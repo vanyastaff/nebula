@@ -20,7 +20,7 @@ new-adrs:
 
 **Goal:** Land 7 production-track SEC findings from audit Errata §XII (and 1 conditional SEC-13) in 5 sequential stages with mandatory landing gates per stage.
 
-**Architecture:** This plan executes the spec at `docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md` verbatim. Stage order is strict: Stage 0 → 1 → 2 → 3 → 4. Each stage produces one merge commit (squash); PRs may be 1+ per stage at execution choice. Test discipline: 4 mandatory compile-fail probes + 4 mandatory runtime tests + 1 conditional Stage 0.5 test, mapped 1:1 to SEC IDs for traceability.
+**Architecture:** This plan executes the spec at `docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md` verbatim. Stage order is strict: Stage 0 → 1 → 2 → 3 → 4. Each stage produces one merge commit (squash); PRs may be 1+ per stage at execution choice. Test discipline: 4 mandatory compile-fail probes + 3 mandatory runtime tests + 1 SEC-10 structural grep check + 1 conditional Stage 0.5 test, mapped 1:1 to SEC IDs for traceability.
 
 **Tech Stack:** Rust 1.95.0 (pinned), tokio 1.51, `zeroize` 1.8, `secrecy` workspace, `url` 2.x (existing dep), `wiremock` 0.6 (test-only), `trybuild` 1.0 (compile-fail), `cargo-nextest` (test runner per CI matrix). No new dependencies introduced.
 
@@ -51,7 +51,6 @@ new-adrs:
 | `crates/credential/tests/probes/scheme_guard_send.rs` | SEC-06 probe input | 2 |
 | `crates/credential/tests/probes/scheme_guard_send.stderr` | SEC-06 expected error | 2 |
 | `crates/credential/tests/zeroize_drop_oauth2_bearer.rs` | runtime drop verification SEC-09 | 2 |
-| `crates/engine/tests/zeroize_drop_token_refresh_intermediates.rs` | runtime drop verification SEC-10 | 2 |
 | `crates/engine/tests/oauth_idp_oversized_body_bounded.rs` | wiremock SEC-01 | 3 |
 | `crates/engine/tests/oauth_idp_error_uri_validation.rs` | wiremock SEC-02 (table-driven) | 3 |
 | `crates/engine/tests/refresh_err_redaction_token_in_description.rs` | (conditional) Stage 0.5 wiremock | 0.5 |
@@ -65,9 +64,8 @@ new-adrs:
 | `crates/credential/src/secrets/crypto.rs` | delete `pub fn encrypt`; migrate internal callers to `encrypt_with_key_id` | 1 |
 | `crates/credential/src/secrets/guard.rs` | drop `Clone` impl on `CredentialGuard` | 2 |
 | `crates/credential/src/secrets/scheme_guard.rs` | add `_marker: PhantomData<*const ()>` field | 2 |
-| `crates/credential/src/secrets/secret_string.rs` (or equivalent) | add `to_zeroizing_string(&self) -> Zeroizing<String>` helper on `SecretString` | 2 |
-| `crates/credential/src/credentials/oauth2.rs` | `bearer_header()` returns `Zeroizing<String>` (was `String`) | 2 |
-| `crates/engine/src/credential/rotation/token_refresh.rs` | replace `.expose_secret().to_owned()` with `.to_zeroizing_string()` ×3; add `read_token_response_limited` helper; add `sanitize_error_uri` helper | 2, 3 |
+| `crates/credential/src/credentials/oauth2.rs` | `bearer_header()` returns `Zeroizing<String>` (was `String`); allocate inside `Zeroizing::new(String::with_capacity(...))` then `push_str` | 2 |
+| `crates/engine/src/credential/rotation/token_refresh.rs` | restructure `refresh_oauth2_state`: secret borrows live inside an inner block returning the built `RequestBuilder`; eliminate the 3 `Zeroizing<String>` intermediates; add `read_token_response_limited` (error path) + `sanitize_error_uri` helpers | 2, 3 |
 | `crates/credential/Cargo.toml` | dev-dep additions for trybuild (verify presence; add if missing) | 1, 2 |
 | `crates/engine/Cargo.toml` | dev-dep additions for wiremock (verify presence; add if missing) | 3 |
 | `docs/MATURITY.md` | append «Security hardening 2026-04-27 SEC-cluster (PR <sha>)» under Audited column for `nebula-credential` | 4 |
@@ -240,34 +238,54 @@ None at file level. Function deletions are line-level only — `pub fn encrypt` 
   - Update call sites to handle new return type (`Zeroizing<String>` vs `String`)
   - `nebula-action` consumers (if any): update in same PR
 
-### Task 2.5 — SEC-10 helper: SecretString::to_zeroizing_string
-
-- [ ] Locate `SecretString` impl in `crates/credential/src/secrets/`
-  - Likely path: `secret_string.rs` or `secrets/mod.rs` (verify)
-- [ ] Add method:
-  ```rust
-  impl SecretString {
-      /// Returns plaintext as `Zeroizing<String>` — wraps allocation under
-      /// the zeroize guard atomically. Use instead of
-      /// `Zeroizing::new(.expose_secret().to_owned())` which leaves a non-Zeroizing
-      /// `String` intermediate during the move.
-      pub fn to_zeroizing_string(&self) -> Zeroizing<String> {
-          let plain = self.expose_secret();
-          let mut buf = Zeroizing::new(String::with_capacity(plain.len()));
-          buf.push_str(plain);
-          buf
-      }
-  }
-  ```
-
-### Task 2.6 — SEC-10 application: token_refresh.rs
+### Task 2.5 — SEC-10: scope-tighten secret borrows in `refresh_oauth2_state`
 
 - [ ] Edit `crates/engine/src/credential/rotation/token_refresh.rs:62-72`:
-  - 3 sites: `refresh_tok`, `client_id`, `client_secret`
-  - Replace pattern `Zeroizing::new(secret.expose_secret().to_owned())` with `secret.to_zeroizing_string()`
-  - Verify resulting variable type is `Zeroizing<String>` (compiler will tell)
+  - **Delete** the 3 `Zeroizing<String>` declarations (`refresh_tok`, `client_id`, `client_secret`)
+  - Restructure into inner block that owns the secret-borrows and returns the built `RequestBuilder`:
+    ```rust
+    let scope_joined: Option<String> = (!state.scopes.is_empty())
+        .then(|| state.scopes.join(" "));
+    let req = {
+        let refresh_tok = state
+            .refresh_token
+            .as_ref()
+            .ok_or(TokenRefreshError::MissingRefreshToken)?
+            .expose_secret();
+        let client_id = state.client_id.expose_secret();
+        let client_secret = state.client_secret.expose_secret();
 
-### Task 2.7 — Runtime drop test SEC-09
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_tok),
+        ];
+        if let Some(ref scope) = scope_joined {
+            form.push(("scope", scope.as_str()));
+        }
+
+        let client = oauth_token_http_client();
+        let mut req = client.post(&state.token_url);
+        match state.auth_style {
+            AuthStyle::Header => {
+                req = req.basic_auth(client_id, Some(client_secret));
+                req = req.form(&form);
+            }
+            AuthStyle::PostBody => {
+                form.push(("client_id", client_id));
+                form.push(("client_secret", client_secret));
+                req = req.form(&form);
+            }
+        }
+        req // moved out; secret borrows drop here
+    };
+
+    let resp = req.send().await
+        .map_err(|e| TokenRefreshError::Request(e.to_string()))?;
+    ```
+  - **No** `Zeroizing<String>` intermediates in our code; reqwest copies the `&str` refs into its internal request body for the HTTP round-trip duration (unavoidable; documented as best-effort defense).
+  - **No** new helper method introduced. Type-enforced by Rust borrow scoping — incorrect usage would be a borrow-checker error, not a developer-discipline issue.
+
+### Task 2.6 — SEC-09: bearer_header runtime drop test
 
 - [ ] Create `crates/credential/tests/zeroize_drop_oauth2_bearer.rs`:
   - Construct `OAuth2Token` with known plaintext
@@ -275,18 +293,13 @@ None at file level. Function deletions are line-level only — `pub fn encrypt` 
   - Drop, verify zeroed via `std::ptr::read_volatile` byte-by-byte
   - If MIRI flagged: mark `#[cfg(not(miri))]` + add doc comment with rationale; alternative deterministic-drop verification via custom Zeroizing wrapper that increments static AtomicUsize on drop
 
-### Task 2.8 — Runtime drop test SEC-10
-
-- [ ] Create `crates/engine/tests/zeroize_drop_token_refresh_intermediates.rs`:
-  - `tokio::test`
-  - Define instrumented `Zeroizing<String>` wrapper with static drop counter
-  - Run refresh path against wiremock IdP
-  - Assert all 3 sites (refresh_tok / client_id / client_secret) drop their `Zeroizing<String>` exactly once with zeroize executing
+> **Note:** SEC-10 has no dedicated runtime test — the «no `Zeroizing<String>` intermediate» property is enforced structurally by the absence of owned String declarations in `refresh_oauth2_state`. Stage 2 landing gate verifies via grep: `! grep -n "Zeroizing::<String>::new\|Zeroizing::new.*expose_secret" crates/engine/src/credential/rotation/token_refresh.rs`. If grep returns hits, Stage 2 is incomplete.
 
 ### Stage 2 — Landing gate
 
-- [ ] 2 compile-fail probes green
-- [ ] 2 runtime tests green
+- [ ] 2 compile-fail probes green (SEC-05, SEC-06)
+- [ ] 1 runtime test green (SEC-09 zeroize_drop_oauth2_bearer)
+- [ ] SEC-10 structural check passes: `! grep -nE "Zeroizing::<String>::new|Zeroizing::new\(.*expose_secret" crates/engine/src/credential/rotation/token_refresh.rs` returns no hits
 - [ ] `cargo clippy --workspace -- -D warnings` green
 - [ ] `cargo nextest run -p nebula-credential -p nebula-engine` green
 - [ ] **Manual review by security-lead recommended** (load-bearing per §4.2 PRODUCT_CANON N10)
@@ -450,7 +463,8 @@ None at file level. Function deletions are line-level only — `pub fn encrypt` 
 ## Spec-level DoD (final acceptance)
 
 - [ ] All 4 mandatory compile-fail probes green
-- [ ] All 4 mandatory runtime tests green
+- [ ] All 3 mandatory runtime tests green
+- [ ] SEC-10 structural grep check passes (no `Zeroizing<String>` intermediates in `refresh_oauth2_state`)
 - [ ] Conditional Stage 0.5 test green (if executed)
 - [ ] All 6 docs synced
 - [ ] CHANGELOG entry added

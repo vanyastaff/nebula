@@ -120,7 +120,7 @@ Modified:
 | SEC-05 | `crates/credential/src/secrets/guard.rs:64-71` — `CredentialGuard: Clone` derived | Remove `Clone` impl; `CredentialGuard` becomes `!Clone` |
 | SEC-06 | `crates/credential/src/secrets/scheme_guard.rs:64` — `SchemeGuard` is implicitly `Send` if `Scheme: Send` | Add explicit `!Send` marker via `_marker: PhantomData<*const ()>` field |
 | SEC-09 | `crates/credential/src/credentials/oauth2.rs:125-128` — `format!("Bearer {}", token.expose_secret())` produces non-Zeroizing `String` intermediate | `bearer_header()` constructs `Zeroizing<String>` directly; `format!` macro replaced with `let mut s = Zeroizing::<String>::new(String::with_capacity(...)); write!(&mut s, ...)?;` |
-| SEC-10 | `crates/engine/src/credential/rotation/token_refresh.rs:62-72` — `expose_secret().to_owned()` creates unwrapped `String` before `Zeroizing::new` wrap; ×3 sites (refresh_tok / client_id / client_secret) | Single-expression form: `Zeroizing::new(secret.expose_secret().to_owned())` does NOT close gap (compiler may produce temp `String` before move-into-Zeroizing). Introduce `secret.to_zeroizing_string()` helper on `&SecretString` that internally allocates inside `Zeroizing::with_capacity` and copies via `extend_from_slice`. Use at all 3 sites. |
+| SEC-10 | `crates/engine/src/credential/rotation/token_refresh.rs:62-72` — `expose_secret().to_owned()` creates unwrapped `String` before `Zeroizing::new` wrap; ×3 sites (refresh_tok / client_id / client_secret) | **Drop the owned `Zeroizing<String>` intermediates entirely.** Refactor `refresh_oauth2_state` so secret borrows live inside a tight inner scope that builds `RequestBuilder` (consumes the `&str` refs into reqwest's internal body buffer), then ends — releasing borrows before `req.send().await`. After await, `state` is free for `&mut` mutation in `update_state_from_token_response`. No owned plaintext copy in our code; the unavoidable in-flight copy lives in reqwest's request body for the HTTP round-trip duration (cannot fix without forking reqwest). **No discipline-based helper introduced** — type-enforced via Rust borrow scoping. |
 
 **Critical: order of operations within Stage 2.** SEC-05 + SEC-06 are TYPE-level changes (compile-fail probes fire). SEC-09 + SEC-10 are PATTERN-level (no compile-fail; runtime drop test or visual review). Land SEC-05 + SEC-06 first to lock the type invariant; then SEC-09 + SEC-10 within the same stage so runtime patterns are closed inside the locked type frame.
 
@@ -129,10 +129,11 @@ Modified:
 - `crates/credential/tests/compile_fail_credential_guard_clone.rs` — `let g2 = guard.clone()` fails with `E0599 no method clone`.
 - `crates/credential/tests/compile_fail_scheme_guard_send.rs` — `tokio::spawn(async move { let _ = guard; })` fails with `E0277 SchemeGuard cannot be sent between threads safely`.
 
-**Runtime tests (zeroization verification):**
+**Runtime test (zeroization verification — SEC-09 only):**
 
 - `crates/credential/tests/zeroize_drop_oauth2_bearer.rs` — construct `OAuth2Token`, capture pointer of `Zeroizing<String>` returned by `.bearer_header()`, drop, assert memory at the captured address is zeroed (use `std::ptr::read_volatile` for safety; document `#[ignore]` if MIRI-incompatible — fall back to deterministic-drop verification via a counter).
-- `crates/engine/tests/zeroize_drop_token_refresh_intermediates.rs` — refresh path with `tokio::test`; introduces a `#[derive(Zeroize, Drop)]` instrumented wrapper to count drops; asserts all 3 sites (refresh_tok / client_id / client_secret) drop their owned-string exactly once with zeroize.
+
+**Structural check (SEC-10):** SEC-10 has no dedicated runtime test — the «no `Zeroizing<String>` intermediate» property is enforced by the absence of owned `String` declarations in `refresh_oauth2_state`. Verified at landing gate via grep: `! grep -nE "Zeroizing::<String>::new|Zeroizing::new\(.*expose_secret" crates/engine/src/credential/rotation/token_refresh.rs` must return no hits.
 
 **Files touched:**
 
@@ -142,17 +143,16 @@ Created:
 - `crates/credential/tests/compile_fail_scheme_guard_send.rs`
 - `crates/credential/tests/probes/scheme_guard_send.rs` + `scheme_guard_send.stderr`
 - `crates/credential/tests/zeroize_drop_oauth2_bearer.rs`
-- `crates/engine/tests/zeroize_drop_token_refresh_intermediates.rs`
 
 Modified:
 - `crates/credential/src/secrets/guard.rs` — drop `Clone` impl on `CredentialGuard`
 - `crates/credential/src/secrets/scheme_guard.rs` — add `_marker: PhantomData<*const ()>`
-- `crates/credential/src/credentials/oauth2.rs` — `bearer_header()` returns `Zeroizing<String>` constructed via `write!` into pre-allocated `Zeroizing<String>`
-- `crates/credential/src/secrets/secret_string.rs` (or equivalent) — add `to_zeroizing_string(&self) -> Zeroizing<String>` helper method on `SecretString`
-- `crates/engine/src/credential/rotation/token_refresh.rs` — replace `.expose_secret().to_owned()` with `.to_zeroizing_string()` at 3 sites (refresh_tok / client_id / client_secret)
+- `crates/credential/src/credentials/oauth2.rs` — `bearer_header()` returns `Zeroizing<String>` constructed by allocating inside `Zeroizing::new(String::with_capacity(...))` then `push_str` (no `format!` macro intermediate)
+- `crates/engine/src/credential/rotation/token_refresh.rs` — restructure `refresh_oauth2_state`: secret borrows live inside an inner block that returns a built `RequestBuilder` (reqwest copies `&str` refs into its internal body); inner block ends → borrows drop → `state` free for `&mut` mutation post-await. **No** `Zeroizing<String>` intermediates in our code, **no** new helper.
 
 **Landing gate (Stage 2):**
-- 2 compile-fail probes + 2 runtime tests green.
+- 2 compile-fail probes (SEC-05, SEC-06) + 1 runtime test (SEC-09) green.
+- SEC-10 structural check passes (grep returns no Zeroizing<String> intermediates in `refresh_oauth2_state`).
 - N10 invariant cluster closure noted in `docs/tracking/credential-concerns-register.md` (SEC-05/06/09/10 rows: `proposed` → `decided` with stage commit SHA).
 - Manual review by security-lead recommended (this stage carries the most weight per §1 threat model).
 
@@ -245,15 +245,20 @@ Modified:
 | `compile_fail_credential_guard_clone.rs` | 2 | `E0599 no method clone` |
 | `compile_fail_scheme_guard_send.rs` | 2 | `E0277 SchemeGuard cannot be sent between threads` |
 
-**Runtime tests — 4 mandatory + 1 conditional:**
+**Runtime tests — 3 mandatory + 1 conditional:**
 
 | Test | Stage | Driver |
 |---|---|---|
 | `zeroize_drop_oauth2_bearer.rs` | 2 | unit (drop count + ptr::read_volatile) |
-| `zeroize_drop_token_refresh_intermediates.rs` | 2 | tokio::test (instrumented wrappers) |
 | `oauth_idp_oversized_body_bounded.rs` | 3 | wiremock |
 | `oauth_idp_error_uri_validation.rs` | 3 | wiremock (table-driven 6 cases) |
 | `refresh_err_redaction_token_in_description.rs` | 0.5 (conditional) | wiremock |
+
+**Structural check — 1 mandatory:**
+
+| Check | Stage | Command |
+|---|---|---|
+| no `Zeroizing<String>` intermediate in `refresh_oauth2_state` (SEC-10) | 2 | `! grep -nE "Zeroizing::<String>::new\|Zeroizing::new\(.*expose_secret" crates/engine/src/credential/rotation/token_refresh.rs` |
 
 **Test discipline:**
 - Each test ID maps to one SEC ID for traceability.
@@ -280,7 +285,8 @@ These belong to a separate test-coverage cleanup spec.
 - ✅ Internal call sites of `crypto::encrypt` audited and migrated to `encrypt_with_key_id`.
 
 **Stage 2:**
-- ✅ 2 compile-fail probes + 2 runtime tests green.
+- ✅ 2 compile-fail probes (SEC-05, SEC-06) + 1 runtime test (SEC-09) green.
+- ✅ SEC-10 structural check passes (grep returns no `Zeroizing<String>` intermediates).
 - ✅ N10 invariant cluster closure noted in register.
 - ✅ Manual review by security-lead recommended (load-bearing per §4.2 PRODUCT_CANON).
 
@@ -295,7 +301,7 @@ These belong to a separate test-coverage cleanup spec.
 - ✅ CHANGELOG entry added.
 
 **Spec-level DoD:**
-- All 4 compile-fail probes + 4 runtime tests + 1 conditional runtime test green under workspace nextest.
+- All 4 compile-fail probes + 3 runtime tests + 1 SEC-10 structural check + 1 conditional runtime test green under workspace nextest.
 - All 6 docs synced.
 - 1-line summary added to `CHANGELOG.md`.
 
