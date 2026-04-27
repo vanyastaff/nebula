@@ -33,7 +33,11 @@ if [[ -z "$CMD" ]]; then
 fi
 
 # Block destructive git operations even if deny-list misses a variant.
-if printf '%s' "$CMD" | grep -qE 'git.*(push.*--force|push.*-f([^a-zA-Z]|$)|reset --hard|clean -[a-zA-Z]*f)'; then
+# Note: `--force(\s|$)` (boundary) lets safe variants pass: `--force-with-lease`
+# and `--force-if-includes` are Git's safe force-pushes (reject if remote
+# changed since last fetch / since the local ref was last updated). The
+# unsafe bare `--force` and short `-f` flags remain blocked.
+if printf '%s' "$CMD" | grep -qE 'git.*(push.*--force(\s|$)|push.*-f([^a-zA-Z]|$)|reset --hard|clean -[a-zA-Z]*f)'; then
   echo "Blocked by guard-bash.sh: destructive git operation detected." >&2
   exit 2
 fi
