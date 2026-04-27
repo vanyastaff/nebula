@@ -52,6 +52,7 @@ use nebula_resource::{
     resource_key, ResourceContext, Error, Manager, PoolConfig, Resource,
     ResourceConfig, ResourceMetadata,
 };
+use nebula_credential::NoCredential;
 use nebula_core::ResourceKey;
 
 // --- Config (no secrets) -----------------------------------------------------
@@ -87,7 +88,7 @@ impl Resource for HttpResource {
     type Runtime    = HttpRuntime;
     type Lease      = HttpRuntime;   // Pooled: Lease == Runtime (cloned on checkout)
     type Error      = Error;
-    type Auth = ();                  // No auth needed
+    type Credential = NoCredential;  // No credential needed
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -96,7 +97,7 @@ impl Resource for HttpResource {
     async fn create(
         &self,
         config: &HttpConfig,
-        _auth: &(),
+        _scheme: &(),
         _ctx: &ResourceContext,
     ) -> Result<HttpRuntime, Error> {
         Ok(HttpRuntime { base_url: config.base_url.clone() })
@@ -143,7 +144,7 @@ async fn main() -> Result<(), nebula_resource::Error> {
 
     let ctx = ResourceContext::new(ExecutionId::new());
 
-    // acquire_pooled_default: no auth noise for Auth = ()
+    // acquire_pooled_default: no credential noise for Credential = NoCredential
     let handle = manager
         .acquire_pooled_default::<HttpResource>(&ctx, &AcquireOptions::default())
         .await?;

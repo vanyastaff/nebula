@@ -19,7 +19,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Public API
 
-- `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 5 core methods (`create`, `check`, `shutdown`, `destroy`, `schema()`).
+- `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 5 core methods (`create`, `check`, `shutdown`, `destroy`, `schema()`). The trait binds to credentials via `type Credential: Credential` per [ADR-0036](../../docs/adr/0036-resource-credential-adoption-auth-retirement.md); resources without an authenticated binding write `type Credential = NoCredential;` (re-exported from `nebula_credential`). The runtime projects `<Self::Credential as Credential>::Scheme` and threads it into `create` and rotation hooks.
 - `ResourceGuard` — RAII lease guard with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
 - `Manager`, `ManagerConfig`, `RegisterOptions` — central registry with acquire dispatch and shutdown coordination.
 - `Registry`, `AnyManagedResource` — type-erased storage for registered resource instances.
