@@ -25,6 +25,7 @@ use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaimRepo, ReplicaId,
     RepoError,
 };
+use tokio::sync::Notify;
 
 // ──────────────────────────────────────────────────────────────────────────
 // FlakyReleaseRepo — forwards everything except `release`, which always
@@ -162,6 +163,84 @@ impl RefreshClaimRepo for AlwaysFailHeartbeatRepo {
     }
 
     async fn heartbeat(&self, _token: &ClaimToken, _ttl: Duration) -> Result<(), HeartbeatError> {
+        Err(HeartbeatError::ClaimLost)
+    }
+
+    async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
+        self.inner.release(token).await
+    }
+
+    async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
+        self.inner.mark_sentinel(token).await
+    }
+
+    async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError> {
+        self.inner.reclaim_stuck().await
+    }
+
+    async fn record_sentinel_event(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+    ) -> Result<(), RepoError> {
+        self.inner
+            .record_sentinel_event(credential_id, crashed_holder, generation)
+            .await
+    }
+
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential_id: &CredentialId,
+        window_start: DateTime<Utc>,
+    ) -> Result<u32, RepoError> {
+        self.inner
+            .count_sentinel_events_in_window(credential_id, window_start)
+            .await
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// SignallingFailHeartbeatRepo — like `AlwaysFailHeartbeatRepo` but fires a
+// `Notify` BEFORE returning `Err(ClaimLost)`. The notify lets the user
+// closure synchronize on the heartbeat call so it can resolve `Ok(...)`
+// AFTER the production heartbeat task has called `cancel.cancel()` — i.e.
+// both arms of the production `select!` are ready when the main task
+// re-polls. Used by the M1 wave-4 reviewer-Issue-1 end-to-end bias test.
+//
+// Sequence inside one heartbeat-task poll:
+//   1. `repo.heartbeat()` runs: `notify.notify_one()` (wakes user closure), returns
+//      `Err(ClaimLost)`.
+//   2. Heartbeat task's match arm: `cancel.cancel()` (wakes select! cancel arm).
+//   3. Heartbeat task `break`s.
+// Then the main task is scheduled and re-polls `select!` with BOTH arms
+// ready — so the production bias must pick `do_refresh_fut`.
+// ──────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct SignallingFailHeartbeatRepo {
+    pub inner: Arc<dyn RefreshClaimRepo>,
+    /// Fires once per heartbeat call. Test code wires the matching
+    /// `notified().await` into the user closure's prologue.
+    pub heartbeat_called: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl RefreshClaimRepo for SignallingFailHeartbeatRepo {
+    async fn try_claim(
+        &self,
+        credential_id: &CredentialId,
+        holder: &ReplicaId,
+        ttl: Duration,
+    ) -> Result<ClaimAttempt, RepoError> {
+        self.inner.try_claim(credential_id, holder, ttl).await
+    }
+
+    async fn heartbeat(&self, _token: &ClaimToken, _ttl: Duration) -> Result<(), HeartbeatError> {
+        // Fire the notify BEFORE returning. After the await resolves, the
+        // production heartbeat task calls `cancel.cancel()` synchronously
+        // (in the same task poll). Order: notify → cancel → main task
+        // wakes and re-polls select! with both arms ready.
+        self.heartbeat_called.notify_one();
         Err(HeartbeatError::ClaimLost)
     }
 

@@ -1143,7 +1143,8 @@ mod tests {
     // ──────────────────────────────────────────────────────────────────
 
     use crate::credential::refresh::test_fixtures::{
-        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, FlakyReleaseRepo, TransientFailHeartbeatRepo,
+        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, FlakyReleaseRepo,
+        SignallingFailHeartbeatRepo, TransientFailHeartbeatRepo,
     };
 
     /// I1 regression — sub-spec §3.4. After Stage 2 review C1+I1: a
@@ -1505,21 +1506,20 @@ mod tests {
         );
     }
 
-    /// M1 wave-4 regression — sub-spec §3.4. The biased-select must
-    /// poll `do_refresh_fut` BEFORE `cancel.cancelled()`. If the user
-    /// future resolves `Ok(...)` and the heartbeat task fires
-    /// `cancel.cancel()` in the same wake-cycle, a ready future MUST
-    /// win deterministically. Otherwise the runtime polls cancel-arm
-    /// first → returns `ClaimLostMidRefresh` → caller routes through
-    /// `record_failure` → reissues IdP POST against stale
-    /// `refresh_token_v1` (n8n #13088 lineage).
+    /// Tokio-semantics regression — sub-spec §3.4. Defense-in-depth
+    /// for the production end-to-end test
+    /// `refresh_coalesced_returns_ok_when_closure_ready_concurrent_with_cancel`
+    /// below. This inline `select!` reproduces the exact biased-select
+    /// shape used in `refresh_coalesced` and proves tokio's `biased`
+    /// primitive picks the first-listed ready arm, not "any ready arm".
+    /// If a future tokio release silently changed `biased` semantics,
+    /// the production test could appear to pass by accident; this
+    /// test would catch the upstream regression.
     ///
-    /// Strategy: pre-cancel the token, then enter the same select!
-    /// shape used in `refresh_coalesced` with a ready user future.
-    /// With biased-do-refresh-first, the ready future wins.
-    /// Without the fix, cancel wins.
+    /// Scope: tokio's `select! { biased; ... }` primitive — NOT the
+    /// production code path. See the end-to-end test for that.
     #[tokio::test]
-    async fn biased_select_lets_ready_future_win_over_cancel() {
+    async fn select_with_biased_refresh_first_lets_ready_future_win_pre_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel(); // pre-cancelled — worst case for the new bias
         let user_future = std::future::ready(Ok::<i32, RefreshError>(42));
@@ -1536,6 +1536,88 @@ mod tests {
         assert!(
             matches!(result, Ok(42)),
             "biased order must let ready future win even when cancel is set; got {result:?}"
+        );
+    }
+
+    /// M1 wave-4 reviewer-Issue-1 regression — sub-spec §3.4.
+    /// End-to-end test through `refresh_coalesced` proving the
+    /// production bias order picks `do_refresh_fut` over
+    /// `cancel.cancelled()` when both arms are ready in the same
+    /// wake-cycle. The sibling
+    /// `select_with_biased_refresh_first_lets_ready_future_win_pre_cancelled`
+    /// covers tokio's `biased` primitive in isolation; this test
+    /// exercises the actual production code path so a future refactor
+    /// that flips the bias order (or accidentally introduces a
+    /// non-biased `select!`) is caught here.
+    ///
+    /// Strategy under `start_paused = true`:
+    ///   1. `SignallingFailHeartbeatRepo::heartbeat()` calls `notify.notify_one()` AND THEN returns
+    ///      `Err(ClaimLost)` in one synchronous body. Production's heartbeat task then calls
+    ///      `cancel.cancel()` synchronously in the same task poll. Order: notify → main task
+    ///      scheduled → cancel fires → main task already in queue (no-op).
+    ///   2. The user closure awaits `notify.notified()` THEN returns `Ok(42)`. By the time it
+    ///      resolves, `cancel` is set.
+    ///   3. Main task re-polls `select!`. Both arms are ready — `do_refresh_fut` (Ok(42)) and
+    ///      `cancel.cancelled()`. With the production bias `r = do_refresh_fut => r` listed first,
+    ///      the ready closure wins → `Ok(42)`.
+    ///
+    /// Pre-fix bias (`cancel.cancelled()` first) would surface
+    /// `ClaimLostMidRefresh` here — caller routes through
+    /// `record_failure` → reissues IdP POST against stale
+    /// `refresh_token_v1` (n8n #13088 lineage). Verified by mutation
+    /// during construction: flipping the production bias order to
+    /// cancel-first makes this test fail.
+    #[tokio::test(start_paused = true)]
+    async fn refresh_coalesced_returns_ok_when_closure_ready_concurrent_with_cancel() {
+        use tokio::sync::Notify;
+
+        let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let heartbeat_called = Arc::new(Notify::new());
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(SignallingFailHeartbeatRepo {
+            inner,
+            heartbeat_called: Arc::clone(&heartbeat_called),
+        });
+
+        // validate()-passing config. `refresh_timeout` is generous so
+        // it does NOT race with the heartbeat tick — under virtual
+        // time, it never elapses because the closure resolves the
+        // moment the heartbeat fixture fires `notify`. Heartbeat tick
+        // at 10ms drives the test; the timeout at 5s is a safety net.
+        //   heartbeat_interval × 3 = 30ms ≤ claim_ttl 6s ✓
+        //   refresh_timeout + heartbeat × 2 = 5s + 20ms ≤ claim_ttl 6s ✓
+        let cfg = RefreshCoordConfig {
+            claim_ttl: Duration::from_secs(6),
+            heartbeat_interval: Duration::from_millis(10),
+            refresh_timeout: Duration::from_secs(5),
+            reclaim_sweep_interval: Duration::from_secs(5),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let coord = RefreshCoordinator::new_with(repo, ReplicaId::new("bias-e2e-test"), cfg)
+            .expect("config valid");
+        let cid = CredentialId::new();
+
+        let notify_for_closure = Arc::clone(&heartbeat_called);
+        let result: Result<i32, RefreshError> = coord
+            .refresh_coalesced(
+                &cid,
+                |_| async { true },
+                |_claim| async move {
+                    // Wait for the heartbeat fixture to fire the notify.
+                    // Production's heartbeat task then synchronously calls
+                    // `cancel.cancel()` in the same task poll, so by the
+                    // time the main task re-polls `select!`, BOTH arms
+                    // are ready and the bias must pick this future.
+                    notify_for_closure.notified().await;
+                    Ok::<i32, RefreshError>(42)
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Ok(42)),
+            "biased select must let ready do_refresh future win over cancel in production code; \
+             got {result:?}"
         );
     }
 
