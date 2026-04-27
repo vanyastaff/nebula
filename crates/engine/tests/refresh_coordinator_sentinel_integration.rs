@@ -8,7 +8,7 @@
 //! - A [`ReclaimSweepHandle`] running on a tight cadence so the test progresses without sleeps.
 //! - An `EventBus<CredentialEvent>` to observe `ReauthRequired` emissions.
 //!
-//! The "below-threshold", "at-threshold", and "two-in-window-one-outside"
+//! The "below-threshold", "at-threshold", and "one-in-window-one-outside"
 //! cases each seed a controlled number of stuck `RefreshInFlight` claim
 //! rows via the L2 `try_claim` + `mark_sentinel` path, wait for the
 //! background sweep to process them, and then assert the bus output.
@@ -179,10 +179,11 @@ async fn at_threshold_publishes_reauth_with_sentinel_repeated_reason() {
 }
 
 #[tokio::test]
-async fn two_in_window_one_outside_does_not_publish_reauth() {
+async fn one_in_window_one_outside_does_not_publish_reauth() {
     let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
     // Custom config: threshold 2 with a 100ms rolling window. The
-    // first stuck event ages out before the second + third land.
+    // first stuck event ages out before the second lands, so only one
+    // event is ever inside the rolling window — count=1 < threshold=2.
     let sentinel = Arc::new(SentinelTrigger::new(
         Arc::clone(&repo),
         SentinelThresholdConfig {
@@ -202,7 +203,7 @@ async fn two_in_window_one_outside_does_not_publish_reauth() {
 
     let cid = nebula_core::CredentialId::new();
 
-    // Event #1.
+    // Event #1 (will age out of the rolling window before event #2 lands).
     seed_stuck_inflight_claim(&repo, cid, "crashed-1").await;
     tokio::time::sleep(Duration::from_millis(60)).await;
 
@@ -210,7 +211,7 @@ async fn two_in_window_one_outside_does_not_publish_reauth() {
     // rolling window.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Event #2 — first inside the new window.
+    // Event #2 — the only one inside the rolling window from this point on.
     seed_stuck_inflight_claim(&repo, cid, "crashed-2").await;
     tokio::time::sleep(Duration::from_millis(60)).await;
 
@@ -219,6 +220,6 @@ async fn two_in_window_one_outside_does_not_publish_reauth() {
     let observed = drain_reauth_for(&mut subscriber, cid, Duration::from_millis(200)).await;
     assert!(
         observed.is_empty(),
-        "two-in-window-one-outside must not escalate; got {observed:?}"
+        "one-in-window-one-outside must not escalate; got {observed:?}"
     );
 }
