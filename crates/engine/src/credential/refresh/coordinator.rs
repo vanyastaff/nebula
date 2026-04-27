@@ -625,17 +625,30 @@ impl RefreshCoordinator {
         // Wrap in `select!` over `cancel.cancelled()` so a heartbeat
         // failure mid-refresh aborts the closure BEFORE it issues the
         // IdP POST — sub-spec §3.4 invariant.
+        //
+        // Bias order MUST poll `do_refresh_fut` first: if the future
+        // resolves `Ok(...)` and the heartbeat task fires
+        // `cancel.cancel()` in the same wake-cycle, biased-cancel-first
+        // would silently drop the successful result and route through
+        // `record_failure`, which would reissue an IdP POST against a
+        // stale `refresh_token_v1` — re-introducing the n8n #13088
+        // refresh-storm pattern P2 was designed to prevent. With
+        // `do_refresh_fut` polled first, a ready future deterministically
+        // wins; cancel only fires while the refresh future is still
+        // suspended. The `select!` is wrapped INSIDE `timeout(...)` so
+        // the timeout still bounds the overall wait.
         let timeout = self.config.refresh_timeout;
         let do_refresh_fut = do_refresh(claim);
-        let result = tokio::select! {
-            biased;
-            () = cancel.cancelled() => Err(RefreshError::ClaimLostMidRefresh),
-            outcome = tokio::time::timeout(timeout, do_refresh_fut) => {
-                outcome
-                    .map_err(|_elapsed| RefreshError::Timeout(timeout))
-                    .and_then(std::convert::identity)
+        let result = tokio::time::timeout(timeout, async {
+            tokio::select! {
+                biased;
+                r = do_refresh_fut => r,
+                () = cancel.cancelled() => Err(RefreshError::ClaimLostMidRefresh),
             }
-        };
+        })
+        .await
+        .map_err(|_elapsed| RefreshError::Timeout(timeout))
+        .and_then(std::convert::identity);
 
         // Normal-exit release (review I1, sub-spec §3.4). We DO NOT
         // propagate release errors — propagating them with `?` would
@@ -1412,6 +1425,40 @@ mod tests {
         assert!(
             matches!(result, Err(RefreshError::ClaimLostMidRefresh)),
             "expected ClaimLostMidRefresh after heartbeat failure; got {result:?}"
+        );
+    }
+
+    /// M1 wave-4 regression — sub-spec §3.4. The biased-select must
+    /// poll `do_refresh_fut` BEFORE `cancel.cancelled()`. If the user
+    /// future resolves `Ok(...)` and the heartbeat task fires
+    /// `cancel.cancel()` in the same wake-cycle, a ready future MUST
+    /// win deterministically. Otherwise the runtime polls cancel-arm
+    /// first → returns `ClaimLostMidRefresh` → caller routes through
+    /// `record_failure` → reissues IdP POST against stale
+    /// `refresh_token_v1` (n8n #13088 lineage).
+    ///
+    /// Strategy: pre-cancel the token, then enter the same select!
+    /// shape used in `refresh_coalesced` with a ready user future.
+    /// With biased-do-refresh-first, the ready future wins.
+    /// Without the fix, cancel wins.
+    #[tokio::test]
+    async fn biased_select_lets_ready_future_win_over_cancel() {
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // pre-cancelled — worst case for the new bias
+        let user_future = std::future::ready(Ok::<i32, RefreshError>(42));
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                biased;
+                r = user_future => r,
+                () = cancel.cancelled() => Err(RefreshError::ClaimLostMidRefresh),
+            }
+        })
+        .await
+        .expect("inner select must complete before timeout");
+
+        assert!(
+            matches!(result, Ok(42)),
+            "biased order must let ready future win even when cancel is set; got {result:?}"
         );
     }
 }
