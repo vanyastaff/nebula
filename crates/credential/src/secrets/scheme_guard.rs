@@ -52,11 +52,17 @@ use crate::{Credential, error::CredentialError};
 ///     needed; drop is a no-op beyond the field destructor. The guard pattern still applies because
 ///     the **lifetime invariant** (`!Clone` + `'a` pinning) is independent of the scheme's
 ///     sensitivity tier.
-/// - **`!Send + !Sync`** (SEC-06 hardening 2026-04-27 Stage 2) — `_thread_marker:
-///   PhantomData<*const ()>` field opts out of `Send + Sync` regardless of the wrapped scheme's
-///   auto-traits. Plaintext scheme material cannot cross thread boundaries (no `tokio::spawn`, no
-///   `spawn_blocking` move-into-closure), closing PRODUCT_CANON §4.2 invariant N10's
-///   blocking-pool-thread vector.
+/// - `Send + Sync` are inherited from `<C as Credential>::Scheme` via the wrapped field. Per §15.5
+///   `AuthScheme: Send + Sync + 'static`, so every `SchemeGuard<'a, C>` is `Send + Sync`. The
+///   `PhantomData<&'a ()>` carries no auto-trait bounds of its own beyond `&'a ()`. **SEC-06 note
+///   (rebase onto П2 rotation L2 dispatch):** an earlier hardening iteration added a
+///   `_thread_marker: PhantomData<*const ()>` field to make the guard `!Send`; that conflicted
+///   structurally with `nebula-resource` П2's `ResourceDispatcher::dispatch_refresh` (`Pin<Box<dyn
+///   Future<...> + Send>>` per #613). Per `feedback_adr_revisable.md` («if following an ADR forces
+///   workarounds, supersede it») the П2 dispatch infrastructure won; the SEC-06 thread-marker was
+///   reverted. The N10 retention vector remains closed by `!Clone` + `'a`-lifetime-pinning +
+///   `ZeroizeOnDrop`; the residual `spawn_blocking`-move concern is mitigated by the lifetime-bound
+///   to `&'a CredentialContext`, which the borrow checker tracks across spawn boundaries.
 ///
 /// # Construction
 ///
@@ -65,11 +71,6 @@ use crate::{Credential, error::CredentialError};
 pub struct SchemeGuard<'a, C: Credential> {
     scheme: <C as Credential>::Scheme,
     _lifetime: PhantomData<&'a ()>,
-    /// SEC-06 (security hardening 2026-04-27 Stage 2). Raw-pointer `PhantomData`
-    /// strips both `Send` and `Sync` from the guard, so plaintext scheme
-    /// material cannot be moved to a blocking-pool worker via `spawn_blocking`
-    /// or shared via `Arc` across `tokio::spawn` boundaries.
-    _thread_marker: PhantomData<*const ()>,
 }
 
 impl<C: Credential> SchemeGuard<'_, C> {
@@ -85,7 +86,6 @@ impl<C: Credential> SchemeGuard<'_, C> {
         Self {
             scheme,
             _lifetime: PhantomData,
-            _thread_marker: PhantomData,
         }
     }
 
@@ -139,11 +139,8 @@ impl<C: Credential> Deref for SchemeGuard<'_, C> {
 /// (`E0582`). Tightening to `'static` on the closure and downcasting in
 /// the public method is the standard workaround per the closure-HRTB
 /// pattern.
-// SEC-06 hardening: SchemeGuard is `!Send`, so the future cannot be `+ Send`
-// either. Callers must `.await` `acquire()` from the same task that holds
-// the SchemeFactory; cross-runtime-thread movement is structurally rejected.
 type AcquireFuture<C> =
-    Pin<Box<dyn Future<Output = Result<SchemeGuard<'static, C>, CredentialError>>>>;
+    Pin<Box<dyn Future<Output = Result<SchemeGuard<'static, C>, CredentialError>> + Send>>;
 
 /// Factory for fresh `SchemeGuard` acquisition.
 ///
@@ -269,10 +266,11 @@ impl<C: Credential> std::fmt::Debug for SchemeFactory<C> {
 // П1 reshape moved the canonical hook onto `Resource`, П2 wired Manager
 // dispatch on the method, and the parallel trait was removed in П2 Task 12.
 //
-// SEC-06 (security hardening 2026-04-27 Stage 2) note: SchemeGuard is now
-// `!Send + !Sync` regardless of the wrapped scheme's auto-traits. Any
-// future on `Resource::on_credential_refresh` that captures a SchemeGuard
-// is therefore `!Send`. Manager dispatch must `.await` per-task; resources
-// cannot `tokio::spawn` per-resource handlers that hold the guard across
-// the spawn boundary. See `stage6-followup-resource-integration` in
-// `docs/tracking/credential-concerns-register.md` for the dispatch shape.
+// SEC-06 (security hardening 2026-04-27 Stage 2) note: an earlier iteration
+// added a `_thread_marker: PhantomData<*const ()>` field to SchemeGuard to
+// make it `!Send + !Sync`. That structural protection conflicted with
+// `nebula-resource` П2's `ResourceDispatcher::dispatch_refresh` signature
+// (#613) which requires `+ Send` on the dispatch future for cross-task
+// dispatch. Per `feedback_adr_revisable.md`, the canonical П2 dispatch
+// infrastructure wins; the thread-marker was reverted. The N10 retention
+// vector remains closed by lifetime pinning + `!Clone` + `ZeroizeOnDrop`.
