@@ -72,6 +72,7 @@ pub mod config {
 
     /// Daemon configuration.
     #[derive(Debug, Clone)]
+    #[non_exhaustive]
     pub struct Config {
         /// When to restart the daemon after it exits.
         pub restart_policy: RestartPolicy,

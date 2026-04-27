@@ -62,6 +62,7 @@ pub trait EventSource: Resource {
 
 /// EventSource configuration.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct EventSourceConfig {
     /// Buffer size for the event channel (transport-dependent semantics).
     pub buffer_size: usize,
