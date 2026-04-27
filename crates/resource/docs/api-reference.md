@@ -81,7 +81,7 @@ Two configs with the same non-zero fingerprint are treated as identical during `
 
 ### `Credential`
 
-Credential type resolved by the credential system before `Resource::create`. Use [`NoCredential`](https://docs.rs/nebula-credential) for unauthenticated resources (re-exported from `nebula_credential`). The runtime projects `<Self::Credential as Credential>::Scheme` and threads it into `create` and rotation hooks. Defined in `nebula-credential` (`crates/credential/src/credential.rs`).
+Credential type resolved by the credential system before `Resource::create`. Use `nebula_resource::NoCredential` for unauthenticated resources (also reachable as `nebula_credential::NoCredential` — same item, re-exported via `crates/resource/src/lib.rs`). The runtime projects `<Self::Credential as Credential>::Scheme` and threads it into `create` and rotation hooks. The `Credential` trait is defined in `nebula-credential` (`crates/credential/src/contract/credential.rs`) and also re-exported as `nebula_resource::Credential`.
 
 ```rust
 pub trait Credential: Send + Sync + 'static {

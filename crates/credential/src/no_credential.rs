@@ -53,7 +53,10 @@ impl CredentialState for NoCredentialState {
 ///
 /// # Examples
 ///
-/// <!-- TODO(П1 Task 9): un-ignore once nebula-resource trait reshape lands -->
+/// Marked `ignore` because `nebula-resource` is not a dev-dependency of
+/// `nebula-credential` (would create a cyclic build dep); compile-time
+/// coverage of this snippet lives in `crates/resource/tests/`.
+///
 /// ```ignore
 /// use nebula_credential::NoCredential;
 /// use nebula_resource::Resource;

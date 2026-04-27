@@ -15,11 +15,11 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Seven named topologies cover the full integration space: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`, `EventSource`, `Daemon`. The `Resource` trait declares five associated types and five core methods; topology traits add pool-specific recycle and broken-instance decisions.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Seven named topologies cover the full integration space: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`, `EventSource`, `Daemon`. The `Resource` trait declares five associated types and seven core methods; topology traits add pool-specific recycle and broken-instance decisions.
 
 ## Public API
 
-- `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 5 core methods (`create`, `check`, `shutdown`, `destroy`, `schema()`). The trait binds to credentials via `type Credential: Credential` per [ADR-0036](../../docs/adr/0036-resource-credential-adoption-auth-retirement.md); resources without an authenticated binding write `type Credential = NoCredential;` (re-exported from `nebula_credential`). The runtime projects `<Self::Credential as Credential>::Scheme` and threads it into `create` and rotation hooks.
+- `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 7 core methods (`create`, `check`, `shutdown`, `destroy`, `schema()`, `on_credential_refresh`, `on_credential_revoke`). The trait binds to credentials via `type Credential: Credential` per [ADR-0036](../../docs/adr/0036-resource-credential-adoption-auth-retirement.md); resources without an authenticated binding write `type Credential = NoCredential;` (re-exported as `nebula_resource::NoCredential`). The runtime projects `<Self::Credential as Credential>::Scheme` and threads it into `create` and rotation hooks.
 - `ResourceGuard` — RAII lease guard with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
 - `Manager`, `ManagerConfig`, `RegisterOptions` — central registry with acquire dispatch and shutdown coordination.
 - `Registry`, `AnyManagedResource` — type-erased storage for registered resource instances.
