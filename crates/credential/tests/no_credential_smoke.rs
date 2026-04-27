@@ -46,8 +46,13 @@ async fn resolve_returns_complete_state() {
     let outcome = NoCredential::resolve(&values, &ctx)
         .await
         .expect("NoCredential::resolve never fails");
-    assert!(matches!(
-        outcome,
-        ResolveResult::Complete(NoCredentialState)
-    ));
+    // Explicit type annotation, not `matches!(_, ResolveResult::Complete(NoCredentialState))`:
+    // if NoCredentialState ever gains a field (becoming a tuple/struct variant),
+    // the bare-name pattern would silently turn into a binding and stop asserting
+    // the type. The `let state: NoCredentialState = ...` form fails to compile
+    // in that case, surfacing the regression.
+    let _state: NoCredentialState = match outcome {
+        ResolveResult::Complete(s) => s,
+        other => panic!("expected ResolveResult::Complete, got {other:?}"),
+    };
 }
