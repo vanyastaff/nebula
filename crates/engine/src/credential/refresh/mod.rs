@@ -18,8 +18,10 @@
 //! - **L2 (cross-replica):** `RefreshClaimRepo` (in `nebula-storage`). CAS-based claim with TTL +
 //!   heartbeat. Lands in Stage 2.2.
 
+mod audit;
 mod coordinator;
 mod l1;
+mod metrics;
 mod reclaim;
 mod sentinel;
 
@@ -27,5 +29,6 @@ pub use coordinator::{
     ConfigError, RefreshAttempt, RefreshConfigError, RefreshCoordConfig, RefreshCoordinator,
     RefreshError,
 };
+pub use metrics::RefreshCoordMetrics;
 pub use reclaim::ReclaimSweepHandle;
 pub use sentinel::{SentinelDecision, SentinelThresholdConfig, SentinelTrigger};

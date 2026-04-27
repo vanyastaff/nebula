@@ -25,10 +25,13 @@ use std::{sync::Arc, time::Duration};
 
 use nebula_credential::{CredentialEvent, resolve::ReauthReason};
 use nebula_eventbus::EventBus;
-use nebula_storage::credential::{RefreshClaimRepo, SentinelState};
+use nebula_storage::credential::{AuditSink, RefreshClaimRepo, SentinelState};
+use tracing::Instrument;
 
 use super::{
+    audit::{emit_reauth_flagged, emit_sentinel_triggered},
     coordinator::RefreshCoordinator,
+    metrics::RefreshCoordMetrics,
     sentinel::{SentinelDecision, SentinelTrigger},
 };
 
@@ -76,8 +79,13 @@ impl ReclaimSweepHandle {
     ) -> Self {
         let cadence = coord.config().reclaim_sweep_interval;
         let repo = Arc::clone(coord.repo());
+        // Sub-spec §6 — sweep emits metrics + audit events through the
+        // same handles wired into the coordinator so a single PromQL /
+        // sink view aggregates both refresh sites.
+        let metrics = coord.metrics().clone();
+        let audit_sink = coord.audit_sink().cloned();
         let handle = tokio::spawn(async move {
-            sweep_loop(repo, sentinel, cadence, event_bus).await;
+            sweep_loop(repo, sentinel, cadence, event_bus, metrics, audit_sink).await;
         });
         Self { handle }
     }
@@ -107,6 +115,8 @@ async fn sweep_loop(
     sentinel: Arc<SentinelTrigger>,
     cadence: Duration,
     event_bus: Option<Arc<EventBus<CredentialEvent>>>,
+    metrics: RefreshCoordMetrics,
+    audit_sink: Option<Arc<dyn AuditSink>>,
 ) {
     let mut ticker = tokio::time::interval(cadence);
     // Avoid back-to-back sweeps after a long storage stall.
@@ -117,7 +127,15 @@ async fn sweep_loop(
     ticker.tick().await;
     loop {
         ticker.tick().await;
-        if let Err(e) = run_one_sweep(&repo, &sentinel, event_bus.as_ref()).await {
+        if let Err(e) = run_one_sweep(
+            &repo,
+            &sentinel,
+            event_bus.as_ref(),
+            &metrics,
+            audit_sink.as_deref(),
+        )
+        .await
+        {
             // run_one_sweep already logs per-row errors; this catches
             // the top-level reclaim_stuck failure.
             tracing::warn!(?e, "credential refresh reclaim sweep failed");
@@ -129,21 +147,46 @@ async fn run_one_sweep(
     repo: &Arc<dyn RefreshClaimRepo>,
     sentinel: &Arc<SentinelTrigger>,
     event_bus: Option<&Arc<EventBus<CredentialEvent>>>,
+    metrics: &RefreshCoordMetrics,
+    audit_sink: Option<&dyn AuditSink>,
 ) -> Result<(), nebula_storage::credential::RepoError> {
     let stuck = repo.reclaim_stuck().await?;
+    // Sub-spec §6 — increment reclaim sweep counter once per sweep,
+    // labeled by whether work was found. `no_work` is the steady state
+    // for healthy systems; `reclaimed` rising is a crashed-runner signal.
+    if stuck.is_empty() {
+        metrics.reclaim_no_work.inc();
+    } else {
+        metrics.reclaim_reclaimed.inc();
+    }
     for reclaimed in stuck {
         if reclaimed.sentinel != SentinelState::RefreshInFlight {
             // Normal-path expiry — claim was reclaimed, nothing more to
             // do (no mid-refresh crash to record).
             continue;
         }
-        let decision = match sentinel
-            .on_sentinel_detected(
-                &reclaimed.credential_id,
-                &reclaimed.previous_holder,
-                reclaimed.previous_generation,
-            )
-            .await
+        // Sub-spec §6 — per-row span; an operator can grep
+        // `credential.refresh.sentinel.detected` for crashed-mid-refresh
+        // events without wading through normal-expiry rows. Use
+        // `.instrument(...)` rather than `.entered()` so the span
+        // boundary respects `Send` for the spawned sweep task.
+        let detect_span = tracing::info_span!(
+            "credential.refresh.sentinel.detected",
+            credential_id = %reclaimed.credential_id,
+            crashed_holder = %reclaimed.previous_holder,
+            generation = reclaimed.previous_generation,
+        );
+        let decision = match async {
+            sentinel
+                .on_sentinel_detected(
+                    &reclaimed.credential_id,
+                    &reclaimed.previous_holder,
+                    reclaimed.previous_generation,
+                )
+                .await
+        }
+        .instrument(detect_span)
+        .await
         {
             Ok(d) => d,
             Err(e) => {
@@ -163,6 +206,9 @@ async fn run_one_sweep(
                     event_count,
                     "sentinel recoverable — credential refresh will retry"
                 );
+                // Sub-spec §6 — record the event (below threshold).
+                metrics.sentinel_recorded.inc();
+                emit_sentinel_triggered(audit_sink, &reclaimed.credential_id, event_count);
             },
             SentinelDecision::EscalateToReauth {
                 event_count,
@@ -174,6 +220,13 @@ async fn run_one_sweep(
                     window_secs,
                     "sentinel threshold exceeded — escalating to ReauthRequired"
                 );
+                // Sub-spec §6 — bump both the recorded counter (every
+                // detection counts) and the reauth_triggered counter
+                // (the escalation transition itself).
+                metrics.sentinel_recorded.inc();
+                metrics.sentinel_reauth_triggered.inc();
+                emit_sentinel_triggered(audit_sink, &reclaimed.credential_id, event_count);
+                emit_reauth_flagged(audit_sink, &reclaimed.credential_id, "sentinel_repeated");
                 if let Some(bus) = event_bus {
                     let event = CredentialEvent::ReauthRequired {
                         credential_id: reclaimed.credential_id,
@@ -273,7 +326,8 @@ mod tests {
         let cid = CredentialId::new();
         seed_stuck_inflight_claim(&repo, cid).await;
 
-        run_one_sweep(&repo, &sentinel, Some(&bus))
+        let metrics = RefreshCoordMetrics::default();
+        run_one_sweep(&repo, &sentinel, Some(&bus), &metrics, None)
             .await
             .expect("sweep ok");
 
@@ -296,13 +350,14 @@ mod tests {
         let mut subscriber = bus.subscribe();
 
         let cid = CredentialId::new();
+        let metrics = RefreshCoordMetrics::default();
         // Three sweeps, each seeded with a stuck RefreshInFlight claim
         // for the same credential. The third call to
         // `on_sentinel_detected` reaches threshold (default 3-in-1h)
         // and the sweep must publish CredentialEvent::ReauthRequired.
         for _ in 0..3 {
             seed_stuck_inflight_claim(&repo, cid).await;
-            run_one_sweep(&repo, &sentinel, Some(&bus))
+            run_one_sweep(&repo, &sentinel, Some(&bus), &metrics, None)
                 .await
                 .expect("sweep ok");
         }
@@ -357,9 +412,11 @@ mod tests {
 
         let cid = CredentialId::new();
 
+        let metrics = RefreshCoordMetrics::default();
+
         // Event #1.
         seed_stuck_inflight_claim(&repo, cid).await;
-        run_one_sweep(&repo, &sentinel, Some(&bus))
+        run_one_sweep(&repo, &sentinel, Some(&bus), &metrics, None)
             .await
             .expect("sweep 1 ok");
 
@@ -368,7 +425,7 @@ mod tests {
 
         // Event #2 — first inside the new window.
         seed_stuck_inflight_claim(&repo, cid).await;
-        run_one_sweep(&repo, &sentinel, Some(&bus))
+        run_one_sweep(&repo, &sentinel, Some(&bus), &metrics, None)
             .await
             .expect("sweep 2 ok");
 
@@ -441,6 +498,104 @@ mod tests {
             observed.load(Ordering::SeqCst),
             1,
             "spawned reclaim sweep must publish exactly one ReauthRequired at threshold"
+        );
+    }
+
+    /// Sub-spec §6 emission test for reclaim metrics.
+    ///
+    /// Calls `run_one_sweep` against a repo with one stuck
+    /// `RefreshInFlight` claim and asserts `reclaim_sweeps_total{
+    /// outcome=reclaimed}` and `sentinel_events_total{action=recorded}`
+    /// each tick once. A second sweep over an empty repo must tick
+    /// `reclaim_sweeps_total{outcome=no_work}`.
+    #[tokio::test]
+    async fn run_one_sweep_increments_metrics_per_sub_spec_6() {
+        use nebula_metrics::MetricsRegistry;
+
+        let registry = MetricsRegistry::new();
+        let metrics = RefreshCoordMetrics::with_registry(&registry);
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let sentinel = Arc::new(SentinelTrigger::new(
+            Arc::clone(&repo),
+            SentinelThresholdConfig::default(),
+        ));
+
+        let cid = CredentialId::new();
+        seed_stuck_inflight_claim(&repo, cid).await;
+
+        run_one_sweep(&repo, &sentinel, None, &metrics, None)
+            .await
+            .expect("first sweep ok");
+
+        assert_eq!(
+            metrics.reclaim_reclaimed.get(),
+            1,
+            "reclaim_reclaimed must tick once when stuck rows exist"
+        );
+        assert_eq!(
+            metrics.reclaim_no_work.get(),
+            0,
+            "reclaim_no_work must NOT tick when stuck rows exist"
+        );
+        assert_eq!(
+            metrics.sentinel_recorded.get(),
+            1,
+            "sentinel_recorded must tick once for the RefreshInFlight row"
+        );
+        assert_eq!(
+            metrics.sentinel_reauth_triggered.get(),
+            0,
+            "no escalation below threshold (first event of three)"
+        );
+
+        // Second sweep with no work must increment no_work, leaving
+        // the other counters untouched.
+        run_one_sweep(&repo, &sentinel, None, &metrics, None)
+            .await
+            .expect("second sweep ok");
+        assert_eq!(
+            metrics.reclaim_no_work.get(),
+            1,
+            "second sweep over empty repo must increment no_work"
+        );
+        assert_eq!(
+            metrics.reclaim_reclaimed.get(),
+            1,
+            "no further work; reclaimed counter must remain at 1"
+        );
+    }
+
+    /// Sub-spec §6 — at-threshold sweep must increment both
+    /// `recorded` and `reauth_triggered`.
+    #[tokio::test]
+    async fn run_one_sweep_at_threshold_increments_reauth_triggered() {
+        use nebula_metrics::MetricsRegistry;
+
+        let registry = MetricsRegistry::new();
+        let metrics = RefreshCoordMetrics::with_registry(&registry);
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let sentinel = Arc::new(SentinelTrigger::new(
+            Arc::clone(&repo),
+            SentinelThresholdConfig::default(),
+        ));
+
+        let cid = CredentialId::new();
+        for _ in 0..3 {
+            seed_stuck_inflight_claim(&repo, cid).await;
+            run_one_sweep(&repo, &sentinel, None, &metrics, None)
+                .await
+                .expect("sweep ok");
+        }
+
+        assert_eq!(
+            metrics.sentinel_recorded.get(),
+            3,
+            "three sentinel events recorded"
+        );
+        assert_eq!(
+            metrics.sentinel_reauth_triggered.get(),
+            1,
+            "exactly one reauth_triggered tick when threshold crossed"
         );
     }
 }

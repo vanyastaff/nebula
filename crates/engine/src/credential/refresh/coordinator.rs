@@ -17,16 +17,24 @@
 //! durable L2 claim with backoff per §3.6, runs the user's refresh
 //! closure under both locks, and releases both on the way out.
 
-use std::{fmt, future::Future, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nebula_core::CredentialId;
 use nebula_storage::credential::{
-    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, RefreshClaim,
+    AuditSink, ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, RefreshClaim,
     RefreshClaimRepo, ReplicaId, RepoError,
 };
+use tracing::Instrument;
 
-use super::l1::{
-    L1RefreshCoalescer, RefreshAttempt as L1Attempt, RefreshConfigError as L1ConfigError,
+use super::{
+    audit::emit_claim_acquired,
+    l1::{L1RefreshCoalescer, RefreshAttempt as L1Attempt, RefreshConfigError as L1ConfigError},
+    metrics::RefreshCoordMetrics,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -165,6 +173,8 @@ pub struct RefreshCoordinator {
     repo: Arc<dyn RefreshClaimRepo>,
     replica_id: ReplicaId,
     config: RefreshCoordConfig,
+    metrics: RefreshCoordMetrics,
+    audit_sink: Option<Arc<dyn AuditSink>>,
 }
 
 impl fmt::Debug for RefreshCoordinator {
@@ -173,6 +183,7 @@ impl fmt::Debug for RefreshCoordinator {
             .field("replica_id", &self.replica_id)
             .field("config", &self.config)
             .field("l1", &self.l1)
+            .field("audit_sink_present", &self.audit_sink.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -223,6 +234,11 @@ impl From<L1ConfigError> for RefreshConfigError {
 impl RefreshCoordinator {
     /// Construct a coordinator wired to a given `RefreshClaimRepo`.
     ///
+    /// Metrics are bound to a fresh in-memory registry by default — call
+    /// [`Self::with_metrics`] post-construction to thread the engine-shared
+    /// `MetricsRegistry`. Audit events are not emitted unless
+    /// [`Self::with_audit_sink`] is called.
+    ///
     /// # Errors
     ///
     /// Returns the corresponding [`ConfigError`] if `config.validate()`
@@ -238,6 +254,8 @@ impl RefreshCoordinator {
             repo,
             replica_id,
             config,
+            metrics: RefreshCoordMetrics::default(),
+            audit_sink: None,
         })
     }
 
@@ -268,6 +286,8 @@ impl RefreshCoordinator {
             repo,
             replica_id: ReplicaId::new(default_replica_id_string()),
             config,
+            metrics: RefreshCoordMetrics::default(),
+            audit_sink: None,
         }
     }
 
@@ -290,7 +310,43 @@ impl RefreshCoordinator {
             repo,
             replica_id: ReplicaId::new(default_replica_id_string()),
             config,
+            metrics: RefreshCoordMetrics::default(),
+            audit_sink: None,
         })
+    }
+
+    /// Replace the metric handles with ones bound to the engine-shared
+    /// `MetricsRegistry`. Call once during composition; the coordinator
+    /// emits all sub-spec §6 series against this registry afterwards.
+    #[must_use = "builder methods must be chained or used"]
+    pub fn with_metrics(mut self, metrics: RefreshCoordMetrics) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// Attach an [`AuditSink`] to receive sub-spec §6 audit events
+    /// (`RefreshCoordClaimAcquired`, `SentinelTriggered`,
+    /// `ReauthFlagged`). Without a sink, audit emission is a no-op (the
+    /// metric / tracing surfaces still observe).
+    #[must_use = "builder methods must be chained or used"]
+    pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        self.audit_sink = Some(sink);
+        self
+    }
+
+    /// Borrow the pre-bound metric handles. Used by reclaim-sweep
+    /// wiring so the sweep emits the same series.
+    #[must_use]
+    pub fn metrics(&self) -> &RefreshCoordMetrics {
+        &self.metrics
+    }
+
+    /// Borrow the audit sink (`None` if not configured). Used by the
+    /// reclaim sweep to emit `RefreshCoordSentinelTriggered` /
+    /// `RefreshCoordReauthFlagged` events.
+    #[must_use]
+    pub fn audit_sink(&self) -> Option<&Arc<dyn AuditSink>> {
+        self.audit_sink.as_ref()
     }
 
     /// Borrow the replica identifier this coordinator was constructed
@@ -341,6 +397,15 @@ impl RefreshCoordinator {
     /// See [`RefreshError`]. `CoalescedByOtherReplica` is success-with-side-effect:
     /// another replica refreshed while we were waiting. Caller should
     /// re-read the credential state and proceed.
+    #[tracing::instrument(
+        name = "credential.refresh.coordinate",
+        skip(self, needs_refresh_after_backoff, do_refresh),
+        fields(
+            credential_id = %credential_id,
+            replica_id = %self.replica_id,
+            tier = tracing::field::Empty,
+        ),
+    )]
     pub async fn refresh_coalesced<F, Fut, T, P, PFut>(
         &self,
         credential_id: &CredentialId,
@@ -375,9 +440,12 @@ impl RefreshCoordinator {
         let cred_str = credential_id.to_string();
         match self.l1.try_refresh(&cred_str) {
             super::l1::RefreshAttempt::Winner => {
+                tracing::Span::current().record("tier", "l2");
                 // Fall through to acquire L2 + run the user closure.
             },
             super::l1::RefreshAttempt::Waiter(rx) => {
+                tracing::Span::current().record("tier", "l1");
+                self.metrics.coalesced_l1.inc();
                 // Wait for the Winner to finish. If the receiver errors
                 // (Winner panicked / dropped without complete()) we still
                 // re-read state — pessimistic safety.
@@ -399,6 +467,19 @@ impl RefreshCoordinator {
             .try_acquire_l2_with_backoff(credential_id, &needs_refresh_after_backoff)
             .await?;
 
+        // Sub-spec §6 — record the claim acquisition once we know we own
+        // the L2 row. `acquired` counter, audit event, and start of the
+        // hold-duration measurement happen here so they are paired
+        // with the matching `release` site below.
+        self.metrics.claims_acquired.inc();
+        emit_claim_acquired(
+            self.audit_sink.as_deref(),
+            credential_id,
+            self.replica_id.as_str(),
+            self.config.claim_ttl.as_secs(),
+        );
+        let hold_start = Instant::now();
+
         // Heartbeat task in background.
         let hb_task = self.spawn_heartbeat(claim.token.clone());
 
@@ -413,8 +494,12 @@ impl RefreshCoordinator {
         let token_for_unwind = claim.token.clone();
         let repo_for_unwind = Arc::clone(&self.repo);
         let hb_task_for_unwind = hb_task.abort_handle();
+        let hold_duration_for_unwind = self.metrics.hold_duration.clone();
         let _l2_unwind_guard = scopeguard::guard_on_unwind((), move |()| {
             hb_task_for_unwind.abort();
+            // Even on panic the hold time is observable — observe it
+            // before the spawn so the histogram never drops a sample.
+            hold_duration_for_unwind.observe(hold_start.elapsed().as_secs_f64());
             tokio::spawn(async move {
                 if let Err(e) = repo_for_unwind.release(token_for_unwind).await {
                     tracing::warn!(?e, "L2 claim release on unwind failed");
@@ -446,6 +531,11 @@ impl RefreshCoordinator {
         // (per `guard_on_unwind` semantics), so this synchronous
         // release runs once, deterministically.
         hb_task.abort();
+        // Sub-spec §6 — observe the hold duration on the normal-exit
+        // release path. Symmetric with the unwind guard above.
+        self.metrics
+            .hold_duration
+            .observe(hold_start.elapsed().as_secs_f64());
         if let Err(e) = self.repo.release(token_for_release).await {
             tracing::warn!(?e, "L2 claim release after successful refresh failed");
         }
@@ -476,16 +566,33 @@ impl RefreshCoordinator {
         PFut: Future<Output = bool> + Send,
     {
         const MAX_ATTEMPTS: usize = 5;
-        for _attempt in 0..MAX_ATTEMPTS {
-            match self
-                .repo
-                .try_claim(credential_id, &self.replica_id, self.config.claim_ttl)
-                .await?
-            {
+        for attempt in 0..MAX_ATTEMPTS {
+            // Sub-spec §6 per-attempt tracing span: `attempt` and
+            // `credential_id` so operators correlate contention storms
+            // across replicas.
+            let span = tracing::info_span!(
+                "credential.refresh.claim.acquire",
+                credential_id = %credential_id,
+                replica_id = %self.replica_id,
+                attempt = attempt,
+            );
+            let outcome = async {
+                self.repo
+                    .try_claim(credential_id, &self.replica_id, self.config.claim_ttl)
+                    .await
+            }
+            .instrument(span)
+            .await?;
+            match outcome {
                 ClaimAttempt::Acquired(claim) => return Ok(claim),
                 ClaimAttempt::Contended {
                     existing_expires_at,
                 } => {
+                    // Sub-spec §6 — bump the contended counter for every
+                    // try_claim that returned Contended, regardless of
+                    // whether the post-backoff recheck eventually
+                    // short-circuits.
+                    self.metrics.claims_contended.inc();
                     // Sleep until the contender's claim expires (capped
                     // at 5s so we don't sleep forever if their TTL is
                     // somehow much longer than ours), plus a jitter to
@@ -508,11 +615,18 @@ impl RefreshCoordinator {
                     // refresh_token rotation the contender just
                     // committed (n8n #13088 lineage).
                     if !needs_refresh_after_backoff(credential_id).await {
+                        // Sub-spec §6 — L2 coalesce: another replica
+                        // refreshed while we waited.
+                        self.metrics.coalesced_l2.inc();
                         return Err(RefreshError::CoalescedByOtherReplica);
                     }
                 },
             }
         }
+        // Sub-spec §6 — every retry exhausted without acquiring the L2
+        // row. `claims_total{outcome=exhausted} > 0` is a real production
+        // signal worth alerting on.
+        self.metrics.claims_exhausted.inc();
         Err(RefreshError::ContentionExhausted)
     }
 
@@ -925,6 +1039,117 @@ mod tests {
         assert!(
             matches!(attempt, ClaimAttempt::Acquired(_)),
             "panic must not leave the L2 row held — got {attempt:?}"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Sub-spec §6 — observability emission
+    // ──────────────────────────────────────────────────────────────────
+
+    /// `refresh_coalesced` must increment `claims_acquired` exactly once
+    /// per successful run and observe a hold-duration sample. Pre-bound
+    /// metric handles are shared between coordinator and tests via
+    /// `with_metrics`, so we can read them post-run without poking
+    /// internals.
+    #[tokio::test]
+    async fn refresh_coalesced_increments_acquired_and_observes_hold_duration() {
+        use nebula_metrics::MetricsRegistry;
+
+        let registry = MetricsRegistry::new();
+        let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let coord = RefreshCoordinator::new_with(
+            repo,
+            ReplicaId::new("metrics-test"),
+            RefreshCoordConfig::default(),
+        )
+        .expect("default config valid")
+        .with_metrics(metrics_handle.clone());
+
+        let cid = CredentialId::new();
+        let _: u32 = coord
+            .refresh_coalesced(&cid, |_| async { true }, |_claim| async move { Ok(7) })
+            .await
+            .expect("ok");
+
+        assert_eq!(
+            metrics_handle.claims_acquired.get(),
+            1,
+            "claims_acquired must tick once per successful run"
+        );
+        assert_eq!(
+            metrics_handle.claims_contended.get(),
+            0,
+            "no contention in this single-caller test"
+        );
+        assert_eq!(
+            metrics_handle.hold_duration.count(),
+            1,
+            "hold_duration must observe exactly one sample"
+        );
+    }
+
+    /// L2 backoff resolved by the post-backoff state recheck: the
+    /// caller must surface as `coalesced_l2` exactly once.
+    #[tokio::test]
+    async fn refresh_coalesced_increments_coalesced_l2_when_recheck_short_circuits() {
+        use nebula_metrics::MetricsRegistry;
+
+        let registry = MetricsRegistry::new();
+        let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+
+        // Park a contender claim so try_claim returns Contended for the
+        // unit-under-test caller. TTL is short so the contender
+        // expires before we exhaust attempts.
+        let parked_holder = ReplicaId::new("contender");
+        let _parked = match repo
+            .try_claim(
+                &CredentialId::nil(),
+                &parked_holder,
+                Duration::from_millis(150),
+            )
+            .await
+            .expect("park ok")
+        {
+            ClaimAttempt::Acquired(c) => c,
+            ClaimAttempt::Contended { .. } => panic!("setup must always acquire"),
+        };
+
+        let coord = RefreshCoordinator::new_with(
+            Arc::clone(&repo),
+            ReplicaId::new("coalesce-l2-test"),
+            RefreshCoordConfig {
+                claim_ttl: Duration::from_secs(2),
+                heartbeat_interval: Duration::from_millis(500),
+                refresh_timeout: Duration::from_millis(500),
+                reclaim_sweep_interval: Duration::from_millis(500),
+                sentinel_threshold: 3,
+                sentinel_window: Duration::from_hours(1),
+            },
+        )
+        .expect("custom config valid")
+        .with_metrics(metrics_handle.clone());
+
+        // Use the parked credential so the second caller hits the
+        // contended path. After backoff, the recheck predicate returns
+        // `false` so the coordinator surfaces CoalescedByOtherReplica.
+        let cid = CredentialId::nil();
+        let outcome: Result<i32, RefreshError> = coord
+            .refresh_coalesced(&cid, |_| async { false }, |_| async { Ok(0) })
+            .await;
+        assert!(
+            matches!(outcome, Err(RefreshError::CoalescedByOtherReplica)),
+            "expected CoalescedByOtherReplica; got {outcome:?}"
+        );
+        assert_eq!(
+            metrics_handle.coalesced_l2.get(),
+            1,
+            "post-backoff recheck false must increment coalesced_l2"
+        );
+        assert!(
+            metrics_handle.claims_contended.get() >= 1,
+            "at least one Contended attempt must be counted"
         );
     }
 }

@@ -67,7 +67,16 @@ pub struct AuditEvent {
 }
 
 /// Type of credential store operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variants without payloads describe `CredentialStore` operations
+/// flowing through [`AuditLayer`]. Variants prefixed `RefreshCoord*`
+/// describe events emitted by the engine's two-tier refresh coordinator
+/// (sub-spec
+/// `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`
+/// §6) and carry their structured payload as enum fields. The same
+/// [`AuditSink`] receives both families so operators reuse one sink
+/// implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AuditOperation {
     /// A credential was retrieved.
@@ -80,6 +89,33 @@ pub enum AuditOperation {
     List,
     /// A credential existence check was performed.
     Exists,
+    /// L2 refresh claim acquired by `holder` for `ttl_secs`.
+    /// Sub-spec §6 audit event.
+    RefreshCoordClaimAcquired {
+        /// Replica that holds the claim.
+        holder: String,
+        /// TTL applied to the claim row.
+        ttl_secs: u64,
+    },
+    /// Sentinel event recorded for a credential — a holder crashed
+    /// mid-refresh and the reclaim sweep observed the residual
+    /// `RefreshInFlight` state. `recent_count` is the rolling-window
+    /// count after the new event was inserted. Sub-spec §6 audit event.
+    RefreshCoordSentinelTriggered {
+        /// Sentinel event count in the rolling window after this
+        /// detection (includes the new event).
+        recent_count: u32,
+    },
+    /// Credential transitioned to `ReauthRequired` after the sentinel
+    /// threshold was crossed. `reason` is the textual form of the
+    /// `ReauthReason` published on the event bus. Sub-spec §6 audit
+    /// event.
+    RefreshCoordReauthFlagged {
+        /// Sanitized reason string. For sentinel-driven escalations:
+        /// `"sentinel_repeated"` (the `ReauthReason::SentinelRepeated`
+        /// arm's stable identifier).
+        reason: String,
+    },
 }
 
 /// Outcome of an audited operation.

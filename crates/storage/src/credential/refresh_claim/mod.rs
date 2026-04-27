@@ -45,6 +45,12 @@ impl ReplicaId {
     }
 }
 
+impl std::fmt::Display for ReplicaId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Opaque token returned to the holder after `RefreshClaimRepo::try_claim`
 /// succeeds. Carries an internal generation counter so heartbeats from a
 /// stale holder cannot extend a reclaimed claim.
