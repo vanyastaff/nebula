@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     context::ResourceContext,
-    error::{Error, RefreshOutcome},
+    error::{Error, RefreshOutcome, RevokeOutcome},
     events::ResourceEvent,
     integration::AcquireResilience,
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
@@ -1577,26 +1577,109 @@ impl Manager {
         Ok(results)
     }
 
-    /// Handle a credential revocation event. Stops accepting new acquires
-    /// and taints all outstanding guards for affected resources.
+    /// Handle a credential revocation event by fanning out
+    /// `Resource::on_credential_revoke` hooks to every resource bound to
+    /// `credential_id`.
     ///
-    /// For each affected resource the phase is set to `Failed` and a
-    /// `HealthChanged { healthy: false }` event is emitted.
-    pub async fn on_credential_revoked(&self, credential_id: &CredentialId) -> Result<(), Error> {
-        let keys = self
+    /// Symmetric to [`on_credential_refreshed`](Self::on_credential_refreshed)
+    /// minus the scheme-material plumbing — `on_credential_revoke` takes only
+    /// `&CredentialId`, so no `SchemeFactory<C>` or generic `C: Credential`
+    /// bound is required here.
+    ///
+    /// Each per-resource future runs concurrently via `join_all` and has its
+    /// own timeout budget — one slow or failing resource never poisons
+    /// siblings (security amendment B-1 isolation). The per-resource budget
+    /// is sourced from `RegisterOptions::credential_rotation_timeout` if set
+    /// at register time, otherwise the manager's
+    /// [`ManagerConfig::credential_rotation_timeout`] default.
+    ///
+    /// Per security amendment B-2, every non-`Ok` per-resource outcome
+    /// (`Failed` or `TimedOut`) emits a
+    /// [`ResourceEvent::HealthChanged`] event with `healthy: false` inline
+    /// so the operator sees a per-resource failure signal even if the
+    /// aggregate `CredentialRevoked` event (Task 7) is dropped by a
+    /// saturated subscriber. Successful revocations emit only the aggregate
+    /// event.
+    ///
+    /// Returns a list of `(ResourceKey, RevokeOutcome)` pairs — one per
+    /// affected resource. If no resources are bound to the credential the
+    /// result is an empty `Vec`.
+    ///
+    /// # Errors
+    ///
+    /// This call itself never returns `Err`; per-resource failures are
+    /// reported in the returned `Vec` via [`RevokeOutcome::Failed`] and
+    /// [`RevokeOutcome::TimedOut`]. The `Result` shape is preserved for
+    /// forward-compat with future caller-level guards (e.g. shutdown-in-
+    /// progress short-circuit).
+    pub async fn on_credential_revoked(
+        &self,
+        credential_id: &CredentialId,
+    ) -> Result<Vec<(ResourceKey, RevokeOutcome)>, Error> {
+        use futures::future::join_all;
+
+        let dispatchers = self
             .credential_resources
             .get(credential_id)
             .map(|entry| entry.value().clone())
             .unwrap_or_default();
 
-        if keys.is_empty() {
-            return Ok(());
+        if dispatchers.is_empty() {
+            return Ok(Vec::new());
         }
 
-        // TODO: For each affected resource: mark as unhealthy, taint
-        // outstanding guards, emit HealthChanged { healthy: false }.
-        let _ = &keys;
-        todo!("Implementation deferred to runtime integration")
+        use tracing::Instrument as _;
+
+        let default_timeout = self.credential_rotation_timeout;
+        let event_tx = self.event_tx.clone();
+
+        let span = tracing::warn_span!(
+            "resource.credential_revoke",
+            credential_id = %credential_id,
+            resources_affected = dispatchers.len(),
+        );
+
+        // Per-resource futures with isolation. Each future has its own
+        // timeout budget; one slow or failing resource never poisons
+        // siblings (security amendment B-1). Per security amendment B-2:
+        // emit HealthChanged{healthy:false} inline for any non-Ok outcome
+        // so the operator sees a per-resource failure signal even if the
+        // aggregate event is lost.
+        let futures = dispatchers.into_iter().map(|d| {
+            let timeout = d.timeout_override().unwrap_or(default_timeout);
+            let key = d.resource_key();
+            let credential_id = *credential_id;
+            let event_tx = event_tx.clone();
+
+            async move {
+                let dispatch = d.dispatch_revoke(&credential_id);
+                let outcome = match tokio::time::timeout(timeout, dispatch).await {
+                    Ok(Ok(())) => RevokeOutcome::Ok,
+                    Ok(Err(e)) => RevokeOutcome::Failed(e),
+                    Err(_) => RevokeOutcome::TimedOut { budget: timeout },
+                };
+
+                // Security amendment B-2: emit HealthChanged{healthy:false}
+                // for non-Ok outcomes. Successful revocations emit only the
+                // aggregate CredentialRevoked event (Task 7). Broadcast send
+                // errors (no live subscribers) are intentionally ignored.
+                if !matches!(outcome, RevokeOutcome::Ok) {
+                    let _ = event_tx.send(ResourceEvent::HealthChanged {
+                        key: key.clone(),
+                        healthy: false,
+                    });
+                }
+
+                (key, outcome)
+            }
+        });
+
+        let results: Vec<(ResourceKey, RevokeOutcome)> = join_all(futures).instrument(span).await;
+
+        // Task 7 wires aggregate CredentialRevoked event emission here.
+        // Task 8 wires counter + histogram observation here.
+
+        Ok(results)
     }
 
     /// Removes a resource from the registry by key.

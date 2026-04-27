@@ -36,10 +36,6 @@ use crate::{resource::Resource, runtime::managed::ManagedResource};
 /// Implementations (currently only `TypedDispatcher<R>`) downcast schemes
 /// to the resource's expected `<R::Credential as Credential>::Scheme` and
 /// forward to `Resource::on_credential_refresh` / `on_credential_revoke`.
-#[expect(
-    dead_code,
-    reason = "dispatch_revoke is wired by on_credential_revoked in Task 5"
-)]
 pub(crate) trait ResourceDispatcher: Send + Sync + 'static {
     /// Resource key for diagnostics + event emission.
     fn resource_key(&self) -> ResourceKey;
