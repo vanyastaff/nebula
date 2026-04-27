@@ -1052,64 +1052,9 @@ mod tests {
     // (review feedback C1 + I1, sub-spec §3.4)
     // ──────────────────────────────────────────────────────────────────
 
-    /// `FlakyReleaseRepo` delegates everything to an inner repo except
-    /// `release`, which always returns `RepoError::InvalidState`. Used to
-    /// prove the coordinator does not mask a successful refresh result
-    /// when release fails after the user closure already returned `Ok`.
-    struct FlakyReleaseRepo {
-        inner: Arc<dyn RefreshClaimRepo>,
-    }
-
-    #[async_trait::async_trait]
-    impl RefreshClaimRepo for FlakyReleaseRepo {
-        async fn try_claim(
-            &self,
-            credential_id: &CredentialId,
-            holder: &ReplicaId,
-            ttl: Duration,
-        ) -> Result<ClaimAttempt, RepoError> {
-            self.inner.try_claim(credential_id, holder, ttl).await
-        }
-
-        async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
-            self.inner.heartbeat(token, ttl).await
-        }
-
-        async fn release(&self, _token: ClaimToken) -> Result<(), RepoError> {
-            Err(RepoError::InvalidState("simulated release failure".into()))
-        }
-
-        async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
-            self.inner.mark_sentinel(token).await
-        }
-
-        async fn reclaim_stuck(
-            &self,
-        ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
-            self.inner.reclaim_stuck().await
-        }
-
-        async fn record_sentinel_event(
-            &self,
-            credential_id: &CredentialId,
-            crashed_holder: &ReplicaId,
-            generation: u64,
-        ) -> Result<(), RepoError> {
-            self.inner
-                .record_sentinel_event(credential_id, crashed_holder, generation)
-                .await
-        }
-
-        async fn count_sentinel_events_in_window(
-            &self,
-            credential_id: &CredentialId,
-            window_start: chrono::DateTime<chrono::Utc>,
-        ) -> Result<u32, RepoError> {
-            self.inner
-                .count_sentinel_events_in_window(credential_id, window_start)
-                .await
-        }
-    }
+    use crate::credential::refresh::test_fixtures::{
+        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, FlakyReleaseRepo,
+    };
 
     /// I1 regression — sub-spec §3.4. After Stage 2 review C1+I1: a
     /// transient `release()` failure must NOT mask a successful refresh.
@@ -1387,58 +1332,6 @@ mod tests {
     async fn refresh_coalesced_returns_contention_exhausted_after_max_attempts() {
         use nebula_metrics::MetricsRegistry;
 
-        /// Repo wrapper that returns `Contended` from `try_claim`
-        /// every time, with a short `existing_expires_at` so the
-        /// backoff loop completes quickly.
-        struct AlwaysContendedRepo;
-
-        #[async_trait::async_trait]
-        impl RefreshClaimRepo for AlwaysContendedRepo {
-            async fn try_claim(
-                &self,
-                _credential_id: &CredentialId,
-                _holder: &ReplicaId,
-                _ttl: Duration,
-            ) -> Result<ClaimAttempt, RepoError> {
-                Ok(ClaimAttempt::Contended {
-                    existing_expires_at: chrono::Utc::now() + chrono::Duration::milliseconds(50),
-                })
-            }
-            async fn heartbeat(
-                &self,
-                _token: &ClaimToken,
-                _ttl: Duration,
-            ) -> Result<(), HeartbeatError> {
-                Ok(())
-            }
-            async fn release(&self, _token: ClaimToken) -> Result<(), RepoError> {
-                Ok(())
-            }
-            async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RepoError> {
-                Ok(())
-            }
-            async fn reclaim_stuck(
-                &self,
-            ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
-                Ok(Vec::new())
-            }
-            async fn record_sentinel_event(
-                &self,
-                _credential_id: &CredentialId,
-                _crashed_holder: &ReplicaId,
-                _generation: u64,
-            ) -> Result<(), RepoError> {
-                Ok(())
-            }
-            async fn count_sentinel_events_in_window(
-                &self,
-                _credential_id: &CredentialId,
-                _window_start: chrono::DateTime<chrono::Utc>,
-            ) -> Result<u32, RepoError> {
-                Ok(0)
-            }
-        }
-
         let registry = MetricsRegistry::new();
         let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(AlwaysContendedRepo);
@@ -1485,65 +1378,6 @@ mod tests {
     /// returned `Ok(...)` if not cancelled.
     #[tokio::test]
     async fn heartbeat_failure_cancels_concurrent_do_refresh() {
-        struct AlwaysFailHeartbeatRepo {
-            inner: Arc<dyn RefreshClaimRepo>,
-        }
-
-        #[async_trait::async_trait]
-        impl RefreshClaimRepo for AlwaysFailHeartbeatRepo {
-            async fn try_claim(
-                &self,
-                credential_id: &CredentialId,
-                holder: &ReplicaId,
-                ttl: Duration,
-            ) -> Result<ClaimAttempt, RepoError> {
-                self.inner.try_claim(credential_id, holder, ttl).await
-            }
-
-            async fn heartbeat(
-                &self,
-                _token: &ClaimToken,
-                _ttl: Duration,
-            ) -> Result<(), HeartbeatError> {
-                Err(HeartbeatError::ClaimLost)
-            }
-
-            async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
-                self.inner.release(token).await
-            }
-
-            async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
-                self.inner.mark_sentinel(token).await
-            }
-
-            async fn reclaim_stuck(
-                &self,
-            ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
-                self.inner.reclaim_stuck().await
-            }
-
-            async fn record_sentinel_event(
-                &self,
-                credential_id: &CredentialId,
-                crashed_holder: &ReplicaId,
-                generation: u64,
-            ) -> Result<(), RepoError> {
-                self.inner
-                    .record_sentinel_event(credential_id, crashed_holder, generation)
-                    .await
-            }
-
-            async fn count_sentinel_events_in_window(
-                &self,
-                credential_id: &CredentialId,
-                window_start: chrono::DateTime<chrono::Utc>,
-            ) -> Result<u32, RepoError> {
-                self.inner
-                    .count_sentinel_events_in_window(credential_id, window_start)
-                    .await
-            }
-        }
-
         let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(AlwaysFailHeartbeatRepo { inner });
 

@@ -25,6 +25,9 @@ mod metrics;
 mod reclaim;
 mod sentinel;
 
+#[cfg(test)]
+mod test_fixtures;
+
 pub use coordinator::{
     ConfigError, RefreshAttempt, RefreshConfigError, RefreshCoordConfig, RefreshCoordinator,
     RefreshError,
