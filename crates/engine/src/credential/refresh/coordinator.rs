@@ -461,6 +461,20 @@ impl RefreshCoordinator {
     /// See [`RefreshError`]. `CoalescedByOtherReplica` is success-with-side-effect:
     /// another replica refreshed while we were waiting. Caller should
     /// re-read the credential state and proceed.
+    ///
+    /// # Cancel-safety
+    ///
+    /// The `do_refresh` future MUST be cancel-safe: dropping it mid-`await`
+    /// must not leak resources or leave external state in an inconsistent
+    /// shape. The coordinator drops the future without notice if a heartbeat
+    /// failure mid-refresh requires aborting before the IdP POST issues
+    /// (returning [`RefreshError::ClaimLostMidRefresh`]).
+    ///
+    /// Standard async HTTP clients (`reqwest`, `hyper`) satisfy this. Closures
+    /// that await a `tokio::task::JoinHandle` from `spawn_blocking` without a
+    /// cleanup path do not — the blocking task continues running after the
+    /// `JoinHandle` is dropped, and any state it produces is silently
+    /// discarded.
     #[tracing::instrument(
         name = "credential.refresh.coordinate",
         skip(self, needs_refresh_after_backoff, do_refresh),
