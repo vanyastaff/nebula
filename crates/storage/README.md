@@ -83,10 +83,10 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   `nebula_storage::{RefreshClaim, ClaimAttempt, ClaimToken, …}`.
 - `InMemoryRefreshClaimRepo` — production-shaped reference impl for tests + single-replica
   deploys.
-- Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migration
-  0023).
+- Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migrations
+  `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
 - Feature `postgres` adds `PgRefreshClaimRepo` (production multi-replica backend; `POSTGRES`
-  migration 0022).
+  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
 
 ## Contract
 
