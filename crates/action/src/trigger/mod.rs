@@ -580,7 +580,7 @@ mod tests {
 
     struct TestSource;
     impl TriggerSource for TestSource {
-        type Event = serde_json::Value;
+        type Event = Value;
     }
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
