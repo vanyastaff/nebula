@@ -16,7 +16,7 @@ tokio = { workspace = true, features = ["time", "sync", "rt", "fs", "io-util"], 
 
 # Core tracing
 tracing = { workspace = true }
-tracing-appender = { version = "0.2.4", optional = true }
+tracing-appender = { version = "0.2.5", optional = true }
 tracing-log = { version = "0.2", optional = true }
 tracing-subscriber = { workspace = true, features = [
   "env-filter",
