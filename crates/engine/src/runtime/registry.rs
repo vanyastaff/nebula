@@ -23,7 +23,7 @@ use dashmap::DashMap;
 use nebula_action::{
     Action, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter, ResourceAction,
     ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
-    StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
+    StatelessActionAdapter, TriggerAction, TriggerActionAdapter, TriggerSource, WebhookAction,
     WebhookTriggerAdapter,
 };
 use nebula_core::ActionKey;
@@ -159,9 +159,10 @@ impl ActionRegistry {
     /// Does not return errors. Same-version handlers are replaced silently.
     pub fn register_trigger<A>(&self, action: A)
     where
-        A: Action + TriggerAction + Send + Sync + 'static,
+        A: TriggerAction + Send + Sync + 'static,
+        <A::Source as TriggerSource>::Event: Send + Sync + 'static,
     {
-        let metadata = action.metadata().clone();
+        let metadata = TriggerAction::metadata(&action).clone();
         let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
         self.register(metadata, handler);
     }
