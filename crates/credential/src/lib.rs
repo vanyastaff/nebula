@@ -148,6 +148,9 @@ pub use nebula_core::accessor::CredentialAccessor;
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
+// Opt-out built-in (lives at root, not under credentials::, because it has
+// no Input form and is never registered in CredentialRegistry — it's a
+// Resource-side type marker per ADR-0036).
 pub use no_credential::{NoCredential, NoCredentialState};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};

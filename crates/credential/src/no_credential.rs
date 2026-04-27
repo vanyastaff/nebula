@@ -41,8 +41,19 @@ impl CredentialState for NoCredentialState {
 /// reshape. Use as `type Credential = NoCredential;` on any `Resource` impl
 /// that does not need credential material in `create()`.
 ///
+/// # Not registered with `CredentialRegistry`
+///
+/// `NoCredential` is a type-level marker for `Resource` impls that don't bind
+/// authenticated material — it never enters
+/// [`CredentialRegistry`](crate::CredentialRegistry) (no UI catalog entry, no
+/// `register()` call, no capability-report impls). The five `IsInteractive` /
+/// `IsRefreshable` / `IsRevocable` / `IsTestable` / `IsDynamic` impls present
+/// on registered built-ins (see [`ApiKeyCredential`](crate::ApiKeyCredential))
+/// are intentionally absent here.
+///
 /// # Examples
 ///
+/// <!-- TODO(П1 Task 9): un-ignore once nebula-resource trait reshape lands -->
 /// ```ignore
 /// use nebula_credential::NoCredential;
 /// use nebula_resource::Resource;
