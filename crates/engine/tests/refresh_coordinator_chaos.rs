@@ -1,11 +1,32 @@
-//! Chaos test — 3 in-memory replicas × 5 credentials × 5 seconds.
+//! Chaos test — refresh-coordinator multi-replica race regression.
 //!
 //! Per sub-spec
 //! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` §5.4.
 //!
-//! Default CI runs the scaled-down 5s × 5-credential version; the
-//! nightly `chaos-full` feature widens to 10 minutes × 100 credentials
-//! with no code changes.
+//! # Gating
+//!
+//! This test is `#[ignore]`'d by default — it costs ~6s of wall-clock
+//! per CI run and dominates `nebula-engine` test time on every PR
+//! (review I3). It runs only when one of:
+//!
+//! - the `chaos-full` Cargo feature is on (used by `nightly-chaos.yml`); or
+//! - the runner passes `--include-ignored` to `cargo nextest`.
+//!
+//! Both paths bypass the `cfg_attr(not(feature = "chaos-full"), ignore)`
+//! gate: enabling `chaos-full` removes the `ignore` attribute outright,
+//! while `--include-ignored` runs ignored tests regardless. The default
+//! `cargo nextest run -p nebula-engine` thus skips this test entirely.
+//!
+//! # Plane sizes
+//!
+//! | Plane    | Duration | Credentials | Replicas | Workers/replica | Total worker tasks |
+//! |----------|----------|-------------|----------|-----------------|--------------------|
+//! | `ci()`   | 5s       | 5           | 3        | 3               | 9                  |
+//! | `full()` | 10 min   | 100         | 3        | 8               | 24                 |
+//!
+//! `chaos-full` is not just longer — it also widens the worker
+//! concurrency from 9 to 24 tasks, exercising a different contention
+//! profile, not just more iterations of the same pattern.
 //!
 //! # Design
 //!
@@ -54,11 +75,16 @@ use nebula_metrics::{
 use nebula_storage::credential::{InMemoryRefreshClaimRepo, RefreshClaimRepo, ReplicaId};
 use tokio::task::JoinHandle;
 
-/// Chaos-test parameters. Default is the CI-friendly scaled-down version
-/// (~30s wall-clock, 10 credentials). The full version (10 min ×
-/// 100 credentials) is gated behind the `chaos-full` feature so the
-/// nightly chaos pipeline can widen the test plane without code
-/// changes.
+/// Chaos-test parameters. The default `ci()` plane is the CI-friendly
+/// scaled-down version (5s × 5 credentials × 3 replicas × 3 workers per
+/// replica = 9 worker tasks). The `chaos-full` Cargo feature widens to
+/// the full sub-spec §5.4 plane (10 min × 100 credentials × 3 replicas
+/// × 8 workers per replica = 24 worker tasks) with no code changes —
+/// only the `cfg`-gated literals differ.
+///
+/// The two planes differ in concurrency, not just in duration: 9 vs 24
+/// concurrent worker tasks contend over the shared in-memory L2 row,
+/// so `chaos-full` exercises a noticeably different race profile.
 #[derive(Clone, Debug)]
 struct ChaosParams {
     duration: Duration,
@@ -68,11 +94,17 @@ struct ChaosParams {
 }
 
 impl ChaosParams {
-    /// CI-friendly scaled-down version: 5s wall-clock, 5 credentials.
-    /// Designed so the chaos test fits inside CI's per-test deadline
-    /// without padding workspace-wide test time. Still exercises all
-    /// three coordination paths (L1, L2 acquired, L2 coalesced) at
-    /// realistic concurrency.
+    /// CI-friendly scaled-down plane: 5s × 5 credentials × 3 replicas
+    /// × 3 workers per replica (9 worker tasks total). Sized so the
+    /// chaos test fits inside CI's per-test deadline without padding
+    /// workspace-wide test time, while still exercising all three
+    /// coordination paths (L1 oneshot, L2 acquired, L2 coalesced) at
+    /// non-trivial concurrency.
+    ///
+    /// Default-CI runs of `cargo nextest -p nebula-engine` skip this
+    /// test entirely (the module-level `cfg_attr(not(feature =
+    /// "chaos-full"), ignore)` guard); the plane is therefore only
+    /// observed via `--include-ignored` runs.
     #[cfg(not(feature = "chaos-full"))]
     fn ci() -> Self {
         Self {
@@ -83,10 +115,10 @@ impl ChaosParams {
         }
     }
 
-    /// Nightly chaos build: full sub-spec §5.4 plane (10 min, 100
-    /// credentials, 3 replicas × 8 workers). Gated behind `chaos-full`
-    /// feature so the nightly-chaos workflow can flip a single Cargo
-    /// flag.
+    /// Nightly `chaos-full` plane: 10 min × 100 credentials × 3
+    /// replicas × 8 workers per replica (24 worker tasks total). The
+    /// nightly-chaos workflow flips the `chaos-full` Cargo feature to
+    /// activate this plane.
     #[cfg(feature = "chaos-full")]
     fn ci() -> Self {
         Self {
@@ -126,6 +158,12 @@ impl CredentialTracker {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(feature = "chaos-full"),
+    ignore = "chaos test gated behind chaos-full feature; runs in nightly CI via \
+              .github/workflows/nightly-chaos.yml. Pass --include-ignored or \
+              --features chaos-full to run locally."
+)]
 async fn three_replicas_zero_double_idp_calls() {
     let params = ChaosParams::ci();
     let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());

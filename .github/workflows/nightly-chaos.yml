@@ -49,13 +49,17 @@ jobs:
         uses: taiki-e/install-action@cargo-nextest
 
       - name: Run refresh-coordinator chaos test (full plane)
+        # Uses the `chaos` nextest profile (defined in
+        # `.config/nextest.toml`), which sets slow-timeout to 30 min so
+        # the 10-minute chaos plane is not killed by the `ci` profile's
+        # 180s slow-test ceiling.
         run: |
           set -euo pipefail
           cargo nextest run \
             -p nebula-engine \
             --test refresh_coordinator_chaos \
             --features chaos-full \
-            --profile ci \
+            --profile chaos \
             --no-tests=pass
 
       - name: Upload chaos junit
@@ -63,6 +67,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: nightly-chaos-junit
-          path: target/nextest/ci/junit.xml
+          path: target/nextest/chaos/junit.xml
           if-no-files-found: ignore
           retention-days: 14

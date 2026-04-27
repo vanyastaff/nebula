@@ -27,3 +27,19 @@ failure-output = "immediate"
 success-output = "never"
 fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.chaos]
+# Long-running chaos profile (e.g. nightly-chaos.yml).
+# Inherits nothing from `ci` — the chaos-full plane intentionally runs
+# for 10 minutes (refresh_coordinator_chaos), which would be killed by
+# the `ci` profile's slow-timeout × terminate-after = 180s ceiling.
+retries = 0
+fail-fast = false
+status-level = "pass"
+final-status-level = "fail"
+# Allow up to 30 minutes per test before slow-flag, terminate after a
+# second 30-min interval. Generous so an oversubscribed runner does not
+# kill the chaos run mid-assertion.
+slow-timeout = { period = "30m", terminate-after = 2 }
+[profile.chaos.junit]
+path = "junit.xml"

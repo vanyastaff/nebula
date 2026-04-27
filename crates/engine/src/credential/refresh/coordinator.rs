@@ -440,8 +440,15 @@ impl RefreshCoordinator {
         let cred_str = credential_id.to_string();
         match self.l1.try_refresh(&cred_str) {
             super::l1::RefreshAttempt::Winner => {
-                tracing::Span::current().record("tier", "l2");
-                // Fall through to acquire L2 + run the user closure.
+                // NOTE: do NOT record `tier="l2"` here — the L2 path can
+                // still produce `CoalescedByOtherReplica` via the
+                // post-backoff recheck in
+                // `try_acquire_l2_with_backoff`. Recording the tier
+                // prematurely makes operators see "l2 acquired" when the
+                // actual outcome was "l2 coalesced" (review I1).
+                // The closed set `{l1, l2_acquired, l2_coalesced}` is
+                // recorded at the actual outcome sites below.
+                // (Fall through to acquire L2 + run the user closure.)
             },
             super::l1::RefreshAttempt::Waiter(rx) => {
                 tracing::Span::current().record("tier", "l1");
@@ -471,6 +478,12 @@ impl RefreshCoordinator {
         // the L2 row. `acquired` counter, audit event, and start of the
         // hold-duration measurement happen here so they are paired
         // with the matching `release` site below.
+        //
+        // Span tier (review I1) — record `l2_acquired` at the outcome
+        // site so operators distinguish from the `l2_coalesced` path
+        // (post-backoff recheck), which is recorded inside
+        // `try_acquire_l2_with_backoff` below.
+        tracing::Span::current().record("tier", "l2_acquired");
         self.metrics.claims_acquired.inc();
         emit_claim_acquired(
             self.audit_sink.as_deref(),
@@ -617,6 +630,17 @@ impl RefreshCoordinator {
                     if !needs_refresh_after_backoff(credential_id).await {
                         // Sub-spec §6 — L2 coalesce: another replica
                         // refreshed while we waited.
+                        //
+                        // Span tier (review I1) — record `l2_coalesced`
+                        // at the outcome site. We are now outside the
+                        // per-attempt `instrument(span)` block (which
+                        // wrapped only the `try_claim` future), so
+                        // `Span::current()` resolves to the parent
+                        // `credential.refresh.coordinate` span — the
+                        // intended target. The closed set
+                        // `{l1, l2_acquired, l2_coalesced}` is
+                        // documented in OBSERVABILITY.md §7.2.
+                        tracing::Span::current().record("tier", "l2_coalesced");
                         self.metrics.coalesced_l2.inc();
                         return Err(RefreshError::CoalescedByOtherReplica);
                     }

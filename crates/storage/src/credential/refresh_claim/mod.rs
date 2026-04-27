@@ -29,13 +29,55 @@ pub use postgres::PgRefreshClaimRepo;
 
 /// Stable identifier for a Nebula replica process. Used to distinguish
 /// claim holders for diagnostics + sweep ownership.
+///
+/// # Length cap
+///
+/// Replica ids are stored as a `String` and surfaced in audit events
+/// (`RefreshCoordClaimAcquired { holder, .. }`), tracing span fields,
+/// and the L2 claim row (`holder` column). To keep audit-event payloads
+/// and span attributes bounded, [`ReplicaId::MAX_BYTES`] sets a hard
+/// upper limit on the byte length of the input; values longer than this
+/// are truncated by [`ReplicaId::new`] at a UTF-8 character boundary so
+/// downstream sinks never observe an oversized holder string.
+///
+/// The default limit (256 bytes) is deliberately generous — typical
+/// values are kubernetes pod names (≤63 chars) or hostname-uuid
+/// concatenations (~50 chars) — but any value beyond it is almost
+/// certainly an operator misconfiguration (e.g. accidental log line
+/// concatenation) and must not be allowed to bloat every audit row.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ReplicaId(String);
 
 impl ReplicaId {
+    /// Maximum byte length stored on a `ReplicaId`. Inputs longer than
+    /// this are truncated at the nearest UTF-8 boundary by
+    /// [`ReplicaId::new`].
+    ///
+    /// Sized to comfortably accommodate kubernetes pod names plus a
+    /// generation suffix without permitting accidental megabyte-sized
+    /// holder strings in audit events.
+    pub const MAX_BYTES: usize = 256;
+
     /// Construct a new replica id from any string-like value.
+    ///
+    /// Inputs longer than [`ReplicaId::MAX_BYTES`] are silently
+    /// truncated at the nearest UTF-8 character boundary at or below
+    /// the limit. Truncation is preferred over panic so a misbehaving
+    /// caller (e.g. accidentally concatenating a log line into the
+    /// replica id) does not crash the engine — the audit-event chain
+    /// still records a usable, bounded holder string.
     pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+        let mut s: String = id.into();
+        if s.len() > Self::MAX_BYTES {
+            // Find the largest UTF-8 boundary at or below MAX_BYTES so
+            // we never split a multi-byte codepoint.
+            let mut cap = Self::MAX_BYTES;
+            while !s.is_char_boundary(cap) {
+                cap -= 1;
+            }
+            s.truncate(cap);
+        }
+        Self(s)
     }
 
     /// Borrow the replica id as a string slice.
@@ -208,4 +250,50 @@ pub trait RefreshClaimRepo: Send + Sync + 'static {
         credential_id: &CredentialId,
         window_start: DateTime<Utc>,
     ) -> Result<u32, RepoError>;
+}
+
+#[cfg(test)]
+mod replica_id_tests {
+    use super::ReplicaId;
+
+    #[test]
+    fn short_id_is_stored_verbatim() {
+        let r = ReplicaId::new("pod-a-1");
+        assert_eq!(r.as_str(), "pod-a-1");
+    }
+
+    #[test]
+    fn id_at_max_bytes_is_kept_intact() {
+        let s: String = "a".repeat(ReplicaId::MAX_BYTES);
+        let r = ReplicaId::new(s.clone());
+        assert_eq!(r.as_str().len(), ReplicaId::MAX_BYTES);
+        assert_eq!(r.as_str(), s);
+    }
+
+    #[test]
+    fn oversized_ascii_id_is_truncated_to_max_bytes() {
+        let s: String = "x".repeat(ReplicaId::MAX_BYTES + 100);
+        let r = ReplicaId::new(s);
+        assert_eq!(r.as_str().len(), ReplicaId::MAX_BYTES);
+        assert!(r.as_str().chars().all(|c| c == 'x'));
+    }
+
+    #[test]
+    fn truncation_respects_utf8_char_boundary() {
+        // 4-byte char "🦀" (U+1F980 CRAB) placed near the cap so a
+        // naïve byte-truncate would split it.
+        let mut s = "a".repeat(ReplicaId::MAX_BYTES - 2);
+        s.push('🦀');
+        s.push_str("trailing");
+        // s.len() now > MAX_BYTES because crab is 4 bytes and we added
+        // MAX_BYTES - 2 + 4 + 8 bytes total.
+        assert!(s.len() > ReplicaId::MAX_BYTES);
+        let r = ReplicaId::new(s);
+        // The crab byte sequence starts at byte index MAX_BYTES - 2
+        // and would extend to MAX_BYTES + 2; truncation must back off
+        // to MAX_BYTES - 2 to avoid splitting the codepoint.
+        assert_eq!(r.as_str().len(), ReplicaId::MAX_BYTES - 2);
+        // Round-trip: still valid UTF-8 and no panic on display.
+        let _ = r.to_string();
+    }
 }
