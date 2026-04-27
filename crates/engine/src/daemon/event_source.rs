@@ -1,25 +1,405 @@
 //! EventSource topology + `EventSourceAdapter<E>: TriggerAction`.
 //!
-//! Filled in by Task 5.
+//! Migrated from `crates/resource/src/topology/event_source.rs` and
+//! `crates/resource/src/runtime/event_source.rs` per ADR-0037 / Tech Spec
+//! §12.3. EventSource lands as a thin adapter onto engine's existing
+//! `TriggerAction` substrate.
+//!
+//! # Why an adapter, not a TriggerAction extension
+//!
+//! `EventSource: Resource` (needs `R::Runtime`, `R::Error`, `ResourceContext`)
+//! and `TriggerAction: Action` (needs `ActionMetadata`, `TriggerContext`,
+//! `ActionError`) sit on different bases. Rather than refactor either trait,
+//! `EventSourceAdapter<E>` bridges them at construction time:
+//! caller supplies `Arc<E::Runtime>`, `ActionMetadata`, and an `event_to_payload`
+//! closure; the adapter implements `TriggerAction::start` as a "run-until-cancelled"
+//! loop that `subscribe`s + `recv`s + emits via `ctx.emitter()`.
+//!
+//! This mirrors `crates/action/src/poll.rs::PollTriggerAdapter` (which runs
+//! `poll()` in an inline loop driven by `ctx.cancellation()` + `ctx.emitter()`).
 
-#![allow(missing_docs, reason = "filled by Task 5")]
+use std::{future::Future, sync::Arc};
 
-use nebula_resource::Resource;
+use nebula_action::{
+    Action, ActionError, ActionMetadata, DeclaresDependencies, TriggerAction, TriggerContext,
+};
+use nebula_resource::{Resource, ResourceContext};
 
-#[allow(dead_code, reason = "filled by Task 5")]
-pub trait EventSource: Resource {}
+/// EventSource — pull-based event subscription.
+///
+/// A long-lived event producer where consumers create subscriptions via
+/// [`Self::subscribe`] and drain events via [`Self::recv`].
+pub trait EventSource: Resource {
+    /// The event type produced by this source.
+    type Event: Send + Clone + 'static;
+    /// An opaque subscription handle for receiving events.
+    type Subscription: Send + 'static;
 
-#[allow(dead_code, reason = "filled by Task 5")]
+    /// Creates a new subscription to this event source.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the subscription cannot be created.
+    fn subscribe(
+        &self,
+        runtime: &Self::Runtime,
+        ctx: &ResourceContext,
+    ) -> impl Future<Output = Result<Self::Subscription, Self::Error>> + Send;
+
+    /// Receives the next event from a subscription.
+    ///
+    /// This method blocks asynchronously until an event is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the subscription is broken or the source
+    /// has been shut down.
+    fn recv(
+        &self,
+        subscription: &mut Self::Subscription,
+    ) -> impl Future<Output = Result<Self::Event, Self::Error>> + Send;
+}
+
+/// EventSource configuration.
+#[derive(Debug, Clone, Default)]
 pub struct EventSourceConfig {
+    /// Buffer size for the event channel (transport-dependent semantics).
     pub buffer_size: usize,
 }
 
-#[allow(dead_code, reason = "filled by Task 5")]
+/// Runtime state for an EventSource — preserves the original
+/// `EventSourceRuntime<R>` shape from `nebula-resource` for callers that want
+/// the explicit subscribe/recv API outside the `TriggerAction` adapter path.
+///
+/// Most consumers should use [`EventSourceAdapter`] instead — it folds
+/// EventSource into the engine's `TriggerAction` substrate. This struct stays
+/// for the rare case where direct subscription management is needed
+/// (e.g. testing, ad-hoc engine tooling).
 pub struct EventSourceRuntime<E: EventSource> {
-    _placeholder: std::marker::PhantomData<E>,
+    config: EventSourceConfig,
+    _phantom: std::marker::PhantomData<E>,
 }
 
-#[allow(dead_code, reason = "filled by Task 5")]
+impl<E: EventSource> EventSourceRuntime<E> {
+    /// Creates a new event source runtime with the given configuration.
+    #[must_use]
+    pub fn new(config: EventSourceConfig) -> Self {
+        Self {
+            config,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Returns the current configuration.
+    #[must_use]
+    pub fn config(&self) -> &EventSourceConfig {
+        &self.config
+    }
+}
+
+impl<E> EventSourceRuntime<E>
+where
+    E: EventSource + Send + Sync + 'static,
+    E::Runtime: Send + Sync + 'static,
+{
+    /// Creates a new subscription to the event source.
+    ///
+    /// `E::Error: Into<nebula_resource::Error>` is implied by the `Resource`
+    /// supertrait declaration (`type Error: ... + Into<crate::Error>`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from `EventSource::subscribe`.
+    pub async fn subscribe(
+        &self,
+        resource: &E,
+        runtime: &E::Runtime,
+        ctx: &ResourceContext,
+    ) -> Result<E::Subscription, nebula_resource::Error> {
+        resource.subscribe(runtime, ctx).await.map_err(Into::into)
+    }
+
+    /// Receives the next event from a subscription.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from `EventSource::recv`.
+    pub async fn recv(
+        &self,
+        resource: &E,
+        subscription: &mut E::Subscription,
+    ) -> Result<E::Event, nebula_resource::Error> {
+        resource.recv(subscription).await.map_err(Into::into)
+    }
+}
+
+// ── EventSourceAdapter — bridges EventSource onto TriggerAction ─────────────
+
+/// Adapts an `EventSource` impl as a [`TriggerAction`] so the engine can drive
+/// it through the existing trigger lifecycle (`start`/`stop` + emit-via-context).
+///
+/// # Construction
+///
+/// Callers supply:
+/// - the typed `source: E`,
+/// - an `Arc<E::Runtime>` (caller is responsible for building `E::Runtime` — typically via
+///   `Resource::create()` outside the adapter),
+/// - `ActionMetadata` (EventSource has no inherent action metadata),
+/// - `EventSourceConfig` for buffer / flow-control hints,
+/// - an `event_to_payload` closure converting `&E::Event` to `serde_json::Value` (caller controls
+///   serialization + redaction).
+///
+/// # Cancellation
+///
+/// `start()` runs a "run-until-cancelled" loop using a biased `tokio::select!`
+/// against `ctx.cancellation()`. Drop-safety: each `recv().await` is the
+/// subscription's responsibility; the adapter does not retain in-flight events.
 pub struct EventSourceAdapter<E: EventSource> {
-    _placeholder: std::marker::PhantomData<E>,
+    source: E,
+    runtime: Arc<E::Runtime>,
+    metadata: ActionMetadata,
+    #[allow(dead_code, reason = "buffer_size hint for downstream observability")]
+    config: EventSourceConfig,
+    #[allow(
+        clippy::type_complexity,
+        reason = "single field — extracting to a type alias adds no readability"
+    )]
+    event_to_payload: Arc<dyn Fn(&E::Event) -> serde_json::Value + Send + Sync>,
+}
+
+impl<E> EventSourceAdapter<E>
+where
+    E: EventSource + Send + Sync + 'static,
+    E::Runtime: Send + Sync + 'static,
+{
+    /// Wrap an EventSource impl as a `TriggerAction`.
+    pub fn new<F>(
+        source: E,
+        runtime: Arc<E::Runtime>,
+        metadata: ActionMetadata,
+        config: EventSourceConfig,
+        event_to_payload: F,
+    ) -> Self
+    where
+        F: Fn(&E::Event) -> serde_json::Value + Send + Sync + 'static,
+    {
+        Self {
+            source,
+            runtime,
+            metadata,
+            config,
+            event_to_payload: Arc::new(event_to_payload),
+        }
+    }
+}
+
+impl<E> DeclaresDependencies for EventSourceAdapter<E> where E: EventSource {}
+
+impl<E> Action for EventSourceAdapter<E>
+where
+    E: EventSource + Send + Sync + 'static,
+    E::Runtime: Send + Sync + 'static,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        &self.metadata
+    }
+}
+
+impl<E> TriggerAction for EventSourceAdapter<E>
+where
+    E: EventSource + Send + Sync + 'static,
+    E::Runtime: Send + Sync + 'static,
+{
+    async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+        let resource_ctx =
+            ResourceContext::minimal(ctx.scope().clone(), ctx.cancellation().clone());
+        let mut subscription = self
+            .source
+            .subscribe(&self.runtime, &resource_ctx)
+            .await
+            .map_err(|e| ActionError::retryable(e.to_string()))?;
+
+        loop {
+            tokio::select! {
+                biased;
+                () = ctx.cancellation().cancelled() => return Ok(()),
+                recv = self.source.recv(&mut subscription) => {
+                    match recv {
+                        Ok(event) => {
+                            let payload = (self.event_to_payload)(&event);
+                            if let Err(e) = ctx.emitter().emit(payload).await {
+                                tracing::warn!(error = %e, "event_source: emit failed");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "event_source: recv failed; exiting loop");
+                            return Err(ActionError::retryable(e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+        // Cancellation flows through ctx.cancellation() per PollTriggerAdapter
+        // convention; the live start() loop observes it and returns Ok(()).
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    };
+
+    use nebula_action::{
+        ActionMetadata,
+        testing::{TestContextBuilder, TestTriggerContext},
+    };
+    use nebula_core::{Context, ResourceKey, action_key};
+    use nebula_resource::{
+        ResourceContext,
+        error::Error as ResourceError,
+        resource::{Resource, ResourceConfig, ResourceMetadata},
+    };
+
+    use super::*;
+
+    #[derive(Clone, Debug, Default)]
+    struct EmptyCfg;
+
+    nebula_schema::impl_empty_has_schema!(EmptyCfg);
+
+    impl ResourceConfig for EmptyCfg {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("event-test: {0}")]
+    struct TestError(&'static str);
+
+    impl From<TestError> for ResourceError {
+        fn from(e: TestError) -> Self {
+            ResourceError::transient(e.to_string())
+        }
+    }
+
+    /// Test EventSource that emits 3 fixed events then blocks.
+    #[derive(Clone)]
+    struct ThreeEventSource {
+        emitted: Arc<AtomicU32>,
+    }
+
+    impl Resource for ThreeEventSource {
+        type Config = EmptyCfg;
+        type Runtime = ();
+        type Lease = ();
+        type Error = TestError;
+        type Credential = nebula_credential::NoCredential;
+
+        fn key() -> ResourceKey {
+            ResourceKey::new("event-three").unwrap()
+        }
+
+        async fn create(
+            &self,
+            _config: &Self::Config,
+            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
+            _ctx: &ResourceContext,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl EventSource for ThreeEventSource {
+        type Event = u32;
+        type Subscription = ();
+
+        async fn subscribe(
+            &self,
+            _runtime: &Self::Runtime,
+            _ctx: &ResourceContext,
+        ) -> Result<Self::Subscription, TestError> {
+            Ok(())
+        }
+
+        async fn recv(
+            &self,
+            _subscription: &mut Self::Subscription,
+        ) -> Result<Self::Event, TestError> {
+            let n = self.emitted.fetch_add(1, Ordering::SeqCst);
+            if n < 3 {
+                Ok(n)
+            } else {
+                // Block forever — caller should observe cancellation.
+                std::future::pending().await
+            }
+        }
+    }
+
+    fn make_metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.event_source_adapter"),
+            "EventSourceAdapterTest",
+            "Adapter integration test",
+        )
+    }
+
+    #[tokio::test]
+    async fn adapter_emits_events_until_cancelled() {
+        let emitted = Arc::new(AtomicU32::new(0));
+        let source = ThreeEventSource {
+            emitted: Arc::clone(&emitted),
+        };
+        let adapter = EventSourceAdapter::new(
+            source,
+            Arc::new(()),
+            make_metadata(),
+            EventSourceConfig::default(),
+            |e: &u32| serde_json::json!({ "n": *e }),
+        );
+
+        let ctx: TestTriggerContext = TestContextBuilder::new().build_trigger().0;
+        let cancel = ctx.cancellation().clone();
+
+        // Run start() in background; cancel after a short delay.
+        let join = tokio::spawn(async move { adapter.start(&ctx).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel.cancel();
+        let result = join.await.expect("join ok");
+        assert!(
+            result.is_ok(),
+            "start should return Ok on cancellation: {result:?}"
+        );
+
+        // 3 events succeeded; 4th call hit pending() then was cancelled.
+        assert!(emitted.load(Ordering::SeqCst) >= 3);
+    }
+
+    #[tokio::test]
+    async fn adapter_stop_is_noop() {
+        let source = ThreeEventSource {
+            emitted: Arc::new(AtomicU32::new(0)),
+        };
+        let adapter = EventSourceAdapter::new(
+            source,
+            Arc::new(()),
+            make_metadata(),
+            EventSourceConfig::default(),
+            |e: &u32| serde_json::json!({ "n": *e }),
+        );
+
+        let ctx: TestTriggerContext = TestContextBuilder::new().build_trigger().0;
+        // stop() is a no-op — should always succeed.
+        adapter.stop(&ctx).await.expect("stop is infallible");
+    }
 }
