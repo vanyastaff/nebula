@@ -36,8 +36,7 @@ fn omits_when_none() {
     let v: serde_json::Value = serde_json::from_str(&s).expect("parse JSON");
     assert!(
         v.get("max_concurrent").is_none(),
-        "serialized form should omit None field, got: {}",
-        s
+        "serialized form should omit None field, got: {s}"
     );
 }
 

@@ -3855,6 +3855,7 @@ dependencies = [
 name = "nebula-action"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "bytes",
  "chrono",
@@ -3882,6 +3883,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "trybuild",
  "url",
  "zeroize",
 ]
