@@ -1,8 +1,8 @@
 //! Central resource manager — registration, acquire dispatch, and shutdown.
 //!
 //! [`Manager`] is the single entry point for the resource subsystem. It owns
-//! the [`Registry`], [`RecoveryGroupRegistry`], and a [`CancellationToken`]
-//! for coordinated shutdown.
+//! the registry, recovery-group registry, and a [`CancellationToken`] for
+//! coordinated shutdown.
 //!
 //! # Lifecycle
 //!
@@ -13,6 +13,15 @@
 //!   ├── remove()     — unregister + cleanup
 //!   └── shutdown()   — cancel all, drain
 //! ```
+//!
+//! # Submodule layout (Tech Spec §5.4)
+//!
+//! - `options` — `ManagerConfig`, `RegisterOptions`, `ShutdownConfig`, `DrainTimeoutPolicy`
+//! - `registration` — `register_inner` private helper + reverse-index write
+//! - `gate` — `GateAdmission` + `admit_through_gate` + `settle_gate_admission`
+//! - `execute` — resilience pipeline + register-time pool config validation
+//! - `rotation` — `ResourceDispatcher` trampoline + `on_credential_*` fan-out
+//! - `shutdown` — `graceful_shutdown` + drain helpers + `set_phase_all*`
 
 use std::{
     any::TypeId,
@@ -36,7 +45,7 @@ use crate::{
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
     options::AcquireOptions,
     recovery::{
-        gate::{GateState, RecoveryGate, RecoveryTicket, TryBeginError},
+        gate::{GateState, RecoveryGate},
         group::RecoveryGroupRegistry,
     },
     registry::Registry,
@@ -45,6 +54,18 @@ use crate::{
     resource::Resource,
     runtime::{TopologyRuntime, managed::ManagedResource},
 };
+
+mod execute;
+mod gate;
+pub(crate) mod options;
+mod registration;
+pub(crate) mod rotation;
+mod shutdown;
+
+use execute::{execute_with_resilience, validate_pool_config};
+use gate::{admit_through_gate, settle_gate_admission};
+pub use options::{DrainTimeoutPolicy, ManagerConfig, RegisterOptions, ShutdownConfig};
+pub use shutdown::{ShutdownError, ShutdownReport};
 
 /// Snapshot of a resource's health and operational state.
 #[derive(Debug, Clone)]
@@ -61,182 +82,6 @@ pub struct ResourceHealthSnapshot {
     pub generation: u64,
 }
 
-/// Policy that controls what `graceful_shutdown` does when the
-/// drain phase expires with handles still outstanding (#302).
-///
-/// Before this split, `graceful_shutdown` always proceeded to
-/// `registry.clear()` even on timeout, dropping live `ManagedResource`s
-/// while handles remained outstanding. That turned a cooperative shutdown
-/// into a use-after-logical-drop. The policy makes the choice explicit.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DrainTimeoutPolicy {
-    /// On drain timeout, return
-    /// [`ShutdownError::DrainTimeout`] **without** clearing the registry.
-    /// Live handles remain valid and the caller decides what to do next.
-    /// This is the default — it preserves the "graceful" guarantee.
-    #[default]
-    Abort,
-    /// On drain timeout, log, clear the registry anyway, and report the
-    /// outstanding-handle count in [`ShutdownReport`]. Opt-in escape hatch
-    /// for supervisors that must exit on a deadline regardless of cost.
-    Force,
-}
-
-/// Configuration for graceful shutdown.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct ShutdownConfig {
-    /// How long to wait for in-flight handles to be released.
-    pub drain_timeout: Duration,
-    /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
-    pub on_drain_timeout: DrainTimeoutPolicy,
-    /// Upper bound on how long Phase 4 will wait for release-queue
-    /// workers to finish processing outstanding tasks.
-    pub release_queue_timeout: Duration,
-}
-
-impl Default for ShutdownConfig {
-    fn default() -> Self {
-        Self {
-            drain_timeout: Duration::from_secs(30),
-            on_drain_timeout: DrainTimeoutPolicy::Abort,
-            release_queue_timeout: Duration::from_secs(10),
-        }
-    }
-}
-
-impl ShutdownConfig {
-    /// Override the drain timeout, returning `self` for chaining.
-    ///
-    /// `#[non_exhaustive]` prevents external crates from using struct
-    /// literal construction; this (and the sibling setters) is the
-    /// forward-compatible entry point for per-field customization.
-    #[must_use]
-    pub fn with_drain_timeout(mut self, timeout: Duration) -> Self {
-        self.drain_timeout = timeout;
-        self
-    }
-
-    /// Override the drain-timeout policy.
-    #[must_use]
-    pub fn with_drain_timeout_policy(mut self, policy: DrainTimeoutPolicy) -> Self {
-        self.on_drain_timeout = policy;
-        self
-    }
-
-    /// Override the release-queue timeout budget for Phase 4.
-    #[must_use]
-    pub fn with_release_queue_timeout(mut self, timeout: Duration) -> Self {
-        self.release_queue_timeout = timeout;
-        self
-    }
-}
-
-/// Structured result of a successful (or forced-through) graceful shutdown.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct ShutdownReport {
-    /// How many `ResourceGuard`s were still outstanding when the drain
-    /// phase finished. Zero on the happy path. Nonzero only when the
-    /// caller explicitly opted into [`DrainTimeoutPolicy::Force`].
-    pub outstanding_handles_after_drain: u64,
-    /// Whether Phase 3 (`registry.clear`) actually ran.
-    pub registry_cleared: bool,
-    /// Whether Phase 4 (release-queue drain) completed within
-    /// `release_queue_timeout`.
-    pub release_queue_drained: bool,
-}
-
-/// Errors returned by [`Manager::graceful_shutdown`].
-///
-/// Each variant corresponds to a failure mode that was previously silently
-/// absorbed by the old infallible signature. A timeout during drain, for
-/// example, used to be a `tracing::warn!` and a forced `registry.clear()`;
-/// it is now a typed error that the caller must handle.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum ShutdownError {
-    /// `graceful_shutdown` was already in progress when this call entered.
-    /// CAS-guarded so exactly one caller wins the race.
-    #[error("graceful shutdown already in progress")]
-    AlreadyShuttingDown,
-
-    /// The drain phase did not finish within `drain_timeout` and the
-    /// policy was [`DrainTimeoutPolicy::Abort`]. The registry was **not**
-    /// cleared and any outstanding handles remain valid.
-    #[error(
-        "drain timeout expired with {outstanding} handle(s) still active; registry was NOT cleared (policy=Abort)"
-    )]
-    DrainTimeout {
-        /// Snapshot of the drain-tracker counter at the moment the timeout
-        /// fired.
-        outstanding: u64,
-    },
-
-    /// Phase 4 did not finish within `release_queue_timeout`.
-    #[error("release queue workers did not finish within {timeout:?}")]
-    ReleaseQueueTimeout {
-        /// The budget that was exceeded.
-        timeout: Duration,
-    },
-}
-
-/// Internal drain-phase error used by the private `wait_for_drain` helper.
-/// Carries the outstanding-handle count at the moment the drain timer fired.
-#[derive(Debug)]
-struct DrainTimeoutError {
-    outstanding: u64,
-}
-
-/// Configuration for the [`Manager`].
-#[derive(Debug, Clone)]
-pub struct ManagerConfig {
-    /// Number of background workers for the release queue.
-    ///
-    /// Defaults to 2.
-    pub release_queue_workers: usize,
-    /// Optional shared metrics registry for telemetry counters.
-    ///
-    /// When `Some`, the manager records resource operation counters
-    /// (`acquire_total`, `release_total`, etc.) into the registry.
-    /// When `None`, metrics are silently skipped (zero overhead).
-    pub metrics_registry: Option<Arc<nebula_telemetry::metrics::MetricsRegistry>>,
-}
-
-impl Default for ManagerConfig {
-    fn default() -> Self {
-        Self {
-            release_queue_workers: 2,
-            metrics_registry: None,
-        }
-    }
-}
-
-/// Extended options for resource registration.
-///
-/// Used with the `register_*_with` convenience methods to configure
-/// resilience and recovery beyond the simple `register_*` defaults.
-#[derive(Debug, Clone)]
-pub struct RegisterOptions {
-    /// Scope level for the resource (default: `Global`).
-    pub scope: ScopeLevel,
-    /// Optional acquire resilience (timeout + retry + circuit breaker).
-    pub resilience: Option<AcquireResilience>,
-    /// Optional recovery gate for thundering-herd prevention.
-    pub recovery_gate: Option<Arc<RecoveryGate>>,
-}
-
-impl Default for RegisterOptions {
-    fn default() -> Self {
-        Self {
-            scope: ScopeLevel::Global,
-            resilience: None,
-            recovery_gate: None,
-        }
-    }
-}
-
 /// Central registry and lifecycle manager for all resources.
 ///
 /// Owns the [`ReleaseQueue`] internally — callers never need to create,
@@ -246,23 +91,37 @@ impl Default for RegisterOptions {
 /// Thread-safe: all internal state is behind concurrent data structures.
 /// Share via `Arc<Manager>` across tasks.
 pub struct Manager {
-    registry: Registry,
-    recovery_groups: RecoveryGroupRegistry,
-    cancel: CancellationToken,
-    metrics: Option<ResourceOpsMetrics>,
-    event_tx: broadcast::Sender<ResourceEvent>,
-    release_queue: Arc<ReleaseQueue>,
-    release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
+    pub(super) registry: Registry,
+    pub(super) recovery_groups: RecoveryGroupRegistry,
+    pub(super) cancel: CancellationToken,
+    pub(super) metrics: Option<ResourceOpsMetrics>,
+    pub(super) event_tx: broadcast::Sender<ResourceEvent>,
+    pub(super) release_queue: Arc<ReleaseQueue>,
+    pub(super) release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
     /// Tracks active `ResourceGuard`s for drain-aware shutdown.
-    drain_tracker: Arc<(AtomicU64, Notify)>,
+    pub(super) drain_tracker: Arc<(AtomicU64, Notify)>,
     /// CAS-guarded idempotency flag for `graceful_shutdown`. Flipped
     /// false → true by the winning caller; losers return
     /// [`ShutdownError::AlreadyShuttingDown`].
-    shutting_down: AtomicBool,
-    /// Reverse index: credential_id → resource keys that use this credential.
-    credential_resources: dashmap::DashMap<CredentialId, Vec<ResourceKey>>,
+    pub(super) shutting_down: AtomicBool,
+    /// Reverse index: credential_id → dispatchers for resources that bind to this credential.
+    ///
+    /// Populated at register time when `R::Credential != NoCredential`. Read by
+    /// `Manager::on_credential_refreshed` / `_revoked` to fan out rotation hooks
+    /// in parallel via `join_all` (per Tech Spec §3.2).
+    ///
+    /// `Arc<dyn ResourceDispatcher>` provides type-erased dispatch — see
+    /// `crate::manager::rotation::TypedDispatcher<R>`.
+    pub(super) credential_resources:
+        dashmap::DashMap<CredentialId, Vec<Arc<dyn rotation::ResourceDispatcher>>>,
+    /// Default per-resource timeout budget for credential rotation hooks.
+    ///
+    /// Sourced from [`ManagerConfig::credential_rotation_timeout`] at
+    /// construction. Per-resource overrides flow through
+    /// `TypedDispatcher::timeout_override()` (set at register time, Task 6).
+    pub(super) credential_rotation_timeout: Duration,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
-    lifecycle: Option<LayerLifecycle>,
+    pub(super) lifecycle: Option<LayerLifecycle>,
 }
 
 impl Manager {
@@ -292,6 +151,7 @@ impl Manager {
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             shutting_down: AtomicBool::new(false),
             credential_resources: dashmap::DashMap::new(),
+            credential_rotation_timeout: config.credential_rotation_timeout,
             lifecycle: None,
         }
     }
@@ -341,10 +201,27 @@ impl Manager {
     /// backend. On transient acquire failures the gate is passively
     /// triggered so subsequent callers fast-fail.
     ///
+    /// `credential_id` binds the resource into the credential rotation
+    /// reverse-index. Must be `Some` for credential-bearing resources
+    /// (`R::Credential != NoCredential`); ignored (with a warning) for
+    /// `NoCredential`-bound resources. Sourced from
+    /// [`RegisterOptions::credential_id`] in the `_with` shorthand variants.
+    ///
+    /// `credential_rotation_timeout` overrides
+    /// [`ManagerConfig::credential_rotation_timeout`] (default `30s`) for
+    /// this resource only. `None` keeps the manager-wide default. Sourced
+    /// from [`RegisterOptions::credential_rotation_timeout`] in the `_with`
+    /// shorthand variants.
+    ///
     /// # Errors
     ///
-    /// Returns an error if config validation fails on the
-    /// provided config.
+    /// Returns an error if config validation fails on the provided config,
+    /// or if a credential-bearing resource is registered without a
+    /// `credential_id` (see [`Error::missing_credential_id`]).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "consolidation into `RegisterOptions` deferred; the `_with` shorthand variants already use the consolidated form"
+    )]
     pub fn register<R: Resource>(
         &self,
         resource: R,
@@ -353,9 +230,18 @@ impl Manager {
         topology: TopologyRuntime<R>,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
+        credential_id: Option<CredentialId>,
+        credential_rotation_timeout: Option<Duration>,
     ) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
         config.validate()?;
+
+        // Validate credential-binding contract BEFORE registry mutation.
+        // Without this ordering, a credential-bearing resource without a
+        // `credential_id` would land in the registry first and only THEN
+        // surface `Error::missing_credential_id` — leaving an orphan entry
+        // that retries would see as "already registered" (CodeRabbit 🔴 #1).
+        registration::validate_credential_binding::<R>(credential_id.as_ref())?;
 
         let key = R::key();
 
@@ -368,7 +254,7 @@ impl Manager {
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             resilience,
             recovery_gate,
-            credential_id: None,
+            credential_id,
         });
 
         let type_id = TypeId::of::<ManagedResource<R>>();
@@ -387,6 +273,17 @@ impl Manager {
         let _ = self
             .event_tx
             .send(ResourceEvent::Registered { key: key.clone() });
+
+        // Reverse-index write — populates `credential_resources` for
+        // credential-bearing resources, no-op for `NoCredential`-bound ones.
+        // Validation already passed in `validate_credential_binding` above,
+        // so this path is infallible by construction.
+        registration::write_reverse_index::<R>(
+            self,
+            Arc::clone(&managed),
+            credential_id,
+            credential_rotation_timeout,
+        );
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -426,6 +323,8 @@ impl Manager {
             )),
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -453,6 +352,8 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
+            None,
+            None,
             None,
             None,
         )
@@ -486,6 +387,8 @@ impl Manager {
             )),
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -515,6 +418,8 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
+            None,
+            None,
             None,
             None,
         )
@@ -548,13 +453,16 @@ impl Manager {
             )),
             None,
             None,
+            None,
+            None,
         )
     }
 
     /// Registers a pooled resource with extended options.
     ///
     /// Like [`register_pooled`](Self::register_pooled) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -584,13 +492,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a resident resource with extended options.
     ///
     /// Like [`register_resident`](Self::register_resident) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -614,13 +525,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a service resource with extended options.
     ///
     /// Like [`register_service`](Self::register_service) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -646,13 +560,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a transport resource with extended options.
     ///
     /// Like [`register_transport`](Self::register_transport) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -678,13 +595,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers an exclusive resource with extended options.
     ///
     /// Like [`register_exclusive`](Self::register_exclusive) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -710,6 +630,8 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
@@ -728,7 +650,14 @@ impl Manager {
         &self,
         scope: &ScopeLevel,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
-        if self.cancel.is_cancelled() {
+        // Defense A against the `graceful_shutdown` race: reject any acquire
+        // that arrives after `graceful_shutdown` has flipped the flag, even
+        // if the cancel token has not yet been observed (it is set the line
+        // after on the same task — see `shutdown::graceful_shutdown` Phase 1).
+        // Ordering: `graceful_shutdown` writes `shutting_down` with `AcqRel`,
+        // we read with `Acquire`, so we synchronize-with that write and any
+        // observation here implies the cancel will follow.
+        if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
             return Err(Error::cancelled());
         }
 
@@ -763,6 +692,12 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race: pre-count this
+        // acquire from the moment `lookup()` succeeds. RAII decrements + notifies
+        // on every failure / cancel / panic path; on success the slot is handed
+        // off to the resulting `ResourceGuard` so the count is held continuously
+        // until the guard drops.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -802,7 +737,10 @@ impl Manager {
         // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a pooled resource handle without scheme material.
@@ -849,6 +787,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -871,14 +811,12 @@ impl Manager {
         })
         .await;
 
-        // Settle the gate ticket based on the acquire result. #322: this
-        // makes the ticket ownership end-to-end — on success we `resolve`,
-        // on retryable error we `fail_transient`, on permanent error we
-        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a resident resource handle without scheme material.
@@ -922,6 +860,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -951,14 +891,12 @@ impl Manager {
         })
         .await;
 
-        // Settle the gate ticket based on the acquire result. #322: this
-        // makes the ticket ownership end-to-end — on success we `resolve`,
-        // on retryable error we `fail_transient`, on permanent error we
-        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a service resource handle without scheme material.
@@ -1003,6 +941,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1032,14 +972,12 @@ impl Manager {
         })
         .await;
 
-        // Settle the gate ticket based on the acquire result. #322: this
-        // makes the ticket ownership end-to-end — on success we `resolve`,
-        // on retryable error we `fail_transient`, on permanent error we
-        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a transport resource handle without scheme material.
@@ -1084,6 +1022,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1112,14 +1052,12 @@ impl Manager {
         })
         .await;
 
-        // Settle the gate ticket based on the acquire result. #322: this
-        // makes the ticket ownership end-to-end — on success we `resolve`,
-        // on retryable error we `fail_transient`, on permanent error we
-        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires an exclusive resource handle without scheme material.
@@ -1172,6 +1110,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         let result = match &managed.topology {
@@ -1197,14 +1137,12 @@ impl Manager {
             ))),
         };
 
-        // Settle the gate ticket based on the acquire result. #322: this
-        // makes the ticket ownership end-to-end — on success we `resolve`,
-        // on retryable error we `fail_transient`, on permanent error we
-        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Non-blocking pooled acquire without scheme material.
@@ -1255,16 +1193,22 @@ impl Manager {
         }
     }
 
-    /// Warms up a registered Pool resource by pre-creating instances up to `min_size`.
+    /// Pre-warms a registered Pool resource that opts out of credential binding.
+    ///
+    /// Restricted to `R: Resource<Credential = NoCredential>` — compile-time
+    /// gate that makes the unit scheme (`Scheme = ()`) the only callable shape.
+    /// Internally passes `&()` to the runtime's warmup path.
+    ///
+    /// Per Tech Spec §5.2 and security-lead amendment B-3: kept separate from
+    /// the credential-bearing [`warmup_pool`](Self::warmup_pool) so the
+    /// production hot path never calls `Scheme::default()`. The `NoCredential`
+    /// bound is unfaultable at compile time — a credential-bearing resource
+    /// cannot be pre-warmed via this method.
     ///
     /// This fills the idle queue before production traffic hits, eliminating
     /// cold-start latency on the first batch of requests. Warmup follows the
     /// [`WarmupStrategy`](crate::topology::pooled::config::WarmupStrategy) set
     /// in the pool's configuration.
-    ///
-    /// Uses [`Default::default()`] for the projected scheme, which works for
-    /// `R::Credential = NoCredential` (Scheme = `()`) and any scheme type that
-    /// has a meaningful default.
     ///
     /// # Errors
     ///
@@ -1282,27 +1226,76 @@ impl Manager {
     /// #     Default::default(),
     /// #     tokio_util::sync::CancellationToken::new(),
     /// # );
-    /// // manager.warmup_pool::<MyDb>(&ctx).await.unwrap();
+    /// // manager.warmup_pool_no_credential::<MyDb>(&ctx).await.unwrap();
     /// # }
     /// ```
-    pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
+    pub async fn warmup_pool_no_credential<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
+    where
+        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let config = managed.config();
+        // `NoCredential::Scheme = ()` — pass the unit value directly. NO call
+        // to `Scheme::default()` (security amendment B-3).
+        let scheme = ();
+        match &managed.topology {
+            TopologyRuntime::Pool(rt) => {
+                let count = rt.warmup(&managed.resource, &config, &scheme, ctx).await;
+                Ok(count)
+            },
+            _ => Err(Error::permanent(format!(
+                "{}: warmup_pool_no_credential requires Pool topology, registered as {}",
+                R::key(),
+                managed.topology.tag()
+            ))),
+        }
+    }
+
+    /// Pre-warms a registered credential-bearing Pool resource.
+    ///
+    /// The caller resolves the credential first (e.g. via `CredentialAccessor`)
+    /// and passes a borrowed scheme; the manager forwards it to `R::create` for
+    /// each pre-warmed instance. The borrow does not outlive the call.
+    ///
+    /// Per Tech Spec §5.2 and security-lead amendment B-3: NO `Default` bound
+    /// on `Scheme`, NO `Scheme::default()` call. Forces the caller to supply a
+    /// real credential, eliminating the "warm with empty credential → 401
+    /// storm on first acquire" footgun. Use
+    /// [`warmup_pool_no_credential`](Self::warmup_pool_no_credential) for
+    /// resources that opt out of credential binding (`Credential = NoCredential`).
+    ///
+    /// Caller flow:
+    /// 1. Resolve credential → obtain `<R::Credential as Credential>::Scheme`.
+    /// 2. Call `warmup_pool::<R>(&scheme, &ctx)`.
+    /// 3. Manager threads the scheme through to `R::create` for each instance.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   pool topology.
+    pub async fn warmup_pool<R>(
+        &self,
+        scheme: &<R::Credential as Credential>::Scheme,
+        ctx: &ResourceContext,
+    ) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
-        // INTERIM (П1): retains a Default bound on the projected Scheme so
-        // `NoCredential` (Scheme = ()) keeps working. П2 replaces this with a
-        // credential-bearing warmup signature per ADR-0036 §Decision +
-        // security-lead amendment B-3 (no Scheme::default() in production
-        // hot paths). TODO(П2): remove Default bound, accept Scheme borrow.
-        <R::Credential as Credential>::Scheme: Default,
     {
         let managed = self.lookup::<R>(&ctx.scope_level())?;
         let config = managed.config();
-        let scheme = <<R::Credential as Credential>::Scheme as Default>::default();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
-                let count = rt.warmup(&managed.resource, &config, &scheme, ctx).await;
+                let count = rt.warmup(&managed.resource, &config, scheme, ctx).await;
                 Ok(count)
             },
             _ => Err(Error::permanent(format!(
@@ -1385,60 +1378,13 @@ impl Manager {
         Ok(outcome)
     }
 
-    /// Handle a credential refresh event. Reloads all resources that use
-    /// this credential.
-    ///
-    /// Returns a list of `(ResourceKey, ReloadOutcome)` pairs for each
-    /// affected resource. If no resources use this credential the result
-    /// is an empty `Vec`.
-    pub async fn on_credential_refreshed(
-        &self,
-        credential_id: &CredentialId,
-    ) -> Result<Vec<(ResourceKey, ReloadOutcome)>, Error> {
-        let keys = self
-            .credential_resources
-            .get(credential_id)
-            .map(|entry| entry.value().clone())
-            .unwrap_or_default();
-
-        if keys.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Deferred per concerns register `stage6-followup-resource-integration`
-        // (see Tech Spec §15.7). Stage 6 lands `OnCredentialRefresh<C>` in
-        // nebula-credential as the canonical refresh-hook trait; this manager
-        // dispatch path threads it through once the Resource ↔ Credential
-        // integration shape is decided (Stage 7+ or follow-up cascade).
-        let _ = &keys;
-        todo!(
-            "on_credential_refreshed dispatch deferred — see stage6-followup-resource-integration"
-        )
-    }
-
-    /// Handle a credential revocation event. Stops accepting new acquires
-    /// and taints all outstanding guards for affected resources.
-    ///
-    /// For each affected resource the phase is set to `Failed` and a
-    /// `HealthChanged { healthy: false }` event is emitted.
-    pub async fn on_credential_revoked(&self, credential_id: &CredentialId) -> Result<(), Error> {
-        let keys = self
-            .credential_resources
-            .get(credential_id)
-            .map(|entry| entry.value().clone())
-            .unwrap_or_default();
-
-        if keys.is_empty() {
-            return Ok(());
-        }
-
-        // TODO: For each affected resource: mark as unhealthy, taint
-        // outstanding guards, emit HealthChanged { healthy: false }.
-        let _ = &keys;
-        todo!("Implementation deferred to runtime integration")
-    }
-
     /// Removes a resource from the registry by key.
+    ///
+    /// Also prunes any matching dispatchers from the credential rotation
+    /// reverse-index so a future credential refresh / revoke does not fan out
+    /// to a resource that no longer exists. We compare by `resource_key()` on
+    /// each dispatcher because the original `credential_id` is not preserved
+    /// outside the dispatcher trampoline at remove-time (CodeRabbit 🔴 #2).
     ///
     /// # Errors
     ///
@@ -1448,6 +1394,16 @@ impl Manager {
         if !self.registry.remove(key) {
             return Err(Error::not_found(key));
         }
+
+        // Prune reverse-index: drop dispatchers whose `resource_key()`
+        // matches the removed key, then drop empty CredentialId buckets so
+        // future lookups don't see hollow Vecs.
+        self.credential_resources.iter_mut().for_each(|mut entry| {
+            entry.value_mut().retain(|d| d.resource_key() != *key);
+        });
+        self.credential_resources
+            .retain(|_id, dispatchers| !dispatchers.is_empty());
+
         if let Some(m) = &self.metrics {
             m.record_destroy();
         }
@@ -1468,206 +1424,6 @@ impl Manager {
     pub fn shutdown(&self) {
         tracing::info!("resource manager shutting down");
         self.cancel.cancel();
-    }
-
-    /// Triggers graceful shutdown with drain and cleanup.
-    ///
-    /// 1. **Signal** — cancels the token so new acquires are rejected.
-    /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for in-flight handles to be
-    ///    released.
-    /// 3. **Clear** — drops all managed resources, releasing their `Arc<ReleaseQueue>` references
-    ///    so workers can drain and exit.
-    /// 4. **Await workers** — waits for the release queue workers to finish processing remaining
-    ///    tasks.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nebula_resource::manager::{Manager, ShutdownConfig};
-    /// # use std::time::Duration;
-    /// # async fn example() {
-    /// let manager = Manager::new();
-    /// manager
-    ///     .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_secs(5)))
-    ///     .await
-    ///     .expect("graceful shutdown should succeed");
-    /// # }
-    /// ```
-    pub async fn graceful_shutdown(
-        &self,
-        config: ShutdownConfig,
-    ) -> Result<ShutdownReport, ShutdownError> {
-        // CAS idempotency guard: exactly one caller wins. Concurrent callers
-        // that arrive after this CAS see `AlreadyShuttingDown` immediately
-        // rather than re-entering the drain logic against a half-torn state.
-        if self
-            .shutting_down
-            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
-            .is_err()
-        {
-            return Err(ShutdownError::AlreadyShuttingDown);
-        }
-
-        tracing::info!("resource manager: starting graceful shutdown");
-
-        // Phase 1: SIGNAL — cancel the shared token. This does two things:
-        //   a) Rejects new acquire calls (checked in `lookup`).
-        //   b) Tells release queue workers to drain remaining tasks and exit
-        //      (they share this token via `ReleaseQueue::with_cancel`).
-        self.cancel.cancel();
-
-        // #387: mark every registered resource as `Draining` so operators
-        // polling `health_check` during the drain window see the correct
-        // lifecycle phase instead of a stale `Ready`.
-        self.set_phase_all(crate::state::ResourcePhase::Draining);
-
-        // Phase 2: DRAIN — wait for in-flight handles to be released.
-        // On timeout, respect the policy: Abort preserves "graceful"
-        // (returns Err *without* clearing the registry), Force proceeds
-        // but records the outstanding count in the report.
-        let mut outstanding_after_drain: u64 = 0;
-        match self.wait_for_drain(config.drain_timeout).await {
-            Ok(()) => {},
-            Err(DrainTimeoutError { outstanding }) => match config.on_drain_timeout {
-                DrainTimeoutPolicy::Abort => {
-                    tracing::warn!(
-                        outstanding,
-                        "resource manager: drain timeout, policy=Abort — \
-                         registry preserved, returning DrainTimeout"
-                    );
-                    // #387 / PR #399 review: we already flipped every
-                    // resource to `Draining` above. The Abort policy
-                    // preserves the "graceful" guarantee and keeps live
-                    // handles valid, so we must also restore the phase
-                    // back to `Ready` — otherwise `is_accepting()` would
-                    // falsely keep returning `false` and the manager
-                    // would reject new acquires forever.
-                    self.set_phase_all(crate::state::ResourcePhase::Ready);
-                    self.shutting_down.store(false, AtomicOrdering::Release);
-                    return Err(ShutdownError::DrainTimeout { outstanding });
-                },
-                DrainTimeoutPolicy::Force => {
-                    tracing::warn!(
-                        outstanding,
-                        "resource manager: drain timeout, policy=Force — \
-                         clearing registry anyway"
-                    );
-                    outstanding_after_drain = outstanding;
-                },
-            },
-        }
-
-        // #387: drain has completed (or been force-released). Mark every
-        // resource as `ShuttingDown` so a health snapshot captured in the
-        // narrow window between here and `registry.clear()` reflects the
-        // real lifecycle state.
-        self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
-
-        // Phase 3: CLEAR — drop all ManagedResources so their
-        // Arc<ReleaseQueue> refs are released.
-        self.registry.clear();
-
-        // Phase 4: AWAIT WORKERS — workers are already draining (from
-        // Phase 1 cancel signal). Await with a bounded timeout; failure
-        // to finish in time is a typed error, not a swallowed warning.
-        if let Some(handle) = self.release_queue_handle.lock().await.take() {
-            let shutdown_fut = ReleaseQueue::shutdown(handle);
-            if tokio::time::timeout(config.release_queue_timeout, shutdown_fut)
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    timeout = ?config.release_queue_timeout,
-                    "resource manager: release queue workers did not \
-                     finish within release_queue_timeout"
-                );
-                return Err(ShutdownError::ReleaseQueueTimeout {
-                    timeout: config.release_queue_timeout,
-                });
-            }
-        }
-
-        tracing::info!("resource manager: shutdown complete");
-        Ok(ShutdownReport {
-            outstanding_handles_after_drain: outstanding_after_drain,
-            registry_cleared: true,
-            // If we reached this line Phase 4 either succeeded or had no
-            // work to drain — either way the contract is "drained".
-            release_queue_drained: true,
-        })
-    }
-
-    /// Drives every registered resource to the given lifecycle phase.
-    ///
-    /// Type-erased bulk update used during graceful shutdown so that
-    /// `health_check` returns the correct phase while the drain/cleanup
-    /// is in flight (#387).
-    fn set_phase_all(&self, phase: crate::state::ResourcePhase) {
-        for managed in self.registry.all_managed() {
-            managed.set_phase_erased(phase);
-        }
-    }
-
-    /// Waits until all active `ResourceGuard`s are dropped or timeout expires.
-    ///
-    /// The loop uses a `register-then-check` ordering to avoid the classic
-    /// `Notify::notify_waiters` lost-wakeup:
-    ///
-    /// 1. Construct + pin + `enable()` a fresh `Notified` future. Calling `enable()` registers this
-    ///    waiter on the `Notify` queue without requiring a `.await`, so any subsequent
-    ///    `notify_waiters()` (fired when a handle's `Drop` decrements the counter from 1 → 0) will
-    ///    reach us.
-    /// 2. Re-check the counter. If it already hit 0 between the outer initial check and our
-    ///    registration, return now — the wakeup we would otherwise wait for has already been
-    ///    consumed.
-    /// 3. Only then await the `Notified` future.
-    ///
-    /// Without this ordering, a burst of handle drops that completes the
-    /// drain *before* the first `notified().await` poll would leak the
-    /// notification entirely, stalling `graceful_shutdown` for the full
-    /// `drain_timeout` (default 30 s) and risking `SIGKILL` escalation
-    /// under a tight orchestrator shutdown window.
-    async fn wait_for_drain(&self, timeout: Duration) -> Result<(), DrainTimeoutError> {
-        let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
-        if active == 0 {
-            return Ok(());
-        }
-
-        tracing::debug!(active_handles = active, "waiting for handles to drain");
-        let tracker = &self.drain_tracker;
-        let drained = tokio::time::timeout(timeout, async {
-            loop {
-                // Pre-register this waiter BEFORE re-checking the counter.
-                let notified = tracker.1.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-
-                // Re-check after registration. If the last handle dropped
-                // while we were between the outer check and `enable()`,
-                // the counter is now 0 and we would otherwise wait on a
-                // notification that has already fired.
-                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
-                    return;
-                }
-
-                notified.await;
-
-                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
-                    return;
-                }
-            }
-        })
-        .await;
-
-        if drained.is_err() {
-            let outstanding = tracker.0.load(AtomicOrdering::Acquire);
-            tracing::warn!(
-                outstanding,
-                "resource manager: drain timeout expired with handles still active"
-            );
-            return Err(DrainTimeoutError { outstanding });
-        }
-        Ok(())
     }
 
     /// Returns `true` if a resource with the given key is registered.
@@ -1765,151 +1521,79 @@ impl Manager {
     }
 }
 
-/// Outcome of the pre-acquire gate admission check (#322).
-///
-/// The old `check_recovery_gate` → `trigger_recovery_on_failure` split was
-/// a stampede hazard: after the backoff expired, every caller's `state()`
-/// read returned the same snapshot and all of them proceeded through to
-/// hit the dead backend. The gate was only advanced to `InProgress` *after*
-/// failure, in `trigger_recovery_on_failure`, which is too late.
-///
-/// This enum pushes the CAS-based single-probe claim into the pre-acquire
-/// check: either the caller is granted a ticket (`Probe`) that must be
-/// resolved end-to-end with the acquire result, or the gate was idle/absent
-/// (`Open`), or we got a typed error out directly.
-enum GateAdmission {
-    /// No gate attached. Proceed normally; no ticket ownership.
-    Open,
-    /// Gate attached and currently healthy (`Idle`). Proceed without a
-    /// ticket, but retain the gate so a retryable acquire error can mark it
-    /// failed and open the backoff window for subsequent callers.
-    OpenGated(Arc<RecoveryGate>),
-    /// This caller has been granted the single recovery slot. The acquire
-    /// **must** consume the ticket by calling `resolve()`, `fail_transient`,
-    /// or `fail_permanent` based on the acquire result. Dropping it without
-    /// resolution auto-fails to `GateState::Failed` via its `Drop` impl —
-    /// so even a cancellation or panic in the acquire path is safe.
-    Probe(RecoveryTicket),
-}
-
-/// Admits a caller through the optional recovery gate.
-///
-/// Healthy gates (`Idle`) admit immediately with no CAS so regular traffic
-/// keeps full pool concurrency. Only callers entering while the gate is in a
-/// retryable `Failed` state claim a probe ticket.
-fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<GateAdmission, Error> {
-    let Some(gate) = gate else {
-        return Ok(GateAdmission::Open);
-    };
-
-    match gate.state() {
-        GateState::Idle => Ok(GateAdmission::OpenGated(Arc::clone(gate))),
-        GateState::InProgress { .. } => Err(Error::transient(
-            "backend recovery in progress, retry later",
-        )),
-        GateState::Failed { retry_at, .. } => {
-            if Instant::now() < retry_at {
-                let wait = retry_at.saturating_duration_since(Instant::now());
-                return Err(Error::exhausted("backend recovering", Some(wait)));
-            }
-            match gate.try_begin() {
-                Ok(ticket) => Ok(GateAdmission::Probe(ticket)),
-                Err(TryBeginError::AlreadyInProgress(_waiter)) => Err(Error::transient(
-                    "backend recovery in progress, retry later",
-                )),
-                Err(TryBeginError::RetryLater { retry_at }) => {
-                    let wait = retry_at.saturating_duration_since(Instant::now());
-                    Err(Error::exhausted("backend recovering", Some(wait)))
-                },
-                Err(TryBeginError::PermanentlyFailed { message }) => Err(Error::permanent(message)),
-            }
-        },
-        GateState::PermanentlyFailed { message } => Err(Error::permanent(message)),
-    }
-}
-
-/// Resolves the ticket granted by [`admit_through_gate`] based on the
-/// acquire result. No-op when the admission was [`GateAdmission::Open`]
-/// (no gate attached), so callers can always call this unconditionally.
-fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>) {
-    match (admission, result) {
-        (GateAdmission::Probe(ticket), Ok(_)) => ticket.resolve(),
-        (GateAdmission::Probe(ticket), Err(e)) if e.is_retryable() => {
-            ticket.fail_transient(e.to_string());
-        },
-        (GateAdmission::Probe(ticket), Err(_e)) => {
-            // Non-retryable errors are not backend-health signals; keep the
-            // gate open to avoid permanently bricking acquires.
-            ticket.resolve();
-        },
-        (GateAdmission::OpenGated(gate), Err(e)) if e.is_retryable() => {
-            // First retryable failure on healthy path opens the backoff gate.
-            if let Ok(ticket) = gate.try_begin() {
-                ticket.fail_transient(e.to_string());
-            }
-        },
-        (GateAdmission::OpenGated(_) | GateAdmission::Open, _) => {},
-    }
-}
-
-/// Executes an async operation with optional timeout and retry from
-/// [`AcquireResilience`] configuration.
-///
-/// Delegates to [`nebula_resilience::retry_with`] which handles exponential
-/// backoff, wall-clock budget, retry-after hints, and `Classify`-based
-/// error filtering automatically.
-async fn execute_with_resilience<F, Fut, T>(
-    resilience: &Option<AcquireResilience>,
-    mut operation: F,
-) -> Result<T, Error>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T, Error>> + Send,
-{
-    let Some(config) = resilience else {
-        return operation().await;
-    };
-
-    // #383: `to_retry_config` returns `None` only if the underlying
-    // `RetryConfig::new` rejects the clamped attempt count. That path is
-    // unreachable today; if it ever fires we prefer to fall through to a
-    // single un-retried attempt rather than panic the manager.
-    let Some(retry_cfg) = config.to_retry_config() else {
-        return operation().await;
-    };
-    nebula_resilience::retry_with(retry_cfg, operation)
-        .await
-        .map_err(|call_err| match call_err {
-            nebula_resilience::CallError::Operation(e)
-            | nebula_resilience::CallError::RetriesExhausted { last: e, .. } => e,
-            nebula_resilience::CallError::Timeout(d) => {
-                Error::transient(format!("acquire timed out after {d:?}"))
-            },
-            other => Error::transient(other.to_string()),
-        })
-}
-
-/// Validates pool config invariants at registration time.
-///
-/// Catches obviously broken configs (`max_size == 0`, `min_size > max_size`)
-/// before they reach [`PoolRuntime`], so warmup never inflates beyond
-/// `max_size` and callers cannot deadlock on an empty semaphore (#390).
-fn validate_pool_config(cfg: &crate::topology::pooled::config::Config) -> Result<(), Error> {
-    if cfg.max_size == 0 {
-        return Err(Error::permanent("pool max_size must be > 0"));
-    }
-    if cfg.min_size > cfg.max_size {
-        return Err(Error::permanent(format!(
-            "pool min_size ({}) must be <= max_size ({})",
-            cfg.min_size, cfg.max_size,
-        )));
-    }
-    Ok(())
-}
-
 impl Default for Manager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// RAII guard that pre-counts an in-flight `acquire_*` call against
+// `Manager::drain_tracker` from the moment `lookup()` succeeds until either
+// (a) the acquire completes and the slot is handed off to the resulting
+// `ResourceGuard`, or (b) the acquire fails / panics / is cancelled and the
+// slot is decremented + waiters notified on drop.
+//
+// This is **Defense B** of the `graceful_shutdown` race fix (Defense A is
+// the `shutting_down` check inside `Manager::lookup`). Without pre-
+// counting, an acquire that passes `lookup()` before `cancel.cancel()` can
+// complete *after* `wait_for_drain()` saw `0` and the registry was cleared
+// — the caller would end up holding a `ResourceGuard` to a registry that
+// has been torn down.
+//
+// The counter slot lifecycle is *exactly* one increment + one decrement
+// across the (acquire, guard) pair, with no transient gaps:
+//
+// 1. `InFlightCounter::new` increments.
+// 2. The acquire runs (any number of `await` points).
+// 3a. Success — `release_to_guard()` returns the `Arc<(AtomicU64, Notify)>` and
+//     suppresses the Drop decrement; the caller hands the slot to
+//     `ResourceGuard::with_drain_tracker`, which decrements + notifies on
+//     guard Drop. Net effect across the pair: +1 on enter, -1 on guard Drop.
+// 3b. Failure / panic / cancel — Drop runs and decrements + notifies. Net
+//     effect: +1 on enter, -1 on early return.
+struct InFlightCounter {
+    tracker: Arc<(AtomicU64, Notify)>,
+    /// Set true by `release_to_guard` to skip the Drop decrement once the
+    /// slot has been transferred.
+    released: bool,
+}
+
+impl InFlightCounter {
+    /// Increments the in-flight counter immediately.
+    fn new(tracker: Arc<(AtomicU64, Notify)>) -> Self {
+        // `AcqRel` matches the `Acquire` load in `wait_for_drain` so the
+        // increment is visible to a concurrent `wait_for_drain` snapshot
+        // before that snapshot can return `Ok(())`.
+        tracker.0.fetch_add(1, AtomicOrdering::AcqRel);
+        Self {
+            tracker,
+            released: false,
+        }
+    }
+
+    /// Hands the counter slot off to the resulting `ResourceGuard`.
+    ///
+    /// The returned `Arc` is then passed to
+    /// [`ResourceGuard::with_drain_tracker`] which assumes the increment has
+    /// already happened. This method suppresses the Drop decrement so the
+    /// counter is owned by exactly one entity at all times — no double
+    /// counting, no transient gap.
+    fn release_to_guard(mut self) -> Arc<(AtomicU64, Notify)> {
+        self.released = true;
+        self.tracker.clone()
+    }
+}
+
+impl Drop for InFlightCounter {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        // The acquire failed / was cancelled / panicked. Decrement and notify
+        // so `wait_for_drain` does not block forever on a phantom in-flight.
+        if self.tracker.0.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+            self.tracker.1.notify_waiters();
+        }
     }
 }
 
@@ -1919,221 +1603,5 @@ impl std::fmt::Debug for Manager {
             .field("registered_count", &self.registry.keys().len())
             .field("is_shutdown", &self.is_shutdown())
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod gate_admission_tests {
-    use super::*;
-    use crate::recovery::gate::RecoveryGateConfig;
-
-    /// #322: after `Failed { retry_at = past }`, concurrent callers must
-    /// see **exactly one** `Probe` ticket, not a stampede. The CAS-based
-    /// single-probe claim lives in `admit_through_gate`. Each spawned
-    /// task parks on a `Barrier` before calling so the 32 attempts
-    /// really contend, instead of being serviced one at a time.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn expired_failed_state_admits_only_one_probe() {
-        let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
-            max_attempts: 16,
-            base_backoff: Duration::from_millis(5),
-        }));
-
-        // Drive the gate into Failed { retry_at ≈ past }.
-        let ticket = gate.try_begin().expect("first ticket");
-        ticket.fail_transient("seed");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-
-        async fn contend(
-            gate: Arc<RecoveryGate>,
-            barrier: Arc<tokio::sync::Barrier>,
-        ) -> (u32, u32) {
-            // Park here until every task is ready so we really stress
-            // the CAS claim.
-            barrier.wait().await;
-            let some_gate: Option<Arc<RecoveryGate>> = Some(gate);
-            match admit_through_gate(&some_gate) {
-                Ok(GateAdmission::Probe(ticket)) => {
-                    // Hold the probe until the test is done counting so
-                    // a second caller can't race in after a fast
-                    // resolve/fail cycle.
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    drop(ticket);
-                    (1, 0)
-                },
-                Ok(GateAdmission::Open | GateAdmission::OpenGated(_)) => (0, 1),
-                Err(_) => (0, 1),
-            }
-        }
-
-        let barrier = Arc::new(tokio::sync::Barrier::new(32));
-        let mut handles = Vec::with_capacity(32);
-        for _ in 0..32 {
-            handles.push(tokio::spawn(contend(
-                Arc::clone(&gate),
-                Arc::clone(&barrier),
-            )));
-        }
-
-        let mut probes = 0u32;
-        let mut blocked = 0u32;
-        for h in handles {
-            let (p, b) = h.await.expect("admission task");
-            probes += p;
-            blocked += b;
-        }
-
-        assert_eq!(probes, 1, "exactly one Probe ticket must be granted (#322)");
-        assert_eq!(
-            probes + blocked,
-            32,
-            "every call must be accounted for: probes={probes}, blocked={blocked}",
-        );
-    }
-}
-
-#[cfg(test)]
-mod drain_race_tests {
-    use super::*;
-
-    /// Regression for the drain-race bug: previously `wait_for_drain`
-    /// did `tracker.1.notified().await` without pre-registering the
-    /// `Notified` future, so a handle dropping (and firing
-    /// `notify_waiters()`) in the window between the outer
-    /// `active == 0` check and the first `notified().await` poll would
-    /// leak the wakeup. Stall persisted until the full `drain_timeout`
-    /// elapsed.
-    ///
-    /// The fix pre-enables the `Notified` future and re-checks the
-    /// counter *after* registration, so a drop that completes the drain
-    /// mid-race is observed on the re-check and returns immediately.
-    ///
-    /// This test exercises the normal "handle drops while we're waiting"
-    /// path and asserts we return far sooner than the timeout.
-    #[tokio::test]
-    async fn wait_for_drain_returns_promptly_when_handle_drops() {
-        let mgr = Manager::new();
-        // Simulate one active handle.
-        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
-
-        let tracker = mgr.drain_tracker.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
-                tracker.1.notify_waiters();
-            }
-        });
-
-        let start = Instant::now();
-        mgr.wait_for_drain(Duration::from_secs(30))
-            .await
-            .expect("handle drop must drain under the timeout");
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "wait_for_drain should return within 1s when a handle drops, took {elapsed:?}"
-        );
-        assert_eq!(mgr.drain_tracker.0.load(AtomicOrdering::Acquire), 0);
-    }
-
-    /// Regression: if the counter reaches 0 *before* `wait_for_drain`
-    /// gets to pre-register the `Notified`, the post-enable re-check
-    /// must catch it and return immediately rather than stalling.
-    ///
-    /// We simulate the race by setting `active = 1` (so the outer
-    /// early-return doesn't fire), then immediately decrementing to 0
-    /// before `wait_for_drain` is polled.
-    #[tokio::test]
-    async fn wait_for_drain_catches_drop_via_recheck() {
-        let mgr = Manager::new();
-        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
-
-        // Decrement + notify synchronously — the counter is 0 before
-        // `wait_for_drain` is even called, but we want to prove that
-        // even if the outer check observed `active == 1` and then
-        // the counter hit 0 *between* that check and the inner enable,
-        // the inner re-check would catch it.
-        //
-        // Simulated here by priming the state and then calling
-        // wait_for_drain directly; the inner loop's re-check should
-        // fire on the very first iteration because the counter is
-        // already 0. The outer check is bypassed by the fetch_add
-        // above leaving active == 1 until... wait, we need to
-        // decrement BETWEEN the outer check and the inner enable.
-        //
-        // Easiest approximation: skip the outer early-return by
-        // keeping active = 1 through the outer check, then decrement
-        // via a spawned task that runs before wait_for_drain gets
-        // scheduler time.
-        let tracker = mgr.drain_tracker.clone();
-        tokio::task::yield_now().await;
-        let handle = tokio::spawn(async move {
-            // Yield so that wait_for_drain's outer load sees active = 1,
-            // then decrement before the inner poll happens.
-            tokio::task::yield_now().await;
-            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
-                tracker.1.notify_waiters();
-            }
-        });
-
-        let start = Instant::now();
-        mgr.wait_for_drain(Duration::from_secs(30))
-            .await
-            .expect("recheck path must drain under the timeout");
-        let elapsed = start.elapsed();
-        handle.await.unwrap();
-
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "wait_for_drain must return promptly even under race, took {elapsed:?}"
-        );
-    }
-
-    /// #302: Abort policy must return a typed `DrainTimeout` error and
-    /// leave the registry untouched. Before the policy split
-    /// `graceful_shutdown` would log a warning and proceed to
-    /// `registry.clear()` anyway, turning a cooperative shutdown into a
-    /// logical use-after-free.
-    #[tokio::test]
-    async fn graceful_shutdown_abort_policy_returns_drain_timeout_error() {
-        let mgr = Manager::new();
-        // Simulate an outstanding handle.
-        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
-
-        let cfg = ShutdownConfig::default()
-            .with_drain_timeout(Duration::from_millis(50))
-            .with_drain_timeout_policy(DrainTimeoutPolicy::Abort);
-
-        let err = mgr
-            .graceful_shutdown(cfg)
-            .await
-            .expect_err("Abort policy must surface drain timeout");
-        match err {
-            ShutdownError::DrainTimeout { outstanding } => {
-                assert_eq!(outstanding, 1, "outstanding count mismatch");
-            },
-            other => panic!("wrong error variant: {other:?}"),
-        }
-    }
-
-    /// #302: Force policy must clear the registry and report the
-    /// outstanding-handle count in `ShutdownReport` so operators can see
-    /// exactly how much in-flight work was abandoned.
-    #[tokio::test]
-    async fn graceful_shutdown_force_policy_clears_registry_with_outstanding_count() {
-        let mgr = Manager::new();
-        mgr.drain_tracker.0.fetch_add(2, AtomicOrdering::Release);
-
-        let cfg = ShutdownConfig::default()
-            .with_drain_timeout(Duration::from_millis(50))
-            .with_drain_timeout_policy(DrainTimeoutPolicy::Force);
-
-        let report = mgr
-            .graceful_shutdown(cfg)
-            .await
-            .expect("Force policy must succeed");
-        assert!(report.registry_cleared);
-        assert_eq!(report.outstanding_handles_after_drain, 2);
     }
 }

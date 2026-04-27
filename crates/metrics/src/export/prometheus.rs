@@ -28,8 +28,10 @@ use crate::naming::{
     NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
     NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
-    NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
+    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS, NEBULA_RESOURCE_DESTROY_TOTAL,
+    NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
     NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
@@ -64,6 +66,12 @@ fn counter_help(name: &str) -> &'static str {
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL => "Total resources released from quarantine.",
         NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL => "Total config reloads.",
         NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL => "Total credential rotations applied.",
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL => {
+            "Per-resource credential refresh dispatch attempts (labeled by outcome)."
+        },
+        NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL => {
+            "Per-resource credential revoke dispatch attempts (labeled by outcome)."
+        },
         NEBULA_RESOURCE_DESTROY_TOTAL => "Total resource instances destroyed.",
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL => "Total resource acquire errors.",
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL => "Total credential rotation attempts.",
@@ -104,6 +112,9 @@ fn histogram_help(name: &str) -> &'static str {
             "Wait time before resource acquisition in seconds."
         },
         NEBULA_RESOURCE_USAGE_DURATION_SECONDS => "Resource usage duration in seconds.",
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS => {
+            "Per-resource credential rotation dispatch latency in seconds (labeled by outcome)."
+        },
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS => "Credential rotation duration in seconds.",
         _ => "Custom histogram.",
     }

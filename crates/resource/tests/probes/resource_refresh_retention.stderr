@@ -1,0 +1,33 @@
+error: lifetime may not live long enough
+   --> tests/probes/resource_refresh_retention.rs:92:9
+    |
+ 88 |           &self,
+    |           - let's call the lifetime of this reference `'1`
+...
+ 92 | /         async move {
+...   |
+100 | |             Ok(())
+101 | |         }
+    | |_________^ returning this value requires that `'1` must outlive `'static`
+    |
+help: to declare that `impl Future<Output = Result<(), <LeakyResource as nebula_resource::Resource>::Error>> + Send + 'a` captures data from argument `self`, you can add an explicit `'_` lifetime bound
+    |
+ 91 |     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a + '_ {
+    |                                                                    ++++
+
+error[E0521]: borrowed data escapes outside of method
+  --> tests/probes/resource_refresh_retention.rs:98:29
+   |
+87 |     fn on_credential_refresh<'a>(
+   |                              -- lifetime `'a` defined here
+88 |         &self,
+89 |         new_scheme: SchemeGuard<'a, Self::Credential>,
+   |         ---------- `new_scheme` is a reference that is only valid in the method body
+...
+98 |             let mut stash = self.stash.lock().unwrap();
+   |                             ^^^^^^^^^^^^^^^^^
+   |                             |
+   |                             `new_scheme` escapes the method body here
+   |                             argument requires that `'a` must outlive `'static`
+
+help: replace `'a` with `'static`

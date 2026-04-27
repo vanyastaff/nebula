@@ -480,6 +480,8 @@ async fn manager_register_and_acquire_pooled() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -519,6 +521,8 @@ async fn manager_register_and_acquire_resident() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -548,6 +552,8 @@ async fn manager_shutdown_rejects_acquire() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -732,6 +738,8 @@ async fn register_transitions_phase_to_ready() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("register");
 
@@ -755,6 +763,8 @@ async fn reload_config_bumps_status_generation() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -792,6 +802,8 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -951,6 +963,8 @@ async fn register_emits_registered_event() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -974,6 +988,8 @@ async fn remove_emits_removed_event() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -1003,6 +1019,8 @@ async fn acquire_emits_success_event() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -1154,6 +1172,8 @@ async fn manager_scope_exact_match() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -1190,6 +1210,8 @@ async fn manager_scope_fallback_to_global() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -1232,6 +1254,8 @@ async fn manager_scope_mismatch_not_found() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -1267,6 +1291,7 @@ async fn metrics_track_acquire_release_create_destroy() {
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 2,
         metrics_registry: Some(registry.clone()),
+        ..Default::default()
     });
     let resource = ResidentTestResource::new();
     let resident_rt =
@@ -1278,6 +1303,8 @@ async fn metrics_track_acquire_release_create_destroy() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -1332,6 +1359,8 @@ async fn manager_multiple_resources_coexist() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("pool registration should succeed");
 
@@ -1346,6 +1375,8 @@ async fn manager_multiple_resources_coexist() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -1792,6 +1823,8 @@ async fn service_acquire_via_manager() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Service(svc_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -2309,6 +2342,7 @@ async fn registry_backed_metrics_record_operations() {
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 1,
         metrics_registry: Some(registry.clone()),
+        ..Default::default()
     });
 
     // Register two resources.
@@ -2327,6 +2361,8 @@ async fn registry_backed_metrics_record_operations() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("pool registration should succeed");
 
@@ -2340,6 +2376,8 @@ async fn registry_backed_metrics_record_operations() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -2405,6 +2443,8 @@ async fn graceful_shutdown_stops_new_acquires() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2444,6 +2484,8 @@ async fn graceful_shutdown_clears_registry() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -2637,6 +2679,8 @@ async fn acquire_retries_on_transient_failure() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -2678,6 +2722,8 @@ async fn acquire_no_retry_on_permanent_failure() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -2708,6 +2754,8 @@ async fn acquire_succeeds_without_resilience() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -2750,6 +2798,8 @@ async fn acquire_timeout_fires() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -2781,6 +2831,8 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -2830,6 +2882,8 @@ async fn topology_mismatch_returns_permanent_error() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -2883,6 +2937,8 @@ async fn retry_exhaustion_returns_last_transient_error() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -2933,6 +2989,8 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(gate.clone()),
+            None,
+            None,
         )
         .unwrap();
 
@@ -3448,6 +3506,8 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -3483,6 +3543,8 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -3516,6 +3578,8 @@ async fn recovery_gate_allows_acquire_when_idle() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -3550,6 +3614,8 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -3577,6 +3643,8 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None, // no recovery gate
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -3698,6 +3766,8 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("register should succeed");
 
@@ -3733,6 +3803,8 @@ async fn reload_config_rejects_invalid_config() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -3779,6 +3851,8 @@ async fn reload_config_emits_event() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("register should succeed");
 
@@ -3812,6 +3886,8 @@ async fn reload_config_evicts_stale_pool_instances() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -3879,6 +3955,8 @@ async fn reload_config_rejected_when_shutdown() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
+            None,
+            None,
         )
         .expect("register should succeed");
 
@@ -3912,6 +3990,8 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -3948,6 +4028,99 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
     );
 }
 
+/// R-023 / 🔴-4 regression: `DrainTimeoutPolicy::Abort` must transition
+/// every registered resource to `ResourcePhase::Failed`, **not** restore
+/// `Ready`. Pre-fix the manager would set the phase back to `Ready` to
+/// "keep the resource acquirable", but the cancel token already rejects
+/// new acquires and `health_check` then lied about lifecycle state.
+///
+/// Also asserts the per-resource `HealthChanged{healthy:false}` event is
+/// emitted on the broadcast channel so external observers see the
+/// failure signal even if they only subscribe to events.
+#[tokio::test]
+async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
+    use nebula_resource::{ResourceEvent, ResourcePhase, manager::ShutdownError};
+
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    // Subscribe BEFORE the shutdown so we can capture the
+    // HealthChanged{healthy:false} broadcast emitted by
+    // set_phase_all_failed.
+    let mut events = manager.subscribe_events();
+
+    // Hold a handle across the shutdown so drain cannot complete.
+    let ctx = test_ctx();
+    let _handle = manager
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire must succeed");
+
+    let err = manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(20)),
+        )
+        .await
+        .expect_err("Abort policy must surface drain timeout as Err");
+
+    assert!(
+        matches!(err, ShutdownError::DrainTimeout { .. }),
+        "expected DrainTimeout, got {err:?}"
+    );
+
+    // R-023 assertion: phase is `Failed`, NOT `Ready`. Pre-fix this
+    // would be `Ready` (the bug). We bypass `health_check` here because
+    // it goes through `lookup` which short-circuits on the cancel token
+    // post-shutdown; `get_any` reads the type-erased registry entry
+    // directly so we can observe the phase the abort branch wrote.
+    let phase = manager
+        .get_any(&resource_key!("test-resident"), &ScopeLevel::Global)
+        .expect("registry preserved (Abort policy)")
+        .phase_erased();
+    assert_eq!(
+        phase,
+        ResourcePhase::Failed,
+        "drain-abort must transition phase to Failed, got {phase:?} \
+         (R-023: Ready would be the pre-fix bug)",
+    );
+
+    // R-023 assertion: per-resource HealthChanged{healthy:false} was
+    // emitted. Drain through the channel until we find it (other
+    // events like `Registered` and `AcquireSuccess` were also emitted
+    // earlier).
+    let mut saw_health_change = false;
+    while let Ok(event) = events.try_recv() {
+        if let ResourceEvent::HealthChanged {
+            key,
+            healthy: false,
+        } = event
+            && key == resource_key!("test-resident")
+        {
+            saw_health_change = true;
+            break;
+        }
+    }
+    assert!(
+        saw_health_change,
+        "drain-abort must emit HealthChanged{{healthy:false}} per resource"
+    );
+}
+
 /// #302: `DrainTimeoutPolicy::Force` is the opt-in escape hatch. It clears
 /// the registry anyway and reports the outstanding-handle count so a
 /// supervisor with a hard deadline can still exit.
@@ -3966,6 +4139,8 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -4012,6 +4187,8 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -4066,6 +4243,8 @@ async fn probe_boundary_serializes_callers_under_herd() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(gate.clone()),
+            None,
+            None,
         )
         .unwrap();
 

@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
-use nebula_core::ResourceKey;
+use nebula_core::{CredentialId, ResourceKey};
+
+use crate::error::RotationOutcome;
 
 /// A lifecycle event emitted by the resource manager.
 ///
@@ -86,11 +88,54 @@ pub enum ResourceEvent {
         /// Human-readable description of the new gate state.
         state: String,
     },
+    /// Aggregate outcome of one credential refresh cycle.
+    ///
+    /// Emitted by [`Manager::on_credential_refreshed`] after every
+    /// per-resource dispatch future has completed (Tech Spec §6.2). The
+    /// payload reports how many resources were affected and how their
+    /// outcomes broke down across `ok` / `failed` / `timed_out`.
+    ///
+    /// Per-resource health-change signals on revocation failure are emitted
+    /// inline via [`Self::HealthChanged`] (security amendment B-2). This
+    /// aggregate captures only the cycle-level outcome distribution, so
+    /// subscribers that miss it still see per-resource failure events.
+    ///
+    /// [`Manager::on_credential_refreshed`]: crate::manager::Manager::on_credential_refreshed
+    CredentialRefreshed {
+        /// The credential whose rotation triggered the cycle.
+        credential_id: CredentialId,
+        /// Total resources reached by the dispatch fan-out. Equal to
+        /// `outcome.total()`.
+        resources_affected: usize,
+        /// Aggregate breakdown of per-resource outcomes.
+        outcome: RotationOutcome,
+    },
+    /// Aggregate outcome of one credential revocation cycle.
+    ///
+    /// Emitted by [`Manager::on_credential_revoked`] after every
+    /// per-resource dispatch future has completed (Tech Spec §6.2).
+    /// Symmetric to [`Self::CredentialRefreshed`].
+    ///
+    /// [`Manager::on_credential_revoked`]: crate::manager::Manager::on_credential_revoked
+    CredentialRevoked {
+        /// The credential whose revocation triggered the cycle.
+        credential_id: CredentialId,
+        /// Total resources reached by the dispatch fan-out. Equal to
+        /// `outcome.total()`.
+        resources_affected: usize,
+        /// Aggregate breakdown of per-resource outcomes.
+        outcome: RotationOutcome,
+    },
 }
 
 impl ResourceEvent {
-    /// Returns the resource key associated with this event.
-    pub fn key(&self) -> &ResourceKey {
+    /// Returns the resource key associated with this event, if any.
+    ///
+    /// Aggregate events ([`Self::CredentialRefreshed`],
+    /// [`Self::CredentialRevoked`]) span multiple resources and return
+    /// `None`; use the `credential_id` field on those payloads for the
+    /// rotation identifier.
+    pub fn key(&self) -> Option<&ResourceKey> {
         match self {
             Self::Registered { key }
             | Self::Removed { key }
@@ -101,7 +146,8 @@ impl ResourceEvent {
             | Self::ConfigReloaded { key }
             | Self::RetryAttempt { key, .. }
             | Self::BackpressureDetected { key }
-            | Self::RecoveryGateChanged { key, .. } => key,
+            | Self::RecoveryGateChanged { key, .. } => Some(key),
+            Self::CredentialRefreshed { .. } | Self::CredentialRevoked { .. } => None,
         }
     }
 }

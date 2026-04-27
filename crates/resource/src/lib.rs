@@ -57,7 +57,7 @@ pub mod topology_tag;
 
 pub use cell::Cell;
 pub use context::ResourceContext;
-pub use error::{Error, ErrorKind, ErrorScope};
+pub use error::{Error, ErrorKind, ErrorScope, RefreshOutcome, RevokeOutcome, RotationOutcome};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
@@ -66,7 +66,7 @@ pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot,
     ShutdownConfig, ShutdownError, ShutdownReport,
 };
-pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
+pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
 // Credential adoption surface per ADR-0036 — re-exported so resource
 // consumers don't need a direct nebula-credential dep for trait shape.

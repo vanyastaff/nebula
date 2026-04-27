@@ -168,12 +168,14 @@ pub use scheme::{
     KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers,
-// scheme-guard + refresh hook (§15.7).
-#[allow(deprecated)]
+// scheme-guard refresh surface (§15.7). The refresh-notification hook
+// itself lives on `nebula_resource::Resource::on_credential_refresh`
+// per ADR-0036; the previously-defined parallel `OnCredentialRefresh<C>`
+// trait was removed in nebula-resource П2.
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, OnCredentialRefresh, RedactedSecret,
-    SchemeFactory, SchemeGuard, SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad,
-    encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier, generate_random_state,
+    CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SchemeFactory, SchemeGuard,
+    SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad, encrypt_with_key_id,
+    generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};

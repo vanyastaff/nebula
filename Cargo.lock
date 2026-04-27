@@ -4359,6 +4359,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "dashmap",
+ "futures",
  "insta",
  "nebula-core",
  "nebula-credential",
@@ -4372,11 +4373,14 @@ dependencies = [
  "pretty_assertions",
  "rstest",
  "semver",
+ "serde",
  "smallvec",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
+ "trybuild",
+ "zeroize",
 ]
 
 [[package]]

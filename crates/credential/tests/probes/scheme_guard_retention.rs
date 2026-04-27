@@ -26,12 +26,13 @@ impl LeakyResource {
         &mut self,
         new_scheme: SchemeGuard<'a, ApiKeyCredential>,
         // `ctx` is decorative for this probe — it mirrors the canonical
-        // refresh-hook signature (`OnCredentialRefresh::on_credential_refresh`
-        // takes a `&'a CredentialContext` alongside the guard) so the probe
-        // matches the production call shape verbatim. The retention error
-        // would fire on `new_scheme` alone; the parameter is kept to make
-        // the fixture grep-equivalent to real call sites and to ensure any
-        // future refactor of the hook signature surfaces here.
+        // refresh-hook signature (`Resource::on_credential_refresh` takes a
+        // `&'a CredentialContext` alongside the guard per ADR-0036 + Tech
+        // Spec §15.4) so the probe matches the production call shape
+        // verbatim. The retention error would fire on `new_scheme` alone;
+        // the parameter is kept to make the fixture grep-equivalent to
+        // real call sites and to ensure any future refactor of the hook
+        // signature surfaces here.
         ctx: &'a CredentialContext,
     ) {
         let _ = ctx;

@@ -30,11 +30,11 @@
 
 | ID | Concern | Severity | Labels | Source | Status | Owner |
 |----|---------|----------|--------|--------|--------|-------|
-| R-001 | `Resource::Auth` dead bound; `Resource::Credential` adoption per Tech Spec §3.6 | 🔴 | tech-spec-material | Phase 1 §1.1 convergent | Strategy §4.1 + ADR-0036 | Phase 6 Tech Spec §3 |
-| R-002 | `credential_resources` reverse-index never populated → silent revocation drop today; latent `todo!()` panic | 🔴 | tech-spec-material | Phase 1 §1.1 (security-lead correction of Phase 0); `manager.rs:262, 370, 1378, 1400` | Strategy §4.1/§4.2 — atomic landing required | Phase 6 Tech Spec §5 |
-| R-003 | `on_credential_revoked` semantics (default body, mechanism) | 🟠 | tech-spec-material | Strategy §4.2 (tech-lead TL-E2) | Invariant: "no further authenticated traffic" post-invocation; mechanism deferred to Tech Spec §5 | Phase 6 Tech Spec §5 |
-| R-004 | Rotation dispatch mechanics — parallel `join_all` with per-resource timeout isolation | 🟠 | tech-spec-material | Strategy §4.3 (tech-lead TL-E1) | Invariant: per-resource timeout, NOT global | Phase 6 Tech Spec §5 |
-| R-005 | `warmup_pool` must not call `Scheme::default()` under new shape | 🟡 | tech-spec-material | Phase 1 security-lead B-3 amendment | Strategy §4.9 (observability + invariant) | Phase 6 Tech Spec §5 |
+| R-001 | `Resource::Auth` dead bound; `Resource::Credential` adoption per Tech Spec §3.6 | 🔴 | tech-spec-material | Phase 1 §1.1 convergent | **landed П1** (`ec36365f` on main, PR #607) | Strategy §4.1 + ADR-0036 |
+| R-002 | `credential_resources` reverse-index never populated → silent revocation drop today; latent `todo!()` panic | 🔴 | tech-spec-material | Phase 1 §1.1 (security-lead correction of Phase 0); `manager.rs:262, 370, 1378, 1400` | **landed П2** (Tasks 3-6: `d7b57df4`, `b98f5ed1`, `fab78f96`, RegisterOptions wiring); reverse-index write + dispatcher loops + per-resource timeout override | Strategy §4.1/§4.2 |
+| R-003 | `on_credential_revoked` semantics (default body, mechanism) | 🟠 | tech-spec-material | Strategy §4.2 (tech-lead TL-E2) | **landed П2** (`fab78f96`); join_all dispatcher + B-2 HealthChanged{healthy:false} on non-Ok outcomes | Invariant: "no further authenticated traffic" post-invocation |
+| R-004 | Rotation dispatch mechanics — parallel `join_all` with per-resource timeout isolation | 🟠 | tech-spec-material | Strategy §4.3 (tech-lead TL-E1) | **landed П2** (`b98f5ed1`+`fab78f96`); per-resource `tokio::time::timeout` per dispatcher, security amendment B-1 | Invariant: per-resource timeout, NOT global |
+| R-005 | `warmup_pool` must not call `Scheme::default()` under new shape | 🟡 | tech-spec-material | Phase 1 security-lead B-3 amendment | **landed П2** (`4e8f582d`); split into `warmup_pool_no_credential` (NoCredential gate) + `warmup_pool(scheme: &..., ctx)` for credential-bearing | Strategy §4.9 |
 | R-006 | `AuthScheme: Clone` bound forces secret cloneability — each clone is another zeroize obligation | 🟡 | future-cascade | Phase 1 §2.2 security-unique | Deferred — requires cross-crate reshape | Coordinate with credential side cascade |
 | R-007 | `CredentialId` split import (`nebula_core` vs `nebula-credential`) | 🟡 | post-cascade | Phase 1 §2.2 security-unique | Cosmetic — drive-by fix | Any future PR touching the imports |
 
@@ -55,7 +55,7 @@
 | R-020 | `manager.rs` 2101 L grab-bag | 🟠 | tech-spec-material | Phase 1 §1.4 convergent | Strategy §4.5: file-split into 5 submodules (mod/options/gate/execute/rotation) | Phase 6 Tech Spec §5 |
 | R-021 | `register_*_with` builder anti-pattern; inconsistent `with_*` conventions | 🟠 | tech-spec-material | Phase 1 §2.3 rust-senior | Strategy §4.5: resolved by file-split + redesign | Phase 6 Tech Spec §5 |
 | R-022 | `register_pooled` silently requires `Auth = ()`; no documented escape for authed adapters | 🟠 | tech-spec-material | Phase 1 §1.5 convergent | Resolved by §4.1 `type Credential: Credential` + `NoCredential` opt-out | Phase 6 Tech Spec §5 |
-| R-023 | Drain-abort phase corruption — `graceful_shutdown::Abort` flips phase to Ready without recording failure | 🔴 | tech-spec-material | Phase 1 §1.5 rust-senior `manager.rs:1493-1510`, `runtime/managed.rs:93-102` | Strategy §4.6: absorbed into file-split PR; `ManagedResource::set_failed()` wired | Phase 6 Tech Spec §5 |
+| R-023 | Drain-abort phase corruption — `graceful_shutdown::Abort` flips phase to Ready without recording failure | 🔴 | tech-spec-material | Phase 1 §1.5 rust-senior `manager.rs:1493-1510`, `runtime/managed.rs:93-102` | **landed П2** (`e603b22d`); `set_phase_all_failed` wires `ManagedResource::set_failed`, regression test included | Strategy §4.6 |
 
 ### Documentation
 
@@ -91,7 +91,7 @@
 
 | ID | Concern | Severity | Labels | Source | Status | Owner |
 |----|---------|----------|--------|--------|--------|-------|
-| R-060 | Rotation path ships without trace span / counter / `ResourceEvent::CredentialRefreshed` | 🟠 | tech-spec-material | Phase 1 §2.2 security-lead | Strategy §4.9 + Phase 6 CP-review gate (DoD) | Phase 6 Tech Spec §4 (observability section) |
+| R-060 | Rotation path ships without trace span / counter / `ResourceEvent::CredentialRefreshed` | 🟠 | tech-spec-material | Phase 1 §2.2 security-lead | **landed П2** (`7ddf84db`); `ResourceEvent::{CredentialRefreshed, CredentialRevoked}` aggregates + `nebula_resource.credential_rotation_attempts/revoke_attempts/dispatch_latency` metrics + `resource.credential_refresh/revoke` spans | Strategy §4.9 |
 
 ### Positive findings (preserved as invariants)
 

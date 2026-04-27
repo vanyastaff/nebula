@@ -412,6 +412,8 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
             TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(pool_config, fingerprint)),
             Some(AcquireResilience::standard()), // resilience
             None,                                // recovery gate
+            None,
+            None,
         )
         .expect("registration should succeed");
 

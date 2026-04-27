@@ -191,6 +191,61 @@ pub const NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL: &str =
 /// Counter: circuit breaker transitioned to closed state (recovered).
 pub const NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL: &str =
     "nebula_resource_circuit_breaker_closed_total";
+/// Counter: per-resource credential refresh dispatch attempts.
+///
+/// Labeled by `outcome` (see [`rotation_outcome`]). Bounded cardinality
+/// (3 closed values) — no `resource_key` or `credential_id` label, since
+/// either would explode cardinality on hot rotation paths. Aggregate-level
+/// fan-out signal is published via
+/// [`crate::naming::NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL`].
+pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL: &str =
+    "nebula_resource_credential_rotation_attempts_total";
+/// Counter: per-resource credential revoke dispatch attempts.
+///
+/// Labeled by `outcome` (see [`rotation_outcome`]). Symmetric to
+/// [`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`].
+pub const NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL: &str =
+    "nebula_resource_credential_revoke_attempts_total";
+/// Histogram: per-resource credential rotation dispatch latency in seconds.
+///
+/// Labeled by `outcome` (see [`rotation_outcome`]). Covers the full
+/// dispatcher span — `SchemeFactory::acquire` plus the resource hook
+/// (`on_credential_refresh` for rotations, `on_credential_revoke` for
+/// revocations) wrapped in the per-resource `tokio::time::timeout` budget.
+pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS: &str =
+    "nebula_resource_credential_rotation_dispatch_latency_seconds";
+
+/// Counter: dispatchers skipped during fan-out because their
+/// `scheme_type_id()` did not match the caller's credential `C`.
+///
+/// Increments inside `Manager::on_credential_refreshed` /
+/// `_revoked` whenever a `filter_map` drops a dispatcher — historically a
+/// silent shrinkage of `resources_affected` that masked register-time
+/// mismatches between the dispatcher's typed scheme and the engine-side
+/// credential type. A non-zero crossing is a register-side bug and a real
+/// operator signal; pair with the per-resource error log emitted at the
+/// same site to triage which `(resource_key, credential_id)` pair drifted.
+///
+/// Unlabeled — no `outcome` / `resource_key` / `credential_id` dimensions
+/// (cardinality hygiene, mirrors the rotation-attempts pattern).
+pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL: &str =
+    "nebula_resource_credential_rotation_skipped_total";
+
+/// Outcome labels for the credential rotation dispatch counters and
+/// histogram ([`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`],
+/// [`NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL`],
+/// [`NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS`]).
+///
+/// Closed set of three values — adding another permanently inflates the
+/// cardinality floor and requires a sub-spec amendment.
+pub mod rotation_outcome {
+    /// Resource hook returned `Ok(())` within the per-resource budget.
+    pub const SUCCESS: &str = "success";
+    /// Resource hook returned `Err` within the per-resource budget.
+    pub const FAILED: &str = "failed";
+    /// Per-resource budget elapsed before the hook completed.
+    pub const TIMED_OUT: &str = "timed_out";
+}
 
 // ---------------------------------------------------------------------------
 // EventBus (generic bus layer)
@@ -388,16 +443,20 @@ mod tests {
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
         NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
-        NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
+        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
+        NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
         NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
         refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
-        refresh_coord_sentinel_action,
+        refresh_coord_sentinel_action, rotation_outcome,
     };
 
-    const RESOURCE_METRIC_NAMES: [&str; 16] = [
+    const RESOURCE_METRIC_NAMES: [&str; 20] = [
         NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -412,6 +471,10 @@ mod tests {
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL,
         NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL,
         NEBULA_RESOURCE_DESTROY_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     ];
@@ -419,9 +482,10 @@ mod tests {
     const RESOURCE_GAUGE_NAMES: [&str; 2] =
         [NEBULA_RESOURCE_HEALTH_STATE, NEBULA_RESOURCE_POOL_WAITERS];
 
-    const RESOURCE_HISTOGRAM_NAMES: [&str; 2] = [
+    const RESOURCE_HISTOGRAM_NAMES: [&str; 3] = [
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
         NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
     ];
 
     #[test]
@@ -455,7 +519,26 @@ mod tests {
             }
         }
 
-        assert_eq!(unique.len(), 16);
+        assert_eq!(unique.len(), 20);
+    }
+
+    #[test]
+    fn rotation_outcome_labels_are_closed_set() {
+        // Closed label set — adding a value here permanently inflates
+        // cardinality on every rotation/revoke series, so the test is
+        // a CI gate against silent expansion.
+        let labels = [
+            rotation_outcome::SUCCESS,
+            rotation_outcome::FAILED,
+            rotation_outcome::TIMED_OUT,
+        ];
+        let mut unique = HashSet::new();
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+            assert!(unique.insert(label));
+        }
+        assert_eq!(unique.len(), 3);
     }
 
     const CREDENTIAL_METRIC_NAMES: [&str; 6] = [

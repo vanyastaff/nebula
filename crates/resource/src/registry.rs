@@ -38,6 +38,24 @@ pub trait AnyManagedResource: Send + Sync + 'static {
     /// graceful shutdown where only the type-erased registry iteration
     /// is available.
     fn set_phase_erased(&self, phase: crate::state::ResourcePhase);
+
+    /// Type-erased terminal failure transition (R-023).
+    ///
+    /// Transitions the resource to [`ResourcePhase::Failed`] and records
+    /// the supplied human-readable reason in `last_error`. Used by
+    /// `Manager::set_phase_all_failed` so `DrainTimeoutPolicy::Abort` can
+    /// signal per-resource failure without needing typed access to each
+    /// entry.
+    ///
+    /// [`ResourcePhase::Failed`]: crate::state::ResourcePhase::Failed
+    fn set_failed_erased(&self, reason: &str);
+
+    /// Type-erased read of the current lifecycle phase.
+    ///
+    /// Symmetric to [`Self::set_phase_erased`] / [`Self::set_failed_erased`].
+    /// Diagnostic-only — typed callers should prefer
+    /// `ManagedResource::status().phase` after a successful downcast.
+    fn phase_erased(&self) -> crate::state::ResourcePhase;
 }
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
@@ -55,6 +73,14 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 
     fn set_phase_erased(&self, phase: crate::state::ResourcePhase) {
         self.set_phase(phase);
+    }
+
+    fn set_failed_erased(&self, reason: &str) {
+        self.set_failed(reason.to_owned());
+    }
+
+    fn phase_erased(&self) -> crate::state::ResourcePhase {
+        self.status().phase
     }
 }
 
@@ -268,6 +294,10 @@ mod tests {
             TypeId::of::<FakeA>()
         }
         fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
+        fn set_failed_erased(&self, _reason: &str) {}
+        fn phase_erased(&self) -> crate::state::ResourcePhase {
+            crate::state::ResourcePhase::Ready
+        }
     }
 
     impl AnyManagedResource for FakeB {
@@ -281,6 +311,10 @@ mod tests {
             TypeId::of::<FakeB>()
         }
         fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
+        fn set_failed_erased(&self, _reason: &str) {}
+        fn phase_erased(&self) -> crate::state::ResourcePhase {
+            crate::state::ResourcePhase::Ready
+        }
     }
 
     #[test]

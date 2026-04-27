@@ -231,6 +231,8 @@ async fn use_case_1_http_client_pool() {
             TopologyRuntime::Pool(pool_rt),
             None, // resilience
             None, // recovery_gate
+            None,
+            None,
         )
         .expect("registration should succeed");
 
@@ -362,6 +364,8 @@ async fn use_case_2_resident_config_store() {
             },
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
             None,
             None,
         )
@@ -505,6 +509,8 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             Some(resilience),
+            None,
+            None,
             None,
         )
         .expect("db registration should succeed");

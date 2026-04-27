@@ -153,6 +153,104 @@ impl Error {
     pub fn backpressure(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Backpressure, message)
     }
+
+    /// A credential-bearing resource was registered without a `credential_id`.
+    ///
+    /// Resources whose `Credential` associated type is not `NoCredential`
+    /// must be registered with a `credential_id` so the engine can project
+    /// scheme material at acquire time and dispatch rotation hooks.
+    pub fn missing_credential_id(key: ResourceKey) -> Self {
+        Self::permanent(format!(
+            "{key}: credential-bearing Resource (Credential != NoCredential) requires a credential_id at register time"
+        ))
+        .with_resource_key(key)
+    }
+
+    /// A dispatcher failed to downcast `&(dyn Any)` to the expected
+    /// `<R::Credential as Credential>::Scheme`.
+    ///
+    /// Indicates a dispatcher bug — the engine passed a scheme of the wrong
+    /// type to a typed rotation hook. Returned as `Permanent` so it
+    /// surfaces immediately rather than triggering retry loops.
+    pub fn scheme_type_mismatch<R: crate::resource::Resource>() -> Self {
+        let key = R::key();
+        Self::permanent(format!(
+            "{key}: scheme type mismatch — dispatcher expected <{} as Credential>::Scheme",
+            std::any::type_name::<R::Credential>()
+        ))
+        .with_resource_key(key)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rotation outcomes (П2)
+// ---------------------------------------------------------------------------
+
+/// Outcome of a single resource's `on_credential_refresh` invocation.
+///
+/// Produced by the rotation dispatcher (one per resource per refresh cycle).
+/// Aggregated into [`RotationOutcome`] for event payloads and metrics.
+///
+/// Not `Clone` because [`Error`] carries a non-cloneable source chain;
+/// outcomes are consumed once when folded into the aggregate.
+#[derive(Debug)]
+pub enum RefreshOutcome {
+    /// Resource successfully applied the new scheme.
+    Ok,
+    /// Resource returned an error from `on_credential_refresh`.
+    Failed(Error),
+    /// Per-resource timeout budget exceeded.
+    TimedOut {
+        /// The per-resource budget that was exceeded.
+        budget: Duration,
+    },
+}
+
+/// Outcome of a single resource's `on_credential_revoke` invocation.
+///
+/// Produced by the rotation dispatcher (one per resource per revoke cycle).
+/// Aggregated into [`RotationOutcome`] for event payloads and metrics.
+///
+/// Not `Clone` because [`Error`] carries a non-cloneable source chain;
+/// outcomes are consumed once when folded into the aggregate.
+#[derive(Debug)]
+pub enum RevokeOutcome {
+    /// Resource successfully tore down credential-bound state.
+    Ok,
+    /// Resource returned an error from `on_credential_revoke`.
+    Failed(Error),
+    /// Per-resource timeout budget exceeded.
+    TimedOut {
+        /// The per-resource budget that was exceeded.
+        budget: Duration,
+    },
+}
+
+/// Aggregate counts derived from a rotation cycle's per-resource outcomes.
+///
+/// Constructed at event-emission time from `Vec<(ResourceKey, RefreshOutcome)>`
+/// or its revoke counterpart. Used in `ResourceEvent::CredentialRefreshed` /
+/// `CredentialRevoked` payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RotationOutcome {
+    /// Number of resources that applied the rotation successfully.
+    pub ok: usize,
+    /// Number of resources that returned an error from the hook.
+    pub failed: usize,
+    /// Number of resources whose hook exceeded the per-resource budget.
+    pub timed_out: usize,
+}
+
+impl RotationOutcome {
+    /// Total resources affected by the rotation cycle.
+    pub fn total(&self) -> usize {
+        self.ok + self.failed + self.timed_out
+    }
+
+    /// True if any resource did not complete the hook successfully.
+    pub fn has_partial_failure(&self) -> bool {
+        self.failed + self.timed_out > 0
+    }
 }
 
 impl fmt::Display for Error {
