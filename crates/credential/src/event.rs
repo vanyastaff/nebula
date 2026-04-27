@@ -50,6 +50,8 @@ pub enum CredentialEvent {
     /// - The IdP rejects the refresh (`ReauthReason::ProviderRejected`).
     /// - The sentinel threshold (default N=3 within 1h) is exceeded for mid-refresh crashes
     ///   (`ReauthReason::SentinelRepeated`).
+    /// - A locally detected lack of refresh material — e.g. an OAuth2 state with no `refresh_token`
+    ///   (`ReauthReason::MissingRefreshMaterial`); the IdP was never contacted.
     ///
     /// Consumers (UI, monitoring) surface a re-auth prompt. Pools and
     /// connections using this credential must be invalidated until the

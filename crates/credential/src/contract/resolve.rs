@@ -204,6 +204,18 @@ pub enum ReauthReason {
         /// counted (seconds).
         window_secs: u64,
     },
+    /// The credential lacks the refresh material required for a refresh
+    /// (e.g., OAuth2 state has no `refresh_token`). Locally detected;
+    /// the IdP was never contacted. Operators should re-auth (likely
+    /// after fixing scope / `grant_type` configuration).
+    ///
+    /// Distinct from [`ReauthReason::ProviderRejected`] — that variant
+    /// implies the IdP returned an error; this one means we never even
+    /// reached the IdP because the local state was unusable for refresh.
+    MissingRefreshMaterial {
+        /// Human-readable diagnostic (e.g. which field is missing).
+        detail: String,
+    },
 }
 
 // ── TestResult ─────────────────────────────────────────────────────────

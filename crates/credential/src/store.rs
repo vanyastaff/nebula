@@ -60,9 +60,12 @@ pub struct StoredCredential {
     /// `O(replicas)` IdP load on a credential that has already been
     /// rejected.
     ///
-    /// Persistence: stores serialise this field via `serde(default = false)`
-    /// when present in the row's metadata blob (see backend
-    /// implementations); it does not require its own SQL column.
+    /// Persistence: backends store this either as a dedicated column or as
+    /// a key in the metadata blob. Backend row structs that do use serde
+    /// should annotate this field with `#[serde(default)]` so older rows
+    /// missing the field deserialize as `false`. No dedicated SQL column
+    /// is required on `StoredCredential` itself (which has no serde
+    /// derives).
     pub reauth_required: bool,
     /// Arbitrary metadata.
     pub metadata: serde_json::Map<String, Value>,

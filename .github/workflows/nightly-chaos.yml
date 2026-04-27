@@ -23,7 +23,10 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}
-  cancel-in-progress: true
+  # Queue new triggers rather than cancelling a 25-min chaos run mid-flight
+  # — losing a partial chaos result on a re-fire wipes any signal we were
+  # going to record about the previous run.
+  cancel-in-progress: false
 
 jobs:
   refresh-coordinator-chaos:

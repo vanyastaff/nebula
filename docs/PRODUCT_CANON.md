@@ -440,7 +440,7 @@ The canonical bar for credential rotation and refresh discipline (referenced as 
 - **[L2]** **Explicit failure on irreconcilable state:** when reconciliation cannot succeed (e.g. provider rejected the refresh token, sentinel threshold tripped on repeated mid-refresh crashes per ADR-0041), the credential transitions to an explicit `ReauthRequired` state surfaced in `CredentialStatus` — never a silent stuck credential and never a synthetic success.
 - **[L2]** **Cross-replica coordination is durable, not folklore:** when running multi-replica, only one replica refreshes a credential per expiry window. The L2 claim repository (ADR-0041) is the ground truth; in-process L1 coalescing is an optimization on top, not a substitute.
 
-Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between credential / storage / engine), ADR-0030 §3 engine-owned orchestration (refresh coordinator + rotation scheduler), ADR-0033 integration-credentials Plane B, ADR-0041 durable refresh claim repository. §15.7 `SchemeGuard` (handed to resources at refresh time) prevents retention past the call site so a rotated credential does not bleed into the next request through a stale handle.
+Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between credential / storage / engine), ADR-0030 §3 engine-owned orchestration (refresh coordinator + rotation scheduler), ADR-0033 integration-credentials Plane B, ADR-0041 durable refresh claim repository. The credential Tech Spec §15.7 `SchemeGuard` (handed to resources at refresh time) prevents retention past the call site so a rotated credential does not bleed into the next request through a stale handle.
 
 **What “done” means for a change touching execution / API / storage / plugins:**
 

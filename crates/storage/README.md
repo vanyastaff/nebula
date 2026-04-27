@@ -198,7 +198,7 @@ contract consumers should depend on today.
 
 | Backend | Feature flag | Status |
 |---|---|---|
-| SQLite (file or `sqlite::memory:`) | built-in | `implemented` — local + test default |
+| SQLite (file or `sqlite::memory:`) | `sqlite` | `implemented` — local + test default; feature-gated since the wave-2 review (driver footprint not unconditional) |
 | PostgreSQL | `postgres` | `implemented` — production path |
 | Redis | `redis` | `experimental` — KV only, not execution state |
 | S3 / MinIO | `s3` | `experimental` — blob storage |

@@ -532,9 +532,14 @@ impl Refreshable for OAuth2Credential {
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
         if state.refresh_token.is_none() {
+            // Locally detected: we never spoke to the IdP, so this is
+            // *not* a provider rejection. Surface as
+            // `MissingRefreshMaterial` so operators can distinguish a
+            // misconfigured grant (no refresh_token issued) from a
+            // genuine provider invalidation.
             return Ok(RefreshOutcome::ReauthRequired(
-                crate::resolve::ReauthReason::ProviderRejected {
-                    detail: "missing refresh_token".to_string(),
+                crate::resolve::ReauthReason::MissingRefreshMaterial {
+                    detail: "OAuth2 state has no refresh_token".to_string(),
                 },
             ));
         }
@@ -1199,14 +1204,16 @@ mod tests {
 
         let ctx = CredentialContext::for_test("test-user");
         let outcome = OAuth2Credential::refresh(&mut state, &ctx).await.unwrap();
+        // Locally detected: never spoke to the IdP. Distinct from
+        // `ProviderRejected` per wave-2 review (see ReauthReason rustdoc).
         assert!(
             matches!(
                 outcome,
                 RefreshOutcome::ReauthRequired(
-                    crate::resolve::ReauthReason::ProviderRejected { .. }
+                    crate::resolve::ReauthReason::MissingRefreshMaterial { .. }
                 )
             ),
-            "expected ReauthRequired(ProviderRejected); got {outcome:?}"
+            "expected ReauthRequired(MissingRefreshMaterial); got {outcome:?}"
         );
     }
 
