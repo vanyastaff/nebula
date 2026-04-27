@@ -13,6 +13,7 @@ related:
 defers-to:
   - 2026-04-27-credential-aad-key-id-redesign-design.md (SEC-03 — separate ADR amendment track)
   - 2026-04-27-credential-id-copy-migration-design.md (PERF-01/02/IDIOM-10 — architect bundle)
+  - 2026-04-27-credential-secret-string-wrapper-removal-design.md (drop custom SecretString wrapper; subsumes SEC-07 + SEC-08)
 ---
 
 # Credential Security Hardening (post-audit 2026-04-27)
@@ -320,6 +321,8 @@ This spec **does not** cover the following audit findings; each has a forward-po
 | GAP-01 (`manager.rs:1378` `todo!()` fan-out) | П3+ deferred cascade per Tech Spec §15.7:3522-3523 | Intentional П1 state via `OnCredentialRefresh<C>` parallel trait |
 | ARCH-02 / ARCH-03 (test-shim duplication) | non-finding per Errata §XII.C | Intentional ADR-0032 §3 design |
 | SEC-15 / SEC-17 (key_id deadline / RUSTSEC sweep) | Independent CI hygiene task | Not gated by this spec |
+| SEC-07 (SecretString deserialize too-narrow `[REDACTED]` rejection) | `2026-04-27-credential-secret-string-wrapper-removal-design.md` | Wrapper removal eliminates the rejection logic entirely (secrecy native has no Serialize-as-`[REDACTED]`, so no round-trip protection needed) — structural fix subsumes the runtime-narrow concern |
+| SEC-08 long-term fix | `2026-04-27-credential-secret-string-wrapper-removal-design.md` | Stage 1 of THIS spec fixes SEC-08 via `pub → pub(crate)` (interim). Wrapper-removal spec deletes the function entirely — strictly stricter. Stage 1 fix lands first, wrapper-removal lands later parallel-track |
 
 ## §10 Migration / rollout
 
