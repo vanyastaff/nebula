@@ -170,8 +170,11 @@ struct TestResource {
     last_token: Arc<Mutex<Option<String>>>,
     /// Counts `on_credential_revoke` invocations.
     revoke_count: Arc<Mutex<usize>>,
-    /// Optional refresh delay — drives the per-resource timeout test.
+    /// Optional refresh delay — drives the per-resource refresh-timeout test.
     refresh_delay: Duration,
+    /// Optional revoke delay — drives the per-resource revoke-timeout test
+    /// (Test 5b — security amendment B-2 `TimedOut` branch coverage).
+    revoke_delay: Duration,
     /// If true, `on_credential_refresh` returns `Err` deliberately.
     refresh_should_fail: bool,
     /// If true, `on_credential_revoke` returns `Err` deliberately.
@@ -190,6 +193,7 @@ impl TestResource {
             last_token: Arc::new(Mutex::new(None)),
             revoke_count: Arc::new(Mutex::new(0)),
             refresh_delay: Duration::ZERO,
+            revoke_delay: Duration::ZERO,
             refresh_should_fail: false,
             revoke_should_fail: false,
             _phantom: std::marker::PhantomData,
@@ -198,6 +202,11 @@ impl TestResource {
 
     fn with_refresh_delay(mut self, delay: Duration) -> Self {
         self.refresh_delay = delay;
+        self
+    }
+
+    fn with_revoke_delay(mut self, delay: Duration) -> Self {
+        self.revoke_delay = delay;
         self
     }
 
@@ -236,6 +245,10 @@ macro_rules! test_resource {
 
             fn with_refresh_delay(self, delay: Duration) -> Self {
                 Self(self.0.with_refresh_delay(delay))
+            }
+
+            fn with_revoke_delay(self, delay: Duration) -> Self {
+                Self(self.0.with_revoke_delay(delay))
             }
 
             fn with_refresh_failure(self) -> Self {
@@ -297,8 +310,12 @@ macro_rules! test_resource {
                 _credential_id: &CredentialId,
             ) -> impl Future<Output = Result<(), Self::Error>> + Send {
                 let count = Arc::clone(&self.0.revoke_count);
+                let delay = self.0.revoke_delay;
                 let should_fail = self.0.revoke_should_fail;
                 async move {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
                     if should_fail {
                         return Err(TestError(format!(
                             "{} revoke deliberately failed",
@@ -786,6 +803,121 @@ async fn revoke_emits_health_changed_for_failures() {
     assert_eq!(aggregate.2.ok, 1);
     assert_eq!(aggregate.2.failed, 1);
     assert_eq!(aggregate.2.timed_out, 0);
+}
+
+// ============================================================================
+// Test 5b — revoke emits HealthChanged for TIMED-OUT resources too
+// (security amendment B-2: "non-Ok outcomes emit HealthChanged{healthy:false}").
+//
+// Test 5 above only covers `RevokeOutcome::Failed`. A regression that
+// dropped the `TimedOut` arm from the emit-guard would still pass Test 5
+// but break the contract — operators relying on per-resource health
+// signals would silently miss timed-out revokes. This test pins the
+// `TimedOut` branch independently.
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoke_timeout_emits_health_changed() {
+    // Manager rotation timeout: 100ms. TestResource revoke_delay: 5s.
+    // The revoke dispatch will time out at 100ms long before the sleep
+    // completes, producing `RevokeOutcome::TimedOut { budget: 100ms }`.
+    let manager = Manager::with_config(ManagerConfig {
+        credential_rotation_timeout: Duration::from_millis(100),
+        ..Default::default()
+    });
+    let cid = CredentialId::new();
+
+    let a = TestResourceA::new().with_revoke_delay(Duration::from_secs(5));
+    let observer_a = a.clone();
+
+    manager
+        .register::<TestResourceA>(
+            a,
+            TestConfig,
+            ScopeLevel::Global,
+            pool_topology::<TestResourceA>(),
+            None,
+            None,
+            Some(cid),
+            None,
+        )
+        .expect("register succeeds");
+
+    // Subscribe BEFORE dispatch so the broadcast channel is wired.
+    let mut rx = manager.subscribe_events();
+    // Drop the `Registered` event the registration broadcast.
+    let _ = drain_events(&mut rx);
+
+    let started = Instant::now();
+    let results = manager
+        .on_credential_revoked(&cid)
+        .await
+        .expect("dispatch loop succeeds even when one resource times out");
+    let elapsed = started.elapsed();
+
+    // Sanity check: dispatch returned in ~100ms, NOT 5s. The per-resource
+    // timeout is doing its job (security amendment B-1 isolation).
+    assert!(
+        elapsed < Duration::from_millis(800),
+        "revoke dispatch should honour per-resource timeout (~100ms), but took {elapsed:?}",
+    );
+
+    assert_eq!(results.len(), 1, "one resource bound to credential");
+
+    // Outcome must be `TimedOut` (not `Failed`, not `Ok`) — the resource's
+    // 5s sleep is still running when we time out at 100ms, so the revoke
+    // hook's body never reached the counter increment.
+    match &results[0].1 {
+        nebula_resource::RevokeOutcome::TimedOut { budget } => {
+            assert_eq!(
+                *budget,
+                Duration::from_millis(100),
+                "TimedOut.budget should report the configured rotation timeout",
+            );
+        },
+        other => panic!("expected RevokeOutcome::TimedOut, got {other:?}"),
+    }
+    assert_eq!(results[0].0, TestResourceA::key());
+    // The revoke hook never reached the counter increment — it was
+    // cut off by the timeout mid-sleep.
+    assert_eq!(*observer_a.inner().revoke_count.lock().unwrap(), 0);
+
+    let events = drain_events(&mut rx);
+
+    // Security amendment B-2: HealthChanged{healthy:false} MUST fire for
+    // the TimedOut resource. Pre-fix would only fire for `Failed`; this
+    // test pins the `TimedOut` branch independently.
+    let health_events: Vec<_> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            ResourceEvent::HealthChanged { key, healthy } => Some((key.clone(), *healthy)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        health_events,
+        vec![(TestResourceA::key(), false)],
+        "B-2: HealthChanged{{healthy:false}} must fire for RevokeOutcome::TimedOut, got events: {events:?}",
+    );
+
+    // Aggregate CredentialRevoked event reflects the timeout in the
+    // outcome counters (timed_out=1, ok=0, failed=0).
+    let aggregate = events
+        .iter()
+        .find_map(|ev| match ev {
+            ResourceEvent::CredentialRevoked {
+                credential_id,
+                resources_affected,
+                outcome,
+            } => Some((*credential_id, *resources_affected, *outcome)),
+            _ => None,
+        })
+        .expect("CredentialRevoked aggregate event emitted");
+    assert_eq!(aggregate.0, cid);
+    assert_eq!(aggregate.1, 1);
+    assert_eq!(aggregate.2.timed_out, 1);
+    assert_eq!(aggregate.2.failed, 0);
+    assert_eq!(aggregate.2.ok, 0);
 }
 
 // ============================================================================
