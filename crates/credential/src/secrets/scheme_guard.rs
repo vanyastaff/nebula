@@ -30,7 +30,7 @@
 
 use std::{future::Future, marker::PhantomData, ops::Deref, pin::Pin, sync::Arc};
 
-use crate::{Credential, context::CredentialContext, error::CredentialError};
+use crate::{Credential, error::CredentialError};
 
 // ── SchemeGuard ─────────────────────────────────────────────────────────────
 
@@ -191,96 +191,9 @@ impl<C: Credential> std::fmt::Debug for SchemeFactory<C> {
     }
 }
 
-// ── OnCredentialRefresh ─────────────────────────────────────────────────────
-
-/// Refresh-notification hook for credential-bound resources.
-///
-/// Per Tech Spec §15.7 spike iter-3: when the engine refreshes a
-/// credential, it notifies bound resources by calling
-/// [`on_credential_refresh`](OnCredentialRefresh::on_credential_refresh)
-/// with a fresh [`SchemeGuard`] plus a shared-lifetime [`CredentialContext`]
-/// borrow. The shared `'a` lifetime between guard and context is the
-/// structural barrier that prevents retention — see Probe 6
-/// (`compile_fail_scheme_guard_retention.rs`).
-///
-/// # Why a parallel trait, not a method on `nebula_resource::Resource`
-///
-/// The `Resource` trait in `nebula-resource` carries 5 associated types
-/// (`Config` / `Runtime` / `Lease` / `Error` / `Auth`) and currently links
-/// to credentials via `Auth: AuthScheme`, not `Credential: Credential`.
-/// Adding a required `type Credential: Credential` would force every
-/// existing `Resource` impl (28+ test impls in `nebula-resource` alone)
-/// to either nominate a real `Credential` type or accept a
-/// no-op-credential placeholder. Default associated types are unstable
-/// on stable Rust 1.95, so the placeholder approach is closed.
-///
-/// `OnCredentialRefresh<C>` is the spec-canonical signature shape —
-/// resources that do react to credential refresh implement this trait
-/// alongside `Resource`. Resources that don't (the common case) leave it
-/// unimplemented. The trait lives in `nebula-credential` so it sees
-/// `SchemeGuard` + `CredentialContext` directly.
-///
-/// # Cancellation safety
-///
-/// Implementations MUST be cancel-safe: if the future is dropped
-/// mid-await, the wrapped scheme must remain consistent. `SchemeGuard`'s
-/// `ZeroizeOnDrop` semantics fire deterministically across the
-/// cancellation boundary, so plaintext does not survive a dropped
-/// future.
-///
-/// # Example
-///
-/// ```ignore
-/// use nebula_credential::{OnCredentialRefresh, SchemeGuard, CredentialContext};
-///
-/// struct MyPool { /* ... */ }
-///
-/// impl OnCredentialRefresh<MyOAuth2Credential> for MyPool {
-///     type Error = MyPoolError;
-///
-///     async fn on_credential_refresh<'a>(
-///         &self,
-///         new_scheme: SchemeGuard<'a, MyOAuth2Credential>,
-///         ctx: &'a CredentialContext,
-///     ) -> Result<(), Self::Error> {
-///         let _ = (new_scheme, ctx); // no retention possible
-///         Ok(())
-///     }
-/// }
-/// ```
-#[deprecated(
-    since = "0.1.0",
-    note = "Resource::on_credential_refresh subsumes this trait per ADR-0036; \
-            removal scheduled for nebula-resource П2 once Manager dispatch \
-            lands on the new method."
-)]
-pub trait OnCredentialRefresh<C: Credential>: Send + Sync {
-    /// Resource-specific error type for refresh hooks.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Called by the engine when `C` is refreshed.
-    ///
-    /// `new_scheme` and `ctx` share the lifetime `'a`. The shared
-    /// lifetime is the compile-time retention barrier — see Probe 6.
-    /// Implementations MUST NOT store either argument past this call.
-    ///
-    /// # Default
-    ///
-    /// The default body is a no-op (returns `Ok(())` after dropping
-    /// `new_scheme` and `ctx`). Per Tech Spec §15.7 lines 3422-3429:
-    /// resources that don't react to credential refresh opt out via
-    /// the default rather than implementing an empty body. The wrapped
-    /// `SchemeGuard` zeroizes deterministically when the function
-    /// returns; no retention is possible across the default path.
-    fn on_credential_refresh<'a>(
-        &'a self,
-        new_scheme: SchemeGuard<'a, C>,
-        ctx: &'a CredentialContext,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
-        async move {
-            let _ = new_scheme;
-            let _ = ctx;
-            Ok(())
-        }
-    }
-}
+// Refresh-notification hook lives on `nebula_resource::Resource` itself
+// (`Resource::on_credential_refresh`) per ADR-0036 + Tech Spec §15.4. The
+// previously-defined parallel `OnCredentialRefresh<C>` trait was a
+// transitional bridge while `Resource` still bound `Auth: AuthScheme`; the
+// П1 reshape moved the canonical hook onto `Resource`, П2 wired Manager
+// dispatch on the method, and the parallel trait was removed in П2 Task 12.
