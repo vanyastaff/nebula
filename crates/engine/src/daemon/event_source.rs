@@ -23,7 +23,7 @@ use std::{future::Future, sync::Arc};
 use nebula_action::{
     Action, ActionError, ActionMetadata, DeclaresDependencies, TriggerAction, TriggerContext,
 };
-use nebula_resource::{Resource, ResourceContext};
+use nebula_resource::{Resource, ResourceContext, error::ErrorKind as ResourceErrorKind};
 
 /// EventSource — pull-based event subscription.
 ///
@@ -227,13 +227,46 @@ where
                     match recv {
                         Ok(event) => {
                             let payload = (self.event_to_payload)(&event);
-                            if let Err(e) = ctx.emitter().emit(payload).await {
-                                tracing::warn!(error = %e, "event_source: emit failed");
+                            match ctx.emitter().emit(payload).await {
+                                Ok(_) => ctx.health().record_success(1),
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "event_source: emit failed");
+                                    ctx.health().record_error();
+                                }
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "event_source: recv failed; exiting loop");
-                            return Err(ActionError::retryable(e.to_string()));
+                            // Classify via nebula_resource::Error semantics.
+                            // Supertrait `Resource::Error: Into<crate::Error>`
+                            // (resource.rs:237) propagates the conversion.
+                            // Permanent / NotFound / Cancelled -> fatal so the
+                            // engine's daemon supervisor doesn't hot-loop into
+                            // a broken source. Retryable kinds (Transient,
+                            // Exhausted, Backpressure) keep the loop alive —
+                            // recv() blocks until the next event so there's no
+                            // backoff to apply here. A future RecvErrorPolicy
+                            // enum could add structured backoff once a real
+                            // EventSource consumer needs operator tuning.
+                            let res_err: nebula_resource::Error = e.into();
+                            ctx.health().record_error();
+                            if matches!(
+                                res_err.kind(),
+                                ResourceErrorKind::Transient
+                                    | ResourceErrorKind::Exhausted { .. }
+                                    | ResourceErrorKind::Backpressure
+                            ) {
+                                tracing::warn!(
+                                    error = %res_err,
+                                    "event_source: recv transient error; continuing",
+                                );
+                                continue;
+                            }
+                            tracing::error!(
+                                error = %res_err,
+                                kind = ?res_err.kind(),
+                                "event_source: recv permanent error; exiting",
+                            );
+                            return Err(ActionError::fatal(res_err.to_string()));
                         }
                     }
                 }
@@ -368,7 +401,7 @@ mod tests {
             |e: &u32| serde_json::json!({ "n": *e }),
         );
 
-        let ctx: TestTriggerContext = TestContextBuilder::new().build_trigger().0;
+        let (ctx, emitter, _scheduler) = TestContextBuilder::new().build_trigger();
         let cancel = ctx.cancellation().clone();
 
         // Run start() in background; cancel after a short delay.
@@ -381,8 +414,106 @@ mod tests {
             "start should return Ok on cancellation: {result:?}"
         );
 
-        // 3 events succeeded; 4th call hit pending() then was cancelled.
+        // Source-side counter: 3 events succeeded; 4th call hit pending()
+        // then was cancelled.
         assert!(emitted.load(Ordering::SeqCst) >= 3);
+
+        // Verify the spy emitter actually received the payloads —
+        // the source-side counter alone would pass even if every
+        // emit() returned Err(_) and dropped the payload.
+        let payloads = emitter.emitted();
+        assert!(
+            payloads.len() >= 3,
+            "expected >=3 payloads on the spy emitter, got {}",
+            payloads.len()
+        );
+        // First three payloads are well-formed per the closure
+        // |e: &u32| serde_json::json!({ "n": *e }).
+        assert_eq!(payloads[0], serde_json::json!({ "n": 0 }));
+        assert_eq!(payloads[1], serde_json::json!({ "n": 1 }));
+        assert_eq!(payloads[2], serde_json::json!({ "n": 2 }));
+    }
+
+    /// EventSource that fails recv() with a permanent error.
+    ///
+    /// Verifies the recv-error classification path: permanent kinds must
+    /// surface as `ActionError::fatal` so the daemon supervisor doesn't
+    /// hot-loop into a broken source.
+    #[derive(Clone)]
+    struct PermanentlyBrokenSource;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("permanent: {0}")]
+    struct PermanentError(&'static str);
+
+    impl From<PermanentError> for ResourceError {
+        fn from(e: PermanentError) -> Self {
+            ResourceError::permanent(e.to_string())
+        }
+    }
+
+    impl Resource for PermanentlyBrokenSource {
+        type Config = EmptyCfg;
+        type Runtime = ();
+        type Lease = ();
+        type Error = PermanentError;
+        type Credential = nebula_credential::NoCredential;
+
+        fn key() -> ResourceKey {
+            ResourceKey::new("event-permanently-broken").unwrap()
+        }
+
+        async fn create(
+            &self,
+            _config: &Self::Config,
+            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
+            _ctx: &ResourceContext,
+        ) -> Result<(), PermanentError> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl EventSource for PermanentlyBrokenSource {
+        type Event = u32;
+        type Subscription = ();
+
+        async fn subscribe(
+            &self,
+            _runtime: &Self::Runtime,
+            _ctx: &ResourceContext,
+        ) -> Result<Self::Subscription, PermanentError> {
+            Ok(())
+        }
+
+        async fn recv(
+            &self,
+            _subscription: &mut Self::Subscription,
+        ) -> Result<Self::Event, PermanentError> {
+            Err(PermanentError("source torn down"))
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_returns_fatal_on_permanent_recv_error() {
+        let adapter = EventSourceAdapter::new(
+            PermanentlyBrokenSource,
+            Arc::new(()),
+            make_metadata(),
+            EventSourceConfig::default(),
+            |e: &u32| serde_json::json!({ "n": *e }),
+        );
+
+        let (ctx, _emitter, _scheduler) = TestContextBuilder::new().build_trigger();
+        let result = adapter.start(&ctx).await;
+        let err = result.expect_err("permanent recv error must surface as Err");
+        assert!(
+            err.is_fatal(),
+            "permanent ResourceError must map to ActionError::fatal, got {err:?}",
+        );
     }
 
     #[tokio::test]
