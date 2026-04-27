@@ -434,9 +434,9 @@ impl Manager {
     // `RegisterOptions` parameter. Until that lands, the positional surface
     // mirrors the existing pre-Task-6 signature with two new credential
     // parameters wired through to `register_inner`.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
-        reason = "consolidation into `RegisterOptions` deferred to Task 11 (Manager file-split)"
+        reason = "consolidation into `RegisterOptions` deferred to Task 11 (Manager file-split); self-fires when arg count drops"
     )]
     pub fn register<R: Resource>(
         &self,
