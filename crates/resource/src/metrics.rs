@@ -17,7 +17,8 @@ use nebula_metrics::naming::{
     NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
     NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
-    NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS, NEBULA_RESOURCE_DESTROY_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
+    NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
     NEBULA_RESOURCE_RELEASE_TOTAL, rotation_outcome,
 };
 use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
@@ -61,6 +62,12 @@ pub struct ResourceOpsMetrics {
     /// label. Wraps the full per-dispatcher span (`SchemeFactory::acquire`
     /// + resource hook) inside the per-resource timeout budget.
     rotation_dispatch_latency: OutcomeBoundHistograms,
+    /// Counter for dispatchers skipped during fan-out because the
+    /// dispatcher's `scheme_type_id()` did not match the caller's
+    /// credential type. Unlabeled — a non-zero crossing is a register-
+    /// side bug surface and the per-resource error log carries the
+    /// triage detail.
+    credential_rotation_skipped: Counter,
 }
 
 impl ResourceOpsMetrics {
@@ -90,6 +97,8 @@ impl ResourceOpsMetrics {
                 registry,
                 NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
             ),
+            credential_rotation_skipped: registry
+                .counter(NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL),
         }
     }
 
@@ -144,6 +153,18 @@ impl ResourceOpsMetrics {
             .observe(label, elapsed_seconds);
     }
 
+    /// Records a dispatcher skipped during fan-out because its
+    /// `scheme_type_id()` did not match the caller's credential type.
+    ///
+    /// Mirrors the per-resource `tracing::error!` emitted at the same
+    /// site so operators see a metric crossing in addition to the log.
+    /// A non-zero value is a register-side bug and a real signal — pair
+    /// with the log lines to identify which `(resource_key, credential_id)`
+    /// pair drifted.
+    pub fn record_rotation_skipped(&self) {
+        self.credential_rotation_skipped.inc();
+    }
+
     /// Captures a point-in-time snapshot of all counters.
     ///
     /// Each counter is read with [`Relaxed`](std::sync::atomic::Ordering::Relaxed)
@@ -161,6 +182,7 @@ impl ResourceOpsMetrics {
             rotation_attempts: self.rotation_attempts.snapshot(),
             revoke_attempts: self.revoke_attempts.snapshot(),
             rotation_dispatch_latency_count: self.rotation_dispatch_latency.snapshot_count(),
+            credential_rotation_skipped: self.credential_rotation_skipped.get(),
         }
     }
 }
@@ -296,6 +318,10 @@ pub struct ResourceOpsSnapshot {
     /// Per-`outcome` rotation-dispatch latency observation counts.
     /// Sums and percentiles are read directly from the registry.
     pub rotation_dispatch_latency_count: OutcomeCountersSnapshot,
+    /// Total dispatchers skipped during rotation/revoke fan-out due to a
+    /// `scheme_type_id()` mismatch with the caller's credential type. A
+    /// non-zero crossing is a register-side bug.
+    pub credential_rotation_skipped: u64,
 }
 
 #[cfg(test)]
@@ -321,6 +347,19 @@ mod tests {
             snap.rotation_dispatch_latency_count,
             OutcomeCountersSnapshot::default()
         );
+        assert_eq!(snap.credential_rotation_skipped, 0);
+    }
+
+    #[test]
+    fn rotation_skipped_counter_increments() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry);
+
+        metrics.record_rotation_skipped();
+        metrics.record_rotation_skipped();
+        metrics.record_rotation_skipped();
+
+        assert_eq!(metrics.snapshot().credential_rotation_skipped, 3);
     }
 
     #[test]

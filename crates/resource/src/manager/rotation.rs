@@ -277,6 +277,12 @@ impl Manager {
                     got_scheme_type = ?d.scheme_type_id(),
                     "dispatcher scheme_type_id mismatch — skipping (register_inner bug?)",
                 );
+                // CodeRabbit 🟡 #6: also bump the skipped-dispatchers
+                // counter so the silent shrinkage of `resources_affected`
+                // is observable in metrics, not just in error logs.
+                if let Some(m) = metrics.as_ref() {
+                    m.record_rotation_skipped();
+                }
                 return None;
             }
 

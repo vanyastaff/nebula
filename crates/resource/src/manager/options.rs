@@ -98,15 +98,21 @@ pub struct ManagerConfig {
     /// (`acquire_total`, `release_total`, etc.) into the registry.
     /// When `None`, metrics are silently skipped (zero overhead).
     pub metrics_registry: Option<Arc<nebula_telemetry::metrics::MetricsRegistry>>,
-    /// Default per-resource timeout budget for credential rotation hooks
-    /// (`on_credential_refresh` / `on_credential_revoke`).
+    /// Default per-resource timeout budget for the FULL rotation dispatch.
+    ///
+    /// The budget covers `SchemeFactory::acquire` (engine-side credential
+    /// resolution that mints the per-call `SchemeGuard`) AND the resource's
+    /// `on_credential_refresh` / `on_credential_revoke` hook body — the
+    /// `tokio::time::timeout` sits OUTSIDE both, so a slow credential
+    /// resolution can consume most of the budget before the hook even
+    /// starts. Tune this with the credential-side resolution latency in
+    /// mind, not just the resource-side hook latency.
     ///
     /// Each registered resource may override this via
-    /// `RegisterOptions::credential_rotation_timeout` (Task 6). When a
-    /// rotation hook exceeds the per-resource budget the dispatcher reports
-    /// `RefreshOutcome::TimedOut` / `RevokeOutcome::TimedOut` and the
-    /// remaining sibling dispatches continue unaffected (security amendment
-    /// B-1: per-resource isolation).
+    /// `RegisterOptions::credential_rotation_timeout` (Task 6). When the
+    /// budget elapses the dispatcher reports `RefreshOutcome::TimedOut` /
+    /// `RevokeOutcome::TimedOut` and the remaining sibling dispatches
+    /// continue unaffected (security amendment B-1: per-resource isolation).
     ///
     /// Defaults to 30 seconds.
     pub credential_rotation_timeout: Duration,
@@ -147,9 +153,12 @@ pub struct RegisterOptions {
     pub credential_id: Option<CredentialId>,
     /// Per-resource override for the default credential rotation timeout.
     ///
-    /// `None` falls back to [`ManagerConfig::credential_rotation_timeout`]
-    /// (default `30s`). Only meaningful for credential-bearing resources;
-    /// ignored for `NoCredential`-bound resources.
+    /// Covers the FULL dispatch — `SchemeFactory::acquire` (engine-side
+    /// credential resolution) plus the resource's `on_credential_refresh` /
+    /// `on_credential_revoke` hook body. `None` falls back to
+    /// [`ManagerConfig::credential_rotation_timeout`] (default `30s`). Only
+    /// meaningful for credential-bearing resources; ignored for
+    /// `NoCredential`-bound resources.
     ///
     /// Set via [`RegisterOptions::with_rotation_timeout`].
     pub credential_rotation_timeout: Option<Duration>,
@@ -182,6 +191,8 @@ impl RegisterOptions {
 
     /// Overrides the default credential rotation timeout for this resource.
     ///
+    /// Covers the FULL dispatch — `SchemeFactory::acquire` plus the
+    /// resource hook (`on_credential_refresh` / `on_credential_revoke`).
     /// Falls back to [`ManagerConfig::credential_rotation_timeout`] (default
     /// `30s`) when not set. Only meaningful for credential-bearing resources.
     #[must_use]

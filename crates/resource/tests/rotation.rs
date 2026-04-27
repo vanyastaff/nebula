@@ -845,3 +845,60 @@ async fn no_credential_resource_skips_reverse_index() {
         "NoCredential resource never enters the reverse-index — got {revoke_results:?}",
     );
 }
+
+// ============================================================================
+// Test 7 — `NoCredential` resource registered WITH a credential_id (the
+// warn-and-ignore opt-out path).
+//
+// Complement to Test 6: confirms that even when the caller mistakenly
+// supplies a `credential_id` for a `NoCredential`-bound resource, the
+// register path warns and discards the id rather than wiring a dispatcher.
+// A subsequent dispatch against that id must return zero results — proving
+// the validate-then-write split (CodeRabbit 🔴 #1) preserves the existing
+// opt-out semantics.
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_credential_resource_with_credential_id_warns_and_ignores() {
+    let manager = Manager::new();
+    let cred = cred_ctx();
+    let cid = CredentialId::new();
+
+    let resource = NoCredentialResource;
+    manager
+        .register::<NoCredentialResource>(
+            resource,
+            TestConfig,
+            ScopeLevel::Global,
+            pool_topology::<NoCredentialResource>(),
+            None,
+            None,
+            // Supply a credential_id — the register path should log a warn
+            // and refuse to wire the dispatcher rather than fail.
+            Some(cid),
+            None,
+        )
+        .expect("register succeeds for NoCredential resource even when credential_id supplied");
+
+    // Dispatch refresh against the id we supplied — must still find no
+    // dispatchers because NoCredential opts out unconditionally.
+    let factory: SchemeFactory<NoCredential> = SchemeFactory::for_test_static(());
+    let refresh_results = manager
+        .on_credential_refreshed::<NoCredential>(&cid, factory, &cred)
+        .await
+        .expect("dispatch loop succeeds");
+    assert!(
+        refresh_results.is_empty(),
+        "NoCredential resource must not appear in reverse-index even when credential_id provided; got {refresh_results:?}",
+    );
+
+    // Same for revoke — the warn-and-ignore path leaves the index empty.
+    let revoke_results = manager
+        .on_credential_revoked(&cid)
+        .await
+        .expect("dispatch loop succeeds");
+    assert!(
+        revoke_results.is_empty(),
+        "NoCredential resource must not appear in reverse-index for revoke either; got {revoke_results:?}",
+    );
+}

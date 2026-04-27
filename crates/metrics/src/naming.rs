@@ -215,6 +215,22 @@ pub const NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL: &str =
 pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS: &str =
     "nebula_resource_credential_rotation_dispatch_latency_seconds";
 
+/// Counter: dispatchers skipped during fan-out because their
+/// `scheme_type_id()` did not match the caller's credential `C`.
+///
+/// Increments inside `Manager::on_credential_refreshed` /
+/// `_revoked` whenever a `filter_map` drops a dispatcher — historically a
+/// silent shrinkage of `resources_affected` that masked register-time
+/// mismatches between the dispatcher's typed scheme and the engine-side
+/// credential type. A non-zero crossing is a register-side bug and a real
+/// operator signal; pair with the per-resource error log emitted at the
+/// same site to triage which `(resource_key, credential_id)` pair drifted.
+///
+/// Unlabeled — no `outcome` / `resource_key` / `credential_id` dimensions
+/// (cardinality hygiene, mirrors the rotation-attempts pattern).
+pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL: &str =
+    "nebula_resource_credential_rotation_skipped_total";
+
 /// Outcome labels for the credential rotation dispatch counters and
 /// histogram ([`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`],
 /// [`NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL`],
@@ -431,7 +447,8 @@ mod tests {
         NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
-        NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
+        NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
         NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
@@ -439,7 +456,7 @@ mod tests {
         refresh_coord_sentinel_action, rotation_outcome,
     };
 
-    const RESOURCE_METRIC_NAMES: [&str; 19] = [
+    const RESOURCE_METRIC_NAMES: [&str; 20] = [
         NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -457,6 +474,7 @@ mod tests {
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL,
         NEBULA_RESOURCE_DESTROY_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     ];
@@ -501,7 +519,7 @@ mod tests {
             }
         }
 
-        assert_eq!(unique.len(), 19);
+        assert_eq!(unique.len(), 20);
     }
 
     #[test]
