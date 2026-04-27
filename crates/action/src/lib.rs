@@ -143,6 +143,7 @@ pub use testing::{
 };
 pub use trigger::{
     TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,
+    TriggerSource,
 };
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,

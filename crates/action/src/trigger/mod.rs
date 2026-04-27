@@ -31,6 +31,8 @@
 //! HTTP methods, queue offsets, partition ids) stay inside the family
 //! that owns them — they do NOT leak into the base trigger contract.
 
+mod source;
+
 use std::{
     any::{Any, TypeId},
     fmt,
@@ -40,6 +42,7 @@ use std::{
 };
 
 use serde_json::Value;
+pub use source::TriggerSource;
 
 use crate::{
     action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
