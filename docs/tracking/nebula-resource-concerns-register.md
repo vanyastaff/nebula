@@ -42,9 +42,9 @@
 
 | ID | Concern | Severity | Labels | Source | Status | Owner |
 |----|---------|----------|--------|--------|--------|-------|
-| R-010 | Daemon topology has no public start path (pub(crate) barrier) | 🔴 | tech-spec-material | Phase 1 §1.2 dx-tester `runtime/managed.rs:35` | Strategy §4.4: engine-fold extraction | Phase 6 Tech Spec §4 (extraction) |
-| R-011 | EventSource same orphan-surface pattern — 0 Manager-level tests | 🔴 | tech-spec-material | Phase 1 §1.6 convergent | Strategy §4.4: extract with Daemon | Phase 6 Tech Spec §4 |
-| R-012 | Daemon + EventSource out-of-canon §3.5 ("resource = pool/SDK client") | 🟠 | tech-spec-material | Phase 1 §1.6 tech-lead | Resolved by §4.4 engine-fold | Phase 6 Tech Spec §4 |
+| R-010 | Daemon topology has no public start path (pub(crate) barrier) | 🔴 | tech-spec-material | Phase 1 §1.2 dx-tester `runtime/managed.rs:35` | **landed П3** (`77a301bd` on branch); extracted to `nebula_engine::daemon` per ADR-0037 / Tech Spec §12.1-§12.2; `DaemonRegistry::{register, start_all, stop_all, shutdown}` provides public lifecycle surface | Strategy §4.4 + ADR-0037 |
+| R-011 | EventSource same orphan-surface pattern — 0 Manager-level tests | 🔴 | tech-spec-material | Phase 1 §1.6 convergent | **landed П3** (`77a301bd` on branch); EventSource trait + `EventSourceAdapter<E>: TriggerAction` in `nebula_engine::daemon::event_source` per Tech Spec §12.3; closure-based payload converter, `record_success`/`record_error` health signals, ErrorKind classification on recv path | Strategy §4.4 + ADR-0037 |
+| R-012 | Daemon + EventSource out-of-canon §3.5 ("resource = pool/SDK client") | 🟠 | tech-spec-material | Phase 1 §1.6 tech-lead | **landed П3** (`77a301bd` on branch); `nebula-resource` retains zero refs to Daemon/EventSource (4 source files deleted, 7 re-exports pruned, TopologyRuntime 7→5, TopologyTag 7→5); canon §3.5 truth restored | Strategy §4.4 + ADR-0037 |
 | R-013 | Transport topology has 0 Manager-level integration tests | 🟠 | post-cascade | Phase 1 §2.4 tech-lead | Test debt, not structural | Follow-up task after cascade |
 | R-014 | Service vs Transport differentiation thin | 🟡 | future-cascade | Phase 1 §2.4 tech-lead | Defer — separation is defensible but low-value | Future cascade trigger: evidence for simplification |
 
