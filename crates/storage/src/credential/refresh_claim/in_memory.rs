@@ -56,6 +56,28 @@ impl InMemoryRefreshClaimRepo {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Test-only: push a synthetic sentinel event with a caller-supplied
+    /// `detected_at`. Used by the in-memory smoke tests to seed
+    /// pre-prune-cutoff entries (24h-old) without manipulating the system
+    /// clock. Gated behind `#[cfg(any(test, feature = "test-util"))]` so
+    /// production builds cannot construct events out-of-band.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn push_sentinel_event_at(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+        detected_at: DateTime<Utc>,
+    ) {
+        let mut guard = self.sentinel_events.lock();
+        guard.push(SentinelEventRow {
+            credential_id: *credential_id,
+            detected_at,
+            crashed_holder: crashed_holder.clone(),
+            generation,
+        });
+    }
 }
 
 impl std::fmt::Debug for InMemoryRefreshClaimRepo {
