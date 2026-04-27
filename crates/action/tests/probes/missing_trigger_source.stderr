@@ -1,1 +1,15 @@
-TBD — populated after Task 3.2 by running `TRYBUILD=overwrite cargo test --test trigger_source_required_compile_fail`. Expected to contain "not all trait items implemented" + "missing: Source".
+warning: unused import: `IdempotencyKey`
+ --> tests/probes/missing_trigger_source.rs:5:50
+  |
+5 | use nebula_action::{ActionError, ActionMetadata, IdempotencyKey, TriggerAction};
+  |                                                  ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0046]: not all trait items implemented, missing: `Source`
+  --> tests/probes/missing_trigger_source.rs:10:1
+   |
+10 | impl TriggerAction for BadTrigger {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Source` in implementation
+   |
+   = help: implement the missing item: `type Source = /* Type */;`
