@@ -267,7 +267,7 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// `new_scheme` and `ctx` share the lifetime `'a`. The shared lifetime
     /// is the compile-time barrier preventing retention — see
-    /// [`SchemeGuard`](nebula_credential::SchemeGuard) Probe 6.
+    /// [`SchemeGuard`] Probe 6.
     /// Implementations MUST NOT store either argument past this call.
     ///
     /// Cancellation safety: implementations MUST be cancel-safe — if the
