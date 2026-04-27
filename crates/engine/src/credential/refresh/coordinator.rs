@@ -1545,23 +1545,25 @@ mod tests {
     /// in-flight refresh. Otherwise a 50ms DB hiccup amplifies into a
     /// refresh storm under storage backpressure.
     ///
-    /// Strategy: `TransientFailHeartbeatRepo` returns
-    /// `HeartbeatError::Repo(...)` on the first 2 calls, then forwards
-    /// to the in-memory backing on subsequent calls. The user closure
-    /// sleeps long enough for at least 3 heartbeat ticks. With the
-    /// fix, the budget absorbs the first 2 failures and the 3rd
-    /// succeeds (resetting the counter), so the closure returns Ok.
-    /// Without the fix, the first failure cancels.
-    #[tokio::test]
+    /// Strategy: `start_paused = true` makes the runtime drive time
+    /// deterministically — `tokio::time::sleep` and `tokio::time::interval`
+    /// auto-advance virtual time without wall-clock dependence. With
+    /// `pattern = [true, true, false]` the heartbeat fails on ticks 1
+    /// and 2 (counter → 1 → 2; below `MAX = 3`) and succeeds on tick 3
+    /// (counter → 0). The closure resolves Ok; cancel never fires.
+    /// Pre-fix (no budget), the first failure would cancel and the
+    /// closure would surface `ClaimLostMidRefresh`.
+    #[tokio::test(start_paused = true)]
     async fn heartbeat_tolerates_transient_errors_within_budget() {
         let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
-        // 2 transient failures < MAX_TRANSIENT_HEARTBEAT_FAILURES (3),
-        // so the budget is NOT exhausted and the third tick succeeds.
-        let repo: Arc<dyn RefreshClaimRepo> =
-            Arc::new(TransientFailHeartbeatRepo::new(Arc::clone(&inner), 2));
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(TransientFailHeartbeatRepo::with_pattern(
+            Arc::clone(&inner),
+            // fail, fail, succeed — counter trajectory 1, 2, 0.
+            // 2 < MAX_TRANSIENT_HEARTBEAT_FAILURES (3) so cancel does
+            // NOT fire.
+            vec![true, true, false],
+        ));
 
-        // Tight heartbeat / refresh-timeout window so multiple ticks
-        // fire inside the closure's pause.
         let cfg = RefreshCoordConfig {
             claim_ttl: Duration::from_secs(10),
             heartbeat_interval: Duration::from_millis(50),
@@ -1579,8 +1581,10 @@ mod tests {
                 &cid,
                 |_| async { true },
                 |_claim| async move {
-                    // Sleep long enough for the heartbeat to fire at
-                    // least 3 times: 50ms × 3 + slack = ~250ms.
+                    // Sleep > 3 × heartbeat_interval (150ms) so ticks 1,
+                    // 2, 3 all fire inside the closure. Under
+                    // `start_paused`, this is virtual time — no
+                    // wall-clock dependence.
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     Ok::<i32, RefreshError>(7)
                 },
@@ -1591,6 +1595,61 @@ mod tests {
             result.expect("transient heartbeat errors within budget must NOT cancel refresh"),
             7,
             "user closure must complete despite 2 transient heartbeat failures"
+        );
+    }
+
+    /// M2 wave-4 reviewer-Issue-4 — prove **reset-on-success** semantics.
+    /// The previous test fails 2 ticks then succeeds, but does not
+    /// distinguish "counter reset on success" from "counter is monotonic
+    /// up to MAX". This sibling test asserts a second burst of 2
+    /// failures AFTER an intervening success does NOT amplify into
+    /// cancellation — i.e. the counter genuinely resets to zero on
+    /// every successful heartbeat.
+    ///
+    /// Pattern: fail, fail, succeed, fail, fail, succeed.
+    /// Counter trajectory: 1, 2, 0, 1, 2, 0 — never reaches MAX = 3.
+    /// Without reset, trajectory would be 1, 2, 2, 3 → cancel on tick
+    /// 4 → closure surfaces `ClaimLostMidRefresh`.
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_resets_counter_on_success_after_partial_burst() {
+        let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(TransientFailHeartbeatRepo::with_pattern(
+            Arc::clone(&inner),
+            // fail, fail, succeed (resets), fail, fail, succeed.
+            // Without reset-on-success the second burst would push the
+            // counter to MAX and cancel.
+            vec![true, true, false, true, true, false],
+        ));
+
+        let cfg = RefreshCoordConfig {
+            claim_ttl: Duration::from_secs(10),
+            heartbeat_interval: Duration::from_millis(50),
+            refresh_timeout: Duration::from_secs(5),
+            reclaim_sweep_interval: Duration::from_secs(5),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let coord = RefreshCoordinator::new_with(repo, ReplicaId::new("reset-test"), cfg)
+            .expect("config valid");
+        let cid = CredentialId::new();
+
+        let result: Result<i32, RefreshError> = coord
+            .refresh_coalesced(
+                &cid,
+                |_| async { true },
+                |_claim| async move {
+                    // Sleep > 6 × heartbeat_interval (300ms) so all 6
+                    // ticks fire inside the closure under virtual time.
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    Ok::<i32, RefreshError>(11)
+                },
+            )
+            .await;
+
+        assert_eq!(
+            result.expect("reset-on-success must absorb a second transient burst"),
+            11,
+            "two bursts of transient failures separated by a success must NOT cancel refresh"
         );
     }
 }

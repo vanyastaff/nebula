@@ -14,10 +14,8 @@
 #![cfg(test)]
 
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
+    collections::VecDeque,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -202,24 +200,32 @@ impl RefreshClaimRepo for AlwaysFailHeartbeatRepo {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// TransientFailHeartbeatRepo — fails the first N `heartbeat` calls with
-// `HeartbeatError::Repo(RepoError::InvalidState(...))` (a non-`ClaimLost`
-// transient error), then forwards to inner. Used to prove the heartbeat
-// task absorbs transient backend noise within
-// `MAX_TRANSIENT_HEARTBEAT_FAILURES` budget instead of cancelling on the
-// first hiccup (M2 wave-4).
+// TransientFailHeartbeatRepo — programmable failure pattern for `heartbeat`.
+// Each entry in `pattern` is `true` (return `HeartbeatError::Repo(...)`,
+// the non-`ClaimLost` transient class) or `false` (forward to inner and
+// succeed). Calls past the end of the pattern forward to inner.
+//
+// Used to prove the heartbeat task:
+//  - absorbs transient backend noise within `MAX_TRANSIENT_HEARTBEAT_FAILURES` budget (M2 wave-4
+//    simple case: pattern `vec![true, true]` then succeed); and
+//  - resets the counter on every successful heartbeat (M2 wave-4 reset-on-success coverage: pattern
+//    `vec![true, true, false, true, true, false]` proves a second burst after a successful tick
+//    does NOT amplify into cancellation).
 // ──────────────────────────────────────────────────────────────────────────
 
 pub(crate) struct TransientFailHeartbeatRepo {
     pub inner: Arc<dyn RefreshClaimRepo>,
-    failures_remaining: AtomicU32,
+    pattern: Mutex<VecDeque<bool>>,
 }
 
 impl TransientFailHeartbeatRepo {
-    pub fn new(inner: Arc<dyn RefreshClaimRepo>, failures: u32) -> Self {
+    /// Programmable failure pattern. Each `true` fails this `heartbeat`
+    /// call with `HeartbeatError::Repo(...)`; each `false` forwards to
+    /// inner. Calls past the end of the pattern forward to inner.
+    pub fn with_pattern(inner: Arc<dyn RefreshClaimRepo>, pattern: Vec<bool>) -> Self {
         Self {
             inner,
-            failures_remaining: AtomicU32::new(failures),
+            pattern: Mutex::new(pattern.into()),
         }
     }
 }
@@ -236,15 +242,14 @@ impl RefreshClaimRepo for TransientFailHeartbeatRepo {
     }
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
-        // Decrement only if there is budget remaining; on zero we
-        // forward to inner. `fetch_update` returns Ok(prev) on success
-        // so we get the pre-decrement value back.
-        let prev = self
-            .failures_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
-                if v == 0 { None } else { Some(v - 1) }
-            });
-        if prev.is_ok() {
+        let should_fail = {
+            let mut pattern = self
+                .pattern
+                .lock()
+                .expect("test fixture pattern mutex never poisoned");
+            pattern.pop_front().unwrap_or(false)
+        };
+        if should_fail {
             return Err(HeartbeatError::Repo(RepoError::InvalidState(
                 "simulated transient heartbeat failure".into(),
             )));
