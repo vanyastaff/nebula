@@ -29,6 +29,7 @@ use nebula_storage::credential::{
     AuditSink, ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, RefreshClaim,
     RefreshClaimRepo, ReplicaId, RepoError,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::{
@@ -103,6 +104,18 @@ pub enum ConfigError {
     /// `reclaim_sweep_interval` exceeds `claim_ttl`.
     #[error("reclaim_sweep_interval must be ≤ claim_ttl")]
     ReclaimTooSlow,
+    /// A computed Duration overflowed during invariant validation. The
+    /// surfaced field name lets operators spot which knob to bound (e.g.
+    /// `heartbeat_interval × 3` or `refresh_timeout + 2 × heartbeat_interval`).
+    /// `validate()` MUST surface bad config as a typed error rather than
+    /// panicking inside the very fn meant to detect bad config.
+    #[error("config field {field} overflowed Duration during invariant check (value: {value:?})")]
+    Overflow {
+        /// Logical name of the operand that overflowed.
+        field: &'static str,
+        /// The pre-overflow operand; useful in operator messages.
+        value: Duration,
+    },
 }
 
 impl RefreshCoordConfig {
@@ -111,12 +124,40 @@ impl RefreshCoordConfig {
     /// # Errors
     ///
     /// Returns `ConfigError::*` whose variant names which invariant the
-    /// configuration violates.
+    /// configuration violates. Returns `ConfigError::Overflow` if any of
+    /// the intermediate `Duration` arithmetic (e.g. `heartbeat_interval × 3`,
+    /// `refresh_timeout + 2 × heartbeat_interval`) overflows `Duration::MAX`
+    /// — the canonical fix is to lower the offending knob.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.heartbeat_interval * 3 > self.claim_ttl {
+        // `Duration::checked_mul` and `checked_add` return `None` on
+        // overflow rather than panicking — surface that as a typed
+        // `ConfigError::Overflow` so a user-supplied
+        // `Duration::MAX / 2`-ish value doesn't blow up the config gate.
+        let hb_x3 = self
+            .heartbeat_interval
+            .checked_mul(3)
+            .ok_or(ConfigError::Overflow {
+                field: "heartbeat_interval * 3",
+                value: self.heartbeat_interval,
+            })?;
+        if hb_x3 > self.claim_ttl {
             return Err(ConfigError::HeartbeatTooSlow);
         }
-        if self.refresh_timeout + self.heartbeat_interval * 2 > self.claim_ttl {
+        let hb_x2 = self
+            .heartbeat_interval
+            .checked_mul(2)
+            .ok_or(ConfigError::Overflow {
+                field: "heartbeat_interval * 2",
+                value: self.heartbeat_interval,
+            })?;
+        let hold_budget = self
+            .refresh_timeout
+            .checked_add(hb_x2)
+            .ok_or(ConfigError::Overflow {
+                field: "refresh_timeout + heartbeat_interval * 2",
+                value: self.refresh_timeout,
+            })?;
+        if hold_budget > self.claim_ttl {
             return Err(ConfigError::RefreshTimeoutTooLong);
         }
         if self.reclaim_sweep_interval > self.claim_ttl {
@@ -158,6 +199,19 @@ pub enum RefreshError {
     /// Heartbeat task failure — claim lost or repo error.
     #[error("heartbeat error: {0}")]
     Heartbeat(#[from] HeartbeatError),
+    /// Background heartbeat task failed mid-refresh and could not extend
+    /// the L2 claim. The user closure was aborted before issuing the IdP
+    /// POST so a stale `refresh_token_v1` cannot be sent against an
+    /// already-rotated row. Caller routes through `record_failure` and
+    /// retries with a fresh L2 acquire.
+    ///
+    /// Distinct from `Heartbeat(...)`: that variant is the surface for
+    /// the heartbeat error at construction; this variant signals the
+    /// claim was lost while a refresh closure was already running.
+    #[error(
+        "L2 claim lost during refresh — heartbeat task failed before the IdP POST could complete"
+    )]
+    ClaimLostMidRefresh,
     /// Configuration invariant violated at construction time.
     #[error("config invalid: {0}")]
     Config(#[from] ConfigError),
@@ -503,8 +557,15 @@ impl RefreshCoordinator {
         );
         let hold_start = Instant::now();
 
+        // Cancellation token shared between heartbeat task and the user
+        // closure. The heartbeat task fires `cancel()` on Err so
+        // `do_refresh` can abort before the IdP POST runs against an
+        // already-rotated row (n8n #13088 lineage).
+        let cancel = CancellationToken::new();
+        let hb_cancel = cancel.clone();
+
         // Heartbeat task in background.
-        let hb_task = self.spawn_heartbeat(claim.token.clone());
+        let hb_task = self.spawn_heartbeat(claim.token.clone(), hb_cancel, *credential_id);
 
         // Panic-safety guard (review C1, sub-spec §3.4). Fires ONLY on
         // panic unwind — `guard_on_unwind` does not fire on normal exit.
@@ -538,11 +599,20 @@ impl RefreshCoordinator {
         // Run user's refresh closure under `refresh_timeout` per §3.5.
         // The timeout is shorter than the claim TTL by construction, so
         // the heartbeat keeps the L2 row alive while the closure runs.
+        // Wrap in `select!` over `cancel.cancelled()` so a heartbeat
+        // failure mid-refresh aborts the closure BEFORE it issues the
+        // IdP POST — sub-spec §3.4 invariant.
         let timeout = self.config.refresh_timeout;
-        let result = tokio::time::timeout(timeout, do_refresh(claim))
-            .await
-            .map_err(|_elapsed| RefreshError::Timeout(timeout))
-            .and_then(std::convert::identity);
+        let do_refresh_fut = do_refresh(claim);
+        let result = tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(RefreshError::ClaimLostMidRefresh),
+            outcome = tokio::time::timeout(timeout, do_refresh_fut) => {
+                outcome
+                    .map_err(|_elapsed| RefreshError::Timeout(timeout))
+                    .and_then(std::convert::identity)
+            }
+        };
 
         // Normal-exit release (review I1, sub-spec §3.4). We DO NOT
         // propagate release errors — propagating them with `?` would
@@ -553,6 +623,10 @@ impl RefreshCoordinator {
         // instead. The unwind guard above does NOT fire on normal exit
         // (per `guard_on_unwind` semantics), so this synchronous
         // release runs once, deterministically.
+        //
+        // Cancel the heartbeat token before aborting so the task exits
+        // through its `cancelled()` arm rather than racing the abort.
+        cancel.cancel();
         hb_task.abort();
         // Sub-spec §6 — observe the hold duration on the normal-exit
         // release path. Symmetric with the unwind guard above.
@@ -669,10 +743,24 @@ impl RefreshCoordinator {
     /// `try_claim`, so the §3.5 invariants
     /// (`heartbeat_interval × 3 < claim_ttl`,
     /// `reclaim_sweep_interval ≤ claim_ttl`) hold across heartbeats.
-    fn spawn_heartbeat(&self, token: ClaimToken) -> tokio::task::JoinHandle<()> {
+    ///
+    /// On heartbeat failure (e.g. the underlying row was reclaimed by
+    /// the sweep, or a transient repo error past retry budget), the
+    /// task fires `cancel.cancel()` on its caller's
+    /// [`CancellationToken`] so the concurrent `do_refresh` future can
+    /// abort BEFORE issuing the IdP POST. Without this signal the
+    /// closure would press on with a stale `refresh_token_v1` and
+    /// invalidate the just-rotated row (n8n #13088 lineage).
+    fn spawn_heartbeat(
+        &self,
+        token: ClaimToken,
+        cancel: CancellationToken,
+        credential_id: CredentialId,
+    ) -> tokio::task::JoinHandle<()> {
         let repo = Arc::clone(&self.repo);
         let interval = self.config.heartbeat_interval;
         let ttl = self.config.claim_ttl;
+        let replica_id = self.replica_id.as_str().to_string();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             // Avoid heartbeat amplification under storage backpressure:
@@ -683,13 +771,32 @@ impl RefreshCoordinator {
             // acquired and already has a fresh `expires_at`.
             ticker.tick().await;
             loop {
-                ticker.tick().await;
-                if let Err(e) = repo.heartbeat(&token, ttl).await {
-                    tracing::warn!(
-                        ?e,
-                        "credential refresh heartbeat failed; coordinator will release on next loop"
-                    );
-                    break;
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        // Caller wound up its refresh — heartbeat exits
+                        // cleanly, no signal to fire.
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        if let Err(error) = repo.heartbeat(&token, ttl).await {
+                            // ERROR-level: heartbeat loss is operationally
+                            // important. Promoting from WARN keeps it
+                            // distinguishable from transient retry noise on
+                            // dashboards filtering on level.
+                            tracing::error!(
+                                ?error,
+                                %credential_id,
+                                replica_id = %replica_id,
+                                "credential refresh heartbeat failed; cancelling concurrent do_refresh \
+                                 before it issues the IdP POST"
+                            );
+                            // Fire cancel BEFORE breaking so the user closure
+                            // sees `cancelled()` and aborts the IdP call.
+                            cancel.cancel();
+                            break;
+                        }
+                    }
                 }
             }
         })
@@ -1184,6 +1291,270 @@ mod tests {
         assert!(
             metrics_handle.claims_contended.get() >= 1,
             "at least one Contended attempt must be counted"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Wave-3 review fixes
+    // ──────────────────────────────────────────────────────────────────
+
+    /// `validate()` MUST surface a typed `Overflow` error rather than
+    /// panicking when intermediate `Duration` arithmetic overflows.
+    /// Previously `heartbeat_interval * 3` panicked inside `validate()`
+    /// for pathologically-large user inputs — defeating the very
+    /// purpose of the validation step.
+    #[test]
+    fn validate_returns_overflow_instead_of_panicking() {
+        // `Duration::MAX / 2` overflows `* 3` and `* 2` cleanly.
+        let pathological = Duration::MAX / 2;
+        let cfg = RefreshCoordConfig {
+            claim_ttl: Duration::from_secs(30),
+            heartbeat_interval: pathological,
+            refresh_timeout: Duration::from_secs(8),
+            reclaim_sweep_interval: Duration::from_secs(30),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("validate must reject pathologically-large heartbeat_interval");
+        assert!(
+            matches!(err, ConfigError::Overflow { .. }),
+            "expected Overflow, got {err:?}"
+        );
+    }
+
+    /// `validate()` overflow path also covers the
+    /// `refresh_timeout + heartbeat_interval × 2` operand. Pick a small
+    /// `heartbeat_interval` that fits `× 3` and `× 2` cleanly, then a
+    /// huge `refresh_timeout` whose addition overflows.
+    #[test]
+    fn validate_returns_overflow_for_hold_budget_addition() {
+        let cfg = RefreshCoordConfig {
+            // Make claim_ttl Duration::MAX so heartbeat × 3 ≤ ttl
+            // (otherwise we'd hit HeartbeatTooSlow before the addition
+            // is even attempted).
+            claim_ttl: Duration::MAX,
+            heartbeat_interval: Duration::from_secs(1),
+            // refresh_timeout near MAX so refresh_timeout +
+            // (heartbeat_interval × 2) overflows.
+            refresh_timeout: Duration::MAX
+                .checked_sub(Duration::from_secs(1))
+                .expect("MAX - 1s does not underflow"),
+            reclaim_sweep_interval: Duration::from_secs(30),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let err = cfg
+            .validate()
+            .expect_err("validate must reject overflowing hold-budget addition");
+        assert!(
+            matches!(err, ConfigError::Overflow { .. }),
+            "expected Overflow, got {err:?}"
+        );
+    }
+
+    /// m2 — wave-3: contention exhaustion path. Use a repo wrapper
+    /// that always returns `Contended` from `try_claim`. The
+    /// `existing_expires_at` is set just past `now` so the per-attempt
+    /// backoff is short (the helper sleeps until that timestamp,
+    /// capped at 5s). After `MAX_ATTEMPTS = 5` the coordinator must
+    /// surface `ContentionExhausted` and increment `claims_exhausted`.
+    #[tokio::test]
+    async fn refresh_coalesced_returns_contention_exhausted_after_max_attempts() {
+        use nebula_metrics::MetricsRegistry;
+
+        /// Repo wrapper that returns `Contended` from `try_claim`
+        /// every time, with a short `existing_expires_at` so the
+        /// backoff loop completes quickly.
+        struct AlwaysContendedRepo;
+
+        #[async_trait::async_trait]
+        impl RefreshClaimRepo for AlwaysContendedRepo {
+            async fn try_claim(
+                &self,
+                _credential_id: &CredentialId,
+                _holder: &ReplicaId,
+                _ttl: Duration,
+            ) -> Result<ClaimAttempt, RepoError> {
+                Ok(ClaimAttempt::Contended {
+                    existing_expires_at: chrono::Utc::now() + chrono::Duration::milliseconds(50),
+                })
+            }
+            async fn heartbeat(
+                &self,
+                _token: &ClaimToken,
+                _ttl: Duration,
+            ) -> Result<(), HeartbeatError> {
+                Ok(())
+            }
+            async fn release(&self, _token: ClaimToken) -> Result<(), RepoError> {
+                Ok(())
+            }
+            async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RepoError> {
+                Ok(())
+            }
+            async fn reclaim_stuck(
+                &self,
+            ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
+                Ok(Vec::new())
+            }
+            async fn record_sentinel_event(
+                &self,
+                _credential_id: &CredentialId,
+                _crashed_holder: &ReplicaId,
+                _generation: u64,
+            ) -> Result<(), RepoError> {
+                Ok(())
+            }
+            async fn count_sentinel_events_in_window(
+                &self,
+                _credential_id: &CredentialId,
+                _window_start: chrono::DateTime<chrono::Utc>,
+            ) -> Result<u32, RepoError> {
+                Ok(0)
+            }
+        }
+
+        let registry = MetricsRegistry::new();
+        let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(AlwaysContendedRepo);
+
+        let coord = RefreshCoordinator::new_with(
+            Arc::clone(&repo),
+            ReplicaId::new("exhausted-test"),
+            RefreshCoordConfig::default(),
+        )
+        .expect("default config valid")
+        .with_metrics(metrics_handle.clone());
+
+        // Predicate always says "still needs refresh" so we never
+        // short-circuit through the L2 coalesce path.
+        let cid = CredentialId::new();
+        let outcome: Result<i32, RefreshError> = coord
+            .refresh_coalesced(&cid, |_| async { true }, |_| async { Ok(0) })
+            .await;
+        assert!(
+            matches!(outcome, Err(RefreshError::ContentionExhausted)),
+            "expected ContentionExhausted; got {outcome:?}"
+        );
+        assert_eq!(
+            metrics_handle.claims_exhausted.get(),
+            1,
+            "claims_exhausted must tick exactly once on retry exhaustion"
+        );
+        // Each retry's `try_claim` returned Contended, so we expect
+        // MAX_ATTEMPTS contended ticks.
+        assert_eq!(
+            metrics_handle.claims_contended.get(),
+            5,
+            "every retry must contribute to claims_contended"
+        );
+    }
+
+    /// M1 — wave-3: heartbeat task fails mid-refresh, cancellation
+    /// token fires, user closure aborts with `ClaimLostMidRefresh`
+    /// before its IdP POST equivalent runs.
+    ///
+    /// Strategy: build a repo that returns `HeartbeatError::ClaimLost`
+    /// on every `heartbeat` call. The user closure sleeps long enough
+    /// for the heartbeat ticker to fire at least once, then would have
+    /// returned `Ok(...)` if not cancelled.
+    #[tokio::test]
+    async fn heartbeat_failure_cancels_concurrent_do_refresh() {
+        struct AlwaysFailHeartbeatRepo {
+            inner: Arc<dyn RefreshClaimRepo>,
+        }
+
+        #[async_trait::async_trait]
+        impl RefreshClaimRepo for AlwaysFailHeartbeatRepo {
+            async fn try_claim(
+                &self,
+                credential_id: &CredentialId,
+                holder: &ReplicaId,
+                ttl: Duration,
+            ) -> Result<ClaimAttempt, RepoError> {
+                self.inner.try_claim(credential_id, holder, ttl).await
+            }
+
+            async fn heartbeat(
+                &self,
+                _token: &ClaimToken,
+                _ttl: Duration,
+            ) -> Result<(), HeartbeatError> {
+                Err(HeartbeatError::ClaimLost)
+            }
+
+            async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
+                self.inner.release(token).await
+            }
+
+            async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
+                self.inner.mark_sentinel(token).await
+            }
+
+            async fn reclaim_stuck(
+                &self,
+            ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
+                self.inner.reclaim_stuck().await
+            }
+
+            async fn record_sentinel_event(
+                &self,
+                credential_id: &CredentialId,
+                crashed_holder: &ReplicaId,
+                generation: u64,
+            ) -> Result<(), RepoError> {
+                self.inner
+                    .record_sentinel_event(credential_id, crashed_holder, generation)
+                    .await
+            }
+
+            async fn count_sentinel_events_in_window(
+                &self,
+                credential_id: &CredentialId,
+                window_start: chrono::DateTime<chrono::Utc>,
+            ) -> Result<u32, RepoError> {
+                self.inner
+                    .count_sentinel_events_in_window(credential_id, window_start)
+                    .await
+            }
+        }
+
+        let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(AlwaysFailHeartbeatRepo { inner });
+
+        // Tight heartbeat / refresh-timeout window so the heartbeat
+        // tick fires inside the closure's pause without flapping.
+        let cfg = RefreshCoordConfig {
+            claim_ttl: Duration::from_secs(10),
+            heartbeat_interval: Duration::from_millis(50),
+            refresh_timeout: Duration::from_secs(5),
+            reclaim_sweep_interval: Duration::from_secs(5),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let coord = RefreshCoordinator::new_with(repo, ReplicaId::new("hb-test"), cfg)
+            .expect("config valid");
+        let cid = CredentialId::new();
+
+        let result: Result<i32, RefreshError> = coord
+            .refresh_coalesced(
+                &cid,
+                |_| async { true },
+                |_claim| async move {
+                    // Sleep longer than the heartbeat tick so the
+                    // heartbeat fails and cancellation reaches us
+                    // before we return Ok.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    Ok::<i32, RefreshError>(123)
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(RefreshError::ClaimLostMidRefresh)),
+            "expected ClaimLostMidRefresh after heartbeat failure; got {result:?}"
         );
     }
 }
