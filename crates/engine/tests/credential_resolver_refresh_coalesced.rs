@@ -124,6 +124,7 @@ async fn typed_id_routes_through_refresh_coalesced() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         expires_at: Some(expires_at),
+        reauth_required: false,
         metadata: Default::default(),
     };
     store.put(cred, PutMode::CreateOnly).await.unwrap();

@@ -198,6 +198,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // `resolve_with_refresh` used; if the credential is no longer
         // expired, return `false` so the coordinator surfaces
         // `CoalescedByOtherReplica`.
+        //
+        // Sub-spec §3.6 ProviderRejected gap (review feedback I1): if
+        // the contender's refresh returned `ReauthRequired` it persisted
+        // `reauth_required = true` on the row before releasing the L2
+        // claim. Re-running the IdP closure here would produce another
+        // `invalid_grant` rejection — `O(replicas)` rate-limit / IP-ban
+        // pressure on the IdP. Short-circuit to `false` so this caller
+        // also surfaces `CoalescedByOtherReplica` and the application
+        // layer routes the credential to interactive reauth instead.
         let store_for_recheck = Arc::clone(&self.store);
         let recheck_credential_id = credential_id.to_string();
         let needs_refresh_after_backoff = move |_id: &CredentialId| {
@@ -218,6 +227,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         return true;
                     },
                 };
+                if stored.reauth_required {
+                    tracing::debug!(
+                        credential_id,
+                        "post-backoff state recheck: reauth_required=true on stored \
+                         credential — short-circuiting to CoalescedByOtherReplica \
+                         (sub-spec §3.6 / I1)"
+                    );
+                    return false;
+                }
                 let state: C::State = match serde_json::from_slice(&stored.data) {
                     Ok(s) => s,
                     Err(e) => {
@@ -472,6 +490,12 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         data: data.clone(),
                         updated_at: chrono::Utc::now(),
                         expires_at: state.expires_at(),
+                        // Clear the reauth flag on success — idempotent
+                        // when already false, recovers from a stale
+                        // `true` left over by a previous ReauthRequired
+                        // outcome that the application has since
+                        // re-authorized (sub-spec §3.6 / I1).
+                        reauth_required: false,
                         ..stored.clone()
                     };
                     match self
@@ -515,10 +539,67 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     actual: current_version,
                 }))
             },
-            RefreshOutcome::ReauthRequired(reason) => Err(ResolveError::ReauthRequired {
-                credential_id: credential_id.to_string(),
-                reason,
-            }),
+            RefreshOutcome::ReauthRequired(reason) => {
+                // Persist `reauth_required = true` on the credential row
+                // BEFORE returning the typed error (sub-spec §3.6 / I1).
+                // Cross-replica readers consult this flag in their
+                // post-backoff state-recheck predicate; without the
+                // persisted bit, every replica would re-run the IdP
+                // closure and produce another invalid_grant rejection.
+                //
+                // CAS retry loop mirrors the Refreshed-path write so we
+                // do not clobber a concurrent successful refresh that
+                // bumped the version while we were waiting for the IdP
+                // POST. CAS conflict here means another replica already
+                // committed something — retry with the new version so
+                // our reauth flag is layered on the latest row.
+                let mut current_version = stored.version;
+                for _attempt in 0..3 {
+                    let updated = StoredCredential {
+                        updated_at: chrono::Utc::now(),
+                        reauth_required: true,
+                        ..stored.clone()
+                    };
+                    match self
+                        .store
+                        .put(
+                            updated,
+                            PutMode::CompareAndSwap {
+                                expected_version: current_version,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(_) => break,
+                        Err(StoreError::VersionConflict { actual, .. }) => {
+                            tracing::warn!(
+                                credential_id,
+                                expected = current_version,
+                                actual,
+                                "CAS conflict while persisting reauth_required=true; retrying"
+                            );
+                            current_version = actual;
+                            continue;
+                        },
+                        Err(e) => {
+                            // Best-effort persist: log but still surface
+                            // the typed error to the caller. The next
+                            // refresh attempt will hit the same provider
+                            // rejection and retry the persist.
+                            tracing::warn!(
+                                credential_id,
+                                ?e,
+                                "failed to persist reauth_required=true; surfacing ReauthRequired anyway"
+                            );
+                            break;
+                        },
+                    }
+                }
+                Err(ResolveError::ReauthRequired {
+                    credential_id: credential_id.to_string(),
+                    reason,
+                })
+            },
             // CoalescedByOtherReplica is success — another replica
             // refreshed while we were waiting on L2. Caller re-reads
             // state from the store via the parent dispatch path. This
