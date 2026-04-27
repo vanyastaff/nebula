@@ -50,6 +50,7 @@ pub mod registry;
 pub mod release_queue;
 pub mod reload;
 pub mod resource;
+mod rotation;
 pub mod runtime;
 pub mod state;
 pub mod topology;
