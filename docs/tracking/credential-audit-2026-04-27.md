@@ -1,7 +1,7 @@
 # `nebula-credential` — реестр проблем (snapshot 2026-04-27)
 
 **Snapshot commit:** `f308ded4` (П2 — refresh coordination L2, n8n #13088 close)
-**Scope:** `crates/nebula-credential` + связи в `nebula-engine::credential`, `nebula-storage::credential`, `nebula-resource`, `nebula-action`
+**Scope:** `crates/credential` (package: `nebula-credential`) + связи в `crates/engine` (`nebula-engine::credential`), `crates/storage` (`nebula-storage::credential`), `crates/resource`, `crates/action`
 **Audit composition:** security-lead + rust-senior + 2× Explore agents (architecture, tests/docs)
 
 > Это **снимок-аудит на дату**, не living register. Living tracking — `docs/tracking/credential-concerns-register.md`. Этот файл — точка отсчёта; используется для приоритизации и delta-проверки через ~2 недели.
@@ -33,19 +33,19 @@
 
 | ID | Sev | Место | Суть |
 |---|---|---|---|
-| **SEC-01** | H | [engine/src/credential/rotation/token_refresh.rs:109](../../crates/nebula-engine/src/credential/rotation/token_refresh.rs) | Error-path читает body OAuth-IdP без лимита. Скомпрометированный/MITM-IdP → 10 GB error body → OOM воркера. |
-| **SEC-02** | H | [token_refresh.rs:170-173](../../crates/nebula-engine/src/credential/rotation/token_refresh.rs) | `error_uri` от IdP в error summary без валидации (схема, длина, control-chars) → log/SIEM injection, фишинг через operator-facing сообщения. |
-| **SEC-03** | H | [credential/secrets/crypto.rs:218-266](../../crates/nebula-credential/src/secrets/crypto.rs) + [storage/credential/layer/encryption.rs:208-251](../../crates/nebula-storage/src/credential/layer/encryption.rs) | AAD = `credential_id` без `key_id`. Owner storage row может переписать `envelope.key_id` на legacy → расшифровка через legacy-ключ → audit-trail integrity gap. |
-| **SEC-04** | H | [crypto.rs:136-142](../../crates/nebula-credential/src/secrets/crypto.rs) | `fresh_nonce()` doc заявляет «OS CSPRNG», код использует `rand::rng()` (`ThreadRng`). Под `RUSTSEC-2026-0097` потенциальная nonce-collision = catastrophic AES-GCM. |
-| **GAP-01** | H | [resource/manager.rs:1380](../../crates/nebula-resource/src/manager.rs) | `Manager::on_credential_refreshed` заканчивается `todo!()`. Engine эмитит `CredentialEvent::Refreshed`, никто не подписан. Нет happens-before между store commit и pool swap. |
+| **SEC-01** | H | [engine/src/credential/rotation/token_refresh.rs:109](../../crates/engine/src/credential/rotation/token_refresh.rs) | Error-path читает body OAuth-IdP без лимита. Скомпрометированный/MITM-IdP → 10 GB error body → OOM воркера. |
+| **SEC-02** | H | [token_refresh.rs:170-173](../../crates/engine/src/credential/rotation/token_refresh.rs) | `error_uri` от IdP в error summary без валидации (схема, длина, control-chars) → log/SIEM injection, фишинг через operator-facing сообщения. |
+| **SEC-03** | H | [credential/secrets/crypto.rs:218-266](../../crates/credential/src/secrets/crypto.rs) + [storage/credential/layer/encryption.rs:208-251](../../crates/storage/src/credential/layer/encryption.rs) | AAD = `credential_id` без `key_id`. Owner storage row может переписать `envelope.key_id` на legacy → расшифровка через legacy-ключ → audit-trail integrity gap. |
+| **SEC-04** | H | [crypto.rs:136-142](../../crates/credential/src/secrets/crypto.rs) | `fresh_nonce()` doc заявляет «OS CSPRNG», код использует `rand::rng()` (`ThreadRng`). Под `RUSTSEC-2026-0097` потенциальная nonce-collision = catastrophic AES-GCM. |
+| **GAP-01** | H | [resource/manager.rs:1380](../../crates/resource/src/manager.rs) | `Manager::on_credential_refreshed` заканчивается `todo!()`. Engine эмитит `CredentialEvent::Refreshed`, никто не подписан. Нет happens-before между store commit и pool swap. |
 | **TEST-01** | H | — | Нет end-to-end теста: register → resolve → refresh → revoke → cleanup. |
 | **TEST-02** | H | — | `credential_refresh_drives_per_resource_swap` (упомянут в tech-spec) — не реализован. Multi-replica chaos из MATURITY.md тоже не в репо. |
-| **ARCH-01** | H | [credential/lib.rs:74-82](../../crates/nebula-credential/src/lib.rs) | `accessor`, `context`, `handle`, `metadata`, `record` — приватные `mod`, но типы re-export'ятся. Несогласованность с `pub mod contract/scheme/secrets`. |
-| **ARCH-02** | H | [credential/Cargo.toml:83-89](../../crates/nebula-credential/Cargo.toml) + [lib.rs:152,176](../../crates/nebula-credential/src/lib.rs) | `test-util` feature раскрывает `InMemoryStore`/`InMemoryPendingStore` как public API. Параллельно тот же `InMemoryStore` живёт в `nebula-storage`. Нарушение ADR-0032 §3. |
+| **ARCH-01** | H | [credential/lib.rs:74-82](../../crates/credential/src/lib.rs) | `accessor`, `context`, `handle`, `metadata`, `record` — приватные `mod`, но типы re-export'ятся. Несогласованность с `pub mod contract/scheme/secrets`. |
+| **ARCH-02** | H | [credential/Cargo.toml:83-89](../../crates/credential/Cargo.toml) + [lib.rs:152,176](../../crates/credential/src/lib.rs) | `test-util` feature раскрывает `InMemoryStore`/`InMemoryPendingStore` как public API. Параллельно тот же `InMemoryStore` живёт в `nebula-storage`. Нарушение ADR-0032 §3. |
 | **ARCH-03** | H | — | Test-shim duplication: store-traits живут в credential, имплементации — копии в credential и storage. Любое изменение контракта надо синхронить в двух местах. |
-| **PERF-01** | H | [coordinator.rs:539,565](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) + [l1.rs:67](../../crates/nebula-engine/src/credential/refresh/l1.rs) | L1 keyed `String`. `refresh_coalesced` делает `to_string()` + `clone()` — 2× alloc per refresh. Hot-path под любым herd-сценарием. |
-| **PERF-02** | H | [resolver.rs:139,189,211,341,398,416,472,476,483,537,654](../../crates/nebula-engine/src/credential/resolver.rs) | 12× `credential_id.to_string()` per resolve, 3 на success-path. |
-| **IDIOM-01** | H | [credential/provider.rs:107](../../crates/nebula-credential/src/provider.rs) | Последний `#[async_trait]` в credential-surface. Несогласованность — все остальные контракты на RPITIT. |
+| **PERF-01** | H | [coordinator.rs:539,565](../../crates/engine/src/credential/refresh/coordinator.rs) + [l1.rs:67](../../crates/engine/src/credential/refresh/l1.rs) | L1 keyed `String`. `refresh_coalesced` делает `to_string()` + `clone()` — 2× alloc per refresh. Hot-path под любым herd-сценарием. |
+| **PERF-02** | H | [resolver.rs:139,189,211,341,398,416,472,476,483,537,654](../../crates/engine/src/credential/resolver.rs) | 12× `credential_id.to_string()` per resolve, 3 на success-path. |
+| **IDIOM-01** | H | [credential/provider.rs:107](../../crates/credential/src/provider.rs) | Последний `#[async_trait]` в credential-surface. Несогласованность — все остальные контракты на RPITIT. |
 
 ---
 
@@ -57,15 +57,15 @@
 
 | ID | Место | Суть |
 |---|---|---|
-| **SEC-05** | [secrets/guard.rs:64-71](../../crates/nebula-credential/src/secrets/guard.rs) | `CredentialGuard: Clone` — клон создаёт *второй* zeroize-point. Конфликт с N10 invariant («plaintext не пересекает spawn_blocking»). |
-| **SEC-06** | [secrets/scheme_guard.rs:64](../../crates/nebula-credential/src/secrets/scheme_guard.rs) | `SchemeGuard` не `!Send`. Lifetime-pin защищает retention, но не thread-handoff. Plaintext может попасть на blocking-pool thread. |
-| **SEC-07** | [secret_string.rs:97-104](../../crates/nebula-credential/src/secrets/secret_string.rs) | Deserialize отбрасывает только точное `"[REDACTED]"`. ` [REDACTED]`, `[redacted]`, `[REDACTED]\n` пройдут. |
-| **SEC-08** | [serde_secret.rs:12-14](../../crates/nebula-credential/src/secrets/serde_secret.rs) | `pub fn serialize(&SecretString, S)` экспортирована на module level. Любой downstream может слить plaintext в произвольный sink. Должна быть `pub(crate)`. |
-| **SEC-09** | [oauth2.rs:125-128](../../crates/nebula-credential/src/credentials/oauth2.rs) | `bearer_header()` делает `format!("Bearer {}", token.expose_secret())` — промежуточная `String` не `Zeroizing`. |
-| **SEC-10** | [token_refresh.rs:62-72](../../crates/nebula-engine/src/credential/rotation/token_refresh.rs) | `expose_secret().to_owned()` создаёт unwrapped `String` *до* `Zeroizing::new(...)` обёртки. Паттерн ×3 (refresh_tok / client_id / client_secret). |
-| **SEC-11** | [crypto.rs:158-177](../../crates/nebula-credential/src/secrets/crypto.rs) | Bare `encrypt()` (без AAD, без key_id) до сих пор `pub`. Storage его reject'нет, но плагины и manual callers могут продуцировать envelopes вне AAD-mandatory contract. |
-| **SEC-12** | [storage/credential/key_provider.rs:200-242](../../crates/nebula-storage/src/credential/key_provider.rs) | Нет precedence-check между ENV и FILE provider'ами. Operator может сконфигурить оба. |
-| **SEC-13** | [credential/error.rs:286-298](../../crates/nebula-credential/src/error.rs) | `CredentialError::refresh(.., msg: impl Display)` тянет произвольный `msg.to_string()`. IdP часто эхо'ят части `refresh_token` в `error_description` (особенно `invalid_grant`). |
+| **SEC-05** | [secrets/guard.rs:64-71](../../crates/credential/src/secrets/guard.rs) | `CredentialGuard: Clone` — клон создаёт *второй* zeroize-point. Конфликт с N10 invariant («plaintext не пересекает spawn_blocking»). |
+| **SEC-06** | [secrets/scheme_guard.rs:64](../../crates/credential/src/secrets/scheme_guard.rs) | `SchemeGuard` не `!Send`. Lifetime-pin защищает retention, но не thread-handoff. Plaintext может попасть на blocking-pool thread. |
+| **SEC-07** | [secret_string.rs:97-104](../../crates/credential/src/secrets/secret_string.rs) | Deserialize отбрасывает только точное `"[REDACTED]"`. ` [REDACTED]`, `[redacted]`, `[REDACTED]\n` пройдут. |
+| **SEC-08** | [serde_secret.rs:12-14](../../crates/credential/src/secrets/serde_secret.rs) | `pub fn serialize(&SecretString, S)` экспортирована на module level. Любой downstream может слить plaintext в произвольный sink. Должна быть `pub(crate)`. |
+| **SEC-09** | [oauth2.rs:125-128](../../crates/credential/src/credentials/oauth2.rs) | `bearer_header()` делает `format!("Bearer {}", token.expose_secret())` — промежуточная `String` не `Zeroizing`. |
+| **SEC-10** | [token_refresh.rs:62-72](../../crates/engine/src/credential/rotation/token_refresh.rs) | `expose_secret().to_owned()` создаёт unwrapped `String` *до* `Zeroizing::new(...)` обёртки. Паттерн ×3 (refresh_tok / client_id / client_secret). |
+| **SEC-11** | [crypto.rs:158-177](../../crates/credential/src/secrets/crypto.rs) | Bare `encrypt()` (без AAD, без key_id) до сих пор `pub`. Storage его reject'нет, но плагины и manual callers могут продуцировать envelopes вне AAD-mandatory contract. |
+| **SEC-12** | [storage/credential/key_provider.rs:200-242](../../crates/storage/src/credential/key_provider.rs) | Нет precedence-check между ENV и FILE provider'ами. Operator может сконфигурить оба. |
+| **SEC-13** | [credential/error.rs:286-298](../../crates/credential/src/error.rs) | `CredentialError::refresh(.., msg: impl Display)` тянет произвольный `msg.to_string()`. IdP часто эхо'ят части `refresh_token` в `error_description` (особенно `invalid_grant`). |
 
 ### Low
 
@@ -87,12 +87,12 @@
 
 | ID | Место | Суть |
 |---|---|---|
-| **ARCH-04** | [handle.rs:64](../../crates/nebula-credential/src/handle.rs) | `#[allow(dead_code)]` на `pub(crate) fn replace()` со ссылкой «consumer (RefreshCoordinator) lands in task 1.5». Скрывает потенциальные ошибки. |
-| **ARCH-05** | [lib.rs:114-118](../../crates/nebula-credential/src/lib.rs) | `pub use contract::resolve;` — backward-compat re-export для proc-macro и downstream. Замораживает API shape. Нужен `#[deprecated]` + миграция. |
-| **ARCH-06** | [error.rs](../../crates/nebula-credential/src/error.rs) (518 строк) | `CredentialError`, `CryptoError`, `ValidationError`, `RefreshErrorKind`, `ResolutionStage`, `RetryAdvice` + conversions в одном файле. Разбить на `error/{crypto,validation,refresh,resolution}.rs`. |
-| **ARCH-07** | [Cargo.toml:21-31](../../crates/nebula-credential/Cargo.toml) | `tokio` features `["time", "sync", "macros", "rt"]` тянутся в core. `macros`/`rt` — для `#[tokio::test]` (133 sites), не production. |
-| **ARCH-08** | [lib.rs:208-236](../../crates/nebula-credential/src/lib.rs) | `prelude` включает 16 типов из ~80+ public, без явного критерия. |
-| **ARCH-09** | [contract/resolve.rs](../../crates/nebula-credential/src/contract/resolve.rs) (274 строки) | Module-level docs не объясняют workflow `InteractionRequest → Engine → Action → continue_resolve`. |
+| **ARCH-04** | [handle.rs:64](../../crates/credential/src/handle.rs) | `#[allow(dead_code)]` на `pub(crate) fn replace()` со ссылкой «consumer (RefreshCoordinator) lands in task 1.5». Скрывает потенциальные ошибки. |
+| **ARCH-05** | [lib.rs:114-118](../../crates/credential/src/lib.rs) | `pub use contract::resolve;` — backward-compat re-export для proc-macro и downstream. Замораживает API shape. Нужен `#[deprecated]` + миграция. |
+| **ARCH-06** | [error.rs](../../crates/credential/src/error.rs) (518 строк) | `CredentialError`, `CryptoError`, `ValidationError`, `RefreshErrorKind`, `ResolutionStage`, `RetryAdvice` + conversions в одном файле. Разбить на `error/{crypto,validation,refresh,resolution}.rs`. |
+| **ARCH-07** | [Cargo.toml:21-31](../../crates/credential/Cargo.toml) | `tokio` features `["time", "sync", "macros", "rt"]` тянутся в core. `macros`/`rt` — для `#[tokio::test]` (133 sites), не production. |
+| **ARCH-08** | [lib.rs:208-236](../../crates/credential/src/lib.rs) | `prelude` включает 16 типов из ~80+ public, без явного критерия. |
+| **ARCH-09** | [contract/resolve.rs](../../crates/credential/src/contract/resolve.rs) (274 строки) | Module-level docs не объясняют workflow `InteractionRequest → Engine → Action → continue_resolve`. |
 
 ### Low
 
@@ -107,11 +107,11 @@
 
 | ID | Где | Что |
 |---|---|---|
-| **GAP-01** | [resource/manager.rs:1380](../../crates/nebula-resource/src/manager.rs) | `OnCredentialRefresh` fan-out — `todo!()`. Trait и reverse-index готовы, dispatch заблокирован RPITIT-vs-dyn выбором: (a) per-`C` mono-tables vs (b) parallel `DynOnCredentialRefresh + BoxFuture`. |
-| **GAP-02** | rotation FSM | Compile-fail probes только для capability-discipline. Нет compile-fail для FSM transitions (`Pending → Validating` без `Creating` — не блокируется типом, только runtime-check в [state.rs:44-67](../../crates/nebula-credential/src/rotation/state.rs)). |
+| **GAP-01** | [resource/manager.rs:1380](../../crates/resource/src/manager.rs) | `OnCredentialRefresh` fan-out — `todo!()`. Trait и reverse-index готовы, dispatch заблокирован RPITIT-vs-dyn выбором: (a) per-`C` mono-tables vs (b) parallel `DynOnCredentialRefresh + BoxFuture`. |
+| **GAP-02** | rotation FSM | Compile-fail probes только для capability-discipline. Нет compile-fail для FSM transitions (`Pending → Validating` без `Creating` — не блокируется типом, только runtime-check в [state.rs:44-67](../../crates/credential/src/rotation/state.rs)). |
 | **GAP-03** | rotation feature-gate | Контрактные типы (`policy.rs`, `state.rs`, `error.rs`) **не** под `#[cfg(feature = "rotation")]`, всегда компилируются. Только orchestration в engine за gate. Семантика «contract free, orchestration opt-in» не задокументирована. |
 | **GAP-04** | rotation cleanup_old | После grace-period должен дёрнуться `cleanup_old()`. Кто его дёргает в engine — не очевидно. Нет integration-теста полного `Pending → ... → Committed → GraceExpired → Cleanup`. |
-| **GAP-05** | sentinel threshold | N=3 events в 1h → `ReauthRequired(SentinelRepeated)` ([resolve.rs:200-205](../../crates/nebula-engine/src/credential/refresh/resolve.rs)). Threshold захардкожен, не настраивается per-credential. |
+| **GAP-05** | sentinel threshold | N=3 events в 1h → `ReauthRequired(SentinelRepeated)` ([resolve.rs:200-205](../../crates/engine/src/credential/refresh/resolve.rs)). Threshold захардкожен, не настраивается per-credential. |
 
 ---
 
@@ -173,36 +173,36 @@
 
 | ID | Sev | Место | Суть | Фикс |
 |---|---|---|---|---|
-| **PERF-01** | H | [coordinator.rs:539,565](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) + [l1.rs:67](../../crates/nebula-engine/src/credential/refresh/l1.rs) | L1 keyed `String`. `to_string()` + `clone()` — 2× alloc per refresh. Hot-path. | `HashMap<Arc<str>, _>` (или `HashMap<CredentialId, _>`); `Arc::clone` в scopeguard. |
-| **PERF-02** | H | [resolver.rs:139,189,211,341,398,416,472,476,483,537,654](../../crates/nebula-engine/src/credential/resolver.rs) | 12× `credential_id.to_string()` per resolve, 3 на success-path. | `let cred_id: Arc<str> = Arc::from(credential_id);` и `Arc::clone` в замыкания. |
-| **PERF-03** | M | [coordinator.rs:846](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) | `replica_id.as_str().to_string()` per `spawn_heartbeat`. | `Arc<str>` рядом с `replica_id`. |
-| **PERF-04** | M | [crypto.rs:208-213,302-313](../../crates/nebula-credential/src/secrets/crypto.rs) | `decrypt` делает `ciphertext.clone()` + `extend_from_slice(&tag)`. Alloc + memcpy на каждый decrypt. | Переключить на `decrypt_in_place_detached(nonce, aad, &mut buf, tag_array)`. |
-| **PERF-05** | M | [resolver.rs:439-461](../../crates/nebula-engine/src/credential/resolver.rs) (rotation feature) | 2× JSON serde round-trip per OAuth2 refresh: `C::State` → `Value` → `OAuth2State` → mutate → `Value` → `C::State`. | `(state as &mut dyn Any).downcast_mut::<OAuth2State>()` или вытащить в trait-hook `Refreshable::refresh_via_engine_http`. |
-| **PERF-06** | M | [oauth2.rs:395-404](../../crates/nebula-credential/src/credentials/oauth2.rs) | `OAuth2Credential::project` deep-clone'ит `Vec<String>` scopes на каждый resolve. Doc обещает «synchronous, pure» — implies cheap. | `scopes: Arc<[String]>`. `project` становится `Arc::clone`, true O(1). |
-| **PERF-07** | L | [coordinator.rs:633,705](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) | Двойной abort: scopeguard + явный `hb_task.abort()` на success-path. Гонка с self-cancel-arm. | Убрать abort_handle capture; полагаться на `cancel.cancel()` + `select!`. |
-| **PERF-08** | L | [registry.rs:22-26,80-88](../../crates/nebula-engine/src/credential/registry.rs) | `Arc<dyn Fn>` на append-only registry, который и так в `Arc<StateProjectionRegistry>`. Лишний atomic refcount per dispatch. | `Box<dyn Fn>` — outer Arc уже даёт sharing. |
-| **PERF-09** | L | [crypto.rs:42-58](../../crates/nebula-credential/src/secrets/crypto.rs) | `derive_from_password` (Argon2id 19 MiB / 2 iters, 100–200 ms) на calling thread. Сейчас только из storage setup. | `tokio::task::spawn_blocking` или sibling `derive_from_password_async`. |
+| **PERF-01** | H | [coordinator.rs:539,565](../../crates/engine/src/credential/refresh/coordinator.rs) + [l1.rs:67](../../crates/engine/src/credential/refresh/l1.rs) | L1 keyed `String`. `to_string()` + `clone()` — 2× alloc per refresh. Hot-path. | `HashMap<Arc<str>, _>` (или `HashMap<CredentialId, _>`); `Arc::clone` в scopeguard. |
+| **PERF-02** | H | [resolver.rs:139,189,211,341,398,416,472,476,483,537,654](../../crates/engine/src/credential/resolver.rs) | 12× `credential_id.to_string()` per resolve, 3 на success-path. | `let cred_id: Arc<str> = Arc::from(credential_id);` и `Arc::clone` в замыкания. |
+| **PERF-03** | M | [coordinator.rs:846](../../crates/engine/src/credential/refresh/coordinator.rs) | `replica_id.as_str().to_string()` per `spawn_heartbeat`. | `Arc<str>` рядом с `replica_id`. |
+| **PERF-04** | M | [crypto.rs:208-213,302-313](../../crates/credential/src/secrets/crypto.rs) | `decrypt` делает `ciphertext.clone()` + `extend_from_slice(&tag)`. Alloc + memcpy на каждый decrypt. | Переключить на `decrypt_in_place_detached(nonce, aad, &mut buf, tag_array)`. |
+| **PERF-05** | M | [resolver.rs:439-461](../../crates/engine/src/credential/resolver.rs) (rotation feature) | 2× JSON serde round-trip per OAuth2 refresh: `C::State` → `Value` → `OAuth2State` → mutate → `Value` → `C::State`. | `(state as &mut dyn Any).downcast_mut::<OAuth2State>()` или вытащить в trait-hook `Refreshable::refresh_via_engine_http`. |
+| **PERF-06** | M | [oauth2.rs:395-404](../../crates/credential/src/credentials/oauth2.rs) | `OAuth2Credential::project` deep-clone'ит `Vec<String>` scopes на каждый resolve. Doc обещает «synchronous, pure» — implies cheap. | `scopes: Arc<[String]>`. `project` становится `Arc::clone`, true O(1). |
+| **PERF-07** | L | [coordinator.rs:633,705](../../crates/engine/src/credential/refresh/coordinator.rs) | Двойной abort: scopeguard + явный `hb_task.abort()` на success-path. Гонка с self-cancel-arm. | Убрать abort_handle capture; полагаться на `cancel.cancel()` + `select!`. |
+| **PERF-08** | L | [registry.rs:22-26,80-88](../../crates/engine/src/credential/registry.rs) | `Arc<dyn Fn>` на append-only registry, который и так в `Arc<StateProjectionRegistry>`. Лишний atomic refcount per dispatch. | `Box<dyn Fn>` — outer Arc уже даёт sharing. |
+| **PERF-09** | L | [crypto.rs:42-58](../../crates/credential/src/secrets/crypto.rs) | `derive_from_password` (Argon2id 19 MiB / 2 iters, 100–200 ms) на calling thread. Сейчас только из storage setup. | `tokio::task::spawn_blocking` или sibling `derive_from_password_async`. |
 
 ### VII.B Rust-идиомы 1.95+ (IDIOM)
 
 | ID | Sev | Место | Суть | Фикс |
 |---|---|---|---|---|
-| **IDIOM-01** | H | [credential/provider.rs:107](../../crates/nebula-credential/src/provider.rs) | Последний `#[async_trait]` в credential-surface. Все остальные контракты на RPITIT. `ExternalProvider` dyn-dispatched (`Box<dyn>`). | `#[trait_variant::make(Send)]` или manual: `async fn` для импла + `fn resolve_dyn(...) -> Pin<Box<dyn Future + Send + '_>>` для object-safe. |
-| **IDIOM-02** | M | [accessor.rs:14-39,106-131,165-192](../../crates/nebula-credential/src/accessor.rs) | `BoxFuture<'a, T>` + `Box::pin(async {})` повсюду. `CredentialAccessor` живёт в `nebula-core`, dyn-dispatch (`Arc<dyn>`) блокирует RPITIT. | Local edit не решит — флаг для **architect** на редизайн `nebula-core` accessor trait. |
-| **IDIOM-03** | M | [error.rs:126,134,146](../../crates/nebula-credential/src/error.rs) | `Box<dyn Error + Send + 'static>` на 3 вариантах (`RefreshFailed`, `RevokeFailed`, `CompositionFailed`). Antipattern в 1.95+ + **отсутствует `Sync`**. | Закрытые enum'ы `RefreshFailureCause` etc.; либо минимум `+ Sync`. |
-| **IDIOM-04** | M | [store_memory.rs:30](../../crates/nebula-credential/src/store_memory.rs) + [pending_store_memory.rs:52](../../crates/nebula-credential/src/pending_store_memory.rs) | `tokio::sync::RwLock` на test-only stores с zero `.await` под локом. Async-aware overhead зря. | `parking_lot::RwLock` (sync). 5–10× быстрее. |
-| **IDIOM-05** | M | [oauth2.rs:395-404](../../crates/nebula-credential/src/credentials/oauth2.rs) | Дублирует PERF-06 + over-promising в [contract/credential.rs:151-155](../../crates/nebula-credential/src/contract/credential.rs) («synchronous, pure»). | Чинить через PERF-06 fix или ослабить doc на «synchronous; SHOULD be O(1)». |
-| **IDIOM-06** | L | [coordinator.rs:740-741](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) | `const MAX_ATTEMPTS: usize = 5` function-local. Chaos-тесты не могут override без recompile. | `RefreshCoordConfig.l2_max_attempts` с default 5 + `validate() >= 1`. |
-| **IDIOM-07** | L | [coordinator.rs:683](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) | `.and_then(std::convert::identity)` для flatten `Result<Result<_,E>, E>`. | `.flatten()` (стабильно с 1.66+). |
-| **IDIOM-08** | L | [oauth2.rs:392](../../crates/nebula-credential/src/credentials/oauth2.rs) | `.expect("oauth2 metadata is valid")` на static-shape construction. | Если `CredentialMetadataBuilder` можно сделать `const fn` — panic превратится в compile error. |
-| **IDIOM-09** | L | [record.rs:211](../../crates/nebula-credential/src/record.rs) | `std::thread::sleep(Duration::from_millis(10))` в sync-тесте — flaky на Windows под contended scheduler. | `let original = chrono::Utc::now() - Duration::from_millis(1)` без sleep. |
-| **IDIOM-10** | L | [l1.rs:189](../../crates/nebula-engine/src/credential/refresh/l1.rs) | `HashMap::new()` (SipHash) на hot-path lookup. Registry уже доказал `AHashMap` ~3× быстрее. | `AHashMap<Arc<str>, _>` — комбинируется с PERF-01. |
+| **IDIOM-01** | H | [credential/provider.rs:107](../../crates/credential/src/provider.rs) | Последний `#[async_trait]` в credential-surface. Все остальные контракты на RPITIT. `ExternalProvider` dyn-dispatched (`Box<dyn>`). | `#[trait_variant::make(Send)]` или manual: `async fn` для импла + `fn resolve_dyn(...) -> Pin<Box<dyn Future + Send + '_>>` для object-safe. |
+| **IDIOM-02** | M | [accessor.rs:14-39,106-131,165-192](../../crates/credential/src/accessor.rs) | `BoxFuture<'a, T>` + `Box::pin(async {})` повсюду. `CredentialAccessor` живёт в `nebula-core`, dyn-dispatch (`Arc<dyn>`) блокирует RPITIT. | Local edit не решит — флаг для **architect** на редизайн `nebula-core` accessor trait. |
+| **IDIOM-03** | M | [error.rs:126,134,146](../../crates/credential/src/error.rs) | `Box<dyn Error + Send + 'static>` на 3 вариантах (`RefreshFailed`, `RevokeFailed`, `CompositionFailed`). Antipattern в 1.95+ + **отсутствует `Sync`**. | Закрытые enum'ы `RefreshFailureCause` etc.; либо минимум `+ Sync`. |
+| **IDIOM-04** | M | [store_memory.rs:30](../../crates/credential/src/store_memory.rs) + [pending_store_memory.rs:52](../../crates/credential/src/pending_store_memory.rs) | `tokio::sync::RwLock` на test-only stores с zero `.await` под локом. Async-aware overhead зря. | `parking_lot::RwLock` (sync). 5–10× быстрее. |
+| **IDIOM-05** | M | [oauth2.rs:395-404](../../crates/credential/src/credentials/oauth2.rs) | Дублирует PERF-06 + over-promising в [contract/credential.rs:151-155](../../crates/credential/src/contract/credential.rs) («synchronous, pure»). | Чинить через PERF-06 fix или ослабить doc на «synchronous; SHOULD be O(1)». |
+| **IDIOM-06** | L | [coordinator.rs:740-741](../../crates/engine/src/credential/refresh/coordinator.rs) | `const MAX_ATTEMPTS: usize = 5` function-local. Chaos-тесты не могут override без recompile. | `RefreshCoordConfig.l2_max_attempts` с default 5 + `validate() >= 1`. |
+| **IDIOM-07** | L | [coordinator.rs:683](../../crates/engine/src/credential/refresh/coordinator.rs) | `.and_then(std::convert::identity)` для flatten `Result<Result<_,E>, E>`. | `.flatten()` (стабильно с 1.66+). |
+| **IDIOM-08** | L | [oauth2.rs:392](../../crates/credential/src/credentials/oauth2.rs) | `.expect("oauth2 metadata is valid")` на static-shape construction. | Если `CredentialMetadataBuilder` можно сделать `const fn` — panic превратится в compile error. |
+| **IDIOM-09** | L | [record.rs:211](../../crates/credential/src/record.rs) | `std::thread::sleep(Duration::from_millis(10))` в sync-тесте — flaky на Windows под contended scheduler. | `let original = chrono::Utc::now() - Duration::from_millis(1)` без sleep. |
+| **IDIOM-10** | L | [l1.rs:189](../../crates/engine/src/credential/refresh/l1.rs) | `HashMap::new()` (SipHash) на hot-path lookup. Registry уже доказал `AHashMap` ~3× быстрее. | `AHashMap<Arc<str>, _>` — комбинируется с PERF-01. |
 
 ### VII.C Перекрытия — где один фикс закрывает несколько issue
 
 | Перекрытие | Заметка |
 |---|---|
-| **PERF-04 + SEC-04** | `decrypt_in_place_detached` (PERF-04) + `OsRng` для nonce (SEC-04) — оба в [crypto.rs](../../crates/nebula-credential/src/secrets/crypto.rs); один PR на crypto-cleanup. |
+| **PERF-04 + SEC-04** | `decrypt_in_place_detached` (PERF-04) + `OsRng` для nonce (SEC-04) — оба в [crypto.rs](../../crates/credential/src/secrets/crypto.rs); один PR на crypto-cleanup. |
 | **PERF-06 = IDIOM-05** | Один и тот же site — `oauth2.rs:395-404`. Чинить через `Arc<[String]>`, не через doc-патч. |
 | **IDIOM-03 + ARCH-06** | Box-dyn-error + 518-line `error.rs` — рефакторинг error-модуля решает оба сразу. |
 | **IDIOM-04 + ARCH-02/ARCH-03** | Test-shim `RwLock` + дублирование между credential/storage — общий рефакторинг shim-стратегии. |
@@ -234,11 +234,11 @@
 17. Layered architecture в `storage/src/credential/`: `key_provider/layer/memory/pending/backup/refresh_claim` — каждый модуль одна ответственность.
 18. `engine/src/credential/mod.rs` следует ADR-0030 shape: 26 строк, всё на месте.
 19. `contract/` иерархия в credential — каждый capability в отдельном файле, `mod.rs` чисто re-export, без логики.
-20. **Biased select** в [coordinator.rs:660-680](../../crates/nebula-engine/src/credential/refresh/coordinator.rs) с 10-строчным комментарием-обоснованием (n8n #13088 lineage прямо у строк).
-21. **Waiter-under-lock** в [l1.rs:44-49,235-248](../../crates/nebula-engine/src/credential/refresh/l1.rs): `senders: Mutex<Vec<oneshot::Sender>>` внутри entry под outer map lock. Lost-wakeup race (#268) закрыт by construction. Регрессия `waiter_registered_under_lock_is_never_missed`.
-22. **`ArcSwap` + Clone-independence** в [handle.rs:26-67](../../crates/nebula-credential/src/handle.rs). `Clone` создаёт *независимый* `ArcSwap` — клонирование никогда не пересекает refresh-visibility. Тест `clone_creates_independent_handle`.
-23. **First-wins fail-closed** в [contract/registry.rs:88,131-167](../../crates/nebula-credential/src/contract/registry.rs): `AHashMap<Arc<str>, _>` zero-alloc lookup через `Borrow<str>`, operator-actionable `RegisterError::DuplicateKey`. Append-only invariant в rustdoc оправдывает lock-free hot path.
-24. **NIST-sourced nonce design** в [crypto.rs:126-142](../../crates/nebula-credential/src/secrets/crypto.rs): 6 строк кода + 10 строк citation-grade rationale (NIST SP 800-38D §8.2.2). _Внимание:_ doc заявляет «OS CSPRNG», код использует `ThreadRng` — см. SEC-04.
+20. **Biased select** в [coordinator.rs:660-680](../../crates/engine/src/credential/refresh/coordinator.rs) с 10-строчным комментарием-обоснованием (n8n #13088 lineage прямо у строк).
+21. **Waiter-under-lock** в [l1.rs:44-49,235-248](../../crates/engine/src/credential/refresh/l1.rs): `senders: Mutex<Vec<oneshot::Sender>>` внутри entry под outer map lock. Lost-wakeup race (#268) закрыт by construction. Регрессия `waiter_registered_under_lock_is_never_missed`.
+22. **`ArcSwap` + Clone-independence** в [handle.rs:26-67](../../crates/credential/src/handle.rs). `Clone` создаёт *независимый* `ArcSwap` — клонирование никогда не пересекает refresh-visibility. Тест `clone_creates_independent_handle`.
+23. **First-wins fail-closed** в [contract/registry.rs:88,131-167](../../crates/credential/src/contract/registry.rs): `AHashMap<Arc<str>, _>` zero-alloc lookup через `Borrow<str>`, operator-actionable `RegisterError::DuplicateKey`. Append-only invariant в rustdoc оправдывает lock-free hot path.
+24. **NIST-sourced nonce design** в [crypto.rs:126-142](../../crates/credential/src/secrets/crypto.rs): 6 строк кода + 10 строк citation-grade rationale (NIST SP 800-38D §8.2.2). _Внимание:_ doc заявляет «OS CSPRNG», код использует `ThreadRng` — см. SEC-04.
 
 ---
 
@@ -308,5 +308,4 @@ ARCH-01..03 можно идти параллельно с любой из нед
 
 GAP-01..05 — synthesized из контекста двух предыдущих исследований этой сессии (refresh fan-out + rotation feature-gate).
 
-Memory:
-- `.claude/agent-memory-local/security-lead/project_credential_audit_2026-04-27.md`
+Agent-local working notes were used during the audit session, but they are not committed to this repository.
