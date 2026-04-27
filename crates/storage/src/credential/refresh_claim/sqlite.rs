@@ -3,10 +3,22 @@
 //! Single-replica desktop mode + multi-process tests. CAS via
 //! `INSERT ... ON CONFLICT DO UPDATE WHERE` to mirror Postgres
 //! `INSERT ... ON CONFLICT ... WHERE` pattern.
+//!
+//! # Timestamp encoding
+//!
+//! Timestamp columns (`acquired_at`, `expires_at`, `detected_at`) are
+//! stored as `INTEGER` milliseconds-since-UNIX-epoch, not RFC-3339 text.
+//! Lexicographic comparison of `chrono::DateTime::to_rfc3339()` output is
+//! fragile: the fractional-second suffix is conditional (only emitted when
+//! non-zero), and the timezone form can vary (`+00:00` vs `Z`) across
+//! chrono versions or mixed inserts. Integer ordering is unambiguous for
+//! the `expires_at < now` predicate used by `try_claim`, `heartbeat`, and
+//! `reclaim_stuck`. Postgres uses native `TIMESTAMPTZ`, which is also
+//! naturally typed.
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use nebula_core::CredentialId;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -36,9 +48,15 @@ fn parse_credential_id(s: &str) -> Result<CredentialId, RepoError> {
         .map_err(|e| RepoError::InvalidState(format!("bad credential_id `{s}`: {e}")))
 }
 
-fn parse_iso(s: &str) -> Result<DateTime<Utc>, RepoError> {
-    s.parse::<DateTime<Utc>>()
-        .map_err(|e| RepoError::InvalidState(format!("bad timestamp `{s}`: {e}")))
+/// Convert a millisecond-since-epoch column back to a `DateTime<Utc>`.
+///
+/// SQLite stores timestamps as `INTEGER` per migration 0022/0023; this is the
+/// inverse of `DateTime::timestamp_millis()`. An out-of-range value indicates
+/// table corruption (we never write such values), surfaced as `InvalidState`.
+fn millis_to_utc(ms: i64) -> Result<DateTime<Utc>, RepoError> {
+    Utc.timestamp_millis_opt(ms)
+        .single()
+        .ok_or_else(|| RepoError::InvalidState(format!("timestamp millis out of range: {ms}")))
 }
 
 #[async_trait::async_trait]
@@ -56,8 +74,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
                 .map_err(|e| RepoError::InvalidState(format!("invalid ttl: {e}")))?;
         let cid_str = credential_id.to_string();
         let holder_str = holder.as_str();
-        let now_iso = now.to_rfc3339();
-        let exp_iso = new_expires.to_rfc3339();
+        let now_ms = now.timestamp_millis();
+        let exp_ms = new_expires.timestamp_millis();
         let claim_id_str = new_claim_id.to_string();
 
         // Atomic CAS via UPSERT with conditional UPDATE clause. Mirrors the
@@ -69,7 +87,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         // RETURNING. Lose path: the WHERE clause filtered the UPDATE, no
         // row is returned, and we fetch the existing row's `expires_at` for
         // the caller's backoff hint.
-        let row: Option<(String, i64, String, String)> = sqlx::query_as(
+        let row: Option<(String, i64, i64, i64)> = sqlx::query_as(
             "INSERT INTO credential_refresh_claims \
              (credential_id, claim_id, generation, holder_replica_id, \
               acquired_at, expires_at, sentinel) \
@@ -87,14 +105,14 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(&cid_str)
         .bind(&claim_id_str)
         .bind(holder_str)
-        .bind(&now_iso)
-        .bind(&exp_iso)
+        .bind(now_ms)
+        .bind(exp_ms)
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some((claim_id_str, generation, acquired_at_str, expires_at_str)) = row {
-            let acquired_at = parse_iso(&acquired_at_str)?;
-            let expires_at = parse_iso(&expires_at_str)?;
+        if let Some((claim_id_str, generation, acquired_ms, expires_ms)) = row {
+            let acquired_at = millis_to_utc(acquired_ms)?;
+            let expires_at = millis_to_utc(expires_ms)?;
             let claim_id = claim_id_str
                 .parse::<Uuid>()
                 .map_err(|e| RepoError::InvalidState(format!("bad claim_id: {e}")))?;
@@ -115,7 +133,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         // `Contended { existing_expires_at: now }`: the caller backs off the
         // standard jitter delay and retries. Returning `InvalidState` here
         // would surface a transient race as a hard error.
-        let existing: Option<(String,)> = sqlx::query_as(
+        let existing: Option<(i64,)> = sqlx::query_as(
             "SELECT expires_at FROM credential_refresh_claims WHERE credential_id = ?1",
         )
         .bind(&cid_str)
@@ -123,8 +141,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .await?;
 
         match existing {
-            Some((exp_str,)) => Ok(ClaimAttempt::Contended {
-                existing_expires_at: parse_iso(&exp_str)?,
+            Some((exp_ms,)) => Ok(ClaimAttempt::Contended {
+                existing_expires_at: millis_to_utc(exp_ms)?,
             }),
             None => Ok(ClaimAttempt::Contended {
                 existing_expires_at: now,
@@ -134,12 +152,12 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
 
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
         let now = Utc::now();
-        let now_iso = now.to_rfc3339();
-        let extension = (now
+        let now_ms = now.timestamp_millis();
+        let extension_ms = (now
             + chrono::Duration::from_std(ttl).map_err(|e| {
                 HeartbeatError::Repo(RepoError::InvalidState(format!("invalid ttl: {e}")))
             })?)
-        .to_rfc3339();
+        .timestamp_millis();
         let claim_id_str = token.claim_id.to_string();
 
         let rows = sqlx::query(
@@ -147,10 +165,10 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
              SET expires_at = ?1 \
              WHERE claim_id = ?2 AND generation = ?3 AND expires_at > ?4",
         )
-        .bind(&extension)
+        .bind(extension_ms)
         .bind(&claim_id_str)
         .bind(token.generation as i64)
-        .bind(&now_iso)
+        .bind(now_ms)
         .execute(&self.pool)
         .await
         .map_err(RepoError::from)?
@@ -191,7 +209,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
 
     async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError> {
         let now = Utc::now();
-        let now_iso = now.to_rfc3339();
+        let now_ms = now.timestamp_millis();
 
         // Atomic reclaim via `DELETE ... RETURNING` (SQLite 3.35+, same
         // version that enables UPSERT RETURNING in `try_claim`). Two
@@ -204,7 +222,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
              WHERE expires_at < ?1 \
              RETURNING credential_id, holder_replica_id, generation, sentinel",
         )
-        .bind(&now_iso)
+        .bind(now_ms)
         .fetch_all(&self.pool)
         .await?;
 
@@ -232,14 +250,14 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         generation: u64,
     ) -> Result<(), RepoError> {
         let cid_str = credential_id.to_string();
-        let now_iso = Utc::now().to_rfc3339();
+        let now_ms = Utc::now().timestamp_millis();
         sqlx::query(
             "INSERT INTO credential_sentinel_events \
              (credential_id, detected_at, crashed_holder, generation) \
              VALUES (?1, ?2, ?3, ?4)",
         )
         .bind(&cid_str)
-        .bind(&now_iso)
+        .bind(now_ms)
         .bind(crashed_holder.as_str())
         .bind(generation as i64)
         .execute(&self.pool)
@@ -253,13 +271,13 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         window_start: DateTime<Utc>,
     ) -> Result<u32, RepoError> {
         let cid_str = credential_id.to_string();
-        let window_iso = window_start.to_rfc3339();
+        let window_ms = window_start.timestamp_millis();
         let (count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM credential_sentinel_events \
              WHERE credential_id = ?1 AND detected_at > ?2",
         )
         .bind(&cid_str)
-        .bind(&window_iso)
+        .bind(window_ms)
         .fetch_one(&self.pool)
         .await?;
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
