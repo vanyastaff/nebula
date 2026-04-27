@@ -72,7 +72,6 @@ pub(crate) struct TypedDispatcher<R: Resource> {
 }
 
 impl<R: Resource> TypedDispatcher<R> {
-    #[expect(dead_code, reason = "called by register_inner in Task 3")]
     pub(crate) fn new(
         managed: Arc<ManagedResource<R>>,
         timeout_override: Option<Duration>,

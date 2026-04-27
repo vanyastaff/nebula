@@ -259,8 +259,16 @@ pub struct Manager {
     /// false → true by the winning caller; losers return
     /// [`ShutdownError::AlreadyShuttingDown`].
     shutting_down: AtomicBool,
-    /// Reverse index: credential_id → resource keys that use this credential.
-    credential_resources: dashmap::DashMap<CredentialId, Vec<ResourceKey>>,
+    /// Reverse index: credential_id → dispatchers for resources that bind to this credential.
+    ///
+    /// Populated at register time when `R::Credential != NoCredential`. Read by
+    /// `Manager::on_credential_refreshed` / `_revoked` to fan out rotation hooks
+    /// in parallel via `join_all` (per Tech Spec §3.2).
+    ///
+    /// `Arc<dyn ResourceDispatcher>` provides type-erased dispatch — see
+    /// `crate::rotation::TypedDispatcher<R>`.
+    credential_resources:
+        dashmap::DashMap<CredentialId, Vec<Arc<dyn crate::rotation::ResourceDispatcher>>>,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     lifecycle: Option<LayerLifecycle>,
 }
@@ -388,7 +396,58 @@ impl Manager {
             .event_tx
             .send(ResourceEvent::Registered { key: key.clone() });
 
+        // Reverse-index write: no-op for `NoCredential`-bound resources
+        // (all in-tree resources today). Task 6 plumbs `credential_id` and
+        // `timeout_override` through `RegisterOptions`.
+        self.register_inner(Arc::clone(&managed), None, None)?;
+
         tracing::debug!(%key, "resource registered");
+        Ok(())
+    }
+
+    /// Internal helper: write to `credential_resources` reverse-index when the
+    /// resource binds a real credential; no-op for `NoCredential`-bound resources.
+    ///
+    /// Called by `register<R>` after the registry write succeeds. The `TypeId`
+    /// check distinguishes credential-bearing resources from opt-out marker types
+    /// at compile time.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::missing_credential_id` when a credential-bearing resource
+    /// (`R::Credential != NoCredential`) is registered without a `credential_id`.
+    fn register_inner<R: Resource>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        credential_id: Option<CredentialId>,
+        timeout_override: Option<Duration>,
+    ) -> Result<(), Error> {
+        let opted_out =
+            TypeId::of::<R::Credential>() == TypeId::of::<nebula_credential::NoCredential>();
+
+        match (opted_out, credential_id) {
+            (true, Some(_)) => {
+                tracing::warn!(
+                    resource = %R::key(),
+                    "register: NoCredential resource provided a credential_id; ignoring"
+                );
+            },
+            (true, None) => {
+                // Normal path for NoCredential-bound resources — no reverse-index write.
+            },
+            (false, None) => {
+                return Err(Error::missing_credential_id(R::key()));
+            },
+            (false, Some(id)) => {
+                let dispatcher: Arc<dyn crate::rotation::ResourceDispatcher> = Arc::new(
+                    crate::rotation::TypedDispatcher::new(managed, timeout_override),
+                );
+                self.credential_resources
+                    .entry(id)
+                    .or_default()
+                    .push(dispatcher);
+            },
+        }
         Ok(())
     }
 
