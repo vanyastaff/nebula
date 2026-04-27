@@ -49,6 +49,7 @@ pub mod control_consumer;
 pub mod control_dispatch;
 pub mod credential;
 pub mod credential_accessor;
+pub mod daemon;
 pub mod engine;
 pub mod error;
 pub mod event;
