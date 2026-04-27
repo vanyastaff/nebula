@@ -73,6 +73,10 @@ pub use credential::{
     StateProjectionRegistry, execute_continue, execute_resolve,
 };
 pub use credential_accessor::EngineCredentialAccessor;
+pub use daemon::{
+    AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime, EventSource,
+    EventSourceAdapter, EventSourceConfig, EventSourceRuntime, RestartPolicy,
+};
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
 pub use event::ExecutionEvent;
