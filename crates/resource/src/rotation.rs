@@ -4,9 +4,18 @@
 //!
 //! `ResourceDispatcher` is an object-safe trampoline trait that stores
 //! type-erased per-resource dispatch logic in `Manager::credential_resources`.
-//! `TypedDispatcher<R>` is the generic implementor that downcasts
-//! `&(dyn Any)` schemes to `<R::Credential as Credential>::Scheme` and
-//! invokes the resource's `on_credential_refresh` / `on_credential_revoke`.
+//! `TypedDispatcher<R>` is the generic implementor that downcasts an owned,
+//! type-erased `Box<SchemeFactory<R::Credential>>`, calls `acquire()` to mint
+//! a fresh `SchemeGuard<'_, R::Credential>`, and forwards it to the resource's
+//! `on_credential_refresh` / `on_credential_revoke` hook.
+//!
+//! **Why factory not guard at the boundary:** `Box<dyn Any>` is `'static`-
+//! bound (because `Any: 'static`), so a non-`'static` `SchemeGuard<'_, C>`
+//! cannot be type-erased through it. `SchemeFactory<C>` IS `'static` (its
+//! inner `Arc<dyn Fn>` is `'static`), so it crosses the boundary cleanly.
+//! The `acquire()` call inside `dispatch_refresh` produces a per-call guard
+//! whose `ZeroizeOnDrop` semantics fire deterministically when the dispatch
+//! future completes — equivalent secret-hygiene to manager-side acquire.
 
 use std::{
     any::{Any, TypeId},
@@ -17,7 +26,7 @@ use std::{
 };
 
 use nebula_core::ResourceKey;
-use nebula_credential::{Credential, CredentialId};
+use nebula_credential::{Credential, CredentialContext, CredentialId, SchemeFactory};
 
 use crate::{resource::Resource, runtime::managed::ManagedResource};
 
@@ -29,7 +38,7 @@ use crate::{resource::Resource, runtime::managed::ManagedResource};
 /// forward to `Resource::on_credential_refresh` / `on_credential_revoke`.
 #[expect(
     dead_code,
-    reason = "wired by Manager::credential_resources retype in Task 3"
+    reason = "dispatch_revoke is wired by on_credential_revoked in Task 5"
 )]
 pub(crate) trait ResourceDispatcher: Send + Sync + 'static {
     /// Resource key for diagnostics + event emission.
@@ -43,17 +52,30 @@ pub(crate) trait ResourceDispatcher: Send + Sync + 'static {
     /// the Manager default.
     fn timeout_override(&self) -> Option<Duration>;
 
-    /// Dispatch refresh: downcast `scheme` to expected type, forward to
-    /// `Resource::on_credential_refresh`. Returns boxed future to keep the
-    /// trait object-safe (RPITIT not allowed on dyn-safe traits).
+    /// Dispatch refresh: downcast `factory_box` (an owned, type-erased
+    /// `SchemeFactory<R::Credential>`), call `acquire()` to mint a fresh
+    /// `SchemeGuard<'_, R::Credential>`, and forward to
+    /// `Resource::on_credential_refresh`. Returns a boxed future to keep
+    /// the trait object-safe (RPITIT is not allowed on dyn-safe traits).
     ///
-    /// **Task 4 wires the body** — currently a `todo!()` placeholder. The
-    /// open question is how to bridge `&(dyn Any)` to the typed
-    /// `SchemeGuard<'a, _>` parameter that `Resource::on_credential_refresh`
-    /// requires.
+    /// `factory_box` is `Box<SchemeFactory<R::Credential>>` erased to
+    /// `Box<dyn Any + Send + Sync>`. Because `SchemeFactory<C>: 'static`
+    /// (its inner `Arc<dyn Fn>` is `'static`), the box's trait-object
+    /// lifetime defaults to `'static` cleanly — no lifetime juggling
+    /// required for the dispatch boundary, while the inner `acquire()`
+    /// still mints per-call non-`'static` `SchemeGuard`s with the correct
+    /// `ZeroizeOnDrop` semantics.
+    ///
+    /// Per Task 4 design (option γ-modified, dispatcher-side acquire):
+    /// callers (the manager) clone the `SchemeFactory<C>` per-dispatcher,
+    /// box it, and pass it down. The dispatcher's `scheme_type_id()`
+    /// should already have been verified by the caller; a downcast failure
+    /// here indicates a dispatch bug and is reported as
+    /// `Error::scheme_type_mismatch`.
     fn dispatch_refresh<'a>(
         &'a self,
-        scheme: &'a (dyn Any + Send + Sync),
+        factory_box: Box<dyn Any + Send + Sync>,
+        ctx: &'a CredentialContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), crate::Error>> + Send + 'a>>;
 
     /// Dispatch revoke: forward `credential_id` to
@@ -98,22 +120,34 @@ impl<R: Resource> ResourceDispatcher for TypedDispatcher<R> {
 
     fn dispatch_refresh<'a>(
         &'a self,
-        scheme: &'a (dyn Any + Send + Sync),
+        factory_box: Box<dyn Any + Send + Sync>,
+        ctx: &'a CredentialContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), crate::Error>> + Send + 'a>> {
         Box::pin(async move {
-            // Downcast guard for diagnostics — the actual refresh dispatch
-            // requires bridging &Scheme to SchemeGuard<'a, R::Credential>.
-            // Task 4 of the П2 plan resolves this design question.
-            let _scheme: &<R::Credential as Credential>::Scheme = scheme
-                .downcast_ref::<<R::Credential as Credential>::Scheme>()
-                .ok_or_else(crate::Error::scheme_type_mismatch::<R>)?;
+            // Downcast Box<dyn Any> → Box<SchemeFactory<R::Credential>> → owned factory.
+            // The dispatcher's `scheme_type_id()` should have already been
+            // verified against the caller's credential type; a downcast
+            // failure here therefore indicates a Manager-side dispatch bug.
+            let factory_box: Box<SchemeFactory<R::Credential>> = factory_box
+                .downcast::<SchemeFactory<R::Credential>>()
+                .map_err(|_| crate::Error::scheme_type_mismatch::<R>())?;
 
-            // TASK 4: wire SchemeGuard reconstruction from &Scheme + invoke
-            // self.managed.resource.on_credential_refresh(guard, ctx)
-            // Resolution path: add SchemeGuard::from_borrow helper in
-            // nebula-credential (option α from plan), or pivot to
-            // closure-based dispatch (option β).
-            todo!("Task 4: wire SchemeGuard bridging — see plan critical note")
+            let factory: SchemeFactory<R::Credential> = *factory_box;
+
+            // Acquire a fresh per-dispatcher SchemeGuard. Lives only for the
+            // remainder of this future; dropped (and `ZeroizeOnDrop`
+            // plaintext zeroed) at the await boundary below — RAII handles
+            // secret hygiene per §15.7.
+            let guard = factory
+                .acquire()
+                .await
+                .map_err(|e| crate::Error::permanent(format!("SchemeFactory::acquire: {e}")))?;
+
+            self.managed
+                .resource
+                .on_credential_refresh(guard, ctx)
+                .await
+                .map_err(Into::into)
         })
     }
 

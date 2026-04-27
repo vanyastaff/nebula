@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     context::ResourceContext,
-    error::Error,
+    error::{Error, RefreshOutcome},
     events::ResourceEvent,
     integration::AcquireResilience,
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
@@ -202,6 +202,18 @@ pub struct ManagerConfig {
     /// (`acquire_total`, `release_total`, etc.) into the registry.
     /// When `None`, metrics are silently skipped (zero overhead).
     pub metrics_registry: Option<Arc<nebula_telemetry::metrics::MetricsRegistry>>,
+    /// Default per-resource timeout budget for credential rotation hooks
+    /// (`on_credential_refresh` / `on_credential_revoke`).
+    ///
+    /// Each registered resource may override this via
+    /// `RegisterOptions::credential_rotation_timeout` (Task 6). When a
+    /// rotation hook exceeds the per-resource budget the dispatcher reports
+    /// `RefreshOutcome::TimedOut` / `RevokeOutcome::TimedOut` and the
+    /// remaining sibling dispatches continue unaffected (security amendment
+    /// B-1: per-resource isolation).
+    ///
+    /// Defaults to 30 seconds.
+    pub credential_rotation_timeout: Duration,
 }
 
 impl Default for ManagerConfig {
@@ -209,6 +221,7 @@ impl Default for ManagerConfig {
         Self {
             release_queue_workers: 2,
             metrics_registry: None,
+            credential_rotation_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -269,6 +282,12 @@ pub struct Manager {
     /// `crate::rotation::TypedDispatcher<R>`.
     credential_resources:
         dashmap::DashMap<CredentialId, Vec<Arc<dyn crate::rotation::ResourceDispatcher>>>,
+    /// Default per-resource timeout budget for credential rotation hooks.
+    ///
+    /// Sourced from [`ManagerConfig::credential_rotation_timeout`] at
+    /// construction. Per-resource overrides flow through
+    /// `TypedDispatcher::timeout_override()` (set at register time, Task 6).
+    credential_rotation_timeout: Duration,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     lifecycle: Option<LayerLifecycle>,
 }
@@ -300,6 +319,7 @@ impl Manager {
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             shutting_down: AtomicBool::new(false),
             credential_resources: dashmap::DashMap::new(),
+            credential_rotation_timeout: config.credential_rotation_timeout,
             lifecycle: None,
         }
     }
@@ -1444,35 +1464,117 @@ impl Manager {
         Ok(outcome)
     }
 
-    /// Handle a credential refresh event. Reloads all resources that use
-    /// this credential.
+    /// Handle a credential refresh event by fanning out
+    /// `Resource::on_credential_refresh` hooks to every resource bound to
+    /// `credential_id`.
     ///
-    /// Returns a list of `(ResourceKey, ReloadOutcome)` pairs for each
-    /// affected resource. If no resources use this credential the result
-    /// is an empty `Vec`.
-    pub async fn on_credential_refreshed(
+    /// Each per-resource future runs concurrently via `join_all` and has its
+    /// own timeout budget — one slow or failing resource never poisons
+    /// siblings (security amendment B-1 isolation). The per-resource budget
+    /// is sourced from `RegisterOptions::credential_rotation_timeout` if set
+    /// at register time, otherwise the manager's
+    /// [`ManagerConfig::credential_rotation_timeout`] default.
+    ///
+    /// Returns a list of `(ResourceKey, RefreshOutcome)` pairs — one per
+    /// affected resource. If no resources are bound to the credential the
+    /// result is an empty `Vec`.
+    ///
+    /// # Caller contract
+    ///
+    /// The caller (typically the engine refresh coordinator) constructs a
+    /// [`SchemeFactory<C>`](nebula_credential::SchemeFactory) over the
+    /// freshly-projected post-refresh state. Per fan-out branch the manager
+    /// clones the factory, type-erases it through a `Box<dyn Any>`, and
+    /// passes it to the resource's typed dispatcher. The dispatcher
+    /// downcasts back to `SchemeFactory<R::Credential>` and calls
+    /// `factory.acquire().await` to mint a fresh
+    /// [`SchemeGuard<'_, R::Credential>`](nebula_credential::SchemeGuard)
+    /// inside its own typed scope before invoking the resource hook.
+    ///
+    /// **Why dispatcher-side acquire (not manager-side):** `Box<dyn Any>`
+    /// is `'static`-bound (because `Any: 'static`), so a non-`'static`
+    /// `SchemeGuard<'_, C>` cannot be type-erased through it. `SchemeFactory<C>`
+    /// IS `'static`, so it can. The acquire call is the same in either
+    /// design (one per dispatcher); only the call boundary moves.
+    ///
+    /// # Errors
+    ///
+    /// This call itself never returns `Err`; per-resource failures are
+    /// reported in the returned `Vec` via [`RefreshOutcome::Failed`] and
+    /// [`RefreshOutcome::TimedOut`]. The `Result` shape is preserved for
+    /// forward-compat with future caller-level guards (e.g. shutdown-in-
+    /// progress short-circuit).
+    pub async fn on_credential_refreshed<C: Credential>(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<Vec<(ResourceKey, ReloadOutcome)>, Error> {
-        let keys = self
+        factory: nebula_credential::SchemeFactory<C>,
+        ctx: &nebula_credential::CredentialContext,
+    ) -> Result<Vec<(ResourceKey, RefreshOutcome)>, Error> {
+        use futures::future::join_all;
+
+        let dispatchers = self
             .credential_resources
             .get(credential_id)
             .map(|entry| entry.value().clone())
             .unwrap_or_default();
 
-        if keys.is_empty() {
+        if dispatchers.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Deferred per concerns register `stage6-followup-resource-integration`
-        // (see Tech Spec §15.7). Stage 6 lands `OnCredentialRefresh<C>` in
-        // nebula-credential as the canonical refresh-hook trait; this manager
-        // dispatch path threads it through once the Resource ↔ Credential
-        // integration shape is decided (Stage 7+ or follow-up cascade).
-        let _ = &keys;
-        todo!(
-            "on_credential_refreshed dispatch deferred — see stage6-followup-resource-integration"
-        )
+        use tracing::Instrument as _;
+
+        let scheme_type_id = TypeId::of::<<C as Credential>::Scheme>();
+        let default_timeout = self.credential_rotation_timeout;
+
+        let span = tracing::info_span!(
+            "resource.credential_refresh",
+            credential_id = %credential_id,
+            resources_affected = dispatchers.len(),
+        );
+
+        // Per-resource futures with isolation. Each future has its own
+        // timeout budget; one slow or failing resource never poisons
+        // siblings (security amendment B-1).
+        let futures = dispatchers.into_iter().filter_map(|d| {
+            // Defensive scheme-type check. The dispatcher's
+            // `scheme_type_id()` should match the call's `C` if
+            // `register_inner` was correct; if not, log and skip rather
+            // than panic.
+            if d.scheme_type_id() != scheme_type_id {
+                tracing::error!(
+                    resource = %d.resource_key(),
+                    expected_scheme_type = ?scheme_type_id,
+                    got_scheme_type = ?d.scheme_type_id(),
+                    "dispatcher scheme_type_id mismatch — skipping (register_inner bug?)",
+                );
+                return None;
+            }
+
+            let timeout = d.timeout_override().unwrap_or(default_timeout);
+            let key = d.resource_key();
+            // Cheap Arc bump per dispatcher; the boxed factory becomes the
+            // dispatcher's owned `SchemeFactory<R::Credential>` after
+            // downcast.
+            let factory_box: Box<dyn std::any::Any + Send + Sync> = Box::new(factory.clone());
+
+            Some(async move {
+                let dispatch = d.dispatch_refresh(factory_box, ctx);
+                let outcome = match tokio::time::timeout(timeout, dispatch).await {
+                    Ok(Ok(())) => RefreshOutcome::Ok,
+                    Ok(Err(e)) => RefreshOutcome::Failed(e),
+                    Err(_) => RefreshOutcome::TimedOut { budget: timeout },
+                };
+                (key, outcome)
+            })
+        });
+
+        let results: Vec<(ResourceKey, RefreshOutcome)> = join_all(futures).instrument(span).await;
+
+        // Task 7 wires aggregate event emission here.
+        // Task 8 wires counter + histogram observation here.
+
+        Ok(results)
     }
 
     /// Handle a credential revocation event. Stops accepting new acquires

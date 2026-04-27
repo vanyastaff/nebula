@@ -1267,6 +1267,7 @@ async fn metrics_track_acquire_release_create_destroy() {
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 2,
         metrics_registry: Some(registry.clone()),
+        ..Default::default()
     });
     let resource = ResidentTestResource::new();
     let resident_rt =
@@ -2309,6 +2310,7 @@ async fn registry_backed_metrics_record_operations() {
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 1,
         metrics_registry: Some(registry.clone()),
+        ..Default::default()
     });
 
     // Register two resources.

@@ -4359,6 +4359,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "dashmap",
+ "futures",
  "insta",
  "nebula-core",
  "nebula-credential",

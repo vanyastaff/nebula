@@ -28,6 +28,7 @@ nebula-telemetry = { path = "../telemetry" }
 # Async runtime
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true }
+futures = { workspace = true }
 
 # Core
 nebula-error = { workspace = true }
