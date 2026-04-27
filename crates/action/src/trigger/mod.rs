@@ -44,35 +44,121 @@ use std::{
 use serde_json::Value;
 pub use source::TriggerSource;
 
-use crate::{
-    action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
-};
+use crate::{context::TriggerContext, error::ActionError, metadata::ActionMetadata};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
 /// Trigger action: workflow starter, lives outside the execution graph.
 ///
-/// The runtime calls `start` to begin listening (e.g. webhook, poll); `stop`
-/// to tear down. Triggers emit new workflow executions; they do not run
-/// inside one.
+/// The runtime calls [`start`](Self::start) to begin listening (e.g.
+/// webhook subscription, poll timer); [`stop`](Self::stop) to tear down.
+/// Triggers emit new workflow executions; they do not run inside one.
 ///
-/// Uses [`TriggerContext`] capability composition.
+/// Engine pushes external events via [`handle`](Self::handle); the
+/// trigger returns a [`TriggerEventOutcome`] describing how many
+/// workflow executions to start (skip / one / many).
+///
+/// ## Source associated type
+///
+/// `Source: TriggerSource` ties the trigger to its event family
+/// (webhook / poll / queue / schedule). The typed event reaching
+/// [`handle`](Self::handle) is `<Self::Source as TriggerSource>::Event`.
+/// Per Tech Spec §2.2.3 spike Probe 2 — without `Source`, the impl
+/// fails compile with E0046; this is intentional.
+///
+/// ## Idempotency
+///
+/// [`idempotency_key`](Self::idempotency_key) returns `None` by default;
+/// triggers whose transport supplies a stable per-event id (webhook
+/// delivery id, queue message id) override to return `Some(...)`.
+/// Engine uses the key to suppress duplicate workflow executions per
+/// PRODUCT_CANON §11.3 idempotency.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement TriggerAction",
-    note = "implement `start` and `stop` methods"
+    note = "implement `Source`, `Error`, and the `start`/`stop`/`handle` methods"
 )]
-pub trait TriggerAction: Action {
+pub trait TriggerAction: Send + Sync + 'static {
+    /// Trigger event family — see [`TriggerSource`] (e.g.
+    /// [`WebhookSource`](crate::WebhookSource), [`PollSource`](crate::PollSource)).
+    type Source: TriggerSource;
+
+    /// Error type returned by lifecycle methods.
+    ///
+    /// Most implementations use [`ActionError`](crate::ActionError) directly.
+    /// Specialized triggers MAY use a richer typed error and let the
+    /// adapter wrap it on the way to the dyn-layer.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Static metadata for this trigger.
+    fn metadata(&self) -> &ActionMetadata;
+
     /// Start the trigger (register listener, schedule poll, etc.).
+    ///
+    /// Per [`TriggerHandler::start`](crate::TriggerHandler::start) for the
+    /// two valid lifecycle shapes (setup-and-return vs run-until-cancelled)
+    /// and cancel-safety contract.
     fn start(
         &self,
         ctx: &(impl TriggerContext + ?Sized),
-    ) -> impl Future<Output = Result<(), ActionError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stop the trigger (unregister, cancel schedule).
     fn stop(
         &self,
         ctx: &(impl TriggerContext + ?Sized),
-    ) -> impl Future<Output = Result<(), ActionError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Whether this trigger accepts externally pushed events.
+    /// Default: `false`. Override to return `true` from webhook / queue triggers.
+    fn accepts_events(&self) -> bool {
+        false
+    }
+
+    /// Stable transport-level dedup id for this event, if available.
+    ///
+    /// Default: `None`. Override when the transport supplies a stable
+    /// per-event id (webhook delivery id, queue message id).
+    /// Per Tech Spec §15.12 F2 + PRODUCT_CANON §11.3 idempotency.
+    fn idempotency_key(
+        &self,
+        _event: &<Self::Source as TriggerSource>::Event,
+    ) -> Option<crate::IdempotencyKey> {
+        None
+    }
+
+    /// Handle an external event pushed to this trigger.
+    ///
+    /// Only called when [`accepts_events`](Self::accepts_events) returns
+    /// `true`. The event is the typed `<Self::Source as TriggerSource>::Event`
+    /// (e.g. `WebhookRequest` for `WebhookSource`).
+    ///
+    /// Returns a [`TriggerEventOutcome`] — `Skip` (filter out), `Emit(payload)`
+    /// (start one workflow), or `EmitMany(payloads)` (fan-out).
+    ///
+    /// Default: returns [`Self::Error`] from the action's transport contract;
+    /// triggers that do accept events MUST override.
+    fn handle(
+        &self,
+        _ctx: &(impl TriggerContext + ?Sized),
+        _event: <Self::Source as TriggerSource>::Event,
+    ) -> impl std::future::Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send {
+        async {
+            // Default body: triggers that don't accept events should never
+            // have this called. Engine checks `accepts_events()` first; this
+            // path is a defensive guard.
+            //
+            // We can't construct a Self::Error here without knowing its
+            // shape — convention is that pushed-event triggers override
+            // accepts_events()=true AND override handle(). Implementations
+            // that opt into events but forget to override handle() will
+            // hit `unimplemented!()`; this matches Tech Spec §2.2.3
+            // expected-author-discipline contract.
+            unimplemented!(
+                "TriggerAction::handle: trigger reports accepts_events=true \
+                 but did not override handle(); see Tech Spec §2.2.3"
+            )
+        }
+    }
 }
 
 // ── Transport-agnostic event envelope ───────────────────────────────────────
@@ -444,7 +530,12 @@ where
         'life0: 'a,
         'life1: 'a,
     {
-        Box::pin(async move { self.action.start(ctx).await })
+        Box::pin(async move {
+            self.action
+                .start(ctx)
+                .await
+                .map_err(ActionError::fatal_from)
+        })
     }
 
     /// Stop the trigger by delegating to the typed action.
@@ -461,11 +552,11 @@ where
         'life0: 'a,
         'life1: 'a,
     {
-        Box::pin(async move { self.action.stop(ctx).await })
+        Box::pin(async move { self.action.stop(ctx).await.map_err(ActionError::fatal_from) })
     }
 }
 
-impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
+impl<A: TriggerAction> fmt::Debug for TriggerActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TriggerActionAdapter")
             .field("action", &self.action.metadata().base.key)

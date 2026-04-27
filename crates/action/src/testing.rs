@@ -514,11 +514,17 @@ where
     }
 
     pub async fn start(&self) -> Result<(), ActionError> {
-        self.action.start(&self.ctx).await
+        self.action
+            .start(&self.ctx)
+            .await
+            .map_err(ActionError::fatal_from)
     }
 
     pub async fn stop(&self) -> Result<(), ActionError> {
-        self.action.stop(&self.ctx).await
+        self.action
+            .stop(&self.ctx)
+            .await
+            .map_err(ActionError::fatal_from)
     }
 
     #[must_use]
