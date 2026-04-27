@@ -115,6 +115,15 @@ pub struct ActionMetadata {
     /// with metadata serialized before this field existed.
     #[serde(default)]
     pub category: ActionCategory,
+    /// Per-action concurrency throttle hint.
+    ///
+    /// `None` (default) — engine-global throttle still applies, but no
+    /// per-action limit. `Some(n)` — at most `n` in-flight executions of
+    /// this action across the engine.
+    ///
+    /// Per Tech Spec §15.12 F9 + PRODUCT_CANON §11 backpressure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<core::num::NonZeroU32>,
 }
 
 impl Metadata for ActionMetadata {
@@ -134,6 +143,7 @@ impl ActionMetadata {
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
             category: ActionCategory::Data,
+            max_concurrent: None,
         }
     }
 
@@ -309,6 +319,15 @@ impl ActionMetadata {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_category(mut self, category: ActionCategory) -> Self {
         self.category = category;
+        self
+    }
+
+    /// Set the per-action concurrency throttle.
+    ///
+    /// Per Tech Spec §15.12 F9. Builder-style; chainable.
+    #[must_use]
+    pub fn with_max_concurrent(mut self, n: core::num::NonZeroU32) -> Self {
+        self.max_concurrent = Some(n);
         self
     }
 
