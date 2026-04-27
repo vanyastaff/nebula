@@ -348,10 +348,19 @@ impl RefreshCoordinator {
         do_refresh: F,
     ) -> Result<T, RefreshError>
     where
-        F: FnOnce(RefreshClaim) -> Fut,
-        Fut: Future<Output = Result<T, RefreshError>>,
-        P: Fn(&CredentialId) -> PFut,
-        PFut: Future<Output = bool>,
+        // Explicit `Send` bounds (review I2): the inner futures cross
+        // task boundaries because `do_refresh` runs under
+        // `tokio::time::timeout` and the predicate is awaited from the
+        // spawn'd backoff loop. Without these bounds a `!Send` body
+        // (e.g. one that captures an `Rc<...>`) compiles cleanly here
+        // and surfaces an obscure auto-trait error at the call site.
+        // Locking the contract on the trait bound moves the diagnostic
+        // back to the user closure.
+        F: FnOnce(RefreshClaim) -> Fut + Send,
+        Fut: Future<Output = Result<T, RefreshError>> + Send,
+        T: Send,
+        P: Fn(&CredentialId) -> PFut + Sync,
+        PFut: Future<Output = bool> + Send,
     {
         // L1: in-process coalescing.
         //
@@ -460,8 +469,11 @@ impl RefreshCoordinator {
         needs_refresh_after_backoff: &P,
     ) -> Result<RefreshClaim, RefreshError>
     where
-        P: Fn(&CredentialId) -> PFut,
-        PFut: Future<Output = bool>,
+        // Mirror the `Send`/`Sync` bounds on `refresh_coalesced` so the
+        // helper's auto-trait inference does not silently relax the
+        // public contract.
+        P: Fn(&CredentialId) -> PFut + Sync,
+        PFut: Future<Output = bool> + Send,
     {
         const MAX_ATTEMPTS: usize = 5;
         for _attempt in 0..MAX_ATTEMPTS {

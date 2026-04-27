@@ -27,7 +27,10 @@ use nebula_credential::{CredentialEvent, resolve::ReauthReason};
 use nebula_eventbus::EventBus;
 use nebula_storage::credential::{RefreshClaimRepo, SentinelState};
 
-use super::sentinel::{SentinelDecision, SentinelTrigger};
+use super::{
+    coordinator::RefreshCoordinator,
+    sentinel::{SentinelDecision, SentinelTrigger},
+};
 
 /// Handle for the background reclaim sweep task.
 ///
@@ -47,7 +50,16 @@ impl std::fmt::Debug for ReclaimSweepHandle {
 }
 
 impl ReclaimSweepHandle {
-    /// Spawn the reclaim sweep task. The task wakes every `cadence`,
+    /// Spawn the reclaim sweep task wired to a [`RefreshCoordinator`].
+    ///
+    /// The cadence and the underlying [`RefreshClaimRepo`] are derived
+    /// from `coord` so the §3.5 invariant
+    /// `reclaim_sweep_interval ≤ claim_ttl` (validated at coordinator
+    /// construction) reaches the sweep task by construction — no
+    /// freestanding `Duration` argument that could drift from the
+    /// validated config (review feedback I3).
+    ///
+    /// The task wakes every `coord.config().reclaim_sweep_interval`,
     /// calls `repo.reclaim_stuck()`, routes any `RefreshInFlight`
     /// claims to `sentinel.on_sentinel_detected`, and emits
     /// `CredentialEvent::ReauthRequired` on the supplied event bus
@@ -58,11 +70,12 @@ impl ReclaimSweepHandle {
     /// `credential_sentinel_events` and logs a `tracing::warn!` line —
     /// only the cross-replica fan-out is skipped.
     pub fn spawn(
-        repo: Arc<dyn RefreshClaimRepo>,
+        coord: Arc<RefreshCoordinator>,
         sentinel: Arc<SentinelTrigger>,
-        cadence: Duration,
         event_bus: Option<Arc<EventBus<CredentialEvent>>>,
     ) -> Self {
+        let cadence = coord.config().reclaim_sweep_interval;
+        let repo = Arc::clone(coord.repo());
         let handle = tokio::spawn(async move {
             sweep_loop(repo, sentinel, cadence, event_bus).await;
         });
@@ -201,7 +214,31 @@ mod tests {
     };
 
     use super::*;
-    use crate::credential::refresh::sentinel::{SentinelThresholdConfig, SentinelTrigger};
+    use crate::credential::refresh::{
+        coordinator::{RefreshCoordConfig, RefreshCoordinator},
+        sentinel::{SentinelThresholdConfig, SentinelTrigger},
+    };
+
+    /// Build a [`RefreshCoordinator`] with a tight 30ms reclaim cadence
+    /// for spawn-path unit tests. Other §3.5 invariants are scaled
+    /// proportionally so `validate()` accepts the shape.
+    fn fast_coord_for_test(repo: Arc<dyn RefreshClaimRepo>) -> Arc<RefreshCoordinator> {
+        Arc::new(
+            RefreshCoordinator::new_with(
+                repo,
+                ReplicaId::new("reclaim-spawn-test"),
+                RefreshCoordConfig {
+                    claim_ttl: Duration::from_millis(100),
+                    heartbeat_interval: Duration::from_millis(30),
+                    refresh_timeout: Duration::from_millis(30),
+                    reclaim_sweep_interval: Duration::from_millis(30),
+                    sentinel_threshold: 3,
+                    sentinel_window: Duration::from_hours(1),
+                },
+            )
+            .expect("validated fast-cadence config"),
+        )
+    }
 
     /// Set up an expired RefreshInFlight claim so the next reclaim_stuck
     /// returns it as a sentinel event.
@@ -365,10 +402,10 @@ mod tests {
         let bus = Arc::new(EventBus::<CredentialEvent>::new(16));
         let mut subscriber = bus.subscribe();
 
+        let coord = fast_coord_for_test(Arc::clone(&repo));
         let _handle = ReclaimSweepHandle::spawn(
-            Arc::clone(&repo),
+            Arc::clone(&coord),
             Arc::clone(&sentinel),
-            Duration::from_millis(30),
             Some(Arc::clone(&bus)),
         );
 

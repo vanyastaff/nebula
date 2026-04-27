@@ -23,12 +23,34 @@ use std::{sync::Arc, time::Duration};
 
 use nebula_credential::{CredentialEvent, resolve::ReauthReason};
 use nebula_engine::credential::refresh::{
-    ReclaimSweepHandle, SentinelThresholdConfig, SentinelTrigger,
+    ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordinator, SentinelThresholdConfig,
+    SentinelTrigger,
 };
 use nebula_eventbus::EventBus;
 use nebula_storage::credential::{
     ClaimAttempt, InMemoryRefreshClaimRepo, RefreshClaimRepo, ReplicaId,
 };
+
+/// Build a fast-cadence coordinator for the sentinel integration tests
+/// so the reclaim sweep wakes every ~30ms while still satisfying the
+/// §3.5 interlocking invariants validated by `RefreshCoordConfig`.
+fn fast_coord(repo: Arc<dyn RefreshClaimRepo>, sweep: Duration) -> Arc<RefreshCoordinator> {
+    Arc::new(
+        RefreshCoordinator::new_with(
+            repo,
+            ReplicaId::new("sentinel-it-replica"),
+            RefreshCoordConfig {
+                claim_ttl: Duration::from_millis(100),
+                heartbeat_interval: Duration::from_millis(30),
+                refresh_timeout: Duration::from_millis(30),
+                reclaim_sweep_interval: sweep,
+                sentinel_threshold: 3,
+                sentinel_window: Duration::from_hours(1),
+            },
+        )
+        .expect("validated fast-cadence sentinel-IT config"),
+    )
+}
 
 /// Seed a stuck `RefreshInFlight` claim row whose TTL has already
 /// expired. The next reclaim sweep returns it as a sentinel event.
@@ -88,10 +110,10 @@ async fn below_threshold_does_not_publish_reauth() {
     let bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let mut subscriber = bus.subscribe();
 
+    let coord = fast_coord(Arc::clone(&repo), Duration::from_millis(30));
     let _handle = ReclaimSweepHandle::spawn(
-        Arc::clone(&repo),
+        Arc::clone(&coord),
         Arc::clone(&sentinel),
-        Duration::from_millis(30),
         Some(Arc::clone(&bus)),
     );
 
@@ -121,10 +143,10 @@ async fn at_threshold_publishes_reauth_with_sentinel_repeated_reason() {
     let bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let mut subscriber = bus.subscribe();
 
+    let coord = fast_coord(Arc::clone(&repo), Duration::from_millis(30));
     let _handle = ReclaimSweepHandle::spawn(
-        Arc::clone(&repo),
+        Arc::clone(&coord),
         Arc::clone(&sentinel),
-        Duration::from_millis(30),
         Some(Arc::clone(&bus)),
     );
 
@@ -171,10 +193,10 @@ async fn two_in_window_one_outside_does_not_publish_reauth() {
     let bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let mut subscriber = bus.subscribe();
 
+    let coord = fast_coord(Arc::clone(&repo), Duration::from_millis(20));
     let _handle = ReclaimSweepHandle::spawn(
-        Arc::clone(&repo),
+        Arc::clone(&coord),
         Arc::clone(&sentinel),
-        Duration::from_millis(20),
         Some(Arc::clone(&bus)),
     );
 
