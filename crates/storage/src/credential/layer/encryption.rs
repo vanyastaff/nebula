@@ -259,7 +259,7 @@ mod tests {
     use nebula_credential::{
         PutMode, SecretString,
         credentials::oauth2::{AuthStyle, OAuth2State},
-        encrypt,
+        encrypt_with_key_id,
         store::test_helpers::make_credential,
     };
 
@@ -389,12 +389,24 @@ mod tests {
     #[tokio::test]
     async fn rejects_data_without_aad() {
         let inner = InMemoryStore::new();
-        let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
+        let key = EncryptionKey::from_bytes([0x42; 32]);
 
-        // Simulate legacy write: encrypt without AAD and store directly
-        let plaintext = b"legacy-secret";
-        let encrypted = encrypt(&key, plaintext).unwrap();
-        let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
+        // Construct a legacy-shaped envelope: encrypted with the *current*
+        // provider's key_id ("default" — found via `default_provider()`)
+        // but with an EMPTY AAD. The encryption layer will:
+        //   1. Look up the key under "default" — succeeds (matches provider).
+        //   2. Decrypt with credential_id ("legacy-1") as AAD — fails because the envelope was
+        //      sealed with empty AAD.
+        // This is the AAD-mandatory rejection path; no legacy fallback.
+        //
+        // SEC-11 (security hardening 2026-04-27 Stage 1) removed the bare
+        // `crypto::encrypt(key, plaintext)` helper from public surface.
+        // `encrypt_with_key_id(key, "default", plaintext, b"")` is the
+        // public AAD-aware alternative that produces the same legacy shape
+        // (valid key_id + empty AAD) without exposing a no-AAD shortcut.
+        let envelope = encrypt_with_key_id(&key, "default", b"legacy-secret", b"")
+            .expect("encrypt with empty AAD should succeed at the crypto layer");
+        let encrypted_bytes = serde_json::to_vec(&envelope).unwrap();
 
         let cred = StoredCredential {
             id: "legacy-1".into(),
@@ -411,8 +423,9 @@ mod tests {
         };
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Reading through the encryption layer must fail: AAD is mandatory.
-        // Data encrypted without AAD is unreadable — no legacy fallback.
+        // Reading through the encryption layer must fail with an AAD
+        // mismatch: the envelope was sealed with empty AAD but the layer
+        // unconditionally binds `credential_id` as AAD on decrypt.
         let store = EncryptionLayer::new(inner, default_provider());
         let err = store.get("legacy-1").await.unwrap_err();
         assert!(matches!(err, StoreError::Backend(_)));

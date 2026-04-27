@@ -28,7 +28,9 @@
 //!   `CacheLayer`, `AuditLayer`, `ScopeLayer`) live in `nebula_storage::credential` per ADR-0032.
 //! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
-//! - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM primitives.
+//! - `EncryptedData`, `EncryptionKey`, `encrypt_with_aad`, `encrypt_with_key_id`, `decrypt`,
+//!   `decrypt_with_aad` — AES-256-GCM primitives. The AAD-free `encrypt` path is intentionally not
+//!   exposed (SEC-11 hardening 2026-04-27).
 //! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
 //!
 //! ## Security invariant (canon §12.5)
@@ -172,9 +174,13 @@ pub use scheme::{
 // itself lives on `nebula_resource::Resource::on_credential_refresh`
 // per ADR-0036; the previously-defined parallel `OnCredentialRefresh<C>`
 // trait was removed in nebula-resource П2.
+//
+// SEC-11 (security hardening 2026-04-27 Stage 1): bare `encrypt` removed
+// from public surface. See `secrets/mod.rs` rationale comment above the
+// `pub use crypto::{...}` block.
 pub use secrets::{
     CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SchemeFactory, SchemeGuard,
-    SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad, encrypt_with_key_id,
+    SecretString, decrypt, decrypt_with_aad, encrypt_with_aad, encrypt_with_key_id,
     generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)

@@ -17,6 +17,8 @@ use zeroize::Zeroize;
 /// - `Deref<Target = S>` — transparent access to the inner credential
 /// - `Drop` calls `zeroize()` — secret material wiped from memory
 /// - Does NOT implement `Serialize` — compile error if placed in output/state types
+/// - Does NOT implement `Clone` (SEC-05 hardening 2026-04-27) — cloning would create a second
+///   zeroize point on the same plaintext, violating §4.2 N10
 ///
 /// # Errors
 ///
@@ -61,14 +63,16 @@ impl<S: Zeroize> Drop for CredentialGuard<S> {
     }
 }
 
-impl<S: Zeroize + Clone> Clone for CredentialGuard<S> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            acquired_at: Instant::now(),
-        }
-    }
-}
+// SEC-05 (security hardening 2026-04-27 Stage 2): `Clone` impl removed.
+// Cloning a guard would create a second zeroize point on the same plaintext,
+// violating PRODUCT_CANON §4.2 invariant N10 ("plaintext does not cross
+// spawn boundary"). Each acquired secret has exactly one drop site.
+//
+// Pre-removal pattern (incorrect):
+//     let guard = ctx.credential::<S>().await?;
+//     spawn(async move { use_in_other_task(guard.clone()); }); // !!
+// Post-removal pattern (correct): re-acquire via `SchemeFactory<C>` per
+// Tech Spec §15.7, OR keep the guard in a single-task scope.
 
 impl<S: Zeroize + Send + Sync + 'static> Guard for CredentialGuard<S> {
     fn guard_kind(&self) -> &'static str {
@@ -119,14 +123,10 @@ mod tests {
         assert_eq!(guard.value, "secret-123");
     }
 
-    #[test]
-    fn clone_preserves_value() {
-        let guard = CredentialGuard::new(TestSecret {
-            value: "secret-123".to_owned(),
-        });
-        let cloned = guard.clone();
-        assert_eq!(*cloned, *guard);
-    }
+    // SEC-05: `Clone` impl removed. Compile-fail probe at
+    // `crates/credential/tests/compile_fail_credential_guard_clone.rs`
+    // verifies external attempts to call `.clone()` on a guard fail
+    // with E0599 "no method named clone".
 
     #[test]
     fn debug_redacts_inner_value() {

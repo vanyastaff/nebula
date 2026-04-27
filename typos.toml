@@ -30,6 +30,13 @@ acfec719 = "acfec719"
 f36f3739 = "f36f3739"
 # Git commit hash referenced in credential audit snapshot 2026-04-27
 f308ded4 = "f308ded4"
+# Agent IDs referenced in credential audit Errata §XII (post-review 2026-04-27)
+a371e5d799a0505d5 = "a371e5d799a0505d5"
+a04feb80c85fcb5ca = "a04feb80c85fcb5ca"
+a0068814d902dc18a = "a0068814d902dc18a"
+adf1f21e869808ac3 = "adf1f21e869808ac3"
+a8d8c1bf0fcdb7188 = "a8d8c1bf0fcdb7188"
+a486010c5ca2f7ba8 = "a486010c5ca2f7ba8"
 
 [default.extend-words]
 Hashi = "Hashi"

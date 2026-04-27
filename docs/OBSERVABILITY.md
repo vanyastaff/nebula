@@ -85,8 +85,12 @@ This loop is the operational half of PRODUCT_CANON §2 success sentence: *you ca
 | `nebula.credential.dynamic_lease_issued_total` | Total dynamic credential leases issued |
 | `nebula.credential.dynamic_lease_released_total` | Total dynamic credential leases expired or released |
 | `nebula.credential.tamper_detection_total` | Total tamper detection events |
+| `nebula.credential.refresh.err_uri_rejected_total` | Total IdP `error_uri` values rejected by `sanitize_error_uri` (SEC-02 hardening 2026-04-27) — labels: `reason ∈ {scheme, controlchars, parse_failed}` |
+| `nebula.credential.refresh.body_truncated_total` | Total non-2xx token responses rejected by the bounded reader (SEC-01 hardening 2026-04-27) — labels: `reason ∈ {content_length_too_large, body_too_large, read_chunk}` |
 
 Standard labels: `credential_key` (e.g. `"github_token"`), `outcome` (`"success"` / `"failure"`), `dynamic` (`"true"` / `"false"`), `reason` (refresh failure reason).
+
+> **SEC-01/02 metric emission status (2026-04-27).** Per the security-hardening sub-spec at [`docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md`](superpowers/specs/2026-04-27-credential-security-hardening-design.md) §6, the metric *names* are reserved here as part of the doc-sync stage (PRODUCT_CANON §3.5 and §4.5 «operational honesty»: a new error path must register its observability surface alongside the code that emits it). Emission wiring is deferred to the metric-bus integration cascade — the security-hardening fix surfaces the rejection paths via typed `TokenHttpError` (bounded reader) and the `[*_redacted]` placeholder (sanitizer). When the credential-metrics emitter is wired through `parse_token_response`, both counters get bumped at the existing `Err(...)` returns; no new error semantics are introduced in this stage.
 
 **Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `execution_journal` events. A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
 

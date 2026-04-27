@@ -132,7 +132,16 @@ impl EncryptedData {
 /// restarts — after ~65 k restart-encryptions per key the collision
 /// probability crossed 50%. AES-GCM nonce reuse is catastrophic (full
 /// plaintext recovery + authentication forgery), so we take the NIST random
-/// path and read the full 12 bytes from the OS CSPRNG on every call.
+/// path and read the full 12 bytes from a CSPRNG seeded from the OS via
+/// `getrandom` on every call.
+///
+/// SEC-04 doc clarification (security hardening 2026-04-27, post-audit
+/// Errata §XII.C): `rand::rng()` returns `ThreadRng` which is **CSPRNG-quality**
+/// — seeded from `OsRng` (`getrandom`) at thread start and periodically
+/// reseeded from the OS. The advisory `RUSTSEC-2026-0097` (already ignored
+/// in `deny.toml:16`) is a panic-handler thread-local soundness bug, NOT
+/// a CSPRNG flaw. The 96-bit nonce property required by NIST SP 800-38D
+/// §8.2.2 holds.
 fn fresh_nonce() -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
     use rand::RngExt;
 
@@ -155,7 +164,16 @@ fn fresh_nonce() -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
 /// # Errors
 ///
 /// Returns `CryptoError::EncryptionFailed` if encryption fails
-pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<EncryptedData, CryptoError> {
+///
+/// **SEC-11 (security hardening 2026-04-27 Stage 1).** Renamed from
+/// `encrypt` and gated `#[cfg(test)]` to remove the no-AAD path from any
+/// production surface. Plugins, external callers, and even
+/// non-test internal code cannot construct legacy (no-AAD) envelopes
+/// anymore. The function remains reachable strictly inside this module's
+/// `mod tests` for the `decrypt_no_aad_data_with_aad_fails` regression
+/// test that pins the AAD-mandatory rejection on the decrypt side.
+#[cfg(test)]
+fn encrypt_no_aad(key: &EncryptionKey, plaintext: &[u8]) -> Result<EncryptedData, CryptoError> {
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
@@ -554,7 +572,7 @@ mod tests {
         let plaintext = b"hello world";
 
         // Encrypt without AAD, try to decrypt with AAD
-        let encrypted = encrypt(&key, plaintext).unwrap();
+        let encrypted = encrypt_no_aad(&key, plaintext).unwrap();
         let result = decrypt_with_aad(&key, &encrypted, b"cred-1");
         assert!(result.is_err());
     }

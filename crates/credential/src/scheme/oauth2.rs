@@ -66,13 +66,21 @@ impl OAuth2Token {
     /// contains the access token verbatim; returning `SecretString` forces
     /// `.expose_secret()` at the FFI boundary, eliminating accidental
     /// `Debug` / log leaks of the bearer string.
+    ///
+    /// SEC-09 (security hardening 2026-04-27 Stage 2): construction goes
+    /// through a `Zeroizing<String>` buffer instead of `format!` so that
+    /// any panic during string assembly zeros the partial bearer.
     #[must_use]
     pub fn bearer_header(&self) -> SecretString {
-        SecretString::new(format!(
-            "{} {}",
-            self.token_type,
-            self.access_token.expose_secret()
-        ))
+        let token = self.access_token.expose_secret();
+        // capacity = token_type + " " + token
+        let mut buf = zeroize::Zeroizing::new(String::with_capacity(
+            self.token_type.len() + 1 + token.len(),
+        ));
+        buf.push_str(&self.token_type);
+        buf.push(' ');
+        buf.push_str(token);
+        SecretString::new(std::mem::take(&mut *buf))
     }
 
     /// Returns `true` if the token has expired.

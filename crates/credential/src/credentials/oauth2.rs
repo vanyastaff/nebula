@@ -121,9 +121,19 @@ impl OAuth2State {
     /// `.expose_secret()` at the FFI boundary, eliminating accidental
     /// `Debug` / log leaks of the bearer string. Symmetric with
     /// [`OAuth2Token::bearer_header`](crate::scheme::OAuth2Token::bearer_header).
+    ///
+    /// SEC-09 (security hardening 2026-04-27 Stage 2): construction goes
+    /// through a `Zeroizing<String>` buffer instead of `format!` so that any
+    /// panic during string assembly zeros the partial bearer; the only
+    /// non-zeroizing window remaining is the single-instruction move into
+    /// `SecretString::new`, which has no yield/alloc point inside it.
     #[must_use]
     pub fn bearer_header(&self) -> SecretString {
-        SecretString::new(format!("Bearer {}", self.access_token.expose_secret()))
+        let token = self.access_token.expose_secret();
+        let mut buf = zeroize::Zeroizing::new(String::with_capacity(7 + token.len()));
+        buf.push_str("Bearer ");
+        buf.push_str(token);
+        SecretString::new(std::mem::take(&mut *buf))
     }
 }
 

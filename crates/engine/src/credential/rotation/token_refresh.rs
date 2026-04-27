@@ -26,10 +26,10 @@ use nebula_credential::{
 };
 use reqwest::Response;
 use serde_json::Value;
-use zeroize::Zeroizing;
 
 use super::token_http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
+    read_token_response_text_limited,
 };
 
 /// Refresh-related failures produced by [`refresh_oauth2_state`].
@@ -58,41 +58,56 @@ pub enum TokenRefreshError {
 }
 
 /// Execute OAuth2 refresh-token grant and mutate `state` in place.
+///
+/// SEC-10 (security hardening 2026-04-27 Stage 2): the three secret values
+/// (refresh_token, client_id, client_secret) are NOT extracted into
+/// `Zeroizing<String>` intermediates. Instead, secret borrows live inside
+/// an inner block that returns the built `RequestBuilder`; reqwest copies
+/// the `&str` slices into its internal request body for the HTTP
+/// round-trip, then the inner-block scope ends → secret borrows drop
+/// → `state` is free for `&mut` mutation in
+/// `update_state_from_token_response`. No owned plaintext copy lives in
+/// our code; the unavoidable in-flight copy lives in reqwest's request
+/// body and is released when the response future resolves.
 pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRefreshError> {
-    let refresh_tok: Zeroizing<String> = Zeroizing::new(
-        state
+    let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
+
+    // Inner block scopes secret borrows tightly. After the block returns
+    // the built `RequestBuilder`, reqwest owns the serialized form body
+    // (its own non-zeroizing copy — best-effort defense without forking
+    // reqwest); our borrows drop here.
+    let req = {
+        let refresh_tok = state
             .refresh_token
             .as_ref()
             .ok_or(TokenRefreshError::MissingRefreshToken)?
-            .expose_secret()
-            .to_owned(),
-    );
-    let client_id: Zeroizing<String> = Zeroizing::new(state.client_id.expose_secret().to_owned());
-    let client_secret: Zeroizing<String> =
-        Zeroizing::new(state.client_secret.expose_secret().to_owned());
+            .expose_secret();
+        let client_id = state.client_id.expose_secret();
+        let client_secret = state.client_secret.expose_secret();
 
-    let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
-    let mut form: Vec<(&str, &str)> = vec![
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_tok.as_str()),
-    ];
-    if let Some(ref scope) = scope_joined {
-        form.push(("scope", scope.as_str()));
-    }
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_tok),
+        ];
+        if let Some(ref scope) = scope_joined {
+            form.push(("scope", scope.as_str()));
+        }
 
-    let client = oauth_token_http_client();
-    let mut req = client.post(&state.token_url);
-    match state.auth_style {
-        AuthStyle::Header => {
-            req = req.basic_auth(client_id.as_str(), Some(client_secret.as_str()));
-            req = req.form(&form);
-        },
-        AuthStyle::PostBody => {
-            form.push(("client_id", client_id.as_str()));
-            form.push(("client_secret", client_secret.as_str()));
-            req = req.form(&form);
-        },
-    }
+        let client = oauth_token_http_client();
+        let mut req = client.post(&state.token_url);
+        match state.auth_style {
+            AuthStyle::Header => {
+                req = req.basic_auth(client_id, Some(client_secret));
+                req = req.form(&form);
+            },
+            AuthStyle::PostBody => {
+                form.push(("client_id", client_id));
+                form.push(("client_secret", client_secret));
+                req = req.form(&form);
+            },
+        }
+        req
+    };
 
     let resp = req
         .send()
@@ -106,10 +121,17 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
 async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
     let status = resp.status();
     if !status.is_success() {
-        let summary = match resp.text().await {
-            Ok(body_text) => oauth_token_error_summary(&body_text),
-            Err(e) => format!("failed to read token endpoint error body: {e}"),
-        };
+        // SEC-01 (security hardening 2026-04-27 Stage 3): bounded reader.
+        // Previously `resp.text().await` was unbounded on the error path —
+        // a compromised IdP could push hundreds of MB before the 30s
+        // transport timeout fired. The 256 KiB cap matches the success
+        // path's `read_token_response_limited`.
+        let summary =
+            match read_token_response_text_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES).await
+            {
+                Ok(body_text) => oauth_token_error_summary(&body_text),
+                Err(e) => format!("failed to read token endpoint error body: {e}"),
+            };
         return Err(TokenRefreshError::TokenEndpoint {
             status: status.to_string(),
             summary,
@@ -150,6 +172,82 @@ fn update_state_from_token_response(
     Ok(())
 }
 
+/// Redacts common sensitive-field-name=value patterns in IdP error
+/// strings. OAuth2 IdPs (per RFC 6749 §5.2) sometimes echo submitted
+/// credentials inside `error_description` — most commonly
+/// `refresh_token=<value>` on `invalid_grant` from buggy or hostile
+/// providers. Without redaction those values reach operator-facing
+/// logs / SIEM via [`TokenRefreshError::TokenEndpoint`]. This helper
+/// scrubs the value while preserving the structural diagnostic.
+///
+/// Implements ADR-0030 §4 redaction discipline at the source: the
+/// summary string emitted by [`oauth_token_error_summary`] is the
+/// single chokepoint through which non-2xx response bodies enter the
+/// error type, so applying redaction here covers all downstream
+/// renderings (`Display`, `tracing`, audit events) by construction.
+///
+/// # Pattern stability + non-panicking init
+///
+/// [`REDACTION_PATTERN`] is the source-of-truth pattern. We attempt
+/// `Regex::new` in a `OnceLock<Option<Regex>>` so a malformed pattern
+/// (theoretically possible if a future PR edits the literal incorrectly)
+/// never panics in library code — instead the helper returns a
+/// conservative full-redaction sentinel `[REDACTED]`, which is over-redaction
+/// (not under-redaction; never leaks the input). The CI safety net
+/// (`tests::redaction_regex_compiles` lib test +
+/// `crates/engine/tests/credential_refresh_redaction.rs` integration rows
+/// per ADR-0030 §4) catches the pattern regression before merge so the
+/// fallback path is never reached in production.
+const REDACTION_PATTERN: &str = r"(?i)\b(refresh[_-]?token|access[_-]?token|client[_-]?secret|bearer|api[_-]?key|password|secret)\s*[=:]\s*\S+";
+
+fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
+    use std::sync::OnceLock;
+
+    static REDACTION_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
+    let re = REDACTION_RE.get_or_init(|| regex::Regex::new(REDACTION_PATTERN).ok());
+
+    match re {
+        Some(re) => re.replace_all(input, "$1=[REDACTED]"),
+        None => std::borrow::Cow::Borrowed("[REDACTED]"),
+    }
+}
+
+/// Sanitizes a raw `error_uri` value from a non-2xx OAuth2 token response
+/// before it lands in operator-facing summaries.
+///
+/// SEC-02 (security hardening 2026-04-27 Stage 3) — without sanitization a
+/// compromised / MITM IdP could inject:
+/// - Phishing URLs disguised as legitimate help pages (different scheme, host obfuscation),
+/// - Control characters (`\x00-\x1F`, `\x7F`) that mangle SIEM rows, inject ANSI escapes into
+///   terminal renderings, or break log parsers,
+/// - Arbitrarily long values that bloat audit storage.
+///
+/// Sanitization applies in this order:
+/// 1. `Url::parse` — reject anything that is not a valid absolute URL.
+/// 2. Scheme allowlist — only `https` survives. `http`, `javascript:`, `file:`, custom schemes are
+///    rejected.
+/// 3. Control-char strip — any byte `< 0x20` or `== 0x7F` is rejected.
+/// 4. Length cap — `> 256` chars truncates with a `…[truncated]` suffix.
+///
+/// Returns a placeholder for rejected inputs:
+/// - `[invalid_error_uri_redacted]` — parse fail or non-https scheme
+/// - `[control_chars_in_error_uri_redacted]` — control byte found
+fn sanitize_error_uri(raw: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let parsed = match url::Url::parse(raw) {
+        Ok(u) if u.scheme() == "https" => u,
+        _ => return Cow::Borrowed("[invalid_error_uri_redacted]"),
+    };
+    let s = parsed.to_string();
+    if s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Cow::Borrowed("[control_chars_in_error_uri_redacted]");
+    }
+    if s.len() > 256 {
+        return Cow::Owned(format!("{}…[truncated]", &s[..256]));
+    }
+    Cow::Owned(s)
+}
+
 fn oauth_token_error_summary(body_text: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(body_text) else {
         return "<non-json body>".to_owned();
@@ -161,7 +259,8 @@ fn oauth_token_error_summary(body_text: &str) -> String {
     let mut out = error.to_owned();
     if let Some(desc) = value.get("error_description").and_then(Value::as_str) {
         out.push_str(": ");
-        let prefix: Vec<char> = desc.chars().take(257).collect();
+        let redacted = redact_sensitive_fields(desc);
+        let prefix: Vec<char> = redacted.chars().take(257).collect();
         out.extend(prefix.iter().take(256).copied());
         if prefix.len() > 256 {
             out.push('…');
@@ -169,7 +268,7 @@ fn oauth_token_error_summary(body_text: &str) -> String {
     }
     if let Some(uri) = value.get("error_uri").and_then(Value::as_str) {
         out.push_str(" (error_uri=");
-        out.push_str(uri);
+        out.push_str(&sanitize_error_uri(uri));
         out.push(')');
     }
     out
@@ -178,6 +277,31 @@ fn oauth_token_error_summary(body_text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pin: the static [`REDACTION_PATTERN`] compiles AND the helper
+    /// uses the regex path (not the over-redaction fallback). With the
+    /// non-panicking `OnceLock<Option<Regex>>` shape, a broken pattern
+    /// would silently route through the `[REDACTED]` fallback, which is
+    /// safer than a panic but hides the regression. This lib-level test
+    /// catches the pattern compile + the round-trip at `cargo test --lib`
+    /// — fails fast before the `--features rotation` integration matrix.
+    #[test]
+    fn redaction_regex_compiles() {
+        // Pattern parses standalone — fails fast on a malformed edit.
+        let _ = regex::Regex::new(REDACTION_PATTERN).expect("REDACTION_PATTERN must compile");
+
+        // Round-trip: helper redacts a known sensitive substring AND
+        // preserves surrounding text. If the pattern compiles but the
+        // helper falls back to `[REDACTED]` everywhere (Option::None
+        // branch), the surrounding-text assertion below catches it.
+        let out = redact_sensitive_fields("refresh_token=abc12345 expired");
+        assert!(out.contains("[REDACTED]"), "expected redaction: {out}");
+        assert!(!out.contains("abc12345"), "secret leaked: {out}");
+        assert!(
+            out.contains("expired"),
+            "surrounding text preserved (regex path, not fallback): {out}"
+        );
+    }
 
     fn sample_state() -> OAuth2State {
         OAuth2State {
