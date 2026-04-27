@@ -140,9 +140,22 @@ impl<R: Resource> ResourceGuard<R> {
 
     /// Attaches a drain tracker for shutdown coordination.
     ///
-    /// Increments the counter immediately; decrements on drop.
+    /// **Caller-owned increment**: this method does NOT increment the counter.
+    /// Callers (i.e. `Manager` acquire paths) must pre-increment the counter
+    /// before any `await` past `lookup()` and hand the *already-counted slot*
+    /// off to the guard via this method. The guard then owns the slot and
+    /// decrements + notifies on Drop.
+    ///
+    /// This caller-owned ordering is required to close the
+    /// `graceful_shutdown` race where an acquire that passed `lookup()`
+    /// before `cancel.cancel()` could complete *after* `wait_for_drain()`
+    /// observed `0` and the registry was cleared. With pre-increment via
+    /// `Manager::InFlightCounter`, every in-flight acquire is reflected
+    /// in `drain_tracker` from the moment `lookup()` succeeds, so
+    /// `wait_for_drain()` always blocks until the acquire either finishes
+    /// (and the slot transfers to the guard) or fails (and `InFlightCounter`
+    /// decrements on Drop).
     pub(crate) fn with_drain_tracker(mut self, tracker: Arc<(AtomicU64, Notify)>) -> Self {
-        tracker.0.fetch_add(1, AtomicOrdering::Release);
         self.drain_counter = Some(tracker);
         self
     }

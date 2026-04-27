@@ -27,7 +27,7 @@ use std::{
     any::TypeId,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
     },
     time::{Duration, Instant},
 };
@@ -650,7 +650,14 @@ impl Manager {
         &self,
         scope: &ScopeLevel,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
-        if self.cancel.is_cancelled() {
+        // Defense A against the `graceful_shutdown` race: reject any acquire
+        // that arrives after `graceful_shutdown` has flipped the flag, even
+        // if the cancel token has not yet been observed (it is set the line
+        // after on the same task — see `shutdown::graceful_shutdown` Phase 1).
+        // Ordering: `graceful_shutdown` writes `shutting_down` with `AcqRel`,
+        // we read with `Acquire`, so we synchronize-with that write and any
+        // observation here implies the cancel will follow.
+        if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
             return Err(Error::cancelled());
         }
 
@@ -685,6 +692,12 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race: pre-count this
+        // acquire from the moment `lookup()` succeeds. RAII decrements + notifies
+        // on every failure / cancel / panic path; on success the slot is handed
+        // off to the resulting `ResourceGuard` so the count is held continuously
+        // until the guard drops.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -724,7 +737,10 @@ impl Manager {
         // cancellation/panic paths.
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a pooled resource handle without scheme material.
@@ -771,6 +787,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -795,7 +813,10 @@ impl Manager {
 
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a resident resource handle without scheme material.
@@ -839,6 +860,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -870,7 +893,10 @@ impl Manager {
 
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a service resource handle without scheme material.
@@ -915,6 +941,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -946,7 +974,10 @@ impl Manager {
 
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires a transport resource handle without scheme material.
@@ -991,6 +1022,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1021,7 +1054,10 @@ impl Manager {
 
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Acquires an exclusive resource handle without scheme material.
@@ -1074,6 +1110,8 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(&ctx.scope_level())?;
+        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
+        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         let result = match &managed.topology {
@@ -1101,7 +1139,10 @@ impl Manager {
 
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
-        result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
+        match result {
+            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            Err(e) => Err(e),
+        }
     }
 
     /// Non-blocking pooled acquire without scheme material.
@@ -1483,6 +1524,76 @@ impl Manager {
 impl Default for Manager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// RAII guard that pre-counts an in-flight `acquire_*` call against
+// `Manager::drain_tracker` from the moment `lookup()` succeeds until either
+// (a) the acquire completes and the slot is handed off to the resulting
+// `ResourceGuard`, or (b) the acquire fails / panics / is cancelled and the
+// slot is decremented + waiters notified on drop.
+//
+// This is **Defense B** of the `graceful_shutdown` race fix (Defense A is
+// the `shutting_down` check inside `Manager::lookup`). Without pre-
+// counting, an acquire that passes `lookup()` before `cancel.cancel()` can
+// complete *after* `wait_for_drain()` saw `0` and the registry was cleared
+// — the caller would end up holding a `ResourceGuard` to a registry that
+// has been torn down.
+//
+// The counter slot lifecycle is *exactly* one increment + one decrement
+// across the (acquire, guard) pair, with no transient gaps:
+//
+// 1. `InFlightCounter::new` increments.
+// 2. The acquire runs (any number of `await` points).
+// 3a. Success — `release_to_guard()` returns the `Arc<(AtomicU64, Notify)>` and
+//     suppresses the Drop decrement; the caller hands the slot to
+//     `ResourceGuard::with_drain_tracker`, which decrements + notifies on
+//     guard Drop. Net effect across the pair: +1 on enter, -1 on guard Drop.
+// 3b. Failure / panic / cancel — Drop runs and decrements + notifies. Net
+//     effect: +1 on enter, -1 on early return.
+struct InFlightCounter {
+    tracker: Arc<(AtomicU64, Notify)>,
+    /// Set true by `release_to_guard` to skip the Drop decrement once the
+    /// slot has been transferred.
+    released: bool,
+}
+
+impl InFlightCounter {
+    /// Increments the in-flight counter immediately.
+    fn new(tracker: Arc<(AtomicU64, Notify)>) -> Self {
+        // `AcqRel` matches the `Acquire` load in `wait_for_drain` so the
+        // increment is visible to a concurrent `wait_for_drain` snapshot
+        // before that snapshot can return `Ok(())`.
+        tracker.0.fetch_add(1, AtomicOrdering::AcqRel);
+        Self {
+            tracker,
+            released: false,
+        }
+    }
+
+    /// Hands the counter slot off to the resulting `ResourceGuard`.
+    ///
+    /// The returned `Arc` is then passed to
+    /// [`ResourceGuard::with_drain_tracker`] which assumes the increment has
+    /// already happened. This method suppresses the Drop decrement so the
+    /// counter is owned by exactly one entity at all times — no double
+    /// counting, no transient gap.
+    fn release_to_guard(mut self) -> Arc<(AtomicU64, Notify)> {
+        self.released = true;
+        self.tracker.clone()
+    }
+}
+
+impl Drop for InFlightCounter {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        // The acquire failed / was cancelled / panicked. Decrement and notify
+        // so `wait_for_drain` does not block forever on a phantom in-flight.
+        if self.tracker.0.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+            self.tracker.1.notify_waiters();
+        }
     }
 }
 
