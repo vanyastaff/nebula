@@ -573,13 +573,15 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use nebula_core::DeclaresDependencies;
-
     use super::*;
-    use crate::{
-        action::Action,
-        testing::{TestContextBuilder, TestTriggerContext},
-    };
+    use crate::testing::{TestContextBuilder, TestTriggerContext};
+
+    // ── TestSource ────────────────────────────────────────────────────────────
+
+    struct TestSource;
+    impl TriggerSource for TestSource {
+        type Event = serde_json::Value;
+    }
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 
@@ -601,15 +603,14 @@ mod tests {
         }
     }
 
-    impl DeclaresDependencies for MockTriggerAction {}
+    impl TriggerAction for MockTriggerAction {
+        type Source = TestSource;
+        type Error = ActionError;
 
-    impl Action for MockTriggerAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
-    }
 
-    impl TriggerAction for MockTriggerAction {
         async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(true, Ordering::Release);
             Ok(())
