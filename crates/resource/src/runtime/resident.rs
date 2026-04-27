@@ -6,6 +6,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use nebula_credential::Credential;
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -77,7 +78,7 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         _options: &AcquireOptions,
     ) -> Result<ResourceGuard<R>, Error>
@@ -130,7 +131,7 @@ where
         // Create a new runtime.
         let runtime = match tokio::time::timeout(
             self.config.create_timeout,
-            resource.create(resource_config, auth, ctx),
+            resource.create(resource_config, scheme, ctx),
         )
         .await
         {
@@ -202,7 +203,7 @@ mod tests {
         type Runtime = u32;
         type Lease = u32;
         type Error = MockError;
-        type Auth = ();
+        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("mock-resident")
@@ -211,7 +212,7 @@ mod tests {
         fn create(
             &self,
             _config: &bool,
-            _auth: &(),
+            _scheme: &<Self::Credential as Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -362,7 +363,7 @@ mod tests {
         type Runtime = u32;
         type Lease = u32;
         type Error = MockError;
-        type Auth = ();
+        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("hanging-resident")
@@ -371,7 +372,7 @@ mod tests {
         async fn create(
             &self,
             _config: &bool,
-            _auth: &(),
+            _scheme: &<Self::Credential as Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<u32, MockError> {
             tokio::time::sleep(Duration::from_hours(1)).await;

@@ -307,7 +307,7 @@ mod tests {
         type Runtime = ();
         type Lease = ();
         type Error = TestError;
-        type Auth = ();
+        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-flaky").unwrap()
@@ -316,7 +316,7 @@ mod tests {
         async fn create(
             &self,
             _config: &Self::Config,
-            _auth: &(),
+            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())
@@ -347,7 +347,7 @@ mod tests {
         type Runtime = ();
         type Lease = ();
         type Error = TestError;
-        type Auth = ();
+        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             ResourceKey::new("daemon-oneshot").unwrap()
@@ -356,7 +356,7 @@ mod tests {
         async fn create(
             &self,
             _config: &Self::Config,
-            _auth: &(),
+            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())

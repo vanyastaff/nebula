@@ -24,6 +24,7 @@ use std::{
 };
 
 use nebula_core::{CredentialId, LayerLifecycle, ResourceKey, ScopeLevel};
+use nebula_credential::Credential;
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -408,7 +409,7 @@ impl Manager {
         pool_config: crate::topology::pooled::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -443,7 +444,7 @@ impl Manager {
         resident_config: crate::topology::resident::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -473,7 +474,7 @@ impl Manager {
         service_config: crate::topology::service::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -504,7 +505,7 @@ impl Manager {
         exclusive_config: crate::topology::exclusive::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -535,7 +536,7 @@ impl Manager {
         transport_config: crate::topology::transport::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -566,7 +567,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -602,7 +603,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -633,7 +634,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -665,7 +666,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -697,7 +698,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Auth = ()>,
+        R: Resource<Credential = nebula_credential::NoCredential>,
     {
         self.register(
             resource,
@@ -751,7 +752,7 @@ impl Manager {
     /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
@@ -775,7 +776,7 @@ impl Manager {
                         rt.acquire(
                             &managed.resource,
                             &config,
-                            auth,
+                            scheme,
                             ctx,
                             &managed.release_queue,
                             generation,
@@ -804,17 +805,22 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a pooled resource handle without auth.
+    /// Acquires a pooled resource handle without scheme material.
     ///
-    /// Shorthand for [`acquire_pooled`](Self::acquire_pooled) with `auth = &()`.
-    /// Only available when `R::Auth = ()`.
+    /// Shorthand for [`acquire_pooled`](Self::acquire_pooled) with `scheme = &()`.
+    /// Only available when `R::Credential = NoCredential` (so
+    /// `<R::Credential as Credential>::Scheme = ()`).
     pub async fn acquire_pooled_default<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
@@ -832,7 +838,7 @@ impl Manager {
     /// - Propagates resident-specific acquire errors.
     pub async fn acquire_resident<R>(
         &self,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
@@ -852,7 +858,7 @@ impl Manager {
             async move {
                 match &managed.topology {
                     TopologyRuntime::Resident(rt) => {
-                        rt.acquire(&managed.resource, &config, auth, ctx, options)
+                        rt.acquire(&managed.resource, &config, scheme, ctx, options)
                             .await
                     },
                     _ => Err(Error::permanent(format!(
@@ -875,17 +881,20 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a resident resource handle without auth.
+    /// Acquires a resident resource handle without scheme material.
     ///
-    /// Shorthand for [`acquire_resident`](Self::acquire_resident) with `auth = &()`.
-    /// Only available when `R::Auth = ()`.
+    /// Shorthand for [`acquire_resident`](Self::acquire_resident) with `scheme = &()`.
+    /// Only available when `R::Credential = NoCredential`.
     pub async fn acquire_resident_default<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::resident::Resident<Auth = ()> + Send + Sync + 'static,
+        R: crate::topology::resident::Resident<Credential = nebula_credential::NoCredential>
+            + Send
+            + Sync
+            + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
@@ -952,16 +961,21 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a service resource handle without auth.
+    /// Acquires a service resource handle without scheme material.
     ///
-    /// Shorthand for [`acquire_service`](Self::acquire_service) with `auth = &()`.
+    /// Shorthand for [`acquire_service`](Self::acquire_service); only available
+    /// when `R::Credential = NoCredential`.
     pub async fn acquire_service_default<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::service::Service<Auth = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::service::Service<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
@@ -1028,16 +1042,21 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires a transport resource handle without auth.
+    /// Acquires a transport resource handle without scheme material.
     ///
-    /// Shorthand for [`acquire_transport`](Self::acquire_transport) with `auth = &()`.
+    /// Shorthand for [`acquire_transport`](Self::acquire_transport); only available
+    /// when `R::Credential = NoCredential`.
     pub async fn acquire_transport_default<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::transport::Transport<Auth = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::transport::Transport<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
@@ -1103,16 +1122,21 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Acquires an exclusive resource handle without auth.
+    /// Acquires an exclusive resource handle without scheme material.
     ///
-    /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive) with `auth = &()`.
+    /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive); only available
+    /// when `R::Credential = NoCredential`.
     pub async fn acquire_exclusive_default<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::exclusive::Exclusive<Auth = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::exclusive::Exclusive<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
@@ -1137,7 +1161,7 @@ impl Manager {
     ///   pool topology.
     pub async fn try_acquire_pooled<R>(
         &self,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
@@ -1157,7 +1181,7 @@ impl Manager {
                 rt.try_acquire(
                     &managed.resource,
                     &config,
-                    auth,
+                    scheme,
                     ctx,
                     &managed.release_queue,
                     generation,
@@ -1183,17 +1207,21 @@ impl Manager {
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
 
-    /// Non-blocking pooled acquire without auth.
+    /// Non-blocking pooled acquire without scheme material.
     ///
-    /// Shorthand for [`try_acquire_pooled`](Self::try_acquire_pooled) with `auth = &()`.
-    /// Only available when `R::Auth = ()`.
+    /// Shorthand for [`try_acquire_pooled`](Self::try_acquire_pooled) with `scheme = &()`.
+    /// Only available when `R::Credential = NoCredential`.
     pub async fn try_acquire_pooled_default<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
-        R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
+        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
@@ -1234,8 +1262,9 @@ impl Manager {
     /// [`WarmupStrategy`](crate::topology::pooled::config::WarmupStrategy) set
     /// in the pool's configuration.
     ///
-    /// Uses [`Default::default()`] for auth, which works for `R::Auth = ()` and
-    /// any auth type that has a meaningful default.
+    /// Uses [`Default::default()`] for the projected scheme, which works for
+    /// `R::Credential = NoCredential` (Scheme = `()`) and any scheme type that
+    /// has a meaningful default.
     ///
     /// # Errors
     ///
@@ -1261,14 +1290,19 @@ impl Manager {
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
-        R::Auth: Default,
+        // INTERIM (П1): retains a Default bound on the projected Scheme so
+        // `NoCredential` (Scheme = ()) keeps working. П2 replaces this with a
+        // credential-bearing warmup signature per ADR-0036 §Decision +
+        // security-lead amendment B-3 (no Scheme::default() in production
+        // hot paths). TODO(П2): remove Default bound, accept Scheme borrow.
+        <R::Credential as Credential>::Scheme: Default,
     {
         let managed = self.lookup::<R>(&ctx.scope_level())?;
         let config = managed.config();
-        let auth = R::Auth::default();
+        let scheme = <<R::Credential as Credential>::Scheme as Default>::default();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
-                let count = rt.warmup(&managed.resource, &config, &auth, ctx).await;
+                let count = rt.warmup(&managed.resource, &config, &scheme, ctx).await;
                 Ok(count)
             },
             _ => Err(Error::permanent(format!(

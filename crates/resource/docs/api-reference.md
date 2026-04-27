@@ -38,12 +38,13 @@ pub trait Resource: Send + Sync + 'static {
     type Runtime: Send + Sync + 'static;   // live resource handle
     type Lease: Send + Sync + 'static;     // what callers hold
     type Error: Into<crate::Error> + ...;  // resource-specific error
-    type Auth: AuthScheme;                 // auth material resolved before create()
+    type Credential: Credential;           // credential resolved before create()
 
     fn key() -> ResourceKey;
     fn metadata() -> ResourceMetadata { ... }  // default: derived from key
 
-    fn create(&self, config: &Self::Config, auth: &Self::Auth,
+    fn create(&self, config: &Self::Config,
+              scheme: &<Self::Credential as Credential>::Scheme,
               ctx: &ResourceContext) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
     fn check(&self, runtime: &Self::Runtime)
@@ -65,7 +66,7 @@ If `Runtime` and `Lease` are the same type, the blanket `From<T> for T` satisfie
 
 ### `ResourceConfig`
 
-Operational configuration. Must contain no secrets — auth material goes in `Auth`.
+Operational configuration. Must contain no secrets — auth material goes in `Credential`.
 
 ```rust
 pub trait ResourceConfig: Send + Sync + Clone + 'static {
@@ -78,12 +79,18 @@ Two configs with the same non-zero fingerprint are treated as identical during `
 
 ---
 
-### `AuthScheme`
+### `Credential`
 
-Authentication scheme resolved by the credential system before `Resource::create`. Use `()` for unauthenticated resources. Defined in `nebula-credential` (`crates/credential/src/scheme/auth.rs`).
+Credential type resolved by the credential system before `Resource::create`. Use `nebula_resource::NoCredential` for unauthenticated resources (also reachable as `nebula_credential::NoCredential` — same item, re-exported via `crates/resource/src/lib.rs`). The runtime projects `<Self::Credential as Credential>::Scheme` and threads it into `create` and rotation hooks. The `Credential` trait is defined in `nebula-credential` (`crates/credential/src/contract/credential.rs`) and also re-exported as `nebula_resource::Credential`.
 
 ```rust
-pub trait AuthScheme: Send + Sync + Clone + 'static {}
+pub trait Credential: Send + Sync + 'static {
+    type Input;
+    type State: CredentialState;
+    type Scheme: AuthScheme;
+    const KEY: &'static str;
+    // resolve(), project() ...
+}
 ```
 
 ---
@@ -305,15 +312,15 @@ impl Manager {
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error>;
 
-    // Convenience shorthands (Auth = (), scope = Global, no resilience/gate):
-    pub fn register_pooled<R: Resource<Auth = ()>>(
+    // Convenience shorthands (Credential = NoCredential, scope = Global, no resilience/gate):
+    pub fn register_pooled<R: Resource<Credential = NoCredential>>(
         &self, resource: R, config: R::Config, pool_config: PoolConfig) -> Result<(), Error>;
-    pub fn register_resident<R: Resource<Auth = ()>>(
+    pub fn register_resident<R: Resource<Credential = NoCredential>>(
         &self, resource: R, config: R::Config, resident_config: ResidentConfig) -> Result<(), Error>;
-    pub fn register_service<R: Resource<Auth = ()>>(
+    pub fn register_service<R: Resource<Credential = NoCredential>>(
         &self, resource: R, config: R::Config, runtime: R::Runtime,
         service_config: ServiceConfig) -> Result<(), Error>;
-    pub fn register_exclusive<R: Resource<Auth = ()>>(
+    pub fn register_exclusive<R: Resource<Credential = NoCredential>>(
         &self, resource: R, config: R::Config, runtime: R::Runtime,
         exclusive_config: ExclusiveConfig) -> Result<(), Error>;
 
@@ -326,7 +333,8 @@ impl Manager {
 
     // Acquire (topology-specific):
     pub async fn acquire_pooled<R: Pooled + Clone + ...>(
-        &self, auth: &R::Auth, ctx: &ResourceContext, options: &AcquireOptions,
+        &self, scheme: &<R::Credential as Credential>::Scheme,
+        ctx: &ResourceContext, options: &AcquireOptions,
     ) -> Result<ResourceGuard<R>, Error>;
     pub async fn acquire_resident<R: Resident + ...>(...) -> Result<ResourceGuard<R>, Error>;
     pub async fn acquire_service<R: Service + Clone + ...>(...) -> Result<ResourceGuard<R>, Error>;

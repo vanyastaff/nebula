@@ -248,6 +248,12 @@ impl<C: Credential> std::fmt::Debug for SchemeFactory<C> {
 ///     }
 /// }
 /// ```
+#[deprecated(
+    since = "0.1.0",
+    note = "Resource::on_credential_refresh subsumes this trait per ADR-0036; \
+            removal scheduled for nebula-resource П2 once Manager dispatch \
+            lands on the new method."
+)]
 pub trait OnCredentialRefresh<C: Credential>: Send + Sync {
     /// Resource-specific error type for refresh hooks.
     type Error: std::error::Error + Send + Sync + 'static;

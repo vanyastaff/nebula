@@ -78,6 +78,8 @@ mod context;
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
 mod metadata;
+/// `NoCredential` opt-out type — for resources without an authenticated binding (ADR-0036).
+mod no_credential;
 /// Credential record — runtime operational state (timestamps, version, tags).
 mod record;
 
@@ -146,6 +148,10 @@ pub use nebula_core::accessor::CredentialAccessor;
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
+// Opt-out built-in (lives at root, not under credentials::, because it has
+// no Input form and is never registered in CredentialRegistry — it's a
+// Resource-side type marker per ADR-0036).
+pub use no_credential::{NoCredential, NoCredentialState};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 #[cfg(any(test, feature = "test-util"))]
@@ -163,6 +169,7 @@ pub use scheme::{
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard + refresh hook (§15.7).
+#[allow(deprecated)]
 pub use secrets::{
     CredentialGuard, EncryptedData, EncryptionKey, OnCredentialRefresh, RedactedSecret,
     SchemeFactory, SchemeGuard, SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad,

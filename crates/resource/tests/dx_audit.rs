@@ -25,6 +25,7 @@ use std::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_credential::{Credential, NoCredential};
 use nebula_resource::{
     AcquireOptions, AcquireResilience, Manager, PoolConfig, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig,
@@ -132,7 +133,7 @@ impl Resource for HttpClientResource {
     type Runtime = FakeHttpClient;
     type Lease = FakeHttpClient;
     type Error = DxTestError;
-    type Auth = ();
+    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -141,7 +142,7 @@ impl Resource for HttpClientResource {
     fn create(
         &self,
         _config: &HttpClientConfig,
-        _auth: &(),
+        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -298,7 +299,7 @@ impl Resource for ConfigStoreResource {
     type Runtime = ConfigStore;
     type Lease = ConfigStore;
     type Error = DxTestError;
-    type Auth = ();
+    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -307,7 +308,7 @@ impl Resource for ConfigStoreResource {
     fn create(
         &self,
         config: &ConfigStoreConfig,
-        _auth: &(),
+        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<ConfigStore, DxTestError>> + Send {
         let path = config.path.clone();
@@ -441,7 +442,7 @@ impl Resource for DbResource {
     type Runtime = FakeDbConnection;
     type Lease = FakeDbConnection;
     type Error = DxTestError;
-    type Auth = ();
+    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -450,7 +451,7 @@ impl Resource for DbResource {
     fn create(
         &self,
         _config: &DbConfig,
-        _auth: &(),
+        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
         let count = self.create_count.clone();

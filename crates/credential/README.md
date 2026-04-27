@@ -52,6 +52,7 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 - `#[capability]` (in `nebula-credential-macros`) — capability sub-trait declaration with sealed companion + phantom-shim companion per ADR-0035.
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
 - `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations.
+- `NoCredential` — opt-out for resources without an authenticated binding ([ADR-0036](../../docs/adr/0036-resource-credential-adoption-auth-retirement.md)).
 - `StaticProtocol` — reusable pattern for static credentials (State = Scheme).
 - `ExternalProvider`, `ExternalReference`, `ProviderKind`, `ProviderError` — external provider abstraction for Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and other secret managers.
 - `CredentialMetrics` — standardized credential operation metric names and label helpers (`resolve_total`, `refresh_total`, `rotations_total`, etc.).

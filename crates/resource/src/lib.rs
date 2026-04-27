@@ -68,6 +68,11 @@ pub use manager::{
 };
 pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
+// Credential adoption surface per ADR-0036 — re-exported so resource
+// consumers don't need a direct nebula-credential dep for trait shape.
+pub use nebula_credential::{
+    Credential, CredentialContext, CredentialId, NoCredential, NoCredentialState, SchemeGuard,
+};
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.

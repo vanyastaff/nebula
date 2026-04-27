@@ -34,5 +34,7 @@ pub use crypto::{
 };
 pub use guard::CredentialGuard;
 pub use redacted::RedactedSecret;
-pub use scheme_guard::{OnCredentialRefresh, SchemeFactory, SchemeGuard};
+#[allow(deprecated)]
+pub use scheme_guard::OnCredentialRefresh;
+pub use scheme_guard::{SchemeFactory, SchemeGuard};
 pub use secret_string::SecretString;

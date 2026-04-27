@@ -2,12 +2,15 @@
 //!
 //! [`Resource`] is the central abstraction: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! five associated types and four lifecycle methods.
+//! five associated types and six lifecycle methods. The `Credential`
+//! associated type carries the credential-binding contract per ADR-0036;
+//! resources without an authenticated binding use
+//! `type Credential = NoCredential` (re-exported from `nebula_credential`).
 
 use std::future::Future;
 
 use nebula_core::ResourceKey;
-use nebula_credential::AuthScheme;
+use nebula_credential::{Credential, CredentialContext, CredentialId, SchemeGuard};
 
 use crate::context::ResourceContext;
 
@@ -191,10 +194,16 @@ impl ResourceMetadataBuilder {
     }
 }
 
-/// Core resource trait — 5 associated types + 4 lifecycle methods.
+/// Core resource trait — 5 associated types + 6 lifecycle methods.
 ///
 /// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
 /// which avoids the `Box<dyn Future>` allocation on every call.
+///
+/// Implementors supply five associated types and six lifecycle methods.
+/// The `Credential` associated type carries the credential-binding
+/// contract per ADR-0036; resources without an authenticated binding
+/// use `type Credential = NoCredential` (re-exported from
+/// `nebula_credential`).
 ///
 /// # Associated types
 ///
@@ -204,7 +213,7 @@ impl ResourceMetadataBuilder {
 /// | `Runtime` | The live resource handle (connection, client, etc.) |
 /// | `Lease` | What callers hold while using the resource |
 /// | `Error` | Resource-specific error, convertible to [`crate::Error`] |
-/// | `Auth` | Authentication scheme resolved by the credential system |
+/// | `Credential` | Credential binding per ADR-0036 (use `NoCredential` to opt out) |
 ///
 /// # Lifecycle
 ///
@@ -226,22 +235,76 @@ pub trait Resource: Send + Sync + 'static {
     type Lease: Send + Sync + 'static;
     /// Resource-specific error type.
     type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
-    /// Authentication scheme resolved by the credential system.
+    /// The credential type bound to this resource per ADR-0036.
     ///
-    /// Declares what auth material this resource needs (e.g., `SecretToken`,
-    /// `IdentityPassword`). Use `()` for resources that require no authentication.
-    type Auth: AuthScheme;
+    /// Resources without an authenticated binding use
+    /// [`NoCredential`](nebula_credential::NoCredential). The runtime
+    /// projects `<Self::Credential as Credential>::Scheme` and threads it
+    /// through [`create`](Self::create) and rotation hooks.
+    type Credential: Credential;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
 
-    /// Creates a new runtime instance from config and auth material.
+    /// Creates a new runtime instance from config and projected scheme material.
+    ///
+    /// `scheme` is borrowed from the credential subsystem; resources MUST NOT
+    /// retain it past the returned future per `PRODUCT_CANON.md §12.5`
+    /// (secret-handling discipline).
     fn create(
         &self,
         config: &Self::Config,
-        auth: &Self::Auth,
+        scheme: &<Self::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
+
+    /// Called by the engine after a successful credential refresh.
+    ///
+    /// Default: no-op. Connection-bound resources (Pool, Service, Transport)
+    /// override with the blue-green pool swap pattern per credential Tech
+    /// Spec §15.7 — build a fresh pool from `new_scheme`, atomically swap
+    /// into the resource's `Arc<RwLock<Pool>>`, let RAII drain old handles.
+    ///
+    /// `new_scheme` and `ctx` share the lifetime `'a`. The shared lifetime
+    /// is the compile-time barrier preventing retention — see
+    /// [`SchemeGuard`] Probe 6.
+    /// Implementations MUST NOT store either argument past this call.
+    ///
+    /// Cancellation safety: implementations MUST be cancel-safe — if the
+    /// returned future is dropped mid-await, the resource MUST remain
+    /// consistent (`SchemeGuard`'s `ZeroizeOnDrop` fires deterministically
+    /// across the cancellation boundary).
+    ///
+    /// **П1 status:** Manager-side dispatch is not wired in this PR; this
+    /// method exists for impl ergonomics and forward-compat. П2 lands the
+    /// reverse-index write + parallel `join_all` dispatcher.
+    fn on_credential_refresh<'a>(
+        &self,
+        new_scheme: SchemeGuard<'a, Self::Credential>,
+        ctx: &'a CredentialContext,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
+        let _ = (new_scheme, ctx);
+        async { Ok(()) }
+    }
+
+    /// Called by the engine after a credential is revoked.
+    ///
+    /// Default: no-op. Override invariant per ADR-0036 §Decision:
+    /// post-invocation, the resource MUST emit no further authenticated
+    /// traffic on the revoked credential. The mechanism (destroy pool /
+    /// mark-tainted / wait-for-drain / reject-new-acquires) is the
+    /// implementor's choice; П2 Tech Spec §5 specifies typical patterns.
+    ///
+    /// **П1 status:** Manager-side dispatch is not wired in this PR; this
+    /// method exists for impl ergonomics and forward-compat. П2 lands the
+    /// reverse-index write + revocation dispatcher.
+    fn on_credential_revoke(
+        &self,
+        credential_id: &CredentialId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let _ = credential_id;
+        async { Ok(()) }
+    }
 
     /// Health-checks an existing runtime.
     ///
