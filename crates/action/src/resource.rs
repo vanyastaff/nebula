@@ -66,7 +66,8 @@ pub type ResourceCleanupFuture<'a> =
 /// # Errors
 ///
 /// Returns [`ActionError`] on configuration or cleanup failure.
-pub trait ResourceHandler: Send + Sync {
+#[async_trait::async_trait]
+pub trait ResourceHandler: Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -75,30 +76,22 @@ pub trait ResourceHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if the resource cannot be configured.
-    fn configure<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn configure(
+        &self,
         config: Value,
-        ctx: &'life1 dyn ActionContext,
-    ) -> ResourceConfigureFuture<'a>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+        ctx: &dyn ActionContext,
+    ) -> Result<Box<dyn Any + Send + Sync>, ActionError>;
 
     /// Clean up the resource instance when the scope ends.
     ///
     /// # Errors
     ///
     /// Returns [`ActionError`] if cleanup fails.
-    fn cleanup<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn cleanup(
+        &self,
         instance: Box<dyn Any + Send + Sync>,
-        ctx: &'life1 dyn ActionContext,
-    ) -> ResourceCleanupFuture<'a>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+        ctx: &dyn ActionContext,
+    ) -> Result<(), ActionError>;
 }
 
 // ── Adapter ─────────────────────────────────────────────────────────────────
@@ -132,6 +125,7 @@ impl<A> ResourceActionAdapter<A> {
     }
 }
 
+#[async_trait::async_trait]
 impl<A> ResourceHandler for ResourceActionAdapter<A>
 where
     A: ResourceAction + Send + Sync + 'static,
@@ -143,26 +137,19 @@ where
     /// Configure the resource by delegating to the typed action.
     ///
     /// The `_config` parameter is reserved for future use; the typed
-    /// [`ResourceAction::configure`] obtains its configuration from context.
+    /// `ResourceAction::configure` obtains its configuration from context.
     ///
     /// # Errors
     ///
     /// Returns [`ActionError`] if the resource cannot be configured.
-    fn configure<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn configure(
+        &self,
         _config: Value,
-        ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move {
-            let resource = self.action.configure(ctx).await?;
-            let boxed: Box<dyn Any + Send + Sync> = Box::new(resource);
-            Ok(boxed)
-        })
+        ctx: &dyn ActionContext,
+    ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
+        let resource = self.action.configure(ctx).await?;
+        let boxed: Box<dyn Any + Send + Sync> = Box::new(resource);
+        Ok(boxed)
     }
 
     /// Clean up the resource by downcasting and delegating.
@@ -172,29 +159,22 @@ where
     /// Returns [`ActionError::Fatal`] if the downcast invariant is violated
     /// (engine bug — the box we returned from `configure` was routed to a
     /// different adapter), or propagates errors from the underlying action.
-    fn cleanup<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn cleanup(
+        &self,
         resource: Box<dyn Any + Send + Sync>,
-        ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move {
-            // The downcast is an engine-level invariant check: we box
-            // `A::Resource` in `configure` above and the engine routes the
-            // same box back here. A mismatch is an engine bug, not a user
-            // footgun — there is no `Config`/`Instance` split to bridge.
-            let typed = resource.downcast::<A::Resource>().map_err(|_| {
-                ActionError::fatal(format!(
-                    "ResourceActionAdapter: downcast invariant violated for {}",
-                    std::any::type_name::<A::Resource>()
-                ))
-            })?;
-            self.action.cleanup(*typed, ctx).await
-        })
+        ctx: &dyn ActionContext,
+    ) -> Result<(), ActionError> {
+        // The downcast is an engine-level invariant check: we box
+        // `A::Resource` in `configure` above and the engine routes the
+        // same box back here. A mismatch is an engine bug, not a user
+        // footgun — there is no `Config`/`Instance` split to bridge.
+        let typed = resource.downcast::<A::Resource>().map_err(|_| {
+            ActionError::fatal(format!(
+                "ResourceActionAdapter: downcast invariant violated for {}",
+                std::any::type_name::<A::Resource>()
+            ))
+        })?;
+        self.action.cleanup(*typed, ctx).await
     }
 }
 
