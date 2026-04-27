@@ -19,7 +19,7 @@
 //! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant for closures that need
 //!   credentials, resources, or the logger.
 
-use std::{fmt, future::Future, marker::PhantomData, pin::Pin};
+use std::{fmt, future::Future, marker::PhantomData};
 
 use nebula_core::DeclaresDependencies;
 use serde_json::Value;
@@ -289,33 +289,30 @@ impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
 
 // ── StatelessHandler trait ──────────────────────────────────────────────────
 
-/// Stateless action handler — JSON in, JSON out.
+/// Stateless handler — JSON-erased one-shot execution contract.
 ///
-/// This is the JSON-level contract for one-shot actions. The engine sends
-/// a `serde_json::Value` input and receives a `serde_json::Value` output
-/// wrapped in [`ActionResult`].
+/// The engine dispatches every `StatelessAction` through this `dyn` trait
+/// (wrapped by [`StatelessActionAdapter`]). For typed authoring, write
+/// `impl StatelessAction` and let the adapter bridge to JSON.
 ///
 /// # Errors
 ///
-/// Returns [`ActionError`] on validation, retryable, or fatal failures.
-pub trait StatelessHandler: Send + Sync {
+/// Returns [`ActionError`] on validation, retryable, or fatal failure.
+#[async_trait::async_trait]
+pub trait StatelessHandler: Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
-    /// Execute with JSON input and context.
+    /// Execute one-shot with JSON input.
     ///
     /// # Errors
     ///
     /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
-    fn execute<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn execute(
+        &self,
         input: Value,
-        ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError>;
 }
 
 // ── StatelessActionAdapter ──────────────────────────────────────────────────
@@ -343,6 +340,7 @@ impl<A> StatelessActionAdapter<A> {
     }
 }
 
+#[async_trait::async_trait]
 impl<A> StatelessHandler for StatelessActionAdapter<A>
 where
     A: StatelessAction + Send + Sync + 'static,
@@ -353,31 +351,24 @@ where
         self.action.metadata()
     }
 
-    fn execute<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn execute(
+        &self,
         input: Value,
-        ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move {
-            let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
-                ActionError::validation(
-                    "input",
-                    ValidationReason::MalformedJson,
-                    Some(e.to_string()),
-                )
-            })?;
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
 
-            let result = self.action.execute(typed_input, ctx).await?;
+        let result = self.action.execute(typed_input, ctx).await?;
 
-            result.try_map_output(|output| {
-                serde_json::to_value(output)
-                    .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
-            })
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
         })
     }
 }
