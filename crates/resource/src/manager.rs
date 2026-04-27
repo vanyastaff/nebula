@@ -238,6 +238,24 @@ pub struct RegisterOptions {
     pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Credential ID this resource binds to.
+    ///
+    /// Required for resources where `R::Credential != NoCredential` —
+    /// `Manager::register` returns [`Error::missing_credential_id`] if a
+    /// credential-bearing resource is registered without an ID. Ignored for
+    /// `NoCredential`-bound resources (the manager logs a warning if one is
+    /// supplied alongside `Credential = NoCredential`).
+    ///
+    /// Set via [`RegisterOptions::with_credential_id`].
+    pub credential_id: Option<CredentialId>,
+    /// Per-resource override for the default credential rotation timeout.
+    ///
+    /// `None` falls back to [`ManagerConfig::credential_rotation_timeout`]
+    /// (default `30s`). Only meaningful for credential-bearing resources;
+    /// ignored for `NoCredential`-bound resources.
+    ///
+    /// Set via [`RegisterOptions::with_rotation_timeout`].
+    pub credential_rotation_timeout: Option<Duration>,
 }
 
 impl Default for RegisterOptions {
@@ -246,7 +264,32 @@ impl Default for RegisterOptions {
             scope: ScopeLevel::Global,
             resilience: None,
             recovery_gate: None,
+            credential_id: None,
+            credential_rotation_timeout: None,
         }
+    }
+}
+
+impl RegisterOptions {
+    /// Sets the credential ID this resource binds to.
+    ///
+    /// Required for credential-bearing resources (`R::Credential != NoCredential`).
+    /// `Manager::register` errors with [`Error::missing_credential_id`] if a
+    /// credential-bearing resource is registered without an ID.
+    #[must_use]
+    pub fn with_credential_id(mut self, id: CredentialId) -> Self {
+        self.credential_id = Some(id);
+        self
+    }
+
+    /// Overrides the default credential rotation timeout for this resource.
+    ///
+    /// Falls back to [`ManagerConfig::credential_rotation_timeout`] (default
+    /// `30s`) when not set. Only meaningful for credential-bearing resources.
+    #[must_use]
+    pub fn with_rotation_timeout(mut self, timeout: Duration) -> Self {
+        self.credential_rotation_timeout = Some(timeout);
+        self
     }
 }
 
@@ -369,10 +412,32 @@ impl Manager {
     /// backend. On transient acquire failures the gate is passively
     /// triggered so subsequent callers fast-fail.
     ///
+    /// `credential_id` binds the resource into the credential rotation
+    /// reverse-index. Must be `Some` for credential-bearing resources
+    /// (`R::Credential != NoCredential`); ignored (with a warning) for
+    /// `NoCredential`-bound resources. Sourced from
+    /// [`RegisterOptions::credential_id`] in the `_with` shorthand variants.
+    ///
+    /// `credential_rotation_timeout` overrides
+    /// [`ManagerConfig::credential_rotation_timeout`] (default `30s`) for
+    /// this resource only. `None` keeps the manager-wide default. Sourced
+    /// from [`RegisterOptions::credential_rotation_timeout`] in the `_with`
+    /// shorthand variants.
+    ///
     /// # Errors
     ///
-    /// Returns an error if config validation fails on the
-    /// provided config.
+    /// Returns an error if config validation fails on the provided config,
+    /// or if a credential-bearing resource is registered without a
+    /// `credential_id` (see [`Error::missing_credential_id`]).
+    // Task 11 (Manager file-split) is slated to consolidate scope/resilience/
+    // recovery_gate/credential_id/credential_rotation_timeout into a single
+    // `RegisterOptions` parameter. Until that lands, the positional surface
+    // mirrors the existing pre-Task-6 signature with two new credential
+    // parameters wired through to `register_inner`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "consolidation into `RegisterOptions` deferred to Task 11 (Manager file-split)"
+    )]
     pub fn register<R: Resource>(
         &self,
         resource: R,
@@ -381,6 +446,8 @@ impl Manager {
         topology: TopologyRuntime<R>,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
+        credential_id: Option<CredentialId>,
+        credential_rotation_timeout: Option<Duration>,
     ) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
         config.validate()?;
@@ -396,7 +463,7 @@ impl Manager {
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             resilience,
             recovery_gate,
-            credential_id: None,
+            credential_id,
         });
 
         let type_id = TypeId::of::<ManagedResource<R>>();
@@ -416,10 +483,15 @@ impl Manager {
             .event_tx
             .send(ResourceEvent::Registered { key: key.clone() });
 
-        // Reverse-index write: no-op for `NoCredential`-bound resources
-        // (all in-tree resources today). Task 6 plumbs `credential_id` and
-        // `timeout_override` through `RegisterOptions`.
-        self.register_inner(Arc::clone(&managed), None, None)?;
+        // Reverse-index write — populates `credential_resources` for
+        // credential-bearing resources, no-op for `NoCredential`-bound ones.
+        // `credential_id` and `credential_rotation_timeout` flow through
+        // [`RegisterOptions`] in the `_with` shorthand variants.
+        self.register_inner(
+            Arc::clone(&managed),
+            credential_id,
+            credential_rotation_timeout,
+        )?;
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -505,6 +577,8 @@ impl Manager {
             )),
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -532,6 +606,8 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
+            None,
+            None,
             None,
             None,
         )
@@ -565,6 +641,8 @@ impl Manager {
             )),
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -594,6 +672,8 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
+            None,
+            None,
             None,
             None,
         )
@@ -627,13 +707,16 @@ impl Manager {
             )),
             None,
             None,
+            None,
+            None,
         )
     }
 
     /// Registers a pooled resource with extended options.
     ///
     /// Like [`register_pooled`](Self::register_pooled) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -663,13 +746,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a resident resource with extended options.
     ///
     /// Like [`register_resident`](Self::register_resident) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -693,13 +779,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a service resource with extended options.
     ///
     /// Like [`register_service`](Self::register_service) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -725,13 +814,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a transport resource with extended options.
     ///
     /// Like [`register_transport`](Self::register_transport) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -757,13 +849,16 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
     /// Registers an exclusive resource with extended options.
     ///
     /// Like [`register_exclusive`](Self::register_exclusive) but accepts
-    /// [`RegisterOptions`] for scope, resilience, and recovery gate.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
+    /// credential rotation binding.
     ///
     /// # Errors
     ///
@@ -789,6 +884,8 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
+            options.credential_id,
+            options.credential_rotation_timeout,
         )
     }
 
