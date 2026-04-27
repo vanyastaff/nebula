@@ -17,7 +17,7 @@ use std::time::Duration;
 use nebula_core::CredentialId;
 use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, HeartbeatError, PgRefreshClaimRepo, RefreshClaimRepo, ReplicaId,
-    SentinelState,
+    RepoError, SentinelState,
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::sync::OnceCell;
@@ -185,6 +185,44 @@ async fn mark_sentinel_then_reclaim_returns_in_flight_state() {
     assert_eq!(our_row.previous_holder, ReplicaId::new("crashed-replica"));
     assert_eq!(our_row.previous_generation, 0);
     assert_eq!(our_row.sentinel, SentinelState::RefreshInFlight);
+}
+
+#[tokio::test]
+async fn mark_sentinel_after_reclaim_returns_invalid_state() {
+    // Contract (sub-spec §3.4 + trait doc): once a claim has been reclaimed
+    // (row removed by `reclaim_stuck`, or generation bumped by an in-place
+    // overwrite), the original holder's `mark_sentinel` MUST return
+    // `RepoError::InvalidState` so the holder cannot proceed to the IdP
+    // POST while another replica owns the credential. Silent success would
+    // re-introduce the pre-fix race that this trait change closed.
+    let Some(pool) = pool().await else {
+        eprintln!("DATABASE_URL not set — skipping");
+        return;
+    };
+    let repo = PgRefreshClaimRepo::new(pool);
+    let cid = CredentialId::new();
+
+    let token = match repo
+        .try_claim(&cid, &ReplicaId::new("A"), Duration::from_millis(50))
+        .await
+        .unwrap()
+    {
+        ClaimAttempt::Acquired(c) => c.token,
+        ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+    };
+
+    // Wait past TTL and sweep, deleting the row.
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let _reclaimed = repo.reclaim_stuck().await.unwrap();
+
+    let err = repo
+        .mark_sentinel(&token)
+        .await
+        .expect_err("mark_sentinel must fail after reclaim");
+    assert!(
+        matches!(err, RepoError::InvalidState(_)),
+        "expected InvalidState, got {err:?}"
+    );
 }
 
 #[tokio::test]
