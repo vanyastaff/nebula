@@ -138,6 +138,30 @@ shape maps 1:1 to a call against the new shape.
 > contracts. The "concrete primitive, not a trait" design principle
 > remains unchanged.
 
+> **Amendment 2026-04-26 (Stage 5) — П2 implementation cascade landed:**
+> two-tier coordinator (L1 + L2 claim repo per ADR-0041). The original
+> `RefreshCoordinator` from the 2026-04-23 amendment is now **renamed to
+> `L1RefreshCoalescer` and made private** to `nebula-engine`; a new outer
+> `RefreshCoordinator` composes the in-process L1 with a durable
+> `RefreshClaimRepo` (CAS + TTL + heartbeat + reclaim sweep) for
+> cross-replica coordination. Sentinel N=3-in-1h threshold +
+> `ReauthRequired` escalation surface mid-refresh crashes (a holder
+> dying after the IdP POST but before sentinel clear) so operators see
+> a typed signal instead of a token-rotation black hole. Closes
+> n8n #13088 class production race where rotated `refresh_token_v2`
+> invalidates `refresh_token_v1` on a parallel replica. Implementation
+> ships in `crates/storage/src/credential/refresh_claim/` (trait +
+> in-memory + SQLite + Postgres impls) and
+> `crates/engine/src/credential/refresh.rs` (outer coordinator) +
+> `crates/engine/src/credential/sentinel.rs` (sentinel trigger). The
+> "no extension seam desired for `RefreshCoordinator`" stance from the
+> 2026-04-23 amendment is preserved — the new outer coordinator is
+> still concrete; only the **claim repository** (the storage seam at
+> `RefreshClaimRepo`) is a trait, because durability backends (SQLite
+> vs Postgres) legitimately differ. See sub-spec
+> `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`
+> and ADR-0041 for the full rationale.
+
 **`RefreshCoordinator` now lives in `nebula-engine/src/credential/refresh.rs`
 as a concrete primitive (not a trait).** Engine uses it via its concrete
 API surface. This ADR explicitly declares **no extension seam desired**

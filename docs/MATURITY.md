@@ -21,7 +21,7 @@ Legend:
 | nebula-action        | frontier | stable  | stable | partial (webhook sig `Required` by default at trait surface — ADR-0022; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
 | nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016; API routing infrastructure per spec 05: tenant-scoped routes, RBAC/tenancy/CSRF middleware, cursor pagination, port traits `OrgResolver`/`WorkspaceResolver`/`SessionStore`/`MembershipStore`, extended `ApiConfig` with TLS/Cookie/CORS/Versioning/Pagination sub-configs, 10 new `ApiError` variants) | partial |
 | nebula-core          | frontier | stable  | stable | stable (6 public modules: `role`, `permission`, `tenancy`, `slug`, `auth`, `guard` — `TenantContext`, `ResolvedIds`, `OrgRole`, `WorkspaceRole`, `Permission`, `PermissionDenied`, `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()`, `AuthScheme`, `AuthPattern`, `Guard`, `TypedGuard`, `BaseContext`, `Context`) | n/a |
-| nebula-credential    | frontier (**П1 trait scaffolding landed 2026-04-26** per Tech Spec §15.4-§15.8 — capability sub-trait split, `AuthScheme` sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard`/`SchemeFactory` refresh hook, capability-from-type authority shift; 10 landing-gate compile-fail probes + 1 runtime probe green; ADR-0035 phantom-shim canonical form; P6-P11 architecture cleanup remains — accessor/metadata flattened, `AuthScheme`/`AuthPattern` canonical in `nebula-core`, dep diet к core/metadata/schema/resilience/error, `ExternalProvider` abstraction; **pruned 2026-04-24**: `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes + corresponding `AuthPattern` variants — Plane-A / integration-internal territory) | stable  | stable | partial (runtime resolver/registry + rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API OAuth callback persistence landed; **single-process refresh coordination only** — multi-replica mid-refresh race handling tracked in Spec H0 credential-refresh-coordination, 2026-04-24; engine `iter_compatible` slot-picker consumer wiring + manager-side `OnCredentialRefresh<C>` fan-out tracked as post-П1 follow-ups in credential concerns register) | n/a |
+| nebula-credential    | frontier (**П1 trait scaffolding landed 2026-04-26** per Tech Spec §15.4-§15.8 — capability sub-trait split, `AuthScheme` sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard`/`SchemeFactory` refresh hook, capability-from-type authority shift; 10 landing-gate compile-fail probes + 1 runtime probe green; ADR-0035 phantom-shim canonical form; P6-P11 architecture cleanup remains — accessor/metadata flattened, `AuthScheme`/`AuthPattern` canonical in `nebula-core`, dep diet к core/metadata/schema/resilience/error, `ExternalProvider` abstraction; **pruned 2026-04-24**: `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes + corresponding `AuthPattern` variants — Plane-A / integration-internal territory) | stable  | stable | stable (**П2 refresh coordination L2 landed 2026-04-26** per `<MERGE_SHA>` — two-tier coordinator: in-process L1 (`L1RefreshCoalescer`) + durable L2 (`RefreshClaimRepo` per ADR-0041) with TTL/heartbeat/reclaim sweep; sentinel N=3-in-1h threshold + `ReauthRequired` escalation; 5 metrics + 3 spans + 3 audit events; nightly chaos test (3 replicas × 100 creds × 10 min) — closes n8n #13088 cross-replica `refresh_token_v1`-invalidates-`v2` race; engine `iter_compatible` slot-picker consumer wiring + manager-side `OnCredentialRefresh<C>` fan-out tracked as post-П1 follow-ups in credential concerns register) | n/a |
 | nebula-credential-builtin | frontier (preview — П1 trait scaffolding landed 2026-04-26; `mod sealed_caps` convention surface present; concrete capability sub-trait impls land in П3) | n/a | partial (README + crate-level rustdoc only — no concrete API surface yet beyond the П1 trait scaffolding re-exports) | n/a | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017; engine-owned `credential` runtime surface landed in P8 slice) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
@@ -53,7 +53,24 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-26 — **credential П1 trait scaffolding landed:**
+Last targeted revision: 2026-04-26 — **credential П2 refresh coordination L2 landed:**
+worktree `worktree-credential-p2` lands cross-replica refresh coordination per sub-spec
+`docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` and ADR-0041 in
+6 stages — Stage 1 storage infrastructure (`RefreshClaimRepo` trait + 3 impls + migrations
+0022/0023 + loom CAS probe); Stage 2 engine refactor (`L1RefreshCoalescer` private + new
+outer two-tier `RefreshCoordinator` composing L1 + L2 claim repo + sentinel set before
+IdP POST); Stage 3 sentinel N=3-in-1h threshold + `ReauthRequired` escalation + reclaim
+sweep with `RefreshOutcome::CoalescedByOtherReplica` + `reauth_required` persisted on
+`StoredCredential` (sub-spec §3.6); Stage 4 observability (5 metrics + 3 spans + 3
+audit events) + nightly chaos test (3 replicas × 100 creds × 10 min); Stage 5 doc sync.
+`nebula-credential` Engine integration upgraded `partial → stable` honestly — multi-replica
+mid-refresh race handled via durable claim repo. Closes n8n #13088 class production race
+where rotated `refresh_token_v2` invalidates `refresh_token_v1` on a parallel replica.
+Default chaos test gated behind `--features chaos-full`; nightly workflow runs it. Public
+API breaking change: `AuditOperation` lost `Copy` derive. PRODUCT_CANON anchor
+`#132-rotation-refresh-seam` fixed in this PR (out-of-band cleanup). Merge SHA
+`<MERGE_SHA>`.
+Prior: 2026-04-26 — **credential П1 trait scaffolding landed:**
 worktree `worktree-credential-p1` lands the validated CP5/CP6 trait shape per
 Tech Spec §15.4-§15.8 in 8 stages — capability sub-trait split (Tech Spec §15.4
 — `Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic` replace 4 capability bools);
