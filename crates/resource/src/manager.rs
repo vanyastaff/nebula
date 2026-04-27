@@ -1435,16 +1435,22 @@ impl Manager {
         }
     }
 
-    /// Warms up a registered Pool resource by pre-creating instances up to `min_size`.
+    /// Pre-warms a registered Pool resource that opts out of credential binding.
+    ///
+    /// Restricted to `R: Resource<Credential = NoCredential>` — compile-time
+    /// gate that makes the unit scheme (`Scheme = ()`) the only callable shape.
+    /// Internally passes `&()` to the runtime's warmup path.
+    ///
+    /// Per Tech Spec §5.2 and security-lead amendment B-3: kept separate from
+    /// the credential-bearing [`warmup_pool`](Self::warmup_pool) so the
+    /// production hot path never calls `Scheme::default()`. The `NoCredential`
+    /// bound is unfaultable at compile time — a credential-bearing resource
+    /// cannot be pre-warmed via this method.
     ///
     /// This fills the idle queue before production traffic hits, eliminating
     /// cold-start latency on the first batch of requests. Warmup follows the
     /// [`WarmupStrategy`](crate::topology::pooled::config::WarmupStrategy) set
     /// in the pool's configuration.
-    ///
-    /// Uses [`Default::default()`] for the projected scheme, which works for
-    /// `R::Credential = NoCredential` (Scheme = `()`) and any scheme type that
-    /// has a meaningful default.
     ///
     /// # Errors
     ///
@@ -1462,27 +1468,76 @@ impl Manager {
     /// #     Default::default(),
     /// #     tokio_util::sync::CancellationToken::new(),
     /// # );
-    /// // manager.warmup_pool::<MyDb>(&ctx).await.unwrap();
+    /// // manager.warmup_pool_no_credential::<MyDb>(&ctx).await.unwrap();
     /// # }
     /// ```
-    pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
+    pub async fn warmup_pool_no_credential<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
+    where
+        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let config = managed.config();
+        // `NoCredential::Scheme = ()` — pass the unit value directly. NO call
+        // to `Scheme::default()` (security amendment B-3).
+        let scheme = ();
+        match &managed.topology {
+            TopologyRuntime::Pool(rt) => {
+                let count = rt.warmup(&managed.resource, &config, &scheme, ctx).await;
+                Ok(count)
+            },
+            _ => Err(Error::permanent(format!(
+                "{}: warmup_pool_no_credential requires Pool topology, registered as {}",
+                R::key(),
+                managed.topology.tag()
+            ))),
+        }
+    }
+
+    /// Pre-warms a registered credential-bearing Pool resource.
+    ///
+    /// The caller resolves the credential first (e.g. via `CredentialAccessor`)
+    /// and passes a borrowed scheme; the manager forwards it to `R::create` for
+    /// each pre-warmed instance. The borrow does not outlive the call.
+    ///
+    /// Per Tech Spec §5.2 and security-lead amendment B-3: NO `Default` bound
+    /// on `Scheme`, NO `Scheme::default()` call. Forces the caller to supply a
+    /// real credential, eliminating the "warm with empty credential → 401
+    /// storm on first acquire" footgun. Use
+    /// [`warmup_pool_no_credential`](Self::warmup_pool_no_credential) for
+    /// resources that opt out of credential binding (`Credential = NoCredential`).
+    ///
+    /// Caller flow:
+    /// 1. Resolve credential → obtain `<R::Credential as Credential>::Scheme`.
+    /// 2. Call `warmup_pool::<R>(&scheme, &ctx)`.
+    /// 3. Manager threads the scheme through to `R::create` for each instance.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   pool topology.
+    pub async fn warmup_pool<R>(
+        &self,
+        scheme: &<R::Credential as Credential>::Scheme,
+        ctx: &ResourceContext,
+    ) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
-        // INTERIM (П1): retains a Default bound on the projected Scheme so
-        // `NoCredential` (Scheme = ()) keeps working. П2 replaces this with a
-        // credential-bearing warmup signature per ADR-0036 §Decision +
-        // security-lead amendment B-3 (no Scheme::default() in production
-        // hot paths). TODO(П2): remove Default bound, accept Scheme borrow.
-        <R::Credential as Credential>::Scheme: Default,
     {
         let managed = self.lookup::<R>(&ctx.scope_level())?;
         let config = managed.config();
-        let scheme = <<R::Credential as Credential>::Scheme as Default>::default();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
-                let count = rt.warmup(&managed.resource, &config, &scheme, ctx).await;
+                let count = rt.warmup(&managed.resource, &config, scheme, ctx).await;
                 Ok(count)
             },
             _ => Err(Error::permanent(format!(
