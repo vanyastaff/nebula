@@ -26,7 +26,6 @@ use nebula_credential::{
 };
 use reqwest::Response;
 use serde_json::Value;
-use zeroize::Zeroizing;
 
 use super::token_http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
@@ -58,41 +57,56 @@ pub enum TokenRefreshError {
 }
 
 /// Execute OAuth2 refresh-token grant and mutate `state` in place.
+///
+/// SEC-10 (security hardening 2026-04-27 Stage 2): the three secret values
+/// (refresh_token, client_id, client_secret) are NOT extracted into
+/// `Zeroizing<String>` intermediates. Instead, secret borrows live inside
+/// an inner block that returns the built `RequestBuilder`; reqwest copies
+/// the `&str` slices into its internal request body for the HTTP
+/// round-trip, then the inner-block scope ends → secret borrows drop
+/// → `state` is free for `&mut` mutation in
+/// `update_state_from_token_response`. No owned plaintext copy lives in
+/// our code; the unavoidable in-flight copy lives in reqwest's request
+/// body and is released when the response future resolves.
 pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRefreshError> {
-    let refresh_tok: Zeroizing<String> = Zeroizing::new(
-        state
+    let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
+
+    // Inner block scopes secret borrows tightly. After the block returns
+    // the built `RequestBuilder`, reqwest owns the serialized form body
+    // (its own non-zeroizing copy — best-effort defense without forking
+    // reqwest); our borrows drop here.
+    let req = {
+        let refresh_tok = state
             .refresh_token
             .as_ref()
             .ok_or(TokenRefreshError::MissingRefreshToken)?
-            .expose_secret()
-            .to_owned(),
-    );
-    let client_id: Zeroizing<String> = Zeroizing::new(state.client_id.expose_secret().to_owned());
-    let client_secret: Zeroizing<String> =
-        Zeroizing::new(state.client_secret.expose_secret().to_owned());
+            .expose_secret();
+        let client_id = state.client_id.expose_secret();
+        let client_secret = state.client_secret.expose_secret();
 
-    let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
-    let mut form: Vec<(&str, &str)> = vec![
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_tok.as_str()),
-    ];
-    if let Some(ref scope) = scope_joined {
-        form.push(("scope", scope.as_str()));
-    }
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_tok),
+        ];
+        if let Some(ref scope) = scope_joined {
+            form.push(("scope", scope.as_str()));
+        }
 
-    let client = oauth_token_http_client();
-    let mut req = client.post(&state.token_url);
-    match state.auth_style {
-        AuthStyle::Header => {
-            req = req.basic_auth(client_id.as_str(), Some(client_secret.as_str()));
-            req = req.form(&form);
-        },
-        AuthStyle::PostBody => {
-            form.push(("client_id", client_id.as_str()));
-            form.push(("client_secret", client_secret.as_str()));
-            req = req.form(&form);
-        },
-    }
+        let client = oauth_token_http_client();
+        let mut req = client.post(&state.token_url);
+        match state.auth_style {
+            AuthStyle::Header => {
+                req = req.basic_auth(client_id, Some(client_secret));
+                req = req.form(&form);
+            },
+            AuthStyle::PostBody => {
+                form.push(("client_id", client_id));
+                form.push(("client_secret", client_secret));
+                req = req.form(&form);
+            },
+        }
+        req
+    };
 
     let resp = req
         .send()
