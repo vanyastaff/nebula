@@ -867,11 +867,21 @@ impl RefreshCoordinator {
                                 cancel.cancel();
                                 break;
                             }
-                            Err(other) => {
+                            Err(HeartbeatError::Repo(repo_err)) => {
+                                // Variant-explicit on purpose:
+                                // `HeartbeatError` is NOT `#[non_exhaustive]`,
+                                // so a wildcard `Err(other)` would silently
+                                // bucket any future variant (e.g.
+                                // `Unauthorized`, `Throttled`) as transient.
+                                // Matching `Repo(_)` explicitly forces a
+                                // compiler error when a new variant is
+                                // added so the next maintainer makes a
+                                // per-variant policy decision rather than
+                                // inheriting "treat as transient" by accident.
                                 transient_failures += 1;
                                 if transient_failures >= Self::MAX_TRANSIENT_HEARTBEAT_FAILURES {
                                     tracing::error!(
-                                        error = ?other,
+                                        error = ?repo_err,
                                         %credential_id,
                                         replica_id = %replica_id,
                                         attempts = transient_failures,
@@ -888,7 +898,7 @@ impl RefreshCoordinator {
                                 // perspective. Operators can still see
                                 // them on noisy-log dashboards.
                                 tracing::warn!(
-                                    error = ?other,
+                                    error = ?repo_err,
                                     %credential_id,
                                     replica_id = %replica_id,
                                     attempt = transient_failures,
