@@ -27,6 +27,15 @@ use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 /// Cloning produces a handle to the **same** underlying data (cheap `Arc` clone).
 #[derive(Clone)]
 pub struct InMemoryStore {
+    /// Test-shim store. `tokio::sync::RwLock` is chosen here for
+    /// trait-impl ergonomics — every `async fn` body locks, mutates the
+    /// map, and returns without awaiting under the guard, so a
+    /// `parking_lot::RwLock` in a sync block would be cheaper. Perf is
+    /// irrelevant in this shim; production storage lives in
+    /// `nebula-storage` per ADR-0032. Do **NOT** cargo-cult this
+    /// `tokio::RwLock<HashMap<...>>` pattern into a production module
+    /// where the guard could cross an `.await` — that's the
+    /// issue-#587-shaped perf cost the audit flagged.
     data: Arc<RwLock<HashMap<String, StoredCredential>>>,
 }
 

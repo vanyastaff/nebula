@@ -49,6 +49,15 @@ use crate::{
 /// ```
 #[derive(Clone)]
 pub struct InMemoryPendingStore {
+    /// Test-shim store. `tokio::sync::RwLock` is chosen here for
+    /// trait-impl ergonomics — every `async fn` body locks, mutates the
+    /// map, and returns without awaiting under the guard, so a
+    /// `parking_lot::RwLock` in a sync block would be cheaper. Perf is
+    /// irrelevant in this shim; production storage lives in
+    /// `nebula-storage` per ADR-0029 §4 / ADR-0032 §7. Do **NOT**
+    /// cargo-cult this `tokio::RwLock<HashMap<...>>` pattern into a
+    /// production module where the guard could cross an `.await` —
+    /// that's the issue-#587-shaped perf cost the audit flagged.
     entries: Arc<RwLock<HashMap<String, PendingEntry>>>,
 }
 

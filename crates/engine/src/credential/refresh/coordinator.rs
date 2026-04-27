@@ -526,6 +526,24 @@ impl RefreshCoordinator {
         P: Fn(&CredentialId) -> PFut + Sync,
         PFut: Future<Output = bool> + Send,
     {
+        // NOTE (audit C12 — future-bloat trade-off): this fn is
+        // intentionally large (~250 lines after the B6 permit fix; 8
+        // generic parameters; two scopeguard closures plus a
+        // `tokio::time::timeout` over a `tokio::select!`). The
+        // acquisition / release / teardown ordering is load-bearing —
+        // inlining keeps the strict sequence (try_refresh → permit →
+        // L2 backoff → heartbeat spawn → user closure → defuse +
+        // synchronous release) visible end-to-end so a reviewer can
+        // verify cancel-safety in one pass. If a future profiler shows
+        // `Future::poll` dominating refresh latency (the generated
+        // state machine is substantial), the post-acquisition block
+        // (heartbeat spawn + closure run + release path) can be
+        // extracted into a helper `async fn run_under_claim<T, F,
+        // Fut>(claim, ...) -> Result<T, RefreshError>`; per the post-П2
+        // audit C12 sketch this shrinks the outer state machine
+        // without obscuring the ordering. Defer until profiler
+        // evidence — refresh is rare relative to dispatch.
+        //
         // L1: in-process coalescing.
         //
         // The L1 layer is keyed by string, so we hash on the typed id's
