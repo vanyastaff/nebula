@@ -1623,6 +1623,7 @@ impl Manager {
 
         let scheme_type_id = TypeId::of::<<C as Credential>::Scheme>();
         let default_timeout = self.credential_rotation_timeout;
+        let metrics = self.metrics.clone();
 
         let span = tracing::info_span!(
             "resource.credential_refresh",
@@ -1654,22 +1655,46 @@ impl Manager {
             // dispatcher's owned `SchemeFactory<R::Credential>` after
             // downcast.
             let factory_box: Box<dyn std::any::Any + Send + Sync> = Box::new(factory.clone());
+            let metrics = metrics.clone();
 
             Some(async move {
+                let dispatch_started = Instant::now();
                 let dispatch = d.dispatch_refresh(factory_box, ctx);
                 let outcome = match tokio::time::timeout(timeout, dispatch).await {
                     Ok(Ok(())) => RefreshOutcome::Ok,
                     Ok(Err(e)) => RefreshOutcome::Failed(e),
                     Err(_) => RefreshOutcome::TimedOut { budget: timeout },
                 };
+                let elapsed = dispatch_started.elapsed().as_secs_f64();
+
+                if let Some(m) = metrics.as_ref() {
+                    m.record_rotation_dispatch(&outcome, elapsed);
+                }
+
                 (key, outcome)
             })
         });
 
         let results: Vec<(ResourceKey, RefreshOutcome)> = join_all(futures).instrument(span).await;
 
-        // Task 7 wires aggregate event emission here.
-        // Task 8 wires counter + histogram observation here.
+        // Aggregate per-resource outcomes into a `RotationOutcome` for the
+        // `CredentialRefreshed` event payload (Tech Spec §6.2). Per-resource
+        // dispatch metrics are emitted inline above; this is the cycle-level
+        // aggregate.
+        let mut outcome = crate::error::RotationOutcome::default();
+        for (_, o) in &results {
+            match o {
+                RefreshOutcome::Ok => outcome.ok += 1,
+                RefreshOutcome::Failed(_) => outcome.failed += 1,
+                RefreshOutcome::TimedOut { .. } => outcome.timed_out += 1,
+            }
+        }
+        // Broadcast send errors (no live subscribers) are intentionally ignored.
+        let _ = self.event_tx.send(ResourceEvent::CredentialRefreshed {
+            credential_id: *credential_id,
+            resources_affected: results.len(),
+            outcome,
+        });
 
         Ok(results)
     }
@@ -1729,6 +1754,7 @@ impl Manager {
 
         let default_timeout = self.credential_rotation_timeout;
         let event_tx = self.event_tx.clone();
+        let metrics = self.metrics.clone();
 
         let span = tracing::warn_span!(
             "resource.credential_revoke",
@@ -1747,18 +1773,25 @@ impl Manager {
             let key = d.resource_key();
             let credential_id = *credential_id;
             let event_tx = event_tx.clone();
+            let metrics = metrics.clone();
 
             async move {
+                let dispatch_started = Instant::now();
                 let dispatch = d.dispatch_revoke(&credential_id);
                 let outcome = match tokio::time::timeout(timeout, dispatch).await {
                     Ok(Ok(())) => RevokeOutcome::Ok,
                     Ok(Err(e)) => RevokeOutcome::Failed(e),
                     Err(_) => RevokeOutcome::TimedOut { budget: timeout },
                 };
+                let elapsed = dispatch_started.elapsed().as_secs_f64();
+
+                if let Some(m) = metrics.as_ref() {
+                    m.record_revoke_dispatch(&outcome, elapsed);
+                }
 
                 // Security amendment B-2: emit HealthChanged{healthy:false}
                 // for non-Ok outcomes. Successful revocations emit only the
-                // aggregate CredentialRevoked event (Task 7). Broadcast send
+                // aggregate CredentialRevoked event below. Broadcast send
                 // errors (no live subscribers) are intentionally ignored.
                 if !matches!(outcome, RevokeOutcome::Ok) {
                     let _ = event_tx.send(ResourceEvent::HealthChanged {
@@ -1773,8 +1806,24 @@ impl Manager {
 
         let results: Vec<(ResourceKey, RevokeOutcome)> = join_all(futures).instrument(span).await;
 
-        // Task 7 wires aggregate CredentialRevoked event emission here.
-        // Task 8 wires counter + histogram observation here.
+        // Aggregate per-resource outcomes into a `RotationOutcome` for the
+        // `CredentialRevoked` event payload (Tech Spec §6.2). Per-resource
+        // dispatch metrics are emitted inline above; this is the cycle-level
+        // aggregate.
+        let mut outcome = crate::error::RotationOutcome::default();
+        for (_, o) in &results {
+            match o {
+                RevokeOutcome::Ok => outcome.ok += 1,
+                RevokeOutcome::Failed(_) => outcome.failed += 1,
+                RevokeOutcome::TimedOut { .. } => outcome.timed_out += 1,
+            }
+        }
+        // Broadcast send errors (no live subscribers) are intentionally ignored.
+        let _ = self.event_tx.send(ResourceEvent::CredentialRevoked {
+            credential_id: *credential_id,
+            resources_affected: results.len(),
+            outcome,
+        });
 
         Ok(results)
     }

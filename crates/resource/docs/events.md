@@ -33,8 +33,14 @@ tokio::spawn(async move {
 | `Released` | A handle is dropped | `key`, `held: Duration`, `tainted: bool` |
 | `HealthChanged` | Health status transitions | `key`, `healthy: bool` |
 | `ConfigReloaded` | Config is hot-reloaded | `key` |
+| `CredentialRefreshed` | One refresh-cycle fan-out completed | `credential_id`, `resources_affected`, `outcome: RotationOutcome` |
+| `CredentialRevoked` | One revoke-cycle fan-out completed | `credential_id`, `resources_affected`, `outcome: RotationOutcome` |
 
-All variants carry a `key: ResourceKey` accessible via `event.key()`.
+Per-resource variants carry a `key: ResourceKey` accessible via
+`event.key()` (returns `Some`). Aggregate rotation variants
+(`CredentialRefreshed`, `CredentialRevoked`) span multiple resources and
+return `None` from `event.key()` — read the `credential_id` field for
+the rotation identifier instead.
 
 The enum is `#[non_exhaustive]` — new variants may be added in minor releases.
 
