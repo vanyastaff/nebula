@@ -589,11 +589,20 @@ impl RefreshCoordinator {
         // (`ContentionExhausted` indefinitely). `release()` is
         // idempotent and the spawned task is detached because Drop is
         // synchronous; we cannot `.await` here.
+        //
+        // Heartbeat shutdown order mirrors the success path (below):
+        // `cancel.cancel()` first so the heartbeat exits through its
+        // `cancelled()` arm cleanly, then `abort()` as a belt-and-suspenders
+        // guarantee. `CancellationToken` is reference-counted so dropping
+        // it does NOT auto-cancel — both paths must call `.cancel()`
+        // explicitly to keep release semantics symmetric.
         let token_for_unwind = claim.token.clone();
         let repo_for_unwind = Arc::clone(&self.repo);
+        let hb_cancel_for_unwind = cancel.clone();
         let hb_task_for_unwind = hb_task.abort_handle();
         let hold_duration_for_unwind = self.metrics.hold_duration.clone();
         let _l2_unwind_guard = scopeguard::guard_on_unwind((), move |()| {
+            hb_cancel_for_unwind.cancel();
             hb_task_for_unwind.abort();
             // Even on panic the hold time is observable — observe it
             // before the spawn so the histogram never drops a sample.
