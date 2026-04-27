@@ -36,8 +36,6 @@ mod source;
 use std::{
     any::{Any, TypeId},
     fmt,
-    future::Future,
-    pin::Pin,
     time::SystemTime,
 };
 
@@ -362,7 +360,8 @@ impl TriggerEventOutcome {
 /// # Errors
 ///
 /// Returns [`ActionError`] if start or stop fails.
-pub trait TriggerHandler: Send + Sync {
+#[async_trait::async_trait]
+pub trait TriggerHandler: Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -374,11 +373,11 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// 1. **Setup-and-return** — register an external listener (webhook, message queue consumer),
     ///    then return immediately. The listener runs asynchronously outside this call. Example:
-    ///    [`crate::webhook::WebhookTriggerAdapter`].
+    ///    `crate::webhook::WebhookTriggerAdapter`.
     ///
     /// 2. **Run-until-cancelled** — run the entire trigger loop inline, returning only when
     ///    `ctx.cancellation` fires or a fatal error occurs. Example:
-    ///    [`crate::poll::PollTriggerAdapter`].
+    ///    `crate::poll::PollTriggerAdapter`.
     ///
     /// **Callers MUST spawn `start()` in a dedicated task** and must not
     /// assume it returns promptly. Calling sites that drive multiple
@@ -400,28 +399,12 @@ pub trait TriggerHandler: Send + Sync {
     /// lose one cycle of cursor progress, but must not leak its
     /// listener registration).
     ///
-    /// Shape-1 (setup-and-return) implementations register the
-    /// listener, then return. Cancel safety is trivially satisfied
-    /// because no `.await` sits on user state after registration.
-    /// Shape-2 (run-until-cancelled) implementations must structure
-    /// their `tokio::select!` so that each branch future is itself
-    /// cancel-safe — see [`crate::poll::PollTriggerAdapter::start`]
-    /// for a worked example using cancel-safe
-    /// `CancellationToken::cancelled()` and `tokio::time::sleep`.
-    ///
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be started, if `start`
     /// is called twice without an intervening `stop`, or (for shape 2) if
     /// the trigger loop encounters a fatal error while running.
-    fn start<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError>;
 
     /// Stop the trigger (unregister, cancel schedule).
     ///
@@ -432,14 +415,7 @@ pub trait TriggerHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
-    fn stop<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError>;
 
     /// Whether this trigger accepts externally pushed events.
     ///
@@ -459,22 +435,15 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// Returns [`ActionError::Fatal`] by default — triggers that don't accept
     /// external events should never have this called.
-    fn handle_event<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn handle_event(
+        &self,
         event: TriggerEvent,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<TriggerEventOutcome, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
+        ctx: &dyn TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
         let _ = (event, ctx);
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "trigger does not accept external events",
-            ))
-        })
+        Err(ActionError::fatal(
+            "trigger does not accept external events",
+        ))
     }
 }
 
@@ -508,9 +477,11 @@ impl<A> TriggerActionAdapter<A> {
     }
 }
 
+#[async_trait::async_trait]
 impl<A> TriggerHandler for TriggerActionAdapter<A>
 where
     A: TriggerAction + Send + Sync + 'static,
+    <A::Source as TriggerSource>::Event: Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
         self.action.metadata()
@@ -521,21 +492,11 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be started.
-    fn start<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move {
-            self.action
-                .start(ctx)
-                .await
-                .map_err(ActionError::fatal_from)
-        })
+    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+        self.action
+            .start(ctx)
+            .await
+            .map_err(ActionError::fatal_from)
     }
 
     /// Stop the trigger by delegating to the typed action.
@@ -543,16 +504,40 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
-    fn stop<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move { self.action.stop(ctx).await.map_err(ActionError::fatal_from) })
+    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+        self.action.stop(ctx).await.map_err(ActionError::fatal_from)
+    }
+
+    fn accepts_events(&self) -> bool {
+        self.action.accepts_events()
+    }
+
+    /// Handle an external event by downcasting to the typed `Source::Event`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the payload type does not match, or
+    /// propagates errors from the underlying action's `handle` method.
+    async fn handle_event(
+        &self,
+        event: TriggerEvent,
+        ctx: &dyn TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        let payload_type_name = event.payload_type_name();
+        let (_id, _received_at, typed_event) = event
+            .downcast::<<A::Source as TriggerSource>::Event>()
+            .map_err(|_| {
+                ActionError::fatal(format!(
+                    "trigger event type mismatch: expected {}, got {}",
+                    std::any::type_name::<<A::Source as TriggerSource>::Event>(),
+                    payload_type_name,
+                ))
+            })?;
+
+        self.action
+            .handle(ctx, typed_event)
+            .await
+            .map_err(ActionError::fatal_from)
     }
 }
 
