@@ -553,8 +553,27 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // POST. CAS conflict here means another replica already
                 // committed something — retry with the new version so
                 // our reauth flag is layered on the latest row.
+                // Outcome of the best-effort `reauth_required=true`
+                // persist loop. Distinguishing CAS exhaustion from a
+                // transient store error matters for observability: the
+                // CAS-exhausted metric (sub-spec §6) MUST count only the
+                // case where every attempt lost to `VersionConflict`,
+                // because that is the failure mode that produces a
+                // duplicate IdP load on the next replica's recheck. A
+                // transient store error is a different signal already
+                // logged inside the loop body, and double-warning on the
+                // post-loop branch would smear the two failure modes.
+                enum PersistOutcome {
+                    /// CAS landed; row now has `reauth_required = true`.
+                    Persisted,
+                    /// Store returned a non-CAS error; loop body has
+                    /// already logged it and the typed `ReauthRequired`
+                    /// is surfaced to the caller anyway.
+                    OtherStoreError,
+                }
+
                 let mut current_version = stored.version;
-                let mut persisted = false;
+                let mut outcome: Option<PersistOutcome> = None;
                 for _attempt in 0..3 {
                     let updated = StoredCredential {
                         updated_at: chrono::Utc::now(),
@@ -572,7 +591,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         .await
                     {
                         Ok(_) => {
-                            persisted = true;
+                            outcome = Some(PersistOutcome::Persisted);
                             break;
                         },
                         Err(StoreError::VersionConflict { actual, .. }) => {
@@ -595,31 +614,41 @@ impl<S: CredentialStore> CredentialResolver<S> {
                                 ?e,
                                 "failed to persist reauth_required=true; surfacing ReauthRequired anyway"
                             );
+                            outcome = Some(PersistOutcome::OtherStoreError);
                             break;
                         },
                     }
                 }
-                if !persisted {
-                    // CAS budget exhausted without committing. Without
-                    // observability this is invisible: the post-backoff
-                    // state-recheck on a different replica will read
-                    // `reauth_required = false`, re-run the IdP closure,
-                    // and produce another `invalid_grant`. Surface the
-                    // failure mode at WARN; metric wiring tracked under
-                    // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
-                    // (sub-spec §6) — increment lands when the resolver
-                    // gains a `MetricsRegistry` handle (out of scope for
-                    // this PR-583 wave 2 fix; resolver does not currently
-                    // hold a metrics handle).
-                    //
-                    // TODO(metric): wire
-                    // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
-                    // through `CredentialResolver` constructor once the
-                    // resolver plumbs a shared `MetricsRegistry`.
-                    tracing::warn!(
-                        credential_id,
-                        "reauth_required CAS exhausted; next refresh will retry"
-                    );
+                match outcome {
+                    Some(PersistOutcome::Persisted) => {},
+                    Some(PersistOutcome::OtherStoreError) => {
+                        // Already logged inside the loop body; do not
+                        // double-warn and do not increment the
+                        // CAS-exhausted counter (different signal).
+                    },
+                    None => {
+                        // CAS budget exhausted without committing — every
+                        // attempt observed a `VersionConflict`. Without
+                        // observability this is invisible: the post-backoff
+                        // state-recheck on a different replica will read
+                        // `reauth_required = false`, re-run the IdP closure,
+                        // and produce another `invalid_grant`. Surface the
+                        // failure mode at WARN; metric wiring tracked under
+                        // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
+                        // (sub-spec §6) — increment lands when the resolver
+                        // gains a `MetricsRegistry` handle (out of scope for
+                        // this PR-583 wave 2 fix; resolver does not currently
+                        // hold a metrics handle).
+                        //
+                        // TODO(metric): wire
+                        // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
+                        // through `CredentialResolver` constructor once the
+                        // resolver plumbs a shared `MetricsRegistry`.
+                        tracing::warn!(
+                            credential_id,
+                            "reauth_required CAS exhausted after 3 attempts; next refresh will retry"
+                        );
+                    },
                 }
                 Err(ResolveError::ReauthRequired {
                     credential_id: credential_id.to_string(),
