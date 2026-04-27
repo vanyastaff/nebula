@@ -169,6 +169,7 @@ pub use scheme::{
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard + refresh hook (§15.7).
+#[allow(deprecated)]
 pub use secrets::{
     CredentialGuard, EncryptedData, EncryptionKey, OnCredentialRefresh, RedactedSecret,
     SchemeFactory, SchemeGuard, SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad,
