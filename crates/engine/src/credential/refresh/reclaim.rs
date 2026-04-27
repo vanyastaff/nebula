@@ -326,7 +326,7 @@ mod tests {
         let cid = CredentialId::new();
         seed_stuck_inflight_claim(&repo, cid).await;
 
-        let metrics = RefreshCoordMetrics::default();
+        let metrics = RefreshCoordMetrics::for_tests();
         run_one_sweep(&repo, &sentinel, Some(&bus), &metrics, None)
             .await
             .expect("sweep ok");
@@ -350,7 +350,7 @@ mod tests {
         let mut subscriber = bus.subscribe();
 
         let cid = CredentialId::new();
-        let metrics = RefreshCoordMetrics::default();
+        let metrics = RefreshCoordMetrics::for_tests();
         // Three sweeps, each seeded with a stuck RefreshInFlight claim
         // for the same credential. The third call to
         // `on_sentinel_detected` reaches threshold (default 3-in-1h)
@@ -412,7 +412,7 @@ mod tests {
 
         let cid = CredentialId::new();
 
-        let metrics = RefreshCoordMetrics::default();
+        let metrics = RefreshCoordMetrics::for_tests();
 
         // Event #1.
         seed_stuck_inflight_claim(&repo, cid).await;

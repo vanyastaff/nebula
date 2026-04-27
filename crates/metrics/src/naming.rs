@@ -338,6 +338,24 @@ pub mod refresh_coord_reclaim_outcome {
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS: &str =
     "nebula_credential_refresh_coord_hold_duration_seconds";
 
+/// Counter: `reauth_required = true` persistence attempts that exhausted
+/// their CAS budget without committing.
+///
+/// Incremented in `CredentialResolver::resolve_with_refresh` when all
+/// 3 CAS attempts to flip `reauth_required` on the credential row lose
+/// to a `VersionConflict` and the loop exits without a successful
+/// persist. The post-backoff state-recheck on a different replica then
+/// reads `reauth_required = false`, re-runs the IdP closure, and
+/// produces another `invalid_grant`. Crossing zero is a real signal —
+/// pair with [`NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL`]
+/// `outcome="acquired"` to see the duplicate-IdP-load amplification.
+///
+/// Sub-spec §3.6 / I1 best-effort persist: this counter exposes the
+/// otherwise-silent failure mode without changing the engine's typed
+/// error contract.
+pub const NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL: &str =
+    "nebula_credential_resolver_reauth_persist_cas_exhausted_total";
+
 // ---------------------------------------------------------------------------
 // Cache (memory crate)
 // ---------------------------------------------------------------------------

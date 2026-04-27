@@ -15,10 +15,13 @@
 //! - `reclaim_sweeps_total{outcome=reclaimed|no_work}`
 //! - `hold_duration_seconds` (histogram, no labels)
 //!
-//! The `Default` impl wires a fresh in-memory [`MetricsRegistry`] so
-//! tests / desktop mode get working metrics with zero plumbing. Production
-//! composition threads the engine-shared registry via
-//! [`RefreshCoordMetrics::with_registry`].
+//! Production composition threads the engine-shared registry via
+//! [`RefreshCoordMetrics::with_registry`]. Tests / single-replica desktop
+//! mode use [`RefreshCoordMetrics::for_tests`] (gated on `cfg(test)` /
+//! `feature = "test-util"`) which constructs handles backed by a fresh
+//! private registry — production code must always go through the engine
+//! registry so a scraper actually observes the series, which is why the
+//! `Default` impl has been intentionally removed.
 
 use nebula_metrics::{
     Counter, Histogram, MetricsRegistry, NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
@@ -102,13 +105,18 @@ impl RefreshCoordMetrics {
                 .histogram(NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS),
         }
     }
-}
 
-impl Default for RefreshCoordMetrics {
-    /// Create handles backed by a fresh private registry. Tests and
-    /// single-replica desktop mode use this; production composition
-    /// threads the engine-shared registry via [`Self::with_registry`].
-    fn default() -> Self {
+    /// Construct handles backed by a fresh private registry — tests and
+    /// single-replica desktop mode only.
+    ///
+    /// Production composition MUST use [`Self::with_registry`] with the
+    /// engine-shared registry so a scraper actually observes the series.
+    /// Removing the public `Default` impl in wave 2 of the PR-583 review
+    /// closed a foot-gun where a top-level composer could silently
+    /// publish to a private registry no scraper sees.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn for_tests() -> Self {
         Self::with_registry(&MetricsRegistry::new())
     }
 }
@@ -118,8 +126,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_handles_are_independent_per_label() {
-        let metrics = RefreshCoordMetrics::default();
+    fn for_tests_handles_are_independent_per_label() {
+        let metrics = RefreshCoordMetrics::for_tests();
         metrics.claims_acquired.inc();
         assert_eq!(metrics.claims_acquired.get(), 1);
         assert_eq!(metrics.claims_contended.get(), 0);
@@ -143,7 +151,7 @@ mod tests {
 
     #[test]
     fn hold_duration_records_to_histogram() {
-        let metrics = RefreshCoordMetrics::default();
+        let metrics = RefreshCoordMetrics::for_tests();
         metrics.hold_duration.observe(0.123);
         metrics.hold_duration.observe(0.456);
         assert_eq!(metrics.hold_duration.count(), 2);

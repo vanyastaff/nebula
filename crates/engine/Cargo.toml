@@ -25,6 +25,11 @@ rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
 # scaled-down 30s version; this feature is enabled in the nightly chaos
 # CI job to widen the test plane to 100 credentials × 10 minutes.
 chaos-full = []
+# Exposes `RefreshCoordMetrics::for_tests()` and other test-only helpers
+# that need to construct private MetricsRegistry instances without
+# routing through the engine-shared registry. Must NOT be enabled in a
+# production release build — see ADR-0023.
+test-util = []
 
 [dependencies]
 nebula-core = { path = "../core" }

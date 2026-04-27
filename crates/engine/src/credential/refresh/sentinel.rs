@@ -112,6 +112,23 @@ impl SentinelTrigger {
     /// count; returns `EscalateToReauth` when the count is at or above
     /// threshold (default 3-in-1h per sub-spec §3.4).
     ///
+    /// # Concurrency
+    ///
+    /// The record-then-count sequence is **not atomic**. Two failure
+    /// modes to consider:
+    ///
+    /// - **Same-row case** (two sweepers race on the same stuck claim): prevented at the storage
+    ///   layer — `RefreshClaimRepo::reclaim_stuck` uses `DELETE … RETURNING` (postgres + sqlite) so
+    ///   each expired row is observed by exactly one sweeper, never double-counted.
+    /// - **Distinct-row near-threshold case** (two sweepers each find their own stuck row for the
+    ///   same credential, then both insert and read count ≥ threshold): both will return
+    ///   [`SentinelDecision::EscalateToReauth`] and the consumer will see two
+    ///   `CredentialEvent::ReauthRequired` for the same credential. The consumer
+    ///   (`CredentialEvent::ReauthRequired` handler in the credential engine) MUST be idempotent —
+    ///   flipping `reauth_required = true` is a fixed-point write so a duplicate is harmless.
+    ///   Tightening this to bit-exact single-emit would require an atomic `record_and_count` repo
+    ///   primitive (deferred, out of scope for the wave 2 review).
+    ///
     /// # Errors
     ///
     /// Surfaces underlying [`RepoError`] from

@@ -249,12 +249,16 @@ impl RefreshCoordinator {
         config: RefreshCoordConfig,
     ) -> Result<Self, ConfigError> {
         config.validate()?;
+        // Bootstrap: a fresh private registry so the coordinator is fully
+        // functional without composition. Production callers MUST follow
+        // up with `with_metrics(engine_registry)` so a scraper actually
+        // observes the §6 series — see `with_metrics` rustdoc.
         Ok(Self {
             l1: L1RefreshCoalescer::new(),
             repo,
             replica_id,
             config,
-            metrics: RefreshCoordMetrics::default(),
+            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new()),
             audit_sink: None,
         })
     }
@@ -281,12 +285,16 @@ impl RefreshCoordinator {
         config
             .validate()
             .expect("RefreshCoordConfig::default() must satisfy §3.5 invariants");
+        // Bootstrap: a fresh private registry so the coordinator is fully
+        // functional without composition. Production callers MUST follow
+        // up with `with_metrics(engine_registry)` so a scraper actually
+        // observes the §6 series — see `with_metrics` rustdoc.
         Self {
             l1: L1RefreshCoalescer::new(),
             repo,
             replica_id: ReplicaId::new(default_replica_id_string()),
             config,
-            metrics: RefreshCoordMetrics::default(),
+            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new()),
             audit_sink: None,
         }
     }
@@ -305,12 +313,14 @@ impl RefreshCoordinator {
         config
             .validate()
             .expect("RefreshCoordConfig::default() must satisfy §3.5 invariants");
+        // See `new_with` — the same bootstrap rule applies; production
+        // composition MUST follow up with `with_metrics`.
         Ok(Self {
             l1: L1RefreshCoalescer::with_max_concurrent(max)?,
             repo,
             replica_id: ReplicaId::new(default_replica_id_string()),
             config,
-            metrics: RefreshCoordMetrics::default(),
+            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new()),
             audit_sink: None,
         })
     }

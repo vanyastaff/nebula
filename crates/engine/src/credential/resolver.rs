@@ -554,6 +554,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // committed something — retry with the new version so
                 // our reauth flag is layered on the latest row.
                 let mut current_version = stored.version;
+                let mut persisted = false;
                 for _attempt in 0..3 {
                     let updated = StoredCredential {
                         updated_at: chrono::Utc::now(),
@@ -570,7 +571,10 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         )
                         .await
                     {
-                        Ok(_) => break,
+                        Ok(_) => {
+                            persisted = true;
+                            break;
+                        },
                         Err(StoreError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
                                 credential_id,
@@ -594,6 +598,28 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             break;
                         },
                     }
+                }
+                if !persisted {
+                    // CAS budget exhausted without committing. Without
+                    // observability this is invisible: the post-backoff
+                    // state-recheck on a different replica will read
+                    // `reauth_required = false`, re-run the IdP closure,
+                    // and produce another `invalid_grant`. Surface the
+                    // failure mode at WARN; metric wiring tracked under
+                    // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
+                    // (sub-spec §6) — increment lands when the resolver
+                    // gains a `MetricsRegistry` handle (out of scope for
+                    // this PR-583 wave 2 fix; resolver does not currently
+                    // hold a metrics handle).
+                    //
+                    // TODO(metric): wire
+                    // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
+                    // through `CredentialResolver` constructor once the
+                    // resolver plumbs a shared `MetricsRegistry`.
+                    tracing::warn!(
+                        credential_id,
+                        "reauth_required CAS exhausted; next refresh will retry"
+                    );
                 }
                 Err(ResolveError::ReauthRequired {
                     credential_id: credential_id.to_string(),
