@@ -82,6 +82,7 @@ impl<R: Resource> DaemonRuntime<R> {
     /// lifetime of the runtime, not any individual run. External code may
     /// clone it to observe global shutdown, but must not cancel it to
     /// request daemon stop — use [`stop`](Self::stop) instead.
+    #[must_use]
     pub fn cancel_token(&self) -> &CancellationToken {
         &self.parent_cancel
     }

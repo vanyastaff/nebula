@@ -49,15 +49,15 @@ pub enum RestartPolicy {
 /// A long-running worker that runs until cancelled or until it returns.
 /// Implementations select on `cancel` for cooperative shutdown; `DaemonRuntime`
 /// drives the restart loop per the configured [`RestartPolicy`].
-///
-/// # Errors
-///
-/// Returns `Self::Error` if the daemon encounters a fatal error.
 pub trait Daemon: Resource {
     /// Runs the daemon loop.
     ///
     /// The implementation should select on `cancel` for cooperative shutdown.
     /// When the token is cancelled, the daemon should clean up and return `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the daemon encounters a fatal error.
     fn run(
         &self,
         runtime: &Self::Runtime,
