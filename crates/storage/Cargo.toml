@@ -83,16 +83,23 @@ test-util = ["nebula-credential/test-util"]
 # `nebula-credential/rotation` so the backup type can reference credential's
 # rotation error / id types (ADR-0029 §4, ADR-0032).
 rotation = ["nebula-credential/rotation"]
-# Postgres backend. `sqlx/tls-rustls` is included by default because
-# every managed Postgres tier (RDS, Cloud SQL, Neon, Supabase, Azure)
-# requires TLS — without this, downstream consumers had to layer
-# `sqlx/tls-rustls` themselves which silently broke first-time
-# `connect()` attempts in production. The pure-rust `tls-rustls` is
-# preferred over `tls-native-tls` so we don't drag system openssl into
-# the build matrix. The base `sqlx` dep already enables `runtime-tokio`,
-# so the runtime+TLS bundle (`runtime-tokio-rustls`) isn't needed
-# separately.
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "dep:hex"]
+# Postgres backend. TLS is included by default because every managed
+# Postgres tier (RDS, Cloud SQL, Neon, Supabase, Azure) requires TLS —
+# without this, downstream consumers had to layer the TLS feature
+# themselves which silently broke first-time `connect()` attempts in
+# production.
+#
+# We use `sqlx/tls-rustls-ring-native-roots` (pure-rust TLS, system trust
+# store on macOS/Windows, /etc/ssl/certs on Linux via rustls-native-certs)
+# rather than `sqlx/tls-rustls` (alias for `tls-rustls-ring`, which pulls
+# in `tls-rustls-ring-webpki` — bundled Mozilla CAs only). The former
+# allows corporate/private-CA Postgres deployments to authenticate
+# their CA out of the box; webpki-roots-only would force every
+# private-CA user to override the feature flag. Pure-rust avoids
+# dragging system openssl into the build matrix. The base `sqlx` dep
+# already enables `runtime-tokio`, so the runtime+TLS bundle isn't
+# needed separately.
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots", "dep:hex"]
 sqlite = ["dep:sqlx", "sqlx/sqlite"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
