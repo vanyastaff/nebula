@@ -1,6 +1,11 @@
 [graph]
 targets = []
-all-features = false
+# `all-features = true` is mandatory: with `false`, opt-in features are
+# resolved away before [bans] runs, which made the openssl ban below into
+# theatre — `nebula-log/sentry` (opt-in) used to pull native-tls → openssl
+# under the radar. Keep this `true` so any future opt-in feature path that
+# activates a banned crate fails CI immediately, not after a Dependabot alert.
+all-features = true
 no-default-features = false
 
 [output]
@@ -13,8 +18,8 @@ unmaintained = "workspace"
 yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "rsa pulled by jsonwebtoken rust_crypto feature; project uses HS256 only, RSA code path never reached" },
-  { id = "RUSTSEC-2026-0097", reason = "rand 0.10.0 unsound only under custom panic-logger + thread-local interaction, not our usage pattern; patched release pending upstream" },
-  { id = "RUSTSEC-2026-0098", reason = "webpki URI name-constraint handling is not used by Nebula; no URI SAN assertions are performed in current TLS paths" },
+  # RUSTSEC-2026-0097 / -0098 ignores were dropped 2026-04-28: rand bumped to
+  # 0.10.1 (patched), webpki crate no longer in lock. Re-add only if regressions.
 ]
 
 [licenses]
@@ -22,6 +27,7 @@ allow = [
   "Apache-2.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "BSL-1.0",             # xxhash-rust (transitive via redis 1.x → nebula-storage); permissive, ok for vendoring.
   "CC0-1.0",
   "CDLA-Permissive-2.0",
   "ISC",
@@ -39,7 +45,14 @@ ignore = false
 registries = []
 
 [bans]
-multiple-versions = "deny"
+# `warn`, not `deny`: with `[graph] all-features = true` the workspace exposes
+# legitimate transitive duplicates we don't control (aws-sdk uses an older
+# RustCrypto stack — p256, ecdsa, elliptic-curve, etc. — alongside
+# jsonwebtoken's newer one; figment historically pinned older toml). Hard-
+# denying these forced opt-out via skip lists that grew stale and hid the
+# important signal. Keep duplicates as a noisy warning; the strict gate is the
+# explicit `deny = [...]` list below (openssl, layer wrappers, etc.).
+multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 workspace-default-features = "allow"
@@ -147,12 +160,7 @@ skip = [
   "windows_x86_64_msvc",
 ]
 skip-tree = [
-  # figment 0.10 pins toml v0.8.x (with serde_spanned v0.6, toml_datetime v0.6,
-  # winnow v0.7) while the rest of the workspace is on toml v1.x. Accept the
-  # duplicate under figment only — the CLI is the sole consumer and the older
-  # parser is lifetime-scoped to config loading.
-  { crate = "figment@0.10", depth = 3 },
-]
+] # figment@0.10 entry removed 2026-04-28 — figment is no longer in the resolved graph after the lockfile regenerate.
 
 [sources]
 unknown-registry = "deny"
