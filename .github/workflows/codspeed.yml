@@ -97,6 +97,18 @@ jobs:
         id: filter
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         with:
+          # Required for the `!pattern` exclusions below to take effect.
+          # With the default `some` quantifier dorny treats every pattern
+          # as an independent OR condition, which silently ignores the
+          # `!` negation and lets a markdown-only change trigger every
+          # shard (observed on PR #626 — `crates/resilience/README.md`
+          # set `Filter validator = true` because both `crates/resilience/
+          # **` and `!crates/resilience/**/*.md` were OR-ed in `some`
+          # mode, and the second pattern had no positive expansion).
+          # `every` makes a file match the filter only when every pattern
+          # matches, which is what we actually want for include-then-
+          # exclude semantics.
+          predicate-quantifier: every
           filters: |
             resilience:
               - 'crates/resilience/**'
