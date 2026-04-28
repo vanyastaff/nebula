@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_execution::status::ExecutionTerminationReason;
 use nebula_workflow::NodeState;
 
 /// Events emitted during workflow execution.
@@ -75,5 +76,34 @@ pub enum ExecutionEvent {
         success: bool,
         /// Total elapsed time.
         elapsed: Duration,
+        /// Engine's attribution for *why* the execution reached its
+        /// final status (canon §4.5; ROADMAP §M0.3).
+        ///
+        /// `Some(_)` means the engine attributed a concrete
+        /// termination reason. `None` is **also intentional**: it
+        /// represents a system-driven failure where execution did not
+        /// complete successfully but the engine has nothing to add
+        /// beyond the failure itself (the failure detail lives on
+        /// `ExecutionState::node_states[*].error_message` and
+        /// surfaces through the engine's
+        /// [`crate::result::ExecutionResult::node_errors`] map).
+        /// `determine_final_status` priority 2 (`failed_node` set,
+        /// `terminated_by` empty) is the canonical source of `None`.
+        ///
+        /// Variant guidance:
+        ///
+        /// - `ExplicitStop` / `ExplicitFail` → a node returned `ActionResult::Terminate {
+        ///   TerminationReason::Success | Failure }`.
+        /// - `Cancelled` → external cancel (API / admin / shutdown tripped the cancel token
+        ///   without a node-driven Terminate).
+        /// - `NaturalCompletion` → frontier drained cleanly with no failures and no explicit
+        ///   signal.
+        /// - `SystemError` → engine attributed the failure to a system-level invariant breach
+        ///   (frontier integrity violation, unmapped future `TerminationReason` variant).
+        ///
+        /// Use `success` for the binary outcome; use
+        /// `termination_reason` to distinguish attributed termination
+        /// from unattributed system-driven failure (`None`).
+        termination_reason: Option<ExecutionTerminationReason>,
     },
 }

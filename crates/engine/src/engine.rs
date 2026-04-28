@@ -27,8 +27,10 @@ use nebula_core::{
 use nebula_credential::default_credential_accessor;
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
-use nebula_execution::ExecutionStatus;
-use nebula_execution::{context::ExecutionBudget, plan::ExecutionPlan, state::ExecutionState};
+use nebula_execution::{
+    ExecutionStatus, context::ExecutionBudget, plan::ExecutionPlan, state::ExecutionState,
+    status::ExecutionTerminationReason,
+};
 use nebula_expression::ExpressionEngine;
 use nebula_metrics::naming::{
     NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
@@ -733,6 +735,7 @@ impl WorkflowEngine {
         let elapsed = started.elapsed();
         let FinalStatusDecision {
             status: final_status,
+            termination_reason,
             integrity_violation,
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         // `Running → Cancelled` is not a one-step transition (see
@@ -752,10 +755,19 @@ impl WorkflowEngine {
         let _ = exec_state.transition_status(final_status);
 
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
+        tracing::info!(
+            target = "engine",
+            %execution_id,
+            ?final_status,
+            ?termination_reason,
+            ?elapsed,
+            "execution_finished"
+        );
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
             success: final_status == ExecutionStatus::Completed,
             elapsed,
+            termination_reason: termination_reason.clone(),
         });
 
         let node_outputs: HashMap<NodeKey, serde_json::Value> = outputs
@@ -779,6 +791,7 @@ impl WorkflowEngine {
             node_outputs,
             node_errors,
             duration: elapsed,
+            termination_reason,
         })
     }
 
@@ -1100,6 +1113,7 @@ impl WorkflowEngine {
         let heartbeat_lost = lease.as_ref().is_some_and(LeaseGuard::heartbeat_lost);
         let FinalStatusDecision {
             status: final_status,
+            termination_reason,
             integrity_violation,
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         // `Running → Cancelled` is not a one-step transition (see
@@ -1199,10 +1213,19 @@ impl WorkflowEngine {
 
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
+        tracing::info!(
+            target = "engine",
+            %execution_id,
+            ?reported_status,
+            ?termination_reason,
+            ?elapsed,
+            "execution_finished"
+        );
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
             success: reported_status == ExecutionStatus::Completed,
             elapsed,
+            termination_reason: termination_reason.clone(),
         });
 
         // 11. Collect outputs and errors
@@ -1227,6 +1250,7 @@ impl WorkflowEngine {
             node_outputs,
             node_errors,
             duration: elapsed,
+            termination_reason: termination_reason.clone(),
         })
     }
 
@@ -1523,6 +1547,7 @@ impl WorkflowEngine {
         let heartbeat_lost = lease.as_ref().is_some_and(LeaseGuard::heartbeat_lost);
         let FinalStatusDecision {
             status: final_status,
+            termination_reason,
             integrity_violation,
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         // Use the validated transition path. Ignoring the result is intentional:
@@ -1602,10 +1627,19 @@ impl WorkflowEngine {
 
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
+        tracing::info!(
+            target = "engine",
+            %execution_id,
+            ?reported_status,
+            ?termination_reason,
+            ?elapsed,
+            "execution_finished"
+        );
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
             success: reported_status == ExecutionStatus::Completed,
             elapsed,
+            termination_reason: termination_reason.clone(),
         });
 
         let node_outputs: HashMap<NodeKey, serde_json::Value> = outputs
@@ -1629,6 +1663,7 @@ impl WorkflowEngine {
             node_outputs,
             node_errors,
             duration: elapsed,
+            termination_reason: termination_reason.clone(),
         })
     }
 
@@ -1994,6 +2029,31 @@ impl WorkflowEngine {
                         total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
                     }
 
+                    // Capture an explicit-termination signal BEFORE the
+                    // checkpoint so that the same CAS-write durably
+                    // persists `terminated_by` (canon §11.5; ROADMAP
+                    // §M0.3). The companion `cancel_token.cancel()` is
+                    // deferred until AFTER `Ok` from `checkpoint_node` so
+                    // we tear down sibling branches only on a durable
+                    // decision.
+                    let terminate_was_first_set =
+                        if let ActionResult::Terminate { reason } = &action_result {
+                            let exec_reason = map_termination_reason(node_key.clone(), reason);
+                            let was_first =
+                                exec_state.set_terminated_by(node_key.clone(), exec_reason.clone());
+                            tracing::info!(
+                                target = "engine::frontier",
+                                execution_id = %execution_id,
+                                node_key = %node_key,
+                                ?exec_reason,
+                                was_first,
+                                "explicit_termination_signal"
+                            );
+                            was_first
+                        } else {
+                            false
+                        };
+
                     // Persist node output + execution state, then record the
                     // idempotency key, before any external observer learns the
                     // node is done. This guarantees durability precedes
@@ -2011,6 +2071,30 @@ impl WorkflowEngine {
                         )
                         .await
                     {
+                        // Durability recovery (ROADMAP §M0.3 review M1):
+                        // if the action returned `Terminate` and we
+                        // recorded `terminated_by` in-memory above but
+                        // `checkpoint_node` failed (CAS conflict /
+                        // storage err), the signal never reached disk.
+                        // Drop it so `determine_final_status` does not
+                        // report a durable-looking `termination_reason`
+                        // on the event stream while the audit row stays
+                        // `None`. The engine still surfaces the failure
+                        // via `failed_node` (system-driven `Failed`),
+                        // which is the honest outcome.
+                        if terminate_was_first_set {
+                            tracing::warn!(
+                                target = "engine::frontier",
+                                %execution_id,
+                                %node_key,
+                                checkpoint_error = %e,
+                                "explicit_termination_signal lost on \
+                                 checkpoint failure; clearing in-memory \
+                                 terminated_by to avoid event-vs-audit \
+                                 divergence"
+                            );
+                            exec_state.clear_terminated_by();
+                        }
                         cancel_token.cancel();
                         return Some((node_key.clone(), e.to_string()));
                     }
@@ -2050,6 +2134,23 @@ impl WorkflowEngine {
                         &mut ready_queue,
                         exec_state,
                     );
+
+                    // ROADMAP §M0.3: signal `cancel_token` ONLY after the
+                    // termination signal is durable AND we've gated the
+                    // local downstream edges through `process_outgoing_edges`
+                    // (which already treats `Terminate` like `Skip`).
+                    // Siblings still in flight observe the cancel and tear
+                    // down; the executor's `select!` arm reconciles their
+                    // `Cancelled` state on the next loop iteration.
+                    if terminate_was_first_set {
+                        tracing::trace!(
+                            target = "engine::frontier",
+                            execution_id = %execution_id,
+                            node_key = %node_key,
+                            "cancel_token signalled after durable termination"
+                        );
+                        cancel_token.cancel();
+                    }
                 },
                 Ok((task_id, (node_key, Err(ref err)))) => {
                     task_nodes.remove(&task_id);
@@ -3423,9 +3524,19 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
 /// [`ExecutionEvent::ExecutionFinished`]. Keeping the decision pure (no
 /// event emission inside the function) lets us unit-test it without
 /// a live `WorkflowEngine`.
+///
+/// `termination_reason` carries the engine's explanation of *why* the
+/// execution reached its final status (canon §4.5; ROADMAP §M0.3).
+/// `None` means the engine has nothing to add — historically this was
+/// always the case; the field is `Option` for backwards-compatible
+/// destructuring while consumers are wired in T4.
 #[derive(Debug)]
 struct FinalStatusDecision {
     status: ExecutionStatus,
+    /// Engine-attributed reason for the final status. Wired into
+    /// [`ExecutionResult::termination_reason`] and
+    /// [`ExecutionEvent::ExecutionFinished`] in T4.
+    termination_reason: Option<ExecutionTerminationReason>,
     /// `Some(nodes)` when the frontier exited without `failed_node` or
     /// cancellation but not all nodes reached a terminal state — see
     /// `docs/PRODUCT_CANON.md` §11.1.
@@ -3535,30 +3646,108 @@ impl Drop for LeaseGuard {
     }
 }
 
-/// Determine the final execution status.
+/// Determine the final execution status with explanatory
+/// `termination_reason` (ROADMAP §M0.3).
 ///
-/// Gates `Completed` on [`ExecutionState::all_nodes_terminal`] to satisfy the
-/// §11.1 invariant: if the frontier drains without a failure or cancellation
-/// but some nodes are still non-terminal, we return `Failed` with an attached
-/// integrity-violation payload so the caller can emit a diagnostic event and
-/// (optionally) surface [`EngineError::FrontierIntegrity`] to operators.
+/// # Priority ladder (top wins)
+///
+/// 1. **`exec_state.terminated_by`** is set — a node returned `ActionResult::Terminate`. This is
+///    **authoritative** even if a sibling failed during cancel-driven tear-down (sibling failure
+///    after a deliberate stop is collateral noise; the user's explicit signal wins).
+///    - `ExplicitStop` → `(Completed, Some(ExplicitStop))`
+///    - `ExplicitFail` → `(Failed,    Some(ExplicitFail))`
+///    - any other variant (future-proofing for the `nebula_action::TerminationReason`
+///      `#[non_exhaustive]` map fallback in [`map_termination_reason`]) → `(Failed,
+///      Some(SystemError))`.
+/// 2. **`failed_node` is set** with no explicit termination → a node failed at runtime. `(Failed,
+///    None)` — engine has nothing to add beyond the failure itself; the failure detail is on the
+///    node's `error_message` and the surfacing layer (T4) reports the underlying error.
+/// 3. **`cancel_token` cancelled** with no explicit termination → external cancellation (API,
+///    admin, engine shutdown). `(Cancelled, Some(Cancelled))`.
+/// 4. **Frontier integrity violation** — the loop drained without `failed_node` or cancel but some
+///    nodes are non-terminal (canon §11.1). `(Failed, Some(SystemError))` plus the
+///    integrity_violation payload so the caller can emit a diagnostic
+///    [`ExecutionEvent::FrontierIntegrityViolation`].
+/// 5. **Natural completion** — every node terminal. `(Completed, Some(NaturalCompletion))`.
+///
+/// `(Failed, None)` from path 2 is intentional and load-bearing: a
+/// system-driven failure already carries the error context elsewhere,
+/// and the surfacing layer must distinguish "engine ran into an error"
+/// (None) from "engine attributes the failure to a system-level
+/// invariant breach" (`Some(SystemError)`).
 fn determine_final_status(
     failed_node: &Option<(NodeKey, String)>,
     cancel_token: &CancellationToken,
     exec_state: &ExecutionState,
 ) -> FinalStatusDecision {
+    // Priority 1 — explicit termination wins over everything else.
+    if let Some((_, reason)) = exec_state.terminated_by.as_ref() {
+        let (status, termination_reason) = match reason {
+            ExecutionTerminationReason::ExplicitStop { .. } => {
+                (ExecutionStatus::Completed, reason.clone())
+            },
+            ExecutionTerminationReason::ExplicitFail { .. } => {
+                (ExecutionStatus::Failed, reason.clone())
+            },
+            other => {
+                // `map_termination_reason` falls back to SystemError
+                // for unknown future `nebula_action::TerminationReason`
+                // variants. Surface as Failed so callers don't silently
+                // promote it to Completed.
+                tracing::warn!(
+                    execution_id = %exec_state.execution_id,
+                    ?other,
+                    "terminated_by carried an unexpected variant; treating as Failed"
+                );
+                (
+                    ExecutionStatus::Failed,
+                    ExecutionTerminationReason::SystemError,
+                )
+            },
+        };
+        tracing::debug!(
+            target = "engine::final_status",
+            execution_id = %exec_state.execution_id,
+            ?status,
+            ?termination_reason,
+            "final_status_decided (priority 1: explicit termination)"
+        );
+        return FinalStatusDecision {
+            status,
+            termination_reason: Some(termination_reason),
+            integrity_violation: None,
+        };
+    }
+
+    // Priority 2 — system-driven failure (no explicit signal).
     if failed_node.is_some() {
+        tracing::debug!(
+            target = "engine::final_status",
+            execution_id = %exec_state.execution_id,
+            "final_status_decided (priority 2: failed_node)"
+        );
         return FinalStatusDecision {
             status: ExecutionStatus::Failed,
+            termination_reason: None,
             integrity_violation: None,
         };
     }
+
+    // Priority 3 — external cancellation (no explicit signal).
     if cancel_token.is_cancelled() {
+        tracing::debug!(
+            target = "engine::final_status",
+            execution_id = %exec_state.execution_id,
+            "final_status_decided (priority 3: external cancel)"
+        );
         return FinalStatusDecision {
             status: ExecutionStatus::Cancelled,
+            termination_reason: Some(ExecutionTerminationReason::Cancelled),
             integrity_violation: None,
         };
     }
+
+    // Priority 4 — frontier integrity violation (canon §11.1).
     if !exec_state.all_nodes_terminal() {
         let non_terminal: Vec<(NodeKey, NodeState)> = exec_state
             .node_states
@@ -3575,11 +3764,20 @@ fn determine_final_status(
         );
         return FinalStatusDecision {
             status: ExecutionStatus::Failed,
+            termination_reason: Some(ExecutionTerminationReason::SystemError),
             integrity_violation: Some(non_terminal),
         };
     }
+
+    // Priority 5 — natural completion.
+    tracing::debug!(
+        target = "engine::final_status",
+        execution_id = %exec_state.execution_id,
+        "final_status_decided (priority 5: natural completion)"
+    );
     FinalStatusDecision {
         status: ExecutionStatus::Completed,
+        termination_reason: Some(ExecutionTerminationReason::NaturalCompletion),
         integrity_violation: None,
     }
 }
@@ -3690,6 +3888,51 @@ fn resolve_node_input_with_support(
     };
 
     (flow_input, support_inputs)
+}
+
+/// Map an `ActionResult::Terminate` reason from the action layer into
+/// the engine's `ExecutionTerminationReason` (ROADMAP §M0.3).
+///
+/// Pure conversion; the caller carries the result into
+/// [`ExecutionState::set_terminated_by`]. The `by_node` field is
+/// duplicated on both the outer tuple in `terminated_by` and the inner
+/// reason variant so that downstream consumers (audit log, event bus)
+/// can carry the reason on its own without losing provenance.
+///
+/// `nebula_action::TerminationReason` is `#[non_exhaustive]`. Future
+/// variants land as `SystemError` here — never silently `Cancelled` or
+/// `NaturalCompletion`, both of which would lose audit fidelity.
+/// Adding a new variant upstream surfaces here as a `tracing::error!`
+/// invariant breach so the gap is visible before any persisted state
+/// rolls forward.
+fn map_termination_reason(
+    by_node: NodeKey,
+    reason: &nebula_action::TerminationReason,
+) -> ExecutionTerminationReason {
+    match reason {
+        nebula_action::TerminationReason::Success { note } => {
+            ExecutionTerminationReason::ExplicitStop {
+                by_node,
+                note: note.clone(),
+            }
+        },
+        nebula_action::TerminationReason::Failure { code, message } => {
+            ExecutionTerminationReason::ExplicitFail {
+                by_node,
+                code: code.as_str().into(),
+                message: message.clone(),
+            }
+        },
+        other => {
+            tracing::error!(
+                target = "engine::frontier",
+                ?other,
+                "unknown TerminationReason variant — treating as SystemError; \
+                 add explicit mapping in map_termination_reason"
+            );
+            ExecutionTerminationReason::SystemError
+        },
+    }
 }
 
 /// Extract the primary output value from an ActionResult for downstream input resolution.
@@ -6081,6 +6324,168 @@ mod tests {
         assert!(
             decision.integrity_violation.is_none(),
             "Completed decisions must not carry an integrity payload"
+        );
+    }
+
+    // ── ROADMAP §M0.3 — `determine_final_status` priority-ladder unit tests ──
+    //
+    // These cover the seven branches of the explicit-termination ladder
+    // documented on `determine_final_status`: explicit termination beats
+    // failed_node beats cancel_token beats integrity violation beats natural
+    // completion. Pairs with the engine integration tests that exercise
+    // explicit-termination behavior end-to-end (control_dispatch.rs,
+    // resource_integration.rs).
+
+    fn make_two_terminal_state(
+        terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,
+    ) -> ExecutionState {
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        let mut state = ExecutionState::new(
+            ExecutionId::new(),
+            WorkflowId::new(),
+            &[n1.clone(), n2.clone()],
+        );
+        // Drive both nodes to a terminal state so the integrity guard
+        // does not fire for tests that do not want to exercise it.
+        state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
+        state.node_states.get_mut(&n2).unwrap().state = NodeState::Skipped;
+        state.terminated_by = terminated_by;
+        state
+    }
+
+    /// Priority 1 (Stop): explicit-stop signal yields `Completed` plus the
+    /// `ExplicitStop` reason regardless of natural drainage.
+    #[test]
+    fn final_status_explicit_stop_yields_completed_with_explicit_reason() {
+        let n1 = node_key!("n1");
+        let reason = ExecutionTerminationReason::ExplicitStop {
+            by_node: n1.clone(),
+            note: Some("done".to_owned()),
+        };
+        let state = make_two_terminal_state(Some((n1, reason.clone())));
+
+        let token = CancellationToken::new();
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Completed);
+        assert_eq!(decision.termination_reason, Some(reason));
+        assert!(decision.integrity_violation.is_none());
+    }
+
+    /// Priority 1 (Fail): explicit-fail signal yields `Failed` plus the
+    /// `ExplicitFail` reason — distinct from a system-driven `Failed`.
+    #[test]
+    fn final_status_explicit_fail_yields_failed_with_explicit_reason() {
+        let n1 = node_key!("n1");
+        let reason = ExecutionTerminationReason::ExplicitFail {
+            by_node: n1.clone(),
+            code: nebula_execution::status::ExecutionTerminationCode::new("E_FAIL"),
+            message: "boom".to_owned(),
+        };
+        let state = make_two_terminal_state(Some((n1, reason.clone())));
+
+        let token = CancellationToken::new();
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Failed);
+        assert_eq!(decision.termination_reason, Some(reason));
+    }
+
+    /// Priority 2: a system-driven `failed_node` without an explicit
+    /// termination yields `(Failed, None)` — the `None` is load-bearing
+    /// (signals "engine has nothing extra to attribute").
+    #[test]
+    fn final_status_failed_node_without_terminate_yields_failed_none() {
+        let state = make_two_terminal_state(None);
+        let token = CancellationToken::new();
+        let failed = Some((node_key!("n1"), "boom".to_owned()));
+
+        let decision = determine_final_status(&failed, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Failed);
+        assert!(decision.termination_reason.is_none());
+    }
+
+    /// Priority 3: external cancel without an explicit termination yields
+    /// `(Cancelled, Cancelled)` — distinct from explicit-stop.
+    #[test]
+    fn final_status_external_cancel_yields_cancelled_with_cancelled_reason() {
+        let state = make_two_terminal_state(None);
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Cancelled);
+        assert_eq!(
+            decision.termination_reason,
+            Some(ExecutionTerminationReason::Cancelled)
+        );
+    }
+
+    /// Priority 5: natural drainage with all-terminal nodes and no signal
+    /// yields `(Completed, NaturalCompletion)`.
+    #[test]
+    fn final_status_natural_completion_yields_completed_with_natural_reason() {
+        let state = make_two_terminal_state(None);
+        let token = CancellationToken::new();
+
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Completed);
+        assert_eq!(
+            decision.termination_reason,
+            Some(ExecutionTerminationReason::NaturalCompletion)
+        );
+    }
+
+    /// Priority 1 wins over Priority 2: explicit stop authoritative even
+    /// when a sibling failed mid-cancel. The user's stop signal is
+    /// authoritative; sibling failure is collateral.
+    #[test]
+    fn final_status_explicit_stop_wins_over_failed_node() {
+        let n1 = node_key!("n1");
+        let stop_reason = ExecutionTerminationReason::ExplicitStop {
+            by_node: n1.clone(),
+            note: None,
+        };
+        let state = make_two_terminal_state(Some((n1, stop_reason.clone())));
+        let token = CancellationToken::new();
+        // Sibling failure that would have promoted to Failed under priority 2.
+        let failed = Some((node_key!("n2"), "sibling exploded mid-cancel".to_owned()));
+
+        let decision = determine_final_status(&failed, &token, &state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Completed,
+            "ExplicitStop must win over sibling failure"
+        );
+        assert_eq!(decision.termination_reason, Some(stop_reason));
+    }
+
+    /// Priority 1 wins over Priority 2 (Fail variant): an explicit fail
+    /// signal is authoritative even when a sibling also failed.
+    #[test]
+    fn final_status_explicit_fail_wins_over_failed_sibling() {
+        let n1 = node_key!("n1");
+        let fail_reason = ExecutionTerminationReason::ExplicitFail {
+            by_node: n1.clone(),
+            code: nebula_execution::status::ExecutionTerminationCode::new("E_USER_FAIL"),
+            message: "user-driven".to_owned(),
+        };
+        let state = make_two_terminal_state(Some((n1, fail_reason.clone())));
+        let token = CancellationToken::new();
+        let failed = Some((node_key!("n2"), "sibling crash".to_owned()));
+
+        let decision = determine_final_status(&failed, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Failed);
+        assert_eq!(
+            decision.termination_reason,
+            Some(fail_reason),
+            "ExplicitFail must win over sibling failure"
         );
     }
 

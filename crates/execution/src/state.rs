@@ -13,7 +13,7 @@ use crate::{
     error::ExecutionError,
     idempotency::IdempotencyKey,
     output::NodeOutput,
-    status::ExecutionStatus,
+    status::{ExecutionStatus, ExecutionTerminationReason},
     transition::{validate_execution_transition, validate_node_transition},
 };
 
@@ -168,6 +168,19 @@ pub struct ExecutionState {
     /// warning log so the degradation is visible.
     #[serde(default)]
     pub budget: Option<ExecutionBudget>,
+    /// First explicit termination signal observed during this
+    /// execution. `Some((node_key, reason))` means the named node
+    /// returned `ActionResult::Terminate` and its
+    /// `ExecutionTerminationReason` is the authoritative source of
+    /// the eventual final status (canon §4.5; ROADMAP §M0.3).
+    /// First-write-wins: subsequent terminate signals from racing
+    /// siblings are dropped at `set_terminated_by`.
+    ///
+    /// Legacy persisted states that predate this field deserialize
+    /// as `None`; the engine treats those executions as not having
+    /// received an explicit termination.
+    #[serde(default)]
+    pub terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,
 }
 
 impl ExecutionState {
@@ -195,6 +208,7 @@ impl ExecutionState {
             variables: serde_json::Map::new(),
             workflow_input: None,
             budget: None,
+            terminated_by: None,
         }
     }
 
@@ -217,6 +231,127 @@ impl ExecutionState {
     /// recovery (issue #289).
     pub fn set_budget(&mut self, budget: ExecutionBudget) {
         self.budget = Some(budget);
+    }
+
+    /// Record an explicit termination signal from a node returning
+    /// `ActionResult::Terminate`.
+    ///
+    /// # Invariants enforced
+    ///
+    /// 1. **Reason kind is explicit.** Only [`ExecutionTerminationReason::ExplicitStop`] and
+    ///    [`ExecutionTerminationReason::ExplicitFail`] are accepted. `NaturalCompletion`,
+    ///    `Cancelled`, and `SystemError` are engine-attributed in `nebula-engine`'s
+    ///    `determine_final_status` via other priority-ladder branches and must not be recorded in
+    ///    `terminated_by` directly — passing them returns `false` with a `tracing::warn!` and no
+    ///    mutation.
+    /// 2. **`by_node` matches `node_key`.** The variant's inner `by_node` field MUST equal the
+    ///    `node_key` argument. Mismatched identity returns `false` with a `tracing::warn!` and no
+    ///    mutation. Engine wiring constructs the reason via
+    ///    `map_termination_reason(node_key.clone(), ...)`, so a mismatch indicates a programming
+    ///    error in a non-engine caller (or a refactor regression).
+    /// 3. **First-write-wins.** Only the first signal is durable; subsequent signals are
+    ///    debug-logged and dropped so the post-mortem audit log has a single authoritative source
+    ///    per execution (canon §4.5). The frontier loop holds `&mut ExecutionState` while it
+    ///    consumes node results, so no two writers race here at the language level.
+    ///
+    /// On a successful set this method bumps the parent
+    /// [`ExecutionState::version`] and `updated_at` so any
+    /// optimistic-concurrency reader observes the change (issue
+    /// #255). On a rejected call (any of the cases above) it is a
+    /// no-op.
+    ///
+    /// Returns `true` when the signal was recorded, `false` when
+    /// rejected. The return value is load-bearing — the
+    /// `nebula-engine` crate uses it to decide whether to signal the
+    /// `cancel_token` (only on first successful set).
+    pub fn set_terminated_by(
+        &mut self,
+        node_key: NodeKey,
+        reason: ExecutionTerminationReason,
+    ) -> bool {
+        // Invariants 1 + 2: reason must be an explicit variant, and
+        // its inner `by_node` must match the caller's `node_key`.
+        let kind_consistent = match &reason {
+            ExecutionTerminationReason::ExplicitStop { by_node, .. }
+            | ExecutionTerminationReason::ExplicitFail { by_node, .. } => by_node == &node_key,
+            // NaturalCompletion / Cancelled / SystemError are engine-
+            // attributed via determine_final_status priority ladder
+            // and must not be stored as `terminated_by`.
+            _ => false,
+        };
+        if !kind_consistent {
+            tracing::warn!(
+                target = "execution::state",
+                execution_id = %self.execution_id,
+                attempted_by = %node_key,
+                attempted_reason = ?reason,
+                "set_terminated_by rejected — reason must be ExplicitStop/ExplicitFail \
+                 with matching by_node (canon §4.5; ROADMAP §M0.3)"
+            );
+            return false;
+        }
+
+        // Invariant 3: first-write-wins.
+        if self.terminated_by.is_some() {
+            tracing::debug!(
+                target = "execution::state",
+                execution_id = %self.execution_id,
+                already_set_by = ?self.terminated_by.as_ref().map(|(nk, _)| nk),
+                attempted_by = %node_key,
+                attempted_reason = ?reason,
+                "set_terminated_by skipped — already set (first-write-wins)"
+            );
+            return false;
+        }
+        tracing::trace!(
+            target = "execution::state",
+            execution_id = %self.execution_id,
+            %node_key,
+            ?reason,
+            "set_terminated_by"
+        );
+        self.terminated_by = Some((node_key, reason));
+        self.version += 1;
+        self.updated_at = Utc::now();
+        true
+    }
+
+    /// Drop a previously recorded explicit termination signal **without**
+    /// bumping the parent version.
+    ///
+    /// Recovery escape hatch for the engine's durability path: when a
+    /// `set_terminated_by` succeeded in-memory but the next
+    /// `checkpoint_node` returned `Err` (CAS conflict, storage failure,
+    /// etc.), the signal never reached disk. Leaving the in-memory
+    /// `terminated_by` set would let `determine_final_status` report a
+    /// durable-looking `termination_reason` on `ExecutionResult` /
+    /// `ExecutionEvent::ExecutionFinished` while the persisted state
+    /// row contains `None` — a semantic divergence between the event
+    /// stream and the audit-of-record.
+    ///
+    /// `clear_terminated_by` undoes the in-memory record so the engine
+    /// reports the honest system-driven outcome (e.g. `(Failed, None)`
+    /// from `failed_node` priority). Version is **not** bumped because
+    /// the matching set's bump never made it to disk either — readers
+    /// keying on `version` should never have observed the intermediate
+    /// state.
+    ///
+    /// Returns `true` when there was a signal to clear, `false`
+    /// otherwise. The return value is informational; the engine uses
+    /// it only for log fidelity.
+    pub fn clear_terminated_by(&mut self) -> bool {
+        if let Some((node_key, reason)) = self.terminated_by.take() {
+            tracing::warn!(
+                target = "execution::state",
+                execution_id = %self.execution_id,
+                cleared_by = %node_key,
+                ?reason,
+                "clear_terminated_by — recovery path; signal was not durable"
+            );
+            true
+        } else {
+            false
+        }
     }
 
     /// Get a node's execution state.
@@ -817,5 +952,214 @@ mod tests {
 
         let key = state.idempotency_key_for_node(phantom.clone());
         assert_eq!(key, IdempotencyKey::for_attempt(eid, phantom, 1));
+    }
+
+    /// ROADMAP §M0.3 — `terminated_by` must round-trip through serde
+    /// so a resumed execution sees the same authoritative termination
+    /// signal the original run recorded. Pairs with the runtime
+    /// guarantee that the engine persists `ExecutionState` (including
+    /// this field) via `checkpoint_node` immediately after
+    /// `set_terminated_by`.
+    #[test]
+    fn terminated_by_roundtrip_via_serde() {
+        let (mut state, n1, _n2) = make_state();
+        assert!(state.terminated_by.is_none());
+
+        let was_first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1.clone(),
+                note: Some("done".to_owned()),
+            },
+        );
+        assert!(was_first, "first set_terminated_by must return true");
+
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ExecutionState = serde_json::from_str(&json).unwrap();
+        match back.terminated_by {
+            Some((nk, ExecutionTerminationReason::ExplicitStop { by_node, note })) => {
+                assert_eq!(nk, n1);
+                assert_eq!(by_node, n1);
+                assert_eq!(note.as_deref(), Some("done"));
+            },
+            other => panic!("unexpected terminated_by after roundtrip: {other:?}"),
+        }
+    }
+
+    /// ROADMAP §M0.3 — legacy persisted states that predate
+    /// `terminated_by` must still deserialize so a resumed legacy
+    /// execution does not crash on missing field. Engine then treats
+    /// those as never-explicitly-terminated.
+    #[test]
+    fn terminated_by_missing_field_deserializes_as_none() {
+        let legacy = serde_json::json!({
+            "execution_id": ExecutionId::new(),
+            "workflow_id": WorkflowId::new(),
+            "status": "created",
+            "node_states": {},
+            "version": 0,
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
+            "total_retries": 0,
+            "total_output_bytes": 0,
+        });
+        let state: ExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(state.terminated_by.is_none());
+    }
+
+    /// ROADMAP §M0.3 — first-write-wins. The engine relies on this
+    /// return value to decide whether to signal `cancel_token` (only
+    /// on `true`) so the second signal must NOT replace the first.
+    #[test]
+    fn set_terminated_by_is_first_write_wins() {
+        let (mut state, n1, n2) = make_state();
+
+        let first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1.clone(),
+                note: None,
+            },
+        );
+        assert!(first, "first set must succeed");
+        let v_after_first = state.version;
+
+        let second = state.set_terminated_by(
+            n2.clone(),
+            ExecutionTerminationReason::ExplicitFail {
+                by_node: n2,
+                code: crate::status::ExecutionTerminationCode::new("E_FAIL"),
+                message: "should be ignored".to_owned(),
+            },
+        );
+        assert!(!second, "second set must return false (idempotent)");
+
+        // The original signal must still be the recorded one.
+        match state.terminated_by.as_ref() {
+            Some((
+                nk,
+                ExecutionTerminationReason::ExplicitStop {
+                    by_node,
+                    note: None,
+                },
+            )) => {
+                assert_eq!(nk, &n1);
+                assert_eq!(by_node, &n1);
+            },
+            other => panic!("first signal must remain in place: {other:?}"),
+        }
+        // And the version must NOT have moved on the duplicate path.
+        assert_eq!(
+            state.version, v_after_first,
+            "version must not bump on duplicate set_terminated_by"
+        );
+    }
+
+    /// ROADMAP §M0.3 invariant 1 — `set_terminated_by` must reject
+    /// non-explicit reason variants. `NaturalCompletion`, `Cancelled`,
+    /// and `SystemError` are engine-attributed via
+    /// `determine_final_status` priority-ladder branches and must not
+    /// be recorded directly in `terminated_by`.
+    #[test]
+    fn set_terminated_by_rejects_non_explicit_reason() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+
+        for reason in [
+            ExecutionTerminationReason::NaturalCompletion,
+            ExecutionTerminationReason::Cancelled,
+            ExecutionTerminationReason::SystemError,
+        ] {
+            assert!(
+                !state.set_terminated_by(n1.clone(), reason),
+                "non-explicit variant must be rejected"
+            );
+            assert!(
+                state.terminated_by.is_none(),
+                "rejected call must not mutate terminated_by"
+            );
+            assert_eq!(state.version, v0, "rejected call must not bump version");
+        }
+    }
+
+    /// ROADMAP §M0.3 invariant 2 — `set_terminated_by` must reject a
+    /// reason whose inner `by_node` does not match the `node_key`
+    /// argument. Engine wiring constructs the reason via
+    /// `map_termination_reason(node_key.clone(), ...)` so a mismatch
+    /// indicates a programming error (or a refactor regression) and
+    /// must surface as `false` rather than store inconsistent data.
+    #[test]
+    fn set_terminated_by_rejects_mismatched_by_node() {
+        let (mut state, n1, n2) = make_state();
+        let v0 = state.version;
+
+        // Outer key = n1, inner by_node = n2 — identity mismatch.
+        let mismatched = ExecutionTerminationReason::ExplicitStop {
+            by_node: n2,
+            note: None,
+        };
+        assert!(
+            !state.set_terminated_by(n1, mismatched),
+            "mismatched by_node must be rejected"
+        );
+        assert!(state.terminated_by.is_none());
+        assert_eq!(state.version, v0);
+    }
+
+    /// ROADMAP §M0.3 review M1 — recovery escape hatch:
+    /// `clear_terminated_by` removes an in-memory signal that never
+    /// made it to disk via `checkpoint_node`. Returns `true` when
+    /// there was a signal to clear, `false` otherwise. Does NOT bump
+    /// `version` (the matching set's bump never reached disk either).
+    #[test]
+    fn clear_terminated_by_undoes_in_memory_set() {
+        let (mut state, n1, _n2) = make_state();
+
+        // No signal to clear initially.
+        assert!(
+            !state.clear_terminated_by(),
+            "clear on empty must return false"
+        );
+
+        // Set, then clear.
+        let was_first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1,
+                note: None,
+            },
+        );
+        assert!(was_first);
+        let v_after_set = state.version;
+
+        let cleared = state.clear_terminated_by();
+        assert!(cleared, "clear on Some(_) must return true");
+        assert!(state.terminated_by.is_none());
+        assert_eq!(
+            state.version, v_after_set,
+            "clear_terminated_by must NOT bump version — readers keying on \
+             the set's bump should never have observed the intermediate state"
+        );
+    }
+
+    /// ROADMAP §M0.3 — successful set bumps `version` and
+    /// `updated_at` so optimistic-concurrency readers observe the
+    /// change (issue #255).
+    #[test]
+    fn set_terminated_by_bumps_version_and_updated_at() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+        let t0 = state.updated_at;
+
+        let was_first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1,
+                note: None,
+            },
+        );
+        assert!(was_first);
+        assert_eq!(state.version, v0 + 1, "version must be bumped on first set");
+        assert!(state.updated_at >= t0, "updated_at must move forward");
     }
 }

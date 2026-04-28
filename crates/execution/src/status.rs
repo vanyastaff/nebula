@@ -82,17 +82,25 @@ impl std::fmt::Display for ExecutionStatus {
 /// This does **not** replace [`ExecutionStatus`]. Status describes *what*
 /// terminal state was reached; this enum describes *why*.
 ///
-/// # v1 wiring status
+/// # Engine wiring (ROADMAP §M0.3, canon §4.5)
 ///
-/// The `ExplicitStop` / `ExplicitFail` variants are defined and serde-
-/// round-trippable, but the engine is **not yet** populating them off
-/// `ActionResult::Terminate`. Today a node returning `Terminate` only
-/// causes its own downstream edges to be gated off in `evaluate_edge`;
-/// the scheduler still drives `determine_final_status` from aggregate
-/// node state, so executions that reach a `Terminate` end up with
-/// `termination_reason == None` on the result. Full propagation is
-/// tracked as Phase 3 of the ControlAction plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `ExplicitStop` / `ExplicitFail` are populated by the engine's
+/// frontier loop: a node returning `ActionResult::Terminate` records
+/// the mapped reason on `ExecutionState.terminated_by` before the
+/// next checkpoint (first-write-wins), then signals the
+/// `cancel_token` so sibling branches tear down on a durable
+/// decision. `determine_final_status` reads `terminated_by` ahead of
+/// `failed_node` and the external cancel token, so user-driven
+/// termination is authoritative — sibling failure mid-cancel does
+/// not promote the result.
+///
+/// Surfaced on `ExecutionResult.termination_reason` and
+/// `ExecutionEvent::ExecutionFinished.termination_reason`. Legacy
+/// persisted states that predate `terminated_by` still deserialise
+/// (the field is `#[serde(default)]`) and the engine treats them as
+/// not having received an explicit termination — preserving the
+/// canon §4.5 honesty contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum ExecutionTerminationReason {

@@ -69,6 +69,7 @@ thiserror = { version = "2.0.18" }
 anyhow = "1.0.102"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false }
+tracing-test = "0.2.6"
 
 # Concurrency and synchronization
 dashmap = { version = "6.1.0", default-features = false }

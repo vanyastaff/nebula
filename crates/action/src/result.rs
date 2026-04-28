@@ -203,20 +203,28 @@ pub enum ActionResult<T> {
     /// return `Terminate` today when they want "no more work from this
     /// branch" semantics.
     ///
-    /// # v1 behaviour
+    /// # Engine wiring
     ///
-    /// The engine's `evaluate_edge` treats `Terminate` the same as
-    /// [`Skip`](Self::Skip): downstream edges from this node do **not**
-    /// fire. That is the entirety of the current engine-side wiring.
+    /// The engine's `evaluate_edge` gates downstream edges from this
+    /// node off the moment the action returns (same shape as
+    /// [`Skip`](Self::Skip)).
     ///
-    /// Full scheduler integration — cancelling sibling branches still in
-    /// flight, propagating the [`TerminationReason`] into the audit log
-    /// as `ExecutionTerminationReason::ExplicitStop` /
-    /// `ExecutionTerminationReason::ExplicitFail`, and driving
-    /// `determine_final_status` off the terminate signal — is tracked as
-    /// Phase 3 of the ControlAction plan and is **not yet wired**. Do not
-    /// rely on `Terminate` in v1 to cancel sibling branches; it only
-    /// gates the local subgraph downstream of the terminating node.
+    /// In addition, the frontier loop maps the [`TerminationReason`]
+    /// into `ExecutionTerminationReason::ExplicitStop` /
+    /// `ExecutionTerminationReason::ExplicitFail` and records it on
+    /// `ExecutionState.terminated_by` (first-write-wins) **before** the
+    /// next checkpoint, so the signal is durable across crashes. After
+    /// the persist succeeds, the engine signals its `cancel_token` —
+    /// sibling branches still in flight tear down cleanly. The signal
+    /// drives `determine_final_status` (which prioritises explicit
+    /// termination over `failed_node` and external cancel) and is
+    /// surfaced on `ExecutionResult.termination_reason` and
+    /// `ExecutionEvent::ExecutionFinished.termination_reason` so audit
+    /// / API / webhook consumers can distinguish ExplicitFail from a
+    /// system-driven failure and ExplicitStop from natural completion.
+    ///
+    /// See ROADMAP §M0.3 for the wiring contract and canon §4.5 for
+    /// the operational-honesty rule this closed.
     Terminate {
         /// Why the execution is ending.
         reason: TerminationReason,

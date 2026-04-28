@@ -91,6 +91,7 @@ insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
+tracing-test = { workspace = true }
 wiremock = { workspace = true }
 
 [lib]

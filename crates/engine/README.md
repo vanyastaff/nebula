@@ -106,7 +106,6 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 
 - API stability: `partial` — `WorkflowEngine` and `ExecutionResult` are in active use;
   known open debts (see Appendix) affect correctness boundaries.
-- `ExecutionBudget` is ephemeral (not persisted on resume) — §11.5 debt.
 - Downstream-edge gate only blocks local edges, not the full graph (§10 narrower than
   advertised for multi-hop conditional flows).
 
@@ -125,10 +124,16 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 
 | Gap | Location | Canon impact |
 |---|---|---|
-| `ExecutionBudget` not persisted in `ExecutionState` — budget is lost on resume | `src/engine.rs:796` | §11.5 durability matrix: budget is **ephemeral** |
-| Original workflow input not persisted — resume cannot replay from input | `src/engine.rs:809` | §11.5 + §11.2 retry/resume story narrower than optimal |
 | Downstream-edge gate blocks only **local** edges, not the full graph | `src/engine.rs:1808` | §10 conditional-flow gate is narrower than advertised |
-| `ExecutionBudget` moved to `nebula-execution` — import cleanup pending | `src/engine.rs:20` | documentation / import hygiene |
+| `ExecutionBudget` moved to `nebula-execution` — import cleanup pending | `src/engine.rs` | documentation / import hygiene |
+
+### Recently closed debts (ROADMAP §M0)
+
+| Closed debt | Closed by | Verification |
+|---|---|---|
+| `ExecutionBudget` not persisted in `ExecutionState` — budget lost on resume | issue #289 | `set_budget` at `state.rs:218`; restored at `engine.rs:1433-1444`; tests `resume_restores_persisted_budget` and `resume_falls_back_to_default_budget_on_legacy_state` |
+| Original workflow input not persisted — resume could not replay from input | issue #311 | `set_workflow_input` at `state.rs:206`; restored at `engine.rs:1487-1497`; test `resume_restores_original_workflow_input` |
+| `ActionResult::Terminate` not propagated to `ExecutionTerminationReason::ExplicitStop` / `ExplicitFail` — execution audit lost intent vs system-driven termination | ROADMAP §M0.3 | `set_terminated_by` at `state.rs:240`; engine wiring at `engine.rs:1986-area`; `determine_final_status` priority ladder at `engine.rs:3590`; surfaced via `ExecutionResult.termination_reason` and `ExecutionEvent::ExecutionFinished.termination_reason` |
 
 ### Architecture notes
 
