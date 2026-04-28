@@ -54,27 +54,36 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 ## Step 1: Define Config
 
 `ResourceConfig` extends `nebula_schema::HasSchema + Send + Sync + Clone +
-'static`. The simplest path for a config that doesn't need a meaningful
-UI schema is the `nebula_schema::impl_empty_has_schema!` macro — it
-satisfies the super-bound with an empty schema. Use a real
-`#[derive(Schema)]` only when the config is exposed to a catalog or
-workflow editor.
+'static`. The `HasSchema` super-bound exists so resource configs can be
+introspected by the catalog and workflow editor — derive it from the
+struct shape (recommended) or stub it out for in-process / test fixtures.
+
+### Option A: `#[derive(Schema)]` — recommended
+
+`nebula_schema::Schema` is a derive macro that generates a real schema
+from struct fields. Field-level `#[param(...)]` attributes set labels,
+descriptions, and other catalog metadata. Use this whenever the config
+is meant to be visible in a UI:
 
 ```rust,ignore
 // src/config.rs
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use nebula_resource::{Error, ResourceConfig};
+use nebula_schema::Schema;
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Default, Hash)]
+#[derive(Debug, Clone, Hash, Schema, Deserialize)]
 pub struct PostgresConfig {
+    #[param(label = "Host")]
     pub host: String,
+    #[param(label = "Port", default = 5432)]
     pub port: u16,
+    #[param(label = "Database")]
     pub database: String,
+    #[param(label = "Connect timeout (s)", default = 10)]
     pub connect_timeout_secs: u64,
 }
-
-nebula_schema::impl_empty_has_schema!(PostgresConfig);
 
 impl ResourceConfig for PostgresConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -94,6 +103,35 @@ impl ResourceConfig for PostgresConfig {
     }
 }
 ```
+
+### Option B: explicit empty schema — for in-process / test fixtures
+
+If the config is never exposed to a catalog (e.g., test scaffolding,
+internal-only adapters), implement `HasSchema` directly with an empty
+schema. No macros, no `serde` requirement:
+
+```rust,ignore
+use nebula_schema::{HasSchema, ValidSchema};
+
+#[derive(Debug, Clone, Hash)]
+pub struct PostgresConfig { /* ... */ }
+
+impl HasSchema for PostgresConfig {
+    fn schema() -> ValidSchema {
+        ValidSchema::empty()
+    }
+}
+```
+
+(`nebula-schema` also exposes a `nebula_schema::impl_empty_has_schema!`
+macro that emits the same boilerplate; either form is acceptable.)
+
+### Why both methods are documented
+
+Real `#[derive(Schema)]` is the production-quality path: catalogs render
+your fields, the workflow editor validates inputs, and config evolution
+goes through `ResourceMetadata::validate_compatibility`. Empty schema is
+the explicit opt-out — choose it deliberately, not as the default.
 
 `validate` checks format and bounds — connectivity belongs in
 `Resource::create`. `fingerprint` must be deterministic; on a
