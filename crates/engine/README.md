@@ -97,8 +97,8 @@ action/credential/resource caches enforcing the namespace invariant at construct
 - Not an action dispatcher — delegated to `nebula-runtime`.
 - Not a plugin loader or isolator — see `nebula-sandbox`.
 - Not an expression evaluator — see `nebula-expression`.
-- Not a retry scheduler — engine-level node re-execution from `ActionResult::Retry` is
-  `planned` (§11.2); canonical retry surface is `nebula-resilience` inside an action.
+- Not a retry scheduler — the engine does not re-execute nodes. Retry lives in
+  `nebula-resilience` inside an action around the outbound call (canon §11.2).
 
 ## Maturity
 

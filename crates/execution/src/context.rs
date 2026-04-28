@@ -24,7 +24,7 @@ where
 
 /// Resource budget for a single workflow execution.
 ///
-/// Controls concurrency, wall-clock timeout, output size, and retry limits.
+/// Controls concurrency, wall-clock timeout, and total output size.
 /// All `Option` fields default to `None` (unlimited).
 ///
 /// # Examples
@@ -57,10 +57,6 @@ pub struct ExecutionBudget {
     /// Maximum total bytes across all node outputs. `None` = unlimited.
     #[serde(default)]
     pub max_output_bytes: Option<u64>,
-
-    /// Maximum retry attempts summed across all nodes. `None` = unlimited.
-    #[serde(default)]
-    pub max_total_retries: Option<u32>,
 }
 
 impl Default for ExecutionBudget {
@@ -69,7 +65,6 @@ impl Default for ExecutionBudget {
             max_concurrent_nodes: 10,
             max_duration: None,
             max_output_bytes: None,
-            max_total_retries: None,
         }
     }
 }
@@ -117,13 +112,6 @@ impl ExecutionBudget {
         self.max_output_bytes = Some(bytes);
         self
     }
-
-    /// Set the maximum retry attempts summed across all nodes.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_max_total_retries(mut self, retries: u32) -> Self {
-        self.max_total_retries = Some(retries);
-        self
-    }
 }
 
 /// Lightweight execution context.
@@ -157,7 +145,6 @@ mod tests {
         assert_eq!(budget.max_concurrent_nodes, 10);
         assert_eq!(budget.max_duration, None);
         assert_eq!(budget.max_output_bytes, None);
-        assert_eq!(budget.max_total_retries, None);
     }
 
     #[test]
@@ -165,21 +152,18 @@ mod tests {
         let budget = ExecutionBudget::default()
             .with_max_concurrent_nodes(4)
             .with_max_duration(Duration::from_mins(5))
-            .with_max_output_bytes(1024 * 1024)
-            .with_max_total_retries(50);
+            .with_max_output_bytes(1024 * 1024);
 
         assert_eq!(budget.max_concurrent_nodes, 4);
         assert_eq!(budget.max_duration, Some(Duration::from_mins(5)));
         assert_eq!(budget.max_output_bytes, Some(1024 * 1024));
-        assert_eq!(budget.max_total_retries, Some(50));
     }
 
     #[test]
     fn serde_roundtrip_full() {
         let budget = ExecutionBudget::default()
             .with_max_duration(Duration::from_secs(5))
-            .with_max_output_bytes(999)
-            .with_max_total_retries(3);
+            .with_max_output_bytes(999);
 
         let json = serde_json::to_string(&budget).unwrap();
         let restored: ExecutionBudget = serde_json::from_str(&json).unwrap();
@@ -201,7 +185,6 @@ mod tests {
         assert_eq!(budget.max_concurrent_nodes, 5);
         assert_eq!(budget.max_duration, None);
         assert_eq!(budget.max_output_bytes, None);
-        assert_eq!(budget.max_total_retries, None);
     }
 
     #[test]

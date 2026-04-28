@@ -90,7 +90,7 @@ pub enum EngineError {
     Action(#[from] ActionError),
 
     /// The frontier loop exited while one or more nodes were still in a
-    /// non-terminal state (e.g. `Pending` / `Running` / `Retrying`).
+    /// non-terminal state (e.g. `Pending` / `Ready` / `Running`).
     ///
     /// Per `docs/PRODUCT_CANON.md` §11.1, the engine must be the single source
     /// of truth for execution status and must not silently report `Completed`

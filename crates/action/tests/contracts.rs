@@ -153,12 +153,6 @@ fn action_result_serialization_contract_all_variants_roundtrip() {
         timeout: Some(Duration::from_secs(30)),
         partial_output: Some(ActionOutput::Value(serde_json::json!({"partial": true}))),
     });
-
-    #[cfg(feature = "unstable-retry-scheduler")]
-    assert_result_roundtrip(ActionResult::Retry {
-        after: Duration::from_millis(5000),
-        reason: "backoff".to_string(),
-    });
 }
 
 #[test]
@@ -175,17 +169,6 @@ fn action_result_duration_millis_wire_format_contract() {
         json,
         r#"{"type":"Wait","condition":{"type":"Duration","duration":250},"timeout":5000,"partial_output":null}"#
     );
-}
-
-#[cfg(feature = "unstable-retry-scheduler")]
-#[test]
-fn action_result_retry_wire_format_contract() {
-    let retry = ActionResult::<serde_json::Value>::Retry {
-        after: Duration::from_millis(1234),
-        reason: "retry".to_string(),
-    };
-    let json = serde_json::to_string(&retry).unwrap();
-    assert_eq!(json, r#"{"type":"Retry","after":1234,"reason":"retry"}"#);
 }
 
 #[test]
