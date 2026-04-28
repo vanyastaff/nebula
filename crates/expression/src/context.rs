@@ -34,10 +34,17 @@ pub struct EvaluationContext {
     policy: Option<Arc<EvaluationPolicy>>,
     /// Pre-materialized `$node` view, rebuilt only on mutation.
     ///
-    /// `resolve_variable("node")` was rebuilding a fresh `Map` from `nodes`
-    /// on every call, which made `{{ $node.a + $node.b + $node.c }}` cost
-    /// O(N×M) with N nodes and M references. Caching here trades a small
-    /// allocation per *mutation* for O(1) access on the read hot path.
+    /// `resolve_variable("node")` was rebuilding a fresh `Map` from
+    /// `nodes` on every call, which made `{{ $node.a + $node.b }}` cost
+    /// O(N×M) (N nodes, M references). Caching here moves the
+    /// HashMap→Object materialization to mutation time. Read still does
+    /// a single deep `Value::clone` of the cached object, so the
+    /// per-call cost is O(N) **of the materialized payload** rather
+    /// than O(N) of the source HashMap; what's saved is the per-call
+    /// `Map::with_capacity` + `insert` loop and per-key `to_string()`.
+    /// To make resolve fully O(1) we'd need to change the return type
+    /// to `Arc<Value>`, which is a wider API surgery — captured in
+    /// `docs/pitfalls.md` as a future-work item.
     nodes_view: Arc<Value>,
     /// Pre-materialized `$execution` view (same rationale as `nodes_view`).
     execution_view: Arc<Value>,
@@ -145,9 +152,13 @@ impl EvaluationContext {
 
     /// Resolve a variable by name.
     ///
-    /// `$node` and `$execution` are served from pre-materialized views (see
-    /// `nodes_view` / `execution_view`); the cost of a single resolve is one
-    /// `Value` clone of an already-built object, not a full HashMap rebuild.
+    /// `$node` and `$execution` are served from pre-materialized views
+    /// (see `nodes_view` / `execution_view`); the cost of a single
+    /// resolve is one `Value::clone` of an already-built object — still
+    /// O(N) in the *contents* of the materialized payload, but it skips
+    /// the full HashMap-to-Map rebuild on every access. Returning
+    /// `Arc<Value>` instead of cloning would make this true O(1); that's
+    /// a wider API change tracked separately.
     pub fn resolve_variable(&self, name: &str) -> Option<Value> {
         // Lambda-bound parameters take priority (e.g., `x` in `filter(arr, x => x > 2)`).
         if let Some(value) = self.lambda_vars.get(name) {

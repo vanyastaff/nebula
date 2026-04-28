@@ -89,12 +89,19 @@ pub fn to_float(value: &Value) -> Result<f64, &'static str> {
     }
 }
 
-/// Count Unicode scalar values in a string.
+/// Count Unicode scalar values (Rust `char`s) in a string.
 ///
-/// This is the JS-style `String.length` semantics expected by n8n compatibility:
-/// `"🙂".len()` returns 4 (UTF-8 bytes) but `char_count("🙂")` returns 1.
-/// Built-ins that report string length or compute character offsets must use
-/// this instead of `str::len`.
+/// **Note on n8n / JavaScript parity.** JavaScript's `String.length`
+/// counts UTF-16 code units, so `"🙂".length` is 2 (the emoji is a
+/// surrogate pair). Rust strings can't store unpaired surrogates, so
+/// matching that exactly would require returning shapes Rust cannot
+/// produce safely. This function instead counts Unicode scalar values:
+/// `"🙂"` is 1, `"über"` is 4. That keeps `length` / `substring` /
+/// padding builtins in agreement with each other (you cannot index
+/// into half a codepoint) at the cost of a documented deviation from
+/// JS for non-BMP input. Both `str::len` (UTF-8 bytes) and
+/// `chars().count()` (this) are wrong in different ways relative to JS;
+/// scalar-value count is the closest stable behaviour Rust supports.
 #[inline]
 pub fn char_count(s: &str) -> i64 {
     s.chars().count() as i64

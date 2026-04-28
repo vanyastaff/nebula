@@ -16,7 +16,8 @@
   `resilience`, `system`) — **stable, no pending breaks**.
 - **Core layer** (`core`, `validator`, `expression`, `workflow`, `execution`,
   `schema`, `metadata`) — **stable**. Expression #590 (regex_cache LRU)
-  closed via `moka::sync::Cache` migration (commit pending in fix branch).
+  closed in PR #625 via `moka::sync::Cache` migration —
+  see `crates/expression/src/eval.rs` (regex_cache field on `Evaluator`).
 - **Business layer** (`credential`, `resource`, `action`, `plugin`) — mostly
   stable. `resource` plans 06 + 10 + prototypes are PARTIAL.
 - **Exec layer** — `storage` is production-ready for execution/workflow

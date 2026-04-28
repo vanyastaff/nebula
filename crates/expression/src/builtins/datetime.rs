@@ -1,6 +1,6 @@
 //! Date and time functions
 
-use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use serde_json::Value;
 
@@ -62,11 +62,17 @@ pub fn now_iso(
 
 /// Format a timestamp or date string.
 ///
-/// Signature: `format_date(value, format?, tz?)`
+/// Signature: `format_date(value, format_or_tz?, tz?)`
 /// - `value`: Unix timestamp (integer) or ISO/common date string.
-/// - `format`: optional format string (`YYYY-MM-DD HH:mm:ss` etc.); when omitted, RFC 3339 is used.
-/// - `tz`: optional IANA timezone name (e.g. `"Europe/Moscow"`); when omitted, output is in UTC.
-///   Unknown names yield a typed error.
+/// - 2-arg form: `format_date(value, x)` first tries `x` as an IANA timezone name (so
+///   `format_date(0, "Europe/Moscow")` does what most callers mean — render `value` in Moscow time
+///   as RFC 3339). If `x` doesn't parse as a known timezone, it is treated as a format string. This
+///   avoids the previous "unreachable tz-only" trap where passing only a timezone silently fell
+///   through to the format-string path.
+/// - 3-arg form: `format_date(value, format, tz)` is unambiguous — `format` is the strftime-style
+///   template, `tz` is the timezone.
+/// - When `tz` is omitted output is in UTC; when `format` is omitted RFC 3339 is used. Unknown
+///   timezone names in the explicit-tz slot yield a typed error.
 pub fn format_date(
     args: &[Value],
     _view: BuiltinView<'_>,
@@ -81,17 +87,34 @@ pub fn format_date(
     }
 
     let utc_dt = parse_datetime(&args[0])?;
-    let tz = optional_tz_arg("format_date", args, 2)?;
 
-    let format_str: Option<&str> = if args.len() >= 2 {
-        Some(args[1].as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "string",
-                crate::value_utils::value_type_name(&args[1]),
-            )
-        })?)
-    } else {
-        None
+    let (format_str, tz) = match args.len() {
+        1 => (None, None),
+        2 => {
+            let arg1 = args[1].as_str().ok_or_else(|| {
+                ExpressionError::expression_type_error(
+                    "string",
+                    crate::value_utils::value_type_name(&args[1]),
+                )
+            })?;
+            // Probe-parse as IANA timezone. Success → tz-only call;
+            // failure → treat as format string (legacy 2-arg shape).
+            if let Ok(tz) = arg1.parse::<Tz>() {
+                (None, Some(tz))
+            } else {
+                (Some(arg1), None)
+            }
+        },
+        _ => {
+            let fmt = args[1].as_str().ok_or_else(|| {
+                ExpressionError::expression_type_error(
+                    "string",
+                    crate::value_utils::value_type_name(&args[1]),
+                )
+            })?;
+            let tz = optional_tz_arg("format_date", args, 2)?;
+            (Some(fmt), tz)
+        },
     };
 
     let rendered = match (format_str, tz) {
@@ -335,19 +358,16 @@ const NAIVE_DATE_FORMATS: &[&str] = &[
 /// Try to parse a string as a `NaiveDateTime` using the common formats.
 ///
 /// Date-only inputs (e.g. `2024-01-01`) are extended to midnight of that
-/// day. The `(0, 0, 0)` time components are statically valid for any
-/// `NaiveDate`, so the `expect` cannot fire — see chrono's docs on
-/// `NaiveDate::and_hms_opt`.
+/// day via `NaiveDate::and_time(NaiveTime::MIN)` — an infallible
+/// constructor that avoids the `expect`/`unwrap` panic-path that
+/// `and_hms_opt(0, 0, 0)` would have introduced in library code.
 fn parse_naive(s: &str) -> Option<NaiveDateTime> {
     for format in NAIVE_DATE_FORMATS {
         if let Ok(naive) = NaiveDateTime::parse_from_str(s, format) {
             return Some(naive);
         }
         if let Ok(date) = chrono::NaiveDate::parse_from_str(s, format) {
-            return Some(
-                date.and_hms_opt(0, 0, 0)
-                    .expect("midnight is a valid time for any NaiveDate"),
-            );
+            return Some(date.and_time(NaiveTime::MIN));
         }
     }
     None

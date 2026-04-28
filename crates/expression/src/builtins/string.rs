@@ -13,8 +13,9 @@ use crate::{
 // Note: there used to be a `pub fn length` here that took a string only,
 // duplicating the polymorphic `util::length` registered in
 // `BuiltinRegistry::new()`. Removed in favor of the single polymorphic
-// version in `util.rs`, which already uses `value_utils::char_count` for
-// strings (n8n-compatible code-unit counting, not UTF-8 byte length).
+// version in `util.rs`, which uses `value_utils::char_count` for
+// strings (Unicode-scalar-value counting, NOT UTF-8 byte length and
+// NOT JavaScript's UTF-16 code-unit count — see `char_count` docs).
 
 /// Convert string to uppercase
 pub fn uppercase(
@@ -80,12 +81,17 @@ pub fn replace(
     Ok(Value::String(s.replace(from, to)))
 }
 
-/// Extract a substring by Unicode scalar value indices (n8n-compatible).
+/// Extract a substring by Unicode scalar value indices.
 ///
 /// Both `start` and `end` are character indices, NOT byte offsets — so
 /// `substring("🙂hello", 0, 1)` returns `"🙂"`. When `end` is omitted it
 /// defaults to the character count of the input. Out-of-range `end` is
 /// clamped to the string's character length; `start > end` produces empty.
+///
+/// Note: indices are Rust scalar values, not JavaScript UTF-16 code
+/// units; `substring("🙂", 0, 1)` returns the full emoji here, while JS
+/// would return the high surrogate alone. See
+/// `value_utils::char_count` for the rationale.
 pub fn substring(
     args: &[Value],
     view: BuiltinView<'_>,

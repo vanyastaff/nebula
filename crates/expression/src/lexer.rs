@@ -12,24 +12,20 @@ use crate::{
 };
 
 /// Parse two ASCII hex digits into a single byte (`\xNN` escape).
+///
+/// Both digits must be ASCII hex `[0-9a-fA-F]`. Non-ASCII inputs (which
+/// can occur on hostile data like `\x🙂🙂`) are rejected with a typed
+/// syntax error rather than panicking through `char::encode_utf8` into
+/// a one-byte buffer.
 fn parse_hex_pair(d1: char, d2: char) -> ExpressionResult<u8> {
-    let mut buf = [0u8; 2];
-    let s = {
-        d1.encode_utf8(&mut buf[0..1]);
-        d2.encode_utf8(&mut buf[1..2]);
-        // Both digits are guaranteed ASCII, but if a non-hex char slipped
-        // through, `from_str_radix` will surface a clear error.
-        std::str::from_utf8(&buf).map_err(|e| {
-            ExpressionError::expression_syntax_error(format!(
-                "\\x escape contains non-UTF-8 digits: {e}"
-            ))
-        })?
-    };
-    u8::from_str_radix(s, 16).map_err(|_| {
+    let bad = || {
         ExpressionError::expression_syntax_error(format!(
             "Invalid hex digits in \\x escape: '{d1}{d2}'",
         ))
-    })
+    };
+    let hi = d1.to_digit(16).ok_or_else(bad)?;
+    let lo = d2.to_digit(16).ok_or_else(bad)?;
+    Ok(((hi << 4) | lo) as u8)
 }
 
 /// Parse a hex code-point string (1–6 digits, no `0x` prefix) into a `char`.
@@ -644,8 +640,29 @@ mod tests {
 
     #[test]
     fn lexer_parses_unicode_bmp_escape_4_digit_form() {
-        // `é` → 'é' (Latin small e with acute, U+00E9, 4-digit BMP form)
-        assert_eq!(lex_string(r#""é""#), "é");
+        // The raw string literal here contains the seven characters
+        // `\`, `u`, `0`, `0`, `E`, `9` — i.e. an actual `\uNNNN` escape
+        // for the lexer to process. The lexer must turn it into the
+        // single character U+00E9. Pre-fix this test passed a literal
+        // `é` directly and exercised only the regular UTF-8 read path,
+        // not the `\uNNNN` escape — the 4-digit-form code path could
+        // regress without failing.
+        assert_eq!(lex_string(r#""\u00E9""#), "é");
+        // Representative ASCII value in 4-digit form.
+        assert_eq!(lex_string(r#""\u0041""#), "A");
+    }
+
+    #[test]
+    fn lexer_hex_escape_with_non_ascii_returns_error_not_panic() {
+        // Regression: `parse_hex_pair` previously called `char::encode_utf8`
+        // into a 1-byte slice. Hostile input like `"\x🙂🙂"` (where the
+        // emoji is 4 UTF-8 bytes) would panic at the encode call. The
+        // ASCII-only digit check now produces a typed syntax error.
+        let err = lex_string_err(r#""\x🙂🙂""#);
+        assert!(
+            err.contains("\\x") || err.contains("Invalid hex"),
+            "got: {err}"
+        );
     }
 
     #[test]

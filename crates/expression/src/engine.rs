@@ -87,26 +87,35 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
 
     #[inline]
     fn record_hit(&self) {
-        // 32-bit saturation: stop incrementing once the high half is full
-        // so `hits` cannot wrap past `u32::MAX` and bleed into / be mistaken
-        // for `misses`. After 4G cache hits the dashboards just plateau —
-        // acceptable for an observability counter.
-        let prev = self.packed_stats.load(Ordering::Relaxed);
-        if (prev >> 32) >= u32::MAX as u64 {
-            return;
-        }
-        self.packed_stats
-            .fetch_add(Self::HIT_DELTA, Ordering::Relaxed);
+        // 32-bit saturation done atomically via `fetch_update`: a
+        // load+`fetch_add` pair would race near `u32::MAX`, allowing two
+        // threads to both pass the guard and both increment, wrapping
+        // the high half into the low half and corrupting both counters
+        // under exactly the concurrent load this struct exists to harden.
+        // After 4G cache hits the dashboards just plateau — acceptable
+        // for an observability counter.
+        let _ = self
+            .packed_stats
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
+                if (prev >> 32) >= u32::MAX as u64 {
+                    None
+                } else {
+                    Some(prev + Self::HIT_DELTA)
+                }
+            });
     }
 
     #[inline]
     fn record_miss(&self) {
-        let prev = self.packed_stats.load(Ordering::Relaxed);
-        if (prev & Self::LOW_MASK) >= u32::MAX as u64 {
-            return;
-        }
-        self.packed_stats
-            .fetch_add(Self::MISS_DELTA, Ordering::Relaxed);
+        let _ = self
+            .packed_stats
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |prev| {
+                if (prev & Self::LOW_MASK) >= u32::MAX as u64 {
+                    None
+                } else {
+                    Some(prev + Self::MISS_DELTA)
+                }
+            });
     }
 
     fn get(&self, key: &K) -> Option<V> {
@@ -667,13 +676,53 @@ mod tests {
         // Concurrent hits and misses must not produce a torn snapshot —
         // (hits, misses) must always reflect a single atomic moment.
         // Pre-fix this could expose `hits + misses != observed_calls`.
-        use std::{sync::Arc, thread};
+        //
+        // Just sampling stats AFTER the workers join would also pass for
+        // the old two-atomic implementation (the loads are sequenced
+        // after every increment), so a sampler thread keeps polling
+        // while requests are in flight to actually exercise the
+        // concurrent-snapshot path.
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicBool, AtomicU64, Ordering},
+            },
+            thread,
+        };
 
         let engine = Arc::new(ExpressionEngine::with_cache_size(64));
         let context = EvaluationContext::new();
 
         // Prime cache so subsequent calls produce a mix of hits and misses.
         engine.evaluate("1 + 1", &context).unwrap();
+
+        let workers_done = Arc::new(AtomicBool::new(false));
+        let max_seen_total = Arc::new(AtomicU64::new(0));
+
+        let sampler = {
+            let engine = Arc::clone(&engine);
+            let workers_done = Arc::clone(&workers_done);
+            let max_seen_total = Arc::clone(&max_seen_total);
+            thread::spawn(move || {
+                while !workers_done.load(Ordering::Acquire) {
+                    let stats = engine.expr_cache_stats().unwrap();
+                    let total = stats.hits + stats.misses;
+                    // Each individual snapshot must be a coherent
+                    // (hits, misses) pair — i.e. consistent with some
+                    // monotonic prefix of the workers' calls. Because
+                    // both halves only ever grow (until saturation),
+                    // any two consecutive snapshots must produce a
+                    // non-decreasing total. A torn snapshot would
+                    // appear as a jump backwards.
+                    let prev = max_seen_total.load(Ordering::Relaxed);
+                    assert!(
+                        total >= prev,
+                        "torn snapshot: total {total} regressed below previous {prev}"
+                    );
+                    max_seen_total.store(total, Ordering::Relaxed);
+                }
+            })
+        };
 
         let mut handles = Vec::new();
         for thread_idx in 0..4 {
@@ -695,6 +744,8 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+        workers_done.store(true, Ordering::Release);
+        sampler.join().unwrap();
 
         let stats = engine.expr_cache_stats().unwrap();
         // Total calls = 1 (priming) + 4 × 200 = 801. The packed counter

@@ -623,12 +623,22 @@ fn format_date_with_format_no_tz_stays_in_utc() {
 
 #[test]
 fn format_date_with_only_tz_emits_rfc3339_in_that_zone() {
-    // No explicit format string → RFC 3339 with the zone's offset.
-    let out = eval(r#"format_date(0, "", "Europe/Moscow")"#);
-    // Expected: "1970-01-01T03:00:00+03:00" — but second arg is empty
-    // string, which is a valid format ("" emits "" — different code path).
-    // Validate via the no-format two-arg form below instead.
-    assert!(out.is_string(), "got: {out:?}");
+    // 2-arg form: arg[1] is probed as a timezone first. `Europe/Moscow`
+    // parses successfully, so the call renders RFC 3339 in Moscow time
+    // (UTC+3) — `1970-01-01T03:00:00+03:00`. Pre-fix, this 2-arg shape
+    // was unreachable: arg[1] was always treated as a format string
+    // and the user had to pass `""` for format to get tz-only output.
+    assert_eq!(
+        eval(r#"format_date(0, "Europe/Moscow")"#),
+        json!("1970-01-01T03:00:00+03:00")
+    );
+}
+
+#[test]
+fn format_date_2arg_falls_back_to_format_when_not_a_tz() {
+    // If arg[1] doesn't parse as an IANA name, treat it as a format.
+    // Backward-compat with the original 2-arg shape.
+    assert_eq!(eval(r#"format_date(0, "YYYY-MM-DD")"#), json!("1970-01-01"));
 }
 
 #[test]

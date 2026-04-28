@@ -13,8 +13,9 @@ use crate::{
 /// Get the length of a string, array, or object — the single polymorphic
 /// `length()` exposed to expressions.
 ///
-/// - **String**: Unicode scalar values (`chars`), matching JS / n8n semantics — `length("🙂")` is
-///   1, not 4.
+/// - **String**: Unicode scalar values (`chars`). `length("🙂")` is 1, `length("über")` is 4. This
+///   deviates from JavaScript / n8n's UTF-16 code-unit semantics (which would return 2 for `"🙂"`)
+///   — see `value_utils::char_count` for the rationale.
 /// - **Array**: number of elements.
 /// - **Object**: number of top-level keys.
 ///
