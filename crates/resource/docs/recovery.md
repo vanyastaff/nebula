@@ -99,21 +99,35 @@ When registering a resource, pass an optional `RecoveryGate`:
 
 ```rust,ignore
 use std::sync::Arc;
+use nebula_resource::{
+    PoolConfig, RecoveryGate, RecoveryGateConfig, RegisterOptions,
+};
 
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
 
-manager.register(
-    resource, config, (), ScopeLevel::Global,
-    topology, None, Some(gate.clone()),
+manager.register_pooled_with(
+    PostgresResource,
+    pg_config,
+    PoolConfig::default(),
+    RegisterOptions {
+        recovery_gate: Some(gate.clone()),
+        ..RegisterOptions::default()
+    },
 )?;
 ```
 
-The Manager automatically:
-1. **Checks the gate** before each acquire (`check_recovery_gate`)
-2. **Triggers the gate** on transient acquire failures (`trigger_recovery_on_failure`)
+For credential-bound resources, also pass `credential_id: Some(...)` in
+`RegisterOptions`. Use `Manager::register` (positional) for full control
+over scope and topology.
 
-This means callers don't need to interact with the gate directly — it works
-transparently to prevent thundering herd on the failing backend.
+The Manager automatically:
+1. **Checks the gate** before each acquire (admission helper in
+   `crate::manager::gate`).
+2. **Triggers the gate** on transient acquire failures, surfacing the
+   `Failed`/`PermanentlyFailed` state to subsequent callers.
+
+Callers don't interact with the gate directly — it works transparently to
+prevent thundering herd on the failing backend.
 
 ---
 
@@ -125,18 +139,30 @@ failure blocks all resources in the group.
 
 ```rust,ignore
 let groups = manager.recovery_groups();
-let gate = groups.get_or_create(RecoveryGroupKey::new("db-server-1"));
-// Pass this gate to multiple register() calls
+let gate = groups.get_or_create(
+    RecoveryGroupKey::new("db-server-1"),
+    RecoveryGateConfig::default(),
+);
+// Pass `gate` (Arc<RecoveryGate>) to RegisterOptions::recovery_gate
+// for every resource on the same backend.
 ```
 
 ---
 
 ## WatchdogHandle
 
-Opt-in background health probe that periodically calls `Resource::check()`:
+Opt-in background health probe. Spawns a Tokio task that runs a
+user-supplied async `check_fn` on a fixed interval. After
+`failure_threshold` consecutive failures it calls
+`on_health_change(false)`; after `recovery_threshold` consecutive
+successes it calls `on_health_change(true)`.
 
 ```rust,ignore
+use std::time::Duration;
 use nebula_resource::{WatchdogConfig, WatchdogHandle};
+use tokio_util::sync::CancellationToken;
+
+let parent_cancel = CancellationToken::new();
 
 let handle = WatchdogHandle::start(
     WatchdogConfig {
@@ -145,8 +171,14 @@ let handle = WatchdogHandle::start(
         failure_threshold: 3,    // 3 consecutive failures → unhealthy
         recovery_threshold: 1,   // 1 success → healthy again
     },
-    probe_fn,
-    |healthy| { /* health change callback */ },
+    || async {
+        // Your async probe — return Result<(), nebula_resource::Error>.
+        Ok(())
+    },
+    |healthy| {
+        tracing::info!(healthy, "watchdog health transition");
+    },
+    parent_cancel.child_token(),
 );
 
 // Graceful stop (awaits the background task):
@@ -154,6 +186,9 @@ handle.stop().await;
 // Or cancel-on-drop (does NOT await):
 drop(handle);
 ```
+
+The `parent_cancel` token lets the watchdog participate in tree-style
+shutdown — the task exits as soon as the parent is cancelled.
 
 ---
 

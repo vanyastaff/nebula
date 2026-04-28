@@ -1,9 +1,11 @@
 # nebula-resource — Pooling
 
-`Pool<R>` is the core concurrency primitive in `nebula-resource`.
-It manages a bounded set of `R::Instance` values with semaphore-controlled
-access, idle-expiry, FIFO/LIFO selection, circuit-breaker-guarded creation,
-and optional auto-scaling.
+[`PoolRuntime<R>`] is the runtime side of the `Pooled` topology. It manages a
+bounded set of `R::Runtime` instances with semaphore-controlled access,
+idle/lifetime expiry, FIFO/LIFO checkout ordering, configurable warmup, and
+optional per-checkout health probes. The corresponding trait is
+[`Pooled`](crate::topology::pooled::Pooled), and the configuration object is
+[`PoolConfig`].
 
 ---
 
@@ -12,10 +14,9 @@ and optional auto-scaling.
 - [How the Pool Works](#how-the-pool-works)
 - [PoolConfig Reference](#poolconfig-reference)
 - [Idle Selection Strategy](#idle-selection-strategy)
-- [Backpressure Policies](#backpressure-policies)
-- [Circuit Breakers](#circuit-breakers)
-- [Pool Stats and Latency Histograms](#pool-stats-and-latency-histograms)
-- [Auto-Scaling](#auto-scaling)
+- [Warmup Strategy](#warmup-strategy)
+- [Test On Checkout](#test-on-checkout)
+- [PoolStats](#poolstats)
 - [Lifecycle of an Instance](#lifecycle-of-an-instance)
 - [Configuration Examples](#configuration-examples)
 
@@ -23,348 +24,314 @@ and optional auto-scaling.
 
 ## How the Pool Works
 
-```
-Pool<R>
-  ├── idle_queue: VecDeque<IdleEntry<R::Instance>>
-  ├── semaphore:  Semaphore (max_size permits)
+```text
+PoolRuntime<R>
+  ├── idle_queue: VecDeque<IdleEntry<R::Runtime>>   // ordered by checkout strategy
+  ├── semaphore:  Semaphore (max_size permits)      // bounds in-flight + idle
   ├── active:     AtomicUsize
-  ├── waiters:    AtomicUsize
-  ├── create_breaker: Option<CircuitBreaker>
-  └── recycle_breaker: Option<CircuitBreaker>
+  └── waiters:    AtomicUsize
 ```
 
-**Acquire:**
-1. Atomically increment waiter count (RAII `CounterGuard`).
-2. Acquire one semaphore permit per the configured `PoolBackpressurePolicy`.
-3. Pop from `idle_queue` (Fifo: front, Lifo: back).
-4. If an idle instance is found, call `Resource::is_reusable`. Discard if false.
-5. If no idle instance (or all discarded), call `Resource::create`.
-6. Wrap the instance in a `Guard<T>` with a release callback.
-7. Record latency in the HDR histogram.
-8. Emit `ResourceEvent::Acquired { wait_duration }`.
+**Acquire** (`Manager::acquire_pooled` / `acquire_pooled_default`):
 
-**Release (Guard drop):**
-- If tainted: call `Resource::cleanup`, emit `CleanedUp { reason: Tainted }`.
-- Otherwise: call `Resource::recycle`, push back to `idle_queue`,
-  release semaphore permit, emit `ResourceEvent::Released { usage_duration }`.
+1. Atomically increment waiter count (RAII counter).
+2. Acquire one semaphore permit (waits up to the resilience-supplied timeout).
+3. Pop from `idle_queue` (`Lifo`: back / `Fifo`: front, per
+   `PoolConfig::strategy`).
+4. If `test_on_checkout` is true, call `Resource::check`. Discard on `Err`.
+5. If no idle instance (or all discarded), call `Resource::create` —
+   bounded by `max_concurrent_creates` to prevent thundering on the backend.
+6. Wrap the runtime in a [`ResourceGuard`] with a release callback.
+7. Emit `ResourceEvent::AcquireSuccess { duration }`.
 
-**Idle expiry** (background maintenance or lazy on acquire):
-- Instances older than `max_lifetime` or idle longer than `idle_timeout`
-  are evicted by calling `Resource::cleanup`.
+**Release** (`ResourceGuard` drop):
+
+- If `taint()` was called: skip recycle, call `Resource::destroy` via the
+  `ReleaseQueue`, emit `ResourceEvent::Released { tainted: true, .. }`.
+- Otherwise: call `Pooled::recycle` synchronously to obtain a
+  `RecycleDecision`:
+  - `Keep` → `Pooled::is_broken` runs; if `Healthy`, push back to
+    `idle_queue` and release the semaphore permit.
+  - `Drop` → `Resource::destroy` via the `ReleaseQueue`; semaphore permit
+    released.
+- Emit `ResourceEvent::Released { held, tainted }`.
+
+**Background maintenance** (`maintenance_interval`):
+
+- Sweeps the idle queue. Instances older than `max_lifetime` or idle longer
+  than `idle_timeout` are evicted via `Resource::destroy`.
 
 ---
 
 ## PoolConfig Reference
 
-```rust
+```rust,ignore
+use std::time::Duration;
+use nebula_resource::PoolConfig;
+use nebula_resource::topology::pooled::{PoolStrategy, WarmupStrategy};
+```
+
+The struct (`crate::topology::pooled::config::Config`, re-exported as
+`nebula_resource::PoolConfig`):
+
+```rust,ignore
 pub struct PoolConfig {
-    pub min_size: usize,                          // default: 1
-    pub max_size: usize,                          // default: 10
-    pub acquire_timeout: Duration,                // default: 30s
-    pub idle_timeout: Duration,                   // default: 10 min
-    pub max_lifetime: Duration,                   // default: 30 min
-    pub validation_interval: Duration,            // default: 60s
-    pub maintenance_interval: Option<Duration>,   // default: None
-    pub strategy: PoolStrategy,                   // default: Fifo
-    pub backpressure_policy: Option<PoolBackpressurePolicy>,
-    pub create_breaker: Option<CircuitBreakerConfig>,
-    pub recycle_breaker: Option<CircuitBreakerConfig>,
-    pub create_timeout: Option<Duration>,
-    pub recycle_timeout: Option<Duration>,
+    pub min_size:               u32,
+    pub max_size:               u32,
+    pub idle_timeout:           Option<Duration>,
+    pub max_lifetime:           Option<Duration>,
+    pub create_timeout:         Duration,
+    pub strategy:               PoolStrategy,
+    pub warmup:                 WarmupStrategy,
+    pub test_on_checkout:       bool,
+    pub maintenance_interval:   Duration,
+    pub max_concurrent_creates: u32,
 }
 ```
 
-| Field | Effect |
-|-------|--------|
-| `min_size` | Pool proactively creates instances to maintain at least this many idle connections. |
-| `max_size` | Hard cap on semaphore permits. Callers block/fail when all permits are taken. |
-| `acquire_timeout` | Upper bound for waiting for a permit (used by `BoundedWait` default policy). |
-| `idle_timeout` | Evicts instances idle longer than this. Prevents stale connections. |
-| `max_lifetime` | Evicts instances regardless of idle time. Forces periodic reconnect. |
-| `validation_interval` | How often `Resource::is_reusable` is called on idle instances. |
-| `maintenance_interval` | If set, spawns a background task that runs idle-expiry on this interval. |
-| `strategy` | `Fifo` (even distribution) or `Lifo` (hot working set). |
-| `backpressure_policy` | Behaviour when no permit is available. See [Backpressure Policies](#backpressure-policies). |
-| `create_breaker` | Circuit breaker for `Resource::create`. Opens after N consecutive failures. |
-| `recycle_breaker` | Circuit breaker for `Resource::recycle`. |
-| `create_timeout` | Per-call timeout for `Resource::create`. Defaults to `acquire_timeout`. |
-| `recycle_timeout` | Per-call timeout for `Resource::recycle`. |
+| Field | Default | Effect |
+|-------|---------|--------|
+| `min_size` | `1` | Pool proactively maintains at least this many idle instances (driven by `WarmupStrategy` at startup). |
+| `max_size` | `10` | Hard cap on instances (idle + checked out). Acquires beyond this wait on the semaphore. |
+| `idle_timeout` | `Some(5 min)` | Evicts instances idle longer than this. `None` disables idle eviction. |
+| `max_lifetime` | `Some(30 min)` | Evicts instances older than this regardless of idle time. `None` disables. |
+| `create_timeout` | `30 s` | Per-call timeout for `Resource::create`. |
+| `strategy` | `Lifo` | `Lifo` (hot working set) or `Fifo` (even spread). See [Idle Selection Strategy](#idle-selection-strategy). |
+| `warmup` | `WarmupStrategy::None` | Pre-create instances at pool startup. See [Warmup Strategy](#warmup-strategy). |
+| `test_on_checkout` | `false` | If `true`, runs `Resource::check` on each checkout; `Err` discards the instance and creates fresh. |
+| `maintenance_interval` | `30 s` | Background sweep interval for idle/lifetime eviction. |
+| `max_concurrent_creates` | `3` | Caps concurrent `Resource::create` calls during cold-start / warmup. |
 
-**Validation:** `PoolConfig::validate()` enforces `min_size <= max_size` and
-non-zero `max_size`. Call it explicitly or let `Manager::register` call it for you.
+`PoolConfig::default()` produces a sensible starting point; tune `min_size`/
+`max_size`/`max_lifetime` against your backend's connection-budget and TTL.
+
+`PoolConfig::validate()` enforces `min_size <= max_size` and non-zero
+`max_size`. `Manager::register_pooled` / `register_pooled_with` call this
+implicitly.
 
 ---
 
 ## Idle Selection Strategy
 
-```rust
+```rust,ignore
 pub enum PoolStrategy {
+    Lifo,   // pop_back  — return most recently used instance (default)
     Fifo,   // pop_front — return oldest idle instance
-    Lifo,   // pop_back  — return most recently used instance
 }
 ```
 
-### When to use FIFO (default)
-
-- Equal distribution across all pooled instances.
-- Prevents any single connection from going stale.
-- Recommended when all instances have equal cost and the pool is fully utilised.
-
-### When to use LIFO
+### When to use LIFO (default)
 
 - Keeps a small "hot" working set active; lets excess idle instances expire
   naturally via `idle_timeout`.
 - Ideal when `min_size` is much smaller than `max_size` and load is bursty:
   most requests hit the same few connections; the rest idle out.
-- Database connection pools behind a PgBouncer often benefit from LIFO.
+- PostgreSQL connection pools behind PgBouncer often benefit from LIFO.
+
+### When to use FIFO
+
+- Equal distribution across all pooled instances.
+- Prevents any single connection from going stale under steady load.
+- Use when all instances have equivalent cost AND the pool is consistently
+  near-full utilisation.
 
 ---
 
-## Backpressure Policies
+## Warmup Strategy
 
-Configure how the pool behaves when all `max_size` permits are taken.
+`WarmupStrategy` controls how `min_size` instances are created at pool
+startup:
 
-### `FailFast`
-
-```rust
-PoolBackpressurePolicy::FailFast
-```
-
-Immediately returns `Error::PoolExhausted`. Use for latency-sensitive paths
-where waiting would be worse than failing and retrying at a higher level.
-
-### `BoundedWait`
-
-```rust
-PoolBackpressurePolicy::BoundedWait { timeout: Duration::from_secs(5) }
-```
-
-Waits up to `timeout` for a permit. Returns `Error::PoolExhausted` if none
-becomes available. This is the default when `backpressure_policy` is `None`
-(uses `acquire_timeout`).
-
-### `Adaptive`
-
-```rust
-PoolBackpressurePolicy::Adaptive(AdaptiveBackpressurePolicy {
-    high_pressure_utilization: 0.8,   // 80% active/max
-    high_pressure_waiters: 8,
-    low_pressure_timeout: Duration::from_secs(30),
-    high_pressure_timeout: Duration::from_millis(100),
-})
-```
-
-At each acquire, the pool computes `utilisation = active / max_size` and
-checks waiter count. If either threshold is exceeded, it uses
-`high_pressure_timeout`; otherwise `low_pressure_timeout`.
-
-**Typical tuning:**
-- Set `high_pressure_timeout` to your SLA budget minus downstream latency.
-- Set `low_pressure_timeout` to match `acquire_timeout`.
-- Lower `high_pressure_utilization` to start shedding load earlier.
-
----
-
-## Circuit Breakers
-
-Circuit breakers protect against cascading failures when `Resource::create` or
-`Resource::recycle` fails repeatedly.
-
-```rust
-// Enable standard circuit breakers for both operations:
-let config = PoolConfig::default().with_standard_breakers();
-
-// Or configure per-operation:
-use nebula_resilience::CircuitBreakerConfig;
-let config = PoolConfig {
-    create_breaker: Some(CircuitBreakerConfig {
-        failure_threshold: 5,
-        success_threshold: 2,
-        timeout: Duration::from_secs(30),
-    }),
-    recycle_breaker: Some(CircuitBreakerConfig {
-        failure_threshold: 3,
-        success_threshold: 1,
-        timeout: Duration::from_secs(10),
-    }),
-    ..PoolConfig::default()
-};
-```
-
-When a circuit breaker opens, `Pool::acquire` returns
-`Error::CircuitBreakerOpen { retry_after }` immediately without attempting
-the operation. The `EventBus` emits `ResourceEvent::CircuitBreakerOpen`.
-
-Circuit breakers for `create` and `recycle` are **independent** — a failing
-recycle does not prevent new creates.
-
----
-
-## Pool Stats and Latency Histograms
-
-```rust
-let stats: PoolStats = manager.pool::<MyResource>().unwrap().stats()?;
-
-println!("active: {}, idle: {}", stats.active, stats.idle);
-println!("total acquired: {}", stats.total_acquisitions);
-println!("times exhausted: {}", stats.exhausted_count);
-
-if let Some(lat) = stats.acquire_latency {
-    println!("p50={} p95={} p99={} p999={} mean={}ms",
-        lat.p50_ms, lat.p95_ms, lat.p99_ms, lat.p999_ms, lat.mean_ms);
+```rust,ignore
+pub enum WarmupStrategy {
+    None,                                    // create on demand (default)
+    Sequential,                              // one at a time
+    Parallel,                                // all at once
+    Staggered { interval: Duration },        // with delay between creations
 }
 ```
 
-Latency is recorded via an [HDR histogram](https://hdrhistogram.github.io/HdrHistogram/)
-with 1ms precision up to 30s. The histogram is stored in the pool state and
-**not** reset between calls to `stats()` — it accumulates over the lifetime
-of the pool.
+- `None` — first acquire pays the cold-start cost. Cheapest, slowest first
+  request.
+- `Sequential` — `min_size` instances created back-to-back during
+  `Manager::register_pooled*`. Predictable startup latency.
+- `Parallel` — fastest warmup but spikes connection count; verify the
+  backend tolerates it.
+- `Staggered { interval }` — connection rate-limited startup. Use when the
+  backend has connection-rate caps (e.g., shared cloud DB).
+
+`max_concurrent_creates` clamps `Parallel` and the active count for
+`Staggered` to avoid overwhelming the backend.
 
 ---
 
-## Auto-Scaling
+## Test On Checkout
 
-`AutoScaler` watches pool utilisation and calls `scale_up` / `scale_down`
-closures when thresholds are crossed. It is purely advisory — the pool still
-enforces `max_size`.
+`test_on_checkout: true` runs `Resource::check` on every checkout. If
+`check` returns `Err`, the instance is discarded and a fresh one is
+created:
 
-### `AutoScalePolicy`
+```rust,ignore
+PoolConfig { test_on_checkout: true, ..PoolConfig::default() }
+```
 
-```rust
-pub struct AutoScalePolicy {
-    /// Utilisation (active / max_size) above which to scale up. Default: 0.8.
-    pub high_watermark: f64,
-    /// Utilisation below which to scale down. Default: 0.2.
-    pub low_watermark: f64,
-    /// Number of connections to add per scale-up step. Default: 2.
-    pub scale_up_step: usize,
-    /// Number of connections to remove per scale-down step. Default: 1.
-    pub scale_down_step: usize,
-    /// How often to evaluate utilisation. Default: 30s.
-    pub evaluation_window: Duration,
-    /// Minimum time between consecutive scale actions. Default: 60s.
-    pub cooldown: Duration,
+**Cost:** one round-trip per acquire. **Benefit:** never hand out a dead
+connection. Use when:
+
+- Your driver's `Resource::is_broken` cannot detect TCP-half-open or
+  server-side timeouts cheaply.
+- The cost of a failed query (caller-side retry, transaction abort) is
+  much higher than a connection-test ping.
+
+For most adapters, prefer letting `Pooled::is_broken` (synchronous, runs
+in `Drop`) handle obvious closures and skip `test_on_checkout`.
+
+---
+
+## PoolStats
+
+`Manager::lookup::<R>(scope)?.topology()` returns the `TopologyRuntime<R>`
+variant; `PoolRuntime<R>::stats()` exposes runtime counters:
+
+```rust,ignore
+pub struct PoolStats {
+    pub active:                 usize,    // currently checked out
+    pub idle:                   usize,    // in idle_queue
+    pub waiters:                usize,    // blocked on the semaphore
+    pub total_acquisitions:     u64,
+    pub total_creations:        u64,
+    pub total_destroys:         u64,
 }
 ```
 
-### Enabling auto-scaling via `ManagerBuilder`
-
-```rust
-// Apply to every pool registered with this manager:
-let manager = ManagerBuilder::new()
-    .default_autoscale_policy(AutoScalePolicy {
-        high_watermark: 0.75,
-        low_watermark: 0.25,
-        scale_up_step: 3,
-        ..Default::default()
-    })
-    .build();
-```
-
-### Enabling auto-scaling per resource
-
-```rust
-let key = ResourceKey::try_from("postgres")?;
-manager.enable_autoscaling(&key, AutoScalePolicy::default())?;
-```
-
-The `AutoScaler` spawns a Tokio task that polls stats at `evaluation_window`
-intervals. It respects the `cooldown` to avoid thrashing.
-
-`AutoScaler::start()` returns an `AutoScalerHandle` that allows graceful shutdown:
-
-```rust
-// AutoScalerHandle — returned by AutoScaler::start()
-pub struct AutoScalerHandle { /* ... */ }
-
-impl AutoScalerHandle {
-    /// Cancel the background task and wait for it to finish.
-    pub async fn shutdown(self);
-    /// Fire-and-forget cancellation (does not await completion).
-    pub fn cancel(&self);
-}
-```
-
-The `Manager` stores `AutoScalerHandle` entries and calls `shutdown().await`
-for each during `Manager::shutdown()`.
+For aggregate cross-pool counters, use `Manager::metrics()` — see
+[`api-reference.md`](api-reference.md) for `ResourceOpsMetrics` /
+`ResourceOpsSnapshot`.
 
 ---
 
 ## Lifecycle of an Instance
 
-```
-Resource::create(config, ctx)
+```text
+Resource::create(config, scheme, ctx)
   │
-  ▼ [instance enters pool]
+  ▼ [instance enters pool, idle_queue.push_back]
   │
   ├─ idle in VecDeque
-  │    │ idle_timeout exceeded → Resource::cleanup (CleanupReason::IdleTimeout)
-  │    │ max_lifetime exceeded → Resource::cleanup (CleanupReason::Expired)
-  │    └─ validation_interval  → Resource::is_reusable
-  │         └─ false           → Resource::cleanup (CleanupReason::RecycleFailed)
+  │    │ idle_timeout exceeded     → Resource::destroy (background sweep)
+  │    │ max_lifetime exceeded     → Resource::destroy (background sweep)
+  │    └─ test_on_checkout enabled → Resource::check on each checkout
+  │         └─ Err                 → Resource::destroy + create fresh
   │
-  ├─ checked out (Guard held by caller)
-  │    │ guard.taint() called  → Resource::cleanup (CleanupReason::Tainted)
-  │    └─ guard dropped        → Resource::recycle → back to idle queue
+  ├─ checked out (ResourceGuard held by caller)
+  │    │ guard.taint() called      → Resource::destroy via ReleaseQueue
+  │    └─ guard dropped            → Pooled::recycle:
+  │         ├─ RecycleDecision::Keep + is_broken=Healthy → push back to idle
+  │         └─ RecycleDecision::Drop OR is_broken=Broken → Resource::destroy
   │
-  └─ Manager::shutdown()       → Resource::cleanup (CleanupReason::Shutdown)
+  └─ Manager::graceful_shutdown    → drain in-flight + Resource::destroy on idle
 ```
+
+`Resource::destroy` runs through `ReleaseQueue` (per-Manager background
+worker pool) so caller-side drop is non-blocking. See `recovery.md` for
+the `RecoveryGate` interaction when `is_broken` returns `Broken` repeatedly.
 
 ---
 
 ## Configuration Examples
 
-### Minimal (defaults)
+### Minimal — defaults
 
-```rust
-PoolConfig::default()
-// min_size=1, max_size=10, acquire_timeout=30s, Fifo, BoundedWait
+```rust,ignore
+use nebula_resource::PoolConfig;
+
+let config = PoolConfig::default();
+// min_size=1, max_size=10, idle=5min, lifetime=30min, Lifo, no warmup,
+// no test_on_checkout, maintenance every 30s, max_concurrent_creates=3
 ```
 
 ### High-throughput API backend
 
-```rust
+```rust,ignore
+use std::time::Duration;
+use nebula_resource::PoolConfig;
+use nebula_resource::topology::pooled::{PoolStrategy, WarmupStrategy};
+
 PoolConfig {
     min_size: 5,
     max_size: 50,
-    acquire_timeout: Duration::from_secs(5),
-    idle_timeout: Duration::from_secs(300),
-    max_lifetime: Duration::from_secs(3600),
+    idle_timeout: Some(Duration::from_secs(300)),
+    max_lifetime: Some(Duration::from_secs(3600)),
+    create_timeout: Duration::from_secs(5),
     strategy: PoolStrategy::Lifo,
-    backpressure_policy: Some(PoolBackpressurePolicy::Adaptive(
-        AdaptiveBackpressurePolicy {
-            high_pressure_utilization: 0.8,
-            high_pressure_waiters: 10,
-            low_pressure_timeout: Duration::from_secs(5),
-            high_pressure_timeout: Duration::from_millis(200),
-        },
-    )),
-    ..PoolConfig::default().with_standard_breakers()
+    warmup: WarmupStrategy::Parallel,
+    max_concurrent_creates: 10,
+    ..PoolConfig::default()
 }
 ```
 
 ### Single-tenant background worker
 
-```rust
+```rust,ignore
 PoolConfig {
     min_size: 1,
     max_size: 3,
-    acquire_timeout: Duration::from_secs(60),
+    idle_timeout: Some(Duration::from_secs(600)),
     strategy: PoolStrategy::Fifo,
-    backpressure_policy: Some(PoolBackpressurePolicy::BoundedWait {
-        timeout: Duration::from_secs(60),
-    }),
     ..PoolConfig::default()
 }
 ```
 
-### Fail-fast microservice sidecar
+### Cloud backend with connection-rate caps
 
-```rust
+```rust,ignore
 PoolConfig {
-    min_size: 2,
-    max_size: 10,
-    backpressure_policy: Some(PoolBackpressurePolicy::FailFast),
-    ..PoolConfig::default().with_standard_breakers()
+    min_size: 5,
+    max_size: 25,
+    warmup: WarmupStrategy::Staggered {
+        interval: Duration::from_millis(500),
+    },
+    max_concurrent_creates: 1,    // serial cold-start to respect rate limits
+    ..PoolConfig::default()
 }
 ```
+
+### Strict health verification (test on each checkout)
+
+```rust,ignore
+PoolConfig {
+    test_on_checkout: true,
+    ..PoolConfig::default()
+}
+```
+
+---
+
+## Integration with Resilience
+
+Per-acquire timeout, retry policy, and recovery-gate admission belong on
+`AcquireResilience` / `RecoveryGate`, not on `PoolConfig`. Wire them in
+via `RegisterOptions`:
+
+```rust,ignore
+use std::sync::Arc;
+use nebula_resource::{
+    AcquireResilience, RecoveryGate, RecoveryGateConfig, RegisterOptions,
+};
+
+let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
+
+manager.register_pooled_with(
+    PostgresResource,
+    pg_config,
+    PoolConfig::default(),
+    RegisterOptions {
+        resilience:    Some(AcquireResilience::standard()),
+        recovery_gate: Some(gate),
+        ..RegisterOptions::default()
+    },
+)?;
+```
+
+See [`api-reference.md`](api-reference.md) for `RegisterOptions` field
+semantics and [`recovery.md`](recovery.md) for `RecoveryGate` behavior.
