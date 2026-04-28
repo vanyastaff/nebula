@@ -1,8 +1,0 @@
-# Pin spike to the same toolchain as the main workspace (1.95 stable).
-# Spike is a self-contained workspace under `spike/`; the repository root
-# workspace excludes `spike` so `cargo check` at the repo root does not
-# touch this spike, and vice versa.
-[toolchain]
-channel = "1.95.0"
-components = ["rustfmt", "clippy"]
-profile = "minimal"

@@ -1,1 +1,0 @@
-tokei failed: tokei not installed in environment; LOC approximated via wc -l on .rs files (111063 total lines across 252 files)
