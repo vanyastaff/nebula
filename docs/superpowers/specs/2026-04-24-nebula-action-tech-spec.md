@@ -19,6 +19,8 @@ related:
 
 # nebula-action Tech Spec (implementation-ready design)
 
+> **Implementation status:** П1 (trait shape scaffolding) LANDED 2026-04-27 per [`docs/superpowers/plans/2026-04-27-nebula-action-p1-trait-shape.md`](../plans/2026-04-27-nebula-action-p1-trait-shape.md). Covers Q1 (`*Handler` `#[async_trait]` migration), Q6 (TriggerAction lifecycle preserved), Q7 R3-R5 (TriggerAction.handle / accepts_events + dyn handler envelopes), Q8 F2 (`IdempotencyKey` + hook), Q8 F9 (`ActionMetadata::max_concurrent`), §2.2.3 `TriggerSource`. П2-Пn (macro / sealed DX / canon §3.5 revision / security floor / credential CP6 adoption / Terminate engine wiring) deferred per the plan's roadmap.
+
 ## §0 Status, scope, freeze policy
 
 ### §0.1 Status progression

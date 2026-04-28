@@ -47,6 +47,7 @@
 //! clocks into this module. Build them in your action on top of the
 //! primitives.
 
+mod source;
 use std::{
     fmt,
     future::Future,
@@ -64,6 +65,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use parking_lot::RwLock;
 use sha2::Sha256;
+pub use source::WebhookSource;
 use subtle::ConstantTimeEq;
 use tokio::sync::{Notify, oneshot};
 
@@ -354,6 +356,34 @@ impl WebhookRequest {
     #[must_use]
     pub fn received_at(&self) -> SystemTime {
         self.received_at
+    }
+
+    /// Stable per-delivery id for transport-level idempotency.
+    ///
+    /// Checks common webhook delivery-id headers in precedence order:
+    /// - `X-Delivery-ID` (general convention)
+    /// - `X-GitHub-Delivery` (GitHub)
+    ///
+    /// Returns the first non-empty ASCII-valid header value found, or `None`
+    /// if no known delivery-id header is present.
+    ///
+    /// Use this from [`crate::TriggerAction::idempotency_key`] to surface
+    /// a transport-supplied dedup id to the engine without re-parsing headers.
+    #[must_use]
+    pub fn delivery_id(&self) -> Option<&str> {
+        // Check headers in precedence order. Uses `header_str` for
+        // case-insensitive lookup and ASCII validation. Empty or
+        // whitespace-only header values are treated as absent so a
+        // blank `X-Delivery-ID` does not shadow a populated fallback
+        // header and never produces an empty `IdempotencyKey`.
+        self.header_str("x-delivery-id")
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                self.header_str("x-github-delivery")
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+            })
     }
 
     /// Attach a response channel for HTTP response plumbing.

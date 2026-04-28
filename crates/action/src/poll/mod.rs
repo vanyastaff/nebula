@@ -9,6 +9,7 @@
 //! the value returned by [`PollAction::initial_cursor`]. Cross-restart
 //! persistence requires runtime storage integration (post-v1).
 
+mod source;
 use std::{
     collections::{HashSet, VecDeque},
     future::Future,
@@ -21,6 +22,7 @@ use std::{
 
 use nebula_core::accessor::{LogLevel, Logger};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+pub use source::PollSource;
 
 use crate::{
     action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,

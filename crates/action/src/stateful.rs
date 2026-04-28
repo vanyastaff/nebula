@@ -6,7 +6,7 @@
 //! [`ActionResult::Continue`] for another iteration or [`ActionResult::Break`]
 //! when done.
 
-use std::{fmt, future::Future, pin::Pin};
+use std::{fmt, future::Future};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -401,7 +401,8 @@ macro_rules! impl_batch_action {
 /// # Errors
 ///
 /// Returns [`ActionError`] on validation, retryable, or fatal failures.
-pub trait StatefulHandler: Send + Sync {
+#[async_trait::async_trait]
+pub trait StatefulHandler: Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -458,18 +459,12 @@ pub trait StatefulHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
-    fn execute<'life0, 'life1, 'life2, 'life3, 'a>(
-        &'life0 self,
-        input: &'life1 Value,
-        state: &'life2 mut Value,
-        ctx: &'life3 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-        'life2: 'a,
-        'life3: 'a;
+    async fn execute(
+        &self,
+        input: &Value,
+        state: &mut Value,
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError>;
 }
 
 // ── StatefulActionAdapter ───────────────────────────────────────────────────
@@ -499,6 +494,7 @@ impl<A> StatefulActionAdapter<A> {
     }
 }
 
+#[async_trait::async_trait]
 impl<A> StatefulHandler for StatefulActionAdapter<A>
 where
     A: StatefulAction + Send + Sync + 'static,
@@ -543,86 +539,76 @@ where
     /// The only path that does NOT checkpoint is `Validation` raised while
     /// deserializing input or state — in that case `typed_state` was never
     /// created and cannot have been mutated.
-    fn execute<'life0, 'life1, 'life2, 'life3, 'a>(
-        &'life0 self,
-        input: &'life1 Value,
-        state: &'life2 mut Value,
-        ctx: &'life3 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-        'life2: 'a,
-        'life3: 'a,
-    {
-        Box::pin(async move {
-            // Adapter clones input ONCE per iteration to deserialize into typed A::Input.
-            let typed_input: A::Input = serde_json::from_value(input.clone()).map_err(|e| {
+    async fn execute(
+        &self,
+        input: &Value,
+        state: &mut Value,
+        ctx: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        // Adapter clones input ONCE per iteration to deserialize into typed A::Input.
+        let typed_input: A::Input = serde_json::from_value(input.clone()).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
+
+        // Happy path: one clone for `from_value`. Migration path (rare,
+        // version skew between stored checkpoint and current State schema):
+        // a second clone only when the first deserialization fails and
+        // `migrate_state` is actually consulted.
+        let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone()) {
+            Ok(s) => s,
+            Err(e) => self.action.migrate_state(state.clone()).ok_or_else(|| {
                 ActionError::validation(
-                    "input",
-                    ValidationReason::MalformedJson,
+                    "state",
+                    ValidationReason::StateDeserialization,
                     Some(e.to_string()),
                 )
-            })?;
+            })?,
+        };
 
-            // Happy path: one clone for `from_value`. Migration path (rare,
-            // version skew between stored checkpoint and current State schema):
-            // a second clone only when the first deserialization fails and
-            // `migrate_state` is actually consulted.
-            let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone())
-            {
-                Ok(s) => s,
-                Err(e) => self.action.migrate_state(state.clone()).ok_or_else(|| {
-                    ActionError::validation(
-                        "state",
-                        ValidationReason::StateDeserialization,
-                        Some(e.to_string()),
-                    )
-                })?,
-            };
+        // Run the typed action. typed_state may be mutated regardless of
+        // Ok/Err — flush it back to JSON before propagating so that a
+        // Retryable does not replay completed work on retry.
+        let action_result = self
+            .action
+            .execute(typed_input, &mut typed_state, ctx)
+            .await;
 
-            // Run the typed action. typed_state may be mutated regardless of
-            // Ok/Err — flush it back to JSON before propagating so that a
-            // Retryable does not replay completed work on retry.
-            let action_result = self
-                .action
-                .execute(typed_input, &mut typed_state, ctx)
-                .await;
+        // Flatten the 2D decision (serialize-success × action-result) into
+        // a single tuple match — easier to audit than nested arms, which
+        // matters on a checkpoint-critical code path.
+        match (serde_json::to_value(&typed_state), &action_result) {
+            (Ok(new_state), _) => {
+                *state = new_state;
+            },
+            (Err(ser_err), Ok(_)) => {
+                // Success path: surface the serialization failure as fatal.
+                return Err(ActionError::fatal(format!(
+                    "state serialization failed: {ser_err}"
+                )));
+            },
+            (Err(ser_err), Err(action_err)) => {
+                // Error path: the action error is the actionable signal.
+                // Log the serde failure forensically and let the original
+                // error propagate — masking it would break retry classification.
+                tracing::error!(
+                    action = %self.action.metadata().base.key,
+                    serialization_error = %ser_err,
+                    action_error = %action_err,
+                    "stateful adapter: state serialization failed on error path; \
+                     checkpoint lost, propagating original action error"
+                );
+            },
+        }
 
-            // Flatten the 2D decision (serialize-success × action-result) into
-            // a single tuple match — easier to audit than nested arms, which
-            // matters on a checkpoint-critical code path.
-            match (serde_json::to_value(&typed_state), &action_result) {
-                (Ok(new_state), _) => {
-                    *state = new_state;
-                },
-                (Err(ser_err), Ok(_)) => {
-                    // Success path: surface the serialization failure as fatal.
-                    return Err(ActionError::fatal(format!(
-                        "state serialization failed: {ser_err}"
-                    )));
-                },
-                (Err(ser_err), Err(action_err)) => {
-                    // Error path: the action error is the actionable signal.
-                    // Log the serde failure forensically and let the original
-                    // error propagate — masking it would break retry classification.
-                    tracing::error!(
-                        action = %self.action.metadata().base.key,
-                        serialization_error = %ser_err,
-                        action_error = %action_err,
-                        "stateful adapter: state serialization failed on error path; \
-                         checkpoint lost, propagating original action error"
-                    );
-                },
-            }
+        let result = action_result?;
 
-            let result = action_result?;
-
-            result.try_map_output(|output| {
-                serde_json::to_value(output)
-                    .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
-            })
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
         })
     }
 }

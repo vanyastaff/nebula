@@ -115,6 +115,24 @@ pub struct ActionMetadata {
     /// with metadata serialized before this field existed.
     #[serde(default)]
     pub category: ActionCategory,
+    /// Per-action concurrency throttle hint — **persisted hint, not yet
+    /// enforced** as of П1.
+    ///
+    /// The П1 surface lands the field so action authors and registries
+    /// can carry it through serialization round-trips, but the engine
+    /// scheduler does not currently read it: setting `Some(n)` does
+    /// **not** bound in-flight executions today. Enforcement lands in
+    /// the engine cluster-mode cascade
+    /// (`docs/tracking/cascade-queue.md` slot 2). Until then, treat
+    /// this as a stable storage shape, not a runtime guarantee.
+    ///
+    /// Future contract (when enforced): `None` — engine-global throttle
+    /// still applies, but no per-action limit. `Some(n)` — at most `n`
+    /// in-flight executions of this action across the engine.
+    ///
+    /// Per Tech Spec §15.12 F9 + PRODUCT_CANON §11 backpressure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<core::num::NonZeroU32>,
 }
 
 impl Metadata for ActionMetadata {
@@ -134,6 +152,7 @@ impl ActionMetadata {
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
             category: ActionCategory::Data,
+            max_concurrent: None,
         }
     }
 
@@ -309,6 +328,19 @@ impl ActionMetadata {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_category(mut self, category: ActionCategory) -> Self {
         self.category = category;
+        self
+    }
+
+    /// Set the per-action concurrency throttle hint.
+    ///
+    /// **Persisted hint, not yet enforced** as of П1 — see
+    /// [`max_concurrent`](Self::max_concurrent) field docs for the
+    /// enforcement timeline. Builder-style; chainable.
+    ///
+    /// Per Tech Spec §15.12 F9.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_max_concurrent(mut self, n: core::num::NonZeroU32) -> Self {
+        self.max_concurrent = Some(n);
         self
     }
 

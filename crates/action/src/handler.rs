@@ -113,7 +113,7 @@ impl fmt::Debug for ActionHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, pin::Pin, sync::Arc};
+    use std::sync::Arc;
 
     use serde_json::Value;
 
@@ -140,22 +140,18 @@ mod tests {
         meta: ActionMetadata,
     }
 
+    #[async_trait::async_trait]
     impl StatelessHandler for TestStatelessHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
 
-        fn execute<'life0, 'life1, 'a>(
-            &'life0 self,
+        async fn execute(
+            &self,
             input: Value,
-            _ctx: &'life1 dyn ActionContext,
-        ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-        where
-            Self: 'a,
-            'life0: 'a,
-            'life1: 'a,
-        {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
+            _ctx: &dyn ActionContext,
+        ) -> Result<ActionResult<Value>, ActionError> {
+            Ok(ActionResult::success(input))
         }
     }
 
@@ -163,6 +159,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
+    #[async_trait::async_trait]
     impl StatefulHandler for TestStatefulHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -172,23 +169,15 @@ mod tests {
             Ok(serde_json::json!(0))
         }
 
-        fn execute<'life0, 'life1, 'life2, 'life3, 'a>(
-            &'life0 self,
-            input: &'life1 Value,
-            state: &'life2 mut Value,
-            _ctx: &'life3 dyn ActionContext,
-        ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
-        where
-            Self: 'a,
-            'life0: 'a,
-            'life1: 'a,
-            'life2: 'a,
-            'life3: 'a,
-        {
+        async fn execute(
+            &self,
+            input: &Value,
+            state: &mut Value,
+            _ctx: &dyn ActionContext,
+        ) -> Result<ActionResult<Value>, ActionError> {
             let count = state.as_u64().unwrap_or(0);
             *state = serde_json::json!(count + 1);
-            let result = ActionResult::success(input.clone());
-            Box::pin(async move { Ok(result) })
+            Ok(ActionResult::success(input.clone()))
         }
     }
 
@@ -196,33 +185,18 @@ mod tests {
         meta: ActionMetadata,
     }
 
+    #[async_trait::async_trait]
     impl TriggerHandler for TestTriggerHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
 
-        fn start<'life0, 'life1, 'a>(
-            &'life0 self,
-            _ctx: &'life1 dyn TriggerContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-        where
-            Self: 'a,
-            'life0: 'a,
-            'life1: 'a,
-        {
-            Box::pin(async { Ok(()) })
+        async fn start(&self, _ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+            Ok(())
         }
 
-        fn stop<'life0, 'life1, 'a>(
-            &'life0 self,
-            _ctx: &'life1 dyn TriggerContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-        where
-            Self: 'a,
-            'life0: 'a,
-            'life1: 'a,
-        {
-            Box::pin(async { Ok(()) })
+        async fn stop(&self, _ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+            Ok(())
         }
     }
 
@@ -230,41 +204,26 @@ mod tests {
         meta: ActionMetadata,
     }
 
+    #[async_trait::async_trait]
     impl ResourceHandler for TestResourceHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
 
-        fn configure<'life0, 'life1, 'a>(
-            &'life0 self,
+        async fn configure(
+            &self,
             _config: Value,
-            _ctx: &'life1 dyn ActionContext,
-        ) -> Pin<
-            Box<
-                dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, ActionError>>
-                    + Send
-                    + 'a,
-            >,
-        >
-        where
-            Self: 'a,
-            'life0: 'a,
-            'life1: 'a,
-        {
-            Box::pin(async { Ok(Box::new(42u32) as Box<dyn std::any::Any + Send + Sync>) })
+            _ctx: &dyn ActionContext,
+        ) -> Result<Box<dyn std::any::Any + Send + Sync>, ActionError> {
+            Ok(Box::new(42u32) as Box<dyn std::any::Any + Send + Sync>)
         }
 
-        fn cleanup<'life0, 'life1, 'a>(
-            &'life0 self,
+        async fn cleanup(
+            &self,
             _instance: Box<dyn std::any::Any + Send + Sync>,
-            _ctx: &'life1 dyn ActionContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-        where
-            Self: 'a,
-            'life0: 'a,
-            'life1: 'a,
-        {
-            Box::pin(async { Ok(()) })
+            _ctx: &dyn ActionContext,
+        ) -> Result<(), ActionError> {
+            Ok(())
         }
     }
 

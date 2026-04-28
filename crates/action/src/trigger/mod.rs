@@ -31,45 +31,129 @@
 //! HTTP methods, queue offsets, partition ids) stay inside the family
 //! that owns them — they do NOT leak into the base trigger contract.
 
+mod source;
+
 use std::{
     any::{Any, TypeId},
     fmt,
     future::Future,
-    pin::Pin,
     time::SystemTime,
 };
 
 use serde_json::Value;
+pub use source::TriggerSource;
 
-use crate::{
-    action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
-};
+use crate::{context::TriggerContext, error::ActionError, metadata::ActionMetadata};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
 /// Trigger action: workflow starter, lives outside the execution graph.
 ///
-/// The runtime calls `start` to begin listening (e.g. webhook, poll); `stop`
-/// to tear down. Triggers emit new workflow executions; they do not run
-/// inside one.
+/// The runtime calls [`start`](Self::start) to begin listening (e.g.
+/// webhook subscription, poll timer); [`stop`](Self::stop) to tear down.
+/// Triggers emit new workflow executions; they do not run inside one.
 ///
-/// Uses [`TriggerContext`] capability composition.
+/// Engine pushes external events via [`handle`](Self::handle); the
+/// trigger returns a [`TriggerEventOutcome`] describing how many
+/// workflow executions to start (skip / one / many).
+///
+/// ## Source associated type
+///
+/// `Source: TriggerSource` ties the trigger to its event family
+/// (webhook / poll / queue / schedule). The typed event reaching
+/// [`handle`](Self::handle) is `<Self::Source as TriggerSource>::Event`.
+/// Per Tech Spec §2.2.3 spike Probe 2 — without `Source`, the impl
+/// fails compile with E0046; this is intentional.
+///
+/// ## Idempotency
+///
+/// [`idempotency_key`](Self::idempotency_key) returns `None` by default;
+/// triggers whose transport supplies a stable per-event id (webhook
+/// delivery id, queue message id) override to return `Some(...)`.
+/// Engine uses the key to suppress duplicate workflow executions per
+/// PRODUCT_CANON §11.3 idempotency.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement TriggerAction",
-    note = "implement `start` and `stop` methods"
+    note = "implement `Source`, `Error`, and the `start`/`stop`/`handle` methods"
 )]
-pub trait TriggerAction: Action {
+pub trait TriggerAction: Send + Sync + 'static {
+    /// Trigger event family — see [`TriggerSource`] (e.g.
+    /// `WebhookSource`, `PollSource`).
+    type Source: TriggerSource;
+
+    /// Error type returned by lifecycle methods.
+    ///
+    /// Most implementations use [`ActionError`] directly.
+    /// Specialized triggers MAY use a richer typed error and let the
+    /// adapter wrap it on the way to the dyn-layer.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Static metadata for this trigger.
+    fn metadata(&self) -> &ActionMetadata;
+
     /// Start the trigger (register listener, schedule poll, etc.).
+    ///
+    /// Per [`TriggerHandler::start`] for the
+    /// two valid lifecycle shapes (setup-and-return vs run-until-cancelled)
+    /// and cancel-safety contract.
     fn start(
         &self,
         ctx: &(impl TriggerContext + ?Sized),
-    ) -> impl Future<Output = Result<(), ActionError>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stop the trigger (unregister, cancel schedule).
     fn stop(
         &self,
         ctx: &(impl TriggerContext + ?Sized),
-    ) -> impl Future<Output = Result<(), ActionError>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Whether this trigger accepts externally pushed events.
+    /// Default: `false`. Override to return `true` from webhook / queue triggers.
+    fn accepts_events(&self) -> bool {
+        false
+    }
+
+    /// Stable transport-level dedup id for this event, if available.
+    ///
+    /// Default: `None`. Override when the transport supplies a stable
+    /// per-event id (webhook delivery id, queue message id).
+    /// Per Tech Spec §15.12 F2 + PRODUCT_CANON §11.3 idempotency.
+    fn idempotency_key(
+        &self,
+        _event: &<Self::Source as TriggerSource>::Event,
+    ) -> Option<crate::IdempotencyKey> {
+        None
+    }
+
+    /// Handle an external event pushed to this trigger.
+    ///
+    /// Only called when [`accepts_events`](Self::accepts_events) returns
+    /// `true`. The event is the typed `<Self::Source as TriggerSource>::Event`
+    /// (e.g. `WebhookRequest` for `WebhookSource`).
+    ///
+    /// Returns a [`TriggerEventOutcome`] — `Skip` (filter out), `Emit(payload)`
+    /// (start one workflow), or `EmitMany(payloads)` (fan-out).
+    ///
+    /// **Required for all triggers.** No default body is provided to keep
+    /// library code panic-free per the project's no-panic invariant.
+    /// Triggers that return `accepts_events() == false` (engine never calls
+    /// `handle` for them) still implement this method — typical pattern for
+    /// such triggers using `type Error = ActionError`:
+    ///
+    /// ```ignore
+    /// async fn handle(
+    ///     &self,
+    ///     _ctx: &(impl TriggerContext + ?Sized),
+    ///     _event: <Self::Source as TriggerSource>::Event,
+    /// ) -> Result<TriggerEventOutcome, ActionError> {
+    ///     Err(ActionError::fatal("trigger does not accept external events"))
+    /// }
+    /// ```
+    fn handle(
+        &self,
+        ctx: &(impl TriggerContext + ?Sized),
+        event: <Self::Source as TriggerSource>::Event,
+    ) -> impl Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send;
 }
 
 // ── Transport-agnostic event envelope ───────────────────────────────────────
@@ -273,7 +357,8 @@ impl TriggerEventOutcome {
 /// # Errors
 ///
 /// Returns [`ActionError`] if start or stop fails.
-pub trait TriggerHandler: Send + Sync {
+#[async_trait::async_trait]
+pub trait TriggerHandler: Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -285,11 +370,11 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// 1. **Setup-and-return** — register an external listener (webhook, message queue consumer),
     ///    then return immediately. The listener runs asynchronously outside this call. Example:
-    ///    [`crate::webhook::WebhookTriggerAdapter`].
+    ///    `crate::webhook::WebhookTriggerAdapter`.
     ///
     /// 2. **Run-until-cancelled** — run the entire trigger loop inline, returning only when
     ///    `ctx.cancellation` fires or a fatal error occurs. Example:
-    ///    [`crate::poll::PollTriggerAdapter`].
+    ///    `crate::poll::PollTriggerAdapter`.
     ///
     /// **Callers MUST spawn `start()` in a dedicated task** and must not
     /// assume it returns promptly. Calling sites that drive multiple
@@ -316,7 +401,7 @@ pub trait TriggerHandler: Send + Sync {
     /// because no `.await` sits on user state after registration.
     /// Shape-2 (run-until-cancelled) implementations must structure
     /// their `tokio::select!` so that each branch future is itself
-    /// cancel-safe — see [`crate::poll::PollTriggerAdapter::start`]
+    /// cancel-safe — see `crate::poll::PollTriggerAdapter::start`
     /// for a worked example using cancel-safe
     /// `CancellationToken::cancelled()` and `tokio::time::sleep`.
     ///
@@ -325,14 +410,7 @@ pub trait TriggerHandler: Send + Sync {
     /// Returns [`ActionError`] if the trigger cannot be started, if `start`
     /// is called twice without an intervening `stop`, or (for shape 2) if
     /// the trigger loop encounters a fatal error while running.
-    fn start<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError>;
 
     /// Stop the trigger (unregister, cancel schedule).
     ///
@@ -343,14 +421,7 @@ pub trait TriggerHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
-    fn stop<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a;
+    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError>;
 
     /// Whether this trigger accepts externally pushed events.
     ///
@@ -370,22 +441,15 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// Returns [`ActionError::Fatal`] by default — triggers that don't accept
     /// external events should never have this called.
-    fn handle_event<'life0, 'life1, 'a>(
-        &'life0 self,
+    async fn handle_event(
+        &self,
         event: TriggerEvent,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<TriggerEventOutcome, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
+        ctx: &dyn TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
         let _ = (event, ctx);
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "trigger does not accept external events",
-            ))
-        })
+        Err(ActionError::fatal(
+            "trigger does not accept external events",
+        ))
     }
 }
 
@@ -419,9 +483,11 @@ impl<A> TriggerActionAdapter<A> {
     }
 }
 
+#[async_trait::async_trait]
 impl<A> TriggerHandler for TriggerActionAdapter<A>
 where
     A: TriggerAction + Send + Sync + 'static,
+    A::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
         self.action.metadata()
@@ -432,16 +498,8 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be started.
-    fn start<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move { self.action.start(ctx).await })
+    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+        self.action.start(ctx).await.map_err(Into::into)
     }
 
     /// Stop the trigger by delegating to the typed action.
@@ -449,20 +507,55 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
-    fn stop<'life0, 'life1, 'a>(
-        &'life0 self,
-        ctx: &'life1 dyn TriggerContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-        'life1: 'a,
-    {
-        Box::pin(async move { self.action.stop(ctx).await })
+    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+        self.action.stop(ctx).await.map_err(Into::into)
+    }
+
+    fn accepts_events(&self) -> bool {
+        self.action.accepts_events()
+    }
+
+    /// Handle an external event by downcasting to the typed `Source::Event`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the payload type does not match, or
+    /// propagates errors from the underlying action's `handle` method.
+    async fn handle_event(
+        &self,
+        event: TriggerEvent,
+        ctx: &dyn TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        // Mirror the dyn-layer default: triggers that don't accept events
+        // never reach `action.handle`. Engine routing should already gate
+        // on `accepts_events()`; this guard is defensive against direct
+        // `dyn TriggerHandler::handle_event` callers that bypass the
+        // default check.
+        if !self.action.accepts_events() {
+            return Err(ActionError::fatal(
+                "trigger does not accept external events",
+            ));
+        }
+
+        let payload_type_name = event.payload_type_name();
+        let (_id, _received_at, typed_event) = event
+            .downcast::<<A::Source as TriggerSource>::Event>()
+            .map_err(|_| {
+                ActionError::fatal(format!(
+                    "trigger event type mismatch: expected {}, got {}",
+                    std::any::type_name::<<A::Source as TriggerSource>::Event>(),
+                    payload_type_name,
+                ))
+            })?;
+
+        self.action
+            .handle(ctx, typed_event)
+            .await
+            .map_err(Into::into)
     }
 }
 
-impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
+impl<A: TriggerAction> fmt::Debug for TriggerActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TriggerActionAdapter")
             .field("action", &self.action.metadata().base.key)
@@ -479,13 +572,15 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use nebula_core::DeclaresDependencies;
-
     use super::*;
-    use crate::{
-        action::Action,
-        testing::{TestContextBuilder, TestTriggerContext},
-    };
+    use crate::testing::{TestContextBuilder, TestTriggerContext};
+
+    // ── TestSource ────────────────────────────────────────────────────────────
+
+    struct TestSource;
+    impl TriggerSource for TestSource {
+        type Event = Value;
+    }
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 
@@ -507,15 +602,14 @@ mod tests {
         }
     }
 
-    impl DeclaresDependencies for MockTriggerAction {}
+    impl TriggerAction for MockTriggerAction {
+        type Source = TestSource;
+        type Error = ActionError;
 
-    impl Action for MockTriggerAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
-    }
 
-    impl TriggerAction for MockTriggerAction {
         async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(true, Ordering::Release);
             Ok(())
@@ -524,6 +618,16 @@ mod tests {
         async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(false, Ordering::Release);
             Ok(())
+        }
+
+        async fn handle(
+            &self,
+            _ctx: &(impl TriggerContext + ?Sized),
+            _event: Value,
+        ) -> Result<TriggerEventOutcome, ActionError> {
+            Err(ActionError::fatal(
+                "MockTriggerAction does not accept external events",
+            ))
         }
     }
 

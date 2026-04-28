@@ -21,7 +21,8 @@
 use std::{future::Future, sync::Arc};
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, DeclaresDependencies, TriggerAction, TriggerContext,
+    ActionError, ActionMetadata, DeclaresDependencies, TriggerAction, TriggerContext,
+    TriggerEventOutcome, TriggerSource,
 };
 use nebula_resource::{Resource, ResourceContext, error::ErrorKind as ResourceErrorKind};
 
@@ -204,14 +205,19 @@ where
 
 impl<E> DeclaresDependencies for EventSourceAdapter<E> where E: EventSource {}
 
-impl<E> Action for EventSourceAdapter<E>
-where
-    E: EventSource + Send + Sync + 'static,
-    E::Runtime: Send + Sync + 'static,
-{
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
-    }
+/// `TriggerSource` marker for event-source-driven triggers.
+///
+/// `EventSourceAdapter` self-drives its event loop via
+/// `ctx.emitter()` inside `start()` and never receives events through
+/// `TriggerAction::handle()` (`accepts_events()` stays the default
+/// `false`). The typed `Event = ()` reflects that the event-stream
+/// slot has no caller for this family — same shape as
+/// [`nebula_action::PollSource`].
+#[derive(Debug, Clone, Copy)]
+pub struct EventSourceFamily;
+
+impl TriggerSource for EventSourceFamily {
+    type Event = ();
 }
 
 impl<E> TriggerAction for EventSourceAdapter<E>
@@ -219,6 +225,13 @@ where
     E: EventSource + Send + Sync + 'static,
     E::Runtime: Send + Sync + 'static,
 {
+    type Source = EventSourceFamily;
+    type Error = ActionError;
+
+    fn metadata(&self) -> &ActionMetadata {
+        &self.metadata
+    }
+
     async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         let resource_ctx =
             ResourceContext::minimal(ctx.scope().clone(), ctx.cancellation().clone());
@@ -270,6 +283,21 @@ where
         // observes the signal and returns Ok(()).
         ctx.cancellation().cancel();
         Ok(())
+    }
+
+    async fn handle(
+        &self,
+        _ctx: &(impl TriggerContext + ?Sized),
+        _event: (),
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        // EventSourceAdapter is self-driving: events flow through
+        // `ctx.emitter()` inside `start()`'s loop. The engine never calls
+        // `handle()` on this adapter (`accepts_events()` defaults to
+        // false); this body is a defensive guard for direct
+        // `TriggerAction::handle` callers.
+        Err(ActionError::fatal(
+            "EventSourceAdapter does not accept external events",
+        ))
     }
 }
 

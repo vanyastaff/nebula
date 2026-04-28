@@ -5,11 +5,18 @@
 //! responsibility via tokio::select!).
 
 use nebula_action::{
-    Action, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
-    StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction,
+    Action, ActionError, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
+    StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction, TriggerSource,
     testing::TestContextBuilder,
 };
 use nebula_core::{DeclaresDependencies, action_key};
+
+// ── TestSource — generic trigger source for test fixtures ───────────────────
+
+struct TestSource;
+impl TriggerSource for TestSource {
+    type Event = serde_json::Value;
+}
 
 // ── StatelessAction ─────────────────────────────────────────────────────────
 
@@ -33,7 +40,7 @@ impl StatelessAction for EchoAction {
         &self,
         input: Self::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
         Ok(ActionResult::success(input))
     }
 }
@@ -83,7 +90,7 @@ impl StatefulAction for CounterAction {
         _input: Self::Input,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
         let count = *state;
         *state += 1;
         if count < 2 {
@@ -153,18 +160,35 @@ impl Action for NoOpTrigger {
 }
 
 impl TriggerAction for NoOpTrigger {
+    type Source = TestSource;
+    type Error = ActionError;
+
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+
     async fn start(
         &self,
         _ctx: &(impl nebula_action::TriggerContext + ?Sized),
-    ) -> Result<(), nebula_action::ActionError> {
+    ) -> Result<(), ActionError> {
         Ok(())
     }
 
     async fn stop(
         &self,
         _ctx: &(impl nebula_action::TriggerContext + ?Sized),
-    ) -> Result<(), nebula_action::ActionError> {
+    ) -> Result<(), ActionError> {
         Ok(())
+    }
+
+    async fn handle(
+        &self,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+        _event: serde_json::Value,
+    ) -> Result<nebula_action::TriggerEventOutcome, ActionError> {
+        Err(ActionError::fatal(
+            "NoOpTrigger does not accept external events",
+        ))
     }
 }
 
@@ -228,7 +252,7 @@ impl StatefulAction for MigratableAction {
         _input: Self::Input,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
         state.count += 1;
         Ok(ActionResult::Break {
             output: ActionOutput::Value(

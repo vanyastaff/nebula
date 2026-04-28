@@ -51,6 +51,8 @@ pub mod error;
 /// adapters live in their respective domain files and are re-exported here
 /// for backwards compatibility of the `nebula_action::handler::*` path space.
 pub mod handler;
+/// [`IdempotencyKey`] — transport-level dedup identifier returned by triggers.
+pub mod idempotency;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
 mod macros;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -101,6 +103,7 @@ pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
 pub use handler::ActionHandler;
+pub use idempotency::IdempotencyKey;
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{
@@ -118,7 +121,7 @@ pub use output::{
 };
 pub use poll::{
     DeduplicatingCursor, EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollConfig,
-    PollCursor, PollOutcome, PollResult, PollTriggerAdapter,
+    PollCursor, PollOutcome, PollResult, PollSource, PollTriggerAdapter,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
@@ -140,6 +143,7 @@ pub use testing::{
 };
 pub use trigger::{
     TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,
+    TriggerSource,
 };
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
@@ -147,7 +151,7 @@ pub use validation::{
 pub use webhook::{
     DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT, RequiredPolicy, SignatureOutcome, SignaturePolicy,
     SignatureScheme, WebhookAction, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse,
-    WebhookRequest, WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
+    WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute,
     verify_hmac_sha256, verify_hmac_sha256_base64, verify_hmac_sha256_with_timestamp,
     verify_tag_constant_time,
 };

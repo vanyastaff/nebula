@@ -22,6 +22,7 @@ pub use crate::{
     control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome},
     error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason},
     handler::ActionHandler,
+    idempotency::IdempotencyKey,
     metadata::{ActionMetadata, MetadataCompatibilityError},
     output::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
@@ -29,7 +30,7 @@ pub use crate::{
     },
     poll::{
         DeduplicatingCursor, EmitFailurePolicy, PollAction, PollConfig, PollCursor, PollOutcome,
-        PollResult, PollTriggerAdapter,
+        PollResult, PollSource, PollTriggerAdapter,
     },
     port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort},
     resource::{ResourceAction, ResourceActionAdapter},
@@ -43,12 +44,15 @@ pub use crate::{
         SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
         TriggerTestHarness,
     },
-    trigger::{TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome},
+    trigger::{
+        TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerSource,
+    },
     validation::{
         ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
     },
     webhook::{
         SignatureOutcome, WebhookAction, WebhookHttpResponse, WebhookRequest, WebhookResponse,
-        WebhookTriggerAdapter, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
+        WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute, verify_hmac_sha256,
+        verify_tag_constant_time,
     },
 };

@@ -1,0 +1,7 @@
+error[E0046]: not all trait items implemented, missing: `Source`
+  --> tests/probes/missing_trigger_source.rs:10:1
+   |
+10 | impl TriggerAction for BadTrigger {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `Source` in implementation
+   |
+   = help: implement the missing item: `type Source = /* Type */;`
