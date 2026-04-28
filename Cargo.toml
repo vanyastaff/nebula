@@ -34,19 +34,9 @@ members = [
   "crates/validator/macros",
   "crates/sandbox",
   "crates/plugin-sdk",
-  "apps/cli",
-  "examples",
 ]
 exclude = [
   "crates/*/fuzz",
-  "scratch/*",
-  # Spike iterations — reference artefacts preserved for study.
-  # Each spike is a standalone workspace (own Cargo.toml, own
-  # rust-toolchain.toml). See spike-iter-1-2/NOTES.md and
-  # spike-iter-3/NOTES.md for findings. History preserved via tags
-  # `spike-iter-1-2` (commit 1c107144) and `spike-iter-3` (commit f36f3739).
-  "spike-iter-1-2",
-  "spike-iter-3",
 ]
 resolver = "3"
 
