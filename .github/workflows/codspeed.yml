@@ -75,6 +75,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Per-shard filters mirror the `paths-ignore` hygiene applied to
+      # `push: branches: [main]` above — markdown / docs changes must
+      # not trigger a benchmark run, otherwise the cachegrind comparison
+      # picks up CodSpeed's own runtime-environment drift across runners
+      # and reports phantom regressions on benchmarks the PR didn't
+      # touch (the workflow header explicitly notes "Doc-only PR →
+      # shards == [] → codspeed job skipped"; this exclusion enforces
+      # that invariant).
       - name: Detect changed crates
         id: filter
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
@@ -82,24 +90,31 @@ jobs:
           filters: |
             resilience:
               - 'crates/resilience/**'
+              - '!crates/resilience/**/*.md'
               - '.github/workflows/codspeed.yml'
             validator:
               - 'crates/validator/**'
+              - '!crates/validator/**/*.md'
               - '.github/workflows/codspeed.yml'
             core:
               - 'crates/core/**'
+              - '!crates/core/**/*.md'
               - '.github/workflows/codspeed.yml'
             eventbus:
               - 'crates/eventbus/**'
+              - '!crates/eventbus/**/*.md'
               - '.github/workflows/codspeed.yml'
             expression:
               - 'crates/expression/**'
+              - '!crates/expression/**/*.md'
               - '.github/workflows/codspeed.yml'
             log:
               - 'crates/log/**'
+              - '!crates/log/**/*.md'
               - '.github/workflows/codspeed.yml'
             system:
               - 'crates/system/**'
+              - '!crates/system/**/*.md'
               - '.github/workflows/codspeed.yml'
 
       - name: Plan shards
