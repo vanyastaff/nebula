@@ -1,0 +1,47 @@
+name: Dependency Review
+
+# PR-time advisory diff for incoming dependency changes. Catches new
+# vulnerable / disallowed-licence crates before merge — complements the
+# weekly `security-audit.yml` (which scans `Cargo.lock` HEAD on `main`)
+# and `ci.yml`'s `cargo deny` (which enforces `deny.toml` rules workspace-wide).
+#
+# Scope: PR diff only, hence light-weight — no full `cargo` install needed.
+
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/dep-review.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Review dependencies
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          # Match the severity floor used by `cargo audit` so this stays
+          # advisory-aligned with the weekly job. Bump to `low` once the
+          # workflow has been live for a release cycle without false-positive
+          # noise (advisory-DB churn for transitive deps is the usual cause).
+          fail-on-severity: moderate
+          # Mirrors the `[licenses].allow` set in `deny.toml`. Keep both lists
+          # aligned — divergence means the same PR can pass dep-review but
+          # fail `cargo deny` (or vice versa) and confuse contributors.
+          allow-licenses: Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
+          comment-summary-in-pr: on-failure

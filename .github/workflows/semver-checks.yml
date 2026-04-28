@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,18 +21,24 @@ jobs:
   semver:
     name: cargo-semver-checks
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # Advisory only during alpha — does not block merge.
     # Make this `required: true` in branch protection when leaving alpha.
     continue-on-error: true
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-semver-checks
       - name: Run cargo-semver-checks (advisory, skip if unpublished)
         run: |
           set +e
-          cargo install cargo-semver-checks --locked 2>&1 || true
           cargo semver-checks check-release --workspace 2>&1 | tee semver-output.log
           exit_code=${PIPESTATUS[0]}
           # Graceful skip: if crates aren't published yet, this is expected in alpha.

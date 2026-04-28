@@ -27,6 +27,7 @@ jobs:
     name: Cleanup runs from deleted branch
     if: github.event_name == 'delete' && github.event.ref_type == 'branch'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Delete workflow runs for ${{ github.event.ref }}
         env:
@@ -50,9 +51,10 @@ jobs:
     name: Cleanup old runs (retention sweep)
     if: github.event_name != 'delete'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Delete runs older than ${{ inputs.retain_days || 14 }} days
-        uses: Mattraks/delete-workflow-runs@v2
+        uses: Mattraks/delete-workflow-runs@b3018382ca039b53d238908238bd35d1fb14f8ee # v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}

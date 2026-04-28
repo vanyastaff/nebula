@@ -50,6 +50,7 @@ jobs:
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -70,6 +71,7 @@ jobs:
     name: Clippy
     needs: [fmt]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -92,6 +94,7 @@ jobs:
     name: Check
     needs: [fmt]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -125,6 +128,7 @@ jobs:
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -151,6 +155,7 @@ jobs:
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -177,6 +182,7 @@ jobs:
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -201,6 +207,7 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: [check]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -226,6 +233,7 @@ jobs:
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -234,7 +242,9 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-deny
       - name: Run cargo deny
         run: cargo deny check
 
@@ -247,6 +257,7 @@ jobs:
     if: always()
     needs: [fmt, clippy, check, doctests, msrv, doc, deny]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Verify required jobs
         env:

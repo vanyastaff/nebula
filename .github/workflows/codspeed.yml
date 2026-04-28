@@ -68,15 +68,16 @@ jobs:
   changes:
     name: Select shards
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Detect changed crates
         id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         with:
           filters: |
             resilience:
@@ -167,26 +168,29 @@ jobs:
     # `run-full-ci` label (see `plan` step).
     if: needs.changes.outputs.shards != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.changes.outputs.shards) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
           shared-key: codspeed-${{ matrix.shard }}
 
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@v2.75.10
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
           tool: cargo-codspeed
 
@@ -194,7 +198,7 @@ jobs:
         run: cargo codspeed build ${{ matrix.packages }}
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@v4
+        uses: CodSpeedHQ/action@db35df748deb45fdef0960669f57d627c1956c30 # v4
         with:
           mode: simulation
           run: cargo codspeed run ${{ matrix.packages }}

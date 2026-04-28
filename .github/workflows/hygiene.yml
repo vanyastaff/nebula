@@ -16,17 +16,18 @@ jobs:
   typos-and-toml:
     name: typos + taplo
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install typos-cli
-        uses: taiki-e/install-action@v2.75.10
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
           tool: typos-cli
 
       - name: Install taplo-cli
-        uses: taiki-e/install-action@v2.75.10
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
           tool: taplo-cli
 
