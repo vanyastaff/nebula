@@ -240,10 +240,10 @@ impl ExecutionState {
     ///
     /// 1. **Reason kind is explicit.** Only [`ExecutionTerminationReason::ExplicitStop`] and
     ///    [`ExecutionTerminationReason::ExplicitFail`] are accepted. `NaturalCompletion`,
-    ///    `Cancelled`, and `SystemError` are engine-attributed in
-    ///    [`crate::engine::determine_final_status`] via other priority-ladder branches and must not
-    ///    be recorded in `terminated_by` directly — passing them returns `false` with a
-    ///    `tracing::warn!` and no mutation.
+    ///    `Cancelled`, and `SystemError` are engine-attributed in `nebula-engine`'s
+    ///    `determine_final_status` via other priority-ladder branches and must not be recorded in
+    ///    `terminated_by` directly — passing them returns `false` with a `tracing::warn!` and no
+    ///    mutation.
     /// 2. **`by_node` matches `node_key`.** The variant's inner `by_node` field MUST equal the
     ///    `node_key` argument. Mismatched identity returns `false` with a `tracing::warn!` and no
     ///    mutation. Engine wiring constructs the reason via
