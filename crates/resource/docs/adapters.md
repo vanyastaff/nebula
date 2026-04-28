@@ -15,7 +15,7 @@ An adapter crate owns three things:
 
 1. A **config struct** — operational parameters (host, port, timeouts).
    No secrets. Implements `ResourceConfig` (super-bound:
-   `nebula_schema::HasSchema`).
+   `HasSchema`, re-exported as `nebula_resource::HasSchema`).
 2. A **resource struct** — implements `Resource` with five associated
    types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`) plus the
    lifecycle methods. The factory.
@@ -43,34 +43,41 @@ edition = "2024"
 [dependencies]
 nebula-resource = { path = "../../crates/resource" }
 nebula-core     = { path = "../../crates/core" }
-nebula-schema   = { path = "../../crates/schema" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 # tokio-postgres = "0.7"   # your driver
 ```
 
+`nebula-resource` re-exports `HasSchema`, `Schema`, `ValidSchema`, and
+the `impl_empty_has_schema!` convenience macro from `nebula-schema`, so
+adapter `Cargo.toml`s do not need a direct `nebula-schema` dependency
+just to satisfy `ResourceConfig`'s super-bound. Add `nebula-schema`
+explicitly only if you reach for schema APIs the resource crate does not
+re-export (custom builders, validators, etc.).
+
 ---
 
 ## Step 1: Define Config
 
-`ResourceConfig` extends `nebula_schema::HasSchema + Send + Sync + Clone +
-'static`. The `HasSchema` super-bound exists so resource configs can be
-introspected by the catalog and workflow editor — derive it from the
-struct shape (recommended) or stub it out for in-process / test fixtures.
+`ResourceConfig` extends `HasSchema + Send + Sync + Clone + 'static`
+(canonical path: `nebula_schema::HasSchema`; re-exported as
+`nebula_resource::HasSchema`). The `HasSchema` super-bound exists so
+resource configs can be introspected by the catalog and workflow editor
+— derive it from the struct shape (recommended) or stub it out for
+in-process / test fixtures.
 
 ### Option A: `#[derive(Schema)]` — recommended
 
-`nebula_schema::Schema` is a derive macro that generates a real schema
-from struct fields. Field-level `#[param(...)]` attributes set labels,
-descriptions, and other catalog metadata. Use this whenever the config
-is meant to be visible in a UI:
+`nebula_resource::Schema` (re-exported from `nebula-schema`) is a derive
+macro that generates a real schema from struct fields. Field-level
+`#[param(...)]` attributes set labels, descriptions, and other catalog
+metadata. Use this whenever the config is meant to be visible in a UI:
 
 ```rust,ignore
 // src/config.rs
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use nebula_resource::{Error, ResourceConfig};
-use nebula_schema::Schema;
+use nebula_resource::{Error, ResourceConfig, Schema};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Hash, Schema, Deserialize)]
@@ -111,7 +118,7 @@ internal-only adapters), implement `HasSchema` directly with an empty
 schema. No macros, no `serde` requirement:
 
 ```rust,ignore
-use nebula_schema::{HasSchema, ValidSchema};
+use nebula_resource::{HasSchema, ValidSchema};
 
 #[derive(Debug, Clone, Hash)]
 pub struct PostgresConfig { /* ... */ }
@@ -123,8 +130,9 @@ impl HasSchema for PostgresConfig {
 }
 ```
 
-(`nebula-schema` also exposes a `nebula_schema::impl_empty_has_schema!`
-macro that emits the same boilerplate; either form is acceptable.)
+(`nebula-resource` also re-exports `impl_empty_has_schema!`, so
+`nebula_resource::impl_empty_has_schema!(PostgresConfig);` emits the
+same boilerplate; either form is acceptable.)
 
 ### `validate` and `fingerprint` (apply to both options)
 
