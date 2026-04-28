@@ -92,7 +92,7 @@ impl std::fmt::Display for ExecutionStatus {
 /// node state, so executions that reach a `Terminate` end up with
 /// `termination_reason == None` on the result. Full propagation is
 /// tracked as Phase 3 of the ControlAction plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum ExecutionTerminationReason {

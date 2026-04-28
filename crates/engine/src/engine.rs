@@ -6303,6 +6303,167 @@ mod tests {
         );
     }
 
+    // ── ROADMAP §M0.3 — `determine_final_status` priority-ladder unit tests ──
+    //
+    // These cover the seven branches of the explicit-termination ladder
+    // documented on `determine_final_status`: explicit termination beats
+    // failed_node beats cancel_token beats integrity violation beats natural
+    // completion. Pairs with the integration tests in
+    // `crates/engine/tests/explicit_termination.rs`.
+
+    fn make_two_terminal_state(
+        terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,
+    ) -> ExecutionState {
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        let mut state = ExecutionState::new(
+            ExecutionId::new(),
+            WorkflowId::new(),
+            &[n1.clone(), n2.clone()],
+        );
+        // Drive both nodes to a terminal state so the integrity guard
+        // does not fire for tests that do not want to exercise it.
+        state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
+        state.node_states.get_mut(&n2).unwrap().state = NodeState::Skipped;
+        state.terminated_by = terminated_by;
+        state
+    }
+
+    /// Priority 1 (Stop): explicit-stop signal yields `Completed` plus the
+    /// `ExplicitStop` reason regardless of natural drainage.
+    #[test]
+    fn final_status_explicit_stop_yields_completed_with_explicit_reason() {
+        let n1 = node_key!("n1");
+        let reason = ExecutionTerminationReason::ExplicitStop {
+            by_node: n1.clone(),
+            note: Some("done".to_owned()),
+        };
+        let state = make_two_terminal_state(Some((n1, reason.clone())));
+
+        let token = CancellationToken::new();
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Completed);
+        assert_eq!(decision.termination_reason, Some(reason));
+        assert!(decision.integrity_violation.is_none());
+    }
+
+    /// Priority 1 (Fail): explicit-fail signal yields `Failed` plus the
+    /// `ExplicitFail` reason — distinct from a system-driven `Failed`.
+    #[test]
+    fn final_status_explicit_fail_yields_failed_with_explicit_reason() {
+        let n1 = node_key!("n1");
+        let reason = ExecutionTerminationReason::ExplicitFail {
+            by_node: n1.clone(),
+            code: nebula_execution::status::ExecutionTerminationCode::new("E_FAIL"),
+            message: "boom".to_owned(),
+        };
+        let state = make_two_terminal_state(Some((n1, reason.clone())));
+
+        let token = CancellationToken::new();
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Failed);
+        assert_eq!(decision.termination_reason, Some(reason));
+    }
+
+    /// Priority 2: a system-driven `failed_node` without an explicit
+    /// termination yields `(Failed, None)` — the `None` is load-bearing
+    /// (signals "engine has nothing extra to attribute").
+    #[test]
+    fn final_status_failed_node_without_terminate_yields_failed_none() {
+        let state = make_two_terminal_state(None);
+        let token = CancellationToken::new();
+        let failed = Some((node_key!("n1"), "boom".to_owned()));
+
+        let decision = determine_final_status(&failed, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Failed);
+        assert!(decision.termination_reason.is_none());
+    }
+
+    /// Priority 3: external cancel without an explicit termination yields
+    /// `(Cancelled, Cancelled)` — distinct from explicit-stop.
+    #[test]
+    fn final_status_external_cancel_yields_cancelled_with_cancelled_reason() {
+        let state = make_two_terminal_state(None);
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Cancelled);
+        assert_eq!(
+            decision.termination_reason,
+            Some(ExecutionTerminationReason::Cancelled)
+        );
+    }
+
+    /// Priority 5: natural drainage with all-terminal nodes and no signal
+    /// yields `(Completed, NaturalCompletion)`.
+    #[test]
+    fn final_status_natural_completion_yields_completed_with_natural_reason() {
+        let state = make_two_terminal_state(None);
+        let token = CancellationToken::new();
+
+        let decision = determine_final_status(&None, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Completed);
+        assert_eq!(
+            decision.termination_reason,
+            Some(ExecutionTerminationReason::NaturalCompletion)
+        );
+    }
+
+    /// Priority 1 wins over Priority 2: explicit stop authoritative even
+    /// when a sibling failed mid-cancel. The user's stop signal is
+    /// authoritative; sibling failure is collateral.
+    #[test]
+    fn final_status_explicit_stop_wins_over_failed_node() {
+        let n1 = node_key!("n1");
+        let stop_reason = ExecutionTerminationReason::ExplicitStop {
+            by_node: n1.clone(),
+            note: None,
+        };
+        let state = make_two_terminal_state(Some((n1, stop_reason.clone())));
+        let token = CancellationToken::new();
+        // Sibling failure that would have promoted to Failed under priority 2.
+        let failed = Some((node_key!("n2"), "sibling exploded mid-cancel".to_owned()));
+
+        let decision = determine_final_status(&failed, &token, &state);
+
+        assert_eq!(
+            decision.status,
+            ExecutionStatus::Completed,
+            "ExplicitStop must win over sibling failure"
+        );
+        assert_eq!(decision.termination_reason, Some(stop_reason));
+    }
+
+    /// Priority 1 wins over Priority 2 (Fail variant): an explicit fail
+    /// signal is authoritative even when a sibling also failed.
+    #[test]
+    fn final_status_explicit_fail_wins_over_failed_sibling() {
+        let n1 = node_key!("n1");
+        let fail_reason = ExecutionTerminationReason::ExplicitFail {
+            by_node: n1.clone(),
+            code: nebula_execution::status::ExecutionTerminationCode::new("E_USER_FAIL"),
+            message: "user-driven".to_owned(),
+        };
+        let state = make_two_terminal_state(Some((n1, fail_reason.clone())));
+        let token = CancellationToken::new();
+        let failed = Some((node_key!("n2"), "sibling crash".to_owned()));
+
+        let decision = determine_final_status(&failed, &token, &state);
+
+        assert_eq!(decision.status, ExecutionStatus::Failed);
+        assert_eq!(
+            decision.termination_reason,
+            Some(fail_reason),
+            "ExplicitFail must win over sibling failure"
+        );
+    }
+
     /// Regression for #341: when the guard populates a non-terminal payload,
     /// `emit_frontier_integrity_if_violated` must send exactly one
     /// `ExecutionEvent::FrontierIntegrityViolation`. Covers the helper all
