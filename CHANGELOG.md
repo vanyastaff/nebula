@@ -150,3 +150,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `resolve_literal_only_fast_path`: ~99 ps (effectively branch-eliminated for
   literal-only schemas — `uses_expressions == false` early return).
 - `find_by_path_100_fields`: 16.5 ns (O(1) `IndexMap` index, Task 20).
+
+### Tooling
+
+- **lefthook**: pre-commit `fmt-check` switched from workspace-wide `cargo +nightly fmt --all -- --check` to a per-crate invocation driven by staged files (`scripts/pre-commit-fmt-check.sh`). Fixes Windows OS error 206 ("filename or extension is too long") that fired when the working tree lived under a deep path (e.g. `.worktrees/nebula/<branch>/`) and forced `--no-verify` bypasses on ~20 commits in PR #616. The script walks each staged `.rs` file to its owning crate's `Cargo.toml`, dedupes, and passes `-p <pkg>` flags; workspace `rustfmt.toml` is honored. CI Linux still runs the workspace-wide form as the authoritative fmt gate.

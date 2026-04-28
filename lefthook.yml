@@ -16,7 +16,11 @@ pre-commit:
   commands:
     fmt-check:
       glob: "**/*.rs"
-      run: cargo +nightly fmt --all -- --check
+      # Per-crate to avoid Windows cmdline length limit (`cargo fmt --all`
+      # iterates every workspace member and trips OS error 206 when the
+      # working-tree path is deep, e.g. under `.worktrees/`). CI Linux still
+      # runs `cargo +nightly fmt --all -- --check` as the authoritative gate.
+      run: bash scripts/pre-commit-fmt-check.sh {staged_files}
     clippy:
       glob: "**/*.rs"
       run: cargo clippy --workspace --all-targets -q -- -D warnings
