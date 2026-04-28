@@ -285,6 +285,44 @@ impl ExecutionState {
         true
     }
 
+    /// Drop a previously recorded explicit termination signal **without**
+    /// bumping the parent version.
+    ///
+    /// Recovery escape hatch for the engine's durability path: when a
+    /// `set_terminated_by` succeeded in-memory but the next
+    /// `checkpoint_node` returned `Err` (CAS conflict, storage failure,
+    /// etc.), the signal never reached disk. Leaving the in-memory
+    /// `terminated_by` set would let `determine_final_status` report a
+    /// durable-looking `termination_reason` on `ExecutionResult` /
+    /// `ExecutionEvent::ExecutionFinished` while the persisted state
+    /// row contains `None` — a semantic divergence between the event
+    /// stream and the audit-of-record.
+    ///
+    /// `clear_terminated_by` undoes the in-memory record so the engine
+    /// reports the honest system-driven outcome (e.g. `(Failed, None)`
+    /// from `failed_node` priority). Version is **not** bumped because
+    /// the matching set's bump never made it to disk either — readers
+    /// keying on `version` should never have observed the intermediate
+    /// state.
+    ///
+    /// Returns `true` when there was a signal to clear, `false`
+    /// otherwise. The return value is informational; the engine uses
+    /// it only for log fidelity.
+    pub fn clear_terminated_by(&mut self) -> bool {
+        if let Some((node_key, reason)) = self.terminated_by.take() {
+            tracing::warn!(
+                target = "execution::state",
+                execution_id = %self.execution_id,
+                cleared_by = %node_key,
+                ?reason,
+                "clear_terminated_by — recovery path; signal was not durable"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get a node's execution state.
     #[must_use]
     pub fn node_state(&self, node_key: NodeKey) -> Option<&NodeExecutionState> {
@@ -983,6 +1021,42 @@ mod tests {
         assert_eq!(
             state.version, v_after_first,
             "version must not bump on duplicate set_terminated_by"
+        );
+    }
+
+    /// ROADMAP §M0.3 review M1 — recovery escape hatch:
+    /// `clear_terminated_by` removes an in-memory signal that never
+    /// made it to disk via `checkpoint_node`. Returns `true` when
+    /// there was a signal to clear, `false` otherwise. Does NOT bump
+    /// `version` (the matching set's bump never reached disk either).
+    #[test]
+    fn clear_terminated_by_undoes_in_memory_set() {
+        let (mut state, n1, _n2) = make_state();
+
+        // No signal to clear initially.
+        assert!(
+            !state.clear_terminated_by(),
+            "clear on empty must return false"
+        );
+
+        // Set, then clear.
+        let was_first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1,
+                note: None,
+            },
+        );
+        assert!(was_first);
+        let v_after_set = state.version;
+
+        let cleared = state.clear_terminated_by();
+        assert!(cleared, "clear on Some(_) must return true");
+        assert!(state.terminated_by.is_none());
+        assert_eq!(
+            state.version, v_after_set,
+            "clear_terminated_by must NOT bump version — readers keying on \
+             the set's bump should never have observed the intermediate state"
         );
     }
 

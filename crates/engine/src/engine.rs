@@ -2071,6 +2071,30 @@ impl WorkflowEngine {
                         )
                         .await
                     {
+                        // Durability recovery (ROADMAP §M0.3 review M1):
+                        // if the action returned `Terminate` and we
+                        // recorded `terminated_by` in-memory above but
+                        // `checkpoint_node` failed (CAS conflict /
+                        // storage err), the signal never reached disk.
+                        // Drop it so `determine_final_status` does not
+                        // report a durable-looking `termination_reason`
+                        // on the event stream while the audit row stays
+                        // `None`. The engine still surfaces the failure
+                        // via `failed_node` (system-driven `Failed`),
+                        // which is the honest outcome.
+                        if terminate_was_first_set {
+                            tracing::warn!(
+                                target = "engine::frontier",
+                                %execution_id,
+                                %node_key,
+                                checkpoint_error = %e,
+                                "explicit_termination_signal lost on \
+                                 checkpoint failure; clearing in-memory \
+                                 terminated_by to avoid event-vs-audit \
+                                 divergence"
+                            );
+                            exec_state.clear_terminated_by();
+                        }
                         cancel_token.cancel();
                         return Some((node_key.clone(), e.to_string()));
                     }
