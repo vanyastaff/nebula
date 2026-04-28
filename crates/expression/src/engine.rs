@@ -495,7 +495,7 @@ mod tests {
 
     fn constant_one(
         _args: &[Value],
-        _evaluator: &Evaluator,
+        _view: crate::eval::BuiltinView<'_>,
         _context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
         Ok(Value::from(1))

@@ -63,22 +63,27 @@ See `src/lib.rs` rustdoc for the quick-start example.
 - Not a template engine for HTML rendering — it resolves `{{ }}` in workflow field strings;
   full HTML templating with control flow is out of scope.
 
-### Known limitation: BuiltinFunction signature and evaluator re-entry
+### BuiltinFunction signature (no re-entry)
 
 `BuiltinFunction` is typed as:
 
 ```rust
-pub type BuiltinFunction = fn(&[Value], &Evaluator, &EvaluationContext) -> ExpressionResult<Value>;
+pub type BuiltinFunction =
+    fn(&[Value], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<Value>;
 ```
 
-The `&Evaluator` parameter lets built-in functions call `Evaluator::eval` recursively.
-This is an intentional design choice for lambda-accepting functions (`filter`, `map`,
-`reduce`) but it means a malicious or buggy built-in can re-enter the evaluator
-arbitrarily. The `EvaluationPolicy` step budget partially guards against runaway
-recursion, but cannot prevent all re-entry patterns. **Built-in functions must not be
-authored by untrusted code** — they are first-party only. See memory note
-`pitfall_expression_builtin_frame.md` for the full pitfall description. This constraint
-should be promoted to `docs/pitfalls.md` before 1.0.
+The middle parameter is `BuiltinView<'_>`, a read-only handle that exposes only the
+policy-query methods builtins legitimately need (`is_strict_mode`,
+`strict_conversions_enabled`, `max_json_parse_length`). It does not expose
+`Evaluator::eval` — a registered builtin physically cannot recurse back into AST
+evaluation, so the historical step-budget bypass that was previously a "discipline-only"
+rule (issue #252) is now type-enforced. The pitfall is documented in
+`docs/pitfalls.md` for historical context.
+
+Higher-order combinators (`filter`, `map`, `reduce`, `flat_map`, `group_by`, `find`,
+`find_index`, `some`, `every`) are NOT registered through this surface. They live
+inside the evaluator module and call `eval_with_frame` directly with the caller's
+`EvalFrame`, so the step budget stays accumulated across every iteration.
 
 ## Maturity
 

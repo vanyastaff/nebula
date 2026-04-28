@@ -121,6 +121,51 @@ impl EvalFrame {
     }
 }
 
+/// Read-only handle on the evaluator's policy state, exposed to
+/// registered builtins.
+///
+/// Replaces the old `&Evaluator` parameter that builtins used to
+/// receive. The crucial difference: `BuiltinView` does not expose
+/// `eval()` or `eval_with_frame()`, so a registered builtin literally
+/// cannot recurse back into AST evaluation. The CO-C1-01 step-budget
+/// bypass therefore becomes type-impossible for first-party builtins,
+/// closing the discipline-only contract documented in the crate
+/// `lib.rs` "Known limitation" note (issue #252).
+///
+/// Higher-order combinators (`filter`, `map`, `reduce`, …) live inside
+/// the evaluator module itself and continue to call `eval_with_frame`
+/// directly with the caller's `EvalFrame`. They never go through this
+/// view; the type-enforced boundary applies only to the
+/// `BuiltinRegistry`'s callable surface.
+#[derive(Copy, Clone)]
+pub struct BuiltinView<'a> {
+    eval: &'a Evaluator,
+}
+
+impl<'a> BuiltinView<'a> {
+    /// Construct a view from an evaluator. `pub(crate)` so only the
+    /// registry/dispatch path can hand it out.
+    pub(crate) fn new(eval: &'a Evaluator) -> Self {
+        Self { eval }
+    }
+
+    /// Whether strict mode is enabled for this evaluation (engine-level
+    /// or context-level policy).
+    pub fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
+        self.eval.is_strict_mode(context)
+    }
+
+    /// Whether strict-coercion mode is enabled for conversion builtins.
+    pub fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
+        self.eval.strict_conversions_enabled(context)
+    }
+
+    /// Optional max JSON parse length cap for `parse_json`.
+    pub fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
+        self.eval.max_json_parse_length(context)
+    }
+}
+
 /// Evaluator for expression ASTs
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
@@ -179,20 +224,18 @@ impl Evaluator {
     /// [`EvaluationPolicy::max_eval_steps`] is enforced across ALL
     /// nested work — lambdas, reduces, pipelines, higher-order combinators.
     ///
-    /// # CO-C1-01 footgun (builtins)
+    /// # CO-C1-01 footgun (builtins) — closed
     ///
-    /// `BuiltinRegistry::call` currently hands builtins `&Evaluator`
-    /// without the caller's [`EvalFrame`]. A builtin that recurses by
-    /// invoking `evaluator.eval(...)` will build a fresh frame and
-    /// reset the step budget mid-traversal — which is exactly the DoS
-    /// bypass this refactor closes for the intrinsic higher-order
-    /// combinators (`map`, `filter`, `reduce`, ...).
-    ///
-    /// Today no shipping builtin does this, but before stabilising the
-    /// public builtin API plumb `&mut EvalFrame` through
-    /// `BuiltinRegistry::call` and add a pitfalls note under
-    /// `.project/context/pitfalls.md`. See issue #252 / audit memory
-    /// `pitfall_expression_builtin_frame`.
+    /// `BuiltinRegistry::call` now hands builtins a [`BuiltinView`]
+    /// instead of `&Evaluator`. The view exposes only policy-query
+    /// methods, so a registered builtin cannot recurse back into AST
+    /// evaluation — the historical step-budget bypass (issue #252) is
+    /// type-enforced shut. Higher-order combinators (`map`, `filter`,
+    /// `reduce`, ...) live inside this module and continue to use
+    /// `eval_with_frame` with the caller's `EvalFrame` directly, so
+    /// their iteration budget stays accumulated. See the `lib.rs`
+    /// crate-level docs and `docs/pitfalls.md` for the historical
+    /// context.
     #[inline]
     pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
         let mut frame = EvalFrame::new(self.resolve_max_steps(context));

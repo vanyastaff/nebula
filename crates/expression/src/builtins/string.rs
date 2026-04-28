@@ -7,7 +7,7 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
 
 // Note: there used to be a `pub fn length` here that took a string only,
@@ -19,7 +19,7 @@ use crate::{
 /// Convert string to uppercase
 pub fn uppercase(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("uppercase", args, 1)?;
@@ -30,7 +30,7 @@ pub fn uppercase(
 /// Convert string to lowercase
 pub fn lowercase(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("lowercase", args, 1)?;
@@ -41,7 +41,7 @@ pub fn lowercase(
 /// Trim whitespace from both ends of a string
 pub fn trim(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("trim", args, 1)?;
@@ -52,7 +52,7 @@ pub fn trim(
 /// Split a string by a delimiter
 pub fn split(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("split", args, 2)?;
@@ -69,7 +69,7 @@ pub fn split(
 /// Replace occurrences of a substring
 pub fn replace(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("replace", args, 3)?;
@@ -88,12 +88,12 @@ pub fn replace(
 /// clamped to the string's character length; `start > end` produces empty.
 pub fn substring(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("substring", args, 2)?;
     let s = get_string_arg("substring", args, 0, "text")?;
-    let start = get_int_arg_with_policy("substring", args, 1, "start", eval, ctx)?;
+    let start = get_int_arg_with_policy("substring", args, 1, "start", view, ctx)?;
     if start < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "substring",
@@ -103,7 +103,7 @@ pub fn substring(
     let chars: Vec<char> = s.chars().collect();
     let start = start as usize;
     let end = if args.len() > 2 {
-        let end = get_int_arg_with_policy("substring", args, 2, "end", eval, ctx)?;
+        let end = get_int_arg_with_policy("substring", args, 2, "end", view, ctx)?;
         if end < 0 {
             return Err(ExpressionError::expression_invalid_argument(
                 "substring",
@@ -122,7 +122,7 @@ pub fn substring(
 /// Check if string contains a substring
 pub fn contains(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("contains", args, 2)?;
@@ -145,7 +145,7 @@ pub fn contains(
 /// Check if string starts with a prefix
 pub fn starts_with(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("starts_with", args, 2)?;
@@ -168,7 +168,7 @@ pub fn starts_with(
 /// Check if string ends with a suffix
 pub fn ends_with(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("ends_with", args, 2)?;
@@ -194,7 +194,7 @@ pub fn ends_with(
 /// Default fill character is a space.
 pub fn pad_start(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_start", args, 2)?;
@@ -205,7 +205,7 @@ pub fn pad_start(
         )));
     }
     let s = get_string_arg("pad_start", args, 0, "text")?;
-    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", eval, ctx)?;
+    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", view, ctx)?;
     if target_len < 0 {
         return Err(ExpressionError::expression_eval_error(
             "pad_start: length must be non-negative",
@@ -248,7 +248,7 @@ pub fn pad_start(
 /// Default fill character is a space.
 pub fn pad_end(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_end", args, 2)?;
@@ -259,7 +259,7 @@ pub fn pad_end(
         )));
     }
     let s = get_string_arg("pad_end", args, 0, "text")?;
-    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", eval, ctx)?;
+    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", view, ctx)?;
     if target_len < 0 {
         return Err(ExpressionError::expression_eval_error(
             "pad_end: length must be non-negative",
@@ -301,12 +301,12 @@ pub fn pad_end(
 /// Example: `repeat("ab", 3)` returns `"ababab"`
 pub fn repeat(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("repeat", args, 2)?;
     let s = get_string_arg("repeat", args, 0, "text")?;
-    let count = get_int_arg_with_policy("repeat", args, 1, "count", eval, ctx)?;
+    let count = get_int_arg_with_policy("repeat", args, 1, "count", view, ctx)?;
     if count < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "repeat",

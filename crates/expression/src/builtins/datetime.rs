@@ -9,7 +9,7 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
 
 /// Parse an IANA timezone name into a `chrono_tz::Tz`.
@@ -43,7 +43,7 @@ fn optional_tz_arg(function: &str, args: &[Value], index: usize) -> ExpressionRe
 /// Get current timestamp as Unix seconds
 pub fn now(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let now = Utc::now().timestamp();
@@ -53,7 +53,7 @@ pub fn now(
 /// Get current date/time as ISO 8601 string
 pub fn now_iso(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let now = Utc::now();
@@ -69,7 +69,7 @@ pub fn now_iso(
 ///   Unknown names yield a typed error.
 pub fn format_date(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("format_date", args, 1)?;
@@ -113,7 +113,7 @@ pub fn format_date(
 ///   suffix ignore `tz` and round-trip exactly.
 pub fn parse_date(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("parse_date", args, 1)?;
@@ -135,7 +135,7 @@ pub fn parse_date(
 /// Add duration to a date
 pub fn date_add(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_add", args, 3)?;
@@ -171,7 +171,7 @@ pub fn date_add(
 /// Subtract duration from a date
 pub fn date_subtract(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_subtract", args, 3)?;
@@ -207,7 +207,7 @@ pub fn date_subtract(
 /// Get difference between two dates in specified unit
 pub fn date_diff(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_diff", args, 3)?;
@@ -243,7 +243,7 @@ pub fn date_diff(
 /// Extract year from date
 pub fn date_year(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_year", args, 1)?;
@@ -254,7 +254,7 @@ pub fn date_year(
 /// Extract month from date (1-12)
 pub fn date_month(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_month", args, 1)?;
@@ -265,7 +265,7 @@ pub fn date_month(
 /// Extract day from date (1-31)
 pub fn date_day(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day", args, 1)?;
@@ -276,7 +276,7 @@ pub fn date_day(
 /// Extract hour from date (0-23)
 pub fn date_hour(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_hour", args, 1)?;
@@ -287,7 +287,7 @@ pub fn date_hour(
 /// Extract minute from date (0-59)
 pub fn date_minute(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_minute", args, 1)?;
@@ -298,7 +298,7 @@ pub fn date_minute(
 /// Extract second from date (0-59)
 pub fn date_second(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_second", args, 1)?;
@@ -309,7 +309,7 @@ pub fn date_second(
 /// Get day of week (0=Sunday, 6=Saturday)
 pub fn date_day_of_week(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day_of_week", args, 1)?;

@@ -44,12 +44,21 @@
 //!
 //! Not a validation rules engine (`nebula-validator`), not a schema system (`nebula-schema`).
 //!
-//! ## Known limitation: BuiltinFunction re-entry
+//! ## BuiltinFunction signature
 //!
-//! `BuiltinFunction` receives `&Evaluator`, allowing built-ins to call `eval` recursively.
-//! `EvaluationPolicy` step budget is the only guard. Built-in functions must be first-party
-//! only — untrusted builtins can re-enter the evaluator. See `crates/expression/README.md`
-//! Contract section and memory note `pitfall_expression_builtin_frame.md`.
+//! `BuiltinFunction` receives [`eval::BuiltinView`], a borrowed handle that
+//! exposes only policy queries (`is_strict_mode`, `strict_conversions_enabled`,
+//! `max_json_parse_length`). It does NOT expose `Evaluator::eval`, so a
+//! registered builtin literally cannot recurse into AST evaluation. The
+//! step-budget bypass that was historically a "discipline-only" rule
+//! (issue #252, audit memory `pitfall_expression_builtin_frame.md`) is now
+//! type-enforced.
+//!
+//! Higher-order combinators (`filter`, `map`, `reduce`, `flat_map`,
+//! `group_by`, `find`, `find_index`, `some`, `every`) are NOT registered
+//! through this surface — they live inside the evaluator module and call
+//! `eval_with_frame` directly with the caller's `EvalFrame`, so the step
+//! budget remains enforced across every iteration.
 
 // Public modules - exposed for external use
 #[doc(hidden)]

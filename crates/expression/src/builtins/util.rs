@@ -7,7 +7,7 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
 
 /// Get the length of a string, array, or object — the single polymorphic
@@ -21,7 +21,7 @@ use crate::{
 /// All other input types yield a typed error.
 pub fn length(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
@@ -39,7 +39,7 @@ pub fn length(
 /// Check if value is null
 pub fn is_null(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("is_null", args, 1)?;
@@ -49,7 +49,7 @@ pub fn is_null(
 /// Check if value is an array
 pub fn is_array(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("is_array", args, 1)?;
@@ -59,7 +59,7 @@ pub fn is_array(
 /// Check if value is an object
 pub fn is_object(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("is_object", args, 1)?;
@@ -69,7 +69,7 @@ pub fn is_object(
 /// Check if value is a string
 pub fn is_string(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("is_string", args, 1)?;
@@ -79,7 +79,7 @@ pub fn is_string(
 /// Check if value is a number
 pub fn is_number(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("is_number", args, 1)?;
@@ -90,7 +90,7 @@ pub fn is_number(
 #[cfg(feature = "uuid")]
 pub fn uuid(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let id = uuid::Uuid::new_v4();
@@ -101,7 +101,7 @@ pub fn uuid(
 #[cfg(not(feature = "uuid"))]
 pub fn uuid(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     Err(ExpressionError::expression_function_not_found(
@@ -114,7 +114,7 @@ pub fn uuid(
 /// Example: `coalesce(null, null, 42, "hello")` returns `42`
 pub fn coalesce(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("coalesce", args, 1)?;
@@ -133,7 +133,7 @@ pub fn coalesce(
 /// Example: `type_of(42)` returns `"number"`
 pub fn type_of(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("type_of", args, 1)?;
