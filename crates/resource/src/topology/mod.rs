@@ -9,19 +9,16 @@
 //! | [`Service`] | Long-lived runtime, short-lived tokens |
 //! | [`Transport`] | Shared connection, multiplexed sessions |
 //! | [`Exclusive`] | One caller at a time via semaphore |
-//! | [`EventSource`] | Pull-based event subscription (secondary) |
-//! | [`Daemon`] | Background run loop (secondary) |
+//!
+//! `Daemon` and `EventSource` live in `nebula_engine::daemon` per ADR-0037 —
+//! canon §3.5 reserves "Resource" for pool/SDK clients.
 
-pub mod daemon;
-pub mod event_source;
 pub mod exclusive;
 pub mod pooled;
 pub mod resident;
 pub mod service;
 pub mod transport;
 
-pub use daemon::{Daemon, RestartPolicy};
-pub use event_source::EventSource;
 pub use exclusive::Exclusive;
 pub use pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision};
 pub use resident::Resident;

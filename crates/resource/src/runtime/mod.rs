@@ -1,20 +1,16 @@
 //! Topology runtime implementations.
 //!
 //! Each topology trait ([`Pooled`], [`Resident`], [`Service`], [`Transport`],
-//! [`Exclusive`], [`EventSource`], [`Daemon`]) has a corresponding runtime
-//! struct that manages instance lifecycle, and a dispatch enum
-//! ([`TopologyRuntime`]) that erases the topology at the registration level.
+//! [`Exclusive`]) has a corresponding runtime struct that manages instance
+//! lifecycle, and a dispatch enum ([`TopologyRuntime`]) that erases the
+//! topology at the registration level.
 //!
 //! [`Pooled`]: crate::topology::pooled::Pooled
 //! [`Resident`]: crate::topology::resident::Resident
 //! [`Service`]: crate::topology::service::Service
 //! [`Transport`]: crate::topology::transport::Transport
 //! [`Exclusive`]: crate::topology::exclusive::Exclusive
-//! [`EventSource`]: crate::topology::event_source::EventSource
-//! [`Daemon`]: crate::topology::daemon::Daemon
 
-pub mod daemon;
-pub mod event_source;
 pub mod exclusive;
 pub mod managed;
 pub mod pool;
@@ -40,10 +36,6 @@ pub enum TopologyRuntime<R: Resource> {
     Transport(transport::TransportRuntime<R>),
     /// One caller at a time via semaphore(1).
     Exclusive(exclusive::ExclusiveRuntime<R>),
-    /// Pull-based event subscription (secondary topology).
-    EventSource(event_source::EventSourceRuntime<R>),
-    /// Background run loop with restart policy (secondary topology).
-    Daemon(daemon::DaemonRuntime<R>),
 }
 
 impl<R: Resource> TopologyRuntime<R> {
@@ -55,8 +47,6 @@ impl<R: Resource> TopologyRuntime<R> {
             Self::Service(_) => TopologyTag::Service,
             Self::Transport(_) => TopologyTag::Transport,
             Self::Exclusive(_) => TopologyTag::Exclusive,
-            Self::EventSource(_) => TopologyTag::EventSource,
-            Self::Daemon(_) => TopologyTag::Daemon,
         }
     }
 }

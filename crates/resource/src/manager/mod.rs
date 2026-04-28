@@ -1370,7 +1370,6 @@ impl Manager {
             TopologyRuntime::Service(_) => ReloadOutcome::PendingDrain {
                 old_generation: prev_gen,
             },
-            TopologyRuntime::Daemon(_) => ReloadOutcome::Restarting,
             _ => ReloadOutcome::SwappedImmediately,
         };
 

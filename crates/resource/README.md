@@ -15,7 +15,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Seven named topologies cover the full integration space: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`, `EventSource`, `Daemon`. The `Resource` trait declares five associated types and seven core methods; topology traits add pool-specific recycle and broken-instance decisions.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Five named topologies cover the full integration space: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`. The `Resource` trait declares five associated types and seven core methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` per ADR-0037 — canon §3.5 reserves "Resource" for pool/SDK clients.
 
 ## Public API
 
@@ -36,9 +36,9 @@ External connections — database pools, HTTP clients, message brokers — are a
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
 - `RecoveryGate`, `RecoveryGateConfig`, `WatchdogHandle`, `WatchdogConfig` — recovery patterns.
 - `AcquireResilience`, `AcquireRetryConfig` — resilience configuration for acquire paths.
-- `TopologyRuntime` — enum dispatching to the 7 topology runtime variants.
-- Topology traits: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`, `EventSource`, `Daemon`.
-- Topology runtimes: `PoolRuntime`, `ResidentRuntime`, `ServiceRuntime`, `TransportRuntime`, `ExclusiveRuntime`, `EventSourceRuntime`, `DaemonRuntime`.
+- `TopologyRuntime` — enum dispatching to the 5 topology runtime variants.
+- Topology traits: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`.
+- Topology runtimes: `PoolRuntime`, `ResidentRuntime`, `ServiceRuntime`, `TransportRuntime`, `ExclusiveRuntime`.
 - `#[derive(Resource)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
 - `resource_key!` — macro for declaring resource keys.
 
@@ -60,7 +60,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 See `docs/MATURITY.md` row for `nebula-resource`.
 
-- API stability: `frontier` — 7 topologies, `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
+- API stability: `frontier` — 5 topologies, `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
 - `#![forbid(unsafe_code)]` enforced, `#![warn(missing_docs)]` active.
 - Integration tests: 0 in `tests/`; lifecycle covered by unit tests per topology.
 
@@ -90,5 +90,5 @@ These types are L4 implementation detail — rename/refactor without canon revis
 | `Service` | OAuth APIs, token-gated services | Long-lived runtime with short-lived tokens |
 | `Transport` | WebSocket, gRPC channels | Shared connection with multiplexed sessions |
 | `Exclusive` | File locks, hardware ports | One caller at a time via semaphore(1) |
-| `EventSource` | Webhooks, SSE, change streams | Pull-based event subscription |
-| `Daemon` | Background workers, watchers | Background run loop with restart policy |
+
+Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon` per ADR-0037; this crate retains pool/SDK-client topologies only (canon §3.5).
