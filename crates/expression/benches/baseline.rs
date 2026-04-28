@@ -99,7 +99,18 @@ fn benchmark_evaluate_no_cache(c: &mut Criterion) {
 
     for (name, expr) in test_cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), expr, |b, expr| {
-            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)));
+            // `.unwrap()` is intentional: a benchmark that silently swallows
+            // an `Err` measures only the error fast-path. Pre-T1, the
+            // parser failed on `abs(min(-5, -10))`-shape expressions
+            // ("Expected ), found ("), so this benchmark on the previous
+            // baseline was timing parse-error production rather than
+            // full parse + eval. Forcing a panic on Err keeps that class
+            // of false-positive baseline out of future runs.
+            b.iter(|| {
+                engine
+                    .evaluate(black_box(expr), black_box(&context))
+                    .unwrap()
+            });
         });
     }
 
