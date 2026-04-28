@@ -206,3 +206,27 @@ logs/security/
 
 # Competitor research (transient cloned repos)
 targets/
+
+# ============================================================================
+# AI FACTORY — track shared context, ignore transient per-fix / per-branch state
+# ============================================================================
+# Tracked (do NOT ignore): config.yaml, DESCRIPTION.md, ARCHITECTURE.md,
+# RULES.md, ROADMAP.md, RESEARCH.md, SECURITY.md, rules/, references/,
+# specs/, skill-context/. Plus the .ai-factory.json install manifest.
+
+# Transient plan / fix files
+.ai-factory/PLAN.md
+.ai-factory/FIX_PLAN.md
+.ai-factory/plans/
+
+# Per-fix / per-branch scratch
+.ai-factory/qa/
+.ai-factory/patches/
+.ai-factory/evolutions/
+.ai-factory/evolution/
+
+# Helper payloads written by update-config.mjs and similar tooling
+.ai-factory/*.update.json
+
+# Serena local state (mirrors .claudeignore policy)
+.serena/
