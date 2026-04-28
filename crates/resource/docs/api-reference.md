@@ -11,7 +11,7 @@ and `nebula-credential` (per ADR-0036) so consumers do not need direct deps:
 - From `nebula_resource_macros`: `ClassifyError`, `Resource` derives.
 
 For the event catalog see [`events.md`](events.md). For pool internals see
-[`Pooling.md`](Pooling.md). For recovery internals see
+[`pooling.md`](pooling.md). For recovery internals see
 [`recovery.md`](recovery.md).
 
 ---
@@ -766,7 +766,7 @@ fetched typed via `Manager::lookup` or type-erased via `Manager::get_any`.
 `resource_key`, `as_any_arc`, `managed_type_id`, `set_phase_erased`,
 `set_failed_erased`, `phase_erased`.
 
-`PoolStats` is returned from `Manager::pool_stats` — see [`Pooling.md`](Pooling.md).
+`PoolStats` is returned from `Manager::pool_stats` — see [`pooling.md`](pooling.md).
 
 ---
 

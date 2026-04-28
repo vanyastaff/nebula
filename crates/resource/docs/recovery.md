@@ -178,7 +178,7 @@ let handle = WatchdogHandle::start(
     |healthy| {
         tracing::info!(healthy, "watchdog health transition");
     },
-    parent_cancel.child_token(),
+    parent_cancel,
 );
 
 // Graceful stop (awaits the background task):
