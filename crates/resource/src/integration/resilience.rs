@@ -45,7 +45,7 @@ pub struct AcquireRetryConfig {
 }
 
 impl AcquireResilience {
-    /// Balanced defaults: 30 s timeout, 3 retries.
+    /// Balanced defaults: 30 s timeout, max_attempts = 3 (1 initial + 2 retries).
     pub fn standard() -> Self {
         Self {
             timeout: Some(Duration::from_secs(30)),
@@ -57,7 +57,7 @@ impl AcquireResilience {
         }
     }
 
-    /// Low-latency: 10 s timeout, 2 retries.
+    /// Low-latency: 10 s timeout, max_attempts = 2 (1 initial + 1 retry).
     pub fn fast() -> Self {
         Self {
             timeout: Some(Duration::from_secs(10)),
@@ -69,7 +69,7 @@ impl AcquireResilience {
         }
     }
 
-    /// Tolerant: 60 s timeout, 5 retries.
+    /// Tolerant: 60 s timeout, max_attempts = 5 (1 initial + 4 retries).
     pub fn slow() -> Self {
         Self {
             timeout: Some(Duration::from_mins(1)),

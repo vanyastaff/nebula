@@ -498,7 +498,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
     // FRICTION NOTE [RESILIENCE WIRING]: AcquireResilience presets are easy
     // to find and use. `AcquireResilience::standard()` is discoverable from
     // lib.rs re-exports. This part of the API is actually good.
-    let resilience = AcquireResilience::fast(); // 10s timeout, 2 retries
+    let resilience = AcquireResilience::fast(); // 10s timeout, max_attempts = 2
 
     manager
         .register(
