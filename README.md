@@ -1,29 +1,28 @@
 # Nebula
 
-[CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
-[Rust](https://www.rust-lang.org/)
-[License](LICENSE)
-[CodSpeed](https://codspeed.io/vanyastaff/nebula)
+[![CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml/badge.svg)](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
-**Modular, type-safe workflow automation engine in Rust.**
+**Modular, type-safe workflow automation engine written in Rust.**
 
-Nebula is a DAG-based automation engine in the same category as n8n, Zapier, and Temporal &mdash; but built from scratch in Rust as a composable library, not a monolithic platform. It is designed for teams that want workflow automation they can embed, extend, and trust with production credentials.
+Nebula is a DAG-based workflow automation engine &mdash; in the same space as n8n, Zapier, and Temporal &mdash; built as a composable Rust library rather than a monolithic platform. The goal is to give teams a foundation they can embed into their own infrastructure, extend with custom integrations, and trust with production secrets.
 
-Alpha stage: core crates are stable, execution engine and desktop app are in active development.
+**Current status:** core crates are stable and well-tested; the execution engine and API layer are in active development. Not production-ready yet.
 
 ---
 
 ## Why Nebula
 
-Most automation platforms are runtime-interpreted, dynamically typed, and treat security as an afterthought. Nebula takes a different path.
+Most automation platforms are runtime-interpreted, dynamically typed, and treat security as an afterthought. Nebula takes a different approach.
 
-**Credentials are a first-class concern, not a bolt-on.** Every secret is encrypted at rest with AES-256-GCM, bound to its record via AAD to prevent swapping attacks, and wiped from memory on drop. Key rotation is built into the storage layer &mdash; not a future feature. The credential system went through 10 adversarial review rounds, 2 dev challenges, and SOC2 grading before shipping.
+**Credentials are a first-class concern, not a bolt-on.** Every secret is encrypted at rest with AES-256-GCM, bound to its record via AAD to prevent swapping attacks, and wiped from memory on drop. Key rotation is built into the storage layer &mdash; not a future feature.
 
-**The type system does the work.** Workflow structure, action I/O, parameter schemas, auth patterns &mdash; all expressed as Rust types. If a workflow compiles, its shape is valid. There are no stringly-typed action references, no untyped credential bags, no "any" escape hatches in the core pipeline.
+**The type system does the work.** Workflow structure, action I/O, parameter schemas, and auth patterns are all expressed as Rust types. If a workflow compiles, its shape is valid. There are no stringly-typed action references, no untyped credential bags, no `Any` escape hatches in the core pipeline.
 
-**Resilience is not optional.** Retry with backoff, circuit breakers, rate limiting, hedged requests, and bulkhead isolation are composable building blocks in `nebula-resilience`. Every pattern returns `CallError<E>` with enough context to decide what to do next. These aren't wrappers around another library &mdash; they're purpose-built, audited (153 tests, 14 integration tests, 7 benchmark suites), and designed for the engine's concurrency model.
+**Resilience is built in, not bolted on.** Retry with backoff, circuit breakers, rate limiting, hedged requests, and bulkhead isolation are composable building blocks in `nebula-resilience`. Every pattern returns a typed error with enough context to decide what to do next. Purpose-built for the engine's concurrency model.
 
-**Modularity is a hard requirement.** The workspace follows one-way layer dependencies with selected checks enforced by `cargo deny` in CI and the rest enforced in review. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`. You can embed `nebula-resilience` in a project that has nothing to do with workflows.
+**Modularity is a hard constraint.** The workspace enforces strict one-way layer dependencies via `cargo deny` in CI. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`; you can embed `nebula-resilience` in a project that has nothing to do with workflows.
 
 ## Design Principles
 
@@ -60,7 +59,7 @@ While strict Rust typing is enforced at the boundaries (inside Actions and Crede
 
 ## Crate Map
 
-Source of truth: workspace members in `Cargo.toml`, status in [`docs/MATURITY.md`](docs/MATURITY.md).
+Source of truth: workspace members in `Cargo.toml`.
 
 | Layer             | Crate           | Purpose                                                                              |
 | ----------------- | --------------- | ------------------------------------------------------------------------------------ |
@@ -90,13 +89,6 @@ Source of truth: workspace members in `Cargo.toml`, status in [`docs/MATURITY.md
 |                   | `metrics`       | `nebula_*` naming, cardinality allowlist, Prometheus export                          |
 |                   | `system`        | Process monitoring, system load tracking                                             |
 
-### Apps
-
-- `apps/cli` — `nebula` CLI (in-process one-shot runs, includes optional `--tui` viewer).
-- `apps/desktop` — Tauri + React reference shell (not a release artefact).
-
-A production composition root (`apps/server`) for the `mode-self-hosted` deployment shape (ADR-0013) is tracked as ADR-0008 follow-up; the SaaS frontend will land alongside it.
-
 ## Credential System
 
 The credential subsystem is one of Nebula's most developed areas. Highlights:
@@ -125,7 +117,6 @@ Requires **Rust 1.95+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) 
 task db:up          # Start Postgres via Docker Compose
 task db:migrate     # Run pending migrations
 task obs:up         # Start Jaeger + OTEL collector
-task desktop:dev    # Launch Tauri desktop app in dev mode
 ```
 
 ### CI Locally
@@ -143,25 +134,11 @@ lefthook install
 
 This enables local hooks from `lefthook.yml`: fast checks on `pre-commit` and full `nextest` on `pre-push`.
 
-## Documentation
-
-| Doc                                                        | Description                                                                       |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| [docs/PRODUCT_CANON.md](docs/PRODUCT_CANON.md)             | Normative core — pillars, golden path, contracts, non-negotiable invariants       |
-| [docs/MATURITY.md](docs/MATURITY.md)                       | Per-crate stability dashboard (`stable` / `frontier` / `partial` / `planned`)     |
-| [docs/STYLE.md](docs/STYLE.md)                             | Rust idioms, naming, error taxonomy                                               |
-| [docs/INTEGRATION_MODEL.md](docs/INTEGRATION_MODEL.md)     | Integration model: Action / Credential / Resource / Schema / Plugin               |
-| [docs/adr/](docs/adr/)                                     | Architectural decision records (numbered, immutable once accepted)                |
-| [CLAUDE.md](CLAUDE.md)                                     | Coding-agent operational guidance + canonical commands                            |
-| [CONTRIBUTING.md](CONTRIBUTING.md)                         | Setup and contribution flow                                                       |
-| [docs/plans/](docs/plans/)                                 | Active implementation plans and archive                                           |
-
-
 ## Status
 
-Nebula is in **active alpha development**. The core layer, credential system, resilience patterns, parameter system, and error infrastructure are stable and well-tested. The execution engine, runtime, and API layer are being wired together. The desktop app (Tauri) is in early development.
+Nebula is in **active alpha development**. The core layer, credential system, resilience patterns, schema system, and error infrastructure are stable and well-tested. The execution engine, runtime, and API layer are actively being wired together.
 
-This is not production-ready yet. APIs will change. But the foundation is solid, and the direction is clear.
+APIs will change. Not production-ready yet. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved.
 
 ## License
 
