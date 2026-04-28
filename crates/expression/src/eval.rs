@@ -2,10 +2,8 @@
 //!
 //! This module implements the evaluation of parsed expression ASTs.
 
-#[cfg(feature = "regex")]
 use std::sync::Arc;
 
-#[cfg(feature = "regex")]
 #[cfg(feature = "regex")]
 use regex::Regex;
 use serde_json::{Number, Value};
