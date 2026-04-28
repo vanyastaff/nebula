@@ -593,18 +593,20 @@ Ok(ActionResult::Continue {
 
 ### Error Recovery
 
+The engine does not retry nodes — classify each failure as either
+**retryable** or **fatal** so an in-action `nebula_resilience::ResiliencePipeline`
+composed around the outbound call can take the retry decision via
+`Classify::is_retryable()`. Marking permanent failures as retryable
+will cause the pipeline to spin until its retry budget exhausts.
+
 ```rust
-// For transient failures, wrap the outbound call with
-// `nebula_resilience::ResiliencePipeline` so retry/timeout/circuit-breaker
-// kick in *inside* the action — the engine itself does not retry nodes.
 match operation().await {
     Ok(data) => Ok(ActionResult::Success(data)),
-    Err(e) if e.is_not_found() => {
-        Ok(ActionResult::Skip {
-            reason: format!("Resource not found: {e}"),
-        })
-    },
-    Err(e) => Err(ActionError::retryable(e.to_string())),
+    Err(e) if e.is_not_found() => Ok(ActionResult::Skip {
+        reason: format!("Resource not found: {e}"),
+    }),
+    Err(e) if e.is_transient() => Err(ActionError::retryable(e.to_string())),
+    Err(e) => Err(ActionError::fatal(e.to_string())),
 }
 ```
 
