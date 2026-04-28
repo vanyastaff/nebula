@@ -124,7 +124,6 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 
 | Gap | Location | Canon impact |
 |---|---|---|
-| Downstream-edge gate blocks only **local** edges, not the full graph | `src/engine.rs:1808` | §10 conditional-flow gate is narrower than advertised |
 | `ExecutionBudget` moved to `nebula-execution` — import cleanup pending | `src/engine.rs` | documentation / import hygiene |
 
 ### Recently closed debts (ROADMAP §M0)
@@ -134,6 +133,14 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 | `ExecutionBudget` not persisted in `ExecutionState` — budget lost on resume | issue #289 | `set_budget` at `state.rs:218`; restored at `engine.rs:1433-1444`; tests `resume_restores_persisted_budget` and `resume_falls_back_to_default_budget_on_legacy_state` |
 | Original workflow input not persisted — resume could not replay from input | issue #311 | `set_workflow_input` at `state.rs:206`; restored at `engine.rs:1487-1497`; test `resume_restores_original_workflow_input` |
 | `ActionResult::Terminate` not propagated to `ExecutionTerminationReason::ExplicitStop` / `ExplicitFail` — execution audit lost intent vs system-driven termination | ROADMAP §M0.3 | `set_terminated_by` at `state.rs:240`; engine wiring at `engine.rs:1986-area`; `determine_final_status` priority ladder at `engine.rs:3590`; surfaced via `ExecutionResult.termination_reason` and `ExecutionEvent::ExecutionFinished.termination_reason` |
+
+### Recently closed debts (ROADMAP §M1)
+
+| Closed debt | Closed by | Verification |
+|---|---|---|
+| Skip-propagation correctness on non-trivial topologies (multi-hop chain, diamond, mixed-source aggregate, all-sources-skipped, sibling activation) was undocumented and untested — `propagate_skip` recursion was not exercised beyond a single linear-3-node test | ROADMAP §M1.1 | 5 integration tests at `crates/engine/tests/integration.rs` (`skip_propagates_transitively_through_three_hop_chain`, `diamond_with_one_skipped_branch_still_completes`, `aggregate_with_one_skipped_source_fires`, `aggregate_with_all_sources_skipped_propagates_skip`, `multi_hop_skip_with_sibling_activation_still_runs`); all green |
+| Dead `WorkflowEngine.expression_engine` field with misleading `#[expect(dead_code)]` reason ("wired up... but not yet called at runtime"). Spec 28 §2.2 already settled conditional routing via `ControlAction` nodes — no engine-level edge expression to evaluate; the shared `Arc<ExpressionEngine>` lives in `ParamResolver` (the only consumer) | ROADMAP §M1.2 | Field removed at `engine.rs:125-130`; struct init at `engine.rs:262` no longer clones; `cargo clippy --workspace --all-targets -- -D warnings` green |
+| Stale Public API listing in `crates/workflow/README.md` advertising removed types (`EdgeCondition`, `ErrorMatcher`, `ResultMatcher`); 880-line `crates/workflow/docs/Architecture.md` pre-Spec-28 planning doc with no stale-marker | ROADMAP §M1.3 | `workflow/README.md` rewritten to describe `Connection` as a pure wire; `Architecture.md` frontmatter status changed to `stale-pre-spec-28` with drift table at top |
 
 ### Architecture notes
 

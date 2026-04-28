@@ -196,6 +196,34 @@ impl StatelessAction for CounterHandler {
     }
 }
 
+/// Returns `ActionResult::Skip` — exercises the engine's `propagate_skip`
+/// recursive ladder. A skipped node's outgoing edges do not activate (per
+/// `evaluate_edge`), so successors with no other active source are
+/// transitively skipped.
+struct SkipHandler {
+    meta: ActionMetadata,
+}
+
+impl DeclaresDependencies for SkipHandler {}
+impl Action for SkipHandler {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatelessAction for SkipHandler {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        _input: Self::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        Ok(ActionResult::skip("test skip"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -772,5 +800,356 @@ async fn disabled_node_is_skipped_and_successor_executes() {
         result.node_output(&c),
         Some(&serde_json::json!(null)),
         "C should execute after B is skipped, receiving null (B produced no output)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Skip-propagation regression tests (ROADMAP §M1.1)
+//
+// Pin behaviour of `engine::propagate_skip` — the recursive ladder that
+// walks the graph when a node returns `ActionResult::Skip` (or any
+// non-activating result) and transitively marks unreachable successors as
+// Skipped. The pre-existing `disabled_node_is_skipped_and_successor_executes`
+// covers the disabled-node BYPASS (which activates outgoing edges with null
+// and is a different code path); these tests cover the propagate_skip ladder
+// triggered by non-activating `ActionResult` variants.
+// ---------------------------------------------------------------------------
+
+/// Three-hop chain A → B → C → D where B returns `ActionResult::Skip`.
+///
+/// Expected: A=Completed, B=Skipped, C=Skipped (one hop transitive), D=Skipped
+/// (two hops transitive). Verifies the recursive `propagate_skip` walk via
+/// `resolved == required && activated == 0` reaches the full chain, not just
+/// the direct successor.
+#[tokio::test]
+async fn skip_propagates_transitively_through_three_hop_chain() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
+    let d = node_key!("d");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+        ],
+        vec![
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(b.clone(), c.clone()),
+            Connection::new(c.clone(), d.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_success(),
+        "workflow should succeed even when middle node skips"
+    );
+    assert_eq!(
+        result.node_output(&a),
+        Some(&serde_json::json!("hi")),
+        "A should execute normally"
+    );
+    assert!(
+        result.node_output(&b).is_none() && !result.node_errors.contains_key(&b),
+        "B returned Skip — no output, no error"
+    );
+    assert!(
+        result.node_output(&c).is_none() && !result.node_errors.contains_key(&c),
+        "C transitively skipped (one hop from B)"
+    );
+    assert!(
+        result.node_output(&d).is_none() && !result.node_errors.contains_key(&d),
+        "D transitively skipped (two hops from B)"
+    );
+}
+
+/// Diamond pattern: A → {B, C} → D, where B returns Skip and C echoes.
+///
+/// Expected: D fires because at least one input edge (from C) activated —
+/// resolved=2, required=2, activated=1. Verifies that `propagate_skip` does
+/// NOT block a node that has any active source.
+#[tokio::test]
+async fn diamond_with_one_skipped_branch_still_completes() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
+    let d = node_key!("d");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+        ],
+        vec![
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(a.clone(), c.clone()),
+            Connection::new(b.clone(), d.clone()),
+            Connection::new(c.clone(), d.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(result.node_output(&a).is_some(), "A executed");
+    assert!(
+        result.node_output(&b).is_none() && !result.node_errors.contains_key(&b),
+        "B skipped"
+    );
+    assert!(
+        result.node_output(&c).is_some(),
+        "C executed via the active branch"
+    );
+    assert!(
+        result.node_output(&d).is_some(),
+        "D fires because at least one input edge (from C) activated"
+    );
+}
+
+/// Mixed-source aggregate: X(skip) and Y(echo) both feed Z. Z has resolved=2,
+/// required=2, activated=1 → fires.
+#[tokio::test]
+async fn aggregate_with_one_skipped_source_fires() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let x = node_key!("x");
+    let y = node_key!("y");
+    let z = node_key!("z");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "echo").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+        ],
+        vec![
+            Connection::new(x.clone(), z.clone()),
+            Connection::new(y.clone(), z.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!(42), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&x).is_none() && !result.node_errors.contains_key(&x),
+        "X skipped"
+    );
+    assert!(result.node_output(&y).is_some(), "Y executed");
+    assert!(
+        result.node_output(&z).is_some(),
+        "Z fires because Y's edge activates (1 of 2 sources)"
+    );
+}
+
+/// All-sources-skipped aggregate: X(skip) and Y(skip) both feed Z. Z has
+/// resolved=2, required=2, activated=0 → propagate_skip(Z) recurs from
+/// the second arrival (whichever Skip-node's edge resolution fills the
+/// counter last).
+#[tokio::test]
+async fn aggregate_with_all_sources_skipped_propagates_skip() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let x = node_key!("x");
+    let y = node_key!("y");
+    let z = node_key!("z");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
+            NodeDefinition::new(y.clone(), "Y", "skip").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+        ],
+        vec![
+            Connection::new(x.clone(), z.clone()),
+            Connection::new(y.clone(), z.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!(0), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&x).is_none() && !result.node_errors.contains_key(&x),
+        "X skipped"
+    );
+    assert!(
+        result.node_output(&y).is_none() && !result.node_errors.contains_key(&y),
+        "Y skipped"
+    );
+    assert!(
+        result.node_output(&z).is_none() && !result.node_errors.contains_key(&z),
+        "Z transitively skipped — no source activated"
+    );
+}
+
+/// Multi-hop skip with sibling activation:
+///
+/// ```text
+///     A ──► B(skip) ──► C ──► D
+///                             ▲
+///     Sib ────────────────────┘
+/// ```
+///
+/// The A→B→C path dies at B's Skip and propagates to C; the Sib→D edge gives
+/// D a sibling source. Expected: A=Completed, B=Skipped, C=Skipped (transitive),
+/// Sib=Completed, D=Completed (D fires because Sib's edge activated). Pins
+/// the interaction between propagate_skip from one branch and an active
+/// sibling source feeding the same downstream join.
+#[tokio::test]
+async fn multi_hop_skip_with_sibling_activation_still_runs() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
+    let d = node_key!("d");
+    let sib = node_key!("sib");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
+            NodeDefinition::new(sib.clone(), "Sib", "echo").unwrap(),
+        ],
+        vec![
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(b.clone(), c.clone()),
+            Connection::new(c.clone(), d.clone()),
+            Connection::new(sib.clone(), d.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!("hi"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(result.node_output(&a).is_some(), "A executed");
+    assert!(
+        result.node_output(&b).is_none() && !result.node_errors.contains_key(&b),
+        "B skipped"
+    );
+    assert!(
+        result.node_output(&c).is_none() && !result.node_errors.contains_key(&c),
+        "C transitively skipped from B"
+    );
+    assert!(result.node_output(&sib).is_some(), "sibling root executed");
+    assert!(
+        result.node_output(&d).is_some(),
+        "D fires via sibling's edge despite the A→B→C branch skipping"
+    );
+}
+
+/// Duplicate edges from the same skipped source: `X(skip)` has two parallel
+/// `Connection` edges into `Z`. Locks the per-edge counter invariant
+/// documented inline at `propagate_skip`'s edge loop ("Increment per-edge
+/// count (not per-source) so that multiple edges from the same skipped
+/// source to the same target are each counted").
+///
+/// Expected: `Z` has `required = 2` (two incoming edges, even though only
+/// one source). `X`'s single Skip resolves both edges via the per-edge loop;
+/// resolved=2, required=2, activated=0 → `propagate_skip(Z)`. A regression
+/// that switched to per-source counting would leave `Z` with resolved=1
+/// forever, hanging or never skipping.
+#[tokio::test]
+async fn duplicate_edges_from_skipped_source_count_per_edge() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let x = node_key!("x");
+    let z = node_key!("z");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+        ],
+        vec![
+            // Two parallel edges from the same skipped source to the same target.
+            Connection::new(x.clone(), z.clone()),
+            Connection::new(x.clone(), z.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!("in"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&x).is_none() && !result.node_errors.contains_key(&x),
+        "X skipped"
+    );
+    assert!(
+        result.node_output(&z).is_none() && !result.node_errors.contains_key(&z),
+        "Z transitively skipped — both duplicate edges from X resolved without activating"
     );
 }

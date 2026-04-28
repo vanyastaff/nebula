@@ -122,12 +122,6 @@ pub struct WorkflowEngine {
     plugin_registry: PluginRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
-    /// Expression engine for evaluating edge conditions.
-    #[expect(
-        dead_code,
-        reason = "field reserved for expression-based edge condition evaluation; wired up in construction but not yet called at runtime"
-    )]
-    expression_engine: Arc<ExpressionEngine>,
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
     /// Optional execution repository for persistent state storage.
@@ -265,8 +259,7 @@ impl WorkflowEngine {
             runtime,
             metrics,
             plugin_registry: PluginRegistry::new(),
-            resolver: ParamResolver::new(expression_engine.clone()),
-            expression_engine,
+            resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
             execution_repo: None,
             workflow_repo: None,
@@ -3214,14 +3207,16 @@ fn process_outgoing_edges(
 /// Port-driven routing (spec 28 §2.2): the engine matches the edge's
 /// effective source port (`from_port`, defaulting to `"main"`) against the
 /// port the upstream `ActionResult` produced on. There is no "edge
-/// condition" — conditionals are carried by explicit control-flow nodes
-/// (`If`, `Switch`, `Router`, `ErrorRouter`) whose own `ActionResult`
-/// decides which port fires.
+/// condition" — conditionals are carried by explicit `ControlAction` nodes
+/// (e.g. `If`, `Switch`, `Router` — the canonical 7 from
+/// `nebula_action::control`) whose own `ActionResult` decides which port
+/// fires.
 ///
 /// Rules:
 /// - `Skip` / `Drop` / `Terminate` → no edges activate on any port.
 /// - Failed node → only edges with `from_port == "error"` activate; action authors wire their
-///   failure path to an `ErrorRouter` or recovery node.
+///   failure path to whichever `ControlAction` fits (typically a `Switch` keyed on error class) or
+///   to a recovery node.
 /// - `Success` → activates edges on `"main"` (or `None`).
 /// - `Branch { selected }` → activates edges whose effective source port equals `selected` (legacy
 ///   alias for `Route`).
@@ -3245,8 +3240,9 @@ fn evaluate_edge(
 
     let effective_port = conn.effective_from_port();
 
-    // Failures route exclusively through the `"error"` port. Downstream must
-    // wire an explicit `ErrorRouter` / recovery node to fan out by error class.
+    // Failures route exclusively through the `"error"` port. Downstream
+    // must wire an explicit `ControlAction` (typically a `Switch` keyed on
+    // error class) or recovery node to fan out by error class.
     if node_failed {
         return effective_port == "error";
     }

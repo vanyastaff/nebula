@@ -1,10 +1,28 @@
 ---
 title: Architecture
-tags: [nebula, nebula-workflow, crate, architecture, dag]
-status: production-ready
+tags: [nebula, nebula-workflow, crate, architecture, dag, stale]
+status: stale-pre-spec-28
 created: 2025-08-17
-updated: 2025-11-09
+updated: 2026-04-28
 ---
+
+> **⚠️ Stale planning document — does NOT reflect shipping code.**
+>
+> This file was authored before Spec 28 §2.2 (port-driven edge routing) and several
+> identifier renames landed. It is preserved as historical context but **must not be
+> used as a current-state reference**. Notable divergences from shipping code:
+>
+> | This document says | Shipping code |
+> |---|---|
+> | `NodeId`, `ActionId` | `NodeKey`, `ActionKey` (`nebula-core`) |
+> | `Edge { from, to, condition: Option<EdgeCondition> }` | `Connection { from_node, to_node, from_port, to_port }` (`src/connection.rs`) |
+> | `EdgeCondition::{Always, Expression, OnResult, OnError}` | Removed; routing is port-driven via `ControlAction` nodes (canonical 7: `If`, `Switch`, `Router`, `Filter`, `NoOp`, `Stop`, `Fail` — shipped downstream, not in this workspace). Error routing happens by wiring the `"error"` port into whichever `ControlAction` fits (no shipped `ErrorRouter` type). |
+> | `WorkflowExecutor` | `WorkflowEngine` lives in `nebula-engine`, not in this crate |
+> | `state.status = ExecutionStatus::Running` (direct mutation) | Versioned CAS via `ExecutionState::transition_node` (issue #255) |
+>
+> **Authoritative current state:** `crates/workflow/src/connection.rs` module doc
+> (port-driven activation contract); `crates/workflow/README.md` (public API list);
+> `crates/engine/README.md` (engine orchestration model).
 
 # Workflow Architecture
 
