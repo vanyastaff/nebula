@@ -13,7 +13,7 @@ use crate::{
     error::ExecutionError,
     idempotency::IdempotencyKey,
     output::NodeOutput,
-    status::ExecutionStatus,
+    status::{ExecutionStatus, ExecutionTerminationReason},
     transition::{validate_execution_transition, validate_node_transition},
 };
 
@@ -168,6 +168,19 @@ pub struct ExecutionState {
     /// warning log so the degradation is visible.
     #[serde(default)]
     pub budget: Option<ExecutionBudget>,
+    /// First explicit termination signal observed during this
+    /// execution. `Some((node_key, reason))` means the named node
+    /// returned `ActionResult::Terminate` and its
+    /// `ExecutionTerminationReason` is the authoritative source of
+    /// the eventual final status (canon §4.5; ROADMAP §M0.3).
+    /// First-write-wins: subsequent terminate signals from racing
+    /// siblings are dropped at `set_terminated_by`.
+    ///
+    /// Legacy persisted states that predate this field deserialize
+    /// as `None`; the engine treats those executions as not having
+    /// received an explicit termination.
+    #[serde(default)]
+    pub terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,
 }
 
 impl ExecutionState {
@@ -195,6 +208,7 @@ impl ExecutionState {
             variables: serde_json::Map::new(),
             workflow_input: None,
             budget: None,
+            terminated_by: None,
         }
     }
 
@@ -217,6 +231,58 @@ impl ExecutionState {
     /// recovery (issue #289).
     pub fn set_budget(&mut self, budget: ExecutionBudget) {
         self.budget = Some(budget);
+    }
+
+    /// Record an explicit termination signal from a node returning
+    /// `ActionResult::Terminate`.
+    ///
+    /// Semantics are first-write-wins. The engine's frontier loop
+    /// holds `&mut ExecutionState` while it consumes node results, so
+    /// no two writers race here at the language level. However the
+    /// loop may still observe several siblings produce `Terminate` in
+    /// the same scheduling round before it tears them down via the
+    /// `cancel_token`. Only the first signal is durable; subsequent
+    /// signals are debug-logged and dropped so the post-mortem audit
+    /// log has a single authoritative source per execution
+    /// (canon §4.5).
+    ///
+    /// On a successful set this method bumps the parent
+    /// [`ExecutionState::version`] and `updated_at` so any
+    /// optimistic-concurrency reader observes the change (issue
+    /// #255). On a duplicate (`Some(_)` already present) it is a
+    /// no-op.
+    ///
+    /// Returns `true` when the signal was recorded, `false` when an
+    /// earlier signal was already in place. The return value is
+    /// load-bearing — `crate::engine` uses it to decide whether to
+    /// signal the `cancel_token` (only on first set).
+    pub fn set_terminated_by(
+        &mut self,
+        node_key: NodeKey,
+        reason: ExecutionTerminationReason,
+    ) -> bool {
+        if self.terminated_by.is_some() {
+            tracing::debug!(
+                target = "execution::state",
+                execution_id = %self.execution_id,
+                already_set_by = ?self.terminated_by.as_ref().map(|(nk, _)| nk),
+                attempted_by = %node_key,
+                attempted_reason = ?reason,
+                "set_terminated_by skipped — already set (first-write-wins)"
+            );
+            return false;
+        }
+        tracing::trace!(
+            target = "execution::state",
+            execution_id = %self.execution_id,
+            %node_key,
+            ?reason,
+            "set_terminated_by"
+        );
+        self.terminated_by = Some((node_key, reason));
+        self.version += 1;
+        self.updated_at = Utc::now();
+        true
     }
 
     /// Get a node's execution state.
@@ -817,5 +883,127 @@ mod tests {
 
         let key = state.idempotency_key_for_node(phantom.clone());
         assert_eq!(key, IdempotencyKey::for_attempt(eid, phantom, 1));
+    }
+
+    /// ROADMAP §M0.3 — `terminated_by` must round-trip through serde
+    /// so a resumed execution sees the same authoritative termination
+    /// signal the original run recorded. Pairs with the runtime
+    /// guarantee that the engine persists `ExecutionState` (including
+    /// this field) via `checkpoint_node` immediately after
+    /// `set_terminated_by`.
+    #[test]
+    fn terminated_by_roundtrip_via_serde() {
+        let (mut state, n1, _n2) = make_state();
+        assert!(state.terminated_by.is_none());
+
+        let was_first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1.clone(),
+                note: Some("done".to_owned()),
+            },
+        );
+        assert!(was_first, "first set_terminated_by must return true");
+
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ExecutionState = serde_json::from_str(&json).unwrap();
+        match back.terminated_by {
+            Some((nk, ExecutionTerminationReason::ExplicitStop { by_node, note })) => {
+                assert_eq!(nk, n1);
+                assert_eq!(by_node, n1);
+                assert_eq!(note.as_deref(), Some("done"));
+            },
+            other => panic!("unexpected terminated_by after roundtrip: {other:?}"),
+        }
+    }
+
+    /// ROADMAP §M0.3 — legacy persisted states that predate
+    /// `terminated_by` must still deserialize so a resumed legacy
+    /// execution does not crash on missing field. Engine then treats
+    /// those as never-explicitly-terminated.
+    #[test]
+    fn terminated_by_missing_field_deserializes_as_none() {
+        let legacy = serde_json::json!({
+            "execution_id": ExecutionId::new(),
+            "workflow_id": WorkflowId::new(),
+            "status": "created",
+            "node_states": {},
+            "version": 0,
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
+            "total_retries": 0,
+            "total_output_bytes": 0,
+        });
+        let state: ExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(state.terminated_by.is_none());
+    }
+
+    /// ROADMAP §M0.3 — first-write-wins. The engine relies on this
+    /// return value to decide whether to signal `cancel_token` (only
+    /// on `true`) so the second signal must NOT replace the first.
+    #[test]
+    fn set_terminated_by_is_first_write_wins() {
+        let (mut state, n1, n2) = make_state();
+
+        let first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1.clone(),
+                note: None,
+            },
+        );
+        assert!(first, "first set must succeed");
+        let v_after_first = state.version;
+
+        let second = state.set_terminated_by(
+            n2.clone(),
+            ExecutionTerminationReason::ExplicitFail {
+                by_node: n2,
+                code: crate::status::ExecutionTerminationCode::new("E_FAIL"),
+                message: "should be ignored".to_owned(),
+            },
+        );
+        assert!(!second, "second set must return false (idempotent)");
+
+        // The original signal must still be the recorded one.
+        match state.terminated_by.as_ref() {
+            Some((
+                nk,
+                ExecutionTerminationReason::ExplicitStop {
+                    by_node,
+                    note: None,
+                },
+            )) => {
+                assert_eq!(nk, &n1);
+                assert_eq!(by_node, &n1);
+            },
+            other => panic!("first signal must remain in place: {other:?}"),
+        }
+        // And the version must NOT have moved on the duplicate path.
+        assert_eq!(
+            state.version, v_after_first,
+            "version must not bump on duplicate set_terminated_by"
+        );
+    }
+
+    /// ROADMAP §M0.3 — successful set bumps `version` and
+    /// `updated_at` so optimistic-concurrency readers observe the
+    /// change (issue #255).
+    #[test]
+    fn set_terminated_by_bumps_version_and_updated_at() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+        let t0 = state.updated_at;
+
+        let was_first = state.set_terminated_by(
+            n1.clone(),
+            ExecutionTerminationReason::ExplicitStop {
+                by_node: n1,
+                note: None,
+            },
+        );
+        assert!(was_first);
+        assert_eq!(state.version, v0 + 1, "version must be bumped on first set");
+        assert!(state.updated_at >= t0, "updated_at must move forward");
     }
 }

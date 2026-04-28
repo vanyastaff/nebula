@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use nebula_core::{NodeKey, id::ExecutionId};
-use nebula_execution::ExecutionStatus;
+use nebula_execution::{ExecutionStatus, status::ExecutionTerminationReason};
 
 /// The final result of a workflow execution.
 #[derive(Debug)]
@@ -18,6 +18,17 @@ pub struct ExecutionResult {
     pub node_errors: HashMap<NodeKey, String>,
     /// Wall-clock duration of the execution.
     pub duration: Duration,
+    /// Engine's attribution for *why* the execution reached its
+    /// final status (canon §4.5; ROADMAP §M0.3). Threaded from
+    /// `determine_final_status` `FinalStatusDecision::termination_reason`
+    /// so downstream consumers (audit, API responses, webhook
+    /// dispatch) can distinguish ExplicitFail from a system-driven
+    /// failure and ExplicitStop from natural completion.
+    ///
+    /// `None` only when the engine cannot attribute the outcome
+    /// (priority-2 path in `determine_final_status` — `failed_node`
+    /// without an explicit `Terminate`).
+    pub termination_reason: Option<ExecutionTerminationReason>,
 }
 
 impl ExecutionResult {
@@ -54,6 +65,7 @@ mod tests {
             node_outputs: HashMap::new(),
             node_errors: HashMap::new(),
             duration: Duration::from_millis(100),
+            termination_reason: None,
         };
         assert!(result.is_success());
         assert!(!result.is_failure());
@@ -67,6 +79,7 @@ mod tests {
             node_outputs: HashMap::new(),
             node_errors: HashMap::new(),
             duration: Duration::from_millis(50),
+            termination_reason: None,
         };
         assert!(result.is_failure());
         assert!(!result.is_success());
@@ -84,6 +97,7 @@ mod tests {
             node_outputs: outputs,
             node_errors: HashMap::new(),
             duration: Duration::from_millis(10),
+            termination_reason: None,
         };
 
         assert_eq!(result.node_output(&node_key), Some(&serde_json::json!(42)));

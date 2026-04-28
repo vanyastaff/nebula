@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_execution::status::ExecutionTerminationReason;
 use nebula_workflow::NodeState;
 
 /// Events emitted during workflow execution.
@@ -75,5 +76,20 @@ pub enum ExecutionEvent {
         success: bool,
         /// Total elapsed time.
         elapsed: Duration,
+        /// Engine's attribution for *why* the execution reached its
+        /// final status (canon §4.5; ROADMAP §M0.3). `None` is
+        /// preserved for legacy in-flight subscribers that consumed
+        /// this event before the field existed; new emitters always
+        /// set `Some(_)` when wired through `determine_final_status`.
+        ///
+        /// - `ExplicitStop` / `ExplicitFail` → a node returned `ActionResult::Terminate`.
+        /// - `Cancelled` → external cancel (API / admin / shutdown).
+        /// - `NaturalCompletion` → frontier drained cleanly.
+        /// - `SystemError` → integrity violation or unmapped reason.
+        ///
+        /// Distinguishes ExplicitFail from a system-driven failure
+        /// (which surfaces with `termination_reason: None`); use
+        /// `success` for the binary outcome.
+        termination_reason: Option<ExecutionTerminationReason>,
     },
 }
