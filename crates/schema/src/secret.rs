@@ -6,16 +6,17 @@
 //! [`SecretBytes::expose`], and an explicit [`SecretWire`] for callers that
 //! must persist plaintext to an already-encrypted channel.
 //!
-//! Architecture: [`ADR-0034`](../../../docs/adr/0034-schema-secret-value-credential-seam.md)
-//! in-repo; design details in
-//! `docs/superpowers/specs/2026-04-16-nebula-schema-phase3-security-design.md`.
+//! KDF cost / salt bounds align with **RFC 9106 §4** ("Recommended values"
+//! for Argon2id at server-side cost). See `MIN_KDF_MEMORY_KIB` /
+//! `MAX_KDF_MEMORY_KIB` (and the matching `*_TIME_COST`, `*_PARALLELISM`,
+//! `*_SALT_BYTES`, `*_OUTPUT_BYTES` constants exported from this module).
 
-use std::{fmt, ops::DerefMut};
+use std::fmt;
 
 use argon2::{Argon2, Params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 /// String returned by JSON helpers when a secret must not be leaked on the wire.
 pub const SECRET_REDACTED: &str = "<redacted>";
@@ -49,10 +50,10 @@ fn decode_salt(salt_hex: &str) -> Result<Vec<u8>, KdfError> {
         ));
     }
     let bytes = hex::decode(s).map_err(KdfError::InvalidSaltHex)?;
-    if !(8..=64).contains(&bytes.len()) {
-        return Err(KdfError::InvalidParams(
-            "KDF salt must decode to 8–64 bytes after hex decode".into(),
-        ));
+    if !(MIN_KDF_SALT_BYTES..=MAX_KDF_SALT_BYTES).contains(&bytes.len()) {
+        return Err(KdfError::InvalidParams(format!(
+            "KDF salt must decode to {MIN_KDF_SALT_BYTES}–{MAX_KDF_SALT_BYTES} bytes after hex decode"
+        )));
     }
     Ok(bytes)
 }
@@ -69,16 +70,32 @@ fn decode_salt(salt_hex: &str) -> Result<Vec<u8>, KdfError> {
 #[serde(tag = "algorithm", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KdfParams {
     /// Argon2id (RFC 9106) using the `argon2` crate.
+    ///
+    /// Cost parameters must satisfy
+    /// `MIN_KDF_MEMORY_KIB ≤ memory_kib ≤ MAX_KDF_MEMORY_KIB`,
+    /// `MIN_KDF_TIME_COST ≤ time_cost ≤ MAX_KDF_TIME_COST`, and
+    /// `MIN_KDF_PARALLELISM ≤ parallelism ≤ MAX_KDF_PARALLELISM`.
+    /// Salt must decode to `MIN_KDF_SALT_BYTES..=MAX_KDF_SALT_BYTES`
+    /// bytes. The optional `output_bytes` may set the derived-key length
+    /// in `MIN_KDF_OUTPUT_BYTES..=MAX_KDF_OUTPUT_BYTES`; default 32.
+    /// Bounds align with RFC 9106 §4 ("Recommended values") for
+    /// interactive Argon2id at server-side cost.
     Argon2id {
-        /// Salt as even-length hex (no `0x`); decoded length 8–32 bytes recommended.
+        /// Salt as even-length hex (no `0x`); RFC 9106 §3.1 recommends
+        /// at least 16 bytes. See [`MIN_KDF_SALT_BYTES`].
         salt_hex: String,
-        /// `m` cost (memory, `KiB`). Must match the Argon2 `Params` range.
+        /// `m` cost (memory, `KiB`). RFC 9106 §4 recommends at least
+        /// 8 MiB (8192 KiB) for interactive use.
         memory_kib: u32,
-        /// `t` cost (iterations).
+        /// `t` cost (iterations). Minimum 1.
         time_cost: u32,
         /// `p` cost (parallelism / lanes). Must be at least 1.
         #[serde(default = "default_p_cost")]
         parallelism: u8,
+        /// Optional length of the derived key in bytes. Defaults to 32.
+        /// Must be within `MIN_KDF_OUTPUT_BYTES..=MAX_KDF_OUTPUT_BYTES`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_bytes: Option<u8>,
     },
 }
 
@@ -88,9 +105,39 @@ const fn default_p_cost() -> u8 {
 
 // Product-level guardrails for resolve-time KDF cost to prevent runaway
 // resource usage from unbounded user-supplied schema parameters.
-const MAX_KDF_MEMORY_KIB: u32 = 256 * 1024;
-const MAX_KDF_TIME_COST: u32 = 10;
-const MAX_KDF_PARALLELISM: u8 = 16;
+//
+// Lower bounds match RFC 9106 §4 ("Recommended values") for interactive
+// Argon2id at server-side cost. Upper bounds cap a single hash to
+// roughly the same envelope as the upstream `argon2` crate's defaults
+// for batch use; multi-tenant deployments that need stricter caps
+// should wrap `KdfParams::hash_password` and reject before invocation.
+
+/// Minimum salt length in bytes (RFC 9106 §3.1).
+pub const MIN_KDF_SALT_BYTES: usize = 16;
+/// Maximum salt length in bytes.
+pub const MAX_KDF_SALT_BYTES: usize = 64;
+
+/// Minimum Argon2id memory cost in KiB (8 MiB, per RFC 9106 §4).
+pub const MIN_KDF_MEMORY_KIB: u32 = 8 * 1024;
+/// Maximum Argon2id memory cost in KiB (256 MiB).
+pub const MAX_KDF_MEMORY_KIB: u32 = 256 * 1024;
+
+/// Minimum Argon2id iteration count.
+pub const MIN_KDF_TIME_COST: u32 = 1;
+/// Maximum Argon2id iteration count.
+pub const MAX_KDF_TIME_COST: u32 = 10;
+
+/// Minimum Argon2id parallelism (lanes).
+pub const MIN_KDF_PARALLELISM: u8 = 1;
+/// Maximum Argon2id parallelism (lanes).
+pub const MAX_KDF_PARALLELISM: u8 = 16;
+
+/// Minimum derived-key length in bytes.
+pub const MIN_KDF_OUTPUT_BYTES: u8 = 16;
+/// Maximum derived-key length in bytes.
+pub const MAX_KDF_OUTPUT_BYTES: u8 = 64;
+/// Default derived-key length in bytes when `output_bytes` is unset.
+pub const DEFAULT_KDF_OUTPUT_BYTES: u8 = 32;
 
 // ── SecretString / SecretBytes / SecretValue --------------------------------
 
@@ -117,12 +164,25 @@ impl SecretString {
 
     /// Return the raw UTF-8 secret for trusted consumers.
     ///
-    /// Emits a [`tracing::debug!`] line with a caller location to support audits.
+    /// Emits a `tracing::trace!` line with a caller location for diagnostics.
+    /// Enable the `audit-secret-expose` feature to escalate to `tracing::debug!`
+    /// for compliance / audit trails.
     #[inline]
     #[track_caller]
     pub fn expose(&self) -> &str {
         let s = self.0.as_str();
-        tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretString::expose");
+        #[cfg(feature = "audit-secret-expose")]
+        tracing::debug!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretString::expose"
+        );
+        #[cfg(not(feature = "audit-secret-expose"))]
+        tracing::trace!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretString::expose"
+        );
         s
     }
 
@@ -154,10 +214,25 @@ impl Serialize for SecretString {
     }
 }
 
+// `SecretString` deliberately rejects deserialization. Secret material must
+// **never** be reconstructed from wire bytes that the schema layer sees:
+//
+// - Schema definitions (`Field::Secret`) flow over `serde` for catalog / plugin manifests; allowing
+//   `SecretString` here would let a default value or a leaked test fixture round-trip plaintext
+//   through schema storage.
+// - Resolved secret values are always introduced by the resolve pipeline (via `SecretValue::string`
+//   / `KdfParams::hash_password`), not by parsing wire JSON.
+//
+// As a result, `Schema` definitions must NOT contain a `default` for a
+// `Field::Secret`; the lint pass in `crate::lint` enforces this with the
+// `secret.default_forbidden` code (Severity::Error). To populate a secret
+// field, configure it via the credential setup form.
 impl<'de> Deserialize<'de> for SecretString {
     fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         Err(serde::de::Error::custom(
-            "SecretString cannot be constructed from deserializer",
+            "SecretString cannot be constructed from a deserializer — \
+             secret material must originate from the resolve pipeline, \
+             not from wire JSON",
         ))
     }
 }
@@ -181,10 +256,25 @@ impl SecretBytes {
     }
 
     /// Return raw bytes.
+    ///
+    /// Emits a `tracing::trace!` line with a caller location for diagnostics.
+    /// Enable the `audit-secret-expose` feature to escalate to `tracing::debug!`
+    /// for compliance / audit trails.
     #[inline]
     #[track_caller]
     pub fn expose(&self) -> &[u8] {
-        tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretBytes::expose");
+        #[cfg(feature = "audit-secret-expose")]
+        tracing::debug!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretBytes::expose"
+        );
+        #[cfg(not(feature = "audit-secret-expose"))]
+        tracing::trace!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretBytes::expose"
+        );
         &self.0
     }
 
@@ -305,6 +395,7 @@ impl KdfParams {
     ///
     /// Returns [`KdfError`] when parameters are invalid, salt decoding fails, or
     /// hashing fails.
+    #[tracing::instrument(skip_all, fields(algo = "Argon2id"))]
     pub fn hash_password(&self, password: &[u8]) -> Result<SecretValue, KdfError> {
         match self {
             Self::Argon2id {
@@ -312,15 +403,21 @@ impl KdfParams {
                 memory_kib,
                 time_cost,
                 parallelism,
+                output_bytes,
             } => {
-                if *parallelism == 0 {
-                    return Err(KdfError::InvalidParams(
-                        "Argon2 parallelism must be >= 1".into(),
-                    ));
+                if *memory_kib < MIN_KDF_MEMORY_KIB {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 memory_kib must be >= {MIN_KDF_MEMORY_KIB} (RFC 9106 §4)"
+                    )));
                 }
                 if *memory_kib > MAX_KDF_MEMORY_KIB {
                     return Err(KdfError::InvalidParams(format!(
                         "Argon2 memory_kib must be <= {MAX_KDF_MEMORY_KIB}"
+                    )));
+                }
+                if *time_cost < MIN_KDF_TIME_COST {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 time_cost must be >= {MIN_KDF_TIME_COST}"
                     )));
                 }
                 if *time_cost > MAX_KDF_TIME_COST {
@@ -328,13 +425,32 @@ impl KdfParams {
                         "Argon2 time_cost must be <= {MAX_KDF_TIME_COST}"
                     )));
                 }
+                if *parallelism < MIN_KDF_PARALLELISM {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 parallelism must be >= {MIN_KDF_PARALLELISM}"
+                    )));
+                }
                 if *parallelism > MAX_KDF_PARALLELISM {
                     return Err(KdfError::InvalidParams(format!(
                         "Argon2 parallelism must be <= {MAX_KDF_PARALLELISM}"
                     )));
                 }
+                let out_bytes = output_bytes.unwrap_or(DEFAULT_KDF_OUTPUT_BYTES);
+                if !(MIN_KDF_OUTPUT_BYTES..=MAX_KDF_OUTPUT_BYTES).contains(&out_bytes) {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 output_bytes must be in {MIN_KDF_OUTPUT_BYTES}..={MAX_KDF_OUTPUT_BYTES}"
+                    )));
+                }
                 let salt = decode_salt(salt_hex)?;
-                let out_len: usize = 32;
+                let out_len = usize::from(out_bytes);
+                tracing::debug!(
+                    target: "nebula_schema::secret::kdf",
+                    memory_kib = *memory_kib,
+                    time_cost = *time_cost,
+                    parallelism = *parallelism,
+                    out_len,
+                    "running Argon2id"
+                );
                 let params = Params::new(
                     *memory_kib,
                     *time_cost,
@@ -354,11 +470,10 @@ impl KdfParams {
     }
 }
 
-impl Drop for SecretBytes {
-    fn drop(&mut self) {
-        self.0.deref_mut().as_mut_slice().zeroize();
-    }
-}
+// `Zeroizing<Vec<u8>>` already zeroizes the heap buffer via its blanket
+// `Drop` impl — no manual `Drop` needed here. (Symmetric with
+// `SecretString` which relies on `Zeroizing<String>` for the same
+// guarantee.)
 
 #[cfg(test)]
 mod tests {
@@ -390,14 +505,21 @@ mod tests {
         assert_eq!(ser, serde_json::Value::String("616263".into()));
     }
 
+    /// Helper: build a 16-byte hex salt for tests where exact contents
+    /// don't matter.
+    fn test_salt_hex() -> String {
+        "00112233445566778899aabbccddeeff".to_owned()
+    }
+
     #[test]
     fn kdf_invalid_salt_hex_chains_from_hex_error() {
         let kdf = KdfParams::Argon2id {
             // Even length but non-hex characters → `hex::FromHexError`.
-            salt_hex: "gggggggggggggggg".to_owned(),
-            memory_kib: 4096,
+            salt_hex: "gggggggggggggggggggggggggggggggg".to_owned(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
             time_cost: 1,
             parallelism: 1,
+            output_bytes: None,
         };
         let err = kdf.hash_password(b"pw").expect_err("invalid hex");
         let KdfError::InvalidSaltHex(_) = &err else {
@@ -409,12 +531,29 @@ mod tests {
     }
 
     #[test]
-    fn kdf_rejects_excessive_resource_costs() {
+    fn kdf_rejects_short_salt_below_min() {
+        // 8 bytes hex (16 hex chars) — below MIN_KDF_SALT_BYTES (16).
         let kdf = KdfParams::Argon2id {
             salt_hex: "0011223344556677".to_owned(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
+            time_cost: 1,
+            parallelism: 1,
+            output_bytes: None,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject short salt");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+    }
+
+    #[test]
+    fn kdf_rejects_excessive_resource_costs() {
+        let kdf = KdfParams::Argon2id {
+            salt_hex: test_salt_hex(),
             memory_kib: MAX_KDF_MEMORY_KIB + 1,
             time_cost: 1,
             parallelism: 1,
+            output_bytes: None,
         };
         let err = kdf
             .hash_password(b"pw")
@@ -422,10 +561,11 @@ mod tests {
         assert!(matches!(err, KdfError::InvalidParams(_)));
 
         let kdf = KdfParams::Argon2id {
-            salt_hex: "0011223344556677".to_owned(),
-            memory_kib: 4096,
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
             time_cost: MAX_KDF_TIME_COST + 1,
             parallelism: 1,
+            output_bytes: None,
         };
         let err = kdf
             .hash_password(b"pw")
@@ -433,14 +573,84 @@ mod tests {
         assert!(matches!(err, KdfError::InvalidParams(_)));
 
         let kdf = KdfParams::Argon2id {
-            salt_hex: "0011223344556677".to_owned(),
-            memory_kib: 4096,
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
             time_cost: 1,
             parallelism: MAX_KDF_PARALLELISM + 1,
+            output_bytes: None,
         };
         let err = kdf
             .hash_password(b"pw")
             .expect_err("must reject high parallelism");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+    }
+
+    #[test]
+    fn kdf_rejects_subminimum_costs() {
+        // memory_kib below RFC 9106 §4 minimum (8 MiB).
+        let kdf = KdfParams::Argon2id {
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB - 1,
+            time_cost: 1,
+            parallelism: 1,
+            output_bytes: None,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject below-min memory");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+
+        // time_cost = 0 below MIN_KDF_TIME_COST.
+        let kdf = KdfParams::Argon2id {
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
+            time_cost: 0,
+            parallelism: 1,
+            output_bytes: None,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject zero time_cost");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+
+        // parallelism = 0 below MIN_KDF_PARALLELISM.
+        let kdf = KdfParams::Argon2id {
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
+            time_cost: 1,
+            parallelism: 0,
+            output_bytes: None,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject zero parallelism");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+    }
+
+    #[test]
+    fn kdf_rejects_output_bytes_outside_range() {
+        let kdf = KdfParams::Argon2id {
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
+            time_cost: 1,
+            parallelism: 1,
+            output_bytes: Some(MIN_KDF_OUTPUT_BYTES - 1),
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject sub-min output_bytes");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+
+        let kdf = KdfParams::Argon2id {
+            salt_hex: test_salt_hex(),
+            memory_kib: MIN_KDF_MEMORY_KIB,
+            time_cost: 1,
+            parallelism: 1,
+            output_bytes: Some(MAX_KDF_OUTPUT_BYTES + 1),
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject above-max output_bytes");
         assert!(matches!(err, KdfError::InvalidParams(_)));
     }
 }

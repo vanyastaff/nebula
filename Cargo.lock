@@ -3762,7 +3762,6 @@ name = "nebula-schema"
 version = "0.1.0"
 dependencies = [
  "argon2",
- "async-trait",
  "codspeed-criterion-compat",
  "hex",
  "indexmap",

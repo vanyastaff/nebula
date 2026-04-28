@@ -127,18 +127,16 @@ fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
             redact_secrets_in_value_for_loader(&var.field, mv.as_mut());
         },
         (Field::Mode(mode), FieldValue::Object(map)) => {
-            let Ok(mode_selector_key) = FieldKey::new("mode") else {
-                return;
-            };
-            let Ok(payload_key) = FieldKey::new("value") else {
-                return;
-            };
-            let resolved_key = match map.get(&mode_selector_key) {
+            // Reuse the interned `MODE_SELECTOR_KEY` / `MODE_PAYLOAD_KEY` exported by
+            // `validated`; defining them here too would duplicate the `LazyLock` cells.
+            let mode_selector_key = &*crate::validated::MODE_SELECTOR_KEY;
+            let payload_key = &*crate::validated::MODE_PAYLOAD_KEY;
+            let resolved_key = match map.get(mode_selector_key) {
                 Some(FieldValue::Literal(Json::String(mode_key))) => Some(mode_key.clone()),
                 Some(_) => None,
                 None => mode.default_variant.clone(),
             };
-            let Some(mv) = map.get_mut(&payload_key) else {
+            let Some(mv) = map.get_mut(payload_key) else {
                 return;
             };
             let Some(var) = resolved_key
@@ -187,11 +185,10 @@ impl<T: Send + 'static> Clone for Loader<T> {
     }
 }
 
-impl<T: Send + 'static> PartialEq for Loader<T> {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
+// `Loader<T>` intentionally does NOT implement `PartialEq`. Two loaders backed
+// by different closures cannot be compared by value, and a previous "always
+// `true`" impl violated the contract — see the T05 entry of the
+// nebula-schema-quality-fixes plan.
 
 impl<T: Send + 'static> std::fmt::Debug for Loader<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -318,6 +315,12 @@ impl LoaderRegistry {
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
     /// Both errors carry the requesting field's path (from `context.field_key`).
+    #[tracing::instrument(
+        level = "info",
+        target = "nebula_schema::loader",
+        skip(self, context),
+        fields(loader_key = %key, field_key = %context.field_key)
+    )]
     pub async fn load_options(
         &self,
         key: &str,
@@ -325,6 +328,11 @@ impl LoaderRegistry {
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
         let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.option_loaders.get(key) else {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                "option loader not registered"
+            );
             return Err(ValidationError::builder("loader.not_registered")
                 .at(field_path)
                 .message(format!("option loader `{key}` is not registered"))
@@ -332,6 +340,12 @@ impl LoaderRegistry {
                 .build());
         };
         loader.call(context).await.map_err(|e| {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                code = %e.code,
+                "option loader call failed"
+            );
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(&field_path, &e))
                 .message(format!("option loader `{key}` failed: {e}"))
@@ -348,6 +362,12 @@ impl LoaderRegistry {
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
     /// Both errors carry the requesting field's path (from `context.field_key`).
+    #[tracing::instrument(
+        level = "info",
+        target = "nebula_schema::loader",
+        skip(self, context),
+        fields(loader_key = %key, field_key = %context.field_key)
+    )]
     pub async fn load_records(
         &self,
         key: &str,
@@ -355,6 +375,11 @@ impl LoaderRegistry {
     ) -> Result<LoaderResult<Value>, ValidationError> {
         let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.record_loaders.get(key) else {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                "record loader not registered"
+            );
             return Err(ValidationError::builder("loader.not_registered")
                 .at(field_path)
                 .message(format!("record loader `{key}` is not registered"))
@@ -362,6 +387,12 @@ impl LoaderRegistry {
                 .build());
         };
         loader.call(context).await.map_err(|e| {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                code = %e.code,
+                "record loader call failed"
+            );
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(&field_path, &e))
                 .message(format!("record loader `{key}` failed: {e}"))
@@ -378,8 +409,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        Field, FieldValues, Schema, expression::Expression, key::FieldKey, secret::SECRET_REDACTED,
-        value::FieldValue,
+        Field, FieldValues, Schema, expression::Expression, field_key, key::FieldKey,
+        secret::SECRET_REDACTED, value::FieldValue,
     };
 
     fn k(name: &str) -> FieldKey {
@@ -485,9 +516,9 @@ mod tests {
     fn with_secrets_redacted_object_nested_and_non_secret_unchanged() {
         let schema = Schema::builder()
             .add(
-                Field::object("config")
-                    .add(Field::secret("api_key"))
-                    .add(Field::string("label")),
+                Field::object(field_key!("config"))
+                    .add(Field::secret(field_key!("api_key")))
+                    .add(Field::string(field_key!("label"))),
             )
             .build()
             .expect("valid schema");
@@ -514,7 +545,7 @@ mod tests {
     #[test]
     fn with_secrets_redacted_list_of_secrets() {
         let schema = Schema::builder()
-            .add(Field::list("tokens").item(Field::secret("t")))
+            .add(Field::list(field_key!("tokens")).item(Field::secret(field_key!("t"))))
             .build()
             .expect("valid schema");
         let values = FieldValues::from_json(json!({ "tokens": ["a", "b"] })).expect("values");
@@ -533,15 +564,15 @@ mod tests {
     fn with_secrets_redacted_mode_variant_object_with_nested_secret() {
         let schema = Schema::builder()
             .add(
-                Field::mode("auth")
+                Field::mode(field_key!("auth"))
                     .variant(
                         "oauth",
                         "OAuth",
-                        Field::object("creds")
-                            .add(Field::secret("client_secret"))
-                            .add(Field::string("client_id")),
+                        Field::object(field_key!("creds"))
+                            .add(Field::secret(field_key!("client_secret")))
+                            .add(Field::string(field_key!("client_id"))),
                     )
-                    .variant("plain", "Plain", Field::string("name")),
+                    .variant("plain", "Plain", Field::string(field_key!("name"))),
             )
             .build()
             .expect("valid schema");
@@ -584,13 +615,13 @@ mod tests {
     fn with_secrets_redacted_mode_object_without_mode_uses_default_variant() {
         let schema = Schema::builder()
             .add(
-                Field::mode("auth")
+                Field::mode(field_key!("auth"))
                     .variant(
                         "oauth",
                         "OAuth",
-                        Field::object("creds")
-                            .add(Field::secret("client_secret"))
-                            .add(Field::string("client_id")),
+                        Field::object(field_key!("creds"))
+                            .add(Field::secret(field_key!("client_secret")))
+                            .add(Field::string(field_key!("client_id"))),
                     )
                     .default_variant("oauth"),
             )
@@ -626,7 +657,7 @@ mod tests {
     #[test]
     fn with_secrets_redacted_expression_on_secret_is_literal_token() {
         let schema = Schema::builder()
-            .add(Field::secret("api_key"))
+            .add(Field::secret(field_key!("api_key")))
             .build()
             .expect("valid schema");
         let mut values = FieldValues::new();

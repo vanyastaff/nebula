@@ -5,16 +5,15 @@
 //! assertions instead of `main`.
 
 use nebula_schema::{
-    ExpressionAst, ExpressionContext, Field, FieldValues, Schema, ValidationError, field_key,
+    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, Schema, field_key,
 };
 use serde_json::json;
 
 struct Ctx(serde_json::Value);
 
-#[async_trait::async_trait]
 impl ExpressionContext for Ctx {
-    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        Ok(self.0.clone())
+    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        Box::pin(async move { Ok(self.0.clone()) })
     }
 }
 

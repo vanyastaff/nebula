@@ -585,13 +585,18 @@ mod tests {
 
     #[test]
     fn schema_field_change_requires_major_bump() {
-        use nebula_schema::{FieldCollector, Schema};
+        use nebula_schema::{FieldCollector, Schema, field_key};
 
         let prev =
             ActionMetadata::new(action_key!("http.request"), "HTTP", "desc").with_version(1, 0);
         let next = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc")
             .with_version(1, 1)
-            .with_schema(Schema::builder().string("added", |s| s).build().unwrap());
+            .with_schema(
+                Schema::builder()
+                    .string(field_key!("added"), |s| s)
+                    .build()
+                    .unwrap(),
+            );
 
         let err = next.validate_compatibility(&prev).unwrap_err();
         assert_eq!(

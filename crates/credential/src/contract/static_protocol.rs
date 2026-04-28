@@ -17,8 +17,8 @@
 //!
 //!     fn parameters() -> ValidSchema {
 //!         Schema::builder()
-//!             .add(Field::string("host").required())
-//!             .add(Field::integer("port").default(json!(5432)))
+//!             .add(Field::string(field_key!("host")).required())
+//!             .add(Field::integer(field_key!("port")).default(json!(5432)))
 //!             .build()
 //!             .expect("static schema is valid")
 //!     }
@@ -147,7 +147,9 @@ mod tests {
     #[test]
     fn build_produces_scheme_from_valid_parameters() {
         let mut values = FieldValues::new();
-        values.set_raw("token", serde_json::json!("test-token"));
+        values
+            .try_set_raw("token", serde_json::json!("test-token"))
+            .expect("test-only known-good key");
         let token = TestProtocol::build(&values).unwrap();
         let value = token.token().expose_secret().to_owned();
         assert_eq!(value, "test-token");

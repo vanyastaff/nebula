@@ -25,7 +25,7 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    ExpressionAst, ExpressionContext, Field, FieldKey, FieldValue, FieldValues, Schema,
+    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldKey, FieldValue, FieldValues, Schema,
     ValidationError, ValidationReport, field_key,
 };
 use serde_json::json;
@@ -377,21 +377,21 @@ fn emits_expression_parse() {
 
 struct RuntimeFailCtx;
 
-#[async_trait::async_trait]
 impl ExpressionContext for RuntimeFailCtx {
-    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        Err(ValidationError::builder("expression.runtime")
-            .message("forced runtime failure")
-            .build())
+    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        Box::pin(async move {
+            Err(ValidationError::builder("expression.runtime")
+                .message("forced runtime failure")
+                .build())
+        })
     }
 }
 
 struct ConstCtx(serde_json::Value);
 
-#[async_trait::async_trait]
 impl ExpressionContext for ConstCtx {
-    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        Ok(self.0.clone())
+    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        Box::pin(async move { Ok(self.0.clone()) })
     }
 }
 
@@ -511,7 +511,7 @@ fn emits_duplicate_variant() {
 fn emits_schema_index_overflow() {
     let mut builder = Schema::builder();
     for i in 0..(usize::from(u16::MAX) + 2) {
-        builder = builder.add(Field::string(format!("f{i}")));
+        builder = builder.add(Field::string(fk(&format!("f{i}"))));
     }
     let report = builder.build().unwrap_err();
     assert!(has_code(&report, "schema.index_overflow"));
@@ -519,13 +519,46 @@ fn emits_schema_index_overflow() {
 
 #[test]
 fn emits_schema_depth_limit() {
-    let mut leaf = Field::string("leaf").into_field();
+    let mut leaf = Field::string(field_key!("leaf")).into_field();
     for i in 0..usize::from(u8::MAX) {
-        leaf = Field::object(format!("n{i}")).add(leaf).into_field();
+        leaf = Field::object(fk(&format!("n{i}"))).add(leaf).into_field();
     }
 
     let report = Schema::builder().add(leaf).build().unwrap_err();
     assert!(has_code(&report, "schema.depth_limit"));
+}
+
+#[test]
+fn emits_secret_default_forbidden() {
+    // Defaults on Field::Secret hard-code plaintext into the schema and
+    // are blocked by lint at build time.
+    let report = Schema::builder()
+        .add(Field::secret(field_key!("api_key")).default(json!("hardcoded-token")))
+        .build()
+        .unwrap_err();
+    assert!(
+        has_code(&report, "secret.default_forbidden"),
+        "got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_recursion_limit_on_deeply_nested_value_input() {
+    use nebula_schema::value::MAX_VALUE_DEPTH;
+
+    // Nest plain JSON objects 5 levels past MAX_VALUE_DEPTH to trigger the
+    // ingress depth-guard in `FieldValues::from_json`.
+    let mut current = json!({ "leaf": 1 });
+    for _ in 0..usize::from(MAX_VALUE_DEPTH) + 5 {
+        let mut wrapped = serde_json::Map::with_capacity(1);
+        wrapped.insert("n".to_owned(), current);
+        current = serde_json::Value::Object(wrapped);
+    }
+    let payload = json!({ "top": current });
+
+    let err = FieldValues::from_json(payload).expect_err("must reject deep input");
+    assert_eq!(err.code, "recursion_limit", "got: {}", err.message);
 }
 
 #[test]
@@ -548,7 +581,7 @@ fn emits_self_dependency() {
     use nebula_schema::{DynamicField, FieldPath};
 
     let path = FieldPath::parse("deps").unwrap();
-    let field = DynamicField::new("deps")
+    let field = DynamicField::new(field_key!("deps"))
         .loader("my_loader")
         .depends_on(path)
         .into_field();
@@ -652,7 +685,7 @@ fn emits_missing_loader_warning() {
 fn emits_loader_without_dynamic_warning() {
     // A select with a loader key but dynamic=false → loader_without_dynamic.
     use nebula_schema::{Field, SelectField};
-    let mut sf = SelectField::new("s2");
+    let mut sf = SelectField::new(field_key!("s2"));
     sf.dynamic = false;
     sf.loader = Some("my_loader".into());
     let schema = raw_schema(vec![Field::Select(sf)]);
@@ -720,7 +753,7 @@ fn emits_notice_misuse() {
     // NoticeField with required=Always → notice.misuse warning via lint_tree/SchemaBuilder.
     use nebula_schema::{Field, NoticeField, RequiredMode};
 
-    let mut nf = NoticeField::new("n");
+    let mut nf = NoticeField::new(field_key!("n"));
     nf.required = RequiredMode::Always;
     let schema = raw_schema(vec![Field::Notice(nf)]);
     let lint = schema.lint();
@@ -736,7 +769,7 @@ fn emits_notice_missing_description() {
     // NoticeField without description → notice_missing_description warning.
     use nebula_schema::{Field, NoticeField};
 
-    let nf = NoticeField::new("info");
+    let nf = NoticeField::new(field_key!("info"));
     let schema = raw_schema(vec![Field::Notice(nf)]);
     let lint = schema.lint();
     assert!(

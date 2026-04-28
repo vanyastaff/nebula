@@ -457,10 +457,10 @@ mod tests {
 
     impl nebula_schema::HasSchema for AddInput {
         fn schema() -> nebula_schema::ValidSchema {
-            use nebula_schema::{FieldCollector, Schema};
+            use nebula_schema::{FieldCollector, Schema, field_key};
             Schema::builder()
-                .integer("a", |n| n)
-                .integer("b", |n| n)
+                .integer(field_key!("a"), |n| n)
+                .integer(field_key!("b"), |n| n)
                 .build()
                 .expect("AddInput schema is valid")
         }

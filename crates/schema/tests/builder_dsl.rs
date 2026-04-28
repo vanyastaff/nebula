@@ -2,7 +2,7 @@
 
 use nebula_schema::{
     Field, FieldCollector, FieldValues, GroupBuilder, InputHint, RequiredMode, Schema,
-    StringWidget, VisibilityMode,
+    StringWidget, VisibilityMode, field_key,
 };
 use nebula_validator::{Predicate, Rule};
 
@@ -14,7 +14,7 @@ use serde_json::json;
 #[test]
 fn closure_string_produces_equivalent_schema() {
     let via_closure = Schema::builder()
-        .string("name", |s| {
+        .string(field_key!("name"), |s| {
             s.label("Name")
                 .required()
                 .min_length(1)
@@ -26,7 +26,7 @@ fn closure_string_produces_equivalent_schema() {
 
     let via_direct = Schema::builder()
         .add(
-            Field::string("name")
+            Field::string(field_key!("name"))
                 .label("Name")
                 .required()
                 .min_length(1)
@@ -42,7 +42,7 @@ fn closure_string_produces_equivalent_schema() {
 #[test]
 fn closure_number_integer_flag_applied() {
     let schema = Schema::builder()
-        .integer("count", |n| n.min(0_i64).max(100_i64))
+        .integer(field_key!("count"), |n| n.min(0_i64).max(100_i64))
         .build()
         .unwrap();
     match &schema.fields()[0] {
@@ -57,7 +57,7 @@ fn closure_number_integer_flag_applied() {
 #[test]
 fn closure_boolean_chainable() {
     let schema = Schema::builder()
-        .boolean("flag", |b| b.label("Flag").no_expression())
+        .boolean(field_key!("flag"), |b| b.label("Flag").no_expression())
         .build()
         .unwrap();
     match &schema.fields()[0] {
@@ -75,10 +75,10 @@ fn closure_boolean_chainable() {
 #[test]
 fn closure_nested_object_holds_children() {
     let schema = Schema::builder()
-        .object("user", |o| {
+        .object(field_key!("user"), |o| {
             o.label("User")
-                .string("name", nebula_schema::StringBuilder::required)
-                .number("age", |n| n.integer().min(0_i64))
+                .string(field_key!("name"), nebula_schema::StringBuilder::required)
+                .number(field_key!("age"), |n| n.integer().min(0_i64))
         })
         .build()
         .unwrap();
@@ -96,10 +96,10 @@ fn closure_nested_object_holds_children() {
 #[test]
 fn closure_list_item_via_closure() {
     let schema = Schema::builder()
-        .list("tags", |l| {
+        .list(field_key!("tags"), |l| {
             l.min_items(1)
                 .max_items(10)
-                .item_string("entry", |s| s.max_length(32))
+                .item_string(field_key!("entry"), |s| s.max_length(32))
         })
         .build()
         .unwrap();
@@ -121,16 +121,19 @@ fn closure_list_item_via_closure() {
 #[test]
 fn builder_full_example_from_spec() {
     let schema = Schema::builder()
-        .string("url", |s| {
+        .string(field_key!("url"), |s| {
             s.label("URL")
                 .hint(InputHint::Url)
                 .required()
                 .max_length(8192)
         })
-        .integer("timeout", |n| {
+        .integer(field_key!("timeout"), |n| {
             n.label("Timeout (s)").min(1_i64).max(300_i64)
         })
-        .boolean("verbose", nebula_schema::BooleanBuilder::no_expression)
+        .boolean(
+            field_key!("verbose"),
+            nebula_schema::BooleanBuilder::no_expression,
+        )
         .build()
         .unwrap();
 
@@ -145,11 +148,11 @@ fn builder_full_example_from_spec() {
 fn group_propagates_visible_when_to_children() {
     let rule = eq_rule("method", "POST");
     let schema = Schema::builder()
-        .string("method", nebula_schema::StringBuilder::required)
+        .string(field_key!("method"), nebula_schema::StringBuilder::required)
         .group("body_section", |g| {
             g.visible_when(rule.clone())
-                .string("body", |s| s.widget(StringWidget::Multiline))
-                .integer("content_length", |n| n)
+                .string(field_key!("body"), |s| s.widget(StringWidget::Multiline))
+                .integer(field_key!("content_length"), |n| n)
         })
         .build()
         .unwrap();
@@ -180,11 +183,11 @@ fn group_propagates_visible_when_to_children() {
 fn group_propagates_required_when_to_children() {
     let rule = eq_rule("enabled", true);
     let schema = Schema::builder()
-        .boolean("enabled", |b| b)
+        .boolean(field_key!("enabled"), |b| b)
         .group("details", |g| {
             g.required_when(rule.clone())
-                .string("detail_a", |s| s)
-                .string("detail_b", |s| s)
+                .string(field_key!("detail_a"), |s| s)
+                .string(field_key!("detail_b"), |s| s)
         })
         .build()
         .unwrap();
@@ -205,11 +208,11 @@ fn group_composes_existing_child_visible_when() {
     let group_rule = eq_rule("section", "A");
     let child_rule = eq_rule("mode", "advanced");
     let schema = Schema::builder()
-        .string("section", |s| s)
-        .string("mode", |s| s)
+        .string(field_key!("section"), |s| s)
+        .string(field_key!("mode"), |s| s)
         .group("g", |g| {
             g.visible_when(group_rule.clone())
-                .string("x", |s| s.visible_when(child_rule.clone()))
+                .string(field_key!("x"), |s| s.visible_when(child_rule.clone()))
         })
         .build()
         .unwrap();
@@ -239,14 +242,14 @@ fn group_builder_name_accessor() {
 fn group_required_when_composes_with_always_and_never_children() {
     let rule = eq_rule("enabled", true);
     let schema = Schema::builder()
-        .boolean("enabled", |b| b)
+        .boolean(field_key!("enabled"), |b| b)
         // A field declared `.required()` before the group applies its
         // `required_when` must stay `Always` (compose_required's
         // `Always` branch).
         .group("details", |g| {
             g.required_when(rule.clone())
-                .string("always_required", nebula_schema::StringBuilder::required)
-                .string("optional_by_default", |s| s)
+                .string(field_key!("always_required"), nebula_schema::StringBuilder::required)
+                .string(field_key!("optional_by_default"), |s| s)
         })
         .build()
         .unwrap();
@@ -275,8 +278,8 @@ fn group_required_when_composes_with_always_and_never_children() {
 fn group_preserves_explicit_child_group_label() {
     let schema = Schema::builder()
         .group("outer", |g| {
-            g.string("inherits", |s| s)
-                .string("overrides", |s| s.group("inner"))
+            g.string(field_key!("inherits"), |s| s)
+                .string(field_key!("overrides"), |s| s.group("inner"))
         })
         .build()
         .unwrap();

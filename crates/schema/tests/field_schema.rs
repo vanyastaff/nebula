@@ -1,6 +1,6 @@
 use nebula_schema::{
     BooleanWidget, Field, FieldValues, NumberWidget, RequiredMode, Schema, SecretWidget,
-    SelectWidget, StringWidget, Transformer, VisibilityMode,
+    SelectWidget, StringWidget, Transformer, VisibilityMode, field_key,
 };
 use serde_json::json;
 
@@ -11,7 +11,7 @@ fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
 
 #[test]
 fn builds_typed_fields_with_rules() {
-    let field = Field::string("name")
+    let field = Field::string(field_key!("name"))
         .label("Name")
         .required()
         .min_length(2)
@@ -25,14 +25,14 @@ fn builds_typed_fields_with_rules() {
 
 #[test]
 fn supports_select_and_number_builders() {
-    let select = Field::select("mode")
+    let select = Field::select(field_key!("mode"))
         .widget(SelectWidget::Combobox)
         .option("a", "Option A")
         .multiple()
         .searchable()
         .into_field();
 
-    let number = Field::number("retries")
+    let number = Field::number(field_key!("retries"))
         .integer()
         .widget(NumberWidget::Stepper)
         .min(0)
@@ -61,9 +61,13 @@ fn try_field_constructors_accept_valid_keys() {
 #[test]
 fn schema_add_and_find_work() {
     let schema = raw_schema(vec![
-        Field::string("name").widget(StringWidget::Plain).into(),
-        Field::secret("api_key").widget(SecretWidget::Plain).into(),
-        Field::boolean("enabled")
+        Field::string(field_key!("name"))
+            .widget(StringWidget::Plain)
+            .into(),
+        Field::secret(field_key!("api_key"))
+            .widget(SecretWidget::Plain)
+            .into(),
+        Field::boolean(field_key!("enabled"))
             .widget(BooleanWidget::Toggle)
             .into(),
     ]);
@@ -77,8 +81,8 @@ fn schema_add_and_find_work() {
 #[test]
 fn schema_builder_rejects_duplicate_key() {
     let result = Schema::builder()
-        .add(Field::string("name").min_length(2))
-        .add(Field::string("name").min_length(10))
+        .add(Field::string(field_key!("name")).min_length(2))
+        .add(Field::string(field_key!("name")).min_length(10))
         .build();
 
     let err = result.expect_err("duplicate key should cause build to fail");
@@ -88,7 +92,7 @@ fn schema_builder_rejects_duplicate_key() {
 #[test]
 fn serde_roundtrip_field_and_schema() {
     let schema = raw_schema(vec![
-        Field::string("username")
+        Field::string(field_key!("username"))
             .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
             ))
@@ -107,7 +111,7 @@ fn serde_roundtrip_field_and_schema() {
 #[test]
 fn validate_reports_missing_required() {
     let schema = Schema::builder()
-        .add(Field::string("username").required())
+        .add(Field::string(field_key!("username")).required())
         .build()
         .expect("valid schema");
     let values = FieldValues::new();
@@ -122,9 +126,9 @@ fn validate_reports_missing_required() {
 #[test]
 fn validate_applies_visibility_and_rules() {
     let schema = Schema::builder()
-        .add(Field::boolean("enabled").required())
+        .add(Field::boolean(field_key!("enabled")).required())
         .add(
-            Field::string("api_key")
+            Field::string(field_key!("api_key"))
                 .visible_when(nebula_validator::Rule::predicate(
                     nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
                 ))
@@ -135,11 +139,17 @@ fn validate_applies_visibility_and_rules() {
         .expect("valid schema");
 
     let mut values = FieldValues::new();
-    values.set_raw("enabled", json!(false));
+    values
+        .try_set_raw("enabled", json!(false))
+        .expect("test-only known-good key");
     assert!(schema.validate(&values).is_ok());
 
-    values.set_raw("enabled", json!(true));
-    values.set_raw("api_key", json!("abc"));
+    values
+        .try_set_raw("enabled", json!(true))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("api_key", json!("abc"))
+        .expect("test-only known-good key");
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
     assert!(report.errors().any(|e| e.path.to_string() == "api_key"));
@@ -148,15 +158,21 @@ fn validate_applies_visibility_and_rules() {
 #[test]
 fn validate_enforces_scalar_type_mismatches() {
     let schema = Schema::builder()
-        .add(Field::string("name").required())
-        .add(Field::number("retries").required())
-        .add(Field::boolean("enabled").required())
+        .add(Field::string(field_key!("name")).required())
+        .add(Field::number(field_key!("retries")).required())
+        .add(Field::boolean(field_key!("enabled")).required())
         .build()
         .expect("valid schema");
     let mut values = FieldValues::new();
-    values.set_raw("name", json!(123));
-    values.set_raw("retries", json!("bad"));
-    values.set_raw("enabled", json!("true"));
+    values
+        .try_set_raw("name", json!(123))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("retries", json!("bad"))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("enabled", json!("true"))
+        .expect("test-only known-good key");
 
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
@@ -181,14 +197,16 @@ fn validate_enforces_scalar_type_mismatches() {
 fn validate_applies_transformers_before_rules() {
     let schema = Schema::builder()
         .add(
-            Field::string("api_key")
+            Field::string(field_key!("api_key"))
                 .with_transformer(Transformer::Trim)
                 .with_rule(nebula_validator::Rule::max_length(6)),
         )
         .build()
         .expect("valid schema");
     let mut values = FieldValues::new();
-    values.set_raw("api_key", json!("  SECRET  "));
+    values
+        .try_set_raw("api_key", json!("  SECRET  "))
+        .expect("test-only known-good key");
 
     assert!(schema.validate(&values).is_ok());
 }
@@ -196,13 +214,17 @@ fn validate_applies_transformers_before_rules() {
 #[test]
 fn validate_enforces_file_value_shape() {
     let schema = Schema::builder()
-        .add(Field::file("single").required())
-        .add(Field::file("many").multiple().required())
+        .add(Field::file(field_key!("single")).required())
+        .add(Field::file(field_key!("many")).multiple().required())
         .build()
         .expect("valid schema");
     let mut values = FieldValues::new();
-    values.set_raw("single", json!(true));
-    values.set_raw("many", json!(["a.txt", 42]));
+    values
+        .try_set_raw("single", json!(true))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("many", json!(["a.txt", 42]))
+        .expect("test-only known-good key");
 
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
@@ -223,30 +245,42 @@ fn serde_roundtrip_supports_all_field_variants() {
     use nebula_schema::InputHint;
 
     let schema = raw_schema(vec![
-        Field::string("s").into(),
-        Field::secret("sec").into(),
-        Field::number("n").into(),
-        Field::boolean("b").into(),
-        Field::select("sel").option("a", "A").into(),
-        Field::object("obj").add(Field::string("child")).into(),
-        Field::list("list").item(Field::string("item")).into(),
-        Field::mode("mode")
-            .variant("simple", "Simple", Field::string("payload"))
+        Field::string(field_key!("s")).into(),
+        Field::secret(field_key!("sec")).into(),
+        Field::number(field_key!("n")).into(),
+        Field::boolean(field_key!("b")).into(),
+        Field::select(field_key!("sel")).option("a", "A").into(),
+        Field::object(field_key!("obj"))
+            .add(Field::string(field_key!("child")))
             .into(),
-        Field::code("code").into(),
+        Field::list(field_key!("list"))
+            .item(Field::string(field_key!("item")))
+            .into(),
+        Field::mode(field_key!("mode"))
+            .variant("simple", "Simple", Field::string(field_key!("payload")))
+            .into(),
+        Field::code(field_key!("code")).into(),
         // Date/DateTime/Time/Color → StringField with hint (replaces removed variants)
-        Field::string("date").hint(InputHint::Date).into(),
-        Field::string("datetime").hint(InputHint::DateTime).into(),
-        Field::string("time").hint(InputHint::Time).into(),
-        Field::string("color_field").hint(InputHint::Color).into(),
-        Field::file("file").into(),
+        Field::string(field_key!("date"))
+            .hint(InputHint::Date)
+            .into(),
+        Field::string(field_key!("datetime"))
+            .hint(InputHint::DateTime)
+            .into(),
+        Field::string(field_key!("time"))
+            .hint(InputHint::Time)
+            .into(),
+        Field::string(field_key!("color_field"))
+            .hint(InputHint::Color)
+            .into(),
+        Field::file(field_key!("file")).into(),
         // Hidden → visible(Never) on any field
-        Field::string("hidden_field")
+        Field::string(field_key!("hidden_field"))
             .visible(VisibilityMode::Never)
             .into(),
-        Field::computed("computed").into(),
-        Field::dynamic("dynamic").into(),
-        Field::notice("notice").into(),
+        Field::computed(field_key!("computed")).into(),
+        Field::dynamic(field_key!("dynamic")).into(),
+        Field::notice(field_key!("notice")).into(),
     ]);
 
     let encoded = serde_json::to_value(&schema).expect("serialize full variant schema");

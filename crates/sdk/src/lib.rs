@@ -147,7 +147,8 @@ macro_rules! params {
 
         let mut values = FieldValues::new();
         $(
-            values.set_raw($key, json!($value));
+            values.try_set_raw($key, json!($value))
+                .expect("params! macro: invalid FieldKey or nested key");
         )*
         values
     }};

@@ -1,0 +1,11 @@
+# Per-crate clippy config. Inherits the workspace `clippy.toml` defaults at
+# the repo root and adds crate-local rules below.
+
+# Ban `#[async_trait::async_trait]` on this crate. Rust 1.75+ supports
+# `async fn` in traits directly; use the `BoxFuture`-style `EvalFuture`
+# alias for object-safe usage instead. See ARCHITECTURE.md anti-patterns.
+# Lint level is escalated to `deny` via `#![deny(clippy::disallowed_macros)]`
+# in `src/lib.rs`.
+disallowed-macros = [
+  { path = "async_trait::async_trait", reason = "Rust 1.75+ supports `async fn` in traits — use the BoxFuture-style trait pattern documented in ARCHITECTURE.md instead" },
+]

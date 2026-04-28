@@ -8,14 +8,18 @@
 
 use nebula_credential::CredentialMetadata;
 use nebula_metadata::Metadata;
-use nebula_schema::{Field, Schema};
+use nebula_schema::{Field, Schema, field_key};
 
 fn main() {
     // Example 1: GitHub OAuth2 credential type
     let github_schema = Schema::builder()
-        .add(Field::string("client_id").label("Client ID").required())
         .add(
-            Field::secret("client_secret")
+            Field::string(field_key!("client_id"))
+                .label("Client ID")
+                .required(),
+        )
+        .add(
+            Field::secret(field_key!("client_secret"))
                 .label("Client Secret")
                 .required(),
         )
@@ -44,9 +48,17 @@ fn main() {
 
     // Example 2: PostgreSQL database credential type
     let postgres_schema = Schema::builder()
-        .add(Field::string("host").label("Host").required())
-        .add(Field::string("username").label("Username").required())
-        .add(Field::secret("password").label("Password").required())
+        .add(Field::string(field_key!("host")).label("Host").required())
+        .add(
+            Field::string(field_key!("username"))
+                .label("Username")
+                .required(),
+        )
+        .add(
+            Field::secret(field_key!("password"))
+                .label("Password")
+                .required(),
+        )
         .build()
         .expect("postgres schema is always valid");
 
@@ -68,7 +80,11 @@ fn main() {
 
     // Example 3: Simple API Key credential type via the `new` constructor.
     let api_key_schema = Schema::builder()
-        .add(Field::secret("api_key").label("API Key").required())
+        .add(
+            Field::secret(field_key!("api_key"))
+                .label("API Key")
+                .required(),
+        )
         .build()
         .expect("api_key schema is always valid");
 

@@ -124,3 +124,10 @@ warn-unsafe-macro-metavars-in-private-macros = true
 matches-for-let-else = "WellKnownTypes"
 # Encourage re-borrow in `for x in &mut iter` style loops.
 enforce-iter-loop-reborrow = true
+
+# Per-crate clippy configs (`crates/<crate>/clippy.toml`) extend or
+# override these defaults; for example `nebula-schema` declares
+# `disallowed-macros = [{ path = "async_trait::async_trait" }]` in its
+# own clippy.toml + `#![deny(clippy::disallowed_macros)]` in lib.rs to
+# ban the macro on that crate without forcing a workspace-wide migration
+# of legacy `#[async_trait]` users. See ARCHITECTURE.md anti-patterns.

@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use indexmap::IndexMap;
@@ -28,6 +28,16 @@ use crate::{
     secret::SecretValue,
     value::{FieldValue, FieldValues},
 };
+
+/// `Mode` payload uses two well-known nested keys: `"mode"` (variant
+/// selector) and `"value"` (variant payload). Both are interned via
+/// `LazyLock` so per-call `FieldKey::new` does not re-allocate the
+/// `Arc<str>` every time `validate_field` / `resolve_value` /
+/// `promote_secrets_in_value` recurses through a `Field::Mode`.
+pub(crate) static MODE_SELECTOR_KEY: LazyLock<FieldKey> =
+    LazyLock::new(|| FieldKey::new("mode").expect("static mode selector key is valid"));
+pub(crate) static MODE_PAYLOAD_KEY: LazyLock<FieldKey> =
+    LazyLock::new(|| FieldKey::new("value").expect("static mode payload key is valid"));
 
 /// Flags computed once at build time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -310,6 +320,15 @@ impl ValidSchema {
     /// assert!(schema.validate(&full).is_ok());
     /// ```
     #[allow(clippy::result_large_err)]
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_schema::validate",
+        skip(self, values),
+        fields(
+            field_count = self.0.fields.len(),
+            has_root_rules = !self.0.root_rules.is_empty(),
+        )
+    )]
     pub fn validate(&self, values: &FieldValues) -> Result<ValidValues, ValidationReport> {
         use crate::context::RootContext;
 
@@ -324,6 +343,11 @@ impl ValidSchema {
         run_root_rules(&self.0.root_rules, values, &mut report);
 
         if report.has_errors() {
+            tracing::warn!(
+                target: "nebula_schema::validate",
+                error_count = report.errors().count(),
+                "validate produced errors"
+            );
             return Err(report);
         }
 
@@ -411,6 +435,15 @@ impl ValidValues {
     /// Returns `Err(ValidationReport)` when any expression evaluation fails
     /// or when a resolved value violates a field rule.
     #[allow(clippy::result_large_err)]
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_schema::resolve",
+        skip(self, ctx),
+        fields(
+            uses_expressions = self.schema.flags().uses_expressions,
+            field_count = self.schema.fields().len(),
+        )
+    )]
     pub async fn resolve(
         self,
         ctx: &dyn ExpressionContext,
@@ -460,21 +493,45 @@ impl ValidValues {
         // Re-run schema validation on resolved + promoted literals. Any type
         // mismatches at paths produced by expression evaluation are surfaced
         // as `expression.type_mismatch`.
+        //
+        // Fast path: if no expressions were resolved AND the schema doesn't
+        // declare any expression-bearing fields, the values are unchanged
+        // since the prior `validate()` call (the one that produced `self`).
+        // Skip the second walk in that case — it amounts to ~50% of the
+        // wall-clock cost of `resolve()` on schemas without expressions.
         let resolve_warnings: Vec<ValidationError> = report
             .iter()
             .filter(|e| e.severity == Severity::Warning)
             .cloned()
             .collect();
-        let post_resolve_warnings: Vec<ValidationError> = match self.schema.validate(&values) {
-            Ok(post_resolve_valid) => post_resolve_valid.warnings().to_vec(),
-            Err(mut post_resolve_report) => {
-                post_resolve_report.extend(self.warnings.iter().cloned());
-                post_resolve_report.extend(resolve_warnings.iter().cloned());
-                return Err(remap_expression_type_mismatch(
-                    post_resolve_report,
-                    &resolved_expression_paths,
-                ));
-            },
+
+        let skip_revalidate = resolved_expression_paths.is_empty()
+            && !self.schema.flags().uses_expressions
+            && resolve_warnings.is_empty();
+
+        let post_resolve_warnings: Vec<ValidationError> = if skip_revalidate {
+            tracing::trace!(
+                target: "nebula_schema::resolve",
+                "skipping post-resolve revalidate (no expressions / warnings)"
+            );
+            Vec::new()
+        } else {
+            tracing::debug!(
+                target: "nebula_schema::resolve",
+                resolved_expression_paths = resolved_expression_paths.len(),
+                "running post-resolve revalidate"
+            );
+            match self.schema.validate(&values) {
+                Ok(post_resolve_valid) => post_resolve_valid.warnings().to_vec(),
+                Err(mut post_resolve_report) => {
+                    post_resolve_report.extend(self.warnings.iter().cloned());
+                    post_resolve_report.extend(resolve_warnings.iter().cloned());
+                    return Err(remap_expression_type_mismatch(
+                        post_resolve_report,
+                        &resolved_expression_paths,
+                    ));
+                },
+            }
         };
 
         let all_warnings: Arc<[ValidationError]> = self
@@ -657,9 +714,7 @@ fn first_secret_path_in_field_value(value: &FieldValue, path: &FieldPath) -> Opt
             value: Some(payload),
             ..
         } => {
-            let payload_key =
-                FieldKey::new("value").expect("static mode payload key must be valid");
-            let payload_path = path.clone().join(payload_key);
+            let payload_path = path.clone().join((*MODE_PAYLOAD_KEY).clone());
             first_secret_path_in_field_value(payload, &payload_path)
         },
         FieldValue::Literal(_)
@@ -725,32 +780,13 @@ fn promote_secrets_in_value(
             let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
                 return;
             };
-            let k = match FieldKey::new("value") {
-                Ok(k) => k,
-                Err(e) => {
-                    report.push(
-                        ValidationError::builder("invalid_key")
-                            .at(path.clone())
-                            .message(format!(
-                                "invalid static mode payload key `value`: {}",
-                                e.message
-                            ))
-                            .build(),
-                    );
-                    return;
-                },
-            };
-            let p = path.clone().join(k);
+            let p = path.clone().join((*MODE_PAYLOAD_KEY).clone());
             promote_secrets_in_value(&var.field, mv.as_mut(), &p, report);
         },
         (Field::Mode(mode), FieldValue::Object(map)) => {
-            let Ok(mode_selector_key) = FieldKey::new("mode") else {
-                return;
-            };
-            let Ok(payload_key) = FieldKey::new("value") else {
-                return;
-            };
-            let resolved_key = match map.get(&mode_selector_key) {
+            let mode_selector_key = &*MODE_SELECTOR_KEY;
+            let payload_key = &*MODE_PAYLOAD_KEY;
+            let resolved_key = match map.get(mode_selector_key) {
                 Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
                     Some(mode_key.clone())
                 },
@@ -763,10 +799,10 @@ fn promote_secrets_in_value(
             else {
                 return;
             };
-            let Some(mv) = map.get_mut(&payload_key) else {
+            let Some(mv) = map.get_mut(payload_key) else {
                 return;
             };
-            let p = path.clone().join(payload_key);
+            let p = path.clone().join(payload_key.clone());
             promote_secrets_in_value(&var.field, mv, &p, report);
         },
         _ => {},
@@ -852,9 +888,19 @@ fn resolve_value<'v>(
     Box::pin(async move {
         match value {
             FieldValue::Expression(ref expr) => {
+                tracing::debug!(
+                    target: "nebula_schema::resolve",
+                    path = %path,
+                    "evaluating expression"
+                );
                 match expr.parse_at(path) {
                     Ok(ast) => match ctx.evaluate(ast).await {
                         Ok(v) => {
+                            tracing::trace!(
+                                target: "nebula_schema::resolve",
+                                path = %path,
+                                "expression resolved"
+                            );
                             resolved_expression_paths.insert(path.clone());
                             FieldValue::Literal(v)
                         },
@@ -868,11 +914,23 @@ fn resolve_value<'v>(
                                     .message(e.message.clone())
                                     .build();
                             }
+                            tracing::warn!(
+                                target: "nebula_schema::resolve",
+                                path = %path,
+                                code = %e.code,
+                                "expression evaluation failed"
+                            );
                             report.push(e);
                             FieldValue::Literal(serde_json::Value::Null)
                         },
                     },
                     Err(e) => {
+                        tracing::warn!(
+                            target: "nebula_schema::resolve",
+                            path = %path,
+                            code = %e.code,
+                            "expression parse failed at resolve"
+                        );
                         report.push(e);
                         FieldValue::Literal(serde_json::Value::Null)
                     },
@@ -900,13 +958,7 @@ fn resolve_value<'v>(
             },
             FieldValue::Mode { mode, value } => {
                 let resolved_value = if let Some(inner) = value {
-                    let Ok(payload_key) = FieldKey::new("value") else {
-                        return FieldValue::Mode {
-                            mode,
-                            value: Some(inner),
-                        };
-                    };
-                    let inner_path = path.clone().join(payload_key);
+                    let inner_path = path.clone().join((*MODE_PAYLOAD_KEY).clone());
                     let resolved =
                         resolve_value(*inner, ctx, &inner_path, report, resolved_expression_paths)
                             .await;
@@ -1375,10 +1427,8 @@ fn validate_literal_value(
             rules,
             ..
         }) => {
-            let mode_selector_key =
-                FieldKey::new("mode").expect("static mode selector key must remain valid");
-            let payload_key =
-                FieldKey::new("value").expect("static mode payload key must remain valid");
+            let mode_selector_key = &*MODE_SELECTOR_KEY;
+            let payload_key = &*MODE_PAYLOAD_KEY;
 
             let (resolved_key, mode_value) = match value {
                 FieldValue::Mode {
@@ -1401,9 +1451,9 @@ fn validate_literal_value(
                         return;
                     }
 
-                    match map.get(&mode_selector_key) {
+                    match map.get(mode_selector_key) {
                         Some(FieldValue::Literal(serde_json::Value::String(mode))) => {
-                            (Some(mode.as_str()), map.get(&payload_key))
+                            (Some(mode.as_str()), map.get(payload_key))
                         },
                         Some(other) => {
                             report.push(
@@ -1417,7 +1467,7 @@ fn validate_literal_value(
                             );
                             return;
                         },
-                        None => (None, map.get(&payload_key)),
+                        None => (None, map.get(payload_key)),
                     }
                 },
                 _ => {
@@ -1456,7 +1506,7 @@ fn validate_literal_value(
                 return;
             };
             {
-                let payload_path = path.clone().join(payload_key);
+                let payload_path = path.clone().join(payload_key.clone());
                 validate_field(&variant.field, mode_value, ctx, &payload_path, report);
             }
         },
@@ -1528,10 +1578,12 @@ fn validate_literal_value(
 fn first_duplicate_index(values: impl IntoIterator<Item = serde_json::Value>) -> Option<usize> {
     let mut seen: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     for (idx, value) in values.into_iter().enumerate() {
-        // serde_json::Value does not implement Hash. Bucket by serialized form,
-        // then confirm equality within the bucket to preserve exact semantics.
+        // serde_json::Value does not implement Hash. Bucket by canonical
+        // string form (`serde_json::to_string` is infallible for `Value`
+        // because all map keys are strings), then confirm equality within
+        // the bucket to preserve exact semantics.
         let key = serde_json::to_string(&value)
-            .unwrap_or_else(|_| format!("__fallback_non_serializable__:{value:?}"));
+            .expect("serde_json::Value::to_string is infallible for valid JSON");
         if let Some(bucket) = seen.get_mut(&key) {
             if bucket.iter().any(|prior| prior == &value) {
                 return Some(idx);
@@ -1702,7 +1754,7 @@ fn push_validator_rule_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Field, FieldKey, Schema};
+    use crate::{Field, FieldKey, Schema, field_key};
 
     #[test]
     fn clone_is_cheap_via_arc() {
@@ -1727,11 +1779,14 @@ mod tests {
     #[test]
     fn find_by_path_handles_nested_object_and_mode_variant() {
         let schema = Schema::builder()
-            .add(Field::object(FieldKey::new("user").unwrap()).add(Field::string("email")))
+            .add(
+                Field::object(FieldKey::new("user").unwrap())
+                    .add(Field::string(field_key!("email"))),
+            )
             .add(Field::mode(FieldKey::new("auth").unwrap()).variant(
                 "token",
                 "Token",
-                Field::string("value"),
+                Field::string(field_key!("value")),
             ))
             .build()
             .unwrap();

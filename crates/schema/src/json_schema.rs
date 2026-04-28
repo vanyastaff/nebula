@@ -69,6 +69,15 @@ impl crate::validated::ValidSchema {
     ///
     /// Returns [`JsonSchemaExportError`] when root rules cannot be serialized or
     /// when the generated JSON value cannot be converted to `schemars::Schema`.
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_schema::json_schema",
+        skip(self),
+        fields(
+            field_count = self.fields().len(),
+            root_rule_count = self.root_rules().len(),
+        )
+    )]
     pub fn json_schema(&self) -> Result<schemars::Schema, JsonSchemaExportError> {
         schema_for_fields(self.fields(), self.root_rules())
     }
@@ -387,11 +396,24 @@ fn apply_value_rules(schema: &mut Map<String, Value>, rules: &[nebula_validator:
     }
 }
 
-fn apply_expression_mode(mut core: Map<String, Value>, mode: ExpressionMode) -> Map<String, Value> {
-    let mut out = Map::new();
+fn apply_expression_mode(core: Map<String, Value>, mode: ExpressionMode) -> Map<String, Value> {
+    // The `x-nebula-resolved-value-schema` extension is always emitted (regardless
+    // of expression mode) so that UI / downstream consumers have a stable shape:
+    // they can read the post-resolution value schema without branching on mode.
     match mode {
-        ExpressionMode::Forbidden => core,
+        ExpressionMode::Forbidden => {
+            // No expression wrapper — the JSON-Schema-Draft 2020-12 part IS the
+            // resolved-value schema; expose both as the same map so consumers
+            // can rely on the extension key being present.
+            let mut out = core.clone();
+            out.insert(
+                "x-nebula-resolved-value-schema".to_owned(),
+                Value::Object(core),
+            );
+            out
+        },
         ExpressionMode::Allowed => {
+            let mut out = Map::new();
             out.insert(
                 "anyOf".to_owned(),
                 Value::Array(vec![
@@ -401,7 +423,7 @@ fn apply_expression_mode(mut core: Map<String, Value>, mode: ExpressionMode) -> 
             );
             out.insert(
                 "x-nebula-resolved-value-schema".to_owned(),
-                Value::Object(core.clone()),
+                Value::Object(core),
             );
             out
         },
@@ -409,7 +431,7 @@ fn apply_expression_mode(mut core: Map<String, Value>, mode: ExpressionMode) -> 
             let mut wrapper = expression_wrapper_schema();
             wrapper.insert(
                 "x-nebula-resolved-value-schema".to_owned(),
-                Value::Object(std::mem::take(&mut core)),
+                Value::Object(core),
             );
             wrapper
         },
@@ -679,6 +701,29 @@ mod tests {
         assert_eq!(
             json["properties"]["total"]["x-nebula-resolved-value-schema"]["type"],
             json!("number")
+        );
+    }
+
+    /// Regression: every property must carry `x-nebula-resolved-value-schema`,
+    /// regardless of the field's ExpressionMode. Boolean fields default to
+    /// Forbidden — they used to omit the extension key.
+    #[test]
+    fn resolved_value_schema_extension_is_emitted_for_forbidden_mode() {
+        let schema = Schema::builder()
+            .add(Field::boolean(FieldKey::new("flag").expect("static key")))
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+
+        assert_eq!(
+            json["properties"]["flag"]["x-nebula-expression-mode"],
+            json!("forbidden")
+        );
+        assert_eq!(
+            json["properties"]["flag"]["x-nebula-resolved-value-schema"]["type"],
+            json!("boolean"),
+            "Forbidden-mode fields must still expose x-nebula-resolved-value-schema"
         );
     }
 }

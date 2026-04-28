@@ -1,8 +1,19 @@
 //! Expression value wrapper — lazy parse via OnceLock.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 
 use crate::{error::ValidationError, path::FieldPath};
+
+/// Boxed future returned by [`ExpressionContext::evaluate`].
+///
+/// Stored as a type alias so impls can write `Box::pin(async move { … })`
+/// without spelling out the full `Pin<Box<dyn Future …>>` shape.
+pub type EvalFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<serde_json::Value, ValidationError>> + Send + 'a>>;
 
 /// Minimal contract required to evaluate an expression at runtime.
 ///
@@ -10,29 +21,30 @@ use crate::{error::ValidationError, path::FieldPath};
 /// expression engine. The real evaluator lives in `nebula-expression`;
 /// this trait is the integration seam so Phase 1 tests can use a stub.
 ///
+/// The trait is dyn-safe: callers receive `&dyn ExpressionContext` from
+/// [`ValidValues::resolve`](crate::ValidValues::resolve). The `evaluate`
+/// method intentionally returns a [`EvalFuture`] (boxed future) instead of
+/// using `async fn` so the trait stays object-safe under Rust 1.95 / edition
+/// 2024 without an `async-trait` macro indirection.
+///
 /// # Example
 ///
 /// ```rust
-/// use nebula_schema::{ExpressionAst, ExpressionContext, ValidationError};
+/// use nebula_schema::{EvalFuture, ExpressionAst, ExpressionContext, ValidationError};
 ///
 /// struct ConstCtx(serde_json::Value);
 ///
-/// #[async_trait::async_trait]
 /// impl ExpressionContext for ConstCtx {
-///     async fn evaluate(
-///         &self,
-///         _ast: &ExpressionAst,
-///     ) -> Result<serde_json::Value, ValidationError> {
-///         Ok(self.0.clone())
+///     fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+///         Box::pin(async move { Ok(self.0.clone()) })
 ///     }
 /// }
 /// ```
-#[async_trait::async_trait]
 pub trait ExpressionContext: Send + Sync {
     /// Evaluate a parsed expression AST and return the resulting JSON value.
     ///
     /// Errors should use code `"expression.runtime"`.
-    async fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError>;
+    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a>;
 }
 
 /// Opaque parsed AST wrapper.

@@ -11,7 +11,7 @@
 use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema, field_key};
 // Re-exports for backward compatibility with `credentials::oauth2::` paths
 // used by external crates (nebula-api, nebula-storage).
 pub use oauth2_config::{
@@ -333,32 +333,32 @@ impl HasSchema for OAuth2Input {
     fn schema() -> ValidSchema {
         Schema::builder()
             .add(
-                Field::string("client_id")
+                Field::string(field_key!("client_id"))
                     .label("Client ID")
                     .description("OAuth2 client identifier")
                     .required(),
             )
             .add(
-                Field::secret("client_secret")
+                Field::secret(field_key!("client_secret"))
                     .label("Client Secret")
                     .description("OAuth2 client secret")
                     .required(),
             )
             .add(
-                Field::string("auth_url")
+                Field::string(field_key!("auth_url"))
                     .label("Authorization URL")
                     .description("OAuth2 authorization endpoint URL")
                     .placeholder("https://provider.example.com/oauth2/authorize"),
             )
             .add(
-                Field::string("token_url")
+                Field::string(field_key!("token_url"))
                     .label("Token URL")
                     .description("OAuth2 token endpoint URL")
                     .required()
                     .placeholder("https://provider.example.com/oauth2/token"),
             )
             .add(
-                Field::string("grant_type")
+                Field::string(field_key!("grant_type"))
                     .label("Grant Type")
                     .description(
                         "OAuth2 grant type: authorization_code, client_credentials, or device_code",
@@ -366,12 +366,12 @@ impl HasSchema for OAuth2Input {
                     .default(serde_json::json!("authorization_code")),
             )
             .add(
-                Field::string("scopes")
+                Field::string(field_key!("scopes"))
                     .label("Scopes")
                     .description("Space-separated list of OAuth2 scopes"),
             )
             .add(
-                Field::string("redirect_uri")
+                Field::string(field_key!("redirect_uri"))
                     .label("Redirect URI")
                     .description(
                         "OAuth2 redirect URI (required for authorization_code grant; must match the URI registered with the provider)",
@@ -916,7 +916,9 @@ mod tests {
     #[test]
     fn parse_scopes_splits_whitespace() {
         let mut values = FieldValues::new();
-        values.set_raw("scopes", serde_json::json!("read write admin"));
+        values
+            .try_set_raw("scopes", serde_json::json!("read write admin"))
+            .expect("test-only known-good key");
         let scopes = parse_scopes(&values);
         assert_eq!(scopes, vec!["read", "write", "admin"]);
     }
@@ -932,8 +934,12 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_missing_token_url() {
         let mut values = FieldValues::new();
-        values.set_raw("client_id", serde_json::json!("cid"));
-        values.set_raw("client_secret", serde_json::json!("cs"));
+        values
+            .try_set_raw("client_id", serde_json::json!("cid"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("client_secret", serde_json::json!("cs"))
+            .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
         assert!(result.is_err());
@@ -962,11 +968,21 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_missing_redirect_uri_for_auth_code() {
         let mut values = FieldValues::new();
-        values.set_raw("client_id", serde_json::json!("cid"));
-        values.set_raw("client_secret", serde_json::json!("cs"));
-        values.set_raw("auth_url", serde_json::json!("https://a.com/auth"));
-        values.set_raw("token_url", serde_json::json!("https://a.com/token"));
-        values.set_raw("grant_type", serde_json::json!("authorization_code"));
+        values
+            .try_set_raw("client_id", serde_json::json!("cid"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("client_secret", serde_json::json!("cs"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("auth_url", serde_json::json!("https://a.com/auth"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("token_url", serde_json::json!("https://a.com/token"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("grant_type", serde_json::json!("authorization_code"))
+            .expect("test-only known-good key");
 
         let ctx = CredentialContext::for_test("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
@@ -1088,22 +1104,36 @@ mod tests {
 
     fn auth_code_values() -> FieldValues {
         let mut values = FieldValues::new();
-        values.set_raw("client_id", serde_json::json!("test_client_id"));
-        values.set_raw("client_secret", serde_json::json!("test_client_secret"));
-        values.set_raw(
-            "auth_url",
-            serde_json::json!("https://idp.example.com/authorize"),
-        );
-        values.set_raw(
-            "token_url",
-            serde_json::json!("https://idp.example.com/token"),
-        );
-        values.set_raw("grant_type", serde_json::json!("authorization_code"));
-        values.set_raw("scopes", serde_json::json!("read write"));
-        values.set_raw(
-            "redirect_uri",
-            serde_json::json!("https://app.example.com/oauth2/callback"),
-        );
+        values
+            .try_set_raw("client_id", serde_json::json!("test_client_id"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("client_secret", serde_json::json!("test_client_secret"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw(
+                "auth_url",
+                serde_json::json!("https://idp.example.com/authorize"),
+            )
+            .expect("test-only known-good key");
+        values
+            .try_set_raw(
+                "token_url",
+                serde_json::json!("https://idp.example.com/token"),
+            )
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("grant_type", serde_json::json!("authorization_code"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("scopes", serde_json::json!("read write"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw(
+                "redirect_uri",
+                serde_json::json!("https://app.example.com/oauth2/callback"),
+            )
+            .expect("test-only known-good key");
         values
     }
 
@@ -1148,18 +1178,30 @@ mod tests {
         // Build values without redirect_uri — AuthorizationCode requires it
         // per build_config (RFC 6749 §3.1.2 — registered redirection URI).
         let mut values = FieldValues::new();
-        values.set_raw("client_id", serde_json::json!("test_client_id"));
-        values.set_raw("client_secret", serde_json::json!("test_client_secret"));
-        values.set_raw(
-            "auth_url",
-            serde_json::json!("https://idp.example.com/authorize"),
-        );
-        values.set_raw(
-            "token_url",
-            serde_json::json!("https://idp.example.com/token"),
-        );
-        values.set_raw("grant_type", serde_json::json!("authorization_code"));
-        values.set_raw("scopes", serde_json::json!("read"));
+        values
+            .try_set_raw("client_id", serde_json::json!("test_client_id"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("client_secret", serde_json::json!("test_client_secret"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw(
+                "auth_url",
+                serde_json::json!("https://idp.example.com/authorize"),
+            )
+            .expect("test-only known-good key");
+        values
+            .try_set_raw(
+                "token_url",
+                serde_json::json!("https://idp.example.com/token"),
+            )
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("grant_type", serde_json::json!("authorization_code"))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("scopes", serde_json::json!("read"))
+            .expect("test-only known-good key");
 
         let result = OAuth2Credential::initiate_authorization_code(&values);
         match result {

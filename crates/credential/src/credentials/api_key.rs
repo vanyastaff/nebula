@@ -4,7 +4,7 @@
 //! input. State and Scheme are the same type ([`SecretToken`]) via
 //! [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema, field_key};
 
 use crate::{
     Credential, CredentialContext, SecretString, contract::plugin_capability_report,
@@ -23,13 +23,13 @@ impl HasSchema for ApiKeyInput {
     fn schema() -> ValidSchema {
         Schema::builder()
             .add(
-                Field::string("server")
+                Field::string(field_key!("server"))
                     .label("Server URL")
                     .description("Base URL of the service (e.g. https://api.example.com)")
                     .placeholder("https://api.example.com"),
             )
             .add(
-                Field::secret("api_key")
+                Field::secret(field_key!("api_key"))
                     .label("API Key")
                     .description("Secret API token or personal access token")
                     .required(),
@@ -141,7 +141,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_extracts_api_key_field() {
         let mut values = FieldValues::new();
-        values.set_raw("api_key", serde_json::Value::String("sk-secret-123".into()));
+        values
+            .try_set_raw("api_key", serde_json::Value::String("sk-secret-123".into()))
+            .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
         match result {

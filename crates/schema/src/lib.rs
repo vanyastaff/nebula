@@ -109,6 +109,17 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// Hard-deny `#[async_trait::async_trait]` on this crate. Project rule
+// (see `ARCHITECTURE.md` anti-patterns + `clippy.toml`) — Rust 1.75+
+// supports `async fn` in traits directly; the schema crate ships a
+// `BoxFuture`-style `EvalFuture` alias for object-safe usage instead.
+#![deny(clippy::disallowed_macros)]
+
+// Allow `nebula_schema::Foo` to resolve from inside the crate too (lib unit
+// tests, examples_include, internal docs). The proc-macro `field_key!` emits
+// absolute `nebula_schema::FieldKey::new(..)` paths so the same call site
+// works from external crates, integration tests, doctests, and lib tests.
+extern crate self as nebula_schema;
 
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
@@ -161,7 +172,7 @@ pub use builder::{
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
-pub use expression::{Expression, ExpressionAst, ExpressionContext};
+pub use expression::{EvalFuture, Expression, ExpressionAst, ExpressionContext};
 /// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).
 ///
 /// # JSON wire format
@@ -232,3 +243,11 @@ pub use widget::{
 
 /// Schema wire-format version emitted in serialized output (Phase 2+ plugins read this).
 pub const SCHEMA_WIRE_VERSION: u16 = 1;
+
+#[doc(hidden)]
+pub mod __private {
+    //! Re-exports used by `nebula-schema-macros`-generated code.
+    //!
+    //! Not part of the stable API. Do not depend on these from user code.
+    pub use tracing;
+}

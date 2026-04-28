@@ -5,6 +5,7 @@ use nebula_validator::Rule;
 use crate::{
     builder::FieldCollector,
     field::{Field, ObjectField},
+    key::FieldKey,
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
     widget::ObjectWidget,
 };
@@ -16,7 +17,7 @@ pub struct ObjectBuilder {
 
 impl ObjectBuilder {
     /// Create a new object builder bound to the given field key.
-    pub fn new(key: impl AsRef<str>) -> Self {
+    pub fn new(key: FieldKey) -> Self {
         Self {
             inner: ObjectField::new(key),
         }

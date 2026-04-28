@@ -78,14 +78,29 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                             .build()
                         {
                             ::core::result::Result::Ok(s) => s,
-                            ::core::result::Result::Err(report) => ::core::panic!(
-                                "#[derive(Schema)] on `{}` produced an invalid schema — \
-                                 attribute combinations conflict with a schema-level lint. \
-                                 Fix the `#[param(..)]` / `#[validate(..)]` attributes on this type. \
-                                 Report: {:?}",
-                                #ty_name_str,
-                                report,
-                            ),
+                            ::core::result::Result::Err(report) => {
+                                // Surface the structured report through `tracing` first so logs
+                                // capture the failure even if the panic is caught (e.g. tests).
+                                // Compile-time conflict detection in attrs.rs / derive_schema.rs
+                                // catches common attribute mistakes; this branch only runs for
+                                // lint-class issues (visibility cycles, dangling refs,
+                                // contradictory rules across fields) that depend on the full
+                                // value tree and cannot be statically proved at expansion time.
+                                #crate_path::__private::tracing::error!(
+                                    target: "nebula_schema::derive",
+                                    type_name = #ty_name_str,
+                                    report = ?report,
+                                    "#[derive(Schema)] schema-level lint failed at runtime"
+                                );
+                                ::core::panic!(
+                                    "#[derive(Schema)] on `{}` produced an invalid schema — \
+                                     attribute combinations conflict with a schema-level lint. \
+                                     Fix the `#[param(..)]` / `#[validate(..)]` attributes on this type. \
+                                     Report: {:?}",
+                                    #ty_name_str,
+                                    report,
+                                );
+                            },
                         }
                     })
                     .clone()
@@ -102,7 +117,14 @@ fn build_field_expr(
     validate: &ValidateAttrs,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let key = field_name.to_string();
+    let key_str = field_name.to_string();
+    // Wrap as FieldKey via fallible constructor + expect (Rust idents are
+    // always valid FieldKey strings — `.expect()` is unreachable in practice
+    // and is the derive-codegen equivalent of `unreachable!`).
+    let key = quote! {
+        #crate_path::FieldKey::new(#key_str)
+            .expect("#[derive(Schema)] field name is a valid FieldKey")
+    };
     let optional = kind.is_optional();
     let inner = kind.inner();
 
@@ -110,6 +132,27 @@ fn build_field_expr(
         return Err(syn::Error::new_spanned(
             field_name,
             "`#[param(enum_select)]` cannot be combined with `#[param(secret)]`",
+        ));
+    }
+    if param.no_expression && param.expression_required {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(no_expression)]` and `#[param(expression_required)]` are contradictory: \
+             pick exactly one expression-mode attribute",
+        ));
+    }
+    if param.secret && param.multiline {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(multiline)]` does not apply to secret fields — secret values are always \
+             rendered as masked single-line input",
+        ));
+    }
+    if param.secret && param.default.is_some() {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(default = ..)]` on a secret field hard-codes plaintext into the schema; \
+             configure the value via the credential setup form instead",
         ));
     }
     if param.enum_select && matches!(kind, FieldKind::List(_)) {
@@ -305,8 +348,16 @@ fn list_field_expr(
     item_kind: &FieldKind,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let key = field_name.to_string();
-    let item_key = format!("{key}_item");
+    let key_str = field_name.to_string();
+    let item_key_str = format!("{key_str}_item");
+    let key = quote! {
+        #crate_path::FieldKey::new(#key_str)
+            .expect("#[derive(Schema)] field name is a valid FieldKey")
+    };
+    let item_key = quote! {
+        #crate_path::FieldKey::new(#item_key_str)
+            .expect("#[derive(Schema)] list item key is a valid FieldKey")
+    };
     let item_expr = match item_kind {
         FieldKind::String => quote! { #crate_path::Field::string(#item_key) },
         FieldKind::Boolean => quote! { #crate_path::Field::boolean(#item_key) },

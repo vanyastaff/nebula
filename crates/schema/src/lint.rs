@@ -20,6 +20,12 @@ fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
 ///
 /// Walks the field tree rooted at `prefix` and appends `ValidationError`
 /// issues to `report`. Errors block the build; warnings are advisory.
+#[tracing::instrument(
+    level = "debug",
+    target = "nebula_schema::lint",
+    skip(fields, report),
+    fields(field_count = fields.len(), prefix = %prefix)
+)]
 pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut ValidationReport) {
     // Collect root-level key set for cross-reference checks.
     let root_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
@@ -27,6 +33,14 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_visibility_cycles_new(fields, prefix, report);
     lint_required_cycles_new(fields, prefix, report);
     lint_loader_dependency_cycles(fields, prefix, report);
+    if report.has_errors() || report.has_warnings() {
+        tracing::debug!(
+            target: "nebula_schema::lint",
+            error_count = report.errors().count(),
+            warning_count = report.warnings().count(),
+            "lint completed with issues"
+        );
+    }
 }
 
 fn lint_fields_new(
@@ -84,6 +98,26 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
 
     // Null is always valid as a default (means "no default value set").
     if matches!(default, Value::Null) {
+        return;
+    }
+
+    // `Field::Secret` MUST NOT carry a non-null `default`. A default value
+    // hard-codes plaintext into the schema definition; secrets must originate
+    // from the credential setup form, not from a catalog manifest. (See the
+    // `Deserialize` impl on `SecretString` — it rejects wire reconstruction
+    // for the same reason.) Surface this as an error rather than silently
+    // letting plaintext drift into shared schema storage.
+    if matches!(field, Field::Secret(_)) {
+        report.push(
+            ValidationError::builder("secret.default_forbidden")
+                .at(path.clone())
+                .message(format!(
+                    "field `{path}` is a secret field; `default` is not allowed because it would \
+                     hard-code plaintext into the schema. Configure the value via the credential \
+                     setup form instead."
+                ))
+                .build(),
+        );
         return;
     }
 
@@ -1184,7 +1218,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{FieldKey, error::ValidationReport, field::Field, path::FieldPath};
+    use crate::{FieldKey, error::ValidationReport, field::Field, field_key, path::FieldPath};
 
     fn run(fields: &[Field]) -> ValidationReport {
         let mut report = ValidationReport::new();
@@ -1277,22 +1311,22 @@ mod tests {
 
     #[test]
     fn detects_visibility_cycle_inside_nested_object() {
-        let outer = Field::object("outer")
+        let outer = Field::object(field_key!("outer"))
             .add(
-                Field::string("x")
+                Field::string(field_key!("x"))
                     .visible_when(Rule::predicate(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
                     .into_field(),
             )
             .add(
-                Field::string("y")
+                Field::string(field_key!("y"))
                     .visible_when(Rule::predicate(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
                     .into_field(),
             );
-        let report = run(&vec![outer.into()]);
+        let report = run(&[outer.into()]);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
@@ -1303,8 +1337,8 @@ mod tests {
     #[test]
     fn acyclic_visibility_rules_do_not_error() {
         let fields = vec![
-            Field::string("toggle").into_field(),
-            Field::string("detail")
+            Field::string(field_key!("toggle")).into_field(),
+            Field::string(field_key!("detail"))
                 .visible_when(Rule::predicate(
                     Predicate::eq("/toggle", json!(true)).unwrap(),
                 ))
@@ -1317,18 +1351,18 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_with_list_index_reference() {
         let fields = vec![
-            Field::list("items")
+            Field::list(field_key!("items"))
                 .item(
-                    Field::object("row")
+                    Field::object(field_key!("row"))
                         .add(
-                            Field::string("x")
+                            Field::string(field_key!("x"))
                                 .visible_when(Rule::predicate(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
                         )
                         .add(
-                            Field::string("y")
+                            Field::string(field_key!("y"))
                                 .visible_when(Rule::predicate(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
@@ -1349,16 +1383,16 @@ mod tests {
     #[test]
     fn pointer_refs_in_nested_scope_are_checked_against_root_keys() {
         let fields = vec![
-            Field::object("outer")
+            Field::object(field_key!("outer"))
                 .add(
-                    Field::string("x")
+                    Field::string(field_key!("x"))
                         .visible_when(Rule::predicate(
                             Predicate::eq("/outer/y", json!(true)).unwrap(),
                         ))
                         .into_field(),
                 )
                 .into_field(),
-            Field::string("top").into_field(),
+            Field::string(field_key!("top")).into_field(),
         ];
 
         let report = run(&fields);
@@ -1375,14 +1409,14 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_through_mode_variant_payload() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .visible_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
                 .into_field(),
-            Field::mode("m")
+            Field::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
-                    Field::string("payload")
+                    Field::string(field_key!("payload"))
                         .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                         .into_field(),
                 )
@@ -1400,10 +1434,10 @@ mod tests {
     #[test]
     fn detects_required_cycle_between_top_level_fields() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
                 .into_field(),
-            Field::string("b")
+            Field::string(field_key!("b"))
                 .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                 .into_field(),
         ];
@@ -1418,23 +1452,23 @@ mod tests {
 
     #[test]
     fn detects_required_cycle_inside_nested_object() {
-        let outer = Field::object("outer")
+        let outer = Field::object(field_key!("outer"))
             .add(
-                Field::string("x")
+                Field::string(field_key!("x"))
                     .required_when(Rule::predicate(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
                     .into_field(),
             )
             .add(
-                Field::string("y")
+                Field::string(field_key!("y"))
                     .required_when(Rule::predicate(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
                     .into_field(),
             );
 
-        let report = run(&vec![outer.into()]);
+        let report = run(&[outer.into()]);
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
@@ -1445,18 +1479,18 @@ mod tests {
     #[test]
     fn detects_required_cycle_with_list_index_reference() {
         let fields = vec![
-            Field::list("items")
+            Field::list(field_key!("items"))
                 .item(
-                    Field::object("row")
+                    Field::object(field_key!("row"))
                         .add(
-                            Field::string("x")
+                            Field::string(field_key!("x"))
                                 .required_when(Rule::predicate(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
                         )
                         .add(
-                            Field::string("y")
+                            Field::string(field_key!("y"))
                                 .required_when(Rule::predicate(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
@@ -1477,14 +1511,14 @@ mod tests {
     #[test]
     fn detects_required_cycle_through_mode_variant_payload() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .required_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
                 .into_field(),
-            Field::mode("m")
+            Field::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
-                    Field::string("payload")
+                    Field::string(field_key!("payload"))
                         .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                         .into_field(),
                 )
@@ -1502,11 +1536,11 @@ mod tests {
     #[test]
     fn detects_visibility_and_required_cycles_independently() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .visible_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
                 .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
                 .into_field(),
-            Field::string("b")
+            Field::string(field_key!("b"))
                 .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                 .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                 .into_field(),
@@ -1521,6 +1555,39 @@ mod tests {
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn secret_field_with_default_emits_secret_default_forbidden() {
+        use serde_json::json;
+        let fields = vec![
+            Field::secret(FieldKey::new("api_key").unwrap())
+                .default(json!("hardcoded-token"))
+                .into_field(),
+        ];
+        let report = run(&fields);
+        assert!(
+            report
+                .errors()
+                .any(|e| e.code == "secret.default_forbidden"),
+            "expected secret.default_forbidden, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn secret_field_without_default_passes_lint() {
+        let fields = vec![
+            Field::secret(FieldKey::new("api_key").unwrap())
+                .required()
+                .into_field(),
+        ];
+        let report = run(&fields);
+        assert!(
+            !report.has_errors(),
+            "expected no errors, got {:?}",
             report.errors().map(|e| &e.code).collect::<Vec<_>>()
         );
     }

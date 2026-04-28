@@ -3,7 +3,7 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema, field_key};
 
 use crate::{
     Credential, CredentialContext, SecretString, contract::plugin_capability_report,
@@ -18,13 +18,13 @@ impl HasSchema for BasicAuthInput {
     fn schema() -> ValidSchema {
         Schema::builder()
             .add(
-                Field::string("username")
+                Field::string(field_key!("username"))
                     .label("Username")
                     .description("Username for HTTP Basic authentication")
                     .required(),
             )
             .add(
-                Field::secret("password")
+                Field::secret(field_key!("password"))
                     .label("Password")
                     .description("Password for HTTP Basic authentication")
                     .required(),
@@ -132,8 +132,12 @@ mod tests {
     #[tokio::test]
     async fn resolve_extracts_username_and_password() {
         let mut values = FieldValues::new();
-        values.set_raw("username", serde_json::Value::String("alice".into()));
-        values.set_raw("password", serde_json::Value::String("p@ssw0rd".into()));
+        values
+            .try_set_raw("username", serde_json::Value::String("alice".into()))
+            .expect("test-only known-good key");
+        values
+            .try_set_raw("password", serde_json::Value::String("p@ssw0rd".into()))
+            .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
@@ -149,7 +153,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_error_on_missing_username() {
         let mut values = FieldValues::new();
-        values.set_raw("password", serde_json::Value::String("secret".into()));
+        values
+            .try_set_raw("password", serde_json::Value::String("secret".into()))
+            .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
@@ -158,7 +164,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_error_on_missing_password() {
         let mut values = FieldValues::new();
-        values.set_raw("username", serde_json::Value::String("alice".into()));
+        values
+            .try_set_raw("username", serde_json::Value::String("alice".into()))
+            .expect("test-only known-good key");
         let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
