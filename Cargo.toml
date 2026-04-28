@@ -79,6 +79,9 @@ parking_lot = { version = "0.12.5", default-features = false }
 moka = { version = "0.12", default-features = false }
 arc-swap = "1.9"
 
+# Text / Unicode
+unicode-width = "0.2"
+
 # Graph
 petgraph = "0.8"
 domain-key = { version = "0.5.1", features = [

@@ -216,9 +216,19 @@ impl Template {
                 let mut expr_column = column + 2;
 
                 while j + 1 < len {
+                    // Newline handling must short-circuit the rest of the
+                    // loop body. Previously the `\n` branch ran first, set
+                    // `expr_column = 1`, then *fell through* to the `else`
+                    // branch's `expr_column += 1` — producing an off-by-one
+                    // column for every char that followed a newline inside
+                    // a multiline `{{ ... }}` expression. The error
+                    // formatter then highlighted one cell to the right of
+                    // the actual offending character.
                     if chars[j] == '\n' {
                         expr_line += 1;
                         expr_column = 1;
+                        j += 1;
+                        continue;
                     }
 
                     if chars[j] == '{' && chars[j + 1] == '{' {
@@ -557,6 +567,52 @@ Line 3: Done",
             assert_eq!(position.line, 2);
             assert_eq!(position.column, 1);
         }
+    }
+
+    /// Helper: extract the second `Static` part from a parsed template
+    /// (i.e., the static text that follows the first `{{ ... }}` block).
+    fn static_after_first_expr(template: &Template) -> Option<&Position> {
+        let mut found_expr = false;
+        for part in template.parts() {
+            match part {
+                TemplatePart::Expression { .. } => found_expr = true,
+                TemplatePart::Static { position, .. } if found_expr => return Some(position),
+                _ => {},
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn static_position_after_multiline_expression_is_correct() {
+        // Regression: a `\n` inside `{{ ... }}` previously left the column
+        // counter off-by-one because the newline branch fell through to
+        // the `else` branch's `expr_column += 1`. After `}}` the static
+        // run got the wrong start column, which then propagated to error
+        // diagnostics for everything past the expression.
+        //
+        // Source layout:
+        //   line 1: "A{{"
+        //   line 2: "b"
+        //   line 3: "}}C"          ← "C" is at line 3 column 3
+        let template = Template::new("A{{\nb\n}}C").unwrap();
+        let pos = static_after_first_expr(&template).expect("static `C` part should exist");
+        assert_eq!(pos.line, 3);
+        assert_eq!(
+            pos.column, 3,
+            "C is the 3rd character on line 3 (after `}}`) — pre-fix this came out as 4"
+        );
+    }
+
+    #[test]
+    fn static_position_after_expression_with_internal_newline_then_text_is_correct() {
+        // Source layout (closing `}}` on the same line as some text):
+        //   line 1: "{{"
+        //   line 2: "x }}Z"        ← "Z" is at line 2 column 5
+        let template = Template::new("{{\nx }}Z").unwrap();
+        let pos = static_after_first_expr(&template).expect("static `Z` part should exist");
+        assert_eq!(pos.line, 2);
+        assert_eq!(pos.column, 5);
     }
 
     #[test]

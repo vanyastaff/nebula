@@ -10,15 +10,22 @@ use serde_json::{Map, Value};
 
 use crate::policy::EvaluationPolicy;
 
-/// Evaluation context containing variables and workflow data
+/// Evaluation context containing variables and workflow data.
+///
+/// All maps are wrapped in `Arc<HashMap<...>>` so cloning the context is
+/// O(1) — important because higher-order builtins like `map`, `filter`,
+/// and `reduce` clone the context once per iteration to scope a fresh
+/// lambda binding. Mutations go through `Arc::make_mut` (copy-on-write):
+/// the first `set_node_data` after a clone allocates, subsequent ones in
+/// the same owner are in-place.
 #[derive(Debug, Clone)]
 pub struct EvaluationContext {
     /// Node data ($node['name'].data)
-    nodes: HashMap<Arc<str>, Arc<Value>>,
+    nodes: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Execution variables ($execution.id, $execution.mode, etc.)
-    execution_vars: HashMap<Arc<str>, Arc<Value>>,
+    execution_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Lambda-bound parameters (isolated from execution_vars to avoid name collisions)
-    lambda_vars: HashMap<Arc<str>, Arc<Value>>,
+    lambda_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Workflow metadata ($workflow.id, $workflow.name, etc.)
     workflow: Arc<Value>,
     /// Input data ($input.item, $input.all, etc.)
@@ -50,13 +57,18 @@ fn empty_object_arc() -> Arc<Value> {
     Arc::new(Value::Object(Map::new()))
 }
 
+#[inline]
+fn empty_map_arc() -> Arc<HashMap<Arc<str>, Arc<Value>>> {
+    Arc::new(HashMap::new())
+}
+
 impl EvaluationContext {
     /// Create a new empty evaluation context
     pub fn new() -> Self {
         Self {
-            nodes: HashMap::new(),
-            execution_vars: HashMap::new(),
-            lambda_vars: HashMap::new(),
+            nodes: empty_map_arc(),
+            execution_vars: empty_map_arc(),
+            lambda_vars: empty_map_arc(),
             workflow: empty_object_arc(),
             input: empty_object_arc(),
             policy: None,
@@ -68,7 +80,7 @@ impl EvaluationContext {
     /// Set data for a specific node
     pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: Value) {
         let key: Arc<str> = Arc::from(node_key.as_ref());
-        self.nodes.insert(key, Arc::new(data));
+        Arc::make_mut(&mut self.nodes).insert(key, Arc::new(data));
         self.nodes_view = build_view(&self.nodes);
     }
 
@@ -80,7 +92,7 @@ impl EvaluationContext {
     /// Set an execution variable
     pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
-        self.execution_vars.insert(key, Arc::new(value));
+        Arc::make_mut(&mut self.execution_vars).insert(key, Arc::new(value));
         self.execution_view = build_view(&self.execution_vars);
     }
 
@@ -93,7 +105,7 @@ impl EvaluationContext {
     /// collisions with real execution variables)
     pub fn set_lambda_var(&mut self, name: impl AsRef<str>, value: Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
-        self.lambda_vars.insert(key, Arc::new(value));
+        Arc::make_mut(&mut self.lambda_vars).insert(key, Arc::new(value));
     }
 
     /// Get a lambda-bound parameter
@@ -229,9 +241,9 @@ impl EvaluationContextBuilder {
         let nodes_view = build_view(&self.nodes);
         let execution_view = build_view(&self.execution_vars);
         EvaluationContext {
-            nodes: self.nodes,
-            execution_vars: self.execution_vars,
-            lambda_vars: HashMap::new(),
+            nodes: Arc::new(self.nodes),
+            execution_vars: Arc::new(self.execution_vars),
+            lambda_vars: empty_map_arc(),
             workflow: self.workflow.unwrap_or_else(empty_object_arc),
             input: self.input.unwrap_or_else(empty_object_arc),
             policy: self.policy,

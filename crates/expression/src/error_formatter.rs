@@ -5,7 +5,24 @@
 //! - Surrounding source code for context
 //! - Visual highlighting with ^^^ under the error location
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::template::Position;
+
+/// Compute the display-width padding (ASCII spaces) needed to align under
+/// the `column`-th character (1-based) of `line`.
+///
+/// `Position::column` advances one per Unicode scalar value, but a
+/// monospace terminal renders East-Asian / emoji code points two cells
+/// wide. Using `" ".repeat(column - 1)` would short-pad those rows and
+/// the caret would land left of the offending character. We compute the
+/// actual display width of the prefix and pad with that many ASCII
+/// spaces (each ASCII space is one cell wide).
+fn caret_padding(line: &str, column: usize) -> String {
+    let take = column.saturating_sub(1);
+    let prefix_width: usize = line.chars().take(take).collect::<String>().width();
+    " ".repeat(prefix_width)
+}
 
 /// Format an error message with source context
 pub struct ErrorFormatter<'a> {
@@ -70,16 +87,19 @@ impl<'a> ErrorFormatter<'a> {
 
         // Show error line
         if error_line_idx < lines.len() {
+            let line = lines[error_line_idx];
             output.push_str(&format!(
                 " {:width$} | {}\n",
                 error_line_idx + 1,
-                lines[error_line_idx],
+                line,
                 width = line_num_width
             ));
 
-            // Add highlighting under the error position
+            // Add highlighting under the error position. Padding must
+            // account for terminal cell width, not character count
+            // (see `caret_padding`).
             let padding = " ".repeat(line_num_width + 3); // " N | "
-            let column_padding = " ".repeat(self.position.column.saturating_sub(1));
+            let column_padding = caret_padding(line, self.position.column);
             output.push_str(&format!("{padding}{column_padding}^\n"));
         }
 
@@ -129,16 +149,17 @@ impl<'a> ErrorFormatter<'a> {
 
         // Error line
         if error_line_idx < lines.len() {
+            let line = lines[error_line_idx];
             output.push_str(&format!(
                 " {:width$} | {}\n",
                 error_line_idx + 1,
-                lines[error_line_idx],
+                line,
                 width = line_num_width
             ));
 
-            // Multi-character highlighting
+            // Multi-character highlighting (see `caret_padding`).
             let padding = " ".repeat(line_num_width + 3);
-            let column_padding = " ".repeat(self.position.column.saturating_sub(1));
+            let column_padding = caret_padding(line, self.position.column);
             let highlight = "^".repeat(length.max(1));
             output.push_str(&format!("{padding}{column_padding}{highlight}\n"));
         }
@@ -235,5 +256,52 @@ mod tests {
         assert!(output.contains("Undefined variable"));
         assert!(output.contains("<title>{{ $unknown }}</title>"));
         assert!(output.contains("Expression: $unknown"));
+    }
+
+    /// Helper: count leading spaces preceding the lone `^` caret on the
+    /// formatter's caret row. The caret line has the form
+    /// `"<gutter><column-padding>^"`, where `<gutter>` is a fixed
+    /// `line_num_width + 3` ASCII spaces. Subtracting the gutter from the
+    /// total leading spaces gives the column padding the formatter chose,
+    /// which is the value we want to assert against display width.
+    fn caret_column_padding(output: &str, line_num_width: usize) -> usize {
+        let caret = output
+            .lines()
+            .find(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with('^') && !trimmed.contains('|')
+            })
+            .expect("formatter output must contain a caret line");
+        let total_padding = caret.len() - caret.trim_start().len();
+        let gutter = line_num_width + 3;
+        total_padding.saturating_sub(gutter)
+    }
+
+    #[test]
+    fn caret_aligns_under_emoji_prefix() {
+        // Source line begins with an emoji whose terminal cell width is 2.
+        // The caret must land at display column 4 (right after `🙂x`),
+        // i.e. three cells of padding — not two ASCII chars (which would
+        // be the naive `column - 1` count).
+        let source = "🙂xY";
+        let position = Position::new(1, 3, 0); // 'Y' is the 3rd char
+        let formatter = ErrorFormatter::new(source, position, "boom");
+
+        let out = formatter.format();
+        // line_num_width is 1 (only one line, "1")
+        assert_eq!(caret_column_padding(&out, 1), 3);
+    }
+
+    #[test]
+    fn caret_aligns_under_cyrillic_prefix() {
+        // Cyrillic letters are display-width 1, so caret-by-char-count
+        // already aligned. This test locks in that we don't regress
+        // when the same path now goes through `unicode-width`.
+        let source = "Привет";
+        let position = Position::new(1, 4, 0); // 'в' is the 4th char
+        let formatter = ErrorFormatter::new(source, position, "boom");
+
+        let out = formatter.format();
+        assert_eq!(caret_column_padding(&out, 1), 3);
     }
 }
