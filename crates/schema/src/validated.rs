@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use indexmap::IndexMap;
@@ -28,6 +28,16 @@ use crate::{
     secret::SecretValue,
     value::{FieldValue, FieldValues},
 };
+
+/// `Mode` payload uses two well-known nested keys: `"mode"` (variant
+/// selector) and `"value"` (variant payload). Both are interned via
+/// `LazyLock` so per-call `FieldKey::new` does not re-allocate the
+/// `Arc<str>` every time `validate_field` / `resolve_value` /
+/// `promote_secrets_in_value` recurses through a `Field::Mode`.
+pub(crate) static MODE_SELECTOR_KEY: LazyLock<FieldKey> =
+    LazyLock::new(|| FieldKey::new("mode").expect("static mode selector key is valid"));
+pub(crate) static MODE_PAYLOAD_KEY: LazyLock<FieldKey> =
+    LazyLock::new(|| FieldKey::new("value").expect("static mode payload key is valid"));
 
 /// Flags computed once at build time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -657,9 +667,7 @@ fn first_secret_path_in_field_value(value: &FieldValue, path: &FieldPath) -> Opt
             value: Some(payload),
             ..
         } => {
-            let payload_key =
-                FieldKey::new("value").expect("static mode payload key must be valid");
-            let payload_path = path.clone().join(payload_key);
+            let payload_path = path.clone().join((*MODE_PAYLOAD_KEY).clone());
             first_secret_path_in_field_value(payload, &payload_path)
         },
         FieldValue::Literal(_)
@@ -725,32 +733,13 @@ fn promote_secrets_in_value(
             let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
                 return;
             };
-            let k = match FieldKey::new("value") {
-                Ok(k) => k,
-                Err(e) => {
-                    report.push(
-                        ValidationError::builder("invalid_key")
-                            .at(path.clone())
-                            .message(format!(
-                                "invalid static mode payload key `value`: {}",
-                                e.message
-                            ))
-                            .build(),
-                    );
-                    return;
-                },
-            };
-            let p = path.clone().join(k);
+            let p = path.clone().join((*MODE_PAYLOAD_KEY).clone());
             promote_secrets_in_value(&var.field, mv.as_mut(), &p, report);
         },
         (Field::Mode(mode), FieldValue::Object(map)) => {
-            let Ok(mode_selector_key) = FieldKey::new("mode") else {
-                return;
-            };
-            let Ok(payload_key) = FieldKey::new("value") else {
-                return;
-            };
-            let resolved_key = match map.get(&mode_selector_key) {
+            let mode_selector_key = &*MODE_SELECTOR_KEY;
+            let payload_key = &*MODE_PAYLOAD_KEY;
+            let resolved_key = match map.get(mode_selector_key) {
                 Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
                     Some(mode_key.clone())
                 },
@@ -763,10 +752,10 @@ fn promote_secrets_in_value(
             else {
                 return;
             };
-            let Some(mv) = map.get_mut(&payload_key) else {
+            let Some(mv) = map.get_mut(payload_key) else {
                 return;
             };
-            let p = path.clone().join(payload_key);
+            let p = path.clone().join(payload_key.clone());
             promote_secrets_in_value(&var.field, mv, &p, report);
         },
         _ => {},
@@ -922,13 +911,7 @@ fn resolve_value<'v>(
             },
             FieldValue::Mode { mode, value } => {
                 let resolved_value = if let Some(inner) = value {
-                    let Ok(payload_key) = FieldKey::new("value") else {
-                        return FieldValue::Mode {
-                            mode,
-                            value: Some(inner),
-                        };
-                    };
-                    let inner_path = path.clone().join(payload_key);
+                    let inner_path = path.clone().join((*MODE_PAYLOAD_KEY).clone());
                     let resolved =
                         resolve_value(*inner, ctx, &inner_path, report, resolved_expression_paths)
                             .await;
@@ -1397,10 +1380,8 @@ fn validate_literal_value(
             rules,
             ..
         }) => {
-            let mode_selector_key =
-                FieldKey::new("mode").expect("static mode selector key must remain valid");
-            let payload_key =
-                FieldKey::new("value").expect("static mode payload key must remain valid");
+            let mode_selector_key = &*MODE_SELECTOR_KEY;
+            let payload_key = &*MODE_PAYLOAD_KEY;
 
             let (resolved_key, mode_value) = match value {
                 FieldValue::Mode {
@@ -1423,9 +1404,9 @@ fn validate_literal_value(
                         return;
                     }
 
-                    match map.get(&mode_selector_key) {
+                    match map.get(mode_selector_key) {
                         Some(FieldValue::Literal(serde_json::Value::String(mode))) => {
-                            (Some(mode.as_str()), map.get(&payload_key))
+                            (Some(mode.as_str()), map.get(payload_key))
                         },
                         Some(other) => {
                             report.push(
@@ -1439,7 +1420,7 @@ fn validate_literal_value(
                             );
                             return;
                         },
-                        None => (None, map.get(&payload_key)),
+                        None => (None, map.get(payload_key)),
                     }
                 },
                 _ => {
@@ -1478,7 +1459,7 @@ fn validate_literal_value(
                 return;
             };
             {
-                let payload_path = path.clone().join(payload_key);
+                let payload_path = path.clone().join(payload_key.clone());
                 validate_field(&variant.field, mode_value, ctx, &payload_path, report);
             }
         },

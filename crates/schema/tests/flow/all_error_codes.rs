@@ -529,6 +529,24 @@ fn emits_schema_depth_limit() {
 }
 
 #[test]
+fn emits_recursion_limit_on_deeply_nested_value_input() {
+    use nebula_schema::value::MAX_VALUE_DEPTH;
+
+    // Nest plain JSON objects 5 levels past MAX_VALUE_DEPTH to trigger the
+    // ingress depth-guard in `FieldValues::from_json`.
+    let mut current = json!({ "leaf": 1 });
+    for _ in 0..usize::from(MAX_VALUE_DEPTH) + 5 {
+        let mut wrapped = serde_json::Map::with_capacity(1);
+        wrapped.insert("n".to_owned(), current);
+        current = serde_json::Value::Object(wrapped);
+    }
+    let payload = json!({ "top": current });
+
+    let err = FieldValues::from_json(payload).expect_err("must reject deep input");
+    assert_eq!(err.code, "recursion_limit", "got: {}", err.message);
+}
+
+#[test]
 fn emits_rule_contradictory() {
     // min_length > max_length → rule.contradictory error.
     let report = Schema::builder()

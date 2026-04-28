@@ -16,6 +16,19 @@ use crate::{
 /// Reserved key for an explicit expression wrapper.
 pub const EXPRESSION_KEY: &str = "$expr";
 
+/// Maximum recursion depth permitted for user-provided value trees.
+///
+/// `validate_json_keys`, `validate_field`, `resolve_value`, and
+/// `promote_secrets_in_value` all walk through `FieldValue::Object`,
+/// `FieldValue::List`, and `FieldValue::Mode` containers without
+/// natural bounds. Adversarial JSON with deeply nested objects can
+/// otherwise overflow the call stack. Any recursion that exceeds this
+/// depth produces a `recursion_limit` validation error and stops
+/// descending. The limit is intentionally conservative (64) because
+/// realistic schemas are flat (≤ 5–10 levels) and JSON-Schema Draft
+/// 2020-12 does not encourage deeply nested shapes.
+pub const MAX_VALUE_DEPTH: u8 = 64;
+
 /// Runtime value — may be literal, expression, tree, or mode-dispatched.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -218,7 +231,7 @@ impl FieldValues {
         reason = "ValidationError is intentionally large; callers are on the validation path"
     )]
     pub fn from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
-        validate_json_keys(&value, &FieldPath::root())?;
+        validate_json_keys(&value, &FieldPath::root(), 0)?;
         match FieldValue::from_json(value) {
             FieldValue::Object(map) => Ok(Self(map)),
             _ => Err(crate::error::ValidationError::builder("type_mismatch")
@@ -261,7 +274,7 @@ impl FieldValues {
                 .build()
         })?;
         let field_path = FieldPath::root().join(fk.clone());
-        validate_json_keys(&value, &field_path)?;
+        validate_json_keys(&value, &field_path, 0)?;
         self.0.insert(fk, FieldValue::from_json(value));
         Ok(())
     }
@@ -431,7 +444,23 @@ impl FieldValues {
 fn validate_json_keys(
     value: &Value,
     path: &FieldPath,
+    depth: u8,
 ) -> Result<(), crate::error::ValidationError> {
+    if depth > MAX_VALUE_DEPTH {
+        tracing::warn!(
+            target: "nebula_schema::value",
+            depth = %depth,
+            path = %path,
+            "value depth limit hit during validate_json_keys"
+        );
+        return Err(crate::error::ValidationError::builder("recursion_limit")
+            .at(path.clone())
+            .param("limit", serde_json::json!(MAX_VALUE_DEPTH))
+            .message(format!(
+                "value tree depth exceeds the {MAX_VALUE_DEPTH}-level limit at `{path}`"
+            ))
+            .build());
+    }
     match value {
         Value::Object(map) => {
             if map.len() == 1 && map.get(EXPRESSION_KEY).is_some_and(Value::is_string) {
@@ -447,14 +476,14 @@ fn validate_json_keys(
                         .build()
                 })?;
                 let child_path = path.clone().join(key);
-                validate_json_keys(child, &child_path)?;
+                validate_json_keys(child, &child_path, depth + 1)?;
             }
             Ok(())
         },
         Value::Array(items) => {
             for (idx, item) in items.iter().enumerate() {
                 let item_path = path.clone().join(idx);
-                validate_json_keys(item, &item_path)?;
+                validate_json_keys(item, &item_path, depth + 1)?;
             }
             Ok(())
         },
@@ -623,6 +652,35 @@ mod tests {
             vs.get(&FieldKey::new("expr").unwrap()),
             Some(FieldValue::Expression(_))
         ));
+    }
+
+    /// Build a JSON object nested `depth` levels deep under `inner_key`.
+    fn nested_object(depth: usize, inner_key: &str) -> Value {
+        let mut current = json!({ "leaf": 1 });
+        for _ in 0..depth {
+            let mut wrapped = Map::with_capacity(1);
+            wrapped.insert(inner_key.to_owned(), current);
+            current = Value::Object(wrapped);
+        }
+        current
+    }
+
+    #[test]
+    fn from_json_rejects_deeply_nested_object_with_recursion_limit() {
+        // Wrap the nested object in another `{"top": ...}` so the input is a
+        // top-level JSON object as required by `FieldValues::from_json`.
+        let deep = nested_object(usize::from(MAX_VALUE_DEPTH) + 5, "n");
+        let payload = json!({ "top": deep });
+        let err = FieldValues::from_json(payload).expect_err("must reject");
+        assert_eq!(err.code, "recursion_limit", "got: {}", err.message);
+    }
+
+    #[test]
+    fn from_json_accepts_at_recursion_limit() {
+        // 60 < 64 — must stay valid.
+        let ok = nested_object(60, "n");
+        let payload = json!({ "top": ok });
+        FieldValues::from_json(payload).expect("must accept under-limit nesting");
     }
 
     #[test]

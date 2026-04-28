@@ -127,18 +127,16 @@ fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
             redact_secrets_in_value_for_loader(&var.field, mv.as_mut());
         },
         (Field::Mode(mode), FieldValue::Object(map)) => {
-            let Ok(mode_selector_key) = FieldKey::new("mode") else {
-                return;
-            };
-            let Ok(payload_key) = FieldKey::new("value") else {
-                return;
-            };
-            let resolved_key = match map.get(&mode_selector_key) {
+            // Reuse the interned `MODE_SELECTOR_KEY` / `MODE_PAYLOAD_KEY` exported by
+            // `validated`; defining them here too would duplicate the `LazyLock` cells.
+            let mode_selector_key = &*crate::validated::MODE_SELECTOR_KEY;
+            let payload_key = &*crate::validated::MODE_PAYLOAD_KEY;
+            let resolved_key = match map.get(mode_selector_key) {
                 Some(FieldValue::Literal(Json::String(mode_key))) => Some(mode_key.clone()),
                 Some(_) => None,
                 None => mode.default_variant.clone(),
             };
-            let Some(mv) = map.get_mut(&payload_key) else {
+            let Some(mv) = map.get_mut(payload_key) else {
                 return;
             };
             let Some(var) = resolved_key

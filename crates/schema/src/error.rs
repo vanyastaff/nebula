@@ -317,6 +317,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "duplicate_variant",
     "schema.index_overflow",
     "schema.depth_limit",
+    "recursion_limit",
     // option lint
     "option.type_inconsistent",
     // warnings
