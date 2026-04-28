@@ -78,6 +78,13 @@ pub use nebula_credential::{
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
 pub use nebula_resource_macros::Resource;
+// Schema surface — re-exported so adapter crates don't need a direct
+// nebula-schema dep just to satisfy `ResourceConfig`'s `HasSchema`
+// super-bound. `Schema` covers both the type and the derive macro
+// (separate namespaces sharing the name); `impl_empty_has_schema!` uses
+// `$crate::*` paths, so its expansion does not require adapters to keep
+// `nebula-schema` in extern_prelude either.
+pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
