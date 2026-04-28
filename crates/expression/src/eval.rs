@@ -145,22 +145,34 @@ pub struct BuiltinView<'a> {
 impl<'a> BuiltinView<'a> {
     /// Construct a view from an evaluator. `pub(crate)` so only the
     /// registry/dispatch path can hand it out.
+    ///
+    /// Marked `#[inline(always)]` because cachegrind-based perf
+    /// simulation (used by CodSpeed) doesn't inline through the wrapper
+    /// the way -O3 codegen does, and the indirection per builtin call
+    /// shows up as a measurable regression on tight nested-builtin
+    /// benchmarks (`abs(min(-5, -10))`-shape). The wrapper is a
+    /// zero-cost newtype around `&Evaluator`; forcing inline keeps it
+    /// that way under every measurement runtime.
+    #[inline(always)]
     pub(crate) fn new(eval: &'a Evaluator) -> Self {
         Self { eval }
     }
 
     /// Whether strict mode is enabled for this evaluation (engine-level
     /// or context-level policy).
+    #[inline(always)]
     pub fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
         self.eval.is_strict_mode(context)
     }
 
     /// Whether strict-coercion mode is enabled for conversion builtins.
+    #[inline(always)]
     pub fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
         self.eval.strict_conversions_enabled(context)
     }
 
     /// Optional max JSON parse length cap for `parse_json`.
+    #[inline(always)]
     pub fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
         self.eval.max_json_parse_length(context)
     }
