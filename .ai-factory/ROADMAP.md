@@ -69,17 +69,22 @@ Pure data debt, no architectural rework needed.
       `crates/execution/src/state.rs:158` (issue #311 closed); persisted at
       `engine.rs:674, 998`; restored at `engine.rs:1487-1497`. Test:
       `resume_restores_original_workflow_input` (engine.rs:6583).
-- [ ] **M0.3** Wire `ExecutionTerminationReason::ExplicitStop` /
-      `ExplicitFail` from `ActionResult::Terminate` through to
-      `determine_final_status`. Today the variants exist in
-      `crates/execution/src/status.rs:85-94` but are never populated. The
-      engine docstring at `crates/action/src/result.rs:206-219` explicitly
-      flags "Phase 3 of the ControlAction plan and is **not yet wired**".
-      Audit log loses intent vs system-driven termination (canon §4.5).
-- [ ] **M0.4** **Sync stale debt docs** — `crates/engine/README.md` "L4
-      debt" block + canon §11.5 references still describe M0.1 and M0.2 as
-      open; update to match shipped reality. Per
-      `feedback_active_dev_mode.md`: do not leave docs trailing the code.
+- [x] **M0.3** ~~Wire `ExecutionTerminationReason::ExplicitStop` /
+      `ExplicitFail`~~ — **DONE** (closed 2026-04-28).
+      `set_terminated_by` at `state.rs:240`; engine wiring at
+      `engine.rs:1986-area`; `determine_final_status` priority ladder at
+      `engine.rs:3590`; surfaced via `ExecutionResult.termination_reason`
+      and `ExecutionEvent::ExecutionFinished.termination_reason`.
+      11 tests cover the priority-ladder branches + state setter + serde
+      compat.
+- [x] **M0.4** ~~Sync stale debt docs~~ — **DONE** (closed 2026-04-28).
+      `engine/README.md` L4 debt block updated (M0.1/M0.2/M0.3 moved to
+      "Recently closed debts" table); `action/src/result.rs:206-219` and
+      `execution/src/status.rs:85-94` docstrings rewritten to describe
+      shipped wiring; workspace-wide Grep for "Phase 3 ControlAction" /
+      "not yet wired" / "v1 wiring status" returns 0 hits in M0 scope
+      (remaining hits are unrelated: sandbox capability discovery (M4),
+      WebSocket endpoint (1.1 deferred)).
 
 **Exit:** M0.3 closes the Phase-3 ControlAction-plan termination wiring with
 test (`Terminate` → `ExplicitStop` round-trips through `ExecutionResult` and
