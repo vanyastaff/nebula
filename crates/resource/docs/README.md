@@ -275,7 +275,7 @@ crates/resource/
 │   ├── context.rs         ResourceContext — execution context with capabilities
 │   ├── error.rs           Error, ErrorKind, ErrorScope, RotationOutcome
 │   ├── events.rs          ResourceEvent — 12 lifecycle event variants
-│   ├── options.rs         AcquireOptions, AcquireIntent
+│   ├── options.rs         AcquireOptions (deadline-only since R-051)
 │   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot, OutcomeCountersSnapshot
 │   ├── state.rs           ResourcePhase, ResourceStatus
 │   ├── cell.rs            Cell — ArcSwap-based lock-free cell for Resident topology
