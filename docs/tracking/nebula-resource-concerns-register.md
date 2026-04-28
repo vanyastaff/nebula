@@ -61,12 +61,14 @@
 
 | ID | Concern | Severity | Labels | Source | Status | Owner |
 |----|---------|----------|--------|--------|--------|-------|
-| R-030 | `docs/api-reference.md` ~50% fabrication rate (`ResourceContext::with_scope/.with_cancel_token`, `AcquireCircuitBreakerPreset`, 4-field `ResourceMetadata`) | 🔴 | tech-spec-material | Phase 1 §1.3 dx-tester | Strategy §4.7: full rewrite after trait shape locks | Phase 6 Tech Spec §6 (docs subsection) |
-| R-031 | `docs/adapters.md` compile-fails on 4/7 code blocks; hidden `HasSchema` super-trait requirement | 🔴 | tech-spec-material | Phase 1 §1.3 dx-tester | Strategy §4.7: ground-up rewrite | Phase 6 Tech Spec §6 |
-| R-032 | `docs/Architecture.md` describes vanished v1 module map | 🟠 | tech-spec-material | Phase 0 | Strategy §4.7: rewrite OR delete (redundant with README) | Phase 6 Tech Spec §6 |
-| R-033 | `docs/README.md` case-drift broken intra-doc links | 🟠 | tech-spec-material | Phase 0 | Strategy §4.7: fix in rewrite | Phase 6 Tech Spec §6 |
-| R-034 | `docs/dx-eval-real-world.rs` references nonexistent `nebula_resource::Credential` | 🟠 | tech-spec-material | Phase 1 §1.3 dx-tester | Strategy §4.7: fix, delete, or gate in CI | Phase 6 Tech Spec §6 |
-| R-035 | `docs/events.md` variant count 7 vs actual 10 | 🟡 | tech-spec-material | Phase 0 | Strategy §4.7: resolved in doc rewrite | Phase 6 Tech Spec §6 |
+| R-030 | `docs/api-reference.md` ~50% fabrication rate (`ResourceContext::with_scope/.with_cancel_token`, `AcquireCircuitBreakerPreset`, 4-field `ResourceMetadata`) | 🔴 | tech-spec-material | Phase 1 §1.3 dx-tester | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); rewritten from source — Resource trait per ADR-0036 with on_credential_refresh/revoke; 5-variant TopologyTag/TopologyRuntime; ResourceMetadata `{ base }` shape; HasSchema super-bound; 11 register + 10 acquire methods documented; AcquireCircuitBreakerPreset / ResourceContext::with_scope removed | Phase 6 Tech Spec §6 (docs subsection) |
+| R-031 | `docs/adapters.md` compile-fails on 4/7 code blocks; hidden `HasSchema` super-trait requirement | 🔴 | tech-spec-material | Phase 1 §1.3 dx-tester | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); ground-up rewrite — Resource impl with `type Credential` (NoCredential opt-out), credential-bound sidebar with on_credential_refresh blue-green pattern, three-path register/acquire narrative, ClassifyError syntax `#[classify(exhausted, retry_after = "30s")]`, Step 1 split into derive(Schema) vs explicit-empty-HasSchema | Phase 6 Tech Spec §6 |
+| R-032 | `docs/Architecture.md` describes vanished v1 module map | 🟠 | tech-spec-material | Phase 0 | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); deleted — README + canon docs cover real architecture; v1 module map (HookRegistry / QuarantineManager / EventBus / AutoScaler / Poison / DependencyGraph) had no real referent | Phase 6 Tech Spec §6 |
+| R-033 | `docs/README.md` case-drift broken intra-doc links | 🟠 | tech-spec-material | Phase 0 | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); 4 broken refs fixed (`architecture.md` removed; `events-and-hooks.md` → `events.md`; `health-and-quarantine.md` → `recovery.md`; `Pooling.md` → `pooling.md` case-rename); Topology Decision Guide drops Daemon/EventSource rows per ADR-0037; Crate Layout refreshed for `manager/` submodule split | Phase 6 Tech Spec §6 |
+| R-034 | `docs/dx-eval-real-world.rs` references nonexistent `nebula_resource::Credential` | 🟠 | tech-spec-material | Phase 1 §1.3 dx-tester | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); deleted — non-compiling design eval; friction commentary obsolete after П1 (`Credential = ()` retired in favor of NoCredential; `register_*_with` exists) | Phase 6 Tech Spec §6 |
+| R-035 | `docs/events.md` variant count 7 vs actual 10 | 🟡 | tech-spec-material | Phase 0 | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); rebuilt against actual 12 variants (10 per-resource + 2 aggregate rotation); event.key() Option<&ResourceKey> semantics clarified; rotation-cycle audit pattern with RotationOutcome.total() invariant | Phase 6 Tech Spec §6 |
+| R-036 | `docs/pooling.md` ~85% v1 fabrication (PoolBackpressurePolicy / CircuitBreaker fields / AutoScaler — none exist in current source); incorrect PoolConfig field list | 🟠 | tech-spec-material | П4 verify pass (Task 7) | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); rewritten — actual PoolConfig fields (warmup, test_on_checkout, max_concurrent_creates added; backpressure_policy, create_breaker, recycle_breaker removed); types fixed (`Option<Duration>` for idle/lifetime); WarmupStrategy section added; AcquireResilience/RecoveryGate moved to RegisterOptions | П4 verify pass |
+| R-037 | `docs/recovery.md` `Manager::register` positional signature; `WatchdogHandle::start` 3-arg form (missing `parent_cancel`); `RecoveryGroupRegistry::get_or_create` single-arg form | 🟡 | tech-spec-material | П4 verify pass (Task 7) | **landed П4** ([PR #618](https://github.com/vanyastaff/nebula/pull/618)); register example replaced with register_pooled_with + RegisterOptions; WatchdogHandle::start fixed to 4-arg signature with parent_cancel + async closure shape; get_or_create takes (key, config) | П4 verify pass |
 
 ### Infrastructure
 
@@ -108,15 +110,15 @@
 | Label | Count |
 |---|---|
 | strategy-blocking | 0 (all resolved in Phase 3 Strategy) |
-| tech-spec-material | 22 |
+| tech-spec-material | 24 |
 | sub-spec | 0 |
 | standalone-fix | 1 (R-040 SF-1 deny.toml) |
 | post-cascade | 5 |
 | future-cascade | 4 |
 | invariant-preservation | 3 |
-| **Total** | **35** |
+| **Total** | **37** |
 
-*Row count (35) vs Phase 1 finding count (28) reconciliation:* register adds items from Strategy decisions (e.g., R-003 `on_credential_revoked` default body) and Phase 0 infrastructure findings not represented as Phase 1 severity tags (e.g., R-041/R-042/R-043). Phase 1 28-finding split is in `02-pain-enumeration.md §4`; register reorganizes per ownership rather than origin.
+*Row count (37) vs Phase 1 finding count (28) reconciliation:* register adds items from Strategy decisions (e.g., R-003 `on_credential_revoked` default body), Phase 0 infrastructure findings not represented as Phase 1 severity tags (e.g., R-041/R-042/R-043), and П4 verify-pass surfaces (R-036 pooling.md drift, R-037 recovery.md drift not caught in original Phase 1 audit). Phase 1 28-finding split is in `02-pain-enumeration.md §4`; register reorganizes per ownership rather than origin.
 
 ---
 
@@ -135,4 +137,5 @@
 - 2026-04-24 T+~135min — Opened by orchestrator (Phase 7 dispatch)
 - 2026-04-25 — Cascade continuation: Phase 4 spike PASSED (commit `262665f8`); Phase 6 CP1 ratified (commit `1e416b91`); ADR-0036 + ADR-0037 flipped `proposed` → `accepted`; Phase 6 CP2 ratified (commit `e0f49536`); Phase 6 CP3 + CP4 ratified, Tech Spec FROZEN
 - 2026-04-25 — All 22 `tech-spec-material` rows status `decided` per Tech Spec §15.6 mapping. Lifecycle Rule 2 satisfied.
+- 2026-04-28 — П4 doc-rewrite landed via [PR #618](https://github.com/vanyastaff/nebula/pull/618): R-030/R-031/R-032/R-033/R-034/R-035 → `landed`; R-036 (pooling.md v1 drift) and R-037 (recovery.md API drift) added during verify pass and immediately landed in the same wave.
 - (Future updates append-only as implementation PR wave + soak progress)
