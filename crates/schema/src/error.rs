@@ -318,6 +318,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "schema.index_overflow",
     "schema.depth_limit",
     "recursion_limit",
+    "secret.default_forbidden",
     // option lint
     "option.type_inconsistent",
     // warnings

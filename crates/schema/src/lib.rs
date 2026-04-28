@@ -109,6 +109,11 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// Hard-deny `#[async_trait::async_trait]` on this crate. Project rule
+// (see `ARCHITECTURE.md` anti-patterns + `clippy.toml`) — Rust 1.75+
+// supports `async fn` in traits directly; the schema crate ships a
+// `BoxFuture`-style `EvalFuture` alias for object-safe usage instead.
+#![deny(clippy::disallowed_macros)]
 
 // Allow `nebula_schema::Foo` to resolve from inside the crate too (lib unit
 // tests, examples_include, internal docs). The proc-macro `field_key!` emits

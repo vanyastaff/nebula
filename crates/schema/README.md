@@ -78,7 +78,7 @@ root-rule metadata, and UI/runtime hints).
 
 ## Contract
 
-- **[L1-3.5]** Schema is the typed-configuration surface for all integration concepts. See `docs/INTEGRATION_MODEL.md`.
+- **[L1-3.5]** Schema is the typed-configuration surface for all integration concepts. See the workspace `ARCHITECTURE.md` (`Core` layer) for layer placement.
 - **[L1-4.5]** `ValidValues` and `ResolvedValues` are compile-time-evident proof-tokens: a caller cannot invoke `resolve` without first holding `ValidValues`, cannot access resolved fields without `ResolvedValues`. No runtime flags.
 - **Structural lint** — `Schema::lint` enforces constraints that cannot be expressed in the builder type alone (duplicate keys, invariant violations across fields). Seam: `crates/schema/src/lint.rs`. Tests: `crates/schema/tests/`.
 - **Expression-required fields** — fields with `ExpressionMode::Required` (for example `ComputedField`) reject literal inputs with `expression.required` during validate-time.
@@ -93,13 +93,11 @@ root-rule metadata, and UI/runtime hints).
 
 ## Maturity
 
-See `docs/MATURITY.md` row for `nebula-schema`.
-
-- API stability: `frontier` — Phase 1 Foundation just landed (commit `ed3a0ce0`); Phases 2–4 (DX, security, advanced) in progress.
+- API stability: `frontier` — Phase 1 Foundation has landed; Phase 4 JSON-Schema export is in `pragmatic baseline` mode.
 - Core pipeline (lint → validate → resolve) is stable; peripheral APIs (UI hints, expression context adapters) may move.
+- Public API is **strict**: `Field::*::new` requires a pre-validated `FieldKey`; runtime panics have been removed from the public surface (use `Field::try_*` or `field_key!(...)` for compile-time-validated keys).
 
 ## Related
 
-- Canon: `docs/PRODUCT_CANON.md §1`, §3.5 (via `docs/INTEGRATION_MODEL.md`).
-- ADRs: `docs/adr/0001-schema-consolidation.md`, `docs/adr/0002-proof-token-pipeline.md`, `docs/adr/0003-consolidated-field-enum.md`.
+- Workspace architecture and layer rules: `ARCHITECTURE.md` at the repo root.
 - Siblings: `nebula-validator` (rules), `nebula-expression` (resolution context).

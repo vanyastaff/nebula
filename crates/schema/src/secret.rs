@@ -6,9 +6,10 @@
 //! [`SecretBytes::expose`], and an explicit [`SecretWire`] for callers that
 //! must persist plaintext to an already-encrypted channel.
 //!
-//! Architecture: [`ADR-0034`](../../../docs/adr/0034-schema-secret-value-credential-seam.md)
-//! in-repo; design details in
-//! `docs/superpowers/specs/2026-04-16-nebula-schema-phase3-security-design.md`.
+//! KDF cost / salt bounds align with **RFC 9106 §4** ("Recommended values"
+//! for Argon2id at server-side cost). See `MIN_KDF_MEMORY_KIB` /
+//! `MAX_KDF_MEMORY_KIB` (and the matching `*_TIME_COST`, `*_PARALLELISM`,
+//! `*_SALT_BYTES`, `*_OUTPUT_BYTES` constants exported from this module).
 
 use std::fmt;
 
@@ -213,10 +214,25 @@ impl Serialize for SecretString {
     }
 }
 
+// `SecretString` deliberately rejects deserialization. Secret material must
+// **never** be reconstructed from wire bytes that the schema layer sees:
+//
+// - Schema definitions (`Field::Secret`) flow over `serde` for catalog / plugin manifests; allowing
+//   `SecretString` here would let a default value or a leaked test fixture round-trip plaintext
+//   through schema storage.
+// - Resolved secret values are always introduced by the resolve pipeline (via `SecretValue::string`
+//   / `KdfParams::hash_password`), not by parsing wire JSON.
+//
+// As a result, `Schema` definitions must NOT contain a `default` for a
+// `Field::Secret`; the lint pass in `crate::lint` enforces this with the
+// `secret.default_forbidden` code (Severity::Error). To populate a secret
+// field, configure it via the credential setup form.
 impl<'de> Deserialize<'de> for SecretString {
     fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
         Err(serde::de::Error::custom(
-            "SecretString cannot be constructed from deserializer",
+            "SecretString cannot be constructed from a deserializer — \
+             secret material must originate from the resolve pipeline, \
+             not from wire JSON",
         ))
     }
 }

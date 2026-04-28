@@ -101,6 +101,26 @@ fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationRep
         return;
     }
 
+    // `Field::Secret` MUST NOT carry a non-null `default`. A default value
+    // hard-codes plaintext into the schema definition; secrets must originate
+    // from the credential setup form, not from a catalog manifest. (See the
+    // `Deserialize` impl on `SecretString` — it rejects wire reconstruction
+    // for the same reason.) Surface this as an error rather than silently
+    // letting plaintext drift into shared schema storage.
+    if matches!(field, Field::Secret(_)) {
+        report.push(
+            ValidationError::builder("secret.default_forbidden")
+                .at(path.clone())
+                .message(format!(
+                    "field `{path}` is a secret field; `default` is not allowed because it would \
+                     hard-code plaintext into the schema. Configure the value via the credential \
+                     setup form instead."
+                ))
+                .build(),
+        );
+        return;
+    }
+
     let ok = match field {
         Field::String(_) | Field::Secret(_) | Field::Code(_) => {
             matches!(default, Value::String(_))
@@ -1306,7 +1326,7 @@ mod tests {
                     ))
                     .into_field(),
             );
-        let report = run(&vec![outer.into()]);
+        let report = run(&[outer.into()]);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
@@ -1448,7 +1468,7 @@ mod tests {
                     .into_field(),
             );
 
-        let report = run(&vec![outer.into()]);
+        let report = run(&[outer.into()]);
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
@@ -1535,6 +1555,39 @@ mod tests {
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn secret_field_with_default_emits_secret_default_forbidden() {
+        use serde_json::json;
+        let fields = vec![
+            Field::secret(FieldKey::new("api_key").unwrap())
+                .default(json!("hardcoded-token"))
+                .into_field(),
+        ];
+        let report = run(&fields);
+        assert!(
+            report
+                .errors()
+                .any(|e| e.code == "secret.default_forbidden"),
+            "expected secret.default_forbidden, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn secret_field_without_default_passes_lint() {
+        let fields = vec![
+            Field::secret(FieldKey::new("api_key").unwrap())
+                .required()
+                .into_field(),
+        ];
+        let report = run(&fields);
+        assert!(
+            !report.has_errors(),
+            "expected no errors, got {:?}",
             report.errors().map(|e| &e.code).collect::<Vec<_>>()
         );
     }

@@ -529,6 +529,21 @@ fn emits_schema_depth_limit() {
 }
 
 #[test]
+fn emits_secret_default_forbidden() {
+    // Defaults on Field::Secret hard-code plaintext into the schema and
+    // are blocked by lint at build time.
+    let report = Schema::builder()
+        .add(Field::secret(field_key!("api_key")).default(json!("hardcoded-token")))
+        .build()
+        .unwrap_err();
+    assert!(
+        has_code(&report, "secret.default_forbidden"),
+        "got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn emits_recursion_limit_on_deeply_nested_value_input() {
     use nebula_schema::value::MAX_VALUE_DEPTH;
 
