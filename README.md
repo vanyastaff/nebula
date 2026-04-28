@@ -89,17 +89,6 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `metrics`       | `nebula_*` naming, cardinality allowlist, Prometheus export                          |
 |                   | `system`        | Process monitoring, system load tracking                                             |
 
-## Credential System
-
-The credential subsystem is one of Nebula's most developed areas. Highlights:
-
-- **12 universal auth patterns** covering real-world auth: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`
-- **Open `AuthScheme` trait** &mdash; plugins add custom schemes without modifying core
-- `#[derive(AuthScheme)]` generates trait impls from a single attribute
-- **Layered storage**: encryption (AES-256-GCM with key rotation) -> cache (moka) -> audit trail -> scope isolation
-- **Interactive flows**: OAuth2 with PKCE, multi-step auth, challenge-response &mdash; all via a state machine (`resolve` / `continue_resolve` / `refresh`)
-- **Rotation subsystem** (feature-gated): periodic, before-expiry, scheduled, manual &mdash; with blue-green and grace period support
-
 ## Quick Start
 
 ```bash
