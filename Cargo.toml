@@ -35,9 +35,7 @@ members = [
   "crates/sandbox",
   "crates/plugin-sdk",
 ]
-exclude = [
-  "crates/*/fuzz",
-]
+exclude = ["crates/*/fuzz"]
 resolver = "3"
 
 [workspace.package]
