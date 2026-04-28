@@ -22,9 +22,15 @@ fn sample_schema() -> nebula_schema::ValidSchema {
 
 fn sample_values() -> FieldValues {
     let mut values = FieldValues::new();
-    values.set_raw("name", json!("nebula"));
-    values.set_raw("retries", json!(3));
-    values.set_raw("mode", json!("sync"));
+    values
+        .try_set_raw("name", json!("nebula"))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("retries", json!(3))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("mode", json!("sync"))
+        .expect("test-only known-good key");
     values
 }
 
@@ -64,11 +70,15 @@ fn nested_schema() -> nebula_schema::ValidSchema {
 
 fn nested_values() -> FieldValues {
     let mut values = FieldValues::new();
-    values.set_raw(
-        "user",
-        json!({ "name": "alice", "email": "a@b.com", "age": 30 }),
-    );
-    values.set_raw("settings", json!({ "notify": true, "locale": "en-US" }));
+    values
+        .try_set_raw(
+            "user",
+            json!({ "name": "alice", "email": "a@b.com", "age": 30 }),
+        )
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("settings", json!({ "notify": true, "locale": "en-US" }))
+        .expect("test-only known-good key");
     values
 }
 

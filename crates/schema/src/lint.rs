@@ -1184,7 +1184,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{FieldKey, error::ValidationReport, field::Field, path::FieldPath};
+    use crate::{FieldKey, error::ValidationReport, field::Field, field_key, path::FieldPath};
 
     fn run(fields: &[Field]) -> ValidationReport {
         let mut report = ValidationReport::new();
@@ -1277,16 +1277,16 @@ mod tests {
 
     #[test]
     fn detects_visibility_cycle_inside_nested_object() {
-        let outer = Field::object("outer")
+        let outer = Field::object(field_key!("outer"))
             .add(
-                Field::string("x")
+                Field::string(field_key!("x"))
                     .visible_when(Rule::predicate(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
                     .into_field(),
             )
             .add(
-                Field::string("y")
+                Field::string(field_key!("y"))
                     .visible_when(Rule::predicate(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
@@ -1303,8 +1303,8 @@ mod tests {
     #[test]
     fn acyclic_visibility_rules_do_not_error() {
         let fields = vec![
-            Field::string("toggle").into_field(),
-            Field::string("detail")
+            Field::string(field_key!("toggle")).into_field(),
+            Field::string(field_key!("detail"))
                 .visible_when(Rule::predicate(
                     Predicate::eq("/toggle", json!(true)).unwrap(),
                 ))
@@ -1317,18 +1317,18 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_with_list_index_reference() {
         let fields = vec![
-            Field::list("items")
+            Field::list(field_key!("items"))
                 .item(
-                    Field::object("row")
+                    Field::object(field_key!("row"))
                         .add(
-                            Field::string("x")
+                            Field::string(field_key!("x"))
                                 .visible_when(Rule::predicate(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
                         )
                         .add(
-                            Field::string("y")
+                            Field::string(field_key!("y"))
                                 .visible_when(Rule::predicate(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
@@ -1349,16 +1349,16 @@ mod tests {
     #[test]
     fn pointer_refs_in_nested_scope_are_checked_against_root_keys() {
         let fields = vec![
-            Field::object("outer")
+            Field::object(field_key!("outer"))
                 .add(
-                    Field::string("x")
+                    Field::string(field_key!("x"))
                         .visible_when(Rule::predicate(
                             Predicate::eq("/outer/y", json!(true)).unwrap(),
                         ))
                         .into_field(),
                 )
                 .into_field(),
-            Field::string("top").into_field(),
+            Field::string(field_key!("top")).into_field(),
         ];
 
         let report = run(&fields);
@@ -1375,14 +1375,14 @@ mod tests {
     #[test]
     fn detects_visibility_cycle_through_mode_variant_payload() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .visible_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
                 .into_field(),
-            Field::mode("m")
+            Field::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
-                    Field::string("payload")
+                    Field::string(field_key!("payload"))
                         .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                         .into_field(),
                 )
@@ -1400,10 +1400,10 @@ mod tests {
     #[test]
     fn detects_required_cycle_between_top_level_fields() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
                 .into_field(),
-            Field::string("b")
+            Field::string(field_key!("b"))
                 .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                 .into_field(),
         ];
@@ -1418,16 +1418,16 @@ mod tests {
 
     #[test]
     fn detects_required_cycle_inside_nested_object() {
-        let outer = Field::object("outer")
+        let outer = Field::object(field_key!("outer"))
             .add(
-                Field::string("x")
+                Field::string(field_key!("x"))
                     .required_when(Rule::predicate(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
                     .into_field(),
             )
             .add(
-                Field::string("y")
+                Field::string(field_key!("y"))
                     .required_when(Rule::predicate(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
@@ -1445,18 +1445,18 @@ mod tests {
     #[test]
     fn detects_required_cycle_with_list_index_reference() {
         let fields = vec![
-            Field::list("items")
+            Field::list(field_key!("items"))
                 .item(
-                    Field::object("row")
+                    Field::object(field_key!("row"))
                         .add(
-                            Field::string("x")
+                            Field::string(field_key!("x"))
                                 .required_when(Rule::predicate(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
                         )
                         .add(
-                            Field::string("y")
+                            Field::string(field_key!("y"))
                                 .required_when(Rule::predicate(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
@@ -1477,14 +1477,14 @@ mod tests {
     #[test]
     fn detects_required_cycle_through_mode_variant_payload() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .required_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
                 .into_field(),
-            Field::mode("m")
+            Field::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
-                    Field::string("payload")
+                    Field::string(field_key!("payload"))
                         .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                         .into_field(),
                 )
@@ -1502,11 +1502,11 @@ mod tests {
     #[test]
     fn detects_visibility_and_required_cycles_independently() {
         let fields = vec![
-            Field::string("a")
+            Field::string(field_key!("a"))
                 .visible_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
                 .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
                 .into_field(),
-            Field::string("b")
+            Field::string(field_key!("b"))
                 .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                 .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
                 .into_field(),

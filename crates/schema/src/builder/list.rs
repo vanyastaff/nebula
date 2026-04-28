@@ -8,6 +8,7 @@ use crate::{
         BooleanField, CodeField, Field, ListField, NumberField, SecretField, SelectField,
         StringField,
     },
+    key::FieldKey,
     mode::{ExpressionMode, VisibilityMode},
     widget::ListWidget,
 };
@@ -23,7 +24,7 @@ pub struct ListBuilder {
 
 impl ListBuilder {
     /// Create a new list builder bound to the given field key.
-    pub fn new(key: impl AsRef<str>) -> Self {
+    pub fn new(key: FieldKey) -> Self {
         Self {
             inner: ListField::new(key),
         }
@@ -124,7 +125,7 @@ impl ListBuilder {
     #[must_use]
     pub fn item_string(
         mut self,
-        key: impl AsRef<str>,
+        key: FieldKey,
         f: impl FnOnce(StringField) -> StringField,
     ) -> Self {
         let built = f(StringField::new(key));
@@ -136,7 +137,7 @@ impl ListBuilder {
     #[must_use]
     pub fn item_number(
         mut self,
-        key: impl AsRef<str>,
+        key: FieldKey,
         f: impl FnOnce(NumberField) -> NumberField,
     ) -> Self {
         let built = f(NumberField::new(key));
@@ -148,7 +149,7 @@ impl ListBuilder {
     #[must_use]
     pub fn item_boolean(
         mut self,
-        key: impl AsRef<str>,
+        key: FieldKey,
         f: impl FnOnce(BooleanField) -> BooleanField,
     ) -> Self {
         let built = f(BooleanField::new(key));
@@ -160,7 +161,7 @@ impl ListBuilder {
     #[must_use]
     pub fn item_select(
         mut self,
-        key: impl AsRef<str>,
+        key: FieldKey,
         f: impl FnOnce(SelectField) -> SelectField,
     ) -> Self {
         let built = f(SelectField::new(key));
@@ -170,11 +171,7 @@ impl ListBuilder {
 
     /// Set a code item schema via a typed closure.
     #[must_use]
-    pub fn item_code(
-        mut self,
-        key: impl AsRef<str>,
-        f: impl FnOnce(CodeField) -> CodeField,
-    ) -> Self {
+    pub fn item_code(mut self, key: FieldKey, f: impl FnOnce(CodeField) -> CodeField) -> Self {
         let built = f(CodeField::new(key));
         self.inner = self.inner.item(built);
         self
@@ -184,7 +181,7 @@ impl ListBuilder {
     #[must_use]
     pub fn item_secret(
         mut self,
-        key: impl AsRef<str>,
+        key: FieldKey,
         f: impl FnOnce(SecretField) -> SecretField,
     ) -> Self {
         let built = f(SecretField::new(key));
@@ -196,7 +193,7 @@ impl ListBuilder {
     #[must_use]
     pub fn item_object(
         mut self,
-        key: impl AsRef<str>,
+        key: FieldKey,
         f: impl FnOnce(ObjectBuilder) -> ObjectBuilder,
     ) -> Self {
         let built = f(ObjectBuilder::new(key));

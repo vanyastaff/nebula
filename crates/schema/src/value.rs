@@ -232,30 +232,19 @@ impl FieldValues {
         self.0.insert(key, value);
     }
 
-    /// Convenience: set a raw JSON value by string key.
-    ///
-    /// Parses `key` as a [`FieldKey`] and wraps `value` via
-    /// [`FieldValue::from_json`]. Panics if `key` is invalid — use only in
-    /// tests/migrations with known-good keys. For runtime input, prefer
-    /// [`Self::try_set_raw`].
-    ///
-    /// # Panics
-    ///
-    /// Panics when `key` is invalid or nested object keys fail validation.
-    pub fn set_raw(&mut self, key: &str, value: Value) {
-        self.try_set_raw(key, value)
-            .unwrap_or_else(|e| panic!("set_raw failed for key {key:?}: {e}"));
-    }
-
-    /// Fallible variant of [`Self::set_raw`] for runtime code paths.
-    ///
-    /// Validates nested object keys before insertion and returns `invalid_key`
-    /// when any path segment violates [`FieldKey`] constraints.
+    /// Set a raw JSON value by string key. Validates nested object keys
+    /// before insertion and returns `invalid_key` when any path segment
+    /// violates [`FieldKey`] constraints.
     ///
     /// # Errors
     ///
     /// Returns a [`crate::error::ValidationError`] when `key` or nested keys
     /// are invalid.
+    ///
+    /// # Example
+    ///
+    /// Use `.expect("known-good key")` in tests/migrations where the key is
+    /// a static literal. For runtime input, propagate the error with `?`.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -267,7 +256,7 @@ impl FieldValues {
     ) -> Result<(), crate::error::ValidationError> {
         let fk = FieldKey::new(key).map_err(|e| {
             crate::error::ValidationError::builder("invalid_key")
-                .message(format!("set_raw: invalid key {key:?}: {e}"))
+                .message(format!("try_set_raw: invalid key {key:?}: {e}"))
                 .param("key", Value::String(key.to_owned()))
                 .build()
         })?;
@@ -626,9 +615,10 @@ mod tests {
     }
 
     #[test]
-    fn set_raw_parses_expression_wrapper() {
+    fn try_set_raw_parses_expression_wrapper() {
         let mut vs = FieldValues::new();
-        vs.set_raw("expr", json!({"$expr":"{{ $x }}"}));
+        vs.try_set_raw("expr", json!({"$expr":"{{ $x }}"}))
+            .expect("test-only known-good key");
         assert!(matches!(
             vs.get(&FieldKey::new("expr").unwrap()),
             Some(FieldValue::Expression(_))

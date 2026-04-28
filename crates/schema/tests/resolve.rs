@@ -30,44 +30,45 @@ struct ApiCredential {
 /// Returns a constant value for every expression.
 struct ConstCtx(serde_json::Value);
 
-#[async_trait::async_trait]
 impl ExpressionContext for ConstCtx {
-    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        Ok(self.0.clone())
+    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        Box::pin(async move { Ok(self.0.clone()) })
     }
 }
 
 /// Returns values based on expression source fragments.
 struct RoutingCtx;
 
-#[async_trait::async_trait]
 impl ExpressionContext for RoutingCtx {
-    async fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        if ast.source().contains("$bad_str") {
-            return Ok(json!(123));
-        }
-        if ast.source().contains("$ok_str") {
-            return Ok(json!("ok"));
-        }
-        if ast.source().contains("$bad_item") {
-            return Ok(json!(999));
-        }
-        if ast.source().contains("$ok_num") {
-            return Ok(json!(42));
-        }
-        Ok(json!(null))
+    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        Box::pin(async move {
+            if ast.source().contains("$bad_str") {
+                return Ok(json!(123));
+            }
+            if ast.source().contains("$ok_str") {
+                return Ok(json!("ok"));
+            }
+            if ast.source().contains("$bad_item") {
+                return Ok(json!(999));
+            }
+            if ast.source().contains("$ok_num") {
+                return Ok(json!(42));
+            }
+            Ok(json!(null))
+        })
     }
 }
 
 /// Always fails with `expression.runtime`.
 struct FailCtx;
 
-#[async_trait::async_trait]
 impl ExpressionContext for FailCtx {
-    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        Err(ValidationError::builder("expression.runtime")
-            .message("evaluation failed")
-            .build())
+    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+        Box::pin(async move {
+            Err(ValidationError::builder("expression.runtime")
+                .message("evaluation failed")
+                .build())
+        })
     }
 }
 

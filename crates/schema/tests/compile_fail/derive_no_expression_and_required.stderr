@@ -1,0 +1,18 @@
+error: `#[param(no_expression)]` and `#[param(expression_required)]` are contradictory: pick exactly one expression-mode attribute
+ --> tests/compile_fail/derive_no_expression_and_required.rs:7:5
+  |
+7 |     name: String,
+  |     ^^^^
+
+error[E0599]: no function or associated item named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_no_expression_and_required.rs:11:18
+   |
+ 5 | struct Bad {
+   | ---------- function or associated item `schema` not found for this struct
+...
+11 |     let _ = Bad::schema();
+   |                  ^^^^^^ function or associated item not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

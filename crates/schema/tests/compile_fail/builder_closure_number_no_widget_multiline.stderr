@@ -1,10 +1,10 @@
 error[E0308]: mismatched types
- --> tests/compile_fail/builder_closure_number_no_widget_multiline.rs:6:35
+ --> tests/compile_fail/builder_closure_number_no_widget_multiline.rs:6:62
   |
-6 |         .number("n", |n| n.widget(StringWidget::Multiline))
-  |                            ------ ^^^^^^^^^^^^^^^^^^^^^^^ expected `NumberWidget`, found `StringWidget`
-  |                            |
-  |                            arguments to this method are incorrect
+6 |         .number(nebula_schema::field_key!("n"), |n| n.widget(StringWidget::Multiline))
+  |                                                       ------ ^^^^^^^^^^^^^^^^^^^^^^^ expected `NumberWidget`, found `StringWidget`
+  |                                                       |
+  |                                                       arguments to this method are incorrect
   |
 note: method defined here
  --> src/field.rs

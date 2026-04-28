@@ -1,22 +1,22 @@
-use nebula_schema::{Field, FieldValues, Schema};
+use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
 fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
         .add(
-            Field::select("resource")
+            Field::select(field_key!("resource"))
                 .option("message", "Message")
                 .option("chat", "Chat")
                 .required(),
         )
         .add(
-            Field::select("operation")
+            Field::select(field_key!("operation"))
                 .option("sendMessage", "Send Message")
                 .option("sendPhoto", "Send Photo")
                 .required(),
         )
         .add(
-            Field::string("text")
+            Field::string(field_key!("text"))
                 .min_length(1)
                 .max_length(4096)
                 .active_when(nebula_validator::Rule::predicate(
@@ -24,7 +24,7 @@ fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
                 )),
         )
         .add(
-            Field::secret("api_key")
+            Field::secret(field_key!("api_key"))
                 .required()
                 .min_length(20)
                 .reveal_last(4),
@@ -36,26 +36,26 @@ fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
 fn http_request_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
         .add(
-            Field::select("method")
+            Field::select(field_key!("method"))
                 .option("GET", "GET")
                 .option("POST", "POST")
                 .option("PUT", "PUT")
                 .required(),
         )
-        .add(Field::string("url").required().url())
+        .add(Field::string(field_key!("url")).required().url())
         .add(
-            Field::mode("auth")
+            Field::mode(field_key!("auth"))
                 // "hidden" role: use VisibilityMode::Never (hidden variant removed)
                 .variant(
                     "none",
                     "None",
-                    Field::string("none_payload")
+                    Field::string(field_key!("none_payload"))
                         .visible(nebula_schema::VisibilityMode::Never),
                 )
                 .variant(
                     "bearer",
                     "Bearer",
-                    Field::secret("token").required().min_length(8),
+                    Field::secret(field_key!("token")).required().min_length(8),
                 )
                 .default_variant("none"),
         )
@@ -66,20 +66,20 @@ fn http_request_schema() -> nebula_schema::ValidSchema {
 fn oauth2_credential_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
         .add(
-            Field::select("grant_type")
+            Field::select(field_key!("grant_type"))
                 .option("client_credentials", "Client Credentials")
                 .option("authorization_code", "Authorization Code")
                 .required(),
         )
         .add(
-            Field::secret("client_secret")
+            Field::secret(field_key!("client_secret"))
                 .required()
                 .multiline()
                 .reveal_last(4),
         )
         .add(
-            Field::list("scopes")
-                .item(Field::string("scope").min_length(1))
+            Field::list(field_key!("scopes"))
+                .item(Field::string(field_key!("scope")).min_length(1))
                 .min_items(1)
                 .max_items(20),
         )
@@ -90,9 +90,9 @@ fn oauth2_credential_schema() -> nebula_schema::ValidSchema {
 fn nested_object_schema() -> nebula_schema::ValidSchema {
     Schema::builder()
         .add(
-            Field::object("config")
-                .add(Field::string("host").required())
-                .add(Field::number("port").required()),
+            Field::object(field_key!("config"))
+                .add(Field::string(field_key!("host")).required())
+                .add(Field::number(field_key!("port")).required()),
         )
         .build()
         .expect("valid nested schema")

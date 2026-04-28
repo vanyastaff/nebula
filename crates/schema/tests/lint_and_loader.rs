@@ -1,6 +1,6 @@
 use nebula_schema::{
     Field, FieldPath, FieldValues, LoaderContext, LoaderRegistry, LoaderResult, Schema,
-    ValidationReport,
+    ValidationReport, field_key,
 };
 use serde_json::json;
 
@@ -24,21 +24,21 @@ fn has_warning(report: &ValidationReport, code: &str, path_prefix: &str) -> bool
 #[test]
 fn lint_schema_reports_dangling_refs_and_structural_issues() {
     let schema = raw_schema(vec![
-        Field::string("toggle").into(),
-        Field::string("name")
+        Field::string(field_key!("toggle")).into(),
+        Field::string(field_key!("name"))
             .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
             ))
             .with_rule(nebula_validator::Rule::min_length(5))
             .with_rule(nebula_validator::Rule::max_length(2))
             .into(),
-        Field::select("region")
+        Field::select(field_key!("region"))
             .dynamic()
             .loader("regions_loader")
             .depends_on(FieldPath::parse("unknown_ref").unwrap())
             .into(),
-        Field::mode("auth")
-            .variant("token", "", Field::secret("token"))
+        Field::mode(field_key!("auth"))
+            .variant("token", "", Field::secret(field_key!("token")))
             .default_variant("missing_variant")
             .into(),
     ]);
@@ -74,12 +74,12 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
 #[tokio::test]
 async fn loader_registry_resolves_select_and_dynamic_loaders() {
     let schema = raw_schema(vec![
-        Field::select("workspace")
+        Field::select(field_key!("workspace"))
             .dynamic()
             .loader("workspace_loader")
             .depends_on(FieldPath::parse("team_id").unwrap())
             .into(),
-        Field::dynamic("resource")
+        Field::dynamic(field_key!("resource"))
             .loader("resource_loader")
             .depends_on(FieldPath::parse("workspace").unwrap())
             .into(),
@@ -105,8 +105,12 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
         });
 
     let mut values = FieldValues::new();
-    values.set_raw("workspace", json!("ws_1"));
-    values.set_raw("team_id", json!("team_1"));
+    values
+        .try_set_raw("workspace", json!("ws_1"))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("team_id", json!("team_1"))
+        .expect("test-only known-good key");
     let context = LoaderContext::new("workspace", values.clone()).with_filter("prod");
 
     let options = schema
@@ -126,15 +130,15 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
 #[tokio::test]
 async fn valid_schema_loader_apis_resolve_loaders() {
     let schema = Schema::builder()
-        .add(Field::string("team_id"))
+        .add(Field::string(field_key!("team_id")))
         .add(
-            Field::select("workspace")
+            Field::select(field_key!("workspace"))
                 .dynamic()
                 .loader("workspace_loader")
                 .depends_on(FieldPath::parse("team_id").unwrap()),
         )
         .add(
-            Field::dynamic("resource")
+            Field::dynamic(field_key!("resource"))
                 .loader("resource_loader")
                 .depends_on(FieldPath::parse("workspace").unwrap()),
         )
@@ -169,13 +173,13 @@ async fn valid_schema_loader_apis_resolve_loaders() {
 #[tokio::test]
 async fn nested_schema_loader_apis_resolve_object_paths() {
     let schema = raw_schema(vec![
-        Field::object("config")
+        Field::object(field_key!("config"))
             .add(
-                Field::select("workspace")
+                Field::select(field_key!("workspace"))
                     .dynamic()
                     .loader("workspace_loader"),
             )
-            .add(Field::dynamic("resource").loader("resource_loader"))
+            .add(Field::dynamic(field_key!("resource")).loader("resource_loader"))
             .into(),
     ]);
 
@@ -221,10 +225,10 @@ async fn nested_schema_loader_apis_resolve_object_paths() {
 #[tokio::test]
 async fn nested_schema_loader_apis_resolve_list_item_paths() {
     let schema = raw_schema(vec![
-        Field::list("rows")
+        Field::list(field_key!("rows"))
             .item(
-                Field::object("row").add(
-                    Field::select("workspace")
+                Field::object(field_key!("row")).add(
+                    Field::select(field_key!("workspace"))
                         .dynamic()
                         .loader("workspace_loader"),
                 ),
@@ -267,11 +271,14 @@ async fn nested_schema_loader_apis_resolve_list_item_paths() {
 #[tokio::test]
 async fn nested_valid_schema_loader_api_resolves_mode_variant_paths() {
     let schema = Schema::builder()
-        .add(Field::mode("auth").variant(
-            "oauth",
-            "OAuth",
-            Field::object("creds").add(Field::dynamic("resource").loader("resource_loader")),
-        ))
+        .add(
+            Field::mode(field_key!("auth")).variant(
+                "oauth",
+                "OAuth",
+                Field::object(field_key!("creds"))
+                    .add(Field::dynamic(field_key!("resource")).loader("resource_loader")),
+            ),
+        )
         .build()
         .expect("schema should build");
 
@@ -297,9 +304,9 @@ async fn nested_valid_schema_loader_api_resolves_mode_variant_paths() {
 #[tokio::test]
 async fn nested_loader_errors_anchor_to_nested_path() {
     let schema = raw_schema(vec![
-        Field::object("config")
+        Field::object(field_key!("config"))
             .add(
-                Field::select("workspace")
+                Field::select(field_key!("workspace"))
                     .dynamic()
                     .loader("missing_workspace_loader"),
             )
@@ -324,9 +331,9 @@ async fn nested_loader_errors_anchor_to_nested_path() {
 #[tokio::test]
 async fn top_level_loader_string_api_rejects_nested_paths() {
     let schema = raw_schema(vec![
-        Field::object("config")
+        Field::object(field_key!("config"))
             .add(
-                Field::select("workspace")
+                Field::select(field_key!("workspace"))
                     .dynamic()
                     .loader("workspace_loader"),
             )
@@ -349,7 +356,7 @@ async fn top_level_loader_string_api_rejects_nested_paths() {
 #[tokio::test]
 async fn loader_registry_reports_missing_loader_registration() {
     let schema = raw_schema(vec![
-        Field::select("region")
+        Field::select(field_key!("region"))
             .dynamic()
             .loader("missing_loader")
             .into(),
@@ -365,7 +372,12 @@ async fn loader_registry_reports_missing_loader_registration() {
 
 #[tokio::test]
 async fn load_select_options_unknown_key_emits_field_not_found() {
-    let schema = raw_schema(vec![Field::select("region").dynamic().loader("x").into()]);
+    let schema = raw_schema(vec![
+        Field::select(field_key!("region"))
+            .dynamic()
+            .loader("x")
+            .into(),
+    ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("ghost", FieldValues::new());
     let error = schema
@@ -378,7 +390,7 @@ async fn load_select_options_unknown_key_emits_field_not_found() {
 
 #[tokio::test]
 async fn load_select_options_wrong_field_type_emits_type_mismatch() {
-    let schema = raw_schema(vec![Field::string("email").into()]);
+    let schema = raw_schema(vec![Field::string(field_key!("email")).into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("email", FieldValues::new());
     let error = schema
@@ -407,7 +419,11 @@ async fn load_select_options_wrong_field_type_emits_type_mismatch() {
 
 #[tokio::test]
 async fn load_select_options_without_loader_emits_missing_config() {
-    let schema = raw_schema(vec![Field::select("region").option("us", "US").into()]);
+    let schema = raw_schema(vec![
+        Field::select(field_key!("region"))
+            .option("us", "US")
+            .into(),
+    ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("region", FieldValues::new());
     let error = schema
@@ -420,7 +436,7 @@ async fn load_select_options_without_loader_emits_missing_config() {
 
 #[tokio::test]
 async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
-    let schema = raw_schema(vec![Field::number("count").into()]);
+    let schema = raw_schema(vec![Field::number(field_key!("count")).into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("count", FieldValues::new());
     let error = schema
@@ -440,7 +456,11 @@ async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
 
 #[tokio::test]
 async fn load_dynamic_records_unknown_key_emits_field_not_found() {
-    let schema = raw_schema(vec![Field::dynamic("resource").loader("loader_x").into()]);
+    let schema = raw_schema(vec![
+        Field::dynamic(field_key!("resource"))
+            .loader("loader_x")
+            .into(),
+    ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("ghost", FieldValues::new());
     let error = schema
@@ -453,7 +473,7 @@ async fn load_dynamic_records_unknown_key_emits_field_not_found() {
 
 #[tokio::test]
 async fn load_dynamic_records_without_loader_emits_missing_config() {
-    let schema = raw_schema(vec![Field::dynamic("resource").into()]);
+    let schema = raw_schema(vec![Field::dynamic(field_key!("resource")).into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("resource", FieldValues::new());
     let error = schema
@@ -467,12 +487,12 @@ async fn load_dynamic_records_without_loader_emits_missing_config() {
 #[test]
 fn lint_schema_detects_visibility_cycles() {
     let schema = raw_schema(vec![
-        Field::string("a")
+        Field::string(field_key!("a"))
             .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("b", json!(true)).unwrap(),
             ))
             .into(),
-        Field::string("b")
+        Field::string(field_key!("b"))
             .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("a", json!(true)).unwrap(),
             ))
@@ -494,9 +514,9 @@ fn lint_schema_detects_visibility_cycles() {
 #[test]
 fn runtime_validation_still_works_with_linted_schema() {
     let schema = Schema::builder()
-        .add(Field::boolean("enabled").required())
+        .add(Field::boolean(field_key!("enabled")).required())
         .add(
-            Field::string("name")
+            Field::string(field_key!("name"))
                 .required_when(nebula_validator::Rule::predicate(
                     nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
                 ))
@@ -506,8 +526,12 @@ fn runtime_validation_still_works_with_linted_schema() {
         .expect("valid schema");
 
     let mut values = FieldValues::new();
-    values.set_raw("enabled", json!(true));
-    values.set_raw("name", json!("ab"));
+    values
+        .try_set_raw("enabled", json!(true))
+        .expect("test-only known-good key");
+    values
+        .try_set_raw("name", json!("ab"))
+        .expect("test-only known-good key");
 
     let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
@@ -516,16 +540,16 @@ fn runtime_validation_still_works_with_linted_schema() {
 #[test]
 fn lint_schema_reports_rule_incompatible_warnings() {
     let schema = raw_schema(vec![
-        Field::number("retries")
+        Field::number(field_key!("retries"))
             .with_rule(nebula_validator::Rule::pattern("^\\d+$"))
             .with_rule(nebula_validator::Rule::email())
             .into(),
-        Field::string("name")
+        Field::string(field_key!("name"))
             .with_rule(nebula_validator::Rule::Value(
                 nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
             ))
             .into(),
-        Field::boolean("flag")
+        Field::boolean(field_key!("flag"))
             .with_rule(nebula_validator::Rule::all([
                 nebula_validator::Rule::max_length(10),
                 nebula_validator::Rule::not(nebula_validator::Rule::min_items(1)),
@@ -551,20 +575,20 @@ fn lint_schema_reports_rule_incompatible_warnings() {
 #[test]
 fn lint_schema_accepts_compatible_rule_types() {
     let schema = raw_schema(vec![
-        Field::string("title")
+        Field::string(field_key!("title"))
             .min_length(3)
             .with_rule(nebula_validator::Rule::url())
             .into(),
-        Field::number("timeout")
+        Field::number(field_key!("timeout"))
             .with_rule(nebula_validator::Rule::Value(
                 nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
             ))
             .into(),
-        Field::list("tags")
-            .item(Field::string("tag"))
+        Field::list(field_key!("tags"))
+            .item(Field::string(field_key!("tag")))
             .with_rule(nebula_validator::Rule::min_items(1))
             .into(),
-        Field::select("regions")
+        Field::select(field_key!("regions"))
             .multiple()
             .with_rule(nebula_validator::Rule::max_items(3))
             .into(),
@@ -592,8 +616,11 @@ fn lint_schema_accepts_compatible_rule_types() {
 #[test]
 fn lint_treats_blank_loader_key_as_missing_loader() {
     let schema = raw_schema(vec![
-        Field::select("region").dynamic().loader("   ").into(),
-        Field::dynamic("resource").loader("").into(),
+        Field::select(field_key!("region"))
+            .dynamic()
+            .loader("   ")
+            .into(),
+        Field::dynamic(field_key!("resource")).loader("").into(),
     ]);
 
     let report = schema.lint();
@@ -611,7 +638,7 @@ fn lint_treats_blank_loader_key_as_missing_loader() {
 fn lint_reports_duplicate_depends_on_entries() {
     let dependency = FieldPath::parse("team_id").unwrap();
     let schema = raw_schema(vec![
-        Field::select("workspace")
+        Field::select(field_key!("workspace"))
             .dynamic()
             .loader("workspace_loader")
             .depends_on(dependency.clone())
@@ -632,7 +659,12 @@ fn lint_reports_duplicate_depends_on_entries() {
 
 #[tokio::test]
 async fn load_select_options_blank_loader_emits_missing_config() {
-    let schema = raw_schema(vec![Field::select("region").dynamic().loader(" ").into()]);
+    let schema = raw_schema(vec![
+        Field::select(field_key!("region"))
+            .dynamic()
+            .loader(" ")
+            .into(),
+    ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("region", FieldValues::new());
     let error = schema
@@ -644,7 +676,9 @@ async fn load_select_options_blank_loader_emits_missing_config() {
 
 #[tokio::test]
 async fn load_dynamic_records_blank_loader_emits_missing_config() {
-    let schema = raw_schema(vec![Field::dynamic("resource").loader(" ").into()]);
+    let schema = raw_schema(vec![
+        Field::dynamic(field_key!("resource")).loader(" ").into(),
+    ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("resource", FieldValues::new());
     let error = schema
@@ -659,13 +693,13 @@ fn loader_dependency_cycle_detected() {
     // region depends_on cloud_provider, cloud_provider depends_on region -> cycle
     let schema = Schema::builder()
         .add(
-            Field::select("region")
+            Field::select(field_key!("region"))
                 .dynamic()
                 .loader("region_loader")
                 .depends_on(FieldPath::parse("cloud_provider").unwrap()),
         )
         .add(
-            Field::select("cloud_provider")
+            Field::select(field_key!("cloud_provider"))
                 .dynamic()
                 .loader("cloud_loader")
                 .depends_on(FieldPath::parse("region").unwrap()),
@@ -689,12 +723,12 @@ fn loader_dependency_no_cycle() {
     // The build itself succeeds without a loader_dependency_cycle error.
     let result = Schema::builder()
         .add(
-            Field::select("cloud_provider")
+            Field::select(field_key!("cloud_provider"))
                 .dynamic()
                 .loader("cloud_loader"),
         )
         .add(
-            Field::select("region")
+            Field::select(field_key!("region"))
                 .dynamic()
                 .loader("region_loader")
                 .depends_on(FieldPath::parse("cloud_provider").unwrap()),
@@ -716,19 +750,19 @@ fn loader_dependency_transitive_cycle() {
     // A depends_on B, B depends_on C, C depends_on A -> transitive cycle
     let schema = Schema::builder()
         .add(
-            Field::select("a")
+            Field::select(field_key!("a"))
                 .dynamic()
                 .loader("loader_a")
                 .depends_on(FieldPath::parse("b").unwrap()),
         )
         .add(
-            Field::select("b")
+            Field::select(field_key!("b"))
                 .dynamic()
                 .loader("loader_b")
                 .depends_on(FieldPath::parse("c").unwrap()),
         )
         .add(
-            Field::select("c")
+            Field::select(field_key!("c"))
                 .dynamic()
                 .loader("loader_c")
                 .depends_on(FieldPath::parse("a").unwrap()),
@@ -750,7 +784,7 @@ fn loader_dependency_transitive_cycle() {
 fn select_options_consistent_types_ok() {
     // All string options — no warning expected.
     let schema = raw_schema(vec![
-        Field::select("color")
+        Field::select(field_key!("color"))
             .option(json!("red"), "Red")
             .option(json!("green"), "Green")
             .option(json!("blue"), "Blue")
@@ -772,7 +806,7 @@ fn select_options_consistent_types_ok() {
 fn select_options_mixed_types_warns() {
     // Mix of string and number option values — should warn.
     let schema = raw_schema(vec![
-        Field::select("mixed")
+        Field::select(field_key!("mixed"))
             .option(json!("alpha"), "Alpha")
             .option(json!(1), "One")
             .into(),
@@ -793,7 +827,7 @@ fn select_options_mixed_types_warns() {
 fn select_options_complex_value_without_multiple_warns() {
     // Non-multiple select with an array option value — should warn.
     let schema = raw_schema(vec![
-        Field::select("tags")
+        Field::select(field_key!("tags"))
             .option(json!(["a", "b"]), "Tags A+B")
             .option(json!(["c"]), "Tag C")
             .into(),
@@ -814,7 +848,7 @@ fn select_options_complex_value_without_multiple_warns() {
 fn select_options_multiple_with_array_values_ok() {
     // Multiple select with array option values — consistent type, no warning expected.
     let schema = raw_schema(vec![
-        Field::select("tags")
+        Field::select(field_key!("tags"))
             .option(json!(["a", "b"]), "Tags A+B")
             .option(json!(["c", "d"]), "Tags C+D")
             .multiple()
@@ -836,7 +870,7 @@ fn select_options_multiple_with_array_values_ok() {
 fn select_single_option_complex_type_warns() {
     // Non-multiple select with a single option whose value is an array — should warn.
     let schema = raw_schema(vec![
-        Field::select("data")
+        Field::select(field_key!("data"))
             .option(json!(["x", "y"]), "X and Y")
             .into(),
     ]);

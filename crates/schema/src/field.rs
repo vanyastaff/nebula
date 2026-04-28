@@ -87,8 +87,26 @@ macro_rules! define_field {
             }
 
             /// Create a typed field with defaults.
-            pub fn new(key: impl AsRef<str>) -> Self {
-                Self::with_key(FieldKey::new(key).expect("field key must be valid"))
+            ///
+            /// Accepts an already-validated [`FieldKey`]. Use the
+            /// [`field_key!`](crate::field_key) macro for compile-time keys
+            /// or [`Self::try_new`] for runtime-validated strings.
+            pub fn new(key: FieldKey) -> Self {
+                Self::with_key(key)
+            }
+
+            /// Create a typed field by validating a runtime string.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`ValidationError`] with code `invalid_key` when `key`
+            /// does not satisfy [`FieldKey`] constraints.
+            #[expect(
+                clippy::result_large_err,
+                reason = "ValidationError is intentionally large; callers are on the validation path"
+            )]
+            pub fn try_new(key: impl AsRef<str>) -> Result<Self, crate::error::ValidationError> {
+                FieldKey::new(key).map(Self::with_key)
             }
 
             /// Borrow the field key.
@@ -625,7 +643,8 @@ impl ModeField {
             key: key.into(),
             label: label.into(),
             field: Box::new(
-                Field::string(Self::EMPTY_PLACEHOLDER_KEY)
+                Field::try_string(Self::EMPTY_PLACEHOLDER_KEY)
+                    .expect("EMPTY_PLACEHOLDER_KEY is a valid FieldKey")
                     .visible(VisibilityMode::Never)
                     .no_expression()
                     .into(),
@@ -840,7 +859,7 @@ impl Field {
     /// assert!(schema.find(&field_key!("greeting")).is_some());
     /// ```
     #[must_use]
-    pub fn string(key: impl AsRef<str>) -> StringField {
+    pub fn string(key: FieldKey) -> StringField {
         StringField::new(key)
     }
 
@@ -857,7 +876,7 @@ impl Field {
 
     /// Create `SecretField`.
     #[must_use]
-    pub fn secret(key: impl AsRef<str>) -> SecretField {
+    pub fn secret(key: FieldKey) -> SecretField {
         SecretField::new(key)
     }
 
@@ -874,7 +893,7 @@ impl Field {
 
     /// Create `NumberField`.
     #[must_use]
-    pub fn number(key: impl AsRef<str>) -> NumberField {
+    pub fn number(key: FieldKey) -> NumberField {
         NumberField::new(key)
     }
 
@@ -891,7 +910,7 @@ impl Field {
 
     /// Create integer `NumberField`.
     #[must_use]
-    pub fn integer(key: impl AsRef<str>) -> NumberField {
+    pub fn integer(key: FieldKey) -> NumberField {
         NumberField::new(key).integer()
     }
 
@@ -925,7 +944,7 @@ impl Field {
     /// assert!(schema.validate(&values).is_ok());
     /// ```
     #[must_use]
-    pub fn boolean(key: impl AsRef<str>) -> BooleanField {
+    pub fn boolean(key: FieldKey) -> BooleanField {
         BooleanField::new(key)
     }
 
@@ -942,7 +961,7 @@ impl Field {
 
     /// Create `SelectField`.
     #[must_use]
-    pub fn select(key: impl AsRef<str>) -> SelectField {
+    pub fn select(key: FieldKey) -> SelectField {
         SelectField::new(key)
     }
 
@@ -959,7 +978,7 @@ impl Field {
 
     /// Create `ObjectField`.
     #[must_use]
-    pub fn object(key: impl AsRef<str>) -> ObjectField {
+    pub fn object(key: FieldKey) -> ObjectField {
         ObjectField::new(key)
     }
 
@@ -976,7 +995,7 @@ impl Field {
 
     /// Create `ListField`.
     #[must_use]
-    pub fn list(key: impl AsRef<str>) -> ListField {
+    pub fn list(key: FieldKey) -> ListField {
         ListField::new(key)
     }
 
@@ -994,7 +1013,7 @@ impl Field {
     /// Create a mode field. See [`ModeField`] for the `{ "mode", "value" }` wire contract and
     /// list payload rules, and [`ModeField::variant_empty`] for no-payload branches.
     #[must_use]
-    pub fn mode(key: impl AsRef<str>) -> ModeField {
+    pub fn mode(key: FieldKey) -> ModeField {
         ModeField::new(key)
     }
 
@@ -1011,7 +1030,7 @@ impl Field {
 
     /// Create `CodeField`.
     #[must_use]
-    pub fn code(key: impl AsRef<str>) -> CodeField {
+    pub fn code(key: FieldKey) -> CodeField {
         CodeField::new(key)
     }
 
@@ -1028,7 +1047,7 @@ impl Field {
 
     /// Create `FileField`.
     #[must_use]
-    pub fn file(key: impl AsRef<str>) -> FileField {
+    pub fn file(key: FieldKey) -> FileField {
         FileField::new(key)
     }
 
@@ -1045,7 +1064,7 @@ impl Field {
 
     /// Create `ComputedField`.
     #[must_use]
-    pub fn computed(key: impl AsRef<str>) -> ComputedField {
+    pub fn computed(key: FieldKey) -> ComputedField {
         ComputedField::new(key)
     }
 
@@ -1062,7 +1081,7 @@ impl Field {
 
     /// Create `DynamicField`.
     #[must_use]
-    pub fn dynamic(key: impl AsRef<str>) -> DynamicField {
+    pub fn dynamic(key: FieldKey) -> DynamicField {
         DynamicField::new(key)
     }
 
@@ -1079,7 +1098,7 @@ impl Field {
 
     /// Create `NoticeField`.
     #[must_use]
-    pub fn notice(key: impl AsRef<str>) -> NoticeField {
+    pub fn notice(key: FieldKey) -> NoticeField {
         NoticeField::new(key)
     }
 

@@ -1,5 +1,5 @@
 error[E0599]: no method named `multiline` found for struct `NumberBuilder` in the current scope
- --> tests/compile_fail/number_no_multiline.rs:2:51
+ --> tests/compile_fail/number_no_multiline.rs:2:78
   |
-2 |     let _ = nebula_schema::Field::number("count").multiline();
-  |                                                   ^^^^^^^^^ method not found in `NumberBuilder`
+2 |     let _ = nebula_schema::Field::number(nebula_schema::field_key!("count")).multiline();
+  |                                                                              ^^^^^^^^^ method not found in `NumberBuilder`

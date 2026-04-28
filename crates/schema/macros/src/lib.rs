@@ -15,15 +15,12 @@ mod type_infer;
 /// works whether the caller renamed the dependency or derives are
 /// expanded from inside `nebula-schema` itself.
 ///
-/// Both [`FoundCrate::Itself`] and `Err(_)` map to the absolute path
-/// `::nebula_schema`, **not** `crate` — `cargo test --doc` compiles
-/// every doctest as a separate binary that links against nebula-schema
-/// as an external dependency, so from that binary's perspective `crate`
-/// resolves to the synthetic doctest crate, not to `nebula_schema`.
-/// Using the absolute path is safe for all call sites (doctests,
-/// integration tests, external crates) and was the original design —
-/// restoring it here after an earlier review suggestion that missed
-/// the doctest linkage.
+/// Resolution rules (driven by [`proc_macro_crate::crate_name`]):
+/// - [`FoundCrate::Itself`] → `::nebula_schema` (works in lib code via `extern crate self as
+///   nebula_schema;` in `lib.rs`, in doctests via the doctest binary's external crate alias, and in
+///   integration tests / examples / benches via the package's own crate alias).
+/// - [`FoundCrate::Name(name)`] → `::name` (external crate that renamed the dependency).
+/// - `Err(_)` → fall back to `::nebula_schema` for unknown contexts.
 pub(crate) fn crate_path() -> TokenStream2 {
     match crate_name("nebula-schema") {
         Ok(FoundCrate::Itself) | Err(_) => quote!(::nebula_schema),

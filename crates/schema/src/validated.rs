@@ -852,9 +852,19 @@ fn resolve_value<'v>(
     Box::pin(async move {
         match value {
             FieldValue::Expression(ref expr) => {
+                tracing::debug!(
+                    target: "nebula_schema::resolve",
+                    path = %path,
+                    "evaluating expression"
+                );
                 match expr.parse_at(path) {
                     Ok(ast) => match ctx.evaluate(ast).await {
                         Ok(v) => {
+                            tracing::trace!(
+                                target: "nebula_schema::resolve",
+                                path = %path,
+                                "expression resolved"
+                            );
                             resolved_expression_paths.insert(path.clone());
                             FieldValue::Literal(v)
                         },
@@ -868,11 +878,23 @@ fn resolve_value<'v>(
                                     .message(e.message.clone())
                                     .build();
                             }
+                            tracing::warn!(
+                                target: "nebula_schema::resolve",
+                                path = %path,
+                                code = %e.code,
+                                "expression evaluation failed"
+                            );
                             report.push(e);
                             FieldValue::Literal(serde_json::Value::Null)
                         },
                     },
                     Err(e) => {
+                        tracing::warn!(
+                            target: "nebula_schema::resolve",
+                            path = %path,
+                            code = %e.code,
+                            "expression parse failed at resolve"
+                        );
                         report.push(e);
                         FieldValue::Literal(serde_json::Value::Null)
                     },
@@ -1702,7 +1724,7 @@ fn push_validator_rule_errors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Field, FieldKey, Schema};
+    use crate::{Field, FieldKey, Schema, field_key};
 
     #[test]
     fn clone_is_cheap_via_arc() {
@@ -1727,11 +1749,14 @@ mod tests {
     #[test]
     fn find_by_path_handles_nested_object_and_mode_variant() {
         let schema = Schema::builder()
-            .add(Field::object(FieldKey::new("user").unwrap()).add(Field::string("email")))
+            .add(
+                Field::object(FieldKey::new("user").unwrap())
+                    .add(Field::string(field_key!("email"))),
+            )
             .add(Field::mode(FieldKey::new("auth").unwrap()).variant(
                 "token",
                 "Token",
-                Field::string("value"),
+                Field::string(field_key!("value")),
             ))
             .build()
             .unwrap();

@@ -187,11 +187,10 @@ impl<T: Send + 'static> Clone for Loader<T> {
     }
 }
 
-impl<T: Send + 'static> PartialEq for Loader<T> {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
+// `Loader<T>` intentionally does NOT implement `PartialEq`. Two loaders backed
+// by different closures cannot be compared by value, and a previous "always
+// `true`" impl violated the contract — see the T05 entry of the
+// nebula-schema-quality-fixes plan.
 
 impl<T: Send + 'static> std::fmt::Debug for Loader<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -378,8 +377,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        Field, FieldValues, Schema, expression::Expression, key::FieldKey, secret::SECRET_REDACTED,
-        value::FieldValue,
+        Field, FieldValues, Schema, expression::Expression, field_key, key::FieldKey,
+        secret::SECRET_REDACTED, value::FieldValue,
     };
 
     fn k(name: &str) -> FieldKey {
@@ -485,9 +484,9 @@ mod tests {
     fn with_secrets_redacted_object_nested_and_non_secret_unchanged() {
         let schema = Schema::builder()
             .add(
-                Field::object("config")
-                    .add(Field::secret("api_key"))
-                    .add(Field::string("label")),
+                Field::object(field_key!("config"))
+                    .add(Field::secret(field_key!("api_key")))
+                    .add(Field::string(field_key!("label"))),
             )
             .build()
             .expect("valid schema");
@@ -514,7 +513,7 @@ mod tests {
     #[test]
     fn with_secrets_redacted_list_of_secrets() {
         let schema = Schema::builder()
-            .add(Field::list("tokens").item(Field::secret("t")))
+            .add(Field::list(field_key!("tokens")).item(Field::secret(field_key!("t"))))
             .build()
             .expect("valid schema");
         let values = FieldValues::from_json(json!({ "tokens": ["a", "b"] })).expect("values");
@@ -533,15 +532,15 @@ mod tests {
     fn with_secrets_redacted_mode_variant_object_with_nested_secret() {
         let schema = Schema::builder()
             .add(
-                Field::mode("auth")
+                Field::mode(field_key!("auth"))
                     .variant(
                         "oauth",
                         "OAuth",
-                        Field::object("creds")
-                            .add(Field::secret("client_secret"))
-                            .add(Field::string("client_id")),
+                        Field::object(field_key!("creds"))
+                            .add(Field::secret(field_key!("client_secret")))
+                            .add(Field::string(field_key!("client_id"))),
                     )
-                    .variant("plain", "Plain", Field::string("name")),
+                    .variant("plain", "Plain", Field::string(field_key!("name"))),
             )
             .build()
             .expect("valid schema");
@@ -584,13 +583,13 @@ mod tests {
     fn with_secrets_redacted_mode_object_without_mode_uses_default_variant() {
         let schema = Schema::builder()
             .add(
-                Field::mode("auth")
+                Field::mode(field_key!("auth"))
                     .variant(
                         "oauth",
                         "OAuth",
-                        Field::object("creds")
-                            .add(Field::secret("client_secret"))
-                            .add(Field::string("client_id")),
+                        Field::object(field_key!("creds"))
+                            .add(Field::secret(field_key!("client_secret")))
+                            .add(Field::string(field_key!("client_id"))),
                     )
                     .default_variant("oauth"),
             )
@@ -626,7 +625,7 @@ mod tests {
     #[test]
     fn with_secrets_redacted_expression_on_secret_is_literal_token() {
         let schema = Schema::builder()
-            .add(Field::secret("api_key"))
+            .add(Field::secret(field_key!("api_key")))
             .build()
             .expect("valid schema");
         let mut values = FieldValues::new();

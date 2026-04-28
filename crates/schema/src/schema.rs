@@ -456,15 +456,15 @@ impl SchemaBuilder {
     /// `visible_when` / `required_when` conditions.
     ///
     /// ```rust
-    /// use nebula_schema::{FieldCollector, Schema, StringWidget};
+    /// use nebula_schema::{FieldCollector, Schema, StringWidget, field_key};
     /// use nebula_validator::{Predicate, Rule};
     ///
     /// let rule = Rule::predicate(Predicate::eq("method", "POST").unwrap());
     /// let schema = Schema::builder()
-    ///     .string("method", |s| s.required())
+    ///     .string(field_key!("method"), |s| s.required())
     ///     .group("body_section", |g| {
     ///         g.visible_when(rule)
-    ///             .string("body", |s| s.widget(StringWidget::Multiline))
+    ///             .string(field_key!("body"), |s| s.widget(StringWidget::Multiline))
     ///     })
     ///     .build()
     ///     .unwrap();

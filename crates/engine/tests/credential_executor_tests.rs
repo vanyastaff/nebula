@@ -16,7 +16,9 @@ async fn execute_resolve_static_credential_returns_complete() {
     let ctx = CredentialContext::for_test("user-1");
 
     let mut values = FieldValues::new();
-    values.set_raw("api_key", serde_json::Value::String("sk-test-key".into()));
+    values
+        .try_set_raw("api_key", serde_json::Value::String("sk-test-key".into()))
+        .expect("test-only known-good key");
 
     let result =
         nebula_engine::credential::execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store)

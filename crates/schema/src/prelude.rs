@@ -21,7 +21,7 @@ pub use nebula_schema_macros::EnumSelect;
 pub use nebula_validator::{Predicate, Rule};
 
 pub use crate::{
-    BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Expression,
+    BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, EvalFuture, Expression,
     ExpressionContext, ExpressionMode, Field, FieldKey, FieldPath, FieldValue, FieldValues,
     FileField, HasSchema, HasSelectOptions, InputHint, KdfParams, ListField, LoaderContext,
     LoaderRegistry, ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField,

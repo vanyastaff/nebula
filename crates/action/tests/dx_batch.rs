@@ -27,10 +27,10 @@ struct NumberList {
 
 impl nebula_schema::HasSchema for NumberList {
     fn schema() -> nebula_schema::ValidSchema {
-        use nebula_schema::{FieldCollector, Schema};
+        use nebula_schema::{FieldCollector, Schema, field_key};
         Schema::builder()
-            .list("numbers", |l| {
-                l.item_number("n", nebula_schema::NumberBuilder::integer)
+            .list(field_key!("numbers"), |l| {
+                l.item_number(field_key!("n"), nebula_schema::NumberBuilder::integer)
             })
             .build()
             .expect("NumberList schema is valid")
