@@ -22,8 +22,10 @@
   (Layer 1 traits stable, 23 PG migrations + 9 common, CAS, outbox, reclaim).
   `engine` is ~80% — orchestration solid, **§11.5 durability debts closed
   via M0** (budget + workflow_input persistence shipped under #289 / #311;
-  explicit-termination wiring landed in M0.3); remaining engine debts are
-  full-graph edge gating (M1.1) and engine-level retry execution (M2.1).
+  explicit-termination wiring landed in M0.3); **§10 conditional-flow
+  correctness verified via M1** (skip-propagation tests + dead-field
+  cleanup, 2026-04-28); remaining engine debt is engine-level retry
+  execution (M2.1).
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
 - **API layer** — routing wired; **5 sizable feature gaps** (auth backend,
@@ -93,19 +95,40 @@ Pure data debt, no architectural rework needed.
 test (`Terminate` → `ExplicitStop` round-trips through `ExecutionResult` and
 `ExecutionEvent`); M0.4 brings README/canon back in sync.
 
-### M1 — Engine correctness: full-graph edge gating
+### M1 — Engine correctness verification + cleanup (canon §10)
 
-- [ ] **M1.1** Replace local-edge skip propagation with full-graph
-      transitive blocking. Today `crates/engine/src/engine.rs:1808`
-      blocks only direct successors; multi-hop conditional flows can
-      read stale outputs from skipped branches.
-- [ ] **M1.2** Decide and document fate of `expression_engine` field
-      (`crates/engine/src/engine.rs:124-128`, currently
-      `#[expect(dead_code)]`): wire dynamic edge conditions for 1.0 OR
-      remove the field and downgrade canon §10 claims.
+**Why re-scoped.** The original M1.1 entry described a "local-edge gating"
+defect that recon (2026-04-28) showed didn't exist — `propagate_skip`
+(engine.rs:3267-3313) was already full-graph recursive via the
+`resolved == required && activated == 0` ladder. M1.2 option A ("wire
+dynamic edge conditions") contradicted Spec 28 §2.2 which already settled
+conditional routing via explicit `ControlAction` nodes. Re-scoped to
+verification + dead-field cleanup + doc audit.
 
-**Exit:** §10 conditional-flow text matches behaviour; no `#[expect(dead_code)]`
-in engine.
+- [x] **M1.1** ~~Verify full-graph skip propagation in non-trivial
+      topologies~~ — **DONE** (closed 2026-04-28). Added 5 integration tests
+      covering transitive 3-hop chain, diamond with one skipped branch,
+      mixed-source aggregate, all-sources-skipped aggregate, and multi-hop
+      skip with sibling activation (`crates/engine/tests/integration.rs`).
+      All pass on the existing `propagate_skip` recursion.
+- [x] **M1.2** ~~Remove dead `WorkflowEngine.expression_engine` field~~ —
+      **DONE** (closed 2026-04-28). Field at `engine.rs:125-130` (annotated
+      `#[expect(dead_code)]`) removed; the shared `Arc<ExpressionEngine>`
+      lives in `ParamResolver` (the only consumer, used for parameter
+      expression / template resolution). Spec 28 §2.2 already settled the
+      conditional-routing question via `ControlAction` nodes — there is no
+      engine-level edge expression to evaluate.
+- [x] **M1.3** ~~Sync canon §10 / docs with Spec 28 §2.2 port-driven
+      routing~~ — **DONE** (closed 2026-04-28). Updated
+      `crates/workflow/README.md` Public API section to describe `Connection`
+      as a pure wire (no `EdgeCondition` / `ResultMatcher` / `ErrorMatcher`);
+      added stale-doc warning + drift table to
+      `crates/workflow/docs/Architecture.md` (880-line pre-Spec-28 planning
+      doc). `connection.rs` and `builder.rs` already frame the removed
+      types as historical context (verified).
+
+**Exit:** skip-propagation correctness verified by tests; no
+`#[expect(dead_code)]` in engine; docs match shipping code.
 
 ### M2 — Engine retry semantics + node attempts
 

@@ -122,12 +122,6 @@ pub struct WorkflowEngine {
     plugin_registry: PluginRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
-    /// Expression engine for evaluating edge conditions.
-    #[expect(
-        dead_code,
-        reason = "field reserved for expression-based edge condition evaluation; wired up in construction but not yet called at runtime"
-    )]
-    expression_engine: Arc<ExpressionEngine>,
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
     /// Optional execution repository for persistent state storage.
@@ -265,8 +259,7 @@ impl WorkflowEngine {
             runtime,
             metrics,
             plugin_registry: PluginRegistry::new(),
-            resolver: ParamResolver::new(expression_engine.clone()),
-            expression_engine,
+            resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
             execution_repo: None,
             workflow_repo: None,
