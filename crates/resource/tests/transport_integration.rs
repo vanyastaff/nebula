@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 use nebula_credential::{Credential, NoCredential};
 use nebula_resource::{
     AcquireOptions, AcquireResilience, AcquireRetryConfig, Manager, RegisterOptions,
@@ -268,8 +268,10 @@ async fn register_transport_then_acquire_via_manager() {
     assert_eq!(handle.topology_tag(), TopologyTag::Transport);
     // Single open_session call so far.
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);
-    // create() was called exactly once at register time (Transport runtime
-    // wraps the user-supplied runtime; create runs ONCE per registration).
+    // `register_transport` wraps the user-supplied runtime directly, so
+    // `Resource::create` is NOT invoked at register or acquire time on this
+    // path. (`create` is only called by topologies that build their own
+    // runtime — Pooled/Resident — not Transport/Service/Exclusive.)
     assert_eq!(resource.create_counter().load(Ordering::Relaxed), 0);
 
     drop(handle);
@@ -299,21 +301,27 @@ async fn multiple_sessions_share_one_transport() {
         )
         .expect("register");
 
-    // Acquire 5 sessions concurrently — semantics: one transport, many sessions.
-    let mut handles = Vec::new();
-    for _ in 0..5 {
-        let h = manager
+    // Acquire 5 sessions in parallel — `join_all` issues all five
+    // `acquire_transport_default` futures concurrently, exercising the
+    // multiplexing path under real concurrency rather than serial awaits.
+    let manager_ref = &manager;
+    let acquires = (0..5).map(|_| async move {
+        manager_ref
             .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
             .await
-            .expect("acquire");
+            .expect("acquire")
+    });
+    let handles: Vec<_> = futures::future::join_all(acquires).await;
+
+    assert_eq!(handles.len(), 5);
+    for h in &handles {
         assert_eq!(h.topology_tag(), TopologyTag::Transport);
-        handles.push(h);
     }
 
     assert_eq!(
         resource.open_counter().load(Ordering::Relaxed),
         5,
-        "five open_session calls expected"
+        "five concurrent open_session calls expected"
     );
 
     // All 5 dropped — close_session called 5 times (background, async).
@@ -636,6 +644,7 @@ async fn register_transport_with_custom_scope() {
     let manager = Manager::new();
     let resource = TransportA::new();
     let transport_inner = Arc::new(MockTransportInner { name: "scoped" });
+    let workflow_id = WorkflowId::new();
 
     manager
         .register_transport_with(
@@ -648,7 +657,7 @@ async fn register_transport_with_custom_scope() {
                 acquire_timeout: Duration::from_secs(1),
             },
             RegisterOptions {
-                scope: ScopeLevel::Global,
+                scope: ScopeLevel::Workflow(workflow_id),
                 ..RegisterOptions::default()
             },
         )
@@ -658,7 +667,39 @@ async fn register_transport_with_custom_scope() {
 
     // lookup<R> at the registered scope returns the ManagedResource.
     let managed = manager
-        .lookup::<TransportA>(&ScopeLevel::Global)
-        .expect("lookup at Global scope");
+        .lookup::<TransportA>(&ScopeLevel::Workflow(workflow_id))
+        .expect("lookup at registered Workflow scope");
     assert_eq!(managed.generation(), 0);
+
+    // Acquire with a context whose `scope_level()` resolves to the same
+    // Workflow level as the registration. `scope_level()` returns the
+    // most specific level derivable from the bag (Execution > Workflow >
+    // ...), so we set ONLY `workflow_id` to keep the resolved level at
+    // Workflow rather than falling through to Execution.
+    let scoped_ctx = {
+        use nebula_core::scope::Scope;
+        use tokio_util::sync::CancellationToken;
+        let scope = Scope {
+            workflow_id: Some(workflow_id),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
+    };
+    let handle = manager
+        .acquire_transport_default::<TransportA>(&scoped_ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire under matching workflow scope");
+    assert_eq!(handle.topology_tag(), TopologyTag::Transport);
+    drop(handle);
+
+    // Lookup at Global (without a Global registration) must NOT resolve to the
+    // workflow-scoped registration — confirms scope isolation.
+    let err = manager
+        .lookup::<TransportA>(&ScopeLevel::Global)
+        .err()
+        .expect("lookup at Global must fail when only Workflow scope is registered");
+    assert!(
+        matches!(err.kind(), ErrorKind::NotFound),
+        "expected NotFound at Global scope, got {err:?}"
+    );
 }
