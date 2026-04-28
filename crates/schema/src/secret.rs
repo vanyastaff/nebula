@@ -163,12 +163,25 @@ impl SecretString {
 
     /// Return the raw UTF-8 secret for trusted consumers.
     ///
-    /// Emits a [`tracing::debug!`] line with a caller location to support audits.
+    /// Emits a `tracing::trace!` line with a caller location for diagnostics.
+    /// Enable the `audit-secret-expose` feature to escalate to `tracing::debug!`
+    /// for compliance / audit trails.
     #[inline]
     #[track_caller]
     pub fn expose(&self) -> &str {
         let s = self.0.as_str();
-        tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretString::expose");
+        #[cfg(feature = "audit-secret-expose")]
+        tracing::debug!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretString::expose"
+        );
+        #[cfg(not(feature = "audit-secret-expose"))]
+        tracing::trace!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretString::expose"
+        );
         s
     }
 
@@ -227,10 +240,25 @@ impl SecretBytes {
     }
 
     /// Return raw bytes.
+    ///
+    /// Emits a `tracing::trace!` line with a caller location for diagnostics.
+    /// Enable the `audit-secret-expose` feature to escalate to `tracing::debug!`
+    /// for compliance / audit trails.
     #[inline]
     #[track_caller]
     pub fn expose(&self) -> &[u8] {
-        tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretBytes::expose");
+        #[cfg(feature = "audit-secret-expose")]
+        tracing::debug!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretBytes::expose"
+        );
+        #[cfg(not(feature = "audit-secret-expose"))]
+        tracing::trace!(
+            target: "nebula_schema::secret",
+            location = %std::panic::Location::caller(),
+            "SecretBytes::expose"
+        );
         &self.0
     }
 

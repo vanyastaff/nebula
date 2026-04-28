@@ -315,6 +315,12 @@ impl LoaderRegistry {
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
     /// Both errors carry the requesting field's path (from `context.field_key`).
+    #[tracing::instrument(
+        level = "info",
+        target = "nebula_schema::loader",
+        skip(self, context),
+        fields(loader_key = %key, field_key = %context.field_key)
+    )]
     pub async fn load_options(
         &self,
         key: &str,
@@ -322,6 +328,11 @@ impl LoaderRegistry {
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
         let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.option_loaders.get(key) else {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                "option loader not registered"
+            );
             return Err(ValidationError::builder("loader.not_registered")
                 .at(field_path)
                 .message(format!("option loader `{key}` is not registered"))
@@ -329,6 +340,12 @@ impl LoaderRegistry {
                 .build());
         };
         loader.call(context).await.map_err(|e| {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                code = %e.code,
+                "option loader call failed"
+            );
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(&field_path, &e))
                 .message(format!("option loader `{key}` failed: {e}"))
@@ -345,6 +362,12 @@ impl LoaderRegistry {
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
     /// Both errors carry the requesting field's path (from `context.field_key`).
+    #[tracing::instrument(
+        level = "info",
+        target = "nebula_schema::loader",
+        skip(self, context),
+        fields(loader_key = %key, field_key = %context.field_key)
+    )]
     pub async fn load_records(
         &self,
         key: &str,
@@ -352,6 +375,11 @@ impl LoaderRegistry {
     ) -> Result<LoaderResult<Value>, ValidationError> {
         let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.record_loaders.get(key) else {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                "record loader not registered"
+            );
             return Err(ValidationError::builder("loader.not_registered")
                 .at(field_path)
                 .message(format!("record loader `{key}` is not registered"))
@@ -359,6 +387,12 @@ impl LoaderRegistry {
                 .build());
         };
         loader.call(context).await.map_err(|e| {
+            tracing::warn!(
+                target: "nebula_schema::loader",
+                loader_key = %key,
+                code = %e.code,
+                "record loader call failed"
+            );
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(&field_path, &e))
                 .message(format!("record loader `{key}` failed: {e}"))

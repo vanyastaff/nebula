@@ -320,6 +320,15 @@ impl ValidSchema {
     /// assert!(schema.validate(&full).is_ok());
     /// ```
     #[allow(clippy::result_large_err)]
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_schema::validate",
+        skip(self, values),
+        fields(
+            field_count = self.0.fields.len(),
+            has_root_rules = !self.0.root_rules.is_empty(),
+        )
+    )]
     pub fn validate(&self, values: &FieldValues) -> Result<ValidValues, ValidationReport> {
         use crate::context::RootContext;
 
@@ -334,6 +343,11 @@ impl ValidSchema {
         run_root_rules(&self.0.root_rules, values, &mut report);
 
         if report.has_errors() {
+            tracing::warn!(
+                target: "nebula_schema::validate",
+                error_count = report.errors().count(),
+                "validate produced errors"
+            );
             return Err(report);
         }
 
@@ -421,6 +435,15 @@ impl ValidValues {
     /// Returns `Err(ValidationReport)` when any expression evaluation fails
     /// or when a resolved value violates a field rule.
     #[allow(clippy::result_large_err)]
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_schema::resolve",
+        skip(self, ctx),
+        fields(
+            uses_expressions = self.schema.flags().uses_expressions,
+            field_count = self.schema.fields().len(),
+        )
+    )]
     pub async fn resolve(
         self,
         ctx: &dyn ExpressionContext,
@@ -470,21 +493,45 @@ impl ValidValues {
         // Re-run schema validation on resolved + promoted literals. Any type
         // mismatches at paths produced by expression evaluation are surfaced
         // as `expression.type_mismatch`.
+        //
+        // Fast path: if no expressions were resolved AND the schema doesn't
+        // declare any expression-bearing fields, the values are unchanged
+        // since the prior `validate()` call (the one that produced `self`).
+        // Skip the second walk in that case — it amounts to ~50% of the
+        // wall-clock cost of `resolve()` on schemas without expressions.
         let resolve_warnings: Vec<ValidationError> = report
             .iter()
             .filter(|e| e.severity == Severity::Warning)
             .cloned()
             .collect();
-        let post_resolve_warnings: Vec<ValidationError> = match self.schema.validate(&values) {
-            Ok(post_resolve_valid) => post_resolve_valid.warnings().to_vec(),
-            Err(mut post_resolve_report) => {
-                post_resolve_report.extend(self.warnings.iter().cloned());
-                post_resolve_report.extend(resolve_warnings.iter().cloned());
-                return Err(remap_expression_type_mismatch(
-                    post_resolve_report,
-                    &resolved_expression_paths,
-                ));
-            },
+
+        let skip_revalidate = resolved_expression_paths.is_empty()
+            && !self.schema.flags().uses_expressions
+            && resolve_warnings.is_empty();
+
+        let post_resolve_warnings: Vec<ValidationError> = if skip_revalidate {
+            tracing::trace!(
+                target: "nebula_schema::resolve",
+                "skipping post-resolve revalidate (no expressions / warnings)"
+            );
+            Vec::new()
+        } else {
+            tracing::debug!(
+                target: "nebula_schema::resolve",
+                resolved_expression_paths = resolved_expression_paths.len(),
+                "running post-resolve revalidate"
+            );
+            match self.schema.validate(&values) {
+                Ok(post_resolve_valid) => post_resolve_valid.warnings().to_vec(),
+                Err(mut post_resolve_report) => {
+                    post_resolve_report.extend(self.warnings.iter().cloned());
+                    post_resolve_report.extend(resolve_warnings.iter().cloned());
+                    return Err(remap_expression_type_mismatch(
+                        post_resolve_report,
+                        &resolved_expression_paths,
+                    ));
+                },
+            }
         };
 
         let all_warnings: Arc<[ValidationError]> = self
@@ -1531,10 +1578,12 @@ fn validate_literal_value(
 fn first_duplicate_index(values: impl IntoIterator<Item = serde_json::Value>) -> Option<usize> {
     let mut seen: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     for (idx, value) in values.into_iter().enumerate() {
-        // serde_json::Value does not implement Hash. Bucket by serialized form,
-        // then confirm equality within the bucket to preserve exact semantics.
+        // serde_json::Value does not implement Hash. Bucket by canonical
+        // string form (`serde_json::to_string` is infallible for `Value`
+        // because all map keys are strings), then confirm equality within
+        // the bucket to preserve exact semantics.
         let key = serde_json::to_string(&value)
-            .unwrap_or_else(|_| format!("__fallback_non_serializable__:{value:?}"));
+            .expect("serde_json::Value::to_string is infallible for valid JSON");
         if let Some(bucket) = seen.get_mut(&key) {
             if bucket.iter().any(|prior| prior == &value) {
                 return Some(idx);

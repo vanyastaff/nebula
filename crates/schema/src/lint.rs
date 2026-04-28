@@ -20,6 +20,12 @@ fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
 ///
 /// Walks the field tree rooted at `prefix` and appends `ValidationError`
 /// issues to `report`. Errors block the build; warnings are advisory.
+#[tracing::instrument(
+    level = "debug",
+    target = "nebula_schema::lint",
+    skip(fields, report),
+    fields(field_count = fields.len(), prefix = %prefix)
+)]
 pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut ValidationReport) {
     // Collect root-level key set for cross-reference checks.
     let root_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
@@ -27,6 +33,14 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_visibility_cycles_new(fields, prefix, report);
     lint_required_cycles_new(fields, prefix, report);
     lint_loader_dependency_cycles(fields, prefix, report);
+    if report.has_errors() || report.has_warnings() {
+        tracing::debug!(
+            target: "nebula_schema::lint",
+            error_count = report.errors().count(),
+            warning_count = report.warnings().count(),
+            "lint completed with issues"
+        );
+    }
 }
 
 fn lint_fields_new(
