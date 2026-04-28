@@ -16,7 +16,7 @@ updated: 2026-04-28
 > |---|---|
 > | `NodeId`, `ActionId` | `NodeKey`, `ActionKey` (`nebula-core`) |
 > | `Edge { from, to, condition: Option<EdgeCondition> }` | `Connection { from_node, to_node, from_port, to_port }` (`src/connection.rs`) |
-> | `EdgeCondition::{Always, Expression, OnResult, OnError}` | Removed; routing is port-driven via `ControlAction` nodes (`If` / `Switch` / `Router` / `ErrorRouter`) |
+> | `EdgeCondition::{Always, Expression, OnResult, OnError}` | Removed; routing is port-driven via `ControlAction` nodes (canonical 7: `If`, `Switch`, `Router`, `Filter`, `NoOp`, `Stop`, `Fail` — shipped downstream, not in this workspace). Error routing happens by wiring the `"error"` port into whichever `ControlAction` fits (no shipped `ErrorRouter` type). |
 > | `WorkflowExecutor` | `WorkflowEngine` lives in `nebula-engine`, not in this crate |
 > | `state.status = ExecutionStatus::Running` (direct mutation) | Versioned CAS via `ExecutionState::transition_node` (issue #255) |
 >

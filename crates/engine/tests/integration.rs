@@ -197,9 +197,9 @@ impl StatelessAction for CounterHandler {
 }
 
 /// Returns `ActionResult::Skip` — exercises the engine's `propagate_skip`
-/// (engine.rs:3267-3313) recursive ladder. A skipped node's outgoing edges
-/// do not activate (per `evaluate_edge`), so successors with no other active
-/// source are transitively skipped.
+/// recursive ladder. A skipped node's outgoing edges do not activate (per
+/// `evaluate_edge`), so successors with no other active source are
+/// transitively skipped.
 struct SkipHandler {
     meta: ActionMetadata,
 }
@@ -806,13 +806,12 @@ async fn disabled_node_is_skipped_and_successor_executes() {
 // ---------------------------------------------------------------------------
 // Skip-propagation regression tests (ROADMAP §M1.1)
 //
-// Pin behaviour of `engine::propagate_skip` (engine.rs:3267-3313) — the
-// recursive ladder that walks the graph when a node returns
-// `ActionResult::Skip` (or any non-activating result) and transitively marks
-// unreachable successors as Skipped. The pre-existing
-// `disabled_node_is_skipped_and_successor_executes` covers the
-// disabled-node BYPASS (which activates outgoing edges with null and is a
-// different code path); these tests cover the propagate_skip ladder
+// Pin behaviour of `engine::propagate_skip` — the recursive ladder that
+// walks the graph when a node returns `ActionResult::Skip` (or any
+// non-activating result) and transitively marks unreachable successors as
+// Skipped. The pre-existing `disabled_node_is_skipped_and_successor_executes`
+// covers the disabled-node BYPASS (which activates outgoing edges with null
+// and is a different code path); these tests cover the propagate_skip ladder
 // triggered by non-activating `ActionResult` variants.
 // ---------------------------------------------------------------------------
 
@@ -1099,5 +1098,58 @@ async fn multi_hop_skip_with_sibling_activation_still_runs() {
     assert!(
         result.node_output(&d).is_some(),
         "D fires via sibling's edge despite the A→B→C branch skipping"
+    );
+}
+
+/// Duplicate edges from the same skipped source: `X(skip)` has two parallel
+/// `Connection` edges into `Z`. Locks the per-edge counter invariant
+/// documented inline at `propagate_skip`'s edge loop ("Increment per-edge
+/// count (not per-source) so that multiple edges from the same skipped
+/// source to the same target are each counted").
+///
+/// Expected: `Z` has `required = 2` (two incoming edges, even though only
+/// one source). `X`'s single Skip resolves both edges via the per-edge loop;
+/// resolved=2, required=2, activated=0 → `propagate_skip(Z)`. A regression
+/// that switched to per-source counting would leave `Z` with resolved=1
+/// forever, hanging or never skipping.
+#[tokio::test]
+async fn duplicate_edges_from_skipped_source_count_per_edge() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(SkipHandler {
+        meta: meta(action_key!("skip")),
+    });
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+    let (engine, _) = make_engine(registry);
+
+    let x = node_key!("x");
+    let z = node_key!("z");
+
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(x.clone(), "X", "skip").unwrap(),
+            NodeDefinition::new(z.clone(), "Z", "echo").unwrap(),
+        ],
+        vec![
+            // Two parallel edges from the same skipped source to the same target.
+            Connection::new(x.clone(), z.clone()),
+            Connection::new(x.clone(), z.clone()),
+        ],
+    );
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!("in"), ExecutionBudget::default())
+        .await
+        .unwrap();
+
+    assert!(result.is_success());
+    assert!(
+        result.node_output(&x).is_none() && !result.node_errors.contains_key(&x),
+        "X skipped"
+    );
+    assert!(
+        result.node_output(&z).is_none() && !result.node_errors.contains_key(&z),
+        "Z transitively skipped — both duplicate edges from X resolved without activating"
     );
 }

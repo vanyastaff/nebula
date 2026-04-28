@@ -3207,14 +3207,16 @@ fn process_outgoing_edges(
 /// Port-driven routing (spec 28 §2.2): the engine matches the edge's
 /// effective source port (`from_port`, defaulting to `"main"`) against the
 /// port the upstream `ActionResult` produced on. There is no "edge
-/// condition" — conditionals are carried by explicit control-flow nodes
-/// (`If`, `Switch`, `Router`, `ErrorRouter`) whose own `ActionResult`
-/// decides which port fires.
+/// condition" — conditionals are carried by explicit `ControlAction` nodes
+/// (e.g. `If`, `Switch`, `Router` — the canonical 7 from
+/// `nebula_action::control`) whose own `ActionResult` decides which port
+/// fires.
 ///
 /// Rules:
 /// - `Skip` / `Drop` / `Terminate` → no edges activate on any port.
 /// - Failed node → only edges with `from_port == "error"` activate; action authors wire their
-///   failure path to an `ErrorRouter` or recovery node.
+///   failure path to whichever `ControlAction` fits (typically a `Switch` keyed on error class) or
+///   to a recovery node.
 /// - `Success` → activates edges on `"main"` (or `None`).
 /// - `Branch { selected }` → activates edges whose effective source port equals `selected` (legacy
 ///   alias for `Route`).
@@ -3238,8 +3240,9 @@ fn evaluate_edge(
 
     let effective_port = conn.effective_from_port();
 
-    // Failures route exclusively through the `"error"` port. Downstream must
-    // wire an explicit `ErrorRouter` / recovery node to fan out by error class.
+    // Failures route exclusively through the `"error"` port. Downstream
+    // must wire an explicit `ControlAction` (typically a `Switch` keyed on
+    // error class) or recovery node to fan out by error class.
     if node_failed {
         return effective_port == "error";
     }

@@ -38,10 +38,13 @@ cannot activate a workflow without explicitly handling the result.
   `RateLimit`, `RetryConfig`, position.
 - `ParamValue` — typed value variant for node parameters (static literal or expression string).
 - `Connection` — directed wire `(from_node, to_node, from_port, to_port)`. Edges carry no
-  conditions or matchers; conditional routing lives in explicit `ControlAction` nodes
-  (`If`, `Switch`, `Router`, `ErrorRouter`) per Spec 28 §2.2 (see `src/connection.rs` module
-  doc for the activation contract). The pre-Spec-28 `EdgeCondition` / `ResultMatcher` /
-  `ErrorMatcher` trio was removed when this design landed.
+  conditions or matchers; conditional and error routing live in explicit `ControlAction`
+  nodes (the trait lives in `nebula_action::control`; canonical implementations — `If`,
+  `Switch`, `Router`, `Filter`, `NoOp`, `Stop`, `Fail` — ship downstream in a reference /
+  plugin crate, not this workspace) per Spec 28 §2.2. Failed nodes activate only edges
+  whose `from_port == "error"` — authors wire that port into whichever `ControlAction`
+  fits. See `src/connection.rs` module doc for the full activation contract. The pre-Spec-28
+  `EdgeCondition` / `ResultMatcher` / `ErrorMatcher` trio was removed when this design landed.
 - `DependencyGraph` — `petgraph`-backed wrapper: topological sort, per-level batching (feeds
   `ExecutionPlan` in `nebula-execution`).
 - `WorkflowBuilder` — fluent, validated construction API.

@@ -2,12 +2,18 @@
 //!
 //! Connections are pure wires: they carry an output from one node's port to
 //! another node's port and nothing else. All routing logic (conditionals,
-//! error handling, branch selection) lives in explicit
-//! `ControlAction` nodes (`If` / `Switch` / `Router` / `ErrorRouter` —
-//! defined in the `nebula_action::control` module) — so the shape of
-//! a workflow is always visible on the graph, never hiding inside edge
-//! metadata. Spec 28 §2.2 replaced the previous `EdgeCondition` /
-//! `ResultMatcher` / `ErrorMatcher` trio with this port-driven routing.
+//! error handling, branch selection) lives in explicit `ControlAction`
+//! nodes — the trait is defined in `nebula_action::control`; the 7 canonical
+//! implementations (`If`, `Switch`, `Router`, `Filter`, `NoOp`, `Stop`,
+//! `Fail`) are shipped downstream in a reference / plugin crate, not in
+//! this workspace. The shape of a workflow is therefore always visible on
+//! the graph, never hiding inside edge metadata. Spec 28 §2.2 replaced the
+//! previous `EdgeCondition` / `ResultMatcher` / `ErrorMatcher` trio with
+//! this port-driven routing. Error routing follows the same model: failed
+//! nodes activate only edges whose `from_port == "error"` (see
+//! `engine::evaluate_edge`); authors wire that port into whichever
+//! `ControlAction` (typically a `Switch` keyed on error class, or a
+//! recovery node) fits their workflow.
 //!
 //! ## Edge activation contract
 //!
@@ -32,9 +38,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// Edges are pure wires — they do not carry conditions, matchers, or
 /// expressions. Authors wire conditional flow through explicit
-/// `ControlAction` nodes (`If`, `Switch`, `Router`, `ErrorRouter`), and the
-/// engine picks which outgoing edge to activate based solely on the source
-/// node's output port (see module docs).
+/// `ControlAction` nodes (e.g. `If`, `Switch`, `Router`); the engine picks
+/// which outgoing edge to activate based solely on the source node's output
+/// port (see module docs for the canonical 7 and the error-routing model).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Connection {
     /// Source node.
