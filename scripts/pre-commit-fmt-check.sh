@@ -22,6 +22,11 @@ fi
 
 declare -A seen=()
 pkg_args=()
+# Standalone manifests (anything carrying its own `[workspace]` table —
+# fuzz crates, for instance) live outside the main workspace and must be
+# formatted via `--manifest-path`, since `cargo fmt -p <name>` from the
+# workspace root cannot see them.
+standalone_manifests=()
 
 for f in "$@"; do
   # Lefthook's `glob: "**/*.rs"` already filters, but be defensive in case
@@ -43,17 +48,32 @@ for f in "$@"; do
   name="$(awk -F'"' '/^name[[:space:]]*=[[:space:]]*"/ { print $2; exit }' "$d/Cargo.toml")"
   [[ -z "$name" ]] && continue
 
-  if [[ -z "${seen[$name]:-}" ]]; then
-    seen[$name]=1
+  if [[ -n "${seen[$name]:-}" ]]; then
+    continue
+  fi
+  seen[$name]=1
+
+  if grep -q '^\[workspace\]' "$d/Cargo.toml"; then
+    standalone_manifests+=("$d/Cargo.toml")
+  else
     pkg_args+=("-p" "$name")
   fi
 done
 
-if [[ ${#pkg_args[@]} -eq 0 ]]; then
+if [[ ${#pkg_args[@]} -eq 0 && ${#standalone_manifests[@]} -eq 0 ]]; then
   exit 0
 fi
 
 # Print which crates we're checking (lefthook suppresses stdout on success;
 # only the failure path surfaces this).
-echo "fmt-check (per-crate):" "${pkg_args[@]}"
-exec cargo +nightly fmt "${pkg_args[@]}" -- --check
+if [[ ${#pkg_args[@]} -gt 0 ]]; then
+  echo "fmt-check (per-crate):" "${pkg_args[@]}"
+  cargo +nightly fmt "${pkg_args[@]}" -- --check
+fi
+
+# Run each standalone manifest in its own invocation — `--manifest-path`
+# accepts only one value, so we loop instead of batching.
+for manifest in "${standalone_manifests[@]}"; do
+  echo "fmt-check (standalone): $manifest"
+  cargo +nightly fmt --manifest-path "$manifest" -- --check
+done
