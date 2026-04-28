@@ -134,30 +134,26 @@ pub trait TriggerAction: Send + Sync + 'static {
     /// Returns a [`TriggerEventOutcome`] — `Skip` (filter out), `Emit(payload)`
     /// (start one workflow), or `EmitMany(payloads)` (fan-out).
     ///
-    /// Default: returns [`Self::Error`] from the action's transport contract;
-    /// triggers that do accept events MUST override.
+    /// **Required for all triggers.** No default body is provided to keep
+    /// library code panic-free per the project's no-panic invariant.
+    /// Triggers that return `accepts_events() == false` (engine never calls
+    /// `handle` for them) still implement this method — typical pattern for
+    /// such triggers using `type Error = ActionError`:
+    ///
+    /// ```ignore
+    /// async fn handle(
+    ///     &self,
+    ///     _ctx: &(impl TriggerContext + ?Sized),
+    ///     _event: <Self::Source as TriggerSource>::Event,
+    /// ) -> Result<TriggerEventOutcome, ActionError> {
+    ///     Err(ActionError::fatal("trigger does not accept external events"))
+    /// }
+    /// ```
     fn handle(
         &self,
-        _ctx: &(impl TriggerContext + ?Sized),
-        _event: <Self::Source as TriggerSource>::Event,
-    ) -> impl Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send {
-        async {
-            // Default body: triggers that don't accept events should never
-            // have this called. Engine checks `accepts_events()` first; this
-            // path is a defensive guard.
-            //
-            // We can't construct a Self::Error here without knowing its
-            // shape — convention is that pushed-event triggers override
-            // accepts_events()=true AND override handle(). Implementations
-            // that opt into events but forget to override handle() will
-            // hit `unimplemented!()`; this matches Tech Spec §2.2.3
-            // expected-author-discipline contract.
-            unimplemented!(
-                "TriggerAction::handle: trigger reports accepts_events=true \
-                 but did not override handle(); see Tech Spec §2.2.3"
-            )
-        }
-    }
+        ctx: &(impl TriggerContext + ?Sized),
+        event: <Self::Source as TriggerSource>::Event,
+    ) -> impl Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send;
 }
 
 // ── Transport-agnostic event envelope ───────────────────────────────────────
@@ -611,6 +607,16 @@ mod tests {
         async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(false, Ordering::Release);
             Ok(())
+        }
+
+        async fn handle(
+            &self,
+            _ctx: &(impl TriggerContext + ?Sized),
+            _event: Value,
+        ) -> Result<TriggerEventOutcome, ActionError> {
+            Err(ActionError::fatal(
+                "MockTriggerAction does not accept external events",
+            ))
         }
     }
 

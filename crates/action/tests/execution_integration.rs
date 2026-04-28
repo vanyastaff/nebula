@@ -180,6 +180,16 @@ impl TriggerAction for NoOpTrigger {
     ) -> Result<(), ActionError> {
         Ok(())
     }
+
+    async fn handle(
+        &self,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+        _event: serde_json::Value,
+    ) -> Result<nebula_action::TriggerEventOutcome, ActionError> {
+        Err(ActionError::fatal(
+            "NoOpTrigger does not accept external events",
+        ))
+    }
 }
 
 #[tokio::test]
