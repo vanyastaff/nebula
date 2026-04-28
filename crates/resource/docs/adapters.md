@@ -126,12 +126,7 @@ impl HasSchema for PostgresConfig {
 (`nebula-schema` also exposes a `nebula_schema::impl_empty_has_schema!`
 macro that emits the same boilerplate; either form is acceptable.)
 
-### Why both methods are documented
-
-Real `#[derive(Schema)]` is the production-quality path: catalogs render
-your fields, the workflow editor validates inputs, and config evolution
-goes through `ResourceMetadata::validate_compatibility`. Empty schema is
-the explicit opt-out — choose it deliberately, not as the default.
+### `validate` and `fingerprint` (apply to both options)
 
 `validate` checks format and bounds — connectivity belongs in
 `Resource::create`. `fingerprint` must be deterministic; on a
@@ -219,8 +214,7 @@ impl Resource for PostgresResource {
     type Runtime = PgConnection;
     type Lease = PgConnection;
     type Error = PostgresError;
-    /// `NoCredential` for unauthenticated resources (see sidebar otherwise).
-    type Credential = NoCredential;
+    type Credential = NoCredential;  // unauthenticated; see sidebar for credential-bound
 
     fn key() -> ResourceKey { resource_key!("postgres") }
 
@@ -318,6 +312,9 @@ impl Pooled for PostgresResource {
         // Replace with: client.simple_query("ROLLBACK").await?;
         Ok(RecycleDecision::Keep)
     }
+
+    // prepare(): default no-op; override for per-checkout session setup
+    // (e.g., `SET search_path`, `SET application_name`).
 }
 ```
 
