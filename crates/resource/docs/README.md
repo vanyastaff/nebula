@@ -38,8 +38,11 @@ Choose the topology that matches the resource's concurrency model.
 | `Service` | Runtime is long-lived; callers get short-lived tokens from it | OAuth client issuing access tokens |
 | `Transport` | Single connection multiplexed across callers (no per-caller clone) | gRPC channel, AMQP connection |
 | `Exclusive` | Only one caller may use the resource at a time | Rate-limited SMS gateway |
-| `Daemon` | Background task with no direct callers (secondary topology) | Metrics flush loop |
-| `EventSource` | Pull-based subscription stream (secondary topology) | Webhook ingestion tail |
+
+> **Background workers and event sources** live in
+> [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`)
+> per [ADR-0037](../../../docs/adr/0037-daemon-eventsource-engine-fold.md).
+> They are not part of the `nebula-resource` topology surface.
 
 ---
 
@@ -129,27 +132,29 @@ impl Pooled for HttpResource {
 ### 3. Register and acquire
 
 ```rust,ignore
-use nebula_resource::{Manager, PoolConfig, ResourceContext, AcquireOptions, ExecutionId};
+use nebula_resource::{Manager, PoolConfig, ResourceContext, AcquireOptions};
+use nebula_core::scope::Scope;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() -> Result<(), nebula_resource::Error> {
     let manager = Manager::new();
 
-    // Simple registration — credential = (), scope = Global, no resilience
+    // Simple registration — Credential = NoCredential, scope = Global, no resilience.
     manager.register_pooled(
         HttpResource,
         HttpConfig { base_url: "https://api.example.com".into(), timeout_ms: 5_000 },
         PoolConfig::default(),
     )?;
 
-    let ctx = ResourceContext::new(ExecutionId::new());
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
 
-    // acquire_pooled_default: no credential noise for Credential = NoCredential
+    // acquire_pooled_default: no scheme arg for Credential = NoCredential.
     let handle = manager
         .acquire_pooled_default::<HttpResource>(&ctx, &AcquireOptions::default())
         .await?;
 
-    // Use via Deref — handle is held until dropped
+    // Use via Deref — handle is held until dropped.
     let _runtime: &HttpRuntime = &*handle;
 
     // Instance recycled automatically on drop.
@@ -210,20 +215,25 @@ with the correct `ErrorKind` per variant — no manual `From` impl needed:
 ```rust,ignore
 use nebula_resource::ClassifyError;
 
-#[derive(Debug, ClassifyError)]
+#[derive(Debug, thiserror::Error, ClassifyError)]
 pub enum DbError {
+    #[error("connection lost: {0}")]
     #[classify(transient)]
     ConnectionLost(String),
+    #[error("auth failed: {0}")]
     #[classify(permanent)]
     AuthFailed(String),
-    #[classify(exhausted, retry_after_secs = 30)]
+    #[error("rate limited")]
+    #[classify(exhausted, retry_after = "30s")]
     RateLimited,
 }
 ```
 
-This generates the `impl From<DbError> for nebula_resource::Error` with
+This generates `impl From<DbError> for nebula_resource::Error` with
 correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
-`ErrorKind::Exhausted { retry_after: Some(30s) }` respectively.
+`ErrorKind::Exhausted { retry_after: Some(Duration::from_secs(30)) }`
+respectively. The `retry_after` value supports `s` / `m` / `h` / `ms`
+suffixes.
 
 ---
 
@@ -251,31 +261,39 @@ correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
 crates/resource/
 ├── src/
 │   ├── lib.rs             Re-exports and crate-level docs
-│   ├── resource.rs        Resource trait, ResourceConfig, ResourceMetadata
-│   ├── manager.rs         Manager, ManagerConfig, ShutdownConfig
+│   ├── resource.rs        Resource trait (5 associated types + 6 lifecycle methods)
+│   ├── manager/           Manager directory — split per Tech Spec §5.4:
+│   │   ├── mod.rs              Manager type + register/acquire entry points
+│   │   ├── options.rs          ManagerConfig, RegisterOptions, ShutdownConfig, DrainTimeoutPolicy
+│   │   ├── registration.rs     register_inner + reverse-index population
+│   │   ├── gate.rs             Recovery-gate admission helpers
+│   │   ├── execute.rs          Resilience pipeline + register-time pool config validation
+│   │   ├── rotation.rs         ResourceDispatcher + on_credential_* fan-out
+│   │   └── shutdown.rs         graceful_shutdown + drain helpers + set_phase_all*
 │   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
-│   ├── guard.rs           ResourceGuard — RAII acquire lease
+│   ├── guard.rs           ResourceGuard — RAII acquire lease (Owned / Guarded / Shared)
 │   ├── context.rs         ResourceContext — execution context with capabilities
-│   ├── error.rs           Error, ErrorKind, ErrorScope
-│   ├── events.rs          ResourceEvent — lifecycle observability
+│   ├── error.rs           Error, ErrorKind, ErrorScope, RotationOutcome
+│   ├── events.rs          ResourceEvent — 12 lifecycle event variants
 │   ├── options.rs         AcquireOptions, AcquireIntent
-│   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot
+│   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot, OutcomeCountersSnapshot
 │   ├── state.rs           ResourcePhase, ResourceStatus
-│   ├── cell.rs            Cell — ArcSwap-based lock-free cell for resident topologies
+│   ├── cell.rs            Cell — ArcSwap-based lock-free cell for Resident topology
 │   ├── release_queue.rs   ReleaseQueue — background async cleanup workers
-│   ├── topology_tag.rs    TopologyTag — discriminant enum
-│   ├── integration.rs     AcquireResilience, AcquireRetryConfig, AcquireCircuitBreakerPreset
+│   ├── reload.rs          ReloadOutcome
+│   ├── topology_tag.rs    TopologyTag — 5-variant discriminant (post-ADR-0037)
+│   ├── integration.rs     AcquireResilience, AcquireRetryConfig
+│   ├── ext.rs             HasResourcesExt
 │   ├── recovery/          RecoveryGate, RecoveryGroupRegistry, WatchdogHandle
-│   ├── runtime/           Per-topology runtime wrappers (pool, resident, service, …)
-│   ├── topology/          Per-topology trait definitions (Pooled, Resident, Service, …)
+│   ├── runtime/           Per-topology runtime wrappers (5 topologies)
+│   └── topology/          Per-topology trait definitions (Pooled / Resident / Service / Transport / Exclusive)
 └── docs/
-    ├── README.md                ← this file
-    ├── architecture.md          Module map, data flow, design invariants
-    ├── api-reference.md         Full public API with signatures
-    ├── pooling.md               PoolConfig, recycle policy, broken-check, max-lifetime
-    ├── events-and-hooks.md      ResourceEvent catalog, subscribe_events usage
-    ├── health-and-quarantine.md RecoveryGate, WatchdogHandle, GateState transitions
-    └── adapters.md              Implementing Resource for a driver crate
+    ├── README.md          ← this file
+    ├── api-reference.md   Full public API with signatures
+    ├── adapters.md        Implementing Resource for a driver crate
+    ├── pooling.md         PoolConfig, recycle policy, broken-check, max-lifetime
+    ├── events.md          ResourceEvent catalog, subscribe_events usage
+    └── recovery.md        RecoveryGate, WatchdogHandle, gate state transitions
 ```
 
 ---
@@ -285,7 +303,7 @@ crates/resource/
 | Document | Contents |
 |----------|----------|
 | [`api-reference.md`](api-reference.md) | Every public type, trait, and method with signatures |
-| [`pooling.md`](pooling.md) | `PoolConfig`, recycle decisions, broken checks, max-lifetime eviction |
-| [`events-and-hooks.md`](events-and-hooks.md) | `ResourceEvent` catalog, `subscribe_events` patterns |
-| [`health-and-quarantine.md`](health-and-quarantine.md) | `RecoveryGate`, `WatchdogHandle`, gate state transitions |
 | [`adapters.md`](adapters.md) | Writing a `Resource` adapter crate (`nebula-resource-postgres`, etc.) |
+| [`pooling.md`](pooling.md) | `PoolConfig`, recycle decisions, broken checks, max-lifetime eviction |
+| [`events.md`](events.md) | `ResourceEvent` catalog, `subscribe_events` patterns |
+| [`recovery.md`](recovery.md) | `RecoveryGate`, `WatchdogHandle`, gate state transitions |
