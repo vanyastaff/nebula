@@ -6,11 +6,11 @@ Lifecycle event system for observability and diagnostics.
 
 ## Overview
 
-The [`Manager`] emits [`ResourceEvent`]s on every significant lifecycle
+The `Manager` emits `ResourceEvent`s on every significant lifecycle
 transition. Events are broadcast via a `tokio::sync::broadcast` channel —
 see `Manager::subscribe_events()` for the receiver type.
 
-Subscribe with [`Manager::subscribe_events()`]:
+Subscribe with `Manager::subscribe_events()`:
 
 ```rust,ignore
 let mut rx = manager.subscribe_events();
@@ -108,6 +108,9 @@ while let Ok(event) = rx.recv().await {
 ```
 
 ### Slow consumers
+
+Slow consumers receive `tokio::sync::broadcast::error::RecvError::Lagged(n)`
+when the channel overruns — *n* events were dropped. Handle it:
 
 ```rust,ignore
 match rx.recv().await {
