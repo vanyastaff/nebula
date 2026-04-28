@@ -477,8 +477,16 @@ pub enum ErrorKind {
 }
 
 #[non_exhaustive]
-pub enum ErrorScope { Resource /* default */, Target { id: String } }
+pub enum ErrorScope {
+    Resource,   // default — currently the only variant
+}
 ```
+
+`ErrorScope` is single-variant today — older drafts had a `Target { id: String }`
+variant for per-target isolation failures (#391); it was removed at register
+R-051 resolution since no consumer ever wired it. New variants land here
+when an engine surface genuinely needs them (the `#[non_exhaustive]`
+attribute keeps that addition non-breaking).
 
 ### Rotation outcomes
 
@@ -544,26 +552,19 @@ Implements `nebula_core::context::Context`, `HasResources` (`fn resources(&self)
 ### `AcquireOptions`
 
 ```rust,ignore
+#[derive(Debug, Clone, Default)]
 pub struct AcquireOptions {
-    pub intent:   AcquireIntent,
     pub deadline: Option<Instant>,
-    pub tags:     SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
 }
 ```
 
-Builders: `with_deadline`, `with_intent`, `with_tag`. Accessor: `remaining()
--> Option<Duration>`.
+Builder: `with_deadline(Instant)`. Accessor: `remaining() -> Option<Duration>`.
 
-> **Status:** `intent` and `tags` are reserved for future engine integration.
-> No topology in `nebula-resource` reads them today (#391). Setting
-> `AcquireIntent::Critical` does NOT bypass queues or change throttling — only
-> `deadline` affects acquire behaviour. Per Strategy §5.2, deprecation /
-> removal will be considered in a future cascade if uptake remains zero.
-
-### `AcquireIntent`
-
-`#[non_exhaustive]` enum: `Standard`, `LongRunning`, `Streaming { expected:
-Duration }`, `Prefetch`, `Critical`.
+> **History:** older drafts carried `intent: AcquireIntent` and `tags: SmallVec<...>`
+> fields reserved for engine integration (#391). They were removed at register
+> R-051 resolution since no consumer ever wired them. If #391 lands, the
+> relevant surface is added back via a new spec rather than reviving the
+> reserved-but-unused shape.
 
 ---
 

@@ -78,7 +78,7 @@ pub use nebula_credential::{
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
 pub use nebula_resource_macros::Resource;
-pub use options::{AcquireIntent, AcquireOptions};
+pub use options::AcquireOptions;
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
     RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
