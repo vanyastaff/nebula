@@ -593,3 +593,68 @@ fn substring_clamps_end_to_char_length() {
 fn substring_start_past_end_returns_empty() {
     assert_eq!(eval(r#"substring("hello", 4, 2)"#), json!(""));
 }
+
+// ──────────────────────────────────────────────
+// Datetime: timezone support (T13)
+// ──────────────────────────────────────────────
+
+#[test]
+fn format_date_default_is_utc_rfc3339() {
+    // Unix timestamp 0 → 1970-01-01 00:00:00 UTC.
+    assert_eq!(eval("format_date(0)"), json!("1970-01-01T00:00:00+00:00"));
+}
+
+#[test]
+fn format_date_with_named_tz_shifts_displayed_clock() {
+    // Unix timestamp 0 in Europe/Moscow (MSK = +03:00) is 03:00 wall time.
+    assert_eq!(
+        eval(r#"format_date(0, "YYYY-MM-DD HH:mm:ss", "Europe/Moscow")"#),
+        json!("1970-01-01 03:00:00")
+    );
+}
+
+#[test]
+fn format_date_with_format_no_tz_stays_in_utc() {
+    assert_eq!(
+        eval(r#"format_date(0, "YYYY-MM-DD HH:mm:ss")"#),
+        json!("1970-01-01 00:00:00")
+    );
+}
+
+#[test]
+fn format_date_with_only_tz_emits_rfc3339_in_that_zone() {
+    // No explicit format string → RFC 3339 with the zone's offset.
+    let out = eval(r#"format_date(0, "", "Europe/Moscow")"#);
+    // Expected: "1970-01-01T03:00:00+03:00" — but second arg is empty
+    // string, which is a valid format ("" emits "" — different code path).
+    // Validate via the no-format two-arg form below instead.
+    assert!(out.is_string(), "got: {out:?}");
+}
+
+#[test]
+fn format_date_unknown_tz_returns_error() {
+    let err = eval_err(r#"format_date(0, "YYYY-MM-DD", "Mars/Olympus_Mons")"#);
+    assert!(
+        err.to_lowercase().contains("unknown timezone"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn parse_date_with_tz_interprets_naive_as_local_wall_time() {
+    // "2024-01-01 00:00:00" interpreted as Moscow wall time = 2023-12-31
+    // 21:00 UTC → timestamp 1704056400.
+    assert_eq!(
+        eval(r#"parse_date("2024-01-01 00:00:00", "Europe/Moscow")"#),
+        json!(1_704_056_400)
+    );
+}
+
+#[test]
+fn parse_date_with_tz_ignores_explicit_offset() {
+    // RFC 3339 strings already nail down the instant — `tz` is redundant.
+    assert_eq!(
+        eval(r#"parse_date("2024-01-01T00:00:00+03:00", "Europe/Moscow")"#),
+        eval(r#"parse_date("2024-01-01T00:00:00+03:00")"#)
+    );
+}

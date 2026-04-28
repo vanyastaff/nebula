@@ -93,6 +93,7 @@ domain-key = { version = "0.5.1", features = [
 ] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }
 indexmap = { version = "2", features = ["serde"] }
 

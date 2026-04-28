@@ -27,6 +27,7 @@ serde_json = { workspace = true }
 regex = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 unicode-width = { workspace = true }
 
@@ -46,7 +47,9 @@ cache = ["dep:moka"]
 # `regex` brings in `moka` so the regex cache always has true LRU eviction
 # (closes ROADMAP #590). Disabling `cache` only turns off the AST cache.
 regex = ["dep:regex", "dep:moka"]
-datetime = []
+# `datetime` brings in `chrono-tz` so date/time builtins accept optional
+# IANA timezone arguments (e.g. `format_date(ts, "YYYY-MM-DD HH:mm", "Europe/Moscow")`).
+datetime = ["dep:chrono-tz"]
 uuid = ["dep:uuid"]
 # Full feature set
 full = ["cache", "regex", "datetime", "uuid"]
