@@ -20,7 +20,10 @@
   stable. `resource` plans 06 + 10 + prototypes are PARTIAL.
 - **Exec layer** — `storage` is production-ready for execution/workflow
   (Layer 1 traits stable, 23 PG migrations + 9 common, CAS, outbox, reclaim).
-  `engine` is ~70% — orchestration solid, **§11.5 durability debts** open.
+  `engine` is ~80% — orchestration solid, **§11.5 durability debts closed
+  via M0** (budget + workflow_input persistence shipped under #289 / #311;
+  explicit-termination wiring landed in M0.3); remaining engine debts are
+  full-graph edge gating (M1.1) and engine-level retry execution (M2.1).
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
 - **API layer** — routing wired; **5 sizable feature gaps** (auth backend,

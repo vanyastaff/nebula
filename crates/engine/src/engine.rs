@@ -6332,8 +6332,9 @@ mod tests {
     // These cover the seven branches of the explicit-termination ladder
     // documented on `determine_final_status`: explicit termination beats
     // failed_node beats cancel_token beats integrity violation beats natural
-    // completion. Pairs with the integration tests in
-    // `crates/engine/tests/explicit_termination.rs`.
+    // completion. Pairs with the engine integration tests that exercise
+    // explicit-termination behavior end-to-end (control_dispatch.rs,
+    // resource_integration.rs).
 
     fn make_two_terminal_state(
         terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,

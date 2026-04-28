@@ -77,19 +77,33 @@ pub enum ExecutionEvent {
         /// Total elapsed time.
         elapsed: Duration,
         /// Engine's attribution for *why* the execution reached its
-        /// final status (canon §4.5; ROADMAP §M0.3). `None` is
-        /// preserved for legacy in-flight subscribers that consumed
-        /// this event before the field existed; new emitters always
-        /// set `Some(_)` when wired through `determine_final_status`.
+        /// final status (canon §4.5; ROADMAP §M0.3).
         ///
-        /// - `ExplicitStop` / `ExplicitFail` → a node returned `ActionResult::Terminate`.
-        /// - `Cancelled` → external cancel (API / admin / shutdown).
-        /// - `NaturalCompletion` → frontier drained cleanly.
-        /// - `SystemError` → integrity violation or unmapped reason.
+        /// `Some(_)` means the engine attributed a concrete
+        /// termination reason. `None` is **also intentional**: it
+        /// represents a system-driven failure where execution did not
+        /// complete successfully but the engine has nothing to add
+        /// beyond the failure itself (the failure detail lives on
+        /// `ExecutionState::node_states[*].error_message` and
+        /// surfaces through the engine's
+        /// [`crate::result::ExecutionResult::node_errors`] map).
+        /// `determine_final_status` priority 2 (`failed_node` set,
+        /// `terminated_by` empty) is the canonical source of `None`.
         ///
-        /// Distinguishes ExplicitFail from a system-driven failure
-        /// (which surfaces with `termination_reason: None`); use
-        /// `success` for the binary outcome.
+        /// Variant guidance:
+        ///
+        /// - `ExplicitStop` / `ExplicitFail` → a node returned `ActionResult::Terminate {
+        ///   TerminationReason::Success | Failure }`.
+        /// - `Cancelled` → external cancel (API / admin / shutdown tripped the cancel token
+        ///   without a node-driven Terminate).
+        /// - `NaturalCompletion` → frontier drained cleanly with no failures and no explicit
+        ///   signal.
+        /// - `SystemError` → engine attributed the failure to a system-level invariant breach
+        ///   (frontier integrity violation, unmapped future `TerminationReason` variant).
+        ///
+        /// Use `success` for the binary outcome; use
+        /// `termination_reason` to distinguish attributed termination
+        /// from unattributed system-driven failure (`None`).
         termination_reason: Option<ExecutionTerminationReason>,
     },
 }

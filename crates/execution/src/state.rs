@@ -236,31 +236,62 @@ impl ExecutionState {
     /// Record an explicit termination signal from a node returning
     /// `ActionResult::Terminate`.
     ///
-    /// Semantics are first-write-wins. The engine's frontier loop
-    /// holds `&mut ExecutionState` while it consumes node results, so
-    /// no two writers race here at the language level. However the
-    /// loop may still observe several siblings produce `Terminate` in
-    /// the same scheduling round before it tears them down via the
-    /// `cancel_token`. Only the first signal is durable; subsequent
-    /// signals are debug-logged and dropped so the post-mortem audit
-    /// log has a single authoritative source per execution
-    /// (canon §4.5).
+    /// # Invariants enforced
+    ///
+    /// 1. **Reason kind is explicit.** Only [`ExecutionTerminationReason::ExplicitStop`] and
+    ///    [`ExecutionTerminationReason::ExplicitFail`] are accepted. `NaturalCompletion`,
+    ///    `Cancelled`, and `SystemError` are engine-attributed in
+    ///    [`crate::engine::determine_final_status`] via other priority-ladder branches and must not
+    ///    be recorded in `terminated_by` directly — passing them returns `false` with a
+    ///    `tracing::warn!` and no mutation.
+    /// 2. **`by_node` matches `node_key`.** The variant's inner `by_node` field MUST equal the
+    ///    `node_key` argument. Mismatched identity returns `false` with a `tracing::warn!` and no
+    ///    mutation. Engine wiring constructs the reason via
+    ///    `map_termination_reason(node_key.clone(), ...)`, so a mismatch indicates a programming
+    ///    error in a non-engine caller (or a refactor regression).
+    /// 3. **First-write-wins.** Only the first signal is durable; subsequent signals are
+    ///    debug-logged and dropped so the post-mortem audit log has a single authoritative source
+    ///    per execution (canon §4.5). The frontier loop holds `&mut ExecutionState` while it
+    ///    consumes node results, so no two writers race here at the language level.
     ///
     /// On a successful set this method bumps the parent
     /// [`ExecutionState::version`] and `updated_at` so any
     /// optimistic-concurrency reader observes the change (issue
-    /// #255). On a duplicate (`Some(_)` already present) it is a
+    /// #255). On a rejected call (any of the cases above) it is a
     /// no-op.
     ///
-    /// Returns `true` when the signal was recorded, `false` when an
-    /// earlier signal was already in place. The return value is
-    /// load-bearing — `crate::engine` uses it to decide whether to
-    /// signal the `cancel_token` (only on first set).
+    /// Returns `true` when the signal was recorded, `false` when
+    /// rejected. The return value is load-bearing — the
+    /// `nebula-engine` crate uses it to decide whether to signal the
+    /// `cancel_token` (only on first successful set).
     pub fn set_terminated_by(
         &mut self,
         node_key: NodeKey,
         reason: ExecutionTerminationReason,
     ) -> bool {
+        // Invariants 1 + 2: reason must be an explicit variant, and
+        // its inner `by_node` must match the caller's `node_key`.
+        let kind_consistent = match &reason {
+            ExecutionTerminationReason::ExplicitStop { by_node, .. }
+            | ExecutionTerminationReason::ExplicitFail { by_node, .. } => by_node == &node_key,
+            // NaturalCompletion / Cancelled / SystemError are engine-
+            // attributed via determine_final_status priority ladder
+            // and must not be stored as `terminated_by`.
+            _ => false,
+        };
+        if !kind_consistent {
+            tracing::warn!(
+                target = "execution::state",
+                execution_id = %self.execution_id,
+                attempted_by = %node_key,
+                attempted_reason = ?reason,
+                "set_terminated_by rejected — reason must be ExplicitStop/ExplicitFail \
+                 with matching by_node (canon §4.5; ROADMAP §M0.3)"
+            );
+            return false;
+        }
+
+        // Invariant 3: first-write-wins.
         if self.terminated_by.is_some() {
             tracing::debug!(
                 target = "execution::state",
@@ -1022,6 +1053,57 @@ mod tests {
             state.version, v_after_first,
             "version must not bump on duplicate set_terminated_by"
         );
+    }
+
+    /// ROADMAP §M0.3 invariant 1 — `set_terminated_by` must reject
+    /// non-explicit reason variants. `NaturalCompletion`, `Cancelled`,
+    /// and `SystemError` are engine-attributed via
+    /// `determine_final_status` priority-ladder branches and must not
+    /// be recorded directly in `terminated_by`.
+    #[test]
+    fn set_terminated_by_rejects_non_explicit_reason() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+
+        for reason in [
+            ExecutionTerminationReason::NaturalCompletion,
+            ExecutionTerminationReason::Cancelled,
+            ExecutionTerminationReason::SystemError,
+        ] {
+            assert!(
+                !state.set_terminated_by(n1.clone(), reason),
+                "non-explicit variant must be rejected"
+            );
+            assert!(
+                state.terminated_by.is_none(),
+                "rejected call must not mutate terminated_by"
+            );
+            assert_eq!(state.version, v0, "rejected call must not bump version");
+        }
+    }
+
+    /// ROADMAP §M0.3 invariant 2 — `set_terminated_by` must reject a
+    /// reason whose inner `by_node` does not match the `node_key`
+    /// argument. Engine wiring constructs the reason via
+    /// `map_termination_reason(node_key.clone(), ...)` so a mismatch
+    /// indicates a programming error (or a refactor regression) and
+    /// must surface as `false` rather than store inconsistent data.
+    #[test]
+    fn set_terminated_by_rejects_mismatched_by_node() {
+        let (mut state, n1, n2) = make_state();
+        let v0 = state.version;
+
+        // Outer key = n1, inner by_node = n2 — identity mismatch.
+        let mismatched = ExecutionTerminationReason::ExplicitStop {
+            by_node: n2,
+            note: None,
+        };
+        assert!(
+            !state.set_terminated_by(n1, mismatched),
+            "mismatched by_node must be rejected"
+        );
+        assert!(state.terminated_by.is_none());
+        assert_eq!(state.version, v0);
     }
 
     /// ROADMAP §M0.3 review M1 — recovery escape hatch:

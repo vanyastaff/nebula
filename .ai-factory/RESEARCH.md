@@ -17,20 +17,32 @@
   tracing span + invariant check) at every new boundary; CI green incl.
   loom nightly; out-of-scope items explicitly deferred to 1.1.
 - **Status:** cross-cutting + core + most business layers stable; engine
-  ~70% (durability debts mostly closed, explicit-termination wiring open);
-  api routes wired but five large feature gaps (auth, OpenAPI, webhook
-  dispatch, idempotency, tracing-context); sandbox correctness-grade only
-  (capability discovery enforcement gap); storage Layer 1 ready, Layer 2
-  deferred to "Sprint E"/1.1.
-- **Decisions taken (this session):**
+  ~80% — **M0 closed** (durability debts §11.5 + explicit-termination
+  wiring); remaining engine debts are full-graph edge gating (M1.1) and
+  engine-level retry (M2.1). API routes wired but five large feature gaps
+  (auth, OpenAPI, webhook dispatch, idempotency, tracing-context); sandbox
+  correctness-grade only (capability discovery enforcement gap M4); storage
+  Layer 1 ready, Layer 2 deferred to "Sprint E"/1.1.
+- **Decisions taken & shipped (M0 wave, 2026-04-28):**
   - 11 ROADMAP milestones M0–M10 in `.ai-factory/ROADMAP.md`.
-  - First sub-project: **M0 — Engine durability debts**. Verification on
-    2026-04-28 collapsed M0.1 / M0.2 (budget + workflow_input persist) to
-    DONE; remaining work is M0.3 (Terminate → ExecutionTerminationReason
-    wiring) + M0.4 (doc sync).
-  - For M0.3: store first-write-wins signal in `ExecutionState.terminated_by`,
-    extend (not replace) `ExecutionEvent::ExecutionFinished`, **include**
-    sibling cancellation per Phase 3 spec.
+  - First sub-project: **M0 — Engine durability debts** — **CLOSED via
+    PR #622** (5 commits, 431+ tests, /aif-verify --strict
+    PASS_WITH_DOCUMENTED_DEVIATION).
+    - **M0.1** (budget persist) DONE — verified pre-shipped under #289.
+    - **M0.2** (workflow_input persist) DONE — verified pre-shipped under #311.
+    - **M0.3** (Terminate → `ExecutionTerminationReason` wiring) DONE —
+      `set_terminated_by` first-write-wins with kind+identity validation;
+      durability-correct ordering (set BEFORE checkpoint, cancel AFTER
+      Ok); priority ladder in `determine_final_status`; recovery hatch
+      `clear_terminated_by` for checkpoint-failure path.
+    - **M0.4** (doc sync) DONE — engine README L4-debt block updated;
+      action/result.rs + execution/status.rs docstrings rewritten;
+      "Recently closed debts" table added.
+  - Architectural choices recorded in M0: extend
+    `ExecutionEvent::ExecutionFinished` (not replace); sibling
+    cancellation **included** per Phase 3 spec; engine-local
+    `ExecutionResult` (not `nebula_execution::ExecutionResult`)
+    carries the new field.
 - **Out of scope for 1.0** (must not slip silently):
   - Storage Layer 2 / spec-16 multi-tenant row model.
   - ADR-0013 compile-time modes (no build.rs / mode-* features yet).
@@ -267,14 +279,16 @@ them.
 ## Pointers
 
 - `.ai-factory/ROADMAP.md` — milestones (M0–M10), DoD, out-of-scope.
-- `.ai-factory/plans/m0-explicit-termination.md` — current plan
-  (Phase 3 ControlAction wiring).
+  M0 marked closed (2026-04-28); next candidates are M3.1 (auth) or M4
+  (sandbox capability discovery).
+- `.ai-factory/plans/m0-explicit-termination.md` — completed plan
+  (Phase 3 ControlAction wiring; gitignored as transient artefact).
 - `.ai-factory/DESCRIPTION.md` — agent-facing project summary.
 - `.ai-factory/ARCHITECTURE.md` — agent-actionable architecture subset.
 - `.ai-factory/rules/base.md` — distilled coding rules.
-- `crates/engine/README.md` — engine "L4 debt" block (see M0.4 — sync
-  pending).
-- `crates/action/src/result.rs:206-219` — Terminate docstring (M0.4
-  cleanup target).
-- `crates/execution/src/status.rs:85-94` — termination reason docstring
-  (M0.4 cleanup target).
+- `crates/engine/README.md` — engine "Recently closed debts" table
+  (M0.1 / M0.2 / M0.3) + remaining open debts (M1.1 edge gating).
+- `crates/action/src/result.rs:206-219` — Terminate docstring rewritten
+  in M0.4 to describe shipped wiring.
+- `crates/execution/src/status.rs:85-94` — `ExecutionTerminationReason`
+  docstring rewritten in M0.4 with priority-ladder + serde compat notes.
