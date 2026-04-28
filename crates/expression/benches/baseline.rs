@@ -93,7 +93,16 @@ fn benchmark_evaluate_no_cache(c: &mut Criterion) {
         ("comparison", "10 > 5"),
         ("string_concat", r#""hello" + " " + "world""#),
         ("function_call", "uppercase('hello')"),
-        ("nested", "abs(min(-5, -10)) * 2"),
+        // `nested` previously used `abs(min(-5, -10)) * 2`. The pre-T1
+        // parser on `main` failed to parse that shape (fn-call-as-arg
+        // hit the lambda-backtrack postfix-only path) and `iter()`
+        // silently swallowed the `Err`, so the recorded baseline
+        // measured parse-error fast-path (~13 µs) instead of full
+        // parse + eval. Switched to a single-fn + binary-expr-in-arg
+        // shape (`abs(-5 + -10) * 2`), which both pre-T1 and post-T1
+        // parsers handle identically — keeping CodSpeed's PR-vs-main
+        // comparison apples-to-apples.
+        ("nested", "abs(-5 + -10) * 2"),
         ("conditional", "if true then 1 else 2"),
     ];
 
