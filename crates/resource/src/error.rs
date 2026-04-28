@@ -30,17 +30,21 @@ pub enum ErrorKind {
 }
 
 /// Whether the error is resource-wide or target-specific.
+///
+/// Currently a single-variant `#[non_exhaustive]` enum: only [`Resource`]
+/// (the default) is constructed by any production code path. Older drafts
+/// included a `Target { id: String }` variant for per-target isolation
+/// failures (#391); it was removed at register R-051 resolution since no
+/// consumer ever wired it. New variants land here when an engine surface
+/// genuinely needs them.
+///
+/// [`Resource`]: ErrorScope::Resource
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ErrorScope {
     /// The resource itself might be broken.
     #[default]
     Resource,
-    /// Only a specific target failed (e.g., bot blocked by one user).
-    Target {
-        /// Opaque identifier of the failed target.
-        id: String,
-    },
 }
 
 /// Unified resource error.
@@ -384,19 +388,6 @@ mod tests {
         let err = Error::transient("connection failed").with_source(inner);
         let source = std::error::Error::source(&err);
         assert!(source.is_some());
-    }
-
-    #[test]
-    fn with_scope_sets_target() {
-        let err = Error::transient("blocked").with_scope(ErrorScope::Target {
-            id: "user-42".into(),
-        });
-        assert_eq!(
-            *err.scope(),
-            ErrorScope::Target {
-                id: "user-42".into()
-            }
-        );
     }
 
     #[test]
