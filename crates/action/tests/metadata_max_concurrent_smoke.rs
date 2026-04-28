@@ -53,3 +53,19 @@ fn deserializes_when_field_absent() {
     let _: ActionMetadata =
         serde_json::from_str(&json_string).expect("backwards-compat deserialize");
 }
+
+#[test]
+fn rejects_zero_max_concurrent() {
+    // `Option<NonZeroU32>` must reject the explicit zero on the wire. The
+    // `Option::is_none` skip-on-serialize doesn't cover this — `0` only
+    // hits the deserializer if a producer or codemod injects it. Pinning
+    // the rejection guards against accidental serde drift later.
+    let mut v = serde_json::to_value(meta()).expect("serialize");
+    v.as_object_mut()
+        .expect("object")
+        .insert("max_concurrent".into(), serde_json::json!(0));
+    assert!(
+        serde_json::from_value::<ActionMetadata>(v).is_err(),
+        "zero must remain invalid for NonZeroU32-backed max_concurrent"
+    );
+}

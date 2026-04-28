@@ -526,6 +526,17 @@ where
         event: TriggerEvent,
         ctx: &dyn TriggerContext,
     ) -> Result<TriggerEventOutcome, ActionError> {
+        // Mirror the dyn-layer default: triggers that don't accept events
+        // never reach `action.handle`. Engine routing should already gate
+        // on `accepts_events()`; this guard is defensive against direct
+        // `dyn TriggerHandler::handle_event` callers that bypass the
+        // default check.
+        if !self.action.accepts_events() {
+            return Err(ActionError::fatal(
+                "trigger does not accept external events",
+            ));
+        }
+
         let payload_type_name = event.payload_type_name();
         let (_id, _received_at, typed_event) = event
             .downcast::<<A::Source as TriggerSource>::Event>()

@@ -30,6 +30,7 @@ pub trait TriggerSource: Send + Sync + 'static {
     /// downstream registries / adapters never need to repeat it.
     ///
     /// Examples: `WebhookSource::Event = WebhookRequest`,
-    /// `PollSource::Event = PollEvent`.
+    /// `PollSource::Event = ()` (poll triggers self-drive their cycle and
+    /// never receive pushed events — see [`crate::poll::PollSource`]).
     type Event: Send + Sync + 'static;
 }

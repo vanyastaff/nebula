@@ -372,13 +372,16 @@ impl WebhookRequest {
     #[must_use]
     pub fn delivery_id(&self) -> Option<&str> {
         // Check headers in precedence order. Uses `header_str` for
-        // case-insensitive lookup and ASCII validation. Empty header
-        // values are treated as absent so a present-but-empty
-        // `X-Delivery-ID` does not shadow a populated fallback header.
+        // case-insensitive lookup and ASCII validation. Empty or
+        // whitespace-only header values are treated as absent so a
+        // blank `X-Delivery-ID` does not shadow a populated fallback
+        // header and never produces an empty `IdempotencyKey`.
         self.header_str("x-delivery-id")
+            .map(str::trim)
             .filter(|v| !v.is_empty())
             .or_else(|| {
                 self.header_str("x-github-delivery")
+                    .map(str::trim)
                     .filter(|v| !v.is_empty())
             })
     }
