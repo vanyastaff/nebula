@@ -525,3 +525,71 @@ fn pad_end_accepts_float_length() {
 fn repeat_accepts_float_count() {
     assert_eq!(eval(r#"repeat("ab", 2.0)"#), json!("abab"));
 }
+
+// ──────────────────────────────────────────────
+// String: Unicode-aware length / substring (n8n-compatible)
+// ──────────────────────────────────────────────
+
+#[test]
+fn length_counts_unicode_chars_not_bytes() {
+    // "🙂" is 1 char (4 UTF-8 bytes); "über" is 4 chars (5 UTF-8 bytes);
+    // "hello" is 5 chars (5 UTF-8 bytes); empty is 0.
+    assert_eq!(eval(r#"length("🙂")"#), json!(1));
+    assert_eq!(eval(r#"length("über")"#), json!(4));
+    assert_eq!(eval(r#"length("hello")"#), json!(5));
+    assert_eq!(eval(r#"length("")"#), json!(0));
+}
+
+#[test]
+fn length_array_still_returns_element_count() {
+    // Polymorphic length: array semantics unchanged.
+    assert_eq!(eval("length([1, 2, 3])"), json!(3));
+    assert_eq!(eval("length([])"), json!(0));
+}
+
+#[test]
+fn length_object_returns_key_count() {
+    // Polymorphic length: object reports number of top-level keys.
+    assert_eq!(eval(r#"length({"a": 1, "b": 2, "c": 3})"#), json!(3));
+    assert_eq!(eval("length({})"), json!(0));
+}
+
+#[test]
+fn length_rejects_non_collection_types() {
+    // Numbers / booleans / null have no meaningful length.
+    let err = eval_err("length(42)");
+    assert!(err.to_lowercase().contains("type"), "got: {err}");
+    let err = eval_err("length(true)");
+    assert!(err.to_lowercase().contains("type"), "got: {err}");
+    let err = eval_err("length(null)");
+    assert!(err.to_lowercase().contains("type"), "got: {err}");
+}
+
+#[test]
+fn substring_handles_emoji_at_boundary() {
+    // Char index 0..1 of "🙂hello" must be the emoji, NOT a slice of its
+    // UTF-8 bytes (which would corrupt the codepoint).
+    assert_eq!(eval(r#"substring("🙂hello", 0, 1)"#), json!("🙂"));
+    assert_eq!(eval(r#"substring("🙂hello", 1, 6)"#), json!("hello"));
+}
+
+#[test]
+fn substring_default_end_uses_char_count() {
+    // Without `end`, the slice goes to the last character — not byte length.
+    // Pre-fix: `s.len()` (byte) on a multibyte string overshot `chars.len()`,
+    // and the silent `.min(chars.len())` masked it.
+    assert_eq!(eval(r#"substring("über", 1)"#), json!("ber"));
+    assert_eq!(eval(r#"substring("🙂🙂🙂", 1)"#), json!("🙂🙂"));
+}
+
+#[test]
+fn substring_clamps_end_to_char_length() {
+    // end past char_count clamps; pre-fix behaviour also clamped, but only
+    // because chars.get() returned None — verify the new path keeps that.
+    assert_eq!(eval(r#"substring("hi", 0, 100)"#), json!("hi"));
+}
+
+#[test]
+fn substring_start_past_end_returns_empty() {
+    assert_eq!(eval(r#"substring("hello", 4, 2)"#), json!(""));
+}

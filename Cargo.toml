@@ -34,6 +34,7 @@ members = [
   "crates/validator/macros",
   "crates/sandbox",
   "crates/plugin-sdk",
+  "examples",
 ]
 exclude = ["crates/*/fuzz"]
 resolver = "3"

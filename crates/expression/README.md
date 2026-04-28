@@ -2,7 +2,7 @@
 name: nebula-expression
 role: Expression Evaluator (dynamic field resolution for workflow parameters)
 status: stable
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-28
 canon-invariants: []
 related: [nebula-schema, nebula-validator, nebula-core]
 ---
@@ -102,19 +102,28 @@ See `docs/MATURITY.md` row for `nebula-expression`.
 
 ```
 nebula-expression/
-├── src/
-│   ├── lexer.rs          # Tokenizer
-│   ├── parser.rs         # Expression → AST
-│   ├── ast.rs            # Expression AST node types
-│   ├── eval.rs           # AST evaluator (Evaluator, EvalFrame)
-│   ├── builtins.rs       # BuiltinFunction registry
-│   ├── context.rs        # EvaluationContext + builder
-│   ├── template.rs       # Template / MaybeTemplate
-│   ├── engine.rs         # ExpressionEngine + LRU cache
-│   ├── maybe.rs          # MaybeExpression<T>
-│   ├── policy.rs         # EvaluationPolicy (DoS budget)
-│   └── error_formatter.rs  # Pretty error display with source context
-└── examples/             # Runnable examples (see root-level examples/ for integration examples)
+└── src/
+    ├── lexer.rs          # Tokenizer
+    ├── parser.rs         # Expression → AST
+    ├── ast.rs            # Expression AST node types
+    ├── eval.rs           # AST evaluator (Evaluator, EvalFrame)
+    ├── builtins.rs       # BuiltinFunction registry
+    ├── context.rs        # EvaluationContext + builder
+    ├── template.rs       # Template / MaybeTemplate
+    ├── engine.rs         # ExpressionEngine + LRU cache
+    ├── maybe.rs          # MaybeExpression<T>
+    ├── policy.rs         # EvaluationPolicy (DoS budget)
+    └── error_formatter.rs  # Pretty error display with source context
+```
+
+Runnable examples live at the workspace root in `examples/expression_*.rs`,
+not under `crates/expression/examples/`. Run them with:
+
+```bash
+cargo run -p nebula-examples --example expression_template_rendering
+cargo run -p nebula-examples --example expression_maybe_vs_template
+cargo run -p nebula-examples --example expression_template_advanced
+cargo run -p nebula-examples --example expression_error_messages
 ```
 
 ### Whitespace control

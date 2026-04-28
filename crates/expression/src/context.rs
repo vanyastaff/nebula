@@ -6,7 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::policy::EvaluationPolicy;
 
@@ -25,6 +25,29 @@ pub struct EvaluationContext {
     input: Arc<Value>,
     /// Optional per-context evaluation policy override.
     policy: Option<Arc<EvaluationPolicy>>,
+    /// Pre-materialized `$node` view, rebuilt only on mutation.
+    ///
+    /// `resolve_variable("node")` was rebuilding a fresh `Map` from `nodes`
+    /// on every call, which made `{{ $node.a + $node.b + $node.c }}` cost
+    /// O(N×M) with N nodes and M references. Caching here trades a small
+    /// allocation per *mutation* for O(1) access on the read hot path.
+    nodes_view: Arc<Value>,
+    /// Pre-materialized `$execution` view (same rationale as `nodes_view`).
+    execution_view: Arc<Value>,
+}
+
+#[inline]
+fn build_view(map: &HashMap<Arc<str>, Arc<Value>>) -> Arc<Value> {
+    let mut obj = Map::with_capacity(map.len());
+    for (key, value) in map {
+        obj.insert(key.to_string(), (**value).clone());
+    }
+    Arc::new(Value::Object(obj))
+}
+
+#[inline]
+fn empty_object_arc() -> Arc<Value> {
+    Arc::new(Value::Object(Map::new()))
 }
 
 impl EvaluationContext {
@@ -34,9 +57,11 @@ impl EvaluationContext {
             nodes: HashMap::new(),
             execution_vars: HashMap::new(),
             lambda_vars: HashMap::new(),
-            workflow: Arc::new(Value::Object(serde_json::Map::new())),
-            input: Arc::new(Value::Object(serde_json::Map::new())),
+            workflow: empty_object_arc(),
+            input: empty_object_arc(),
             policy: None,
+            nodes_view: empty_object_arc(),
+            execution_view: empty_object_arc(),
         }
     }
 
@@ -44,6 +69,7 @@ impl EvaluationContext {
     pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: Value) {
         let key: Arc<str> = Arc::from(node_key.as_ref());
         self.nodes.insert(key, Arc::new(data));
+        self.nodes_view = build_view(&self.nodes);
     }
 
     /// Get data for a specific node
@@ -55,6 +81,7 @@ impl EvaluationContext {
     pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
         self.execution_vars.insert(key, Arc::new(value));
+        self.execution_view = build_view(&self.execution_vars);
     }
 
     /// Get an execution variable
@@ -104,7 +131,11 @@ impl EvaluationContext {
         self.policy.as_deref()
     }
 
-    /// Resolve a variable by name
+    /// Resolve a variable by name.
+    ///
+    /// `$node` and `$execution` are served from pre-materialized views (see
+    /// `nodes_view` / `execution_view`); the cost of a single resolve is one
+    /// `Value` clone of an already-built object, not a full HashMap rebuild.
     pub fn resolve_variable(&self, name: &str) -> Option<Value> {
         // Lambda-bound parameters take priority (e.g., `x` in `filter(arr, x => x > 2)`).
         if let Some(value) = self.lambda_vars.get(name) {
@@ -117,22 +148,8 @@ impl EvaluationContext {
         }
 
         match name {
-            "node" => {
-                // Return an object containing all nodes
-                let mut obj = serde_json::Map::new();
-                for (key, value) in &self.nodes {
-                    obj.insert(key.to_string(), (**value).clone());
-                }
-                Some(Value::Object(obj))
-            },
-            "execution" => {
-                // Return an object containing all execution variables
-                let mut obj = serde_json::Map::new();
-                for (key, value) in &self.execution_vars {
-                    obj.insert(key.to_string(), (**value).clone());
-                }
-                Some(Value::Object(obj))
-            },
+            "node" => Some((*self.nodes_view).clone()),
+            "execution" => Some((*self.execution_view).clone()),
             "workflow" => Some((*self.workflow).clone()),
             "input" => Some((*self.input).clone()),
             "now" => {
@@ -209,17 +226,17 @@ impl EvaluationContextBuilder {
 
     /// Build the evaluation context
     pub fn build(self) -> EvaluationContext {
+        let nodes_view = build_view(&self.nodes);
+        let execution_view = build_view(&self.execution_vars);
         EvaluationContext {
             nodes: self.nodes,
             execution_vars: self.execution_vars,
             lambda_vars: HashMap::new(),
-            workflow: self
-                .workflow
-                .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
-            input: self
-                .input
-                .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
+            workflow: self.workflow.unwrap_or_else(empty_object_arc),
+            input: self.input.unwrap_or_else(empty_object_arc),
             policy: self.policy,
+            nodes_view,
+            execution_view,
         }
     }
 }
@@ -283,5 +300,81 @@ mod tests {
 
         let exec = ctx.resolve_variable("execution").unwrap();
         assert!(exec.is_object());
+    }
+
+    #[test]
+    fn nodes_view_updates_on_set_node_data() {
+        // Each `set_node_data` must rebuild the materialized `$node` view
+        // so that subsequent `resolve_variable("node")` reflects the new key.
+        let mut ctx = EvaluationContext::new();
+        ctx.set_node_data("first", Value::Number(1.into()));
+        let view1 = ctx.resolve_variable("node").unwrap();
+        let obj1 = view1.as_object().unwrap();
+        assert_eq!(obj1.len(), 1);
+        assert!(obj1.contains_key("first"));
+
+        ctx.set_node_data("second", Value::Number(2.into()));
+        let view2 = ctx.resolve_variable("node").unwrap();
+        let obj2 = view2.as_object().unwrap();
+        assert_eq!(obj2.len(), 2);
+        assert!(obj2.contains_key("first"));
+        assert!(obj2.contains_key("second"));
+    }
+
+    #[test]
+    fn execution_view_updates_on_set_execution_var() {
+        let mut ctx = EvaluationContext::new();
+        ctx.set_execution_var("id", Value::String("e1".into()));
+        ctx.set_execution_var("mode", Value::String("test".into()));
+
+        let view = ctx.resolve_variable("execution").unwrap();
+        let obj = view.as_object().unwrap();
+        assert_eq!(obj.get("id").and_then(|v| v.as_str()), Some("e1"));
+        assert_eq!(obj.get("mode").and_then(|v| v.as_str()), Some("test"));
+    }
+
+    #[test]
+    fn builder_initializes_views() {
+        // Builder path must produce the same materialized views as the
+        // imperative API, otherwise `EvaluationContextBuilder::build`
+        // contexts would silently see empty `$node`/`$execution`.
+        let ctx = EvaluationContext::builder()
+            .node("a", Value::Number(1.into()))
+            .execution_var("id", Value::String("x".into()))
+            .build();
+
+        let node_view = ctx.resolve_variable("node").unwrap();
+        assert_eq!(node_view.as_object().unwrap().len(), 1);
+
+        let exec_view = ctx.resolve_variable("execution").unwrap();
+        assert!(exec_view.as_object().unwrap().contains_key("id"));
+    }
+
+    #[test]
+    fn repeated_resolve_returns_consistent_data() {
+        // Hot-path regression: ten resolves of `$node` must all return the
+        // same materialized object — caching must not produce stale views.
+        let mut ctx = EvaluationContext::new();
+        ctx.set_node_data("k", Value::Number(7.into()));
+
+        for _ in 0..10 {
+            let view = ctx.resolve_variable("node").unwrap();
+            assert_eq!(
+                view.as_object().unwrap().get("k").and_then(Value::as_i64),
+                Some(7)
+            );
+        }
+    }
+
+    #[test]
+    fn clone_preserves_view_content() {
+        // `EvaluationContext::Clone` is invoked per lambda iteration; the
+        // cached view must clone with the rest of the struct, not get
+        // dropped or reset to empty.
+        let mut ctx = EvaluationContext::new();
+        ctx.set_node_data("k", Value::Number(7.into()));
+        let cloned = ctx.clone();
+        let view = cloned.resolve_variable("node").unwrap();
+        assert_eq!(view.as_object().unwrap().len(), 1);
     }
 }

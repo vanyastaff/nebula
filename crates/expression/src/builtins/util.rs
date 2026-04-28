@@ -10,7 +10,15 @@ use crate::{
     eval::Evaluator,
 };
 
-/// Get the length of a string or array
+/// Get the length of a string, array, or object — the single polymorphic
+/// `length()` exposed to expressions.
+///
+/// - **String**: Unicode scalar values (`chars`), matching JS / n8n semantics — `length("🙂")` is
+///   1, not 4.
+/// - **Array**: number of elements.
+/// - **Object**: number of top-level keys.
+///
+/// All other input types yield a typed error.
 pub fn length(
     args: &[Value],
     _eval: &Evaluator,
@@ -18,10 +26,11 @@ pub fn length(
 ) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
     match &args[0] {
-        Value::String(t) => Ok(Value::Number((t.len() as i64).into())),
+        Value::String(t) => Ok(Value::Number(crate::value_utils::char_count(t).into())),
         Value::Array(arr) => Ok(Value::Number((arr.len() as i64).into())),
+        Value::Object(obj) => Ok(Value::Number((obj.len() as i64).into())),
         _ => Err(ExpressionError::expression_type_error(
-            "string or array",
+            "string, array, or object",
             crate::value_utils::value_type_name(&args[0]),
         )),
     }

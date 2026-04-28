@@ -41,7 +41,7 @@ struct EmailTemplate {
     from: MaybeExpression<String>,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let engine = ExpressionEngine::new();
     let mut context = EvaluationContext::new();
 
@@ -64,7 +64,7 @@ fn main() {
         "debug": false
     }"#;
 
-    let config: ApiConfig = serde_json::from_str(static_config).unwrap();
+    let config: ApiConfig = serde_json::from_str(static_config)?;
     println!("Static config (from JSON):");
     println!("  timeout: {:?}", config.timeout);
     println!("  retry_count: {:?}", config.retry_count);
@@ -72,19 +72,10 @@ fn main() {
     println!("  debug: {:?}\n", config.debug);
 
     // Resolve values
-    let timeout = config
-        .timeout
-        .resolve_as_integer(&engine, &context)
-        .unwrap();
-    let retry_count = config
-        .retry_count
-        .resolve_as_integer(&engine, &context)
-        .unwrap();
-    let base_url = config
-        .base_url
-        .resolve_as_string(&engine, &context)
-        .unwrap();
-    let debug = config.debug.resolve_as_bool(&engine, &context).unwrap();
+    let timeout = config.timeout.resolve_as_integer(&engine, &context)?;
+    let retry_count = config.retry_count.resolve_as_integer(&engine, &context)?;
+    let base_url = config.base_url.resolve_as_string(&engine, &context)?;
+    let debug = config.debug.resolve_as_bool(&engine, &context)?;
 
     println!("Resolved values:");
     println!("  timeout: {timeout}");
@@ -100,7 +91,7 @@ fn main() {
         "debug": "{{ $execution.env == \"development\" }}"
     }"#;
 
-    let config: ApiConfig = serde_json::from_str(dynamic_config).unwrap();
+    let config: ApiConfig = serde_json::from_str(dynamic_config)?;
     println!("Dynamic config (with expressions):");
     println!("  timeout: {:?}", config.timeout);
     println!("  retry_count: {:?}", config.retry_count);
@@ -108,19 +99,10 @@ fn main() {
     println!("  debug: {:?}\n", config.debug);
 
     // Resolve values
-    let timeout = config
-        .timeout
-        .resolve_as_integer(&engine, &context)
-        .unwrap();
-    let retry_count = config
-        .retry_count
-        .resolve_as_integer(&engine, &context)
-        .unwrap();
-    let base_url = config
-        .base_url
-        .resolve_as_string(&engine, &context)
-        .unwrap();
-    let debug = config.debug.resolve_as_bool(&engine, &context).unwrap();
+    let timeout = config.timeout.resolve_as_integer(&engine, &context)?;
+    let retry_count = config.retry_count.resolve_as_integer(&engine, &context)?;
+    let base_url = config.base_url.resolve_as_string(&engine, &context)?;
+    let debug = config.debug.resolve_as_bool(&engine, &context)?;
 
     println!("Resolved values:");
     println!("  timeout: {timeout} (computed from $input * 1000)");
@@ -138,16 +120,16 @@ fn main() {
         "from": "noreply@example.com"
     }"#;
 
-    let email: EmailTemplate = serde_json::from_str(static_email).unwrap();
+    let email: EmailTemplate = serde_json::from_str(static_email)?;
     println!("Static email template:");
     println!("  subject: {}", email.subject.as_str());
     println!("  body: {}", email.body.as_str());
     println!("  from: {:?}\n", email.from);
 
     // Resolve
-    let subject = email.subject.resolve(&engine, &context).unwrap();
-    let body = email.body.resolve(&engine, &context).unwrap();
-    let from = email.from.resolve_as_string(&engine, &context).unwrap();
+    let subject = email.subject.resolve(&engine, &context)?;
+    let body = email.body.resolve(&engine, &context)?;
+    let from = email.from.resolve_as_string(&engine, &context)?;
 
     println!("Rendered email:");
     println!("  From: {from}");
@@ -161,16 +143,16 @@ fn main() {
         "from": "{{ \"orders@\" + $execution.env + \".example.com\" }}"
     }"#;
 
-    let email: EmailTemplate = serde_json::from_str(dynamic_email).unwrap();
+    let email: EmailTemplate = serde_json::from_str(dynamic_email)?;
     println!("Dynamic email template:");
     println!("  subject.is_template(): {}", email.subject.is_template());
     println!("  body.is_template(): {}", email.body.is_template());
     println!("  from: {:?}\n", email.from);
 
     // Resolve
-    let subject = email.subject.resolve(&engine, &context).unwrap();
-    let body = email.body.resolve(&engine, &context).unwrap();
-    let from = email.from.resolve_as_string(&engine, &context).unwrap();
+    let subject = email.subject.resolve(&engine, &context)?;
+    let body = email.body.resolve(&engine, &context)?;
+    let from = email.from.resolve_as_string(&engine, &context)?;
 
     println!("Rendered email:");
     println!("  From: {from}");
@@ -192,7 +174,7 @@ fn main() {
 </body>
 </html>";
 
-    let template = Template::new(template_str).unwrap();
+    let template = Template::new(template_str)?;
 
     println!("Template analysis:");
     println!("  Number of parts: {}", template.parts().len());
@@ -203,7 +185,7 @@ fn main() {
     }
     println!();
 
-    let result = template.render(&engine, &context).unwrap();
+    let result = template.render(&engine, &context)?;
     println!("Rendered HTML:\n{result}\n");
 
     // Example 4: Combining both in a real-world scenario
@@ -224,7 +206,7 @@ fn main() {
         "body": "User: {{ $execution.user_email }}, Order: {{ $execution.order_id }}, Total: ${{ $execution.total }}"
     }"#;
 
-    let request: HttpRequest = serde_json::from_str(request_config).unwrap();
+    let request: HttpRequest = serde_json::from_str(request_config)?;
 
     println!("HTTP Request Configuration:");
     println!("  url (expression): {:?}", request.url);
@@ -236,13 +218,10 @@ fn main() {
     );
 
     // Resolve all fields
-    let url = request.url.resolve_as_string(&engine, &context).unwrap();
-    let method = request.method.resolve_as_string(&engine, &context).unwrap();
-    let timeout = request
-        .timeout_ms
-        .resolve_as_integer(&engine, &context)
-        .unwrap();
-    let body = request.body.resolve(&engine, &context).unwrap();
+    let url = request.url.resolve_as_string(&engine, &context)?;
+    let method = request.method.resolve_as_string(&engine, &context)?;
+    let timeout = request.timeout_ms.resolve_as_integer(&engine, &context)?;
+    let body = request.body.resolve(&engine, &context)?;
 
     println!("Resolved HTTP Request:");
     println!("  URL: {url}");
@@ -271,4 +250,6 @@ fn main() {
     println!("  ✓ You need detailed error reporting (line/column)");
     println!("  ✓ You want to inspect the template structure");
     println!("  ✓ Performance matters (caching of parsed structure)");
+
+    Ok(())
 }

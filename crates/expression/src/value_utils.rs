@@ -89,6 +89,17 @@ pub fn to_float(value: &Value) -> Result<f64, &'static str> {
     }
 }
 
+/// Count Unicode scalar values in a string.
+///
+/// This is the JS-style `String.length` semantics expected by n8n compatibility:
+/// `"🙂".len()` returns 4 (UTF-8 bytes) but `char_count("🙂")` returns 1.
+/// Built-ins that report string length or compute character offsets must use
+/// this instead of `str::len`.
+#[inline]
+pub fn char_count(s: &str) -> i64 {
+    s.chars().count() as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

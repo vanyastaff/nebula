@@ -105,9 +105,19 @@ pub use token::{Token, TokenKind};
 /// This validates expression grammar without evaluating against a runtime
 /// context. It is the stable parsing entrypoint for downstream crates that
 /// need parse-only checks.
+///
+/// Inputs that contain at least one `{{ ... }}` block are parsed as a
+/// template; otherwise the source is parsed as a raw expression. The
+/// dispatch is decided by the actual template parser, not by a substring
+/// search — so a raw expression that legitimately contains a `{{` literal
+/// (for example inside a string) does not get mis-routed.
 pub fn parse_expression(source: &str) -> ExpressionResult<()> {
-    if source.contains("{{") || source.contains("}}") {
-        let template = Template::new(source.to_owned())?;
+    // Template parser is authoritative: if it sees no expressions, treat
+    // the source as raw. If it errors as a template, also fall through —
+    // raw parsing will surface the real syntax error in context.
+    if let Ok(template) = Template::new(source.to_owned())
+        && template.expression_count() > 0
+    {
         for expression in template.expressions() {
             parse_raw_expression(expression.trim())?;
         }
@@ -160,5 +170,19 @@ mod tests {
     fn parse_expression_accepts_multiple_template_expressions() {
         let result = parse_expression("{{ $a }} + {{ $b }}");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_expression_disambiguates_raw_with_brace_literal_substring() {
+        // Pre-fix: `contains("{{")` mistook a raw expression containing the
+        // substring `{{` (e.g. inside a string literal) for a template and
+        // routed it through the template parser, which then failed because
+        // the wrapping `{{ ... }}` was missing. Now the dispatch is decided
+        // by the actual template parser's `expression_count()`.
+        let result = parse_expression(r#"contains($input, "{{")"#);
+        assert!(
+            result.is_ok(),
+            "raw expression with literal {{{{ substring should parse: {result:?}"
+        );
     }
 }

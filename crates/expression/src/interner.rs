@@ -2,6 +2,16 @@
 //!
 //! This module provides string interning to reduce memory allocations and
 //! enable fast string comparisons via pointer equality.
+//!
+//! # Cost model
+//!
+//! - `intern` is `O(1)` amortised on hit and `O(1)` allocate-and-insert on miss. The fast path
+//!   takes a read lock; the slow path takes a write lock and double-checks for races.
+//! - `Clone` deep-copies the entire `HashSet<Arc<str>>` — `O(n)` in the number of unique strings.
+//!   The contained `Arc<str>` values are still `O(1)` to clone individually, but the `HashSet`
+//!   itself reallocates. Avoid cloning interners on hot paths; share via `Arc<StringInterner>`
+//!   instead.
+//! - `Default::default()` is equivalent to `StringInterner::new()` — empty, ready to use.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -124,5 +134,17 @@ mod tests {
         }
 
         assert_eq!(interner.len(), 10);
+    }
+
+    #[test]
+    fn default_constructs_empty_interner() {
+        let interner = StringInterner::default();
+        assert_eq!(interner.len(), 0);
+        assert!(interner.is_empty());
+
+        // And it's actually usable, not just empty.
+        let s = interner.intern("hello");
+        assert_eq!(&*s, "hello");
+        assert_eq!(interner.len(), 1);
     }
 }

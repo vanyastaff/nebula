@@ -10,16 +10,12 @@ use crate::{
     eval::Evaluator,
 };
 
-/// Get the length of an array
-pub fn length(
-    args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    check_arg_count("length", args, 1)?;
-    let arr = get_array_arg("length", args, 0, "array")?;
-    Ok(Value::Number((arr.len() as i64).into()))
-}
+// Note: there used to be a `pub fn length` here that took an array only,
+// duplicating the polymorphic `util::length` registered in
+// `BuiltinRegistry::new()`. It was unused (the registry never wired it up)
+// and was a maintenance hazard — the array-only and string-only copies
+// could drift from the polymorphic version. Removed; `util::length`
+// handles strings, arrays, and objects in one place.
 
 /// Get the first element of an array
 pub fn first(

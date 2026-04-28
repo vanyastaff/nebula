@@ -10,21 +10,11 @@ use crate::{
     eval::Evaluator,
 };
 
-/// Get the length of a string
-pub fn length(
-    args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    check_arg_count("length", args, 1)?;
-    let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(&args[0]),
-        )
-    })?;
-    Ok(Value::Number((s.len() as i64).into()))
-}
+// Note: there used to be a `pub fn length` here that took a string only,
+// duplicating the polymorphic `util::length` registered in
+// `BuiltinRegistry::new()`. Removed in favor of the single polymorphic
+// version in `util.rs`, which already uses `value_utils::char_count` for
+// strings (n8n-compatible code-unit counting, not UTF-8 byte length).
 
 /// Convert string to uppercase
 pub fn uppercase(
@@ -90,7 +80,12 @@ pub fn replace(
     Ok(Value::String(s.replace(from, to)))
 }
 
-/// Get a substring
+/// Extract a substring by Unicode scalar value indices (n8n-compatible).
+///
+/// Both `start` and `end` are character indices, NOT byte offsets — so
+/// `substring("🙂hello", 0, 1)` returns `"🙂"`. When `end` is omitted it
+/// defaults to the character count of the input. Out-of-range `end` is
+/// clamped to the string's character length; `start > end` produces empty.
 pub fn substring(
     args: &[Value],
     eval: &Evaluator,
@@ -105,6 +100,7 @@ pub fn substring(
             "Argument 'start' must be non-negative",
         ));
     }
+    let chars: Vec<char> = s.chars().collect();
     let start = start as usize;
     let end = if args.len() > 2 {
         let end = get_int_arg_with_policy("substring", args, 2, "end", eval, ctx)?;
@@ -114,17 +110,12 @@ pub fn substring(
                 "Argument 'end' must be non-negative",
             ));
         }
-        end as usize
+        (end as usize).min(chars.len())
     } else {
-        s.len()
+        chars.len()
     };
 
-    let chars: Vec<char> = s.chars().collect();
-    let result: String = chars
-        .get(start..end.min(chars.len()))
-        .unwrap_or(&[])
-        .iter()
-        .collect();
+    let result: String = chars.get(start..end).unwrap_or(&[]).iter().collect();
     Ok(Value::String(result))
 }
 

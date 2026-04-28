@@ -3507,6 +3507,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-examples"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nebula-expression",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nebula-execution"
 version = "0.1.0"
 dependencies = [
@@ -3540,6 +3550,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
  "uuid",
 ]
 
