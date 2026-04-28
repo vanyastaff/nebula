@@ -284,7 +284,6 @@ crates/resource/
 
 | Document | Contents |
 |----------|----------|
-| [`architecture.md`](architecture.md) | Module dependency map, data flow, layer invariants |
 | [`api-reference.md`](api-reference.md) | Every public type, trait, and method with signatures |
 | [`pooling.md`](pooling.md) | `PoolConfig`, recycle decisions, broken checks, max-lifetime eviction |
 | [`events-and-hooks.md`](events-and-hooks.md) | `ResourceEvent` catalog, `subscribe_events` patterns |
