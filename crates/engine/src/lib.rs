@@ -49,6 +49,7 @@ pub mod control_consumer;
 pub mod control_dispatch;
 pub mod credential;
 pub mod credential_accessor;
+pub mod daemon;
 pub mod engine;
 pub mod error;
 pub mod event;
@@ -72,6 +73,10 @@ pub use credential::{
     StateProjectionRegistry, execute_continue, execute_resolve,
 };
 pub use credential_accessor::EngineCredentialAccessor;
+pub use daemon::{
+    AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime, EventSource,
+    EventSourceAdapter, EventSourceConfig, EventSourceRuntime, RestartPolicy,
+};
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
 pub use event::ExecutionEvent;

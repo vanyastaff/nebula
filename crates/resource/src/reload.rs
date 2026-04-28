@@ -14,7 +14,8 @@ pub enum ReloadOutcome {
         /// Generation counter of the runtime being drained.
         old_generation: u64,
     },
-    /// Daemon cancelled and restarting.
+    /// Engine-side daemon (per ADR-0037, lives in `nebula_engine::daemon`)
+    /// cancelled and restarting after a reload.
     Restarting,
     /// Fingerprint identical — no change needed.
     NoChange,

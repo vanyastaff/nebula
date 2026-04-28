@@ -6,7 +6,7 @@
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
 //! receives a `ResourceGuard` that derefs to the lease type and releases on
-//! drop. Seven topology traits cover the full integration space.
+//! drop. Five topology traits cover the full integration space.
 //!
 //! ## Key types
 //!
@@ -92,8 +92,6 @@ pub use resource::{
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{
-    daemon::DaemonRuntime,
-    event_source::EventSourceRuntime,
     exclusive::ExclusiveRuntime,
     managed::ManagedResource,
     pool::{PoolRuntime, PoolStats},
@@ -103,10 +101,7 @@ pub use runtime::{
 };
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
-pub use topology::daemon::config::Config as DaemonConfig;
 pub use topology::{
-    daemon::{Daemon, RestartPolicy},
-    event_source::{EventSource, config::Config as EventSourceConfig},
     exclusive::{Exclusive, config::Config as ExclusiveConfig},
     pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
     resident::{Resident, config::Config as ResidentConfig},

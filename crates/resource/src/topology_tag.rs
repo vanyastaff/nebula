@@ -16,10 +16,6 @@ pub enum TopologyTag {
     Transport,
     /// Exclusive — one caller at a time.
     Exclusive,
-    /// EventSource — pull-based event subscription.
-    EventSource,
-    /// Daemon — background run loop.
-    Daemon,
 }
 
 impl TopologyTag {
@@ -31,8 +27,6 @@ impl TopologyTag {
             Self::Service => "service",
             Self::Transport => "transport",
             Self::Exclusive => "exclusive",
-            Self::EventSource => "event_source",
-            Self::Daemon => "daemon",
         }
     }
 }

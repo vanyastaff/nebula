@@ -22,15 +22,11 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use nebula_core::context::Context;
+use nebula_resource::{Error, Resource, ResourceContext};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    context::ResourceContext,
-    error::Error,
-    resource::Resource,
-    topology::daemon::{Daemon, RestartPolicy, config::Config},
-};
+use crate::daemon::{Daemon, DaemonConfig as Config, RestartPolicy};
 
 /// Runtime state for a daemon topology.
 ///
@@ -86,6 +82,7 @@ impl<R: Resource> DaemonRuntime<R> {
     /// lifetime of the runtime, not any individual run. External code may
     /// clone it to observe global shutdown, but must not cancel it to
     /// request daemon stop — use [`stop`](Self::stop) instead.
+    #[must_use]
     pub fn cancel_token(&self) -> &CancellationToken {
         &self.parent_cancel
     }
@@ -267,14 +264,14 @@ mod tests {
     };
 
     use nebula_core::{ExecutionId, ResourceKey};
-
-    use super::*;
-    use crate::{
+    use nebula_resource::{
         context::ResourceContext,
         error::Error as ResourceError,
         resource::{Resource, ResourceConfig, ResourceMetadata},
-        topology::daemon::{Daemon, RestartPolicy, config::Config as DaemonCfg},
     };
+
+    use super::*;
+    use crate::daemon::{Daemon, DaemonConfig as DaemonCfg, RestartPolicy};
 
     #[derive(Clone, Debug, Default)]
     struct EmptyCfg;
