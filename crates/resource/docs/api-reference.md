@@ -584,10 +584,12 @@ pub struct AcquireRetryConfig {
 }
 ```
 
-Two fields only — no circuit breaker. Three presets: `standard()` (30s / 3
-retries), `fast()` (10s / 2 retries), `slow()` (60s / 5 retries); `none()`
-disables both. Internally converts to `nebula_resilience::RetryConfig`. A
-user-supplied `max_attempts: 0` clamps to `1` instead of panicking (#383).
+Two fields only — no circuit breaker. Three presets: `standard()` (30 s
+timeout / `max_attempts = 3` = 1 initial + 2 retries), `fast()` (10 s /
+`max_attempts = 2`), `slow()` (60 s / `max_attempts = 5`); `none()`
+disables both. Internally converts to `nebula_resilience::RetryConfig`
+with exponential backoff (2× multiplier). A user-supplied
+`max_attempts: 0` clamps to `1` instead of panicking (#383).
 
 ---
 
