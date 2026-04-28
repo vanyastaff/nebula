@@ -6,10 +6,20 @@
 
 use std::sync::OnceLock;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned, ser::SerializeMap,
+};
 use serde_json::Value;
 
 use crate::{ExpressionError, ast::Expr, context::EvaluationContext, engine::ExpressionEngine};
+
+/// Tag key used for `MaybeExpression::Expression` on the wire.
+///
+/// Wrapping the expression source in `{"$expr": "..."}` instead of
+/// piggybacking on bare strings ensures a round-trip is lossless: a
+/// literal `String` containing `{{ ... }}` no longer gets silently
+/// reinterpreted as an expression on deserialize.
+const EXPR_TAG: &str = "$expr";
 
 /// Internal structure for cached expression parsing
 #[derive(Debug)]
@@ -48,9 +58,11 @@ impl PartialEq for CachedExpression {
 ///
 /// # Serialization
 ///
-/// When serializing, both variants are serialized as their inner value.
-/// When deserializing strings, the type automatically detects expressions
-/// by looking for `{{` and `}}` delimiters.
+/// `Value(T)` serializes as the bare inner `T`. `Expression(...)` is
+/// tagged: it serializes as `{"$expr": "<source>"}` so that a literal
+/// `String` carrying `{{` / `}}` cannot be confused for an expression
+/// on round-trip — the previous heuristic (`s.contains("{{")`) was
+/// lossy.
 ///
 /// # Examples
 ///
@@ -70,7 +82,7 @@ impl PartialEq for CachedExpression {
 /// "hello"
 ///
 /// // Expression
-/// "{{ $input.name }}"
+/// {"$expr": "{{ $input.name }}"}
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum MaybeExpression<T> {
@@ -306,9 +318,30 @@ where
     {
         match self {
             Self::Value(v) => v.serialize(serializer),
-            Self::Expression(cached) => cached.source.serialize(serializer),
+            Self::Expression(cached) => {
+                // Tagged form: {"$expr": "<source>"} — distinct from any
+                // bare string a caller might supply, including one that
+                // happens to contain `{{ }}`.
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(EXPR_TAG, &cached.source)?;
+                map.end()
+            },
         }
     }
+}
+
+/// Detect the tagged `{"$expr": "..."}` form on the wire.
+///
+/// Returns the source string if and only if the JSON is exactly an
+/// object with one key, `$expr`, mapping to a string. Anything else —
+/// including objects that contain `$expr` alongside other keys — falls
+/// through to the literal-`T` deserialize path.
+fn extract_expr_tag(value: &Value) -> Option<&str> {
+    let obj = value.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    obj.get(EXPR_TAG).and_then(Value::as_str)
 }
 
 // Deserialization
@@ -320,29 +353,19 @@ where
     where
         D: Deserializer<'de>,
     {
-        // First try to deserialize as a string to check if it's an expression
         let value = Value::deserialize(deserializer)?;
 
-        if let Some(s) = value.as_str() {
-            // If it's a string, check if it looks like an expression
-            if is_expression(s) {
-                return Ok(Self::Expression(CachedExpression {
-                    source: s.to_string(),
-                    ast: OnceLock::new(),
-                }));
-            }
+        if let Some(source) = extract_expr_tag(&value) {
+            return Ok(Self::Expression(CachedExpression {
+                source: source.to_string(),
+                ast: OnceLock::new(),
+            }));
         }
 
-        // Otherwise, try to deserialize as T
         T::deserialize(value)
             .map(Self::Value)
             .map_err(serde::de::Error::custom)
     }
-}
-
-/// Check if a string looks like an expression (contains {{ }})
-fn is_expression(s: &str) -> bool {
-    s.contains("{{") && s.contains("}}")
 }
 
 #[cfg(test)]
@@ -450,9 +473,55 @@ mod tests {
     fn test_serde_expression() {
         let maybe: MaybeExpression<String> = MaybeExpression::expression("{{ $input }}");
         let json = serde_json::to_string(&maybe).unwrap();
-        assert_eq!(json, r#""{{ $input }}""#);
+        assert_eq!(json, r#"{"$expr":"{{ $input }}"}"#);
 
         let deserialized: MaybeExpression<String> = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, maybe);
+    }
+
+    #[test]
+    fn literal_string_with_braces_round_trips_as_value() {
+        // Regression: pre-fix, a bare string containing `{{` and `}}` was
+        // mis-routed to `Expression` on deserialize, so a payload like
+        // `"hello {{ stay literal }}"` lost its meaning. With the tagged
+        // form, only `{"$expr": ...}` is treated as an expression — bare
+        // strings always round-trip as Value.
+        let literal: MaybeExpression<String> =
+            MaybeExpression::value("hello {{ stay literal }}".to_string());
+        let json = serde_json::to_string(&literal).unwrap();
+        assert_eq!(json, r#""hello {{ stay literal }}""#);
+
+        let back: MaybeExpression<String> = serde_json::from_str(&json).unwrap();
+        assert!(back.is_value(), "bare string must deserialize as Value");
+        assert_eq!(
+            back.as_value().map(String::as_str),
+            Some("hello {{ stay literal }}")
+        );
+    }
+
+    #[test]
+    fn object_with_extra_keys_is_not_expression() {
+        // Tagged form is *exactly* `{"$expr": "..."}`. An object that has
+        // `$expr` alongside other keys should be treated as plain JSON
+        // payload (Value variant for `MaybeExpression<Value>`), not as
+        // an expression.
+        let json = r#"{"$expr": "{{ x }}", "extra": 1}"#;
+        let parsed: MaybeExpression<Value> = serde_json::from_str(json).unwrap();
+        assert!(
+            parsed.is_value(),
+            "objects with extra keys must NOT be Expression"
+        );
+    }
+
+    #[test]
+    fn deserializing_old_bare_expression_form_now_yields_value() {
+        // Documented behavioural change: the old wire format used a bare
+        // string with `{{ }}` for Expression. Under the new tagged
+        // form, that wire shape is interpreted as Value. Callers
+        // migrating data must rewrite to `{"$expr": "..."}` form.
+        let old_wire = r#""{{ $input }}""#;
+        let parsed: MaybeExpression<String> = serde_json::from_str(old_wire).unwrap();
+        assert!(parsed.is_value());
+        assert_eq!(parsed.as_value().map(String::as_str), Some("{{ $input }}"));
     }
 }

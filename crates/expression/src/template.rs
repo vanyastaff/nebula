@@ -364,9 +364,20 @@ impl fmt::Display for Template {
     }
 }
 
-/// A template that can be either unresolved (template string) or resolved (final value)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+/// Tag key used for `MaybeTemplate::Template` on the wire.
+const TMPL_TAG: &str = "$tmpl";
+
+/// A template that can be either unresolved (template string) or resolved
+/// (final value).
+///
+/// # Serialization
+///
+/// `Resolved` serializes as a bare string. `Template` is tagged:
+/// `{"$tmpl": "<source>"}`. The previous `#[serde(untagged)]` form
+/// could not distinguish the two on deserialize — both variants
+/// accepted strings, so the first matching variant won regardless of
+/// the caller's intent.
+#[derive(Debug, Clone)]
 pub enum MaybeTemplate {
     /// A template that needs to be rendered
     Template(String),
@@ -376,6 +387,12 @@ pub enum MaybeTemplate {
 
 impl MaybeTemplate {
     /// Create from a string, automatically detecting if it's a template
+    /// based on `{{ }}` delimiters.
+    ///
+    /// This constructor is heuristic by design — caller has explicitly
+    /// opted into auto-detection. The serde path uses the tagged form
+    /// instead so that round-trips of literal strings containing
+    /// `{{ }}` do not get mis-routed.
     pub fn from_string(s: impl Into<String>) -> Self {
         let s = s.into();
         if s.contains("{{") && s.contains("}}") {
@@ -422,6 +439,45 @@ impl From<String> for MaybeTemplate {
 impl From<&str> for MaybeTemplate {
     fn from(s: &str) -> Self {
         Self::from_string(s)
+    }
+}
+
+impl Serialize for MaybeTemplate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::Resolved(s) => s.serialize(serializer),
+            Self::Template(t) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(TMPL_TAG, t)?;
+                map.end()
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MaybeTemplate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        // Tagged form: exactly `{"$tmpl": "..."}` → Template.
+        if let Some(obj) = value.as_object()
+            && obj.len() == 1
+            && let Some(s) = obj.get(TMPL_TAG).and_then(serde_json::Value::as_str)
+        {
+            return Ok(Self::Template(s.to_string()));
+        }
+        match value.as_str() {
+            Some(s) => Ok(Self::Resolved(s.to_string())),
+            None => Err(serde::de::Error::custom(
+                "MaybeTemplate must be a string or {\"$tmpl\": string}",
+            )),
+        }
     }
 }
 
@@ -550,6 +606,47 @@ Line 3: Done",
         let resolved = MaybeTemplate::from_string("Hello World!");
         let result = resolved.resolve(&engine, &context).unwrap();
         assert_eq!(result, "Hello World!");
+    }
+
+    #[test]
+    fn maybe_template_resolved_serializes_as_bare_string() {
+        let resolved = MaybeTemplate::Resolved("Hello World".to_string());
+        let json = serde_json::to_string(&resolved).unwrap();
+        assert_eq!(json, r#""Hello World""#);
+    }
+
+    #[test]
+    fn maybe_template_template_serializes_as_tagged_object() {
+        let template = MaybeTemplate::Template("Hello {{ $input }}".to_string());
+        let json = serde_json::to_string(&template).unwrap();
+        assert_eq!(json, r#"{"$tmpl":"Hello {{ $input }}"}"#);
+    }
+
+    #[test]
+    fn maybe_template_round_trip_preserves_variant() {
+        let original = MaybeTemplate::Template("X{{ y }}Z".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let back: MaybeTemplate = serde_json::from_str(&json).unwrap();
+        assert!(back.is_template());
+        assert_eq!(back.as_str(), "X{{ y }}Z");
+
+        let original = MaybeTemplate::Resolved("plain".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let back: MaybeTemplate = serde_json::from_str(&json).unwrap();
+        assert!(!back.is_template());
+        assert_eq!(back.as_str(), "plain");
+    }
+
+    #[test]
+    fn maybe_template_literal_string_with_braces_round_trips_as_resolved() {
+        // The serde path no longer auto-detects templates from a bare
+        // string — only `{"$tmpl": "..."}` produces Template. A literal
+        // string carrying `{{ }}` round-trips as Resolved.
+        let literal = MaybeTemplate::Resolved("Use {{ literal }} here".to_string());
+        let json = serde_json::to_string(&literal).unwrap();
+        let back: MaybeTemplate = serde_json::from_str(&json).unwrap();
+        assert!(!back.is_template(), "bare strings must NOT auto-detect");
+        assert_eq!(back.as_str(), "Use {{ literal }} here");
     }
 
     #[test]
