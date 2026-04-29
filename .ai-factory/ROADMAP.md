@@ -22,7 +22,7 @@
   stable. `resource` plans 06 + 10 + prototypes are PARTIAL.
 - **Exec layer** — `storage` is production-ready for execution/workflow
   (Layer 1 traits stable, 23 PG migrations + 9 common, CAS, outbox, reclaim).
-  `engine` is ~80% — orchestration solid, **§11.5 durability debts closed
+  `engine` is ~85% — orchestration solid, **§11.5 durability debts closed
   via M0** (budget + workflow_input persistence shipped under #289 / #311;
   explicit-termination wiring landed in M0.3); **§10 conditional-flow
   correctness verified via M1** (skip-propagation tests + dead-field
@@ -30,7 +30,11 @@
   (action-internal retry stays in `nebula-resilience`; engine-level node
   retry now wired end-to-end via `NodeDefinition.retry_policy` →
   `NodeExecutionState::next_attempt_at` → `WaitingRetry` parking →
-  frontier-loop re-dispatch, 2026-04-29).
+  frontier-loop re-dispatch, 2026-04-29); **§11.5 Layer-1 lease
+  enforcement closed via M2.2** (heartbeat-driven `lease_holder` /
+  `lease_expires_at` fence verified by engine + PG + loom + chaos,
+  2026-04-29). Layer 2 (`claimed_by`/`claimed_until` + spec-16 row
+  model) remains Sprint E (1.1) scaffolding.
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
 - **API layer** — routing wired; **5 sizable feature gaps** (auth backend,
@@ -169,8 +173,37 @@ verification + dead-field cleanup + doc audit.
         terminate + budget + idempotency + per-node-vs-workflow
         resolution + one-shot fallback. Total: ~146 unit-test deltas
         + 9 integration tests, all green.
-- [ ] **M2.2** Verify `execution_leases` heartbeat enforcement across runner
-      restarts (per `crates/execution/README.md:138`).
+- [x] **M2.2** ~~Verify `execution_leases` heartbeat enforcement across runner
+      restarts~~ — **DONE** (closed 2026-04-29, Layer 1 only — Layer 2
+      remains Sprint E (1.1) per "Out of scope for 1.0").
+      Sequencing across four commits on
+      `feature/m2-2-execution-leases-heartbeat`:
+      - **Commit 1** (`309e773c`) — T0 verification + T1' Sprint-E
+        boundary doc-comments on `repos/execution.rs` and migration
+        0011 SQL files; T3 in-memory engine takeover test.
+      - **Commit 2** (`45d79088`) — T4 cancel-redeliver across runner
+        restart (control-queue reclaim sweep with engine_b's
+        `EngineControlDispatch`); T5 `replay_execution` lease-less
+        invariant + doc-comment.
+      - **Commit 3** (`7e6ee685`) — T6 PG `acquire_lease`/`renew_lease`/
+        `release_lease` lifecycle tests (7 cases) + T7 PG multi-runner
+        takeover test, all DATABASE_URL-gated and skipping silently
+        when not set.
+      - **Commit 4** (`d37c88fe`) — T8 loom probe `lease_handoff` (3
+        exhaustive-schedule tests) + T9 InMemoryExecutionRepo chaos
+        test (high-contention holder-uniqueness, `#[ignore]` by default).
+      - **Commit 5** (this one) — T10 storage-layer tracing sweep
+        (PgExecutionRepo + InMemoryExecutionRepo parity) + T11/T12
+        documentation (durability matrix split into Layer 1 enforced
+        vs Layer 2 Sprint E scaffolding) + T13 ROADMAP closure +
+        T14 lefthook parity check.
+- [x] **M2.2 — Original T1+T2 (drop legacy schema/trait) superseded.**
+      T0 verification revealed that `repos/execution.rs` and migration
+      0011 lease columns are Sprint E (1.1) Layer-2 scaffolding per
+      `crates/storage/src/lib.rs:16-30, 65-87`, not legacy. T1' (add
+      Sprint-E boundary doc-comments) replaced the planned drops; the
+      `feat!` marker on the closer commit was downgraded to
+      `feat(engine):` because no breaking change shipped.
 
 **Exit:** retry path is real with tests — **closed 2026-04-29 via
 ADR-0042 layered-retry exit.** Workflow authors get the operator-level

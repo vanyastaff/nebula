@@ -77,3 +77,79 @@ jobs:
           path: target/nextest/chaos/junit.xml
           if-no-files-found: ignore
           retention-days: 14
+
+  execution-lease-chaos:
+    name: Execution-lease chaos (M2.2)
+    runs-on: ubuntu-latest
+    # Chaos plane is small (4 runners x 4 executions x 200 iterations),
+    # but we keep the same 25-min budget for parity with the
+    # refresh-coordinator job in case a future widening lands.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          shared-key: nightly-chaos
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-nextest
+
+      - name: Run execution-lease chaos test
+        # The chaos test is `#[ignore]`'d by default; --run-ignored only
+        # opts in. Marker mirrors `refresh_coordinator_chaos.rs`.
+        run: |
+          set -euo pipefail
+          cargo nextest run \
+            -p nebula-storage \
+            --test execution_lease_chaos \
+            --run-ignored only \
+            --no-tests=pass
+
+  lease-handoff-loom:
+    name: Lease handoff loom probe (M2.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          shared-key: nightly-chaos-loom
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-nextest
+
+      - name: Run lease-handoff loom tests
+        # Loom only resolves under `--cfg loom` + the `loom-test`
+        # feature; the standalone probe crate is sized to avoid
+        # propagating `cfg(loom)` to nebula-storage transitive deps.
+        env:
+          RUSTFLAGS: "--cfg loom"
+        run: |
+          set -euo pipefail
+          cargo nextest run \
+            -p nebula-storage-loom-probe \
+            --features loom-test \
+            --test lease_handoff_loom \
+            --no-tests=pass

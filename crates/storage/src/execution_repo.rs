@@ -597,14 +597,30 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         holder: String,
         ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
+        let normalized = normalized_lease_ttl(ttl);
         let mut leases = self.leases.write().await;
         let now = Instant::now();
-        if let Some((_, expires_at)) = leases.get(&id)
+        if let Some((existing_holder, expires_at)) = leases.get(&id)
             && *expires_at >= now
         {
+            tracing::warn!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                attempted_holder = %holder,
+                existing_holder = %existing_holder,
+                ttl_secs = normalized.as_secs_f64(),
+                "acquire_lease: contended (existing lease still live)"
+            );
             return Ok(false);
         }
-        leases.insert(id, (holder, lease_expires_at(now, ttl)));
+        leases.insert(id, (holder.clone(), lease_expires_at(now, ttl)));
+        tracing::debug!(
+            target: "nebula_storage::lease",
+            execution_id = %id,
+            %holder,
+            ttl_secs = normalized.as_secs_f64(),
+            "acquire_lease: acquired"
+        );
         Ok(true)
     }
 
@@ -614,14 +630,31 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         holder: &str,
         ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
+        let normalized = normalized_lease_ttl(ttl);
         let mut leases = self.leases.write().await;
         let now = Instant::now();
         match leases.get_mut(&id) {
             Some((current, expires_at)) if current == holder => {
                 *expires_at = lease_expires_at(now, ttl);
+                tracing::trace!(
+                    target: "nebula_storage::lease",
+                    execution_id = %id,
+                    %holder,
+                    ttl_secs = normalized.as_secs_f64(),
+                    "renew_lease: extended"
+                );
                 Ok(true)
             },
-            _ => Ok(false),
+            _ => {
+                tracing::error!(
+                    target: "nebula_storage::lease",
+                    execution_id = %id,
+                    attempted_holder = %holder,
+                    ttl_secs = normalized.as_secs_f64(),
+                    "renew_lease: rejected (holder mismatch or row missing — caller's lease is lost)"
+                );
+                Ok(false)
+            },
         }
     }
 
@@ -635,8 +668,20 @@ impl ExecutionRepo for InMemoryExecutionRepo {
             && current == holder
         {
             leases.remove(&id);
+            tracing::debug!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                %holder,
+                "release_lease: released"
+            );
             return Ok(true);
         }
+        tracing::warn!(
+            target: "nebula_storage::lease",
+            execution_id = %id,
+            attempted_holder = %holder,
+            "release_lease: rejected (holder mismatch — caller no longer owns this lease)"
+        );
         Ok(false)
     }
 
