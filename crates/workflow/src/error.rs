@@ -104,4 +104,24 @@ pub enum WorkflowError {
         /// Target node of the duplicated connection.
         to: NodeKey,
     },
+
+    /// A `RetryConfig` (per-node or workflow-default) violates the validity
+    /// rules: `max_attempts == 0`, `max_delay_ms < initial_delay_ms`,
+    /// `backoff_multiplier <= 0` or non-finite, or `initial_delay_ms == 0`
+    /// combined with `max_attempts > 1` (burst retry without backoff).
+    /// Per ROADMAP §M2.1 + ADR-0042 the engine relies on these constraints —
+    /// shift-left rejection at activation prevents nonsensical configs from
+    /// reaching the runtime scheduler.
+    #[classify(category = "validation", code = "WORKFLOW:INVALID_RETRY_CONFIG")]
+    #[error(
+        "invalid retry_policy{}: {reason}",
+        node.as_ref().map_or(String::new(), |n| format!(" on node {n}"))
+    )]
+    InvalidRetryConfig {
+        /// The node carrying the bad config, or `None` for workflow-default
+        /// (`WorkflowConfig.retry_policy`).
+        node: Option<NodeKey>,
+        /// Why the config is invalid.
+        reason: String,
+    },
 }
