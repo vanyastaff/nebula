@@ -56,6 +56,16 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         errors.push(WorkflowError::EmptyName);
     }
 
+    // 1b. Check workflow-default retry_policy. Independent of nodes / graph,
+    // so it runs BEFORE the empty-nodes early return — otherwise a malformed
+    // `WorkflowConfig.retry_policy` would be silently dropped when the
+    // workflow also has zero nodes (CodeRabbit on PR #627).
+    if let Some(ref retry) = definition.config.retry_policy {
+        for reason in validate_retry_config(retry) {
+            errors.push(WorkflowError::InvalidRetryConfig { node: None, reason });
+        }
+    }
+
     // 2. Check node count
     if definition.nodes.is_empty() {
         errors.push(WorkflowError::NoNodes);
@@ -153,12 +163,13 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         Err(e) => errors.push(e),
     }
 
-    // 9. Check retry_policy validity (per-node + workflow-default).
-    //
-    // Engine consumes both `NodeDefinition.retry_policy` (per-node override)
-    // and `WorkflowConfig.retry_policy` (workflow-wide default) — see
-    // ADR-0042. Reject configs that violate the engine's invariants here so
-    // they never reach the runtime scheduler (canon §10 shift-left).
+    // 9. Check per-node retry_policy validity. The workflow-default retry
+    // policy was validated as step 1b (before the empty-nodes early return);
+    // here we only iterate the actual nodes. Per ADR-0042 the engine consumes
+    // both surfaces (`NodeDefinition.retry_policy` overriding
+    // `WorkflowConfig.retry_policy`) — rejecting bad configs at this
+    // shift-left point prevents them from reaching the runtime scheduler
+    // (canon §10).
     for node in &definition.nodes {
         if let Some(ref retry) = node.retry_policy {
             for reason in validate_retry_config(retry) {
@@ -167,11 +178,6 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
                     reason,
                 });
             }
-        }
-    }
-    if let Some(ref retry) = definition.config.retry_policy {
-        for reason in validate_retry_config(retry) {
-            errors.push(WorkflowError::InvalidRetryConfig { node: None, reason });
         }
     }
 
@@ -648,6 +654,32 @@ mod tests {
         assert!(
             workflow_err,
             "workflow-default invalid retry config must have node = None; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_default_retry_validated_even_when_nodes_empty() {
+        // Regression test for CodeRabbit PR #627 finding: workflow-default
+        // retry policy must be validated independently of the empty-nodes
+        // early return. Otherwise a malformed `WorkflowConfig.retry_policy`
+        // would be silently dropped when the workflow also has zero nodes.
+        let mut def = make_definition("empty-with-bad-retry", vec![], vec![]);
+        def.config.retry_policy = Some(RetryConfig {
+            max_attempts: 0, // invalid
+            initial_delay_ms: 100,
+            max_delay_ms: 100,
+            backoff_multiplier: 1.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(e, WorkflowError::NoNodes)),
+            "expected NoNodes error; got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::InvalidRetryConfig { node: None, .. })),
+            "workflow-default retry error must surface even when nodes is empty; got: {errors:?}"
         );
     }
 }
