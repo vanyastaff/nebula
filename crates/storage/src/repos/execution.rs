@@ -2,6 +2,25 @@
 //!
 //! Spec 16 layer 4. All state transitions go through [`ExecutionRepo::transition`]
 //! with CAS on `version`. Leases provide multi-process coordination.
+//!
+//! # Status (1.0): Sprint E scaffolding — do not implement against pre-Sprint-E
+//!
+//! This trait is **planned / experimental** per the layered architecture
+//! documented in `crates/storage/src/lib.rs` (see "Layer 2 — `repos` module
+//! — planned / experimental, canon §11.6"). It is part of the spec-16
+//! row-model design, deferred to **Sprint E (1.1)** per the workspace
+//! ROADMAP "Out of scope for 1.0" entry ("Storage Layer 2 / spec-16
+//! multi-tenant row model").
+//!
+//! Production execution persistence today goes through the top-level
+//! `nebula_storage::ExecutionRepo` (defined in
+//! `crates/storage/src/execution_repo.rs`) — that is the trait the engine
+//! actually consumes, with its own `acquire_lease` / `renew_lease` /
+//! `release_lease` methods backed by the `lease_holder` / `lease_expires_at`
+//! columns from common migration `00000000000007_add_execution_leases.sql`.
+//! Do not implement against the trait below pre-Sprint E: adding callers
+//! requires the spec-16 row-model engine refactor and is explicitly
+//! deferred.
 
 use std::{future::Future, time::Duration};
 
