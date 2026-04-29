@@ -3,11 +3,44 @@
 use std::collections::HashSet;
 
 use crate::{
-    definition::{CURRENT_SCHEMA_VERSION, TriggerDefinition, WorkflowDefinition},
+    definition::{CURRENT_SCHEMA_VERSION, RetryConfig, TriggerDefinition, WorkflowDefinition},
     error::WorkflowError,
     graph::DependencyGraph,
     node::ParamValue,
 };
+
+/// Validate a single `RetryConfig` against the engine's invariants.
+///
+/// Returns a list of human-readable rejection reasons; an empty list means the
+/// config is acceptable. Per ADR-0042 (layered retry):
+/// - `max_attempts == 0` is rejected — the field should be `None` to disable retries; zero retries
+///   means the field is dead and indicates a modelling bug.
+/// - `initial_delay_ms == 0` with `max_attempts > 1` is rejected — burst retry with no backoff is
+///   an abuse vector against the action's downstream service.
+/// - `max_delay_ms < initial_delay_ms` is logically incoherent (cap below start).
+/// - `backoff_multiplier <= 0.0` or non-finite (NaN/Inf) breaks the engine's delay formula
+///   `min(initial * mult^attempt, max)`.
+fn validate_retry_config(config: &RetryConfig) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if config.max_attempts == 0 {
+        reasons
+            .push("max_attempts must be >= 1 (use retry_policy = None to disable retries)".into());
+    }
+    if config.initial_delay_ms == 0 && config.max_attempts > 1 {
+        reasons.push(
+            "initial_delay_ms == 0 with max_attempts > 1 is a burst retry without backoff; \
+             use a non-zero delay or set max_attempts == 1"
+                .into(),
+        );
+    }
+    if config.max_delay_ms < config.initial_delay_ms {
+        reasons.push("max_delay_ms must be >= initial_delay_ms".into());
+    }
+    if !config.backoff_multiplier.is_finite() || config.backoff_multiplier <= 0.0 {
+        reasons.push("backoff_multiplier must be a finite positive number".into());
+    }
+    reasons
+}
 
 /// Validate a workflow definition comprehensively.
 ///
@@ -120,6 +153,28 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         Err(e) => errors.push(e),
     }
 
+    // 9. Check retry_policy validity (per-node + workflow-default).
+    //
+    // Engine consumes both `NodeDefinition.retry_policy` (per-node override)
+    // and `WorkflowConfig.retry_policy` (workflow-wide default) — see
+    // ADR-0042. Reject configs that violate the engine's invariants here so
+    // they never reach the runtime scheduler (canon §10 shift-left).
+    for node in &definition.nodes {
+        if let Some(ref retry) = node.retry_policy {
+            for reason in validate_retry_config(retry) {
+                errors.push(WorkflowError::InvalidRetryConfig {
+                    node: Some(node.id.clone()),
+                    reason,
+                });
+            }
+        }
+    }
+    if let Some(ref retry) = definition.config.retry_policy {
+        for reason in validate_retry_config(retry) {
+            errors.push(WorkflowError::InvalidRetryConfig { node: None, reason });
+        }
+    }
+
     errors
 }
 
@@ -134,7 +189,7 @@ mod tests {
     use crate::{
         Version,
         connection::Connection,
-        definition::{WorkflowConfig, WorkflowDefinition},
+        definition::{RetryConfig, WorkflowConfig, WorkflowDefinition},
         node::{NodeDefinition, ParamValue},
     };
 
@@ -395,6 +450,204 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, WorkflowError::DuplicateConnection { .. })),
             "distinct multi-edges must not be flagged as duplicates; got: {errors:?}"
+        );
+    }
+
+    // ── retry_policy validation tests (ROADMAP §M2.1 / ADR-0042) ────────────
+
+    /// Construct a workflow with a single node carrying the given retry config.
+    fn def_with_node_retry(retry: RetryConfig) -> WorkflowDefinition {
+        let a = node_key!("a");
+        let mut n = node(a);
+        n.retry_policy = Some(retry);
+        make_definition("retry-test", vec![n], vec![])
+    }
+
+    /// Construct a workflow with a workflow-default retry config and one node.
+    fn def_with_workflow_retry(retry: RetryConfig) -> WorkflowDefinition {
+        let a = node_key!("a");
+        let mut def = make_definition("retry-test", vec![node(a)], vec![]);
+        def.config.retry_policy = Some(retry);
+        def
+    }
+
+    #[test]
+    fn valid_fixed_retry_passes_validation() {
+        let def = def_with_node_retry(RetryConfig::fixed(3, 100));
+        let errors = validate_workflow(&def);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::InvalidRetryConfig { .. })),
+            "valid fixed retry config should not produce InvalidRetryConfig; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn valid_exponential_retry_passes_validation() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 5,
+            initial_delay_ms: 100,
+            max_delay_ms: 5_000,
+            backoff_multiplier: 2.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::InvalidRetryConfig { .. })),
+            "valid exponential retry config should not produce InvalidRetryConfig; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_max_attempts() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 0,
+            initial_delay_ms: 100,
+            max_delay_ms: 1_000,
+            backoff_multiplier: 1.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::InvalidRetryConfig { reason, .. } if reason.contains("max_attempts must be >= 1")
+            )),
+            "expected max_attempts == 0 to be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_initial_delay_with_multiple_attempts() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 0,
+            max_delay_ms: 0,
+            backoff_multiplier: 2.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::InvalidRetryConfig { reason, .. } if reason.contains("burst retry")
+            )),
+            "expected zero-initial-delay + multi-attempt to be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_max_delay_below_initial_delay() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 1_000,
+            max_delay_ms: 500, // < initial_delay_ms
+            backoff_multiplier: 1.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::InvalidRetryConfig { reason, .. } if reason.contains("max_delay_ms must be >= initial_delay_ms")
+            )),
+            "expected max_delay_ms < initial_delay_ms to be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_zero_backoff_multiplier() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 100,
+            max_delay_ms: 1_000,
+            backoff_multiplier: 0.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::InvalidRetryConfig { reason, .. } if reason.contains("backoff_multiplier must be a finite positive number")
+            )),
+            "expected backoff_multiplier == 0 to be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_negative_backoff_multiplier() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 100,
+            max_delay_ms: 1_000,
+            backoff_multiplier: -2.0,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::InvalidRetryConfig { reason, .. } if reason.contains("backoff_multiplier must be a finite positive number")
+            )),
+            "expected negative backoff_multiplier to be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_backoff_multiplier() {
+        let def = def_with_node_retry(RetryConfig {
+            max_attempts: 3,
+            initial_delay_ms: 100,
+            max_delay_ms: 1_000,
+            backoff_multiplier: f64::NAN,
+        });
+        let errors = validate_workflow(&def);
+        assert!(
+            errors.iter().any(|e| matches!(
+                e,
+                WorkflowError::InvalidRetryConfig { reason, .. } if reason.contains("backoff_multiplier must be a finite positive number")
+            )),
+            "expected NaN backoff_multiplier to be rejected; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn node_level_retry_error_carries_node_id() {
+        let a = node_key!("a");
+        let mut n = node(a.clone());
+        n.retry_policy = Some(RetryConfig {
+            max_attempts: 0,
+            initial_delay_ms: 100,
+            max_delay_ms: 100,
+            backoff_multiplier: 1.0,
+        });
+        let def = make_definition("node-retry", vec![n], vec![]);
+        let errors = validate_workflow(&def);
+        let node_err = errors.iter().find_map(|e| match e {
+            WorkflowError::InvalidRetryConfig {
+                node: Some(key), ..
+            } => Some(key),
+            _ => None,
+        });
+        assert_eq!(
+            node_err,
+            Some(&a),
+            "node-level invalid retry config must carry the node id; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_default_retry_error_carries_no_node() {
+        let def = def_with_workflow_retry(RetryConfig {
+            max_attempts: 0,
+            initial_delay_ms: 100,
+            max_delay_ms: 100,
+            backoff_multiplier: 1.0,
+        });
+        let errors = validate_workflow(&def);
+        let workflow_err = errors
+            .iter()
+            .any(|e| matches!(e, WorkflowError::InvalidRetryConfig { node: None, .. }));
+        assert!(
+            workflow_err,
+            "workflow-default invalid retry config must have node = None; got: {errors:?}"
         );
     }
 }
