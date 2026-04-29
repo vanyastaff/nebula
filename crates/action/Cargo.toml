@@ -13,11 +13,6 @@ documentation.workspace = true
 
 [features]
 default = []
-# Exposes the engine-level retry surface (`ActionResult::Retry`). Currently a
-# planned capability without persisted attempt accounting (canon §11.2). The
-# engine does not honor the variant end-to-end — enabling this flag only
-# un-hides the type; it does not wire a scheduler. Do not enable in production.
-unstable-retry-scheduler = []
 
 [dependencies]
 async-trait = { workspace = true }

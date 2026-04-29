@@ -1936,81 +1936,6 @@ impl WorkflowEngine {
 
             // Phase 3: Process the completed task
             match join_result {
-                // `ActionResult::Retry` is a `planned` capability under canon
-                // §11.2 — there is no persisted attempt accounting yet. The
-                // variant itself is gated behind `unstable-retry-scheduler`
-                // in `nebula-action`, but Cargo feature unification can still
-                // make the variant present in the `nebula-action` the engine
-                // sees even if `nebula-engine/unstable-retry-scheduler` is
-                // off. We therefore route retry detection through the always-
-                // available `ActionResult::is_retry()` predicate instead of
-                // cfg-gating this arm — that way `Retry` is never silently
-                // handed to the generic `Ok(action_result)` success arm.
-                // Handling stays a synthetic failure until the real scheduler
-                // lands (#290 / #296).
-                Ok((task_id, (node_key, Ok(ref action_result)))) if action_result.is_retry() => {
-                    task_nodes.remove(&task_id);
-                    total_retries.fetch_add(1, Ordering::Relaxed);
-                    let err = EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
-                        ActionError::retryable("Action retry is not supported by the engine"),
-                    ));
-                    mark_node_failed(exec_state, node_key.clone(), &err);
-                    let err_str = err.to_string();
-
-                    // Ordering (§11.5, #297 review): classify → apply
-                    // recovery → route (stages OnError payload) →
-                    // checkpoint → emit. Identical shape to the
-                    // runtime-failure branch below; see its comment
-                    // block.
-                    let outcome = classify_failure(error_strategy);
-                    if let Err(e) =
-                        apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
-                    {
-                        cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
-                    }
-
-                    let abort = route_failure_edges(
-                        outcome,
-                        node_key.clone(),
-                        &err_str,
-                        error_strategy,
-                        graph,
-                        outputs,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
-                    );
-
-                    if let Err(e) = self
-                        .checkpoint_node(
-                            execution_id,
-                            node_key.clone(),
-                            outputs,
-                            exec_state,
-                            repo_version,
-                        )
-                        .await
-                    {
-                        cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
-                    }
-
-                    if outcome == FailureOutcome::Fail {
-                        self.emit_event(ExecutionEvent::NodeFailed {
-                            execution_id,
-                            node_key: node_key.clone(),
-                            error: err_str.clone(),
-                        });
-                    }
-
-                    if let Some(err_msg) = abort {
-                        cancel_token.cancel();
-                        return Some((node_key.clone(), err_msg));
-                    }
-                },
                 Ok((task_id, (node_key, Ok(action_result)))) => {
                     task_nodes.remove(&task_id);
                     mark_node_completed(exec_state, node_key.clone());
@@ -3223,9 +3148,8 @@ fn process_outgoing_edges(
 /// - `Route { port }` → activates edges whose effective source port equals `port`.
 /// - `MultiOutput { outputs }` → activates edges whose effective source port is present in
 ///   `outputs`.
-/// - `Continue` / `Break` / `Retry` / `Wait` → engine treats these like `Success` for edge
-///   activation (they hit the main port); persistent state handling lives outside this routing
-///   decision.
+/// - `Continue` / `Break` / `Wait` → engine treats these like `Success` for edge activation (they
+///   hit the main port); persistent state handling lives outside this routing decision.
 fn evaluate_edge(
     conn: &Connection,
     result: Option<&ActionResult<serde_json::Value>>,
