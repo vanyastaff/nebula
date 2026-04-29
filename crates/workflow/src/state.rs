@@ -19,8 +19,6 @@ pub enum NodeState {
     Failed,
     /// Skipped due to an unmet edge condition.
     Skipped,
-    /// Failed but a retry attempt is in progress.
-    Retrying,
     /// Cancelled by the user or by a shutdown signal.
     Cancelled,
 }
@@ -38,7 +36,7 @@ impl NodeState {
     /// Returns `true` if the node is currently doing work.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Running | Self::Retrying)
+        matches!(self, Self::Running)
     }
 
     /// Returns `true` if the node completed successfully.
@@ -63,7 +61,6 @@ impl std::fmt::Display for NodeState {
             Self::Completed => write!(f, "completed"),
             Self::Failed => write!(f, "failed"),
             Self::Skipped => write!(f, "skipped"),
-            Self::Retrying => write!(f, "retrying"),
             Self::Cancelled => write!(f, "cancelled"),
         }
     }
@@ -83,13 +80,11 @@ mod tests {
         assert!(!NodeState::Pending.is_terminal());
         assert!(!NodeState::Ready.is_terminal());
         assert!(!NodeState::Running.is_terminal());
-        assert!(!NodeState::Retrying.is_terminal());
     }
 
     #[test]
     fn active_states() {
         assert!(NodeState::Running.is_active());
-        assert!(NodeState::Retrying.is_active());
 
         assert!(!NodeState::Pending.is_active());
         assert!(!NodeState::Ready.is_active());
@@ -125,7 +120,6 @@ mod tests {
         assert_eq!(NodeState::Completed.to_string(), "completed");
         assert_eq!(NodeState::Failed.to_string(), "failed");
         assert_eq!(NodeState::Skipped.to_string(), "skipped");
-        assert_eq!(NodeState::Retrying.to_string(), "retrying");
         assert_eq!(NodeState::Cancelled.to_string(), "cancelled");
     }
 
@@ -138,7 +132,6 @@ mod tests {
             NodeState::Completed,
             NodeState::Failed,
             NodeState::Skipped,
-            NodeState::Retrying,
             NodeState::Cancelled,
         ];
 
@@ -154,8 +147,8 @@ mod tests {
         let json = serde_json::to_string(&NodeState::Pending).unwrap();
         assert_eq!(json, "\"pending\"");
 
-        let json = serde_json::to_string(&NodeState::Retrying).unwrap();
-        assert_eq!(json, "\"retrying\"");
+        let json = serde_json::to_string(&NodeState::Failed).unwrap();
+        assert_eq!(json, "\"failed\"");
     }
 
     #[test]

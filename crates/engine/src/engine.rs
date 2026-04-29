@@ -11,7 +11,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -1003,9 +1003,9 @@ impl WorkflowEngine {
         // Null (issue #311).
         exec_state.set_workflow_input(input.clone());
         // Persist the execution budget so that resume enforces the
-        // same concurrency / retry / timeout limits the original run
-        // was configured with, rather than falling back to
-        // `ExecutionBudget::default()` (issue #289).
+        // same concurrency, timeout, and output-size limits the
+        // original run was configured with, rather than falling back
+        // to `ExecutionBudget::default()` (issue #289).
         exec_state.set_budget(budget.clone());
 
         // 4b. Persist initial execution state
@@ -1454,8 +1454,8 @@ impl WorkflowEngine {
                 %execution_id,
                 "resume: persisted execution state is missing budget; \
                  falling back to ExecutionBudget::default() — \
-                 concurrency, retry, and timeout limits from the \
-                 original run are not being honoured (issue #289)"
+                 concurrency, timeout, and output-size limits from \
+                 the original run are not being honoured (issue #289)"
             );
             ExecutionBudget::default()
         };
@@ -1697,7 +1697,6 @@ impl WorkflowEngine {
         initial_resolved: HashMap<NodeKey, usize>,
     ) -> Option<(NodeKey, String)> {
         let total_output_bytes = Arc::new(AtomicU64::new(0));
-        let total_retries = Arc::new(AtomicU32::new(0));
         // Precompute how many incoming edges each node has
         let required_count: HashMap<NodeKey, usize> = node_map
             .keys()
@@ -1735,9 +1734,7 @@ impl WorkflowEngine {
                 }
 
                 // Check budget limits before dispatching
-                if let Some(violation) =
-                    check_budget(budget, started, &total_output_bytes, &total_retries)
-                {
+                if let Some(violation) = check_budget(budget, started, &total_output_bytes) {
                     cancel_token.cancel();
                     return Some((node_key, violation));
                 }
@@ -1936,81 +1933,6 @@ impl WorkflowEngine {
 
             // Phase 3: Process the completed task
             match join_result {
-                // `ActionResult::Retry` is a `planned` capability under canon
-                // §11.2 — there is no persisted attempt accounting yet. The
-                // variant itself is gated behind `unstable-retry-scheduler`
-                // in `nebula-action`, but Cargo feature unification can still
-                // make the variant present in the `nebula-action` the engine
-                // sees even if `nebula-engine/unstable-retry-scheduler` is
-                // off. We therefore route retry detection through the always-
-                // available `ActionResult::is_retry()` predicate instead of
-                // cfg-gating this arm — that way `Retry` is never silently
-                // handed to the generic `Ok(action_result)` success arm.
-                // Handling stays a synthetic failure until the real scheduler
-                // lands (#290 / #296).
-                Ok((task_id, (node_key, Ok(ref action_result)))) if action_result.is_retry() => {
-                    task_nodes.remove(&task_id);
-                    total_retries.fetch_add(1, Ordering::Relaxed);
-                    let err = EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
-                        ActionError::retryable("Action retry is not supported by the engine"),
-                    ));
-                    mark_node_failed(exec_state, node_key.clone(), &err);
-                    let err_str = err.to_string();
-
-                    // Ordering (§11.5, #297 review): classify → apply
-                    // recovery → route (stages OnError payload) →
-                    // checkpoint → emit. Identical shape to the
-                    // runtime-failure branch below; see its comment
-                    // block.
-                    let outcome = classify_failure(error_strategy);
-                    if let Err(e) =
-                        apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
-                    {
-                        cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
-                    }
-
-                    let abort = route_failure_edges(
-                        outcome,
-                        node_key.clone(),
-                        &err_str,
-                        error_strategy,
-                        graph,
-                        outputs,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
-                    );
-
-                    if let Err(e) = self
-                        .checkpoint_node(
-                            execution_id,
-                            node_key.clone(),
-                            outputs,
-                            exec_state,
-                            repo_version,
-                        )
-                        .await
-                    {
-                        cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
-                    }
-
-                    if outcome == FailureOutcome::Fail {
-                        self.emit_event(ExecutionEvent::NodeFailed {
-                            execution_id,
-                            node_key: node_key.clone(),
-                            error: err_str.clone(),
-                        });
-                    }
-
-                    if let Some(err_msg) = abort {
-                        cancel_token.cancel();
-                        return Some((node_key.clone(), err_msg));
-                    }
-                },
                 Ok((task_id, (node_key, Ok(action_result)))) => {
                     task_nodes.remove(&task_id);
                     mark_node_completed(exec_state, node_key.clone());
@@ -2319,22 +2241,22 @@ impl WorkflowEngine {
                 Ok(None) => node_input, // No parameters → use predecessor output
                 Err(e) => {
                     // Parameter resolution failed. `mark_setup_failed`
-                    // handles the Pending/Failed/Retrying source states
-                    // uniformly via `override_node_state` (Pending →
-                    // Failed is not a valid forward transition) and
-                    // bumps the parent version for CAS readers
-                    // (issues #255, #300).
+                    // overrides the node state to Failed via
+                    // `override_node_state` (Pending → Failed is not a
+                    // valid forward transition) and bumps the parent
+                    // version for CAS readers (issues #255, #300).
                     let _ = exec_state.mark_setup_failed(node_key.clone(), e.to_string());
                     return false;
                 },
             };
 
         // Drive the node to Running via the typed state-machine
-        // helper. `start_node_attempt` models the legal transitions
-        // (Pending → Ready → Running, Failed → Retrying → Running,
-        // Retrying → Running) and returns an error for anything else.
-        // On error we do NOT silently spawn the task on stale state —
-        // route through the setup-failure path instead (issue #300).
+        // helper. `start_node_attempt` models the only legal
+        // transition path (Pending → Ready → Running) and returns an
+        // error for anything else — the engine does not retry, so
+        // Failed is terminal at the node level. On error we do NOT
+        // silently spawn the task on stale state — route through the
+        // setup-failure path instead (issue #300).
         if let Err(err) = exec_state.start_node_attempt(node_key.clone()) {
             let _ = exec_state.mark_setup_failed(
                 node_key.clone(),
@@ -3223,9 +3145,8 @@ fn process_outgoing_edges(
 /// - `Route { port }` → activates edges whose effective source port equals `port`.
 /// - `MultiOutput { outputs }` → activates edges whose effective source port is present in
 ///   `outputs`.
-/// - `Continue` / `Break` / `Retry` / `Wait` → engine treats these like `Success` for edge
-///   activation (they hit the main port); persistent state handling lives outside this routing
-///   decision.
+/// - `Continue` / `Break` / `Wait` → engine treats these like `Success` for edge activation (they
+///   hit the main port); persistent state handling lives outside this routing decision.
 fn evaluate_edge(
     conn: &Connection,
     result: Option<&ActionResult<serde_json::Value>>,
@@ -3317,7 +3238,6 @@ fn check_budget(
     budget: &ExecutionBudget,
     started: &Instant,
     total_output_bytes: &AtomicU64,
-    total_retries: &AtomicU32,
 ) -> Option<String> {
     if let Some(max_dur) = budget.max_duration
         && started.elapsed() > max_dur
@@ -3328,11 +3248,6 @@ fn check_budget(
         && total_output_bytes.load(Ordering::Relaxed) > max_bytes
     {
         return Some("execution budget exceeded: max_output_bytes".into());
-    }
-    if let Some(max_retries) = budget.max_total_retries
-        && total_retries.load(Ordering::Relaxed) > max_retries
-    {
-        return Some("execution budget exceeded: max_total_retries".into());
     }
     None
 }
@@ -3946,15 +3861,13 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
         ActionResult::Wait { partial_output, .. } => {
             partial_output.as_ref().and_then(|o| o.as_value().cloned())
         },
-        // `ActionResult::Retry` has no primary output; the `_` arm below
-        // handles it identically regardless of feature-unification state.
         _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::atomic::AtomicU32, time::Duration};
 
     use nebula_action::{
         ActionError, action::Action, context::CredentialContextExt, metadata::ActionMetadata,
@@ -4863,46 +4776,6 @@ mod tests {
 
         // A's output exceeds 5 bytes → budget violation before B runs
         assert!(result.is_failure());
-    }
-
-    #[test]
-    fn budget_max_total_retries_exceeded() {
-        let budget = ExecutionBudget::default().with_max_total_retries(2);
-        let started = Instant::now();
-        let total_output_bytes = AtomicU64::new(0);
-
-        // Under the limit: 2 retries allowed, 2 used — not exceeded yet
-        let total_retries = AtomicU32::new(2);
-        assert!(
-            check_budget(&budget, &started, &total_output_bytes, &total_retries).is_none(),
-            "2 retries with limit 2 should not trigger budget"
-        );
-
-        // Over the limit: 3 retries used, limit is 2
-        total_retries.store(3, Ordering::Relaxed);
-        let violation = check_budget(&budget, &started, &total_output_bytes, &total_retries);
-        assert!(
-            violation.is_some(),
-            "3 retries with limit 2 should trigger budget"
-        );
-        assert!(
-            violation.unwrap().contains("max_total_retries"),
-            "violation message should name the exceeded budget"
-        );
-    }
-
-    #[test]
-    fn budget_max_total_retries_unlimited_when_none() {
-        let budget = ExecutionBudget::default(); // max_total_retries = None
-        let started = Instant::now();
-        let total_output_bytes = AtomicU64::new(0);
-        let total_retries = AtomicU32::new(u32::MAX);
-
-        // No limit set — even a saturated counter should not trigger
-        assert!(
-            check_budget(&budget, &started, &total_output_bytes, &total_retries).is_none(),
-            "unlimited retries: u32::MAX retries should not trigger budget when None"
-        );
     }
 
     // -- Error strategy tests --
@@ -6274,7 +6147,7 @@ mod tests {
     fn final_status_never_completed_with_non_terminal_nodes() {
         use NodeState::*;
         let states = [
-            Pending, Ready, Running, Retrying, Completed, Failed, Skipped, Cancelled,
+            Pending, Ready, Running, Completed, Failed, Skipped, Cancelled,
         ];
         let failure_cases = [None, Some((node_key!("n1"), "boom".to_owned()))];
         let cancel_cases = [false, true];
@@ -7060,8 +6933,7 @@ mod tests {
         let configured = ExecutionBudget::default()
             .with_max_concurrent_nodes(3)
             .with_max_duration(Duration::from_secs(97))
-            .with_max_output_bytes(7 * 1024)
-            .with_max_total_retries(11);
+            .with_max_output_bytes(7 * 1024);
 
         // Simulate the state "engine A" would have written right
         // after `execute_workflow` began but before the node ran:

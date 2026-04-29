@@ -9,11 +9,12 @@
 //! **Role:** Execution State Machine + Journal + Idempotency Types.
 //! See `crates/execution/README.md`.
 //!
-//! **Canon:** §11.1 (execution authority), §11.2 (retry debt), §11.3 (idempotency),
+//! **Canon:** §11.1 (execution authority), §11.3 (idempotency),
 //! §11.5 (persistence matrix), §12.2 (single lifecycle).
 //!
 //! **Maturity:** `stable` — state machine, journal, and plan types in active use.
-//! Engine-level retry accounting (`NodeAttempt` → re-execution) is `planned` (§11.2).
+//! The engine does not retry nodes (canon §11.2); the canonical retry surface is
+//! `nebula-resilience` inside an action.
 //!
 //! ## Core Types
 //!
@@ -24,7 +25,8 @@
 //! - [`ExecutionResult`] — post-execution summary.
 //! - [`JournalEntry`] — audit log entry; backs `execution_journal` append-only table.
 //! - [`NodeOutput`], [`ExecutionOutput`] — node output data with metadata.
-//! - [`NodeAttempt`] — attempt tracking; engine re-execution is `planned`, not `implemented`.
+//! - [`NodeAttempt`] — attempt-keyed shape used by `save_node_output`; the engine does not retry
+//!   nodes, but the type still backs attempt-numbered output rows.
 //! - [`IdempotencyKey`] — deterministic key `{execution_id}:{node_id}:{attempt}`; dedup enforcement
 //!   lives in `nebula_storage::ExecutionRepo`.
 //! - [`ExecutionError`] — typed error for state machine violations.

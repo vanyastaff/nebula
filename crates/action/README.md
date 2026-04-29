@@ -3,7 +3,7 @@ name: nebula-action
 role: Action Trait Family + Execution Policy Metadata (Ports & Adapters)
 status: frontier
 last-reviewed: 2026-04-17
-canon-invariants: [L1-3.5, L2-11.2, L2-11.3, L2-13.4, L2-13.5]
+canon-invariants: [L1-3.5, L2-11.3, L2-13.4, L2-13.5]
 related: [nebula-core, nebula-schema, nebula-credential, nebula-resource, nebula-resilience, nebula-sandbox, nebula-plugin]
 ---
 
@@ -79,7 +79,6 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 ## Contract
 
 - **[L1-§3.5]** The action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`) is the typed dispatch surface. Adding a new trait requires a canon revision (§0.2). The engine routes by trait, not by `ActionCategory` — that field is metadata for UI and tooling only.
-- **[L2-§11.2]** Engine-level node re-execution from an `ActionResult` retry variant requires persisted attempt accounting. Status: `planned` — no persisted `attempts` row exists yet. The `ActionResult::Retry` variant is hidden behind the **`unstable-retry-scheduler`** feature flag (default-off) so default builds do not expose the type. The **canonical retry surface today** is the `nebula-resilience` pipeline an action uses internally for outbound calls. No public variant may describe engine-level retry as a current capability until this row moves to `implemented` (#290). See canon §11.2 status table.
 - **[L2-§11.3]** For non-idempotent or risky side effects (payments, writes without natural upsert), action handlers must guard execution with the engine idempotency key path before calling the remote system. See `crates/execution/src/idempotency.rs`.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.
 - **[ADR-0022]** `WebhookAction::config()` is the declarative seam for webhook-transport signature enforcement. Default is `SignaturePolicy::Required` with an empty secret (fail-closed); the HTTP transport returns `401 problem+json` on signature mismatch and `500 problem+json` when `Required` is used without a secret. `OptionalAcceptUnsigned` is the explicit opt-out; `Custom(fn)` composes the primitives in `webhook.rs`. Secret material never flows through the dyn `TriggerHandler` surface — webhook configuration is read from the typed action at activation time and forwarded to `WebhookTransport::activate` as an explicit parameter.
@@ -101,16 +100,11 @@ See `docs/MATURITY.md` row for `nebula-action`.
 - API stability: `frontier` — trait family, metadata, result/output types, and DX specializations are actively used by engine and plugin-sdk; `ActionHandler` dispatch is the evolving integration point.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - `CheckpointPolicy`: `planned` — not in `ActionMetadata` yet; engine does not consume it end-to-end.
-- Engine-level retry from `ActionResult` variant: `planned` — the `Retry` variant is gated behind the `unstable-retry-scheduler` feature (default-off); see §11.2 debt note above.
-
-## Feature flags
-
-- `unstable-retry-scheduler` (default-off) — exposes the `ActionResult::Retry` variant reserved for the future engine retry scheduler. Enabling the flag does **not** install a scheduler; it only un-hides the type so the crate can be inspected by consumers who are preparing to integrate the feature once it lands. The engine mirrors the flag (`nebula-engine/unstable-retry-scheduler`) and routes `Retry` through a synthetic failure path. Per canon §11.2 / §4.5, do **not** enable this flag in production.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.
 
 ## Related
 
-- Canon: `docs/PRODUCT_CANON.md` §3.5 (action trait family; adding a trait = canon revision), §11.2 (retry debt), §11.3 (idempotency), §12.6 (WASM non-goal), §13.4 (trigger delivery), §13.5 (non-idempotent side effects).
+- Canon: `docs/PRODUCT_CANON.md` §3.5 (action trait family; adding a trait = canon revision), §11.2 (retry surface lives in `nebula-resilience`, not the engine), §11.3 (idempotency), §12.6 (WASM non-goal), §13.4 (trigger delivery), §13.5 (non-idempotent side effects).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (including `CheckpointPolicy` status note).
 - Sandbox: `crates/sandbox/README.md` — `ProcessSandbox`, capability allowlists, OS-level hardening.
 - Siblings: `nebula-schema` (`ValidSchema` for `ActionMetadata.parameters`), `nebula-credential` (`CredentialGuard` via `CredentialContextExt`), `nebula-resource` (`ResourceAction`, `ResourceAccessor`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).

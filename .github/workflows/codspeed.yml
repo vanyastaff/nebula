@@ -75,32 +75,62 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Per-shard filters mirror the `paths-ignore` hygiene applied to
+      # `push: branches: [main]` above — markdown / docs changes must
+      # not trigger a benchmark run, otherwise the cachegrind comparison
+      # picks up CodSpeed's own runtime-environment drift across runners
+      # and reports phantom regressions on benchmarks the PR didn't
+      # touch (the workflow header explicitly notes "Doc-only PR →
+      # shards == [] → codspeed job skipped"; this exclusion enforces
+      # that invariant).
+      #
+      # We do NOT list `.github/workflows/codspeed.yml` here. A self-edit
+      # to this workflow used to cascade into every shard for a sanity
+      # check, but in a multi-commit PR (workflow tweak + unrelated docs)
+      # that cascade re-runs all 7 shards on every subsequent push and
+      # any cachegrind environment drift reads as a phantom regression.
+      # The yaml itself is validated by the Hygiene job; on `main` push
+      # the `plan` step below force-runs every shard regardless of this
+      # filter, so the baseline-refresh path still validates the matrix
+      # end-to-end.
       - name: Detect changed crates
         id: filter
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         with:
+          # Required for the `!pattern` exclusions below to take effect.
+          # With the default `some` quantifier dorny treats every pattern
+          # as an independent OR condition, which silently ignores the
+          # `!` negation and lets a markdown-only change trigger every
+          # shard (observed on PR #626 — `crates/resilience/README.md`
+          # set `Filter validator = true` because both `crates/resilience/
+          # **` and `!crates/resilience/**/*.md` were OR-ed in `some`
+          # mode, and the second pattern had no positive expansion).
+          # `every` makes a file match the filter only when every pattern
+          # matches, which is what we actually want for include-then-
+          # exclude semantics.
+          predicate-quantifier: every
           filters: |
             resilience:
               - 'crates/resilience/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/resilience/**/*.md'
             validator:
               - 'crates/validator/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/validator/**/*.md'
             core:
               - 'crates/core/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/core/**/*.md'
             eventbus:
               - 'crates/eventbus/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/eventbus/**/*.md'
             expression:
               - 'crates/expression/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/expression/**/*.md'
             log:
               - 'crates/log/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/log/**/*.md'
             system:
               - 'crates/system/**'
-              - '.github/workflows/codspeed.yml'
+              - '!crates/system/**/*.md'
 
       - name: Plan shards
         id: plan

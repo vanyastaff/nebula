@@ -23,9 +23,9 @@ automatically.
 
 **Stability Patterns Pipeline** — the canonical in-process fault-tolerance layer for outbound calls
 inside actions. Pattern: *Circuit Breaker + Timeout + Retry-with-Backoff* composition (Release It!;
-`docs/GLOSSARY.md` Architectural Patterns). Per canon §11.2, this is the **canonical retry surface
-today** — engine-level node re-execution from an `ActionResult::Retry` variant is `planned`, not
-yet implemented.
+`docs/GLOSSARY.md` Architectural Patterns). Per canon §11.2 this crate is the **only retry surface**
+in the workflow stack: the engine does not re-execute nodes, so retry semantics for transient
+failures must compose inside the action.
 
 ## Public API
 
@@ -42,13 +42,13 @@ yet implemented.
 
 ## Contract
 
-- **[L2-§11.2]** This crate is the **canonical retry surface for outbound calls inside an action**. Engine-level node re-execution with persisted attempt accounting is `planned`; until that row moves to `implemented`, no public API may describe engine-level retry as a current capability. Seam: action call sites that compose `ResiliencePipeline`. Test coverage: see `docs/MATURITY.md`.
+- **[L2-§11.2]** This crate is the **only retry surface in the workflow stack**. The engine does not re-execute nodes; retry, circuit breaking, and timeout for outbound calls live in `ResiliencePipeline` composed inside an action. Seam: action call sites that compose `ResiliencePipeline`. Test coverage: see `docs/MATURITY.md`.
 - **[L1-§4.2]** Retry filtering is driven by `nebula-error::Classify::retry_hint()` — transient vs permanent is an explicit classification, not folklore in individual action bodies.
 - **[L1-§4.3]** This crate is listed in the canon architecture table as the *Keep-alive + Safety* pillar implementation.
 
 ## Non-goals
 
-- Not an engine-level retry scheduler — the engine orchestrating node re-execution with persisted attempt accounting is a separate `planned` capability (see canon §11.2).
+- Not an engine-level retry scheduler — the engine does not re-execute nodes (canon §11.2); retry composes around outbound calls inside an action.
 - Not a durable control plane — in-process patterns only; durable cancel/dispatch lives in `execution_control_queue` (canon §12.2, §4.5).
 - Not a metrics export layer — resilience events feed `nebula-metrics` via observability hooks, not the reverse.
 
@@ -62,7 +62,7 @@ See `docs/MATURITY.md` row for `nebula-resilience`.
 
 ## Related
 
-- Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar / ErrorClassifier), §4.3 (Keep-alive), §6 (architecture ↔ pillars table), §11.2 (retry contract table).
+- Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar / ErrorClassifier), §4.3 (Keep-alive), §6 (architecture ↔ pillars table), §11.2 (engine non-retry; this crate is the retry surface).
 - Glossary: `docs/GLOSSARY.md` Architectural Patterns (*Circuit Breaker + Timeout + Retry-with-Backoff*, Release It!).
 - Siblings: `nebula-error` (provides `Classify` / `RetryHint`), `nebula-action` (primary consumer).
 

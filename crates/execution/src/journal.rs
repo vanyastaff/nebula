@@ -64,16 +64,6 @@ pub enum JournalEntry {
         reason: String,
     },
 
-    /// A node is being retried.
-    NodeRetrying {
-        /// When the event occurred.
-        timestamp: DateTime<Utc>,
-        /// The node being retried.
-        node_key: NodeKey,
-        /// Which attempt is being made (0-indexed).
-        attempt: u32,
-    },
-
     /// The entire execution completed successfully.
     ExecutionCompleted {
         /// When the event occurred.
@@ -110,7 +100,6 @@ impl JournalEntry {
             | Self::NodeCompleted { timestamp, .. }
             | Self::NodeFailed { timestamp, .. }
             | Self::NodeSkipped { timestamp, .. }
-            | Self::NodeRetrying { timestamp, .. }
             | Self::ExecutionCompleted { timestamp, .. }
             | Self::ExecutionFailed { timestamp, .. }
             | Self::CancellationRequested { timestamp, .. } => *timestamp,
@@ -125,8 +114,7 @@ impl JournalEntry {
             | Self::NodeStarted { node_key, .. }
             | Self::NodeCompleted { node_key, .. }
             | Self::NodeFailed { node_key, .. }
-            | Self::NodeSkipped { node_key, .. }
-            | Self::NodeRetrying { node_key, .. } => Some(node_key.clone()),
+            | Self::NodeSkipped { node_key, .. } => Some(node_key.clone()),
             Self::ExecutionStarted { .. }
             | Self::ExecutionCompleted { .. }
             | Self::ExecutionFailed { .. }
@@ -232,16 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn node_retrying_entry() {
-        let entry = JournalEntry::NodeRetrying {
-            timestamp: now(),
-            node_key: node_key!("test"),
-            attempt: 2,
-        };
-        assert!(entry.is_node_event());
-    }
-
-    #[test]
     fn execution_completed_entry() {
         let entry = JournalEntry::ExecutionCompleted {
             timestamp: now(),
@@ -288,13 +266,8 @@ mod tests {
             },
             JournalEntry::NodeSkipped {
                 timestamp: ts,
-                node_key: nid.clone(),
-                reason: "skip".into(),
-            },
-            JournalEntry::NodeRetrying {
-                timestamp: ts,
                 node_key: nid,
-                attempt: 1,
+                reason: "skip".into(),
             },
             JournalEntry::ExecutionCompleted {
                 timestamp: ts,

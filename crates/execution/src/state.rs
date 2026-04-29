@@ -86,23 +86,17 @@ impl NodeExecutionState {
         Ok(())
     }
 
-    /// Drive a node to `Running` for a fresh attempt, covering both the
-    /// first dispatch (`Pending → Ready → Running`) and retry paths
-    /// (`Failed → Retrying → Running`, `Retrying → Running`). Any other
-    /// source state is an invalid transition and returned as such — the
-    /// engine must route the node through the setup-failure path
-    /// instead of silently spawning a task on stale state (issue #300).
+    /// Drive a node to `Running` for a fresh dispatch
+    /// (`Pending → Ready → Running`). Any other source state is an invalid
+    /// transition and returned as such — the engine must route the node
+    /// through the setup-failure path instead of silently spawning a task
+    /// on stale state (issue #300).
     pub fn start_attempt(&mut self) -> Result<(), ExecutionError> {
         match self.state {
             NodeState::Pending => {
                 self.transition_to(NodeState::Ready)?;
                 self.transition_to(NodeState::Running)
             },
-            NodeState::Failed => {
-                self.transition_to(NodeState::Retrying)?;
-                self.transition_to(NodeState::Running)
-            },
-            NodeState::Retrying => self.transition_to(NodeState::Running),
             from => Err(ExecutionError::InvalidTransition {
                 from: from.to_string(),
                 to: NodeState::Running.to_string(),
@@ -140,8 +134,6 @@ pub struct ExecutionState {
     /// When the execution completed.
     #[serde(default)]
     pub completed_at: Option<DateTime<Utc>>,
-    /// Total retry attempts across all nodes.
-    pub total_retries: u32,
     /// Total output bytes across all nodes.
     pub total_output_bytes: u64,
     /// Execution-level variables.
@@ -159,7 +151,7 @@ pub struct ExecutionState {
     /// The [`ExecutionBudget`] the execution was started with.
     ///
     /// Persisted so that `resume_execution` enforces the same
-    /// concurrency, retry, and timeout limits the original run was
+    /// concurrency, timeout, and output-size limits the original run was
     /// configured with, rather than silently falling back to
     /// [`ExecutionBudget::default()`] on recovery (issue #289).
     ///
@@ -203,7 +195,6 @@ impl ExecutionState {
             updated_at: now,
             started_at: None,
             completed_at: None,
-            total_retries: 0,
             total_output_bytes: 0,
             variables: serde_json::Map::new(),
             workflow_input: None,
@@ -225,8 +216,8 @@ impl ExecutionState {
     /// with.
     ///
     /// Called by the engine at execution start so that
-    /// `resume_execution` can restore the same concurrency, retry, and
-    /// timeout limits the original run was configured with, rather
+    /// `resume_execution` can restore the same concurrency, timeout, and
+    /// output-size limits the original run was configured with, rather
     /// than silently falling back to [`ExecutionBudget::default()`] on
     /// recovery (issue #289).
     pub fn set_budget(&mut self, budget: ExecutionBudget) {
@@ -769,15 +760,16 @@ mod tests {
     }
 
     #[test]
-    fn start_attempt_retry_path() {
+    fn start_attempt_rejects_failed() {
         let mut ns = NodeExecutionState::new();
-        // Drive to Failed via the legal transition chain.
         ns.transition_to(NodeState::Ready).unwrap();
         ns.transition_to(NodeState::Running).unwrap();
         ns.transition_to(NodeState::Failed).unwrap();
-        ns.start_attempt()
-            .expect("failed -> running via retrying should be legal");
-        assert_eq!(ns.state, NodeState::Running);
+        let err = ns
+            .start_attempt()
+            .expect_err("failed nodes cannot start a fresh attempt — engine does not retry");
+        assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
+        assert_eq!(ns.state, NodeState::Failed, "state must not move on error");
     }
 
     #[test]
@@ -836,9 +828,9 @@ mod tests {
     }
 
     /// Issue #289 — `ExecutionBudget` must round-trip through serde
-    /// so `resume_execution` can restore the original run's
-    /// concurrency / retry / timeout limits instead of silently
-    /// falling back to [`ExecutionBudget::default()`].
+    /// so `resume_execution` can restore the original run's concurrency,
+    /// timeout, and output-size limits instead of silently falling back
+    /// to [`ExecutionBudget::default()`].
     #[test]
     fn budget_roundtrip_via_serde() {
         use std::time::Duration;
@@ -849,8 +841,7 @@ mod tests {
         let budget = ExecutionBudget::default()
             .with_max_concurrent_nodes(4)
             .with_max_duration(Duration::from_mins(2))
-            .with_max_output_bytes(4 * 1024 * 1024)
-            .with_max_total_retries(7);
+            .with_max_output_bytes(4 * 1024 * 1024);
         state.set_budget(budget.clone());
 
         let json = serde_json::to_string(&state).unwrap();
@@ -871,7 +862,6 @@ mod tests {
             "version": 0,
             "created_at": Utc::now(),
             "updated_at": Utc::now(),
-            "total_retries": 0,
             "total_output_bytes": 0,
         });
         let state: ExecutionState = serde_json::from_value(legacy).unwrap();
@@ -890,7 +880,6 @@ mod tests {
             "version": 0,
             "created_at": Utc::now(),
             "updated_at": Utc::now(),
-            "total_retries": 0,
             "total_output_bytes": 0,
         });
         let state: ExecutionState = serde_json::from_value(legacy).unwrap();
@@ -1000,7 +989,6 @@ mod tests {
             "version": 0,
             "created_at": Utc::now(),
             "updated_at": Utc::now(),
-            "total_retries": 0,
             "total_output_bytes": 0,
         });
         let state: ExecutionState = serde_json::from_value(legacy).unwrap();

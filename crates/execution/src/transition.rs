@@ -57,20 +57,13 @@ pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
         (
             NodeState::Pending,
             NodeState::Ready | NodeState::Skipped | NodeState::Cancelled
-        ) | (NodeState::Ready | NodeState::Retrying, NodeState::Running)
-            | (NodeState::Ready, NodeState::Skipped | NodeState::Cancelled)
-            | (
-                NodeState::Running,
-                NodeState::Completed | NodeState::Failed | NodeState::Cancelled
-            )
-            | (
-                NodeState::Failed,
-                NodeState::Retrying | NodeState::Cancelled
-            )
-            | (
-                NodeState::Retrying,
-                NodeState::Failed | NodeState::Cancelled
-            )
+        ) | (
+            NodeState::Ready,
+            NodeState::Running | NodeState::Skipped | NodeState::Cancelled
+        ) | (
+            NodeState::Running,
+            NodeState::Completed | NodeState::Failed | NodeState::Cancelled
+        ) | (NodeState::Failed, NodeState::Cancelled)
     )
 }
 
@@ -257,8 +250,7 @@ mod tests {
             NodeState::Completed
         ));
         assert!(can_transition_node(NodeState::Running, NodeState::Failed));
-        assert!(can_transition_node(NodeState::Failed, NodeState::Retrying));
-        assert!(can_transition_node(NodeState::Retrying, NodeState::Running));
+        assert!(can_transition_node(NodeState::Failed, NodeState::Cancelled));
         assert!(can_transition_node(
             NodeState::Pending,
             NodeState::Cancelled
@@ -278,5 +270,7 @@ mod tests {
             NodeState::Cancelled,
             NodeState::Running
         ));
+        // Engine does not retry — Failed is terminal except for Cancelled.
+        assert!(!can_transition_node(NodeState::Failed, NodeState::Running));
     }
 }

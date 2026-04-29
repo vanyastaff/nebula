@@ -18,11 +18,14 @@
   loom nightly; out-of-scope items explicitly deferred to 1.1.
 - **Status:** cross-cutting + core + most business layers stable; engine
   ~80% — **M0 closed** (durability debts §11.5 + explicit-termination
-  wiring); remaining engine debts are full-graph edge gating (M1.1) and
-  engine-level retry (M2.1). API routes wired but five large feature gaps
-  (auth, OpenAPI, webhook dispatch, idempotency, tracing-context); sandbox
-  correctness-grade only (capability discovery enforcement gap M4); storage
-  Layer 1 ready, Layer 2 deferred to "Sprint E"/1.1.
+  wiring), **M1 closed** (skip-propagation + dead-field cleanup), **M2.1
+  closed** via the "remove from canon" exit (engine retry surface deleted;
+  retry confined to `nebula-resilience` inside actions, 2026-04-28).
+  Remaining engine debt is execution-lease heartbeat enforcement (M2.2).
+  API routes wired but five large feature gaps (auth, OpenAPI, webhook
+  dispatch, idempotency, tracing-context); sandbox correctness-grade only
+  (capability discovery enforcement gap M4); storage Layer 1 ready, Layer 2
+  deferred to "Sprint E"/1.1.
 - **Decisions taken & shipped (M0 wave, 2026-04-28):**
   - 11 ROADMAP milestones M0–M10 in `.ai-factory/ROADMAP.md`.
   - First sub-project: **M0 — Engine durability debts** — **CLOSED via
@@ -77,13 +80,16 @@
   queue consumption (Start/Resume/Restart/Cancel/Terminate, `reclaim_stuck`
   per ADR-0017), durable journal, idempotency keys, credential access
   deny-by-default per canon §4.5.
-- Partial / open: `ExecutionTerminationReason::ExplicitStop/ExplicitFail`
-  defined but **not wired** (canon §4.5 honesty gap, status.rs:85-94 +
-  result.rs:206-219); engine-level retry from `ActionResult::Retry` is
-  "planned" (canon §11.2); downstream-edge gate is **local-only**
-  (`engine.rs:1808`) — multi-hop conditional flows can read stale data;
-  `expression_engine` field is `#[expect(dead_code)]` (engine.rs:124-128);
-  `support_inputs` port-driven routing reserved (spec 28).
+- Partial / open (snapshot of pre-M0 audit; superseded by closures
+  recorded at top of file): `ExecutionTerminationReason::ExplicitStop/
+  ExplicitFail` defined but **not wired** (status.rs:85-94 +
+  result.rs:206-219, closed in M0.3); downstream-edge gate is
+  **local-only** (`engine.rs:1808`); `expression_engine` field is
+  `#[expect(dead_code)]` (engine.rs:124-128, closed in M1.2);
+  `support_inputs` port-driven routing reserved (spec 28). Engine-level
+  retry from `ActionResult::Retry` was "planned" under canon §11.2;
+  M2.1 (2026-04-28) closed it via the "remove from canon" exit —
+  variant deleted, surface confined to `nebula-resilience`.
 - Tests: 20 engine integration tests (5557 lines); 211 unit tests in
   execution+workflow; no loom probes for engine concurrency; chaos test
   `refresh_coordinator_chaos.rs` `#[ignore]`'d (~6s CI weight).
@@ -190,8 +196,9 @@
   frontier loop (`engine.rs:1711`) and a wall-clock select arm
   (`engine.rs:1874-1900`).
 - Tests: `budget_max_duration_exceeded` (4561), `budget_max_output_bytes_exceeded`
-  (4597), `budget_max_total_retries_exceeded` (4629), unlimited variant
-  (4655); resume round-trips at `engine.rs:6637` and 6723.
+  (4597); resume round-trips at `engine.rs:6637` and 6723. The
+  `budget_max_total_retries_*` tests were removed in M2.1 alongside the
+  `max_total_retries` budget field (engine no longer retries).
 
 **ActionResult::Terminate → ExplicitStop wiring (zond aad39840).**
 - `ActionResult` (`crates/action/src/result.rs:198-223`) — 15 variants.

@@ -49,7 +49,8 @@ Patterns:
   `execution_journal` table via `ExecutionRepo::append_journal`.
 - `NodeOutput`, `ExecutionOutput` — node output data with metadata.
 - `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
-  node status). Used by retry accounting; see §11.2 debt note.
+  node status). Used as the shape of attempt-keyed output rows by
+  `nebula-storage::ExecutionRepo::save_node_output`.
 - `IdempotencyKey` — deterministic key `{execution_id}:{node_id}:{attempt}`. The actual
   dedup enforcement (check-and-mark) lives in `nebula-storage::ExecutionRepo`.
 - `ExecutionError` — typed error for state machine violations and execution failures.
@@ -63,12 +64,11 @@ Patterns:
   The `transition` module in this crate validates state-machine legality; storage enforces
   persistence and CAS.
 
-- **[L2-§11.2]** `NodeAttempt` tracks attempt counts, but **engine-level node re-execution
-  from an `ActionResult::Retry`-style variant is `planned`, not `implemented`**. No persisted
-  attempt-accounting row, no CAS-protected bump, no consumer wired through `ExecutionRepo`
-  today. The canonical retry surface is `nebula-resilience` inside an action. Any public
-  variant or doc claiming engine-level retry is a false capability under §4.5 until the
-  planned accounting lands.
+- **[L2-§11.2]** Engine-level node re-execution is **out of scope for this crate**. The
+  engine does not retry nodes; the canonical retry surface is `nebula-resilience` inside
+  an action around outbound calls. `NodeAttempt` exists to seed the idempotency-key shape
+  `{execution_id}:{node_id}:{attempt}` so storage rows stay attempt-keyed even though the
+  attempt counter never advances past `1` from engine-driven flow.
 
 - **[L2-§11.3]** `IdempotencyKey` shape is `{execution_id}:{node_id}:{attempt}`. Seam:
   `crates/execution/src/idempotency.rs`. Enforcement (check before side effect, mark after)
@@ -91,8 +91,8 @@ Patterns:
   table, `execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
   (durable outbox for cancel/dispatch signals) and the `Transactional Outbox` pattern live
   in `nebula-storage`, not here.
-- Not a retry scheduler — engine-level node retry is `planned` (§11.2); today's canonical
-  retry surface is `nebula-resilience` inside an action.
+- Not a retry scheduler — engine-level node retry is not part of the engine contract
+  (§11.2); the canonical retry surface is `nebula-resilience` inside an action.
 - Not a resource lifecycle manager — see `nebula-resource` for `ReleaseQueue` / `Bulkhead`.
 
 ## Maturity
@@ -101,8 +101,6 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 
 - API stability: `stable` — state machine, journal, idempotency key, and plan types are
   in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
-- **Retry accounting** (`NodeAttempt` → engine re-execution) remains `planned`; do not
-  advertise as current capability.
 - `execution_leases` schema may exist before full engine enforcement; see §11.5 debt.
 - Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
   engine-level integration tests.

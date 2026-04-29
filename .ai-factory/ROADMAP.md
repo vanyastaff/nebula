@@ -26,8 +26,9 @@
   via M0** (budget + workflow_input persistence shipped under #289 / #311;
   explicit-termination wiring landed in M0.3); **§10 conditional-flow
   correctness verified via M1** (skip-propagation tests + dead-field
-  cleanup, 2026-04-28); remaining engine debt is engine-level retry
-  execution (M2.1).
+  cleanup, 2026-04-28); **§11.2 closed via M2.1 "remove from canon"**
+  (engine retry surface removed; retry confined to `nebula-resilience`
+  inside actions, 2026-04-28).
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
 - **API layer** — routing wired; **5 sizable feature gaps** (auth backend,
@@ -134,15 +135,24 @@ verification + dead-field cleanup + doc audit.
 
 ### M2 — Engine retry semantics + node attempts
 
-- [ ] **M2.1** Implement engine-level re-execution from `ActionResult::Retry`
-      (canon §11.2 "planned"). Today `NodeAttempt` tracks counts but no
-      durable re-execution loop. Either ship it for 1.0 OR remove the
-      retry-engine claims from canon and confine retry to `nebula-resilience`
-      inside actions.
+- [x] **M2.1** ~~Decide engine-retry direction for 1.0~~ — **DONE** (closed
+      2026-04-28 via "remove from canon" exit). Engine no longer claims
+      node re-execution: `ActionResult::Retry` variant deleted, the
+      `unstable-retry-scheduler` feature removed (action + engine), the
+      synthetic-failure arm at `engine.rs:1939-2013` cut, the dead
+      `total_retries` budget counter (`ExecutionBudget::max_total_retries`,
+      `ExecutionState::total_retries`) removed along with
+      `NodeState::Retrying` (verified unreachable today). Canon §11.2 now
+      reads as "engine does not retry; retry surface lives in
+      `nebula-resilience` inside an action." Plan:
+      `.ai-factory/plans/claude-adoring-einstein-8e5dba.md`.
 - [ ] **M2.2** Verify `execution_leases` heartbeat enforcement across runner
       restarts (per `crates/execution/README.md:138`).
 
-**Exit:** retry path is either real (with tests) or removed from canon.
+**Exit:** retry path is either real (with tests) or removed from canon —
+**closed via the second exit (2026-04-28).** §11.2 now describes the
+engine as a non-retrying orchestrator and `nebula-resilience` as the only
+retry surface.
 
 ### M3 — API surface completion
 

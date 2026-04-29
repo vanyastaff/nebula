@@ -23,8 +23,8 @@ graph TD
     
     Basic --> Success
     Basic --> Skip
-    Basic --> Retry
-    
+    Basic --> Drop
+
     Control --> Continue
     Control --> Break
     Control --> Branch
@@ -96,36 +96,12 @@ if already_processed(&input) {
 
 ---
 
-### Retry
-
-**Purpose**: Request retry after delay
-
-```rust
-Ok(ActionResult::Retry {
-    after: Duration,
-    reason: String,
-})
-```
-
-**When to Use**:
-
-- ✅ Transient failures
-- ✅ Rate limiting
-- ✅ Temporary resource unavailability
-
-**Example**:
-
-```rust
-match external_api_call().await {
-    Err(ApiError::RateLimited) => {
-        Ok(ActionResult::Retry {
-            after: Duration::from_secs(60),
-            reason: "Rate limited, retry in 1 minute".to_string(),
-        })
-    }
-    // ...
-}
-```
+> **Retry note.** The engine does not re-execute nodes from an
+> `ActionResult` variant — that surface was removed (canon §11.2). For
+> transient failures inside an action (rate limits, flaky downstreams),
+> compose `nebula-resilience::ResiliencePipeline` around the outbound
+> call. The pipeline owns retry, circuit breaker, timeout, bulkhead,
+> and rate-limiter primitives keyed off `nebula-error::Classify`.
 
 ## Control Flow Results
 
@@ -546,15 +522,13 @@ graph TD
     
     Check --> |Success| Next[Next Action]
     Check --> |Skip| SkipNext[Skip to Next]
-    Check --> |Retry| Wait1[Wait & Retry]
     Check --> |Continue| Loop[Next Iteration]
     Check --> |Break| Exit[Exit Loop]
     Check --> |Branch| Route[Route to Branch]
     Check --> |Parallel| Par[Execute Parallel]
     Check --> |Async| Poll[Poll Status]
     Check --> |Wait| WaitCond[Wait for Condition]
-    
-    Wait1 --> Start
+
     Loop --> Start
     Poll --> Check
     WaitCond --> Start
@@ -583,7 +557,7 @@ graph TD
     match action.execute(input, context).await? {
         ActionResult::Success(output) => process_output(output),
         ActionResult::Skip { reason } => log_skip(reason),
-        ActionResult::Retry { after, .. } => schedule_retry(after),
+        ActionResult::Drop { reason } => log_drop(reason),
         // Handle all variants
     }
     ```
@@ -619,22 +593,20 @@ Ok(ActionResult::Continue {
 
 ### Error Recovery
 
+The engine does not retry nodes — classify each failure as either
+**retryable** or **fatal** so an in-action `nebula_resilience::ResiliencePipeline`
+composed around the outbound call can take the retry decision via
+`Classify::is_retryable()`. Marking permanent failures as retryable
+will cause the pipeline to spin until its retry budget exhausts.
+
 ```rust
-// Use appropriate result for recoverable errors
 match operation().await {
     Ok(data) => Ok(ActionResult::Success(data)),
-    Err(e) if e.is_transient() => {
-        Ok(ActionResult::Retry {
-            after: calculate_backoff(),
-            reason: e.to_string(),
-        })
-    },
-    Err(e) if e.is_not_found() => {
-        Ok(ActionResult::Skip {
-            reason: format!("Resource not found: {}", e),
-        })
-    },
-    Err(e) => Err(e.into()),
+    Err(e) if e.is_not_found() => Ok(ActionResult::Skip {
+        reason: format!("Resource not found: {e}"),
+    }),
+    Err(e) if e.is_transient() => Err(ActionError::retryable(e.to_string())),
+    Err(e) => Err(ActionError::fatal(e.to_string())),
 }
 ```
 
