@@ -7,29 +7,20 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
 
-/// Get the length of a string
-pub fn length(
-    args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    check_arg_count("length", args, 1)?;
-    let s = args[0].as_str().ok_or_else(|| {
-        ExpressionError::expression_type_error(
-            "string",
-            crate::value_utils::value_type_name(&args[0]),
-        )
-    })?;
-    Ok(Value::Number((s.len() as i64).into()))
-}
+// Note: there used to be a `pub fn length` here that took a string only,
+// duplicating the polymorphic `util::length` registered in
+// `BuiltinRegistry::new()`. Removed in favor of the single polymorphic
+// version in `util.rs`, which uses `value_utils::char_count` for
+// strings (Unicode-scalar-value counting, NOT UTF-8 byte length and
+// NOT JavaScript's UTF-16 code-unit count — see `char_count` docs).
 
 /// Convert string to uppercase
 pub fn uppercase(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("uppercase", args, 1)?;
@@ -40,7 +31,7 @@ pub fn uppercase(
 /// Convert string to lowercase
 pub fn lowercase(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("lowercase", args, 1)?;
@@ -51,7 +42,7 @@ pub fn lowercase(
 /// Trim whitespace from both ends of a string
 pub fn trim(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("trim", args, 1)?;
@@ -62,7 +53,7 @@ pub fn trim(
 /// Split a string by a delimiter
 pub fn split(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("split", args, 2)?;
@@ -79,7 +70,7 @@ pub fn split(
 /// Replace occurrences of a substring
 pub fn replace(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("replace", args, 3)?;
@@ -90,48 +81,54 @@ pub fn replace(
     Ok(Value::String(s.replace(from, to)))
 }
 
-/// Get a substring
+/// Extract a substring by Unicode scalar value indices.
+///
+/// Both `start` and `end` are character indices, NOT byte offsets — so
+/// `substring("🙂hello", 0, 1)` returns `"🙂"`. When `end` is omitted it
+/// defaults to the character count of the input. Out-of-range `end` is
+/// clamped to the string's character length; `start > end` produces empty.
+///
+/// Note: indices are Rust scalar values, not JavaScript UTF-16 code
+/// units; `substring("🙂", 0, 1)` returns the full emoji here, while JS
+/// would return the high surrogate alone. See
+/// `value_utils::char_count` for the rationale.
 pub fn substring(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("substring", args, 2)?;
     let s = get_string_arg("substring", args, 0, "text")?;
-    let start = get_int_arg_with_policy("substring", args, 1, "start", eval, ctx)?;
+    let start = get_int_arg_with_policy("substring", args, 1, "start", view, ctx)?;
     if start < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "substring",
             "Argument 'start' must be non-negative",
         ));
     }
+    let chars: Vec<char> = s.chars().collect();
     let start = start as usize;
     let end = if args.len() > 2 {
-        let end = get_int_arg_with_policy("substring", args, 2, "end", eval, ctx)?;
+        let end = get_int_arg_with_policy("substring", args, 2, "end", view, ctx)?;
         if end < 0 {
             return Err(ExpressionError::expression_invalid_argument(
                 "substring",
                 "Argument 'end' must be non-negative",
             ));
         }
-        end as usize
+        (end as usize).min(chars.len())
     } else {
-        s.len()
+        chars.len()
     };
 
-    let chars: Vec<char> = s.chars().collect();
-    let result: String = chars
-        .get(start..end.min(chars.len()))
-        .unwrap_or(&[])
-        .iter()
-        .collect();
+    let result: String = chars.get(start..end).unwrap_or(&[]).iter().collect();
     Ok(Value::String(result))
 }
 
 /// Check if string contains a substring
 pub fn contains(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("contains", args, 2)?;
@@ -154,7 +151,7 @@ pub fn contains(
 /// Check if string starts with a prefix
 pub fn starts_with(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("starts_with", args, 2)?;
@@ -177,7 +174,7 @@ pub fn starts_with(
 /// Check if string ends with a suffix
 pub fn ends_with(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("ends_with", args, 2)?;
@@ -203,7 +200,7 @@ pub fn ends_with(
 /// Default fill character is a space.
 pub fn pad_start(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_start", args, 2)?;
@@ -214,7 +211,7 @@ pub fn pad_start(
         )));
     }
     let s = get_string_arg("pad_start", args, 0, "text")?;
-    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", eval, ctx)?;
+    let target_len = get_int_arg_with_policy("pad_start", args, 1, "length", view, ctx)?;
     if target_len < 0 {
         return Err(ExpressionError::expression_eval_error(
             "pad_start: length must be non-negative",
@@ -257,7 +254,7 @@ pub fn pad_start(
 /// Default fill character is a space.
 pub fn pad_end(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pad_end", args, 2)?;
@@ -268,7 +265,7 @@ pub fn pad_end(
         )));
     }
     let s = get_string_arg("pad_end", args, 0, "text")?;
-    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", eval, ctx)?;
+    let target_len = get_int_arg_with_policy("pad_end", args, 1, "length", view, ctx)?;
     if target_len < 0 {
         return Err(ExpressionError::expression_eval_error(
             "pad_end: length must be non-negative",
@@ -310,12 +307,12 @@ pub fn pad_end(
 /// Example: `repeat("ab", 3)` returns `"ababab"`
 pub fn repeat(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("repeat", args, 2)?;
     let s = get_string_arg("repeat", args, 0, "text")?;
-    let count = get_int_arg_with_policy("repeat", args, 1, "count", eval, ctx)?;
+    let count = get_int_arg_with_policy("repeat", args, 1, "count", view, ctx)?;
     if count < 0 {
         return Err(ExpressionError::expression_invalid_argument(
             "repeat",

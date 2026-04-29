@@ -1,6 +1,7 @@
 //! Date and time functions
 
-use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+use chrono_tz::Tz;
 use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count};
@@ -8,13 +9,41 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
+
+/// Parse an IANA timezone name into a `chrono_tz::Tz`.
+///
+/// Used by every datetime builtin that accepts an optional `tz` argument.
+/// Returns a typed error with the rejected name so dashboards can spot
+/// misconfigured workflows quickly.
+fn parse_timezone(function: &str, name: &str) -> ExpressionResult<Tz> {
+    name.parse::<Tz>().map_err(|_| {
+        ExpressionError::expression_invalid_argument(
+            function,
+            format!("Unknown timezone '{name}' — expected IANA name like 'Europe/Moscow' or 'UTC'"),
+        )
+    })
+}
+
+/// Optional 0-based timezone arg shared by `format_date` / `parse_date`.
+///
+/// Returns `Ok(None)` if the slot doesn't exist; `Err` if it exists but
+/// isn't a string or names an unknown zone.
+fn optional_tz_arg(function: &str, args: &[Value], index: usize) -> ExpressionResult<Option<Tz>> {
+    let Some(raw) = args.get(index) else {
+        return Ok(None);
+    };
+    let name = raw.as_str().ok_or_else(|| {
+        ExpressionError::expression_type_error("string", crate::value_utils::value_type_name(raw))
+    })?;
+    parse_timezone(function, name).map(Some)
+}
 
 /// Get current timestamp as Unix seconds
 pub fn now(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let now = Utc::now().timestamp();
@@ -24,55 +53,112 @@ pub fn now(
 /// Get current date/time as ISO 8601 string
 pub fn now_iso(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     let now = Utc::now();
     Ok(Value::String(now.to_rfc3339()))
 }
 
-/// Format a timestamp or date string
+/// Format a timestamp or date string.
+///
+/// Signature: `format_date(value, format_or_tz?, tz?)`
+/// - `value`: Unix timestamp (integer) or ISO/common date string.
+/// - 2-arg form: `format_date(value, x)` first tries `x` as an IANA timezone name (so
+///   `format_date(0, "Europe/Moscow")` does what most callers mean — render `value` in Moscow time
+///   as RFC 3339). If `x` doesn't parse as a known timezone, it is treated as a format string. This
+///   avoids the previous "unreachable tz-only" trap where passing only a timezone silently fell
+///   through to the format-string path.
+/// - 3-arg form: `format_date(value, format, tz)` is unambiguous — `format` is the strftime-style
+///   template, `tz` is the timezone.
+/// - When `tz` is omitted output is in UTC; when `format` is omitted RFC 3339 is used. Unknown
+///   timezone names in the explicit-tz slot yield a typed error.
 pub fn format_date(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("format_date", args, 1)?;
-
-    let dt = parse_datetime(&args[0])?;
-
-    if args.len() >= 2 {
-        let format_str = args[1].as_str().ok_or_else(|| {
-            ExpressionError::expression_type_error(
-                "string",
-                crate::value_utils::value_type_name(&args[1]),
-            )
-        })?;
-
-        let formatted = format_datetime(&dt, format_str)?;
-        Ok(Value::String(formatted))
-    } else {
-        // Default: ISO 8601
-        Ok(Value::String(dt.to_rfc3339()))
+    if args.len() > 3 {
+        return Err(ExpressionError::expression_invalid_argument(
+            "format_date",
+            format!("expected 1-3 arguments, got {}", args.len()),
+        ));
     }
+
+    let utc_dt = parse_datetime(&args[0])?;
+
+    let (format_str, tz) = match args.len() {
+        1 => (None, None),
+        2 => {
+            let arg1 = args[1].as_str().ok_or_else(|| {
+                ExpressionError::expression_type_error(
+                    "string",
+                    crate::value_utils::value_type_name(&args[1]),
+                )
+            })?;
+            // Probe-parse as IANA timezone. Success → tz-only call;
+            // failure → treat as format string (legacy 2-arg shape).
+            if let Ok(tz) = arg1.parse::<Tz>() {
+                (None, Some(tz))
+            } else {
+                (Some(arg1), None)
+            }
+        },
+        _ => {
+            let fmt = args[1].as_str().ok_or_else(|| {
+                ExpressionError::expression_type_error(
+                    "string",
+                    crate::value_utils::value_type_name(&args[1]),
+                )
+            })?;
+            let tz = optional_tz_arg("format_date", args, 2)?;
+            (Some(fmt), tz)
+        },
+    };
+
+    let rendered = match (format_str, tz) {
+        (None, None) => utc_dt.to_rfc3339(),
+        (None, Some(tz)) => utc_dt.with_timezone(&tz).to_rfc3339(),
+        (Some(fmt), None) => format_datetime(&utc_dt, fmt)?,
+        (Some(fmt), Some(tz)) => format_datetime(&utc_dt.with_timezone(&tz), fmt)?,
+    };
+
+    Ok(Value::String(rendered))
 }
 
-/// Parse a date string to Unix timestamp
+/// Parse a date string to Unix timestamp.
+///
+/// Signature: `parse_date(value, tz?)`
+/// - `value`: timestamp (integer) or date string.
+/// - `tz`: optional IANA timezone name. When the input string has no embedded offset, it is
+///   interpreted as wall time in `tz` (UTC by default). Strings that already carry a `+HH:MM` / `Z`
+///   suffix ignore `tz` and round-trip exactly.
 pub fn parse_date(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
-    check_arg_count("parse_date", args, 1)?;
+    check_min_arg_count("parse_date", args, 1)?;
+    if args.len() > 2 {
+        return Err(ExpressionError::expression_invalid_argument(
+            "parse_date",
+            format!("expected 1-2 arguments, got {}", args.len()),
+        ));
+    }
 
-    let dt = parse_datetime(&args[0])?;
+    let tz = optional_tz_arg("parse_date", args, 1)?;
+    let dt = match tz {
+        Some(tz) => parse_datetime_in_tz(&args[0], tz)?,
+        None => parse_datetime(&args[0])?,
+    };
     Ok(Value::Number(dt.timestamp().into()))
 }
 
 /// Add duration to a date
 pub fn date_add(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_add", args, 3)?;
@@ -108,7 +194,7 @@ pub fn date_add(
 /// Subtract duration from a date
 pub fn date_subtract(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_subtract", args, 3)?;
@@ -144,7 +230,7 @@ pub fn date_subtract(
 /// Get difference between two dates in specified unit
 pub fn date_diff(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_diff", args, 3)?;
@@ -180,7 +266,7 @@ pub fn date_diff(
 /// Extract year from date
 pub fn date_year(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_year", args, 1)?;
@@ -191,7 +277,7 @@ pub fn date_year(
 /// Extract month from date (1-12)
 pub fn date_month(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_month", args, 1)?;
@@ -202,7 +288,7 @@ pub fn date_month(
 /// Extract day from date (1-31)
 pub fn date_day(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day", args, 1)?;
@@ -213,7 +299,7 @@ pub fn date_day(
 /// Extract hour from date (0-23)
 pub fn date_hour(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_hour", args, 1)?;
@@ -224,7 +310,7 @@ pub fn date_hour(
 /// Extract minute from date (0-59)
 pub fn date_minute(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_minute", args, 1)?;
@@ -235,7 +321,7 @@ pub fn date_minute(
 /// Extract second from date (0-59)
 pub fn date_second(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_second", args, 1)?;
@@ -246,7 +332,7 @@ pub fn date_second(
 /// Get day of week (0=Sunday, 6=Saturday)
 pub fn date_day_of_week(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day_of_week", args, 1)?;
@@ -257,50 +343,93 @@ pub fn date_day_of_week(
 
 // Helper functions
 
-/// Parse datetime from Value (can be timestamp or string)
+/// Format strings tried in order when no explicit format is given.
+/// Strings that fail RFC 3339 fall through to these naive (no offset)
+/// patterns; midnight is assumed for date-only forms.
+const NAIVE_DATE_FORMATS: &[&str] = &[
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d",
+    "%d.%m.%Y %H:%M:%S",
+    "%d.%m.%Y",
+];
+
+/// Try to parse a string as a `NaiveDateTime` using the common formats.
+///
+/// Date-only inputs (e.g. `2024-01-01`) are extended to midnight of that
+/// day via `NaiveDate::and_time(NaiveTime::MIN)` — an infallible
+/// constructor that avoids the `expect`/`unwrap` panic-path that
+/// `and_hms_opt(0, 0, 0)` would have introduced in library code.
+fn parse_naive(s: &str) -> Option<NaiveDateTime> {
+    for format in NAIVE_DATE_FORMATS {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, format) {
+            return Some(naive);
+        }
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(s, format) {
+            return Some(date.and_time(NaiveTime::MIN));
+        }
+    }
+    None
+}
+
+/// Parse datetime from Value (timestamp or string), interpreting any
+/// naive (no-offset) string as UTC.
 fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
     match value {
         Value::Number(i) => {
             let timestamp = crate::value_utils::number_as_i64(i).ok_or_else(|| {
                 ExpressionError::expression_eval_error("Invalid timestamp: not an integer")
             })?;
-            let dt = Utc
-                .timestamp_opt(timestamp, 0)
+            Utc.timestamp_opt(timestamp, 0)
                 .single()
-                .ok_or_else(|| ExpressionError::expression_eval_error("Invalid timestamp"))?;
-            Ok(dt)
+                .ok_or_else(|| ExpressionError::expression_eval_error("Invalid timestamp"))
         },
         Value::String(s) => {
             let s = s.as_str();
-
-            // Try ISO 8601 / RFC 3339 first
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
                 return Ok(dt.with_timezone(&Utc));
             }
+            let naive = parse_naive(s).ok_or_else(|| {
+                ExpressionError::expression_eval_error(format!("Cannot parse date: {s}"))
+            })?;
+            Ok(Utc.from_utc_datetime(&naive))
+        },
+        _ => Err(ExpressionError::expression_type_error(
+            "integer or string",
+            crate::value_utils::value_type_name(value),
+        )),
+    }
+}
 
-            // Try common formats
-            let formats = [
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d",
-                "%Y/%m/%d %H:%M:%S",
-                "%Y/%m/%d",
-                "%d.%m.%Y %H:%M:%S",
-                "%d.%m.%Y",
-            ];
-
-            for format in &formats {
-                if let Ok(naive) = NaiveDateTime::parse_from_str(s, format) {
-                    return Ok(Utc.from_utc_datetime(&naive));
-                }
-                if let Ok(date) = chrono::NaiveDate::parse_from_str(s, format) {
-                    let naive = date.and_hms_opt(0, 0, 0).unwrap();
-                    return Ok(Utc.from_utc_datetime(&naive));
-                }
+/// Parse datetime from Value, interpreting naive strings as wall time in
+/// the given timezone before converting to UTC.
+///
+/// Numeric timestamps are absolute and ignore `tz`. Strings with embedded
+/// offsets (`Z`, `+HH:MM`) also bypass `tz` — that information already
+/// fully determines the instant.
+fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>> {
+    match value {
+        Value::Number(_) => parse_datetime(value),
+        Value::String(s) => {
+            let s = s.as_str();
+            if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                return Ok(dt.with_timezone(&Utc));
             }
-
-            Err(ExpressionError::expression_eval_error(format!(
-                "Cannot parse date: {s}"
-            )))
+            let naive = parse_naive(s).ok_or_else(|| {
+                ExpressionError::expression_eval_error(format!("Cannot parse date: {s}"))
+            })?;
+            // Naive wall time → tz → UTC. For ambiguous instants (DST
+            // fall-back), pick the earliest interpretation; for skipped
+            // instants (DST spring-forward), surface a typed error.
+            tz.from_local_datetime(&naive)
+                .earliest()
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok_or_else(|| {
+                    ExpressionError::expression_eval_error(format!(
+                        "Local datetime '{s}' does not exist in timezone {tz:?}",
+                    ))
+                })
         },
         _ => Err(ExpressionError::expression_type_error(
             "integer or string",
@@ -323,7 +452,10 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
 /// - m: minute
 /// - ss: 2-digit second
 /// - s: second
-fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String> {
+fn format_datetime<TZ: TimeZone>(dt: &DateTime<TZ>, format: &str) -> ExpressionResult<String>
+where
+    TZ::Offset: std::fmt::Display,
+{
     use std::{borrow::Cow, fmt::Write};
 
     // Pre-compute all formatted values once to avoid repeated formatting

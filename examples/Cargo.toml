@@ -1,0 +1,41 @@
+[package]
+name = "nebula-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Runnable end-user examples for the Nebula workspace"
+
+# Empty lib placeholder so cargo recognises the package; runnable code lives
+# in `examples/<topic>_<name>.rs`. See `crates/<crate>/README.md` for which
+# examples belong to which crate.
+[lib]
+path = "src/lib.rs"
+doc = false
+
+[dependencies]
+nebula-expression = { path = "../crates/expression" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[[example]]
+name = "expression_error_messages"
+path = "examples/expression_error_messages.rs"
+
+[[example]]
+name = "expression_maybe_vs_template"
+path = "examples/expression_maybe_vs_template.rs"
+
+[[example]]
+name = "expression_template_advanced"
+path = "examples/expression_template_advanced.rs"
+
+[[example]]
+name = "expression_template_rendering"
+path = "examples/expression_template_rendering.rs"
+
+[lints]
+workspace = true

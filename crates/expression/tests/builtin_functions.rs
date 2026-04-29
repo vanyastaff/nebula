@@ -525,3 +525,146 @@ fn pad_end_accepts_float_length() {
 fn repeat_accepts_float_count() {
     assert_eq!(eval(r#"repeat("ab", 2.0)"#), json!("abab"));
 }
+
+// ──────────────────────────────────────────────
+// String: Unicode-aware length / substring (n8n-compatible)
+// ──────────────────────────────────────────────
+
+#[test]
+fn length_counts_unicode_chars_not_bytes() {
+    // "🙂" is 1 char (4 UTF-8 bytes); "über" is 4 chars (5 UTF-8 bytes);
+    // "hello" is 5 chars (5 UTF-8 bytes); empty is 0.
+    assert_eq!(eval(r#"length("🙂")"#), json!(1));
+    assert_eq!(eval(r#"length("über")"#), json!(4));
+    assert_eq!(eval(r#"length("hello")"#), json!(5));
+    assert_eq!(eval(r#"length("")"#), json!(0));
+}
+
+#[test]
+fn length_array_still_returns_element_count() {
+    // Polymorphic length: array semantics unchanged.
+    assert_eq!(eval("length([1, 2, 3])"), json!(3));
+    assert_eq!(eval("length([])"), json!(0));
+}
+
+#[test]
+fn length_object_returns_key_count() {
+    // Polymorphic length: object reports number of top-level keys.
+    assert_eq!(eval(r#"length({"a": 1, "b": 2, "c": 3})"#), json!(3));
+    assert_eq!(eval("length({})"), json!(0));
+}
+
+#[test]
+fn length_rejects_non_collection_types() {
+    // Numbers / booleans / null have no meaningful length.
+    let err = eval_err("length(42)");
+    assert!(err.to_lowercase().contains("type"), "got: {err}");
+    let err = eval_err("length(true)");
+    assert!(err.to_lowercase().contains("type"), "got: {err}");
+    let err = eval_err("length(null)");
+    assert!(err.to_lowercase().contains("type"), "got: {err}");
+}
+
+#[test]
+fn substring_handles_emoji_at_boundary() {
+    // Char index 0..1 of "🙂hello" must be the emoji, NOT a slice of its
+    // UTF-8 bytes (which would corrupt the codepoint).
+    assert_eq!(eval(r#"substring("🙂hello", 0, 1)"#), json!("🙂"));
+    assert_eq!(eval(r#"substring("🙂hello", 1, 6)"#), json!("hello"));
+}
+
+#[test]
+fn substring_default_end_uses_char_count() {
+    // Without `end`, the slice goes to the last character — not byte length.
+    // Pre-fix: `s.len()` (byte) on a multibyte string overshot `chars.len()`,
+    // and the silent `.min(chars.len())` masked it.
+    assert_eq!(eval(r#"substring("über", 1)"#), json!("ber"));
+    assert_eq!(eval(r#"substring("🙂🙂🙂", 1)"#), json!("🙂🙂"));
+}
+
+#[test]
+fn substring_clamps_end_to_char_length() {
+    // end past char_count clamps; pre-fix behaviour also clamped, but only
+    // because chars.get() returned None — verify the new path keeps that.
+    assert_eq!(eval(r#"substring("hi", 0, 100)"#), json!("hi"));
+}
+
+#[test]
+fn substring_start_past_end_returns_empty() {
+    assert_eq!(eval(r#"substring("hello", 4, 2)"#), json!(""));
+}
+
+// ──────────────────────────────────────────────
+// Datetime: timezone support (T13)
+// ──────────────────────────────────────────────
+
+#[test]
+fn format_date_default_is_utc_rfc3339() {
+    // Unix timestamp 0 → 1970-01-01 00:00:00 UTC.
+    assert_eq!(eval("format_date(0)"), json!("1970-01-01T00:00:00+00:00"));
+}
+
+#[test]
+fn format_date_with_named_tz_shifts_displayed_clock() {
+    // Unix timestamp 0 in Europe/Moscow (MSK = +03:00) is 03:00 wall time.
+    assert_eq!(
+        eval(r#"format_date(0, "YYYY-MM-DD HH:mm:ss", "Europe/Moscow")"#),
+        json!("1970-01-01 03:00:00")
+    );
+}
+
+#[test]
+fn format_date_with_format_no_tz_stays_in_utc() {
+    assert_eq!(
+        eval(r#"format_date(0, "YYYY-MM-DD HH:mm:ss")"#),
+        json!("1970-01-01 00:00:00")
+    );
+}
+
+#[test]
+fn format_date_with_only_tz_emits_rfc3339_in_that_zone() {
+    // 2-arg form: arg[1] is probed as a timezone first. `Europe/Moscow`
+    // parses successfully, so the call renders RFC 3339 in Moscow time
+    // (UTC+3) — `1970-01-01T03:00:00+03:00`. Pre-fix, this 2-arg shape
+    // was unreachable: arg[1] was always treated as a format string
+    // and the user had to pass `""` for format to get tz-only output.
+    assert_eq!(
+        eval(r#"format_date(0, "Europe/Moscow")"#),
+        json!("1970-01-01T03:00:00+03:00")
+    );
+}
+
+#[test]
+fn format_date_2arg_falls_back_to_format_when_not_a_tz() {
+    // If arg[1] doesn't parse as an IANA name, treat it as a format.
+    // Backward-compat with the original 2-arg shape.
+    assert_eq!(eval(r#"format_date(0, "YYYY-MM-DD")"#), json!("1970-01-01"));
+}
+
+#[test]
+fn format_date_unknown_tz_returns_error() {
+    let err = eval_err(r#"format_date(0, "YYYY-MM-DD", "Mars/Olympus_Mons")"#);
+    assert!(
+        err.to_lowercase().contains("unknown timezone"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn parse_date_with_tz_interprets_naive_as_local_wall_time() {
+    // "2024-01-01 00:00:00" interpreted as Moscow wall time = 2023-12-31
+    // 21:00 UTC → timestamp 1704056400.
+    assert_eq!(
+        eval(r#"parse_date("2024-01-01 00:00:00", "Europe/Moscow")"#),
+        json!(1_704_056_400)
+    );
+}
+
+#[test]
+fn parse_date_with_tz_ignores_explicit_offset() {
+    // RFC 3339 strings already nail down the instant — `tz` is redundant.
+    assert_eq!(
+        eval(r#"parse_date("2024-01-01T00:00:00+03:00", "Europe/Moscow")"#),
+        eval(r#"parse_date("2024-01-01T00:00:00+03:00")"#)
+    );
+}

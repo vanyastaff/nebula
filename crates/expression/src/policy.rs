@@ -92,7 +92,22 @@ impl EvaluationPolicy {
     /// Each AST node evaluation counts as one step. When the limit is
     /// exceeded, the evaluator returns an `EvalError`. `None` means
     /// unlimited (the default).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max == 0`. A zero step budget would abort on the very
+    /// first AST node, which is never the configuration the caller
+    /// actually wanted — this is misconfiguration at construction time
+    /// and is surfaced loudly rather than silently breaking evaluations.
+    /// Pass at least `1`, or do not call this method at all (the default
+    /// is unlimited).
     pub fn with_max_eval_steps(mut self, max: usize) -> Self {
+        assert!(
+            max > 0,
+            "EvaluationPolicy::with_max_eval_steps(0) is misconfigured — \
+             a zero budget aborts every evaluation. Use at least 1 \
+             (or omit the call for unlimited).",
+        );
         self.max_eval_steps = Some(max);
         self
     }
@@ -153,5 +168,19 @@ mod tests {
         assert!(policy.strict_conversion_functions());
         assert!(policy.strict_numeric_comparisons());
         assert_eq!(policy.max_json_parse_length(), Some(2048));
+    }
+
+    #[test]
+    #[should_panic(expected = "misconfigured")]
+    fn with_max_eval_steps_rejects_zero() {
+        let _ = EvaluationPolicy::new().with_max_eval_steps(0);
+    }
+
+    #[test]
+    fn with_max_eval_steps_accepts_one() {
+        // Smallest legitimate budget — still useful for "every call must
+        // fail-fast" testing scenarios.
+        let policy = EvaluationPolicy::new().with_max_eval_steps(1);
+        assert_eq!(policy.max_eval_steps(), Some(1));
     }
 }

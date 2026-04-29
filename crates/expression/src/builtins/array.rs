@@ -7,24 +7,20 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
 
-/// Get the length of an array
-pub fn length(
-    args: &[Value],
-    _eval: &Evaluator,
-    _ctx: &EvaluationContext,
-) -> ExpressionResult<Value> {
-    check_arg_count("length", args, 1)?;
-    let arr = get_array_arg("length", args, 0, "array")?;
-    Ok(Value::Number((arr.len() as i64).into()))
-}
+// Note: there used to be a `pub fn length` here that took an array only,
+// duplicating the polymorphic `util::length` registered in
+// `BuiltinRegistry::new()`. It was unused (the registry never wired it up)
+// and was a maintenance hazard — the array-only and string-only copies
+// could drift from the polymorphic version. Removed; `util::length`
+// handles strings, arrays, and objects in one place.
 
 /// Get the first element of an array
 pub fn first(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("first", args, 1)?;
@@ -38,7 +34,7 @@ pub fn first(
 /// Get the last element of an array
 pub fn last(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("last", args, 1)?;
@@ -56,7 +52,7 @@ pub fn last(
 /// Filter array elements (stub - lambdas need special handling)
 pub fn filter(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     // Note: This would require special handling in the evaluator to pass lambdas
@@ -68,7 +64,7 @@ pub fn filter(
 /// Map over array elements (stub - lambdas need special handling)
 pub fn map(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     Err(ExpressionError::expression_eval_error(
@@ -79,7 +75,7 @@ pub fn map(
 /// Reduce array elements (stub - lambdas need special handling)
 pub fn reduce(
     _args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     Err(ExpressionError::expression_eval_error(
@@ -90,7 +86,7 @@ pub fn reduce(
 /// Sort an array
 pub fn sort(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("sort", args, 1)?;
@@ -117,7 +113,7 @@ pub fn sort(
 /// Reverse an array
 pub fn reverse(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("reverse", args, 1)?;
@@ -132,7 +128,7 @@ pub fn reverse(
 /// Join array elements into a string
 pub fn join(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("join", args, 2)?;
@@ -160,7 +156,7 @@ pub fn join(
 /// Slice an array
 pub fn slice(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("slice", args, 2)?;
@@ -191,7 +187,7 @@ pub fn slice(
 /// Concatenate arrays
 pub fn concat(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("concat", args, 1)?;
@@ -217,7 +213,7 @@ pub fn concat(
 /// Example: `unique([1,2,2,3,1])` returns `[1,2,3]`
 pub fn unique(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("unique", args, 1)?;
@@ -240,7 +236,7 @@ pub fn unique(
 /// Flatten a nested array
 pub fn flatten(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("flatten", args, 1)?;

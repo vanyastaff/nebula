@@ -216,9 +216,19 @@ impl Template {
                 let mut expr_column = column + 2;
 
                 while j + 1 < len {
+                    // Newline handling must short-circuit the rest of the
+                    // loop body. Previously the `\n` branch ran first, set
+                    // `expr_column = 1`, then *fell through* to the `else`
+                    // branch's `expr_column += 1` — producing an off-by-one
+                    // column for every char that followed a newline inside
+                    // a multiline `{{ ... }}` expression. The error
+                    // formatter then highlighted one cell to the right of
+                    // the actual offending character.
                     if chars[j] == '\n' {
                         expr_line += 1;
                         expr_column = 1;
+                        j += 1;
+                        continue;
                     }
 
                     if chars[j] == '{' && chars[j + 1] == '{' {
@@ -354,9 +364,20 @@ impl fmt::Display for Template {
     }
 }
 
-/// A template that can be either unresolved (template string) or resolved (final value)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+/// Tag key used for `MaybeTemplate::Template` on the wire.
+const TMPL_TAG: &str = "$tmpl";
+
+/// A template that can be either unresolved (template string) or resolved
+/// (final value).
+///
+/// # Serialization
+///
+/// `Resolved` serializes as a bare string. `Template` is tagged:
+/// `{"$tmpl": "<source>"}`. The previous `#[serde(untagged)]` form
+/// could not distinguish the two on deserialize — both variants
+/// accepted strings, so the first matching variant won regardless of
+/// the caller's intent.
+#[derive(Debug, Clone)]
 pub enum MaybeTemplate {
     /// A template that needs to be rendered
     Template(String),
@@ -366,6 +387,12 @@ pub enum MaybeTemplate {
 
 impl MaybeTemplate {
     /// Create from a string, automatically detecting if it's a template
+    /// based on `{{ }}` delimiters.
+    ///
+    /// This constructor is heuristic by design — caller has explicitly
+    /// opted into auto-detection. The serde path uses the tagged form
+    /// instead so that round-trips of literal strings containing
+    /// `{{ }}` do not get mis-routed.
     pub fn from_string(s: impl Into<String>) -> Self {
         let s = s.into();
         if s.contains("{{") && s.contains("}}") {
@@ -412,6 +439,45 @@ impl From<String> for MaybeTemplate {
 impl From<&str> for MaybeTemplate {
     fn from(s: &str) -> Self {
         Self::from_string(s)
+    }
+}
+
+impl Serialize for MaybeTemplate {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::Resolved(s) => s.serialize(serializer),
+            Self::Template(t) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(TMPL_TAG, t)?;
+                map.end()
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MaybeTemplate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        // Tagged form: exactly `{"$tmpl": "..."}` → Template.
+        if let Some(obj) = value.as_object()
+            && obj.len() == 1
+            && let Some(s) = obj.get(TMPL_TAG).and_then(serde_json::Value::as_str)
+        {
+            return Ok(Self::Template(s.to_string()));
+        }
+        match value.as_str() {
+            Some(s) => Ok(Self::Resolved(s.to_string())),
+            None => Err(serde::de::Error::custom(
+                "MaybeTemplate must be a string or {\"$tmpl\": string}",
+            )),
+        }
     }
 }
 
@@ -543,6 +609,47 @@ Line 3: Done",
     }
 
     #[test]
+    fn maybe_template_resolved_serializes_as_bare_string() {
+        let resolved = MaybeTemplate::Resolved("Hello World".to_string());
+        let json = serde_json::to_string(&resolved).unwrap();
+        assert_eq!(json, r#""Hello World""#);
+    }
+
+    #[test]
+    fn maybe_template_template_serializes_as_tagged_object() {
+        let template = MaybeTemplate::Template("Hello {{ $input }}".to_string());
+        let json = serde_json::to_string(&template).unwrap();
+        assert_eq!(json, r#"{"$tmpl":"Hello {{ $input }}"}"#);
+    }
+
+    #[test]
+    fn maybe_template_round_trip_preserves_variant() {
+        let original = MaybeTemplate::Template("X{{ y }}Z".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let back: MaybeTemplate = serde_json::from_str(&json).unwrap();
+        assert!(back.is_template());
+        assert_eq!(back.as_str(), "X{{ y }}Z");
+
+        let original = MaybeTemplate::Resolved("plain".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let back: MaybeTemplate = serde_json::from_str(&json).unwrap();
+        assert!(!back.is_template());
+        assert_eq!(back.as_str(), "plain");
+    }
+
+    #[test]
+    fn maybe_template_literal_string_with_braces_round_trips_as_resolved() {
+        // The serde path no longer auto-detects templates from a bare
+        // string — only `{"$tmpl": "..."}` produces Template. A literal
+        // string carrying `{{ }}` round-trips as Resolved.
+        let literal = MaybeTemplate::Resolved("Use {{ literal }} here".to_string());
+        let json = serde_json::to_string(&literal).unwrap();
+        let back: MaybeTemplate = serde_json::from_str(&json).unwrap();
+        assert!(!back.is_template(), "bare strings must NOT auto-detect");
+        assert_eq!(back.as_str(), "Use {{ literal }} here");
+    }
+
+    #[test]
     fn test_position_tracking() {
         let template = Template::new("Line 1\n{{ $a }}\nLine 3").unwrap();
 
@@ -557,6 +664,52 @@ Line 3: Done",
             assert_eq!(position.line, 2);
             assert_eq!(position.column, 1);
         }
+    }
+
+    /// Helper: extract the second `Static` part from a parsed template
+    /// (i.e., the static text that follows the first `{{ ... }}` block).
+    fn static_after_first_expr(template: &Template) -> Option<&Position> {
+        let mut found_expr = false;
+        for part in template.parts() {
+            match part {
+                TemplatePart::Expression { .. } => found_expr = true,
+                TemplatePart::Static { position, .. } if found_expr => return Some(position),
+                _ => {},
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn static_position_after_multiline_expression_is_correct() {
+        // Regression: a `\n` inside `{{ ... }}` previously left the column
+        // counter off-by-one because the newline branch fell through to
+        // the `else` branch's `expr_column += 1`. After `}}` the static
+        // run got the wrong start column, which then propagated to error
+        // diagnostics for everything past the expression.
+        //
+        // Source layout:
+        //   line 1: "A{{"
+        //   line 2: "b"
+        //   line 3: "}}C"          ← "C" is at line 3 column 3
+        let template = Template::new("A{{\nb\n}}C").unwrap();
+        let pos = static_after_first_expr(&template).expect("static `C` part should exist");
+        assert_eq!(pos.line, 3);
+        assert_eq!(
+            pos.column, 3,
+            "C is the 3rd character on line 3 (after `}}`) — pre-fix this came out as 4"
+        );
+    }
+
+    #[test]
+    fn static_position_after_expression_with_internal_newline_then_text_is_correct() {
+        // Source layout (closing `}}` on the same line as some text):
+        //   line 1: "{{"
+        //   line 2: "x }}Z"        ← "Z" is at line 2 column 5
+        let template = Template::new("{{\nx }}Z").unwrap();
+        let pos = static_after_first_expr(&template).expect("static `Z` part should exist");
+        assert_eq!(pos.line, 2);
+        assert_eq!(pos.column, 5);
     }
 
     #[test]

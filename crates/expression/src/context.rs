@@ -6,44 +6,89 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::policy::EvaluationPolicy;
 
-/// Evaluation context containing variables and workflow data
+/// Evaluation context containing variables and workflow data.
+///
+/// All maps are wrapped in `Arc<HashMap<...>>` so cloning the context is
+/// O(1) — important because higher-order builtins like `map`, `filter`,
+/// and `reduce` clone the context once per iteration to scope a fresh
+/// lambda binding. Mutations go through `Arc::make_mut` (copy-on-write):
+/// the first `set_node_data` after a clone allocates, subsequent ones in
+/// the same owner are in-place.
 #[derive(Debug, Clone)]
 pub struct EvaluationContext {
     /// Node data ($node['name'].data)
-    nodes: HashMap<Arc<str>, Arc<Value>>,
+    nodes: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Execution variables ($execution.id, $execution.mode, etc.)
-    execution_vars: HashMap<Arc<str>, Arc<Value>>,
+    execution_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Lambda-bound parameters (isolated from execution_vars to avoid name collisions)
-    lambda_vars: HashMap<Arc<str>, Arc<Value>>,
+    lambda_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Workflow metadata ($workflow.id, $workflow.name, etc.)
     workflow: Arc<Value>,
     /// Input data ($input.item, $input.all, etc.)
     input: Arc<Value>,
     /// Optional per-context evaluation policy override.
     policy: Option<Arc<EvaluationPolicy>>,
+    /// Pre-materialized `$node` view, rebuilt only on mutation.
+    ///
+    /// `resolve_variable("node")` was rebuilding a fresh `Map` from
+    /// `nodes` on every call, which made `{{ $node.a + $node.b }}` cost
+    /// O(N×M) (N nodes, M references). Caching here moves the
+    /// HashMap→Object materialization to mutation time. Read still does
+    /// a single deep `Value::clone` of the cached object, so the
+    /// per-call cost is O(N) **of the materialized payload** rather
+    /// than O(N) of the source HashMap; what's saved is the per-call
+    /// `Map::with_capacity` + `insert` loop and per-key `to_string()`.
+    /// To make resolve fully O(1) we'd need to change the return type
+    /// to `Arc<Value>`, which is a wider API surgery — captured in
+    /// `docs/pitfalls.md` as a future-work item.
+    nodes_view: Arc<Value>,
+    /// Pre-materialized `$execution` view (same rationale as `nodes_view`).
+    execution_view: Arc<Value>,
+}
+
+#[inline]
+fn build_view(map: &HashMap<Arc<str>, Arc<Value>>) -> Arc<Value> {
+    let mut obj = Map::with_capacity(map.len());
+    for (key, value) in map {
+        obj.insert(key.to_string(), (**value).clone());
+    }
+    Arc::new(Value::Object(obj))
+}
+
+#[inline]
+fn empty_object_arc() -> Arc<Value> {
+    Arc::new(Value::Object(Map::new()))
+}
+
+#[inline]
+fn empty_map_arc() -> Arc<HashMap<Arc<str>, Arc<Value>>> {
+    Arc::new(HashMap::new())
 }
 
 impl EvaluationContext {
     /// Create a new empty evaluation context
     pub fn new() -> Self {
         Self {
-            nodes: HashMap::new(),
-            execution_vars: HashMap::new(),
-            lambda_vars: HashMap::new(),
-            workflow: Arc::new(Value::Object(serde_json::Map::new())),
-            input: Arc::new(Value::Object(serde_json::Map::new())),
+            nodes: empty_map_arc(),
+            execution_vars: empty_map_arc(),
+            lambda_vars: empty_map_arc(),
+            workflow: empty_object_arc(),
+            input: empty_object_arc(),
             policy: None,
+            nodes_view: empty_object_arc(),
+            execution_view: empty_object_arc(),
         }
     }
 
     /// Set data for a specific node
     pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: Value) {
         let key: Arc<str> = Arc::from(node_key.as_ref());
-        self.nodes.insert(key, Arc::new(data));
+        Arc::make_mut(&mut self.nodes).insert(key, Arc::new(data));
+        self.nodes_view = build_view(&self.nodes);
     }
 
     /// Get data for a specific node
@@ -54,7 +99,8 @@ impl EvaluationContext {
     /// Set an execution variable
     pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
-        self.execution_vars.insert(key, Arc::new(value));
+        Arc::make_mut(&mut self.execution_vars).insert(key, Arc::new(value));
+        self.execution_view = build_view(&self.execution_vars);
     }
 
     /// Get an execution variable
@@ -66,7 +112,7 @@ impl EvaluationContext {
     /// collisions with real execution variables)
     pub fn set_lambda_var(&mut self, name: impl AsRef<str>, value: Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
-        self.lambda_vars.insert(key, Arc::new(value));
+        Arc::make_mut(&mut self.lambda_vars).insert(key, Arc::new(value));
     }
 
     /// Get a lambda-bound parameter
@@ -104,7 +150,15 @@ impl EvaluationContext {
         self.policy.as_deref()
     }
 
-    /// Resolve a variable by name
+    /// Resolve a variable by name.
+    ///
+    /// `$node` and `$execution` are served from pre-materialized views
+    /// (see `nodes_view` / `execution_view`); the cost of a single
+    /// resolve is one `Value::clone` of an already-built object — still
+    /// O(N) in the *contents* of the materialized payload, but it skips
+    /// the full HashMap-to-Map rebuild on every access. Returning
+    /// `Arc<Value>` instead of cloning would make this true O(1); that's
+    /// a wider API change tracked separately.
     pub fn resolve_variable(&self, name: &str) -> Option<Value> {
         // Lambda-bound parameters take priority (e.g., `x` in `filter(arr, x => x > 2)`).
         if let Some(value) = self.lambda_vars.get(name) {
@@ -117,22 +171,8 @@ impl EvaluationContext {
         }
 
         match name {
-            "node" => {
-                // Return an object containing all nodes
-                let mut obj = serde_json::Map::new();
-                for (key, value) in &self.nodes {
-                    obj.insert(key.to_string(), (**value).clone());
-                }
-                Some(Value::Object(obj))
-            },
-            "execution" => {
-                // Return an object containing all execution variables
-                let mut obj = serde_json::Map::new();
-                for (key, value) in &self.execution_vars {
-                    obj.insert(key.to_string(), (**value).clone());
-                }
-                Some(Value::Object(obj))
-            },
+            "node" => Some((*self.nodes_view).clone()),
+            "execution" => Some((*self.execution_view).clone()),
             "workflow" => Some((*self.workflow).clone()),
             "input" => Some((*self.input).clone()),
             "now" => {
@@ -209,17 +249,17 @@ impl EvaluationContextBuilder {
 
     /// Build the evaluation context
     pub fn build(self) -> EvaluationContext {
+        let nodes_view = build_view(&self.nodes);
+        let execution_view = build_view(&self.execution_vars);
         EvaluationContext {
-            nodes: self.nodes,
-            execution_vars: self.execution_vars,
-            lambda_vars: HashMap::new(),
-            workflow: self
-                .workflow
-                .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
-            input: self
-                .input
-                .unwrap_or_else(|| Arc::new(Value::Object(serde_json::Map::new()))),
+            nodes: Arc::new(self.nodes),
+            execution_vars: Arc::new(self.execution_vars),
+            lambda_vars: empty_map_arc(),
+            workflow: self.workflow.unwrap_or_else(empty_object_arc),
+            input: self.input.unwrap_or_else(empty_object_arc),
             policy: self.policy,
+            nodes_view,
+            execution_view,
         }
     }
 }
@@ -283,5 +323,81 @@ mod tests {
 
         let exec = ctx.resolve_variable("execution").unwrap();
         assert!(exec.is_object());
+    }
+
+    #[test]
+    fn nodes_view_updates_on_set_node_data() {
+        // Each `set_node_data` must rebuild the materialized `$node` view
+        // so that subsequent `resolve_variable("node")` reflects the new key.
+        let mut ctx = EvaluationContext::new();
+        ctx.set_node_data("first", Value::Number(1.into()));
+        let view1 = ctx.resolve_variable("node").unwrap();
+        let obj1 = view1.as_object().unwrap();
+        assert_eq!(obj1.len(), 1);
+        assert!(obj1.contains_key("first"));
+
+        ctx.set_node_data("second", Value::Number(2.into()));
+        let view2 = ctx.resolve_variable("node").unwrap();
+        let obj2 = view2.as_object().unwrap();
+        assert_eq!(obj2.len(), 2);
+        assert!(obj2.contains_key("first"));
+        assert!(obj2.contains_key("second"));
+    }
+
+    #[test]
+    fn execution_view_updates_on_set_execution_var() {
+        let mut ctx = EvaluationContext::new();
+        ctx.set_execution_var("id", Value::String("e1".into()));
+        ctx.set_execution_var("mode", Value::String("test".into()));
+
+        let view = ctx.resolve_variable("execution").unwrap();
+        let obj = view.as_object().unwrap();
+        assert_eq!(obj.get("id").and_then(|v| v.as_str()), Some("e1"));
+        assert_eq!(obj.get("mode").and_then(|v| v.as_str()), Some("test"));
+    }
+
+    #[test]
+    fn builder_initializes_views() {
+        // Builder path must produce the same materialized views as the
+        // imperative API, otherwise `EvaluationContextBuilder::build`
+        // contexts would silently see empty `$node`/`$execution`.
+        let ctx = EvaluationContext::builder()
+            .node("a", Value::Number(1.into()))
+            .execution_var("id", Value::String("x".into()))
+            .build();
+
+        let node_view = ctx.resolve_variable("node").unwrap();
+        assert_eq!(node_view.as_object().unwrap().len(), 1);
+
+        let exec_view = ctx.resolve_variable("execution").unwrap();
+        assert!(exec_view.as_object().unwrap().contains_key("id"));
+    }
+
+    #[test]
+    fn repeated_resolve_returns_consistent_data() {
+        // Hot-path regression: ten resolves of `$node` must all return the
+        // same materialized object — caching must not produce stale views.
+        let mut ctx = EvaluationContext::new();
+        ctx.set_node_data("k", Value::Number(7.into()));
+
+        for _ in 0..10 {
+            let view = ctx.resolve_variable("node").unwrap();
+            assert_eq!(
+                view.as_object().unwrap().get("k").and_then(Value::as_i64),
+                Some(7)
+            );
+        }
+    }
+
+    #[test]
+    fn clone_preserves_view_content() {
+        // `EvaluationContext::Clone` is invoked per lambda iteration; the
+        // cached view must clone with the rest of the struct, not get
+        // dropped or reset to empty.
+        let mut ctx = EvaluationContext::new();
+        ctx.set_node_data("k", Value::Number(7.into()));
+        let cloned = ctx.clone();
+        let view = cloned.resolve_variable("node").unwrap();
+        assert_eq!(view.as_object().unwrap().len(), 1);
     }
 }

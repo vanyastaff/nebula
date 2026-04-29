@@ -11,6 +11,35 @@ use crate::{
     token::{Token, TokenKind},
 };
 
+/// Parse two ASCII hex digits into a single byte (`\xNN` escape).
+///
+/// Both digits must be ASCII hex `[0-9a-fA-F]`. Non-ASCII inputs (which
+/// can occur on hostile data like `\x🙂🙂`) are rejected with a typed
+/// syntax error rather than panicking through `char::encode_utf8` into
+/// a one-byte buffer.
+fn parse_hex_pair(d1: char, d2: char) -> ExpressionResult<u8> {
+    let bad = || {
+        ExpressionError::expression_syntax_error(format!(
+            "Invalid hex digits in \\x escape: '{d1}{d2}'",
+        ))
+    };
+    let hi = d1.to_digit(16).ok_or_else(bad)?;
+    let lo = d2.to_digit(16).ok_or_else(bad)?;
+    Ok(((hi << 4) | lo) as u8)
+}
+
+/// Parse a hex code-point string (1–6 digits, no `0x` prefix) into a `char`.
+fn parse_codepoint(hex: &str) -> ExpressionResult<char> {
+    let cp = u32::from_str_radix(hex, 16).map_err(|_| {
+        ExpressionError::expression_syntax_error(format!("Invalid hex code point: '{hex}'"))
+    })?;
+    char::from_u32(cp).ok_or_else(|| {
+        ExpressionError::expression_syntax_error(format!(
+            "Code point U+{hex} is not a valid Unicode scalar value (surrogate or out of range)",
+        ))
+    })
+}
+
 /// Lexer for tokenizing expression strings
 pub struct Lexer<'a> {
     input: &'a str,
@@ -289,7 +318,18 @@ impl<'a> Lexer<'a> {
         ))
     }
 
-    /// Read a string with escape sequences (requires allocation)
+    /// Read a string with escape sequences (requires allocation).
+    ///
+    /// Supported escapes:
+    /// - `\n`, `\t`, `\r` — control characters
+    /// - `\\`, `\"`, `\'` — literal backslash / quote
+    /// - `\xNN` — exactly two hex digits, byte (`\x41` → `A`)
+    /// - `\uNNNN` — exactly four hex digits, BMP code point (`é` → `é`)
+    /// - `\u{...}` — 1-6 hex digits, full Unicode code point (`\u{1F642}` → `🙂`)
+    ///
+    /// Unknown escapes (e.g. `\q`) pass through verbatim for backward
+    /// compatibility — they don't error. Malformed `\u` / `\x` sequences
+    /// (wrong digit count, invalid code point, etc.) DO error.
     fn read_string_with_escapes(
         &self,
         start: usize,
@@ -298,24 +338,93 @@ impl<'a> Lexer<'a> {
     ) -> ExpressionResult<Token<'a>> {
         let raw = &self.input[start..end];
         let mut result = String::with_capacity(raw.len());
-        let mut chars = raw.chars();
+        let mut chars = raw.chars().peekable();
 
         while let Some(ch) = chars.next() {
-            if ch == '\\' {
-                if let Some(escaped) = chars.next() {
-                    let escaped_char = match escaped {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '\\' => '\\',
-                        '"' => '"',
-                        '\'' => '\'',
-                        _ => escaped,
-                    };
-                    result.push(escaped_char);
-                }
-            } else {
+            if ch != '\\' {
                 result.push(ch);
+                continue;
+            }
+            let Some(escaped) = chars.next() else {
+                return Err(ExpressionError::expression_syntax_error(
+                    "Trailing backslash in string literal",
+                ));
+            };
+            match escaped {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                '\\' => result.push('\\'),
+                '"' => result.push('"'),
+                '\'' => result.push('\''),
+                'x' => {
+                    let d1 = chars.next().ok_or_else(|| {
+                        ExpressionError::expression_syntax_error(
+                            "Truncated \\x escape: expected 2 hex digits",
+                        )
+                    })?;
+                    let d2 = chars.next().ok_or_else(|| {
+                        ExpressionError::expression_syntax_error(
+                            "Truncated \\x escape: expected 2 hex digits",
+                        )
+                    })?;
+                    let value = parse_hex_pair(d1, d2)?;
+                    result.push(value as char);
+                },
+                'u' => {
+                    if chars.peek() == Some(&'{') {
+                        chars.next(); // consume '{'
+                        let mut hex = String::with_capacity(6);
+                        loop {
+                            match chars.next() {
+                                Some('}') => break,
+                                Some(c) if c.is_ascii_hexdigit() => {
+                                    if hex.len() >= 6 {
+                                        return Err(ExpressionError::expression_syntax_error(
+                                            "\\u{...} escape exceeds 6 hex digits",
+                                        ));
+                                    }
+                                    hex.push(c);
+                                },
+                                Some(c) => {
+                                    return Err(ExpressionError::expression_syntax_error(format!(
+                                        "Invalid hex digit '{c}' in \\u{{...}} escape"
+                                    )));
+                                },
+                                None => {
+                                    return Err(ExpressionError::expression_syntax_error(
+                                        "Unterminated \\u{...} escape: missing '}'",
+                                    ));
+                                },
+                            }
+                        }
+                        if hex.is_empty() {
+                            return Err(ExpressionError::expression_syntax_error(
+                                "Empty \\u{} escape: expected 1-6 hex digits",
+                            ));
+                        }
+                        result.push(parse_codepoint(&hex)?);
+                    } else {
+                        let mut hex = String::with_capacity(4);
+                        for _ in 0..4 {
+                            match chars.next() {
+                                Some(c) if c.is_ascii_hexdigit() => hex.push(c),
+                                Some(c) => {
+                                    return Err(ExpressionError::expression_syntax_error(format!(
+                                        "Invalid hex digit '{c}' in \\uNNNN escape"
+                                    )));
+                                },
+                                None => {
+                                    return Err(ExpressionError::expression_syntax_error(
+                                        "Truncated \\uNNNN escape: expected 4 hex digits",
+                                    ));
+                                },
+                            }
+                        }
+                        result.push(parse_codepoint(&hex)?);
+                    }
+                },
+                other => result.push(other),
             }
         }
 
@@ -491,6 +600,114 @@ mod tests {
             TokenKind::String(s) => assert_eq!(s.as_ref(), "test'quote"),
             _ => panic!("Expected string token"),
         }
+    }
+
+    /// Lex a single string literal and return the decoded contents.
+    /// Panics on lex error or non-string token — caller-friendly helper
+    /// for the escape-sequence tests below.
+    fn lex_string(src: &str) -> String {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().expect("expected successful lex");
+        match &tokens[0].kind {
+            TokenKind::String(s) => s.as_ref().to_owned(),
+            other => panic!("expected string token, got {other:?}"),
+        }
+    }
+
+    fn lex_string_err(src: &str) -> String {
+        let mut lexer = Lexer::new(src);
+        lexer
+            .tokenize()
+            .expect_err("expected lex failure")
+            .to_string()
+    }
+
+    #[test]
+    fn lexer_parses_hex_byte_escape() {
+        // `\x41` → 'A' (single ASCII byte)
+        assert_eq!(lex_string(r#""\x41\x42\x43""#), "ABC");
+    }
+
+    #[test]
+    fn lexer_parses_unicode_codepoint_escape_brace_form() {
+        // `\u{1F642}` → 🙂 (slightly smiling face, U+1F642).
+        assert_eq!(lex_string(r#""\u{1F642}""#), "🙂");
+        // 1-digit form is also valid.
+        assert_eq!(lex_string(r#""\u{41}""#), "A");
+        // 6-digit max.
+        assert_eq!(lex_string(r#""\u{10FFFF}""#), "\u{10FFFF}");
+    }
+
+    #[test]
+    fn lexer_parses_unicode_bmp_escape_4_digit_form() {
+        // The raw string literal here contains the seven characters
+        // `\`, `u`, `0`, `0`, `E`, `9` — i.e. an actual `\uNNNN` escape
+        // for the lexer to process. The lexer must turn it into the
+        // single character U+00E9. Pre-fix this test passed a literal
+        // `é` directly and exercised only the regular UTF-8 read path,
+        // not the `\uNNNN` escape — the 4-digit-form code path could
+        // regress without failing.
+        assert_eq!(lex_string(r#""\u00E9""#), "é");
+        // Representative ASCII value in 4-digit form.
+        assert_eq!(lex_string(r#""\u0041""#), "A");
+    }
+
+    #[test]
+    fn lexer_hex_escape_with_non_ascii_returns_error_not_panic() {
+        // Regression: `parse_hex_pair` previously called `char::encode_utf8`
+        // into a 1-byte slice. Hostile input like `"\x🙂🙂"` (where the
+        // emoji is 4 UTF-8 bytes) would panic at the encode call. The
+        // ASCII-only digit check now produces a typed syntax error.
+        let err = lex_string_err(r#""\x🙂🙂""#);
+        assert!(
+            err.contains("\\x") || err.contains("Invalid hex"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn lexer_rejects_truncated_hex_escape() {
+        let err = lex_string_err(r#""\x4""#);
+        assert!(
+            err.contains("Truncated") || err.contains("\\x"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn lexer_rejects_non_hex_in_unicode_escape() {
+        let err = lex_string_err(r#""\u{ZZ}""#);
+        assert!(err.contains("Invalid hex"), "got: {err}");
+    }
+
+    #[test]
+    fn lexer_rejects_unterminated_braced_unicode_escape() {
+        let err = lex_string_err(r#""\u{1F642""#);
+        assert!(
+            err.contains("Unterminated") || err.contains("\\u"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn lexer_rejects_surrogate_codepoint() {
+        // U+D800 is a low surrogate, not a valid Unicode scalar value.
+        let err = lex_string_err(r#""\u{D800}""#);
+        assert!(err.contains("not a valid"), "got: {err}");
+    }
+
+    #[test]
+    fn lexer_rejects_oversized_braced_unicode_escape() {
+        // 7 hex digits — moves past Unicode's 6-digit max.
+        let err = lex_string_err(r#""\u{1234567}""#);
+        assert!(err.contains("exceeds 6"), "got: {err}");
+    }
+
+    #[test]
+    fn lexer_unknown_escape_passes_through() {
+        // Backward compat: `\q` is unknown but doesn't error — the `q`
+        // is preserved verbatim. Adding strict mode is a separate task.
+        assert_eq!(lex_string(r#""\q""#), "q");
     }
 
     #[test]

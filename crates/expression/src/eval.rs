@@ -2,12 +2,8 @@
 //!
 //! This module implements the evaluation of parsed expression ASTs.
 
-#[cfg(feature = "regex")]
-use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(feature = "regex")]
-use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;
 use serde_json::{Number, Value};
@@ -77,9 +73,16 @@ impl EvalFrame {
         if let Some(max) = self.max_steps
             && self.steps > max
         {
-            return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum evaluation steps ({max}) exceeded",
-            )));
+            // Emit a structured warning so dashboards can spot DoS attempts
+            // before the typed error has reached the user. `actual` is the
+            // step that tripped the budget, not the budget itself.
+            tracing::warn!(
+                target: "nebula_expression::dos",
+                limit = max,
+                actual = self.steps,
+                "step budget exceeded"
+            );
+            return Err(ExpressionError::step_limit_exceeded(max, self.steps));
         }
         Ok(())
     }
@@ -95,9 +98,16 @@ impl EvalFrame {
     #[inline]
     fn enter(&mut self) -> ExpressionResult<()> {
         if self.depth >= MAX_RECURSION_DEPTH {
-            return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum recursion depth ({MAX_RECURSION_DEPTH}) exceeded",
-            )));
+            tracing::warn!(
+                target: "nebula_expression::dos",
+                limit = MAX_RECURSION_DEPTH,
+                actual = self.depth,
+                "recursion depth exceeded"
+            );
+            return Err(ExpressionError::depth_exceeded(
+                MAX_RECURSION_DEPTH,
+                self.depth,
+            ));
         }
         self.depth += 1;
         Ok(())
@@ -111,14 +121,75 @@ impl EvalFrame {
     }
 }
 
+/// Read-only handle on the evaluator's policy state, exposed to
+/// registered builtins.
+///
+/// Replaces the old `&Evaluator` parameter that builtins used to
+/// receive. The crucial difference: `BuiltinView` does not expose
+/// `eval()` or `eval_with_frame()`, so a registered builtin literally
+/// cannot recurse back into AST evaluation. The CO-C1-01 step-budget
+/// bypass therefore becomes type-impossible for first-party builtins,
+/// closing the discipline-only contract documented in the crate
+/// `lib.rs` "Known limitation" note (issue #252).
+///
+/// Higher-order combinators (`filter`, `map`, `reduce`, …) live inside
+/// the evaluator module itself and continue to call `eval_with_frame`
+/// directly with the caller's `EvalFrame`. They never go through this
+/// view; the type-enforced boundary applies only to the
+/// `BuiltinRegistry`'s callable surface.
+#[derive(Copy, Clone)]
+pub struct BuiltinView<'a> {
+    eval: &'a Evaluator,
+}
+
+impl<'a> BuiltinView<'a> {
+    /// Construct a view from an evaluator. `pub(crate)` so only the
+    /// registry/dispatch path can hand it out.
+    ///
+    /// Marked `#[inline(always)]` because cachegrind-based perf
+    /// simulation (used by CodSpeed) doesn't inline through the wrapper
+    /// the way -O3 codegen does, and the indirection per builtin call
+    /// shows up as a measurable regression on tight nested-builtin
+    /// benchmarks (`abs(min(-5, -10))`-shape). The wrapper is a
+    /// zero-cost newtype around `&Evaluator`; forcing inline keeps it
+    /// that way under every measurement runtime.
+    #[inline(always)]
+    pub(crate) fn new(eval: &'a Evaluator) -> Self {
+        Self { eval }
+    }
+
+    /// Whether strict mode is enabled for this evaluation (engine-level
+    /// or context-level policy).
+    #[inline(always)]
+    pub fn is_strict_mode(&self, context: &EvaluationContext) -> bool {
+        self.eval.is_strict_mode(context)
+    }
+
+    /// Whether strict-coercion mode is enabled for conversion builtins.
+    #[inline(always)]
+    pub fn strict_conversions_enabled(&self, context: &EvaluationContext) -> bool {
+        self.eval.strict_conversions_enabled(context)
+    }
+
+    /// Optional max JSON parse length cap for `parse_json`.
+    #[inline(always)]
+    pub fn max_json_parse_length(&self, context: &EvaluationContext) -> Option<usize> {
+        self.eval.max_json_parse_length(context)
+    }
+}
+
 /// Evaluator for expression ASTs
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
     policy: Option<Arc<EvaluationPolicy>>,
-    /// Regex cache (pattern -> compiled Regex)
-    /// Using Mutex for thread-safe interior mutability
+    /// Compiled regex cache (pattern → `Arc<Regex>`).
+    ///
+    /// Backed by `moka::sync::Cache` — concurrent, true-LRU eviction.
+    /// Replaces the previous `parking_lot::Mutex<HashMap>` implementation
+    /// whose `keys().next()` eviction was order-undefined and could throw
+    /// out the hottest pattern under load (ROADMAP #590).
     #[cfg(feature = "regex")]
-    regex_cache: Mutex<HashMap<String, Regex>>,
+    regex_cache: moka::sync::Cache<Arc<str>, Arc<Regex>>,
 }
 
 impl Evaluator {
@@ -136,7 +207,7 @@ impl Evaluator {
             builtins,
             policy,
             #[cfg(feature = "regex")]
-            regex_cache: Mutex::new(HashMap::new()),
+            regex_cache: moka::sync::Cache::new(MAX_REGEX_CACHE_SIZE as u64),
         }
     }
 
@@ -165,20 +236,18 @@ impl Evaluator {
     /// [`EvaluationPolicy::max_eval_steps`] is enforced across ALL
     /// nested work — lambdas, reduces, pipelines, higher-order combinators.
     ///
-    /// # CO-C1-01 footgun (builtins)
+    /// # CO-C1-01 footgun (builtins) — closed
     ///
-    /// `BuiltinRegistry::call` currently hands builtins `&Evaluator`
-    /// without the caller's [`EvalFrame`]. A builtin that recurses by
-    /// invoking `evaluator.eval(...)` will build a fresh frame and
-    /// reset the step budget mid-traversal — which is exactly the DoS
-    /// bypass this refactor closes for the intrinsic higher-order
-    /// combinators (`map`, `filter`, `reduce`, ...).
-    ///
-    /// Today no shipping builtin does this, but before stabilising the
-    /// public builtin API plumb `&mut EvalFrame` through
-    /// `BuiltinRegistry::call` and add a pitfalls note under
-    /// `.project/context/pitfalls.md`. See issue #252 / audit memory
-    /// `pitfall_expression_builtin_frame`.
+    /// `BuiltinRegistry::call` now hands builtins a [`BuiltinView`]
+    /// instead of `&Evaluator`. The view exposes only policy-query
+    /// methods, so a registered builtin cannot recurse back into AST
+    /// evaluation — the historical step-budget bypass (issue #252) is
+    /// type-enforced shut. Higher-order combinators (`map`, `filter`,
+    /// `reduce`, ...) live inside this module and continue to use
+    /// `eval_with_frame` with the caller's `EvalFrame` directly, so
+    /// their iteration budget stays accumulated. See the `lib.rs`
+    /// crate-level docs and `docs/pitfalls.md` for the historical
+    /// context.
     #[inline]
     pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
         let mut frame = EvalFrame::new(self.resolve_max_steps(context));
@@ -604,7 +673,17 @@ impl Evaluator {
                 // Always use floating point for power operations
                 let lf = self.number_to_f64(l)?;
                 let rf = self.number_to_f64(r)?;
-                Ok(serde_json::json!(lf.powf(rf)))
+                let result = lf.powf(rf);
+                // Reject non-finite results. `serde_json::json!(NaN | ±∞)`
+                // silently converts to `Value::Null`, which would surface as
+                // `2 ** 1024 = null` instead of an error. Mirrors the guard
+                // in `divide()` for consistent semantics.
+                if !result.is_finite() {
+                    return Err(ExpressionError::expression_eval_error(format!(
+                        "power produced a non-finite result: {lf} ** {rf} = {result}"
+                    )));
+                }
+                Ok(serde_json::json!(result))
             },
             _ => Err(ExpressionError::expression_type_error(
                 "number",
@@ -805,28 +884,19 @@ impl Evaluator {
             ));
         }
 
-        // Try to get from cache first
-        let mut cache = self.regex_cache.lock();
-        let regex = if let Some(cached_regex) = cache.get(pattern) {
-            // Cache hit - clone the Regex (cheap, Arc internally)
-            cached_regex.clone()
+        // Hot path: moka concurrent get is lock-free. Compilation happens
+        // outside any lock; concurrent insertions are tolerated (last writer
+        // wins; redundant compiles are wasted but not incorrect).
+        let key: Arc<str> = Arc::from(pattern);
+        let regex = if let Some(cached) = self.regex_cache.get(&key) {
+            cached
         } else {
-            // Cache miss - compile and cache
-            let new_regex = Regex::new(pattern)
+            let compiled = Regex::new(pattern)
                 .map_err(|e| ExpressionError::expression_regex_error(e.to_string()))?;
-
-            // Enforce cache size limit with simple eviction
-            if cache.len() >= MAX_REGEX_CACHE_SIZE {
-                // Remove first entry (simple eviction strategy)
-                if let Some(key) = cache.keys().next().cloned() {
-                    cache.remove(&key);
-                }
-            }
-
-            cache.insert(pattern.to_string(), new_regex.clone());
-            new_regex
+            let arc = Arc::new(compiled);
+            self.regex_cache.insert(key, Arc::clone(&arc));
+            arc
         };
-        drop(cache); // Release lock before is_match
 
         Ok(Value::Bool(regex.is_match(text)))
     }
@@ -1754,8 +1824,10 @@ mod tests {
         assert_eq!(result2.as_bool(), Some(true));
 
         // Verify cache has the pattern
-        assert_eq!(evaluator.regex_cache.lock().len(), 1);
-        assert!(evaluator.regex_cache.lock().contains_key("hello.*"));
+        evaluator.regex_cache.run_pending_tasks();
+        assert_eq!(evaluator.regex_cache.entry_count(), 1);
+        let key: Arc<str> = Arc::from("hello.*");
+        assert!(evaluator.regex_cache.get(&key).is_some());
     }
 
     #[test]
@@ -1880,10 +1952,14 @@ mod tests {
             let _ = evaluator.eval(&expr, &context);
         }
 
-        // Cache should not exceed MAX_REGEX_CACHE_SIZE
-        let cache_size = evaluator.regex_cache.lock().len();
+        // Cache should not exceed MAX_REGEX_CACHE_SIZE.
+        // moka admits eagerly but evicts asynchronously — running pending
+        // tasks forces eviction-state to converge so the size we read is
+        // the post-LRU steady state.
+        evaluator.regex_cache.run_pending_tasks();
+        let cache_size = evaluator.regex_cache.entry_count();
         assert!(
-            cache_size <= MAX_REGEX_CACHE_SIZE,
+            cache_size <= MAX_REGEX_CACHE_SIZE as u64,
             "Cache size {cache_size} exceeds limit {MAX_REGEX_CACHE_SIZE}"
         );
     }
@@ -1894,6 +1970,44 @@ mod tests {
         // Escaped parentheses and quantifiers should not trigger false positives
         assert!(!Evaluator::is_potentially_dangerous_regex(r"\(a+\)+"));
         assert!(!Evaluator::is_potentially_dangerous_regex(r"\+\*"));
+    }
+
+    #[test]
+    #[cfg(feature = "regex")]
+    fn regex_cache_keeps_hot_pattern_under_load() {
+        // ROADMAP #590: under the previous `keys().next()` eviction the hot
+        // pattern could be thrown out because HashMap iteration order is
+        // undefined. moka's true-LRU eviction must keep a frequently-touched
+        // pattern alive even when N+1 colder patterns are added.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let hot = "hello.*".to_string();
+
+        // Prime the cache with the hot pattern, then keep it warm.
+        let warm = |pat: &str| {
+            let expr = Expr::Binary {
+                left: Box::new(Expr::Literal(Value::String("hello world".into()))),
+                op: BinaryOp::RegexMatch,
+                right: Box::new(Expr::Literal(Value::String(pat.into()))),
+            };
+            let _ = evaluator.eval(&expr, &context);
+        };
+        warm(&hot);
+
+        // Push more cold patterns than the cache holds, but keep touching
+        // the hot one in between so its recency stays fresh.
+        for i in 0..MAX_REGEX_CACHE_SIZE + 20 {
+            let cold = format!("cold_{i}");
+            warm(&cold);
+            warm(&hot); // refresh recency
+        }
+
+        evaluator.regex_cache.run_pending_tasks();
+        let hot_key: Arc<str> = Arc::from(hot.as_str());
+        assert!(
+            evaluator.regex_cache.get(&hot_key).is_some(),
+            "hot pattern was evicted under load — LRU regression"
+        );
     }
 
     // Higher-order function tests
@@ -2196,7 +2310,7 @@ mod tests {
         };
         let err = evaluator.eval(&expr, &context).unwrap_err();
         assert!(
-            err.to_string().contains("Maximum evaluation steps"),
+            err.to_string().contains("Step budget exhausted"),
             "unexpected error: {err}"
         );
     }
@@ -2217,7 +2331,7 @@ mod tests {
             .eval(&expr, &context)
             .expect_err("map over 1000 elements must exceed a 50-step budget");
         assert!(
-            err.to_string().contains("Maximum evaluation steps"),
+            err.to_string().contains("Step budget exhausted"),
             "unexpected error: {err}"
         );
     }
@@ -2256,7 +2370,7 @@ mod tests {
         let err = evaluator
             .eval(&expr, &context)
             .expect_err("nested map/filter must exceed an 80-step budget");
-        assert!(err.to_string().contains("Maximum evaluation steps"));
+        assert!(err.to_string().contains("Step budget exhausted"));
     }
 
     #[test]
@@ -2284,7 +2398,7 @@ mod tests {
         let err = evaluator
             .eval(&expr, &context)
             .expect_err("reduce over 100 elements must exceed a 30-step budget");
-        assert!(err.to_string().contains("Maximum evaluation steps"));
+        assert!(err.to_string().contains("Step budget exhausted"));
     }
 
     #[test]
@@ -2298,7 +2412,7 @@ mod tests {
         let err = evaluator
             .eval(&expr, &context)
             .expect_err("flat_map over 200 elements must exceed a 40-step budget");
-        assert!(err.to_string().contains("Maximum evaluation steps"));
+        assert!(err.to_string().contains("Step budget exhausted"));
     }
 
     #[test]
@@ -2312,7 +2426,7 @@ mod tests {
         let err = evaluator
             .eval(&expr, &context)
             .expect_err("group_by over 200 elements must exceed a 40-step budget");
-        assert!(err.to_string().contains("Maximum evaluation steps"));
+        assert!(err.to_string().contains("Step budget exhausted"));
     }
 
     #[test]
@@ -2351,7 +2465,7 @@ mod tests {
         let err = evaluator
             .eval(&expr, &context)
             .expect_err("context-level budget of 5 must also bound a map over 100 elements");
-        assert!(err.to_string().contains("Maximum evaluation steps"));
+        assert!(err.to_string().contains("Step budget exhausted"));
     }
 
     #[test]
@@ -2368,7 +2482,7 @@ mod tests {
             deep_expr = Expr::Not(Box::new(deep_expr));
         }
         let err = evaluator.eval(&deep_expr, &context).unwrap_err();
-        assert!(err.to_string().contains("Maximum recursion depth"));
+        assert!(err.to_string().contains("Recursion depth exhausted"));
 
         // Next call on the same evaluator must start fresh.
         let ok = evaluator
@@ -2451,7 +2565,7 @@ mod tests {
         let err = evaluator
             .eval(&expr, &context)
             .expect_err("map-of-reduce over 10x10 must exceed an 80-step budget");
-        assert!(err.to_string().contains("Maximum evaluation steps"));
+        assert!(err.to_string().contains("Step budget exhausted"));
     }
 
     #[test]
@@ -2536,5 +2650,66 @@ mod tests {
         let expr = Expr::Negate(Box::new(Expr::Literal(Value::Bool(true))));
         let err = evaluator.eval(&expr, &context).unwrap_err();
         assert!(format!("{err}").to_lowercase().contains("type"));
+    }
+
+    /// Helper: build a `2 ** exp` expression.
+    fn power_expr(base: i64, exp: f64) -> Expr {
+        Expr::Binary {
+            left: Box::new(Expr::Literal(Value::Number(base.into()))),
+            op: BinaryOp::Power,
+            right: Box::new(Expr::Literal(serde_json::json!(exp))),
+        }
+    }
+
+    #[test]
+    fn power_overflow_returns_error() {
+        // 2 ** 1024 overflows f64 to +Infinity. Without the is_finite guard
+        // this would silently serialize as JSON null.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = power_expr(2, 1024.0);
+        let err = evaluator.eval(&expr, &context).unwrap_err();
+        let msg = format!("{err}").to_lowercase();
+        assert!(
+            msg.contains("non-finite"),
+            "expected non-finite error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn power_negative_fractional_returns_error() {
+        // (-1) ** 0.5 is NaN in floating-point. Without the guard it would
+        // serialize as JSON null.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = power_expr(-1, 0.5);
+        let err = evaluator.eval(&expr, &context).unwrap_err();
+        let msg = format!("{err}").to_lowercase();
+        assert!(
+            msg.contains("non-finite"),
+            "expected non-finite error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn power_normal_case_still_works() {
+        // Regression guard: ordinary power must keep working.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = power_expr(2, 10.0);
+        let result = evaluator.eval(&expr, &context).unwrap();
+        // f64-typed literal stays float on the wire
+        assert_eq!(result.as_f64(), Some(1024.0));
+    }
+
+    #[test]
+    fn power_zero_to_zero_returns_one() {
+        // 0 ** 0 is mathematically undefined but f64::powf returns 1.0.
+        // is_finite passes, so we surface the float result rather than erroring.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = power_expr(0, 0.0);
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_f64(), Some(1.0));
     }
 }

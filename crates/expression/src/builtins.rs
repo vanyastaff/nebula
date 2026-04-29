@@ -18,11 +18,19 @@ use crate::{
     ast::Expr,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::{BuiltinView, Evaluator},
 };
 
-/// Type alias for a builtin function
-pub type BuiltinFunction = fn(&[Value], &Evaluator, &EvaluationContext) -> ExpressionResult<Value>;
+/// Type alias for a builtin function.
+///
+/// The middle parameter is `BuiltinView<'_>`, NOT `&Evaluator`. The view
+/// exposes only policy-query methods (`is_strict_mode`,
+/// `strict_conversions_enabled`, `max_json_parse_length`) — registered
+/// builtins cannot recurse back into AST evaluation. This is a
+/// type-enforced replacement for the discipline rule documented in the
+/// crate `lib.rs` "Known limitation" note (CO-C1-01 step-budget bypass).
+pub type BuiltinFunction =
+    fn(&[Value], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<Value>;
 
 /// Registry of all builtin functions
 #[derive(Clone)]
@@ -55,7 +63,10 @@ impl BuiltinRegistry {
         self.functions.insert(name.as_ref().to_owned(), func);
     }
 
-    /// Call a builtin function by name
+    /// Call a builtin function by name.
+    ///
+    /// The evaluator is wrapped in a [`BuiltinView`] before the call, so
+    /// the registered function never sees `&Evaluator` directly.
     pub fn call(
         &self,
         name: &str,
@@ -68,7 +79,7 @@ impl BuiltinRegistry {
             .get(name)
             .ok_or_else(|| ExpressionError::expression_function_not_found(name))?;
 
-        func(args, evaluator, context)
+        func(args, BuiltinView::new(evaluator), context)
     }
 
     /// Check if a function exists
@@ -293,7 +304,7 @@ pub(crate) fn get_int_arg_with_policy(
     args: &[Value],
     index: usize,
     arg_name: &str,
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<i64> {
     let val = args.get(index).ok_or_else(|| {
@@ -303,7 +314,7 @@ pub(crate) fn get_int_arg_with_policy(
         )
     })?;
 
-    if eval.is_strict_mode(ctx) {
+    if view.is_strict_mode(ctx) {
         return match val {
             Value::Number(n) => n.as_i64().ok_or_else(|| {
                 ExpressionError::expression_invalid_argument(
@@ -361,7 +372,7 @@ pub(crate) fn get_number_arg_with_policy(
     args: &[Value],
     index: usize,
     arg_name: &str,
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<f64> {
     let val = args.get(index).ok_or_else(|| {
@@ -371,7 +382,7 @@ pub(crate) fn get_number_arg_with_policy(
         )
     })?;
 
-    if eval.is_strict_mode(ctx) {
+    if view.is_strict_mode(ctx) {
         return match val {
             Value::Number(n) => crate::value_utils::number_as_f64(n).ok_or_else(|| {
                 ExpressionError::expression_invalid_argument(

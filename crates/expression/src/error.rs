@@ -89,6 +89,21 @@ pub enum ExpressionError {
     #[classify(category = "validation", code = "EXPR:INVALID_DATE")]
     #[error("Invalid date format: {0}")]
     InvalidDate(#[from] chrono::format::ParseError),
+
+    /// Step budget exhausted: per-call evaluation cap (`max_eval_steps`)
+    /// has been hit. Carries `limit` and `actual` so callers can
+    /// distinguish a tight policy from a runaway expression and reason
+    /// about whether to relax the limit or shrink the input.
+    #[classify(category = "validation", code = "EXPR:STEP_LIMIT")]
+    #[error("Step budget exhausted: actual={actual} > limit={limit}")]
+    StepLimitExceeded { limit: usize, actual: usize },
+
+    /// Recursion depth exhausted: the per-call AST depth tracker
+    /// (`MAX_RECURSION_DEPTH`) has been hit. Distinguishes a hostile
+    /// stack-blowing input from a legitimate `EvalError`.
+    #[classify(category = "validation", code = "EXPR:DEPTH_LIMIT")]
+    #[error("Recursion depth exhausted: actual={actual} >= limit={limit}")]
+    DepthExceeded { limit: usize, actual: usize },
 }
 
 impl ExpressionError {
@@ -180,6 +195,16 @@ impl ExpressionError {
         Self::Internal {
             message: message.into(),
         }
+    }
+
+    /// Create a step-limit-exceeded error.
+    pub fn step_limit_exceeded(limit: usize, actual: usize) -> Self {
+        Self::StepLimitExceeded { limit, actual }
+    }
+
+    /// Create a recursion-depth-exceeded error.
+    pub fn depth_exceeded(limit: usize, actual: usize) -> Self {
+        Self::DepthExceeded { limit, actual }
     }
 }
 
@@ -310,5 +335,45 @@ mod tests {
     fn test_retryable() {
         assert!(!ExpressionError::syntax_error("test").is_retryable());
         assert!(ExpressionError::internal("test").is_retryable());
+    }
+
+    #[test]
+    fn step_limit_variant_carries_limit_and_actual() {
+        // Downstream callers must be able to pattern-match StepLimitExceeded
+        // and read both numbers — that's the whole point of the typed variant.
+        let err = ExpressionError::step_limit_exceeded(100, 105);
+        match err {
+            ExpressionError::StepLimitExceeded { limit, actual } => {
+                assert_eq!(limit, 100);
+                assert_eq!(actual, 105);
+            },
+            other => panic!("expected StepLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn depth_exceeded_variant_carries_limit_and_actual() {
+        let err = ExpressionError::depth_exceeded(256, 256);
+        match err {
+            ExpressionError::DepthExceeded { limit, actual } => {
+                assert_eq!(limit, 256);
+                assert_eq!(actual, 256);
+            },
+            other => panic!("expected DepthExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn step_limit_and_depth_have_distinct_codes() {
+        // Classify codes are the contract for routing in upstream error
+        // pipelines — they must not collide with each other or with EVAL.
+        assert_eq!(
+            ExpressionError::step_limit_exceeded(1, 2).code(),
+            "EXPR:STEP_LIMIT"
+        );
+        assert_eq!(
+            ExpressionError::depth_exceeded(1, 2).code(),
+            "EXPR:DEPTH_LIMIT"
+        );
     }
 }

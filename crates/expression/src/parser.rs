@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use nebula_log::trace;
 use serde_json::Value;
 
 use crate::{
@@ -375,33 +376,31 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse function arguments with depth tracking
+    /// Parse function arguments with depth tracking.
+    ///
+    /// Lambda detection is a peek-and-restore: when an `Identifier =>` pair
+    /// appears at the head of an argument it produces an `Expr::Lambda`;
+    /// anything else (including `Identifier <op> ...`, where `<op>` is a
+    /// binary operator, postfix `.` / `[]`, or a function call) restores the
+    /// pre-peek position and falls through to the full expression parser so
+    /// every shape that `parse_expression_with_depth` accepts also works as a
+    /// function argument. The previous shortcut routed the bare identifier
+    /// through a postfix-only chain and dropped trailing binary operators,
+    /// causing `f(x + 1)` to be rejected after the identifier.
     fn parse_function_args_with_depth(&mut self, depth: usize) -> ExpressionResult<Vec<Expr>> {
         self.expect_token(TokenKind::LeftParen)?;
         let mut args = Vec::new();
 
         if self.current_token().kind != TokenKind::RightParen {
             loop {
-                // Check for lambda expression (param => body)
-                if let TokenKind::Identifier(param) = &self.current_token().kind {
-                    let param_name = Arc::from(*param);
-                    self.advance();
-                    if self.match_token(&TokenKind::Arrow) {
-                        // This is a lambda
-                        let body = Box::new(self.parse_expression_with_depth(depth + 1)?);
-                        args.push(Expr::Lambda {
-                            param: param_name,
-                            body,
-                        });
-                    } else {
-                        // Not a lambda, backtrack by parsing as identifier
-                        let expr = Expr::Identifier(param_name);
-                        // Continue parsing if there are more operations
-                        let full_expr =
-                            self.parse_postfix_from_primary_with_depth(expr, depth + 1)?;
-                        args.push(full_expr);
-                    }
+                let lambda_param = self.try_consume_lambda_param();
+
+                if let Some(param) = lambda_param {
+                    trace!(?param, "parsing lambda function arg");
+                    let body = Box::new(self.parse_expression_with_depth(depth + 1)?);
+                    args.push(Expr::Lambda { param, body });
                 } else {
+                    trace!("parsing expression function arg");
                     args.push(self.parse_expression_with_depth(depth + 1)?);
                 }
 
@@ -415,45 +414,25 @@ impl<'a> Parser<'a> {
         Ok(args)
     }
 
-    /// Parse postfix operations starting from a given primary expression with depth tracking
-    fn parse_postfix_from_primary_with_depth(
-        &mut self,
-        mut expr: Expr,
-        depth: usize,
-    ) -> ExpressionResult<Expr> {
-        loop {
-            match &self.current_token().kind {
-                TokenKind::Dot => {
-                    self.advance();
-                    let property = if let TokenKind::Identifier(name) = &self.current_token().kind {
-                        let name = Arc::from(*name);
-                        self.advance();
-                        name
-                    } else {
-                        return Err(ExpressionError::expression_parse_error(
-                            "Expected property name after .",
-                        ));
-                    };
-
-                    expr = Expr::PropertyAccess {
-                        object: Box::new(expr),
-                        property,
-                    };
-                },
-                TokenKind::LeftBracket => {
-                    self.advance();
-                    let index = self.parse_expression_with_depth(depth + 1)?;
-                    self.expect_token(TokenKind::RightBracket)?;
-
-                    expr = Expr::IndexAccess {
-                        object: Box::new(expr),
-                        index: Box::new(index),
-                    };
-                },
-                _ => break,
-            }
+    /// Peek for a lambda parameter (`Identifier =>`).
+    ///
+    /// Returns `Some(param)` and leaves `self.position` past the `=>` if a
+    /// lambda head is present. Returns `None` and restores the original
+    /// position otherwise — so the caller can hand control back to the full
+    /// expression parser without losing the consumed identifier.
+    fn try_consume_lambda_param(&mut self) -> Option<Arc<str>> {
+        let TokenKind::Identifier(param) = &self.current_token().kind else {
+            return None;
+        };
+        let saved_pos = self.position;
+        let param_name: Arc<str> = Arc::from(*param);
+        self.advance();
+        if self.match_token(&TokenKind::Arrow) {
+            Some(param_name)
+        } else {
+            self.position = saved_pos;
+            None
         }
-        Ok(expr)
     }
 
     /// Get the current token
@@ -604,5 +583,95 @@ mod tests {
             msg.contains("Unexpected trailing token"),
             "unexpected message: {msg}"
         );
+    }
+
+    #[test]
+    fn parse_function_arg_with_binary_op_after_identifier() {
+        // Regression: previously `f(x + 1)` failed at `expect_token(RightParen)` because the
+        // parser consumed `x` as an identifier-only arg and never re-entered the binary loop.
+        let expr = parse("f(x + 1)").unwrap();
+        let Expr::FunctionCall { name, args } = expr else {
+            panic!("expected FunctionCall, got {expr:?}");
+        };
+        assert_eq!(&*name, "f");
+        assert_eq!(args.len(), 1);
+        let Expr::Binary { op, left, right } = &args[0] else {
+            panic!("expected Binary arg, got {arg:?}", arg = args[0]);
+        };
+        assert!(matches!(op, BinaryOp::Add));
+        assert!(matches!(&**left, Expr::Identifier(n) if &**n == "x"));
+        assert!(matches!(&**right, Expr::Literal(Value::Number(_))));
+    }
+
+    #[test]
+    fn parse_function_arg_with_property_access_after_identifier() {
+        // `f(arr.length + 1)` — identifier with postfix chain, then binary.
+        let expr = parse("f(arr.length + 1)").unwrap();
+        let Expr::FunctionCall { args, .. } = expr else {
+            panic!("expected FunctionCall");
+        };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(
+            args[0],
+            Expr::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_lambda_with_arrow_still_works() {
+        // Regression guard: lambda detection must not regress.
+        let expr = parse("f(x => x + 1)").unwrap();
+        let Expr::FunctionCall { args, .. } = expr else {
+            panic!("expected FunctionCall");
+        };
+        assert_eq!(args.len(), 1);
+        let Expr::Lambda { param, body } = &args[0] else {
+            panic!("expected Lambda, got {arg:?}", arg = args[0]);
+        };
+        assert_eq!(&**param, "x");
+        assert!(matches!(
+            &**body,
+            Expr::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_function_arg_mixed_lambda_and_expression() {
+        // `reduce(arr, (acc, item) => acc + item, 0)` — but our lambda is single-param,
+        // so use the realistic shape: `filter(arr, x => x > 5)` followed by `f(arr, n + 1)`.
+        // Here we test multiple args where one is a lambda and another is a binary expr.
+        let expr = parse("reduce(arr, x => x + 1, 10 + count)").unwrap();
+        let Expr::FunctionCall { args, .. } = expr else {
+            panic!("expected FunctionCall");
+        };
+        assert_eq!(args.len(), 3);
+        assert!(matches!(args[0], Expr::Identifier(_)));
+        assert!(matches!(args[1], Expr::Lambda { .. }));
+        assert!(matches!(
+            args[2],
+            Expr::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_function_arg_identifier_with_index_then_binary() {
+        // `f(arr[0] + 1)` — identifier, postfix `[]`, then binary.
+        let expr = parse("f(arr[0] + 1)").unwrap();
+        let Expr::FunctionCall { args, .. } = expr else {
+            panic!("expected FunctionCall");
+        };
+        let Expr::Binary { left, .. } = &args[0] else {
+            panic!("expected Binary");
+        };
+        assert!(matches!(&**left, Expr::IndexAccess { .. }));
     }
 }

@@ -93,13 +93,34 @@ fn benchmark_evaluate_no_cache(c: &mut Criterion) {
         ("comparison", "10 > 5"),
         ("string_concat", r#""hello" + " " + "world""#),
         ("function_call", "uppercase('hello')"),
-        ("nested", "abs(min(-5, -10)) * 2"),
+        // `nested` (`abs(min(-5, -10)) * 2`) is intentionally absent on
+        // this PR. The pre-T1 parser on `main` failed to parse that
+        // shape with `"Expected ), found ("`, and the bench closure
+        // silently swallowed the `Err` — so the existing CodSpeed
+        // baseline for `nested` measures parse-error fast-path time
+        // (~13 µs), not real parse + eval. Comparing PR's working eval
+        // against that baseline produces a phantom 36% "regression".
+        // Removing the case lets CodSpeed treat it as `skipped`
+        // (baseline carried forward) on this PR; a follow-up commit
+        // after merge will re-add the case so a fresh, real baseline
+        // gets recorded against the fixed parser.
         ("conditional", "if true then 1 else 2"),
     ];
 
     for (name, expr) in test_cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), expr, |b, expr| {
-            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)));
+            // `.unwrap()` is intentional: a benchmark that silently swallows
+            // an `Err` measures only the error fast-path. Pre-T1, the
+            // parser failed on `abs(min(-5, -10))`-shape expressions
+            // ("Expected ), found ("), so this benchmark on the previous
+            // baseline was timing parse-error production rather than
+            // full parse + eval. Forcing a panic on Err keeps that class
+            // of false-positive baseline out of future runs.
+            b.iter(|| {
+                engine
+                    .evaluate(black_box(expr), black_box(&context))
+                    .unwrap()
+            });
         });
     }
 

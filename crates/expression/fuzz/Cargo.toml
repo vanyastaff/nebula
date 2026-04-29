@@ -1,0 +1,46 @@
+# Standalone manifest — NOT part of the main workspace.
+#
+# The root workspace excludes `crates/*/fuzz` so cargo-fuzz can manage
+# its own compilation profile independently and isn't pulled into
+# routine `cargo build --workspace` runs. The empty `[workspace]`
+# table below explicitly declares this manifest as its own root so
+# cargo doesn't get confused when run from inside the directory.
+[workspace]
+
+[package]
+name = "nebula-expression-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.95"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nebula-expression = { path = "..", features = ["full"] }
+
+[[bin]]
+name = "parse_expression"
+path = "fuzz_targets/parse_expression.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_template"
+path = "fuzz_targets/parse_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tokenize"
+path = "fuzz_targets/tokenize.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

@@ -7,7 +7,7 @@ use crate::{
     ExpressionError,
     context::EvaluationContext,
     error::{ExpressionErrorExt, ExpressionResult},
-    eval::Evaluator,
+    eval::BuiltinView,
 };
 
 /// Maximum JSON string length to parse (1MB) - DoS protection
@@ -16,12 +16,12 @@ const MAX_JSON_PARSE_LENGTH: usize = 1024 * 1024;
 /// Convert value to string
 pub fn to_string(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_string", args, 1)?;
 
-    if eval.strict_conversions_enabled(ctx)
+    if view.strict_conversions_enabled(ctx)
         && matches!(&args[0], Value::Array(_) | Value::Object(_))
     {
         return Err(ExpressionError::expression_type_error(
@@ -45,12 +45,12 @@ pub fn to_string(
 /// Convert value to number
 pub fn to_number(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_number", args, 1)?;
 
-    if eval.strict_conversions_enabled(ctx) && !args[0].is_number() {
+    if view.strict_conversions_enabled(ctx) && !args[0].is_number() {
         return Err(ExpressionError::expression_type_error(
             "number",
             crate::value_utils::value_type_name(&args[0]),
@@ -71,12 +71,12 @@ pub fn to_number(
 /// Convert value to boolean
 pub fn to_boolean(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_boolean", args, 1)?;
 
-    if eval.strict_conversions_enabled(ctx) && !args[0].is_boolean() {
+    if view.strict_conversions_enabled(ctx) && !args[0].is_boolean() {
         return Err(ExpressionError::expression_type_error(
             "boolean",
             crate::value_utils::value_type_name(&args[0]),
@@ -89,7 +89,7 @@ pub fn to_boolean(
 /// Convert value to JSON string
 pub fn to_json(
     args: &[Value],
-    _eval: &Evaluator,
+    _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("to_json", args, 1)?;
@@ -104,7 +104,7 @@ pub fn to_json(
 /// Parse JSON string to value
 pub fn parse_json(
     args: &[Value],
-    eval: &Evaluator,
+    view: BuiltinView<'_>,
     ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("parse_json", args, 1)?;
@@ -117,7 +117,7 @@ pub fn parse_json(
     })?;
 
     // DoS protection: limit JSON string size
-    let max_len = eval
+    let max_len = view
         .max_json_parse_length(ctx)
         .unwrap_or(MAX_JSON_PARSE_LENGTH);
     if json_str.len() > max_len {
@@ -132,7 +132,7 @@ pub fn parse_json(
         ExpressionError::expression_eval_error(format!("Failed to parse JSON: {e}"))
     })?;
 
-    if eval.strict_conversions_enabled(ctx) && !matches!(json, Value::Object(_) | Value::Array(_)) {
+    if view.strict_conversions_enabled(ctx) && !matches!(json, Value::Object(_) | Value::Array(_)) {
         return Err(ExpressionError::expression_type_error(
             "object or array",
             crate::value_utils::value_type_name(&json),
