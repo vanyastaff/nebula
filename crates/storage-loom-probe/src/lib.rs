@@ -29,6 +29,8 @@
 
 #![cfg(loom)]
 
+pub mod lease_handoff;
+
 use std::collections::HashMap;
 
 use loom::sync::Mutex;
