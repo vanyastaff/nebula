@@ -26,9 +26,11 @@
   via M0** (budget + workflow_input persistence shipped under #289 / #311;
   explicit-termination wiring landed in M0.3); **§10 conditional-flow
   correctness verified via M1** (skip-propagation tests + dead-field
-  cleanup, 2026-04-28); **§11.2 closed via M2.1 "remove from canon"**
-  (engine retry surface removed; retry confined to `nebula-resilience`
-  inside actions, 2026-04-28).
+  cleanup, 2026-04-28); **§11.2 closed via M2.1 layered-retry shipping**
+  (action-internal retry stays in `nebula-resilience`; engine-level node
+  retry now wired end-to-end via `NodeDefinition.retry_policy` →
+  `NodeExecutionState::next_attempt_at` → `WaitingRetry` parking →
+  frontier-loop re-dispatch, 2026-04-29).
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
 - **API layer** — routing wired; **5 sizable feature gaps** (auth backend,
@@ -136,23 +138,45 @@ verification + dead-field cleanup + doc audit.
 ### M2 — Engine retry semantics + node attempts
 
 - [x] **M2.1** ~~Decide engine-retry direction for 1.0~~ — **DONE** (closed
-      2026-04-28 via "remove from canon" exit). Engine no longer claims
-      node re-execution: `ActionResult::Retry` variant deleted, the
-      `unstable-retry-scheduler` feature removed (action + engine), the
-      synthetic-failure arm at `engine.rs:1939-2013` cut, the dead
-      `total_retries` budget counter (`ExecutionBudget::max_total_retries`,
-      `ExecutionState::total_retries`) removed along with
-      `NodeState::Retrying` (verified unreachable today). Canon §11.2 now
-      reads as "engine does not retry; retry surface lives in
-      `nebula-resilience` inside an action." Plan:
-      `.ai-factory/plans/claude-adoring-einstein-8e5dba.md`.
+      2026-04-29 via the layered-retry exit per ADR-0042). Two retry
+      surfaces, disjoint by trigger boundary:
+      - **Layer 1 — action-internal** (`nebula-resilience::retry_with`)
+        stays in action source code for in-call recoverable failures.
+      - **Layer 2 — engine-level node retry**
+        (`NodeDefinition.retry_policy`) is now real end-to-end:
+        `NodeExecutionState::next_attempt_at` parks the node in the
+        `NodeState::WaitingRetry` state (added in M2.1 T2), the
+        frontier loop's retry-pending min-heap re-dispatches at the
+        scheduled time, and `ExecutionBudget.max_total_retries`
+        provides a global cap (canon §11.2). Cancel/terminate/budget
+        guards drain parked retries to `Cancelled` without
+        re-dispatching.
+      - Sequencing across two PRs:
+        **PR #627 (foundation, 2026-04-28)** — T0 dropped
+        `ActionResult::Retry` + `unstable-retry-scheduler`; T1 landed
+        ADR-0042; T8 added shift-left `validate_workflow` for
+        `RetryConfig` (rejects `max_attempts=0`, non-finite multiplier,
+        `max_delay < initial_delay`, etc.).
+        **PR (this one, 2026-04-29)** — T2 added `next_attempt_at` +
+        `total_retries` + `WaitingRetry` (forward-compat via serde
+        defaults); T3 verified Layer-1 storage is JSONB-only so no
+        column migration is required; T4 wired engine retry decision
+        (per-node policy → workflow default → budget cap, with
+        `NodeAttempt` push for idempotency-key differentiation); T5
+        wired the frontier loop's `retry_heap` + `tokio::select!`
+        across join_set / cancel / wall-clock / retry-timer; T6
+        landed 9 integration tests covering core path + cancel +
+        terminate + budget + idempotency + per-node-vs-workflow
+        resolution + one-shot fallback. Total: ~146 unit-test deltas
+        + 9 integration tests, all green.
 - [ ] **M2.2** Verify `execution_leases` heartbeat enforcement across runner
       restarts (per `crates/execution/README.md:138`).
 
-**Exit:** retry path is either real (with tests) or removed from canon —
-**closed via the second exit (2026-04-28).** §11.2 now describes the
-engine as a non-retrying orchestrator and `nebula-resilience` as the only
-retry surface.
+**Exit:** retry path is real with tests — **closed 2026-04-29 via
+ADR-0042 layered-retry exit.** Workflow authors get the operator-level
+retry policy that canon §4.5 used to claim falsely; action authors keep
+`nebula-resilience::retry_with` for in-call retries. §11.2 now reads as
+"two layers, disjoint by trigger boundary: in-call vs post-finalisation."
 
 ### M3 — API surface completion
 

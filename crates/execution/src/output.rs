@@ -20,11 +20,25 @@ use serde::{Deserialize, Serialize};
 ///
 /// This type only exists after the engine has resolved any `Deferred`,
 /// `Streaming`, or `Collection` outputs from `ActionOutput`.
+///
+/// # Wire format
+///
+/// Internally tagged with `tag = "type"`. The `Inline` variant stores
+/// the payload behind an explicit `value` key so primitives
+/// (`"hello"`, `42`, `true`) round-trip correctly — newtype-wrapped
+/// `Value` cannot share a level with `type`, so the engine's first
+/// attempt to persist a string-output `NodeAttempt` would otherwise
+/// fail at `serde_json::to_value(&exec_state)` (ADR-0042 §M2.1 T2
+/// regression discovered during T4 wiring).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionOutput {
     /// Small data — stored inline as JSON value.
-    Inline(serde_json::Value),
+    Inline {
+        /// The payload itself. Any `serde_json::Value` (object, array,
+        /// string, number, bool, null) is supported.
+        value: serde_json::Value,
+    },
 
     /// Large data — stored in blob storage, referenced by key.
     BlobRef {
@@ -40,7 +54,7 @@ pub enum ExecutionOutput {
 impl ExecutionOutput {
     /// Create an inline output from a JSON value.
     pub fn inline(value: serde_json::Value) -> Self {
-        Self::Inline(value)
+        Self::Inline { value }
     }
 
     /// Create a blob reference.
@@ -54,7 +68,7 @@ impl ExecutionOutput {
 
     /// Returns `true` if this is an inline value.
     pub fn is_inline(&self) -> bool {
-        matches!(self, Self::Inline(_))
+        matches!(self, Self::Inline { .. })
     }
 
     /// Returns `true` if this is a blob reference.
@@ -65,7 +79,7 @@ impl ExecutionOutput {
     /// Extract the inline value, if present.
     pub fn as_inline(&self) -> Option<&serde_json::Value> {
         match self {
-            Self::Inline(v) => Some(v),
+            Self::Inline { value } => Some(value),
             Self::BlobRef { .. } => None,
         }
     }

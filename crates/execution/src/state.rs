@@ -12,10 +12,39 @@ use crate::{
     context::ExecutionBudget,
     error::ExecutionError,
     idempotency::IdempotencyKey,
-    output::NodeOutput,
+    output::{ExecutionOutput, NodeOutput},
     status::{ExecutionStatus, ExecutionTerminationReason},
     transition::{validate_execution_transition, validate_node_transition},
 };
+
+/// Outcome of a single node dispatch, recorded into
+/// `NodeExecutionState::attempts` by [`ExecutionState::record_node_attempt`].
+///
+/// The split is exhaustive — every dispatch either produced an
+/// `ActionResult` (success path) or surfaced an `EngineError` (failure
+/// path). Cancel-during-wait does **not** record an attempt: the
+/// previous failure that scheduled the retry is already captured;
+/// the cancel terminates the wait, not a fresh attempt.
+#[derive(Debug, Clone)]
+pub enum AttemptOutcome {
+    /// The action returned an `ActionResult` (any variant). Carries
+    /// the inline output value the engine staged into `outputs[node_key]`
+    /// and the byte size used for budget accounting.
+    Success {
+        /// Output payload of the attempt.
+        output: ExecutionOutput,
+        /// Output size in bytes (used for budget accounting and
+        /// post-mortem audit).
+        output_bytes: u64,
+    },
+    /// The action surfaced an error before producing a result.
+    /// Carries the error message for the audit log.
+    Failure {
+        /// Error string captured from the failing attempt
+        /// (`EngineError::to_string()`).
+        error: String,
+    },
+}
 
 /// The execution state of a single node within a running workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +68,24 @@ pub struct NodeExecutionState {
     /// Error message if the node failed.
     #[serde(default)]
     pub error_message: Option<String>,
+    /// Wall-clock instant at which the engine should dispatch the next
+    /// retry attempt for this node (ADR-0042 §Decision Layer 2).
+    ///
+    /// `Some(_)` is paired with `state == NodeState::WaitingRetry`: the
+    /// engine sets it when the retry policy still has budget after a
+    /// `Running → Failed` transition, then parks the node in
+    /// `WaitingRetry` and waits until this timestamp before re-driving
+    /// it through `Ready → Running`. On `Cancelled` (during the wait)
+    /// or on a successful retry, the field is **not** cleared — it
+    /// stays for audit/post-mortem so observers can see "the engine
+    /// scheduled a retry for `T` but the cancel/success raced first".
+    ///
+    /// Forward-compat: legacy persisted states that predate this field
+    /// deserialize as `None` (engine treats those nodes as not having
+    /// a pending retry — same as a freshly failed node with a
+    /// retry-exhausted policy).
+    #[serde(default)]
+    pub next_attempt_at: Option<DateTime<Utc>>,
 }
 
 impl NodeExecutionState {
@@ -53,6 +100,7 @@ impl NodeExecutionState {
             started_at: None,
             completed_at: None,
             error_message: None,
+            next_attempt_at: None,
         }
     }
 
@@ -87,16 +135,25 @@ impl NodeExecutionState {
     }
 
     /// Drive a node to `Running` for a fresh dispatch
-    /// (`Pending → Ready → Running`). Any other source state is an invalid
-    /// transition and returned as such — the engine must route the node
-    /// through the setup-failure path instead of silently spawning a task
-    /// on stale state (issue #300).
+    /// (`Pending → Ready → Running` for the first attempt;
+    /// `WaitingRetry → Ready → Running` for a scheduled retry per
+    /// ADR-0042; `Ready → Running` when the engine has already
+    /// promoted the node to `Ready` in a prior phase). Any other
+    /// source state is an invalid transition and returned as such —
+    /// the engine must route the node through the setup-failure path
+    /// instead of silently spawning a task on stale state (issue
+    /// #300).
     pub fn start_attempt(&mut self) -> Result<(), ExecutionError> {
         match self.state {
             NodeState::Pending => {
                 self.transition_to(NodeState::Ready)?;
                 self.transition_to(NodeState::Running)
             },
+            NodeState::WaitingRetry => {
+                self.transition_to(NodeState::Ready)?;
+                self.transition_to(NodeState::Running)
+            },
+            NodeState::Ready => self.transition_to(NodeState::Running),
             from => Err(ExecutionError::InvalidTransition {
                 from: from.to_string(),
                 to: NodeState::Running.to_string(),
@@ -173,6 +230,25 @@ pub struct ExecutionState {
     /// received an explicit termination.
     #[serde(default)]
     pub terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,
+    /// Total number of retry attempts dispatched across all nodes in
+    /// this execution. Bumped exactly once per scheduled retry
+    /// (post-decision, pre-checkpoint) per ADR-0042 §M2.1 T4.
+    ///
+    /// Paired with [`ExecutionBudget::max_total_retries`] as a global
+    /// cap that complements per-node `RetryConfig::max_attempts`. The
+    /// engine consults both on every failure; whichever caps first
+    /// wins (canon §11.2). A `None` budget cap means the global
+    /// counter is informational only — the engine still increments
+    /// it for observability.
+    ///
+    /// Forward-compat: legacy persisted states that predate this
+    /// field deserialize as `0` (engine treats the resumed execution
+    /// as having no prior retries on the books — slightly generous
+    /// vs the original run, but the per-node `attempt_count` on
+    /// `NodeExecutionState::attempts` keeps re-dispatch idempotency
+    /// honest).
+    #[serde(default)]
+    pub total_retries: u32,
 }
 
 impl ExecutionState {
@@ -200,7 +276,39 @@ impl ExecutionState {
             workflow_input: None,
             budget: None,
             terminated_by: None,
+            total_retries: 0,
         }
+    }
+
+    /// Record a scheduled retry attempt at the execution level.
+    ///
+    /// Called by the engine on every successful retry decision (per
+    /// ADR-0042 §M2.1 T4) so [`ExecutionBudget::max_total_retries`]
+    /// can be enforced as a global cap across all nodes. Bumps the
+    /// parent version so optimistic-concurrency readers observe the
+    /// state change (issue #255).
+    ///
+    /// The increment is always-on — even when the budget cap is
+    /// `None` — so the counter remains a faithful audit number
+    /// regardless of policy.
+    pub fn increment_total_retries(&mut self) {
+        self.total_retries = self.total_retries.saturating_add(1);
+        self.version += 1;
+        self.updated_at = Utc::now();
+    }
+
+    /// Returns `true` if this execution has hit its global retry cap
+    /// from [`ExecutionBudget::max_total_retries`].
+    ///
+    /// Returns `false` when the budget is absent (`None` cap) or when
+    /// the budget itself was never set on the execution — the engine
+    /// then defers solely to per-node `RetryConfig::max_attempts`.
+    #[must_use]
+    pub fn has_exhausted_retry_budget(&self) -> bool {
+        self.budget
+            .as_ref()
+            .and_then(|b| b.max_total_retries)
+            .is_some_and(|cap| self.total_retries >= cap)
     }
 
     /// Attach the original workflow-level input to this execution.
@@ -351,36 +459,113 @@ impl ExecutionState {
         self.node_states.get(&node_key)
     }
 
-    /// Build the idempotency key for a node at its current attempt
-    /// count. This is the single source of truth the engine uses on
-    /// both the check and mark sides of the canonical
-    /// (`check_idempotency` → act → `mark_idempotent`) flow, so that a
-    /// retried or restart-replayed attempt does not collide with a
-    /// previous attempt's persisted output (issue #266, canon §11.3).
+    /// Build the idempotency key for the **next** dispatch of a node.
+    ///
+    /// Per ADR-0042 §M2.1 T4 the engine pushes a [`NodeAttempt`] into
+    /// `node_states[*].attempts` after each finished attempt
+    /// (success or failure). The key for the next dispatch is therefore
+    /// `attempts.len() + 1`:
+    ///
+    /// - First dispatch (no prior attempts): `attempt = 1`.
+    /// - First retry (one prior failure pushed): `attempt = 2`.
+    /// - Second retry: `attempt = 3`. And so on.
+    ///
+    /// This is the single source of truth the engine uses on both the
+    /// check and mark sides of the canonical (`check_idempotency` →
+    /// act → `mark_idempotent`) flow, so that a retried or
+    /// restart-replayed attempt does not collide with a previous
+    /// attempt's persisted output (issue #266, canon §11.3).
     ///
     /// The execution id is taken from `self` — callers cannot pass a
-    /// mismatched id by accident.
-    ///
-    /// When the node's `attempts` is empty (the common case while
-    /// engine-level retry accounting is still `planned` per §11.2), the
-    /// key uses attempt number `1` — matching what `save_node_output`
-    /// records via `attempt_count().max(1)`. When the retry scheduler
-    /// lands and begins pushing [`NodeAttempt`]s into `attempts`, this
-    /// helper automatically starts differentiating attempts without any
-    /// engine change.
-    ///
-    /// If `node_key` is not present in `node_states` (a programming
-    /// error in practice — the engine only generates keys for nodes it
-    /// has dispatched), the helper also defaults to attempt number `1`,
-    /// mirroring the `.unwrap_or(1)` fallback `save_node_output` uses
-    /// for the same input.
+    /// mismatched id by accident. If `node_key` is not present in
+    /// `node_states` (a programming error in practice — the engine
+    /// only generates keys for nodes it has dispatched), the helper
+    /// defaults to attempt number `1`.
     #[must_use]
     pub fn idempotency_key_for_node(&self, node_key: NodeKey) -> IdempotencyKey {
         let attempt = self
             .node_states
             .get(&node_key)
-            .map_or(1, |ns| ns.attempt_count().max(1) as u32);
+            .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
         IdempotencyKey::for_attempt(self.execution_id, node_key, attempt)
+    }
+
+    /// Push a [`NodeAttempt`] outcome onto the node's history and
+    /// bump the parent version (issue #255).
+    ///
+    /// Called by the engine's frontier loop **after** the action's
+    /// dispatch resolves — once on success, once on failure — so the
+    /// canonical attempt count drives both `idempotency_key_for_node`
+    /// (next dispatch) and the retry decision (per ADR-0042 §M2.1
+    /// T4). The attempt number is derived from the pre-push
+    /// `attempts.len()` so it stays in lockstep with the
+    /// just-dispatched key.
+    ///
+    /// Returns the recorded attempt number (1-indexed). Returns
+    /// [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
+    pub fn record_node_attempt(
+        &mut self,
+        node_key: NodeKey,
+        idempotency_key: IdempotencyKey,
+        outcome: AttemptOutcome,
+    ) -> Result<u32, ExecutionError> {
+        let ns = self
+            .node_states
+            .get_mut(&node_key)
+            .ok_or_else(|| ExecutionError::NodeNotFound(node_key.clone()))?;
+        let attempt_number = (ns.attempts.len() as u32).saturating_add(1);
+        let mut attempt = NodeAttempt::new(attempt_number, idempotency_key);
+        match outcome {
+            AttemptOutcome::Success {
+                output,
+                output_bytes,
+            } => {
+                attempt.complete_success(output, output_bytes);
+            },
+            AttemptOutcome::Failure { error } => {
+                attempt.complete_failure(error);
+            },
+        }
+        ns.attempts.push(attempt);
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(attempt_number)
+    }
+
+    /// Schedule the next retry attempt for a node per ADR-0042 §M2.1
+    /// T4.
+    ///
+    /// Promotes a `Failed` node to `WaitingRetry`, stamps the wall-clock
+    /// `next_attempt_at`, and increments the global retry counter. The
+    /// caller is responsible for the budget + per-node policy decision
+    /// — this helper is a pure mutation primitive; it does not
+    /// re-evaluate whether the retry is allowed.
+    ///
+    /// On success, both the per-node transition (`Failed → WaitingRetry`)
+    /// and the global counter bump are reflected in `version`. On
+    /// `Err`, the state is left untouched so the caller can route
+    /// through the regular failure path without leaking an in-memory
+    /// half-applied retry.
+    ///
+    /// # Errors
+    /// - [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
+    /// - [`ExecutionError::InvalidTransition`] if the node is not in `Failed` (the engine must only
+    ///   call this after `mark_node_failed`).
+    pub fn schedule_node_retry(
+        &mut self,
+        node_key: NodeKey,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<(), ExecutionError> {
+        self.transition_node(node_key.clone(), NodeState::WaitingRetry)?;
+        if let Some(ns) = self.node_states.get_mut(&node_key) {
+            ns.next_attempt_at = Some(next_attempt_at);
+        }
+        // total_retries bump: separate version step is acceptable —
+        // both bumps land on the same `checkpoint_node` write.
+        self.total_retries = self.total_retries.saturating_add(1);
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
     }
 
     /// Set a node's execution state directly.
@@ -759,6 +944,11 @@ mod tests {
         assert!(ns.started_at.is_some());
     }
 
+    /// ADR-0042 — engine retries via the `Failed → WaitingRetry` edge,
+    /// not directly from `Failed`. A `start_attempt` on `Failed` is
+    /// still rejected (the engine must first promote the node to
+    /// `WaitingRetry` via the retry-decision path); but
+    /// `WaitingRetry` itself is now a legal source.
     #[test]
     fn start_attempt_rejects_failed() {
         let mut ns = NodeExecutionState::new();
@@ -767,9 +957,24 @@ mod tests {
         ns.transition_to(NodeState::Failed).unwrap();
         let err = ns
             .start_attempt()
-            .expect_err("failed nodes cannot start a fresh attempt — engine does not retry");
+            .expect_err("Failed must promote to WaitingRetry before re-dispatch");
         assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
         assert_eq!(ns.state, NodeState::Failed, "state must not move on error");
+    }
+
+    /// ADR-0042 — `WaitingRetry → Ready → Running` is the retry
+    /// re-dispatch path. `start_attempt` honors it.
+    #[test]
+    fn start_attempt_promotes_waiting_retry() {
+        let mut ns = NodeExecutionState::new();
+        ns.transition_to(NodeState::Ready).unwrap();
+        ns.transition_to(NodeState::Running).unwrap();
+        ns.transition_to(NodeState::Failed).unwrap();
+        ns.transition_to(NodeState::WaitingRetry).unwrap();
+
+        ns.start_attempt()
+            .expect("WaitingRetry must be a legal start_attempt source per ADR-0042");
+        assert_eq!(ns.state, NodeState::Running);
     }
 
     #[test]
@@ -897,10 +1102,11 @@ mod tests {
         assert_eq!(back.node_states.len(), state.node_states.len());
     }
 
-    // Regression for #266: idempotency key must reflect the node's real
-    // attempt count, not a hardcoded ":1". The engine calls this helper on
-    // both check and record paths so that cross-restart replay does not
-    // collapse all attempts into one key.
+    // Regression for #266 + ADR-0042 §M2.1 T4: the idempotency key is
+    // for the **next** dispatch — `attempts.len() + 1`. Push-on-result
+    // semantics in the engine guarantees that a retried or
+    // restart-replayed attempt does not collide with a previous
+    // attempt's persisted output.
     #[test]
     fn idempotency_key_for_node_uses_attempt_count() {
         use crate::{attempt::NodeAttempt, idempotency::IdempotencyKey};
@@ -912,23 +1118,146 @@ mod tests {
         assert_eq!(
             fresh,
             IdempotencyKey::for_attempt(eid, n1.clone(), 1),
-            "a node with no attempts should key on attempt=1 (first dispatch)"
+            "first dispatch (no prior attempts) keys on attempt=1"
         );
 
         let ns = state.node_states.get_mut(&n1).unwrap();
         let seed_key = IdempotencyKey::for_attempt(eid, n1.clone(), 1);
-        ns.attempts.push(NodeAttempt::new(0, seed_key));
+        ns.attempts.push(NodeAttempt::new(1, seed_key));
+
+        let after_one = state.idempotency_key_for_node(n1.clone());
+        assert_eq!(
+            after_one,
+            IdempotencyKey::for_attempt(eid, n1.clone(), 2),
+            "after one prior attempt the next dispatch keys on attempt=2"
+        );
+
+        let ns = state.node_states.get_mut(&n1).unwrap();
         ns.attempts.push(NodeAttempt::new(
-            1,
+            2,
             IdempotencyKey::for_attempt(eid, n1.clone(), 2),
         ));
 
         let after_two = state.idempotency_key_for_node(n1.clone());
         assert_eq!(
             after_two,
-            IdempotencyKey::for_attempt(eid, n1, 2),
-            "a node with two prior attempts should key on attempt=2"
+            IdempotencyKey::for_attempt(eid, n1, 3),
+            "after two prior attempts the next dispatch keys on attempt=3"
         );
+    }
+
+    /// ADR-0042 §M2.1 T4 — `record_node_attempt` pushes a sequential
+    /// attempt with the right number, captures the outcome, and bumps
+    /// the parent version (issue #255).
+    #[test]
+    fn record_node_attempt_appends_with_sequential_number() {
+        use crate::output::ExecutionOutput;
+
+        let (mut state, n1, _n2) = make_state();
+        let eid = state.execution_id;
+        let v0 = state.version;
+
+        let key1 = IdempotencyKey::for_attempt(eid, n1.clone(), 1);
+        let n = state
+            .record_node_attempt(
+                n1.clone(),
+                key1,
+                AttemptOutcome::Failure {
+                    error: "boom".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(n, 1, "first attempt is numbered 1");
+        assert_eq!(state.version, v0 + 1);
+
+        let ns = state.node_state(n1.clone()).unwrap();
+        assert_eq!(ns.attempts.len(), 1);
+        assert_eq!(ns.attempts[0].attempt_number, 1);
+        assert!(ns.attempts[0].is_failure());
+
+        let key2 = IdempotencyKey::for_attempt(eid, n1.clone(), 2);
+        let n = state
+            .record_node_attempt(
+                n1.clone(),
+                key2,
+                AttemptOutcome::Success {
+                    output: ExecutionOutput::inline(serde_json::json!({"ok": true})),
+                    output_bytes: 12,
+                },
+            )
+            .unwrap();
+        assert_eq!(n, 2, "second attempt is numbered 2");
+        assert_eq!(state.version, v0 + 2);
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.attempts.len(), 2);
+        assert!(ns.attempts[1].is_success());
+    }
+
+    /// `record_node_attempt` rejects unknown nodes — the engine must
+    /// surface the programming error rather than silently lose the
+    /// attempt record.
+    #[test]
+    fn record_node_attempt_unknown_node_is_error() {
+        let (mut state, _n1, _n2) = make_state();
+        let eid = state.execution_id;
+        let ghost = node_key!("ghost");
+        let key = IdempotencyKey::for_attempt(eid, ghost.clone(), 1);
+        let err = state
+            .record_node_attempt(
+                ghost,
+                key,
+                AttemptOutcome::Failure {
+                    error: "boom".to_owned(),
+                },
+            )
+            .expect_err("unknown node must error");
+        assert!(matches!(err, ExecutionError::NodeNotFound(_)));
+    }
+
+    /// ADR-0042 §M2.1 T4 — `schedule_node_retry` promotes Failed →
+    /// WaitingRetry, stamps `next_attempt_at`, and increments
+    /// `total_retries`. All three observable effects move atomically
+    /// (single `checkpoint_node` covers the version bumps).
+    #[test]
+    fn schedule_node_retry_promotes_failed_and_increments_total_retries() {
+        let (mut state, n1, _n2) = make_state();
+
+        // Drive n1 to Failed via the real path.
+        state.start_node_attempt(n1.clone()).unwrap();
+        state
+            .transition_node(n1.clone(), NodeState::Failed)
+            .unwrap();
+        let v_before = state.version;
+        let total_before = state.total_retries;
+        let when = Utc::now() + chrono::Duration::milliseconds(500);
+
+        state.schedule_node_retry(n1.clone(), when).unwrap();
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::WaitingRetry);
+        assert_eq!(ns.next_attempt_at, Some(when));
+        assert_eq!(state.total_retries, total_before + 1);
+        // transition_node + total_retries bump = 2 version moves on
+        // the same `checkpoint_node` write.
+        assert_eq!(state.version, v_before + 2);
+    }
+
+    /// `schedule_node_retry` rejects nodes that are not in `Failed` —
+    /// e.g. `Running` (race between failure and a stale call).
+    #[test]
+    fn schedule_node_retry_rejects_non_failed() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+        // n1 is now Running, not Failed.
+        let when = Utc::now();
+        let err = state
+            .schedule_node_retry(n1.clone(), when)
+            .expect_err("Running → WaitingRetry must be rejected");
+        assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
+        // State unchanged.
+        assert_eq!(state.node_state(n1).unwrap().state, NodeState::Running);
+        assert_eq!(state.total_retries, 0);
     }
 
     #[test]
@@ -1128,6 +1457,108 @@ mod tests {
             "clear_terminated_by must NOT bump version — readers keying on \
              the set's bump should never have observed the intermediate state"
         );
+    }
+
+    /// ADR-0042 §M2.1 T2 — `next_attempt_at` must round-trip via
+    /// serde so a resumed engine picks up scheduled retries at their
+    /// declared time.
+    #[test]
+    fn next_attempt_at_roundtrip_via_serde() {
+        let mut ns = NodeExecutionState::new();
+        let when = Utc::now();
+        ns.next_attempt_at = Some(when);
+        let json = serde_json::to_string(&ns).unwrap();
+        let back: NodeExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.next_attempt_at,
+            Some(when),
+            "next_attempt_at must survive serde roundtrip"
+        );
+    }
+
+    /// Forward-compat: legacy `NodeExecutionState` JSON that predates
+    /// `next_attempt_at` deserializes as `None`. Engine then treats
+    /// the node as not having a pending retry.
+    #[test]
+    fn next_attempt_at_missing_field_deserializes_as_none() {
+        let legacy = serde_json::json!({
+            "state": "pending",
+            "attempts": [],
+        });
+        let ns: NodeExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(ns.next_attempt_at.is_none());
+    }
+
+    /// ADR-0042 §M2.1 T2 — `total_retries` round-trips and starts
+    /// at zero.
+    #[test]
+    fn total_retries_roundtrip_and_default() {
+        let (state, _n1, _n2) = make_state();
+        assert_eq!(state.total_retries, 0);
+
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.total_retries, 0);
+    }
+
+    /// Forward-compat: legacy `ExecutionState` JSON that predates
+    /// `total_retries` deserializes as `0`.
+    #[test]
+    fn total_retries_missing_field_deserializes_as_zero() {
+        let legacy = serde_json::json!({
+            "execution_id": ExecutionId::new(),
+            "workflow_id": WorkflowId::new(),
+            "status": "created",
+            "node_states": {},
+            "version": 0,
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
+            "total_output_bytes": 0,
+        });
+        let state: ExecutionState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(state.total_retries, 0);
+    }
+
+    /// ADR-0042 §M2.1 T4 — `increment_total_retries` bumps both the
+    /// counter and the parent execution version (issue #255).
+    #[test]
+    fn increment_total_retries_bumps_version() {
+        let (mut state, _n1, _n2) = make_state();
+        let v0 = state.version;
+        state.increment_total_retries();
+        assert_eq!(state.total_retries, 1);
+        assert_eq!(state.version, v0 + 1);
+        state.increment_total_retries();
+        assert_eq!(state.total_retries, 2);
+        assert_eq!(state.version, v0 + 2);
+    }
+
+    /// `has_exhausted_retry_budget` reflects the cap when set, and
+    /// returns `false` when no cap is configured.
+    #[test]
+    fn has_exhausted_retry_budget_respects_cap() {
+        let (mut state, _n1, _n2) = make_state();
+
+        // No budget set — never exhausted.
+        assert!(!state.has_exhausted_retry_budget());
+
+        // Budget without cap — still not exhausted.
+        state.set_budget(ExecutionBudget::default());
+        assert!(!state.has_exhausted_retry_budget());
+
+        // Cap = 2: counter 0 and 1 are under cap; 2 is exhausted.
+        state.set_budget(ExecutionBudget::default().with_max_total_retries(2));
+        assert!(!state.has_exhausted_retry_budget());
+        state.increment_total_retries();
+        assert!(!state.has_exhausted_retry_budget());
+        state.increment_total_retries();
+        assert!(state.has_exhausted_retry_budget());
+
+        // Cap = 0 disables retry entirely from the start.
+        let mut zero_cap =
+            ExecutionState::new(ExecutionId::new(), WorkflowId::new(), &[node_key!("only")]);
+        zero_cap.set_budget(ExecutionBudget::default().with_max_total_retries(0));
+        assert!(zero_cap.has_exhausted_retry_budget());
     }
 
     /// ROADMAP §M0.3 — successful set bumps `version` and

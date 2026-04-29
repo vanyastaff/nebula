@@ -88,7 +88,13 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 ## Non-goals
 
 - Not the execution state machine — see `nebula-execution` (`ExecutionStatus`, `ExecutionPlan`, CAS transitions).
-- Not a retry pipeline — retry around outbound calls uses `nebula-resilience` internally to an action, not an action framework concern.
+- Not the only retry surface — per ADR-0042 the engine carries an
+  operator-declared retry layer (`NodeDefinition.retry_policy`) that
+  fires AFTER the action returns its final outcome. Action authors keep
+  using `nebula-resilience::retry_with` internally for in-call retry;
+  workflow authors declare engine-level retry at the node level. The two
+  layers compose because they trigger at different boundaries (in-call
+  vs. post-finalisation).
 - Not the sandbox driver — process isolation, capability enforcement, OS-level hardening are in `nebula-sandbox`.
 - Not a schema system — `ActionMetadata.parameters` holds a `ValidSchema` from `nebula-schema`; field definitions and validation rules live there.
 - Not WASM — see canon §12.6.
