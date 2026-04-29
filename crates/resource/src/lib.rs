@@ -50,6 +50,7 @@ pub mod registry;
 pub mod release_queue;
 pub mod reload;
 pub mod resource;
+pub mod resource_ref;
 pub mod runtime;
 pub mod state;
 pub mod topology;
@@ -96,6 +97,7 @@ pub use reload::ReloadOutcome;
 pub use resource::{
     AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
 };
+pub use resource_ref::ResourceRef;
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{

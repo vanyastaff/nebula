@@ -76,6 +76,8 @@ pub mod secrets;
 mod accessor;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
+/// Typed credential reference — `CredentialRef<C>` slot-binding handle (ADR-0043 §9).
+mod credential_ref;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
@@ -139,6 +141,7 @@ pub use contract::{
     StaticResolveResult, TestResult, UserInput,
 };
 // Built-in credential implementations
+pub use credential_ref::CredentialRef;
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
 };

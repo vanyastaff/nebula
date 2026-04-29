@@ -68,6 +68,8 @@ pub mod port;
 pub mod prelude;
 /// [`ResourceAction`] DX trait, [`ResourceHandler`] dyn contract, and adapter.
 pub mod resource;
+/// `ResourceProduces<R>` — Output marker for `ResourceAction` (ADR-0043 §4 Variant A).
+pub mod resource_produces;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
 /// [`StatefulAction`] DX trait, [`StatefulHandler`] dyn contract, adapter,
@@ -111,7 +113,8 @@ pub use nebula_core::{
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
-pub use nebula_credential::CredentialGuard;
+pub use nebula_credential::{CredentialGuard, CredentialRef};
+pub use nebula_resource::ResourceRef;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
@@ -125,6 +128,7 @@ pub use poll::{
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
+pub use resource_produces::ResourceProduces;
 pub use result::{
     ActionResult, BranchKey, BreakReason, PortKey, TerminationCode, TerminationReason,
     WaitCondition,
