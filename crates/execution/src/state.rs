@@ -501,23 +501,33 @@ impl ExecutionState {
     /// dispatch resolves — once on success, once on failure — so the
     /// canonical attempt count drives both `idempotency_key_for_node`
     /// (next dispatch) and the retry decision (per ADR-0042 §M2.1
-    /// T4). The attempt number is derived from the pre-push
-    /// `attempts.len()` so it stays in lockstep with the
-    /// just-dispatched key.
+    /// T4).
+    ///
+    /// The idempotency key is **derived internally** from the just-
+    /// finished attempt number (`attempts.len() + 1`) so a stale
+    /// caller cannot persist `attempt_number = N` against an
+    /// `attempt-(N-1)` key — that mismatch would silently corrupt
+    /// the retry/idempotency audit trail this API is supposed to
+    /// own (canon §11.3, ADR-0042 §M2.1 T4).
     ///
     /// Returns the recorded attempt number (1-indexed). Returns
     /// [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
     pub fn record_node_attempt(
         &mut self,
         node_key: NodeKey,
-        idempotency_key: IdempotencyKey,
         outcome: AttemptOutcome,
     ) -> Result<u32, ExecutionError> {
+        let execution_id = self.execution_id;
         let ns = self
             .node_states
             .get_mut(&node_key)
             .ok_or_else(|| ExecutionError::NodeNotFound(node_key.clone()))?;
         let attempt_number = (ns.attempts.len() as u32).saturating_add(1);
+        // Single source of truth for the attempt-N key — engine code
+        // must NOT pass its own pre-computed key here, otherwise the
+        // attempt history and the idempotency-key store can drift.
+        let idempotency_key =
+            IdempotencyKey::for_attempt(execution_id, node_key.clone(), attempt_number);
         let mut attempt = NodeAttempt::new(attempt_number, idempotency_key);
         match outcome {
             AttemptOutcome::Success {
@@ -561,9 +571,21 @@ impl ExecutionState {
         next_attempt_at: DateTime<Utc>,
     ) -> Result<(), ExecutionError> {
         self.transition_node(node_key.clone(), NodeState::WaitingRetry)?;
-        if let Some(ns) = self.node_states.get_mut(&node_key) {
-            ns.next_attempt_at = Some(next_attempt_at);
-        }
+        // `Failed → WaitingRetry` puts the node back in flight. Stale
+        // failure-only metadata from the just-finished attempt
+        // (`error_message`, `completed_at`) must be cleared so a later
+        // successful attempt does not leave contradictory persisted
+        // state — e.g., `state == Completed` paired with the
+        // pre-retry `error_message`. Per-attempt failure history
+        // lives on `attempts` (the failure record was pushed before
+        // this call).
+        let ns = self
+            .node_states
+            .get_mut(&node_key)
+            .ok_or(ExecutionError::NodeNotFound(node_key))?;
+        ns.next_attempt_at = Some(next_attempt_at);
+        ns.error_message = None;
+        ns.completed_at = None;
         // total_retries bump: separate version step is acceptable —
         // both bumps land on the same `checkpoint_node` write.
         self.total_retries = self.total_retries.saturating_add(1);
@@ -1161,11 +1183,9 @@ mod tests {
         let eid = state.execution_id;
         let v0 = state.version;
 
-        let key1 = IdempotencyKey::for_attempt(eid, n1.clone(), 1);
         let n = state
             .record_node_attempt(
                 n1.clone(),
-                key1,
                 AttemptOutcome::Failure {
                     error: "boom".to_owned(),
                 },
@@ -1177,13 +1197,16 @@ mod tests {
         let ns = state.node_state(n1.clone()).unwrap();
         assert_eq!(ns.attempts.len(), 1);
         assert_eq!(ns.attempts[0].attempt_number, 1);
+        assert_eq!(
+            ns.attempts[0].idempotency_key,
+            IdempotencyKey::for_attempt(eid, n1.clone(), 1),
+            "internally minted key must match attempt number"
+        );
         assert!(ns.attempts[0].is_failure());
 
-        let key2 = IdempotencyKey::for_attempt(eid, n1.clone(), 2);
         let n = state
             .record_node_attempt(
                 n1.clone(),
-                key2,
                 AttemptOutcome::Success {
                     output: ExecutionOutput::inline(serde_json::json!({"ok": true})),
                     output_bytes: 12,
@@ -1193,8 +1216,13 @@ mod tests {
         assert_eq!(n, 2, "second attempt is numbered 2");
         assert_eq!(state.version, v0 + 2);
 
-        let ns = state.node_state(n1).unwrap();
+        let ns = state.node_state(n1.clone()).unwrap();
         assert_eq!(ns.attempts.len(), 2);
+        assert_eq!(
+            ns.attempts[1].idempotency_key,
+            IdempotencyKey::for_attempt(eid, n1, 2),
+            "second attempt key carries attempt-2"
+        );
         assert!(ns.attempts[1].is_success());
     }
 
@@ -1204,13 +1232,10 @@ mod tests {
     #[test]
     fn record_node_attempt_unknown_node_is_error() {
         let (mut state, _n1, _n2) = make_state();
-        let eid = state.execution_id;
         let ghost = node_key!("ghost");
-        let key = IdempotencyKey::for_attempt(eid, ghost.clone(), 1);
         let err = state
             .record_node_attempt(
                 ghost,
-                key,
                 AttemptOutcome::Failure {
                     error: "boom".to_owned(),
                 },
@@ -1245,6 +1270,44 @@ mod tests {
         // transition_node + total_retries bump = 2 version moves on
         // the same `checkpoint_node` write.
         assert_eq!(state.version, v_before + 2);
+    }
+
+    /// CodeRabbit review for PR #628 — `schedule_node_retry` must
+    /// scrub failure-only metadata (`error_message`, `completed_at`)
+    /// when reactivating a `Failed` node. Otherwise a later
+    /// successful retry would leave persisted state where
+    /// `state == Completed` carries the pre-retry error message —
+    /// post-mortem readers would misattribute the success.
+    #[test]
+    fn schedule_node_retry_clears_failure_metadata() {
+        let (mut state, n1, _n2) = make_state();
+        state.start_node_attempt(n1.clone()).unwrap();
+        state
+            .transition_node(n1.clone(), NodeState::Failed)
+            .unwrap();
+        // Stamp failure-only fields the way `mark_node_failed` /
+        // `transition_to(Failed)` would.
+        if let Some(ns) = state.node_states.get_mut(&n1) {
+            ns.error_message = Some("boom".to_owned());
+            // `completed_at` is set by `transition_to(Failed)` so
+            // we expect it to already be `Some` here.
+            assert!(ns.completed_at.is_some());
+        }
+        let when = Utc::now() + chrono::Duration::milliseconds(500);
+
+        state.schedule_node_retry(n1.clone(), when).unwrap();
+
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::WaitingRetry);
+        assert_eq!(ns.next_attempt_at, Some(when));
+        assert!(
+            ns.error_message.is_none(),
+            "stale error_message must be cleared on retry promotion"
+        );
+        assert!(
+            ns.completed_at.is_none(),
+            "stale completed_at must be cleared on retry promotion"
+        );
     }
 
     /// `schedule_node_retry` rejects nodes that are not in `Failed` —

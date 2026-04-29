@@ -1363,10 +1363,19 @@ impl WorkflowEngine {
                 );
             }
         }
+        // Reset non-terminal nodes that crashed mid-attempt back to
+        // `Pending` so the frontier loop can re-dispatch them. Retry
+        // waits are different — a `WaitingRetry` node carries a
+        // durable `next_attempt_at` that the frontier loop's
+        // `retry_heap` consumes via the Phase-0 drain. Resetting it
+        // would lose the persisted backoff and re-dispatch the node
+        // immediately on resume, defeating ADR-0042 §M2.1 T2's
+        // resume guarantee. (Crashed `Running` attempts have no
+        // such timestamp and must be re-driven from `Pending`.)
         let non_terminal: Vec<NodeKey> = exec_state
             .node_states
             .iter()
-            .filter(|(_, ns)| !ns.state.is_terminal())
+            .filter(|(_, ns)| !ns.state.is_terminal() && ns.state != NodeState::WaitingRetry)
             .map(|(id, _)| id.clone())
             .collect();
         for id in non_terminal {
@@ -1438,6 +1447,14 @@ impl WorkflowEngine {
         // evaluate edge conditions normally once the node is dispatched.
         for (node_key, ns) in &exec_state.node_states {
             if ns.state.is_terminal() {
+                continue;
+            }
+            // ADR-0042 §M2.1 T5 — `WaitingRetry` nodes belong to the
+            // retry-pending heap, not to the seed/ready_queue. The
+            // frontier loop seeds the heap from `WaitingRetry` nodes
+            // separately; including them here would re-dispatch
+            // immediately and bypass the persisted backoff timer.
+            if ns.state == NodeState::WaitingRetry {
                 continue;
             }
             let incoming = graph.incoming_connections(node_key.clone());
@@ -1935,10 +1952,8 @@ impl WorkflowEngine {
                 // running `compute_retry_decision` against a stale
                 // `attempts.len()` — that would let `max_attempts`
                 // be bypassed and risk an idempotency-key collision.
-                let setup_idem_key = exec_state.idempotency_key_for_node(node_key.clone());
                 let setup_attempt_recorded = match exec_state.record_node_attempt(
                     node_key.clone(),
-                    setup_idem_key,
                     AttemptOutcome::Failure {
                         error: err_msg.clone(),
                     },
@@ -2243,13 +2258,6 @@ impl WorkflowEngine {
                             serde_json::to_string(output.value()).map_or(0, |s| s.len() as u64);
                         total_output_bytes.fetch_add(output_bytes, Ordering::Relaxed);
                     }
-                    // Capture the current dispatch's idempotency key
-                    // BEFORE we push the attempt record (the push
-                    // would otherwise advance the next-dispatch key
-                    // and break record_idempotency / record_node_result
-                    // which want the just-finished attempt's key).
-                    let success_idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-
                     // Capture an explicit-termination signal BEFORE the
                     // checkpoint so that the same CAS-write durably
                     // persists `terminated_by` (canon §11.5; ROADMAP
@@ -2328,10 +2336,11 @@ impl WorkflowEngine {
                     //
                     // ADR-0042 §M2.1 T4 — `attempt_count + 1` is the
                     // current dispatch's attempt number BEFORE we push
-                    // the success record below; same number that
-                    // `success_idem_key` was minted against so the
-                    // idempotency-key store and the per-attempt result
-                    // store stay in lockstep.
+                    // the success record below; same formula as
+                    // `idempotency_key_for_node` and the
+                    // `record_node_attempt` internal mint, so the
+                    // idempotency-key store, per-attempt result store,
+                    // and attempt-history row all carry the same N.
                     let attempt = exec_state
                         .node_states
                         .get(&node_key)
@@ -2347,13 +2356,16 @@ impl WorkflowEngine {
                     // ADR-0042 §M2.1 T4 — push the success attempt
                     // record AFTER record_idempotency / record_node_result
                     // so those helpers see the just-finished attempt's
-                    // key (push advances the next-dispatch key).
+                    // key (push advances the next-dispatch key). The
+                    // attempt's idempotency key is derived inside
+                    // `record_node_attempt` from the new attempt
+                    // number, so engine code cannot drift the audit
+                    // row out of step with the persisted key.
                     let success_payload = outputs
                         .get(&node_key)
                         .map_or_else(|| serde_json::Value::Null, |v| v.value().clone());
                     if let Err(e) = exec_state.record_node_attempt(
                         node_key.clone(),
-                        success_idem_key,
                         AttemptOutcome::Success {
                             output: ExecutionOutput::inline(success_payload),
                             output_bytes,
@@ -2449,10 +2461,8 @@ impl WorkflowEngine {
                     // `attempts.len()` — that path could bypass
                     // `max_attempts` (loop forever when no global cap
                     // is set) or collide idempotency keys on resume.
-                    let failure_idem_key = exec_state.idempotency_key_for_node(node_key.clone());
                     let failure_attempt_recorded = match exec_state.record_node_attempt(
                         node_key.clone(),
-                        failure_idem_key,
                         AttemptOutcome::Failure {
                             error: err_str.clone(),
                         },
@@ -3093,10 +3103,19 @@ impl WorkflowEngine {
         // losing one means a downstream consumer may reconstruct a
         // node as "ran and returned nothing" after restart (§11.5).
         if let Some(output) = outputs.get(&node_key) {
+            // ADR-0042 §M2.1 T4 — `attempt_count + 1` is the
+            // current dispatch's attempt number BEFORE the success
+            // record gets pushed (push happens after this checkpoint).
+            // Same formula as `idempotency_key_for_node` so
+            // `save_node_output`, `record_node_result`, and
+            // `record_node_attempt` all stay in lockstep — the
+            // pre-fix formula `attempt_count().max(1)` produced
+            // attempt N-1 here while the result/history rows used
+            // attempt N, desynchronising the audit trail on retries.
             let attempt = exec_state
                 .node_states
                 .get(&node_key)
-                .map_or(1, |ns| ns.attempt_count().max(1) as u32);
+                .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
             if let Err(e) = repo
                 .save_node_output(
                     execution_id,

@@ -265,20 +265,23 @@ async fn cancel_during_retry_wait() {
     });
 
     // Wait for the engine to schedule a retry (proves the node is
-    // parked in WaitingRetry), then cancel.
-    let mut execution_id = None;
-    while execution_id.is_none() {
-        match events_rx.recv().await {
-            Some(ExecutionEvent::NodeRetryScheduled {
-                execution_id: id, ..
-            }) => {
-                execution_id = Some(id);
-            },
-            Some(_) => continue,
-            None => panic!("event bus closed before NodeRetryScheduled"),
+    // parked in WaitingRetry), then cancel. Bound the wait so a
+    // missing `NodeRetryScheduled` emission fails the test instead
+    // of hanging CI indefinitely.
+    let execution_id = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events_rx.recv().await {
+                Some(ExecutionEvent::NodeRetryScheduled {
+                    execution_id: id, ..
+                }) => break id,
+                Some(_) => continue,
+                None => panic!("event bus closed before NodeRetryScheduled"),
+            }
         }
-    }
-    let cancelled = engine.cancel_execution(execution_id.unwrap());
+    })
+    .await
+    .expect("timed out waiting for NodeRetryScheduled");
+    let cancelled = engine.cancel_execution(execution_id);
     assert!(cancelled, "cancel_execution must find the live frontier");
 
     let result = tokio::time::timeout(Duration::from_secs(5), task)
@@ -300,6 +303,11 @@ async fn cancel_during_retry_wait() {
 /// other branch is parked in WaitingRetry. Tests the same
 /// cancel-token tear-down path as test #3 but driven by a node, not
 /// an external cancel.
+///
+/// Subscribes to the event bus so we can assert the `NodeRetryScheduled`
+/// event actually fired before completion — a green test without
+/// that check would only prove the workflow finished, not that the
+/// drain path was exercised.
 #[tokio::test]
 async fn terminate_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
@@ -312,10 +320,12 @@ async fn terminate_during_retry_wait() {
         meta: ActionMetadata::new(action_key!("term"), "Term", "terminates"),
     });
 
-    let engine = make_engine(registry);
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events_rx = event_bus.subscribe();
+    let engine = make_engine(registry).with_event_bus(event_bus);
     let parked = node_key!("parked");
     let stopper = node_key!("stopper");
-    let mut parked_node = NodeDefinition::new(parked, "parked_node", "flaky_t").unwrap();
+    let mut parked_node = NodeDefinition::new(parked.clone(), "parked_node", "flaky_t").unwrap();
     // 60s backoff parks the node so terminate has to drain it.
     parked_node.retry_policy = Some(RetryConfig::fixed(5, 60_000));
     let stopper_node = NodeDefinition::new(stopper, "stopper_node", "term").unwrap();
@@ -339,6 +349,25 @@ async fn terminate_during_retry_wait() {
     assert!(
         invocations.load(Ordering::SeqCst) <= 2,
         "terminate must drain the WaitingRetry queue without re-dispatching"
+    );
+
+    // Drain the event bus and assert that the parked node DID get a
+    // `NodeRetryScheduled` event before terminate fired. Without this
+    // assertion the test would pass even if terminate beat the retry
+    // schedule entirely, which means the drain path was never exercised.
+    let mut saw_retry_scheduled_for_parked = false;
+    while let Some(event) = events_rx.try_recv() {
+        if let ExecutionEvent::NodeRetryScheduled { node_key, .. } = event
+            && node_key == parked
+        {
+            saw_retry_scheduled_for_parked = true;
+            break;
+        }
+    }
+    assert!(
+        saw_retry_scheduled_for_parked,
+        "parked node must have been parked in WaitingRetry before terminate \
+         drained it (otherwise the test passes without exercising the drain)"
     );
 }
 
