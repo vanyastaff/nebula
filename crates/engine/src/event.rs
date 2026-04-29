@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use nebula_core::{NodeKey, id::ExecutionId};
 use nebula_execution::status::ExecutionTerminationReason;
 use nebula_workflow::NodeState;
@@ -42,6 +43,29 @@ pub enum ExecutionEvent {
         node_key: NodeKey,
         /// Error message.
         error: String,
+    },
+
+    /// A node attempt failed but the engine scheduled a retry per
+    /// ADR-0042 (Layer 2 — engine-level retry). The node has
+    /// transitioned to `WaitingRetry` and will be re-dispatched at
+    /// `next_attempt_at`.
+    ///
+    /// Subscribers should treat this as **not-final**: the node has
+    /// not failed in the canonical sense (`is_failure() == false`
+    /// while `WaitingRetry`); only the post-retry-exhausted
+    /// [`ExecutionEvent::NodeFailed`] counts as a final failure.
+    NodeRetryScheduled {
+        /// Execution this node belongs to.
+        execution_id: ExecutionId,
+        /// The node whose retry is scheduled.
+        node_key: NodeKey,
+        /// Sequential attempt number that just failed (1-indexed).
+        attempt: u32,
+        /// Wall-clock instant the engine plans to dispatch the next
+        /// attempt at.
+        next_attempt_at: DateTime<Utc>,
+        /// Error string from the just-failed attempt.
+        last_error: String,
     },
 
     /// A node was skipped (disabled or dependency not met).

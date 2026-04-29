@@ -97,8 +97,16 @@ action/credential/resource caches enforcing the namespace invariant at construct
 - Not an action dispatcher — delegated to `nebula-runtime`.
 - Not a plugin loader or isolator — see `nebula-sandbox`.
 - Not an expression evaluator — see `nebula-expression`.
-- Not a retry scheduler — the engine does not re-execute nodes. Retry lives in
-  `nebula-resilience` inside an action around the outbound call (canon §11.2).
+- Two retry surfaces, disjoint by trigger boundary (per ADR-0042):
+  - **In-call (Layer 1)** — `nebula-resilience::retry_with` lives inside an action
+    around outbound calls. The engine sees only the action's final outcome.
+  - **Operator-declared (Layer 2)** — `NodeDefinition.retry_policy` /
+    `WorkflowConfig.retry_policy`. After a `Running → Failed` transition the
+    engine consults the effective policy, parks the node in
+    `NodeState::WaitingRetry` with `next_attempt_at`, and re-dispatches the
+    action when the timer fires. Cancel / explicit-terminate / wall-clock
+    budget breach drains parked retries to `Cancelled` without re-dispatching.
+    Global cap via `ExecutionBudget.max_total_retries` (canon §11.2).
 
 ## Maturity
 
@@ -133,6 +141,13 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 | `ExecutionBudget` not persisted in `ExecutionState` — budget lost on resume | issue #289 | `set_budget` at `state.rs:218`; restored at `engine.rs:1433-1444`; tests `resume_restores_persisted_budget` and `resume_falls_back_to_default_budget_on_legacy_state` |
 | Original workflow input not persisted — resume could not replay from input | issue #311 | `set_workflow_input` at `state.rs:206`; restored at `engine.rs:1487-1497`; test `resume_restores_original_workflow_input` |
 | `ActionResult::Terminate` not propagated to `ExecutionTerminationReason::ExplicitStop` / `ExplicitFail` — execution audit lost intent vs system-driven termination | ROADMAP §M0.3 | `set_terminated_by` at `state.rs:240`; engine wiring at `engine.rs:1986-area`; `determine_final_status` priority ladder at `engine.rs:3590`; surfaced via `ExecutionResult.termination_reason` and `ExecutionEvent::ExecutionFinished.termination_reason` |
+
+### Recently closed debts (ROADMAP §M2.1)
+
+| Closed debt | Closed by | Verification |
+|---|---|---|
+| `NodeDefinition.retry_policy` / `WorkflowConfig.retry_policy` were declared and serialised but never read by the engine — operator-level retry was a §4.5 false capability | ADR-0042 + ROADMAP §M2.1 (foundation PR #627 + engine wiring PR) | `NodeState::WaitingRetry` (`crates/workflow/src/state.rs`); `NodeExecutionState::next_attempt_at` + `ExecutionState::total_retries` + `ExecutionBudget::max_total_retries` (`crates/execution/src/state.rs`, `context.rs`); engine retry decision + `tokio::select!` retry-pending heap (`crates/engine/src/engine.rs` `compute_retry_decision`, `effective_retry_policy`, `run_frontier`); 9 integration tests at `crates/engine/tests/retry.rs`; shift-left validation in `validate_workflow` (`crates/workflow/src/validate.rs`) |
+| `ExecutionOutput::Inline(Value)` newtype-tagged variant silently failed `serde_json::to_value` for primitive payloads (string / number / bool / null) — surfaced when M2.1 T4 began pushing `NodeAttempt::output` records | ADR-0042 (engine wiring PR) | `Inline { value }` struct variant (`crates/execution/src/output.rs`); wire format moved from object-only `{"type": "inline", ...spread fields...}` to `{"type": "inline", "value": <any>}` |
 
 ### Recently closed debts (ROADMAP §M1)
 

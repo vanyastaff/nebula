@@ -24,7 +24,8 @@ where
 
 /// Resource budget for a single workflow execution.
 ///
-/// Controls concurrency, wall-clock timeout, and total output size.
+/// Controls concurrency, wall-clock timeout, total output size, and
+/// the global retry cap (sum of retry attempts across all nodes).
 /// All `Option` fields default to `None` (unlimited).
 ///
 /// # Examples
@@ -36,7 +37,8 @@ where
 ///
 /// let budget = ExecutionBudget::default()
 ///     .with_max_duration(Duration::from_secs(300))
-///     .with_max_output_bytes(10 * 1024 * 1024);
+///     .with_max_output_bytes(10 * 1024 * 1024)
+///     .with_max_total_retries(50);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionBudget {
@@ -57,6 +59,21 @@ pub struct ExecutionBudget {
     /// Maximum total bytes across all node outputs. `None` = unlimited.
     #[serde(default)]
     pub max_output_bytes: Option<u64>,
+
+    /// Global cap on retry attempts summed across **all** nodes in
+    /// the execution (ADR-0042 §Consequences "Out of scope" + §M2.1
+    /// T4 acceptance). Complements per-node
+    /// `RetryConfig::max_attempts`: the engine consults both on every
+    /// failure and whichever caps first wins (canon §11.2).
+    ///
+    /// `None` = no global cap; per-node policy is the only retry
+    /// gate. A `Some(0)` value disables engine-level retry entirely
+    /// for this execution, regardless of the per-node `RetryConfig`.
+    ///
+    /// Forward-compat: legacy persisted budgets that predate this
+    /// field deserialize as `None`.
+    #[serde(default)]
+    pub max_total_retries: Option<u32>,
 }
 
 impl Default for ExecutionBudget {
@@ -65,6 +82,7 @@ impl Default for ExecutionBudget {
             max_concurrent_nodes: 10,
             max_duration: None,
             max_output_bytes: None,
+            max_total_retries: None,
         }
     }
 }
@@ -110,6 +128,17 @@ impl ExecutionBudget {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_max_output_bytes(mut self, bytes: u64) -> Self {
         self.max_output_bytes = Some(bytes);
+        self
+    }
+
+    /// Set the global retry cap (ADR-0042 §M2.1 T4).
+    ///
+    /// `0` disables engine-level retry entirely for this execution
+    /// even when nodes declare a `RetryConfig`. Useful for tests and
+    /// for "execute once, no retries" SLAs.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_max_total_retries(mut self, n: u32) -> Self {
+        self.max_total_retries = Some(n);
         self
     }
 }
@@ -204,5 +233,38 @@ mod tests {
             ..ExecutionBudget::default()
         };
         assert!(budget.validate_for_execution().is_err());
+    }
+
+    /// ADR-0042 §M2.1 T2 — `max_total_retries` must round-trip
+    /// through serde so `resume_execution` carries the same global
+    /// cap the original run was started with.
+    #[test]
+    fn max_total_retries_roundtrip() {
+        let budget = ExecutionBudget::default().with_max_total_retries(7);
+        assert_eq!(budget.max_total_retries, Some(7));
+        let json = serde_json::to_string(&budget).unwrap();
+        let back: ExecutionBudget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.max_total_retries, Some(7));
+    }
+
+    /// Forward-compat: legacy budgets that predate `max_total_retries`
+    /// deserialize as `None` (no global cap), so a resumed legacy
+    /// execution does not crash on the missing field.
+    #[test]
+    fn max_total_retries_missing_field_deserializes_as_none() {
+        let legacy = r#"{"max_concurrent_nodes":4}"#;
+        let budget: ExecutionBudget = serde_json::from_str(legacy).unwrap();
+        assert_eq!(budget.max_total_retries, None);
+    }
+
+    /// `Some(0)` is a meaningful "disable retry" signal — distinct
+    /// from `None` (no cap). The engine must observe both states.
+    #[test]
+    fn max_total_retries_zero_is_distinct_from_none() {
+        let disabled = ExecutionBudget::default().with_max_total_retries(0);
+        let unlimited = ExecutionBudget::default();
+        assert_eq!(disabled.max_total_retries, Some(0));
+        assert_eq!(unlimited.max_total_retries, None);
+        assert_ne!(disabled, unlimited);
     }
 }

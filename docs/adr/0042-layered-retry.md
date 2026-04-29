@@ -103,14 +103,30 @@ Rejected. Two retry surfaces with overlapping semantics force consumers to learn
 
 ## Implementation notes (M2.1 task map)
 
-- **T0** (this PR foundation) — remove `ActionResult::Retry` variant, `unstable-retry-scheduler` feature, `is_retry()` predicate, and the synthetic-failure handler in `engine.rs`.
+- **T0** (foundation PR #627, 2026-04-28) — removed `ActionResult::Retry` variant, `unstable-retry-scheduler` feature, `is_retry()` predicate, and the synthetic-failure handler in `engine.rs`.
 - **T1** — this ADR.
-- **T2 + T3** — extend `NodeExecutionState` with `next_attempt_at`; storage migration mirrors PG + SQLite.
-- **T4** — engine reads effective `retry_policy`, computes backoff, decides retry-vs-finalize. Ordering: `[budget-check] → [retry-decision] → schedule | classify+route+checkpoint`.
-- **T5** — frontier loop honors `next_attempt_at`, with cancel/terminate/budget guards before and after the sleep.
-- **T6** — 9 integration tests covering the core path + edge cases (cancel/terminate/budget interaction, idempotency-key differentiation).
-- **T7** — close ROADMAP §M2.1; cross-reference this ADR from action README, workflow README, engine README L4 debt.
-- **T8** — `validate_workflow` rejects invalid `RetryConfig` (max_attempts == 0; backoff_multiplier ≤ 0 or non-finite; max_delay_ms < initial_delay_ms; initial_delay_ms == 0 with max_attempts > 1).
+- **T2** (engine wiring PR, 2026-04-29) — extended `NodeExecutionState` with `next_attempt_at: Option<DateTime<Utc>>`; added `NodeState::WaitingRetry` (non-terminal, non-active, non-failure); restored `ExecutionState.total_retries: u32` and `ExecutionBudget.max_total_retries: Option<u32>`; added `ExecutionState::record_node_attempt`, `ExecutionState::schedule_node_retry`, `ExecutionState::increment_total_retries`, `ExecutionState::has_exhausted_retry_budget`; transition table extended with `Failed → WaitingRetry → Ready` and `WaitingRetry → Cancelled`. Idempotency key formula changed to `attempts.len() + 1` (next-dispatch number) so retries no longer collide with previous attempts' persisted output (canon §11.3). All forward-compat via `#[serde(default)]`.
+- **T3** (engine wiring PR, 2026-04-29) — Layer-1 storage (`crates/storage/migrations/`) persists `ExecutionState` as JSONB. The new fields ride inside the existing `state` column; no column migration required. Layer-2 schema (`crates/storage/migrations/postgres/0012_execution_nodes.sql`) already carries `wake_at` for the future spec-16 columnar split (deferred to ROADMAP §M7 / Sprint E).
+- **T4** (engine wiring PR, 2026-04-29) — engine reads the effective `RetryConfig` (`NodeDefinition.retry_policy` overrides `WorkflowConfig.retry_policy`), computes backoff via `RetryConfig::delay_for_attempt`, decides retry-vs-finalize. Ordering: `mark_node_failed → record_node_attempt(failure) → compute_retry_decision → [Retry: schedule_node_retry → checkpoint → push retry_heap → emit NodeRetryScheduled → continue] | [Finalize: classify → apply_recovery → route_failure_edges → checkpoint → emit NodeFailed]`. Same ordering for setup-failure (param resolution) path.
+- **T5** (engine wiring PR, 2026-04-29) — frontier loop carries a `BinaryHeap<Reverse<(DateTime<Utc>, NodeKey)>>` of parked retries. Phase 0 drains due retries into `ready_queue` (state stays `WaitingRetry`; `spawn_node`'s `start_node_attempt` performs the typed `WaitingRetry → Ready → Running`). Phase 2 races `join_set` / cancel / wall-clock / next-retry-timer via `tokio::select!`. Cancel and wall-clock teardown drain parked retries to `Cancelled` so a cancelled execution never silently re-dispatches. Resume seeds the heap from any persisted `WaitingRetry` nodes.
+- **T6** (engine wiring PR, 2026-04-29) — 9 integration tests (`crates/engine/tests/retry.rs`) cover: success on attempt 2, exhausted retries, cancel-during-wait, terminate-during-wait, global budget cap, idempotency-key differentiation, per-node policy override, workflow-default fallback, and one-shot when no policy is configured. All green.
+- **T7** — closes ROADMAP §M2.1; this ADR is cross-referenced from `crates/engine/src/engine.rs` retry helpers, `NodeExecutionState::next_attempt_at` doc, `NodeState::WaitingRetry` doc, and `ExecutionBudget::max_total_retries` doc.
+- **T8** (foundation PR #627, 2026-04-28) — `validate_workflow` rejects invalid `RetryConfig` (max_attempts == 0; backoff_multiplier ≤ 0 or non-finite; max_delay_ms < initial_delay_ms; initial_delay_ms == 0 with max_attempts > 1).
+
+## Side-effect: `ExecutionOutput` wire format
+
+T4 surfaced a long-standing serde bug in `ExecutionOutput::Inline(Value)`: an internally-tagged enum (`tag = "type"`) cannot carry a primitive newtype payload because the tag has no map to slot into. Object-shaped `Inline` payloads worked by accident (the object's keys merge with `type`); string / number / bool / null payloads silently failed at `serde_json::to_value`. Layer-2 retry path tests (`record_node_attempt(success)` for a string-output workflow) tripped it.
+
+Fix: `Inline` was promoted from a newtype variant to a struct variant with an explicit `value` key:
+
+```rust
+// Before
+Inline(serde_json::Value)
+// After
+Inline { value: serde_json::Value }
+```
+
+JSON wire format moved from `{"type": "inline", ...spread fields...}` (object-only) to `{"type": "inline", "value": <any>}` (works for primitives too). Pre-M2.1 there were zero persisted `ExecutionOutput::Inline` rows because `NodeAttempt::output` was never pushed by the engine (the entire attempts vec was always empty), so this is not a wire-compat break against deployed data.
 
 ## References
 

@@ -50,6 +50,16 @@ pub fn validate_execution_transition(
 }
 
 /// Returns `true` if the node-level transition from `from` to `to` is valid.
+///
+/// The retry-related edges (`Failed → WaitingRetry`,
+/// `WaitingRetry → Ready`, `WaitingRetry → Cancelled`) implement the
+/// engine-level retry path from ADR-0042: when the retry policy still
+/// has budget after a `Running → Failed` transition, the engine moves
+/// the node into `WaitingRetry` (parking it until
+/// `NodeExecutionState::next_attempt_at`), then back to `Ready` for the
+/// next attempt. A cancel signal during the wait shortcuts directly to
+/// `Cancelled` without observing another `Failed` — the previous
+/// attempt's failure is already recorded in `NodeAttempt`.
 #[must_use]
 pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
     matches!(
@@ -63,7 +73,13 @@ pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
         ) | (
             NodeState::Running,
             NodeState::Completed | NodeState::Failed | NodeState::Cancelled
-        ) | (NodeState::Failed, NodeState::Cancelled)
+        ) | (
+            NodeState::Failed,
+            NodeState::Cancelled | NodeState::WaitingRetry
+        ) | (
+            NodeState::WaitingRetry,
+            NodeState::Ready | NodeState::Cancelled
+        )
     )
 }
 
@@ -270,7 +286,58 @@ mod tests {
             NodeState::Cancelled,
             NodeState::Running
         ));
-        // Engine does not retry — Failed is terminal except for Cancelled.
+        // Engine retries via WaitingRetry, not directly back to Running.
         assert!(!can_transition_node(NodeState::Failed, NodeState::Running));
+        // No backdoor from WaitingRetry to Running — the retry path
+        // must go through Ready so `start_node_attempt` accounts the
+        // attempt and bumps the parent version.
+        assert!(!can_transition_node(
+            NodeState::WaitingRetry,
+            NodeState::Running
+        ));
+        // WaitingRetry is non-terminal; it cannot collapse straight
+        // to a finished state without a fresh attempt.
+        assert!(!can_transition_node(
+            NodeState::WaitingRetry,
+            NodeState::Completed
+        ));
+        assert!(!can_transition_node(
+            NodeState::WaitingRetry,
+            NodeState::Failed
+        ));
+    }
+
+    /// ADR-0042 — engine-level retry path:
+    ///
+    /// `Running → Failed → WaitingRetry → Ready → Running`
+    ///
+    /// The `Failed → WaitingRetry` edge fires when the retry policy
+    /// still has budget; `WaitingRetry → Ready` fires when
+    /// `NodeExecutionState::next_attempt_at` arrives and the engine
+    /// re-dispatches.
+    #[test]
+    fn retry_round_trip_transitions_are_valid() {
+        assert!(can_transition_node(NodeState::Running, NodeState::Failed));
+        assert!(can_transition_node(
+            NodeState::Failed,
+            NodeState::WaitingRetry
+        ));
+        assert!(can_transition_node(
+            NodeState::WaitingRetry,
+            NodeState::Ready
+        ));
+        assert!(can_transition_node(NodeState::Ready, NodeState::Running));
+    }
+
+    /// ADR-0042 — cancel during retry wait must be expressible without
+    /// a phantom `WaitingRetry → Failed → Cancelled` detour. The
+    /// previous attempt's failure is already recorded in
+    /// `NodeAttempt`; the cancel terminates the wait, not the attempt.
+    #[test]
+    fn waiting_retry_can_transition_to_cancelled() {
+        assert!(can_transition_node(
+            NodeState::WaitingRetry,
+            NodeState::Cancelled
+        ));
     }
 }
