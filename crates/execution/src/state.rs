@@ -75,10 +75,14 @@ pub struct NodeExecutionState {
     /// engine sets it when the retry policy still has budget after a
     /// `Running → Failed` transition, then parks the node in
     /// `WaitingRetry` and waits until this timestamp before re-driving
-    /// it through `Ready → Running`. On `Cancelled` (during the wait)
-    /// or on a successful retry, the field is **not** cleared — it
-    /// stays for audit/post-mortem so observers can see "the engine
-    /// scheduled a retry for `T` but the cancel/success raced first".
+    /// it through `Ready → Running`. The engine clears the field once
+    /// the retry is promoted out of `WaitingRetry` for re-dispatch, or
+    /// when retry waiting is torn down by cancel / wall-clock teardown
+    /// — a stale `Some(_)` on a non-`WaitingRetry` node would mislead
+    /// resume seeding and audit tooling. Per-attempt history lives on
+    /// [`NodeExecutionState::attempts`] (push of [`AttemptOutcome::Failure`]
+    /// happens *before* `schedule_node_retry`), so post-mortem readers
+    /// keep the failure record without relying on this field.
     ///
     /// Forward-compat: legacy persisted states that predate this field
     /// deserialize as `None` (engine treats those nodes as not having

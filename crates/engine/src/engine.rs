@@ -1775,8 +1775,18 @@ impl WorkflowEngine {
                 if *when > now_drain {
                     break;
                 }
-                let Reverse((_, node_key)) =
-                    retry_heap.pop().expect("peek-then-pop on non-empty heap");
+                let Some(Reverse((_, node_key))) = retry_heap.pop() else {
+                    // Unreachable: peek-then-pop on a single-threaded
+                    // owner cannot lose the entry. Surface defensively
+                    // rather than panic so a future refactor can't
+                    // crash the frontier loop (canon §12.4).
+                    tracing::warn!(
+                        target = "engine::retry",
+                        %execution_id,
+                        "retry heap became empty after peek; aborting retry drain"
+                    );
+                    break;
+                };
                 let still_parked = exec_state
                     .node_state(node_key.clone())
                     .is_some_and(|ns| ns.state == NodeState::WaitingRetry);
@@ -1818,12 +1828,16 @@ impl WorkflowEngine {
                 }
             }
 
-            // Phase 1: Drain ready queue → spawn into join_set
-            while let Some(node_key) = ready_queue.pop_front() {
-                if cancel_token.is_cancelled() {
-                    break;
-                }
-
+            // Phase 1: Drain ready queue → spawn into join_set.
+            // Cancel-check runs BEFORE `pop_front` so a node that
+            // observes the cancel signal mid-iteration stays in the
+            // queue and is collected by `drain_pending_to_cancelled`
+            // on the cancel/wall-clock teardown branches — popping
+            // first would drop the node and strand it as `Ready`,
+            // tripping canon §11.1 frontier-integrity.
+            while !cancel_token.is_cancelled()
+                && let Some(node_key) = ready_queue.pop_front()
+            {
                 // Check budget limits before dispatching
                 if let Some(violation) = check_budget(budget, started, &total_output_bytes) {
                     cancel_token.cancel();
@@ -1916,40 +1930,53 @@ impl WorkflowEngine {
 
                 // Push the failure attempt record so retry-decision
                 // and idempotency_key see the same attempt count.
+                // ADR-0042 §M2.1 T4: if recording fails (programming
+                // error: unknown node), force `Finalize` rather than
+                // running `compute_retry_decision` against a stale
+                // `attempts.len()` — that would let `max_attempts`
+                // be bypassed and risk an idempotency-key collision.
                 let setup_idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-                if let Err(e) = exec_state.record_node_attempt(
+                let setup_attempt_recorded = match exec_state.record_node_attempt(
                     node_key.clone(),
                     setup_idem_key,
                     AttemptOutcome::Failure {
                         error: err_msg.clone(),
                     },
                 ) {
-                    tracing::warn!(
-                        target = "engine::frontier",
-                        %execution_id,
-                        %node_key,
-                        error = %e,
-                        "record_node_attempt(setup-failure) failed; \
-                         continuing without attempt history"
-                    );
-                }
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            target = "engine::frontier",
+                            %execution_id,
+                            %node_key,
+                            error = %e,
+                            "record_node_attempt(setup-failure) failed; forcing finalize \
+                             so stale attempt history cannot bypass max_attempts or \
+                             collide idempotency keys"
+                        );
+                        false
+                    },
+                };
 
                 // ADR-0042 §M2.1 T4 — retry decision (setup-failure
-                // path). Mirror runtime-failure semantics.
-                let setup_retry_policy = node_map
-                    .get(&node_key)
-                    .and_then(|nd| effective_retry_policy(nd, workflow_retry_policy.as_ref()))
-                    .cloned();
-                let setup_decision =
-                    compute_retry_decision(&node_key, exec_state, setup_retry_policy.as_ref());
+                // path). Mirror runtime-failure semantics. Skip the
+                // decision entirely when attempt history is broken.
+                let setup_decision = if setup_attempt_recorded {
+                    let setup_retry_policy = node_map
+                        .get(&node_key)
+                        .and_then(|nd| effective_retry_policy(nd, workflow_retry_policy.as_ref()))
+                        .cloned();
+                    compute_retry_decision(&node_key, exec_state, setup_retry_policy.as_ref())
+                } else {
+                    RetryDecision::Finalize
+                };
 
                 if let RetryDecision::Retry { delay } = setup_decision {
                     let attempt_number = exec_state
                         .node_states
                         .get(&node_key)
                         .map_or(1, |ns| ns.attempt_count() as u32);
-                    let next_at =
-                        Utc::now() + chrono::Duration::from_std(delay).unwrap_or_default();
+                    let next_at = next_retry_at(execution_id, &node_key, delay);
                     if exec_state
                         .schedule_node_retry(node_key.clone(), next_at)
                         .is_ok()
@@ -2117,8 +2144,9 @@ impl WorkflowEngine {
 
             // If join_set is empty but retry_heap has work, we still
             // need to sleep until the timer (or cancel / wall-clock).
-            // Use a `pending` future on the join_set arm in that case
-            // so `select!` does not see a `None` and break early.
+            // Pre-pin a boxed future per branch so `select!` never has
+            // to enter an `unreachable!()` placeholder — library code
+            // must not panic on hot paths (canon §12.4).
             let join_set_empty = join_set.is_empty();
 
             type JoinedResult = Option<
@@ -2145,15 +2173,15 @@ impl WorkflowEngine {
                 Cancel,
             }
 
+            let join_next_fut: Pin<Box<dyn Future<Output = JoinedResult> + Send + '_>> =
+                if join_set_empty {
+                    Box::pin(std::future::pending::<JoinedResult>())
+                } else {
+                    Box::pin(join_set.join_next_with_id())
+                };
+
             let wake = tokio::select! {
-                result = async {
-                    if join_set_empty {
-                        std::future::pending::<()>().await;
-                        unreachable!()
-                    } else {
-                        join_set.join_next_with_id().await
-                    }
-                } => WakeReason::Joined(result),
+                result = join_next_fut => WakeReason::Joined(result),
                 () = &mut retry_sleep_fut, if next_retry_in.is_some() => WakeReason::RetryTimer,
                 () = &mut sleep_fut => WakeReason::WallClock,
                 () = cancel_token.cancelled() => WakeReason::Cancel,
@@ -2415,42 +2443,59 @@ impl WorkflowEngine {
                     // Push the failure attempt record so idempotency
                     // key, retry-decision, and post-mortem audit all
                     // see the same attempt history.
+                    // ADR-0042 §M2.1 T4: if recording fails (programming
+                    // error: unknown node), force `Finalize` rather than
+                    // letting `compute_retry_decision` see a stale
+                    // `attempts.len()` — that path could bypass
+                    // `max_attempts` (loop forever when no global cap
+                    // is set) or collide idempotency keys on resume.
                     let failure_idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-                    if let Err(e) = exec_state.record_node_attempt(
+                    let failure_attempt_recorded = match exec_state.record_node_attempt(
                         node_key.clone(),
                         failure_idem_key,
                         AttemptOutcome::Failure {
                             error: err_str.clone(),
                         },
                     ) {
-                        tracing::warn!(
-                            target = "engine::frontier",
-                            %execution_id,
-                            %node_key,
-                            error = %e,
-                            "record_node_attempt(failure) failed; continuing without \
-                             attempt history (idempotency key may collide on retry)"
-                        );
-                    }
+                        Ok(_) => true,
+                        Err(e) => {
+                            tracing::warn!(
+                                target = "engine::frontier",
+                                %execution_id,
+                                %node_key,
+                                error = %e,
+                                "record_node_attempt(failure) failed; forcing finalize \
+                                 so stale attempt history cannot bypass max_attempts or \
+                                 collide idempotency keys"
+                            );
+                            false
+                        },
+                    };
 
-                    // ADR-0042 §M2.1 T4 — retry decision.
-                    let retry_policy_resolved = node_map
-                        .get(&node_key)
-                        .and_then(|nd| effective_retry_policy(nd, workflow_retry_policy.as_ref()))
-                        .cloned();
-                    let decision = compute_retry_decision(
-                        &node_key,
-                        exec_state,
-                        retry_policy_resolved.as_ref(),
-                    );
+                    // ADR-0042 §M2.1 T4 — retry decision. Skipped when
+                    // attempt history could not be recorded.
+                    let decision = if failure_attempt_recorded {
+                        let retry_policy_resolved = node_map
+                            .get(&node_key)
+                            .and_then(|nd| {
+                                effective_retry_policy(nd, workflow_retry_policy.as_ref())
+                            })
+                            .cloned();
+                        compute_retry_decision(
+                            &node_key,
+                            exec_state,
+                            retry_policy_resolved.as_ref(),
+                        )
+                    } else {
+                        RetryDecision::Finalize
+                    };
 
                     if let RetryDecision::Retry { delay } = decision {
                         let attempt_number = exec_state
                             .node_states
                             .get(&node_key)
                             .map_or(1, |ns| ns.attempt_count() as u32);
-                        let next_at =
-                            Utc::now() + chrono::Duration::from_std(delay).unwrap_or_default();
+                        let next_at = next_retry_at(execution_id, &node_key, delay);
                         match exec_state.schedule_node_retry(node_key.clone(), next_at) {
                             Ok(()) => {
                                 // Persist the WaitingRetry transition,
@@ -3781,13 +3826,25 @@ fn compute_retry_decision(
         return RetryDecision::Finalize;
     };
 
+    // Missing node state means the engine has no history we can
+    // base a retry decision on (programming error: only nodes the
+    // engine has dispatched are eligible). Refuse the retry rather
+    // than fabricating an `attempts_used = 0` for a stranger node —
+    // that would let a programming bug schedule retries on
+    // unbounded state (canon §12.4).
+    let Some(ns) = exec_state.node_states.get(node_key) else {
+        tracing::warn!(
+            target = "engine::retry",
+            execution_id = %exec_state.execution_id,
+            %node_key,
+            "retry skipped: node state missing for retry decision"
+        );
+        return RetryDecision::Finalize;
+    };
     // `attempts.len()` is the count of *completed* attempts at the
     // moment of decision (post-push of the just-failed attempt). Once
     // it reaches `max_attempts`, the budget is spent.
-    let attempts_used = exec_state
-        .node_states
-        .get(node_key)
-        .map_or(0, |ns| ns.attempts.len() as u32);
+    let attempts_used = ns.attempts.len() as u32;
 
     if attempts_used >= policy.max_attempts {
         tracing::debug!(
@@ -3806,6 +3863,33 @@ fn compute_retry_decision(
     // The just-finished attempt index is `attempts_used - 1` (0-based).
     let delay = policy.delay_for_attempt(attempts_used.saturating_sub(1));
     RetryDecision::Retry { delay }
+}
+
+/// Translate a Tokio-style retry delay to a chrono wall-clock
+/// timestamp without panicking on extreme inputs.
+///
+/// `chrono::Duration::from_std` rejects values larger than
+/// `i64::MAX` milliseconds (~292 million years). A naive
+/// `.unwrap_or_default()` would silently substitute zero — turning
+/// a misconfigured huge backoff into a hot-loop retry. Instead, we
+/// log + clamp to `chrono::Duration::MAX` so the next attempt is
+/// effectively never scheduled, but the engine remains responsive
+/// to cancel/wall-clock teardown signals.
+fn next_retry_at(execution_id: ExecutionId, node_key: &NodeKey, delay: Duration) -> DateTime<Utc> {
+    match chrono::Duration::from_std(delay) {
+        Ok(d) => Utc::now() + d,
+        Err(e) => {
+            tracing::warn!(
+                target = "engine::retry",
+                %execution_id,
+                %node_key,
+                error = %e,
+                delay_ms = delay.as_millis() as u64,
+                "retry delay is not representable by chrono; clamping to chrono::Duration::MAX"
+            );
+            Utc::now() + chrono::Duration::MAX
+        },
+    }
 }
 
 /// Classification of a node failure against the workflow's error strategy.

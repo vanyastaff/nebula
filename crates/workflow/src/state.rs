@@ -22,11 +22,11 @@ pub enum NodeState {
     /// Cancelled by the user or by a shutdown signal.
     Cancelled,
     /// Failed but a retry is scheduled — `NodeExecutionState::next_attempt_at`
-    /// holds the wake-up time. Transient state between
-    /// `Failed → Ready → Running` for engine-level retry per ADR-0042.
-    /// Not terminal: a `WaitingRetry` node will eventually transition back
-    /// to `Ready`/`Running` (retry attempt) or to `Cancelled`
-    /// (shutdown / explicit cancel during the wait).
+    /// holds the wake-up time. Transient retry state in the
+    /// `Failed → WaitingRetry → Ready → Running` path for engine-level retry
+    /// per ADR-0042. Not terminal: a `WaitingRetry` node will eventually
+    /// transition back to `Ready`/`Running` (retry attempt) or to
+    /// `Cancelled` (shutdown / explicit cancel during the wait).
     WaitingRetry,
 }
 
