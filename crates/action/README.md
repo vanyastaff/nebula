@@ -114,3 +114,4 @@ See `docs/MATURITY.md` row for `nebula-action`.
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (including `CheckpointPolicy` status note).
 - Sandbox: `crates/sandbox/README.md` — `ProcessSandbox`, capability allowlists, OS-level hardening.
 - Siblings: `nebula-schema` (`ValidSchema` for `ActionMetadata.parameters`), `nebula-credential` (`CredentialGuard` via `CredentialContextExt`), `nebula-resource` (`ResourceAction`, `ResourceAccessor`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).
+- Resource sharing across nodes/workflows: see `crates/resource/README.md` "Shared resource pattern" — when multiple actions or workflows acquire the same `Resource` at the same scope, the manager dedupes by `(R::key(), ScopeLevel)` so a single `Resource::create` call serves every acquirer (e.g. one `TelegramBot` client for ten workflows).

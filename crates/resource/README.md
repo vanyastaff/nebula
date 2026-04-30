@@ -92,3 +92,70 @@ These types are L4 implementation detail — rename/refactor without canon revis
 | `Exclusive` | File locks, hardware ports | One caller at a time via semaphore(1) |
 
 Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon` per ADR-0037; this crate retains pool/SDK-client topologies only (canon §3.5).
+
+### Shared resource pattern
+
+When multiple workflows acquire the same `Resource` impl at the same scope,
+the manager deduplicates by `(R::key(), ScopeLevel)` and — for topologies
+backed by a single shared runtime — by the config `fingerprint()`. Exactly
+one `Resource::create` invocation runs, and every acquirer receives a lease
+that points at the same backing runtime.
+
+This is the foundation of the "one bot, ten workflows" headline: a single
+Telegram bot client serving many concurrent workflow nodes without
+re-authenticating, re-warming connections, or contending for rate limits
+across duplicate clients.
+
+#### Telegram bot example
+
+```rust,ignore
+use std::sync::Arc;
+
+use nebula_resource::{
+    AcquireOptions, Manager, ResidentConfig, ScopeLevel,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+};
+
+// One bot, registered once at organization scope.
+let manager = Arc::new(Manager::new());
+let bot = TelegramBot::new(/* construct from credentials */);
+let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
+manager.register(
+    bot,
+    bot_config,
+    ScopeLevel::Organization(org_id),
+    TopologyRuntime::Resident(resident_rt),
+    None, None,
+)?;
+
+// 10 workflows, each acquiring concurrently, all share the one client.
+let mut handles = Vec::new();
+for _ in 0..10 {
+    let mgr = Arc::clone(&manager);
+    handles.push(tokio::spawn(async move {
+        let ctx = build_workflow_resource_ctx(org_id);
+        mgr.acquire_resident::<TelegramBot>(&ctx, &AcquireOptions::default()).await
+    }));
+}
+
+// `Resource::create` was invoked exactly once; every acquirer holds a
+// lease whose underlying `Arc` is pointer-equal to every other acquirer's.
+```
+
+Resident is the natural topology for a shared bot client; the same dedupe
+guarantee applies to `Pooled` (one pool with N interchangeable instances),
+`Service` (long-lived runtime with refreshable tokens), and `Transport`
+(shared connection with multiplexed sessions). `Exclusive` deliberately
+opts out — its semantics are "one caller at a time," not "one shared
+instance."
+
+Verification: see `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`
+— 10 simulated workflows × 1 `TelegramBot` resource × Organization scope ⇒
+exactly one `create` invocation, all 10 leases share the same `Arc`.
+
+#### Invalidation triggers
+
+- **Fingerprint change in `ResourceConfig`**. Calling `Manager::reload_config::<R>(new_config, &scope)` validates the new config, swaps it in, bumps the resource's `generation`, and emits `ResourceEvent::ConfigReloaded`. For `Pooled` topologies the pool's fingerprint atomic is updated so idle entries with the stale fingerprint are evicted on next acquire or release. `Resident` topologies keep the existing runtime alive until liveness fails (the rebuild then picks up the new config). No-op reloads (same fingerprint) short-circuit to `ReloadOutcome::NoChange` without bumping the generation.
+- **Different `R::key()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire_resident::<TelegramBot>` and `acquire_resident::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
+- **Different `ScopeLevel`**. The same `Resource` impl registered at `Organization(A)` and `Organization(B)` produces two independent instances; the registry's scope-aware `find_by_scope` does an exact match first and falls back to `Global` only when no exact match exists. Per-scope reloads / shutdowns affect only the matching scope.
+- **Manager shutdown**. `Manager::shutdown()` cancels the shared token; in-flight acquires drain via `graceful_shutdown` per canon §11.4. After shutdown, every acquire returns `ErrorKind::Cancelled` — no leases are minted from a torn-down registry.
