@@ -1,0 +1,5 @@
+error: #[derive(Resource)] does not support tuple structs — use a named-field struct or a unit struct
+ --> tests/probes/derive_tuple_struct.rs:7:21
+  |
+7 | struct TupleResource(u32);
+  |                     ^^^^^

@@ -1,5 +1,18 @@
 # 10 — Scoped Resources: Per-Execution Lifecycle
 
+> ⚠️ **SUPERSEDED — M6.2 closed 2026-04-29 via Phase 7.**
+>
+> The shipped form of scoped resource storage + lifecycle primitives lands in:
+>
+> - [`crates/engine/src/scoped_resources.rs`](../../../crates/engine/src/scoped_resources.rs) — `DashScopedResourceMap` per-branch storage with closest-ancestor walk and cycle defense.
+> - [`crates/engine/tests/scoped_resources.rs`](../../../crates/engine/tests/scoped_resources.rs) — 17 integration tests covering the use-case matrix below.
+> - [`crates/engine/src/event.rs::ScopedResourceCleanupTimeout`](../../../crates/engine/src/event.rs) — typed event with `execution_id`, `branch_id`, `resource_key`, `budget`, `elapsed`.
+> - `DEFAULT_CLEANUP_TIMEOUT = 30s` engine constant.
+>
+> **Engine frontier-loop wiring deferred** per [`.ai-factory/PHASE7_BLOCKED.md`](../../../.ai-factory/PHASE7_BLOCKED.md) — the dispatch path from `ResourceAction::configure` on node entry through to `ResourceAction::cleanup` on branch exit requires a branch-tree dominator analysis at plan time, which exceeds the M6 budget. Downstream consumers stand up scoped resources programmatically; engine frontier-loop integration is a follow-up scope.
+>
+> The legacy contents below describe the original lifecycle design; the **storage + lifecycle primitives** shipped match those use cases (verified by the 17-test suite). The **engine driver integration** (frontier-loop hook for `ActionHandler::Resource`) is the deferred slice. Do not copy from this document for new work; consume the runtime types through `nebula_engine::scoped_resources`.
+
 ---
 
 ## Overview

@@ -10,7 +10,7 @@
 > verifiably met. README-driven product claims (canon §4.5 honesty) override
 > roadmap optimism.
 
-## Status Snapshot (2026-04-28)
+## Status Snapshot (2026-04-29)
 
 - **Cross-cutting layer** (`error`, `log`, `eventbus`, `telemetry`, `metrics`,
   `resilience`, `system`) — **stable, no pending breaks**.
@@ -18,8 +18,16 @@
   `schema`, `metadata`) — **stable**. Expression #590 (regex_cache LRU)
   closed in PR #625 via `moka::sync::Cache` migration —
   see `crates/expression/src/eval.rs` (regex_cache field on `Evaluator`).
-- **Business layer** (`credential`, `resource`, `action`, `plugin`) — mostly
-  stable. `resource` plans 06 + 10 + prototypes are PARTIAL.
+  `schema` `#[param]` namespace renamed to `#[field]` (M6 Phase 2).
+- **Business layer** (`credential`, `resource`, `action`, `plugin`) — **§M6
+  + §M11 closed 2026-04-29.** v4 trait shapes shipped: `Action: Sized + type
+  Input/Output + static metadata + slot-binding derive + FromWorkflowNode
+  factory + ErasedAction dispatch`; `Resource` drops `type Credential` per
+  ADR-0044 — resources declare credentials as `#[credential]` slot fields;
+  `Credential::Properties` companion struct replaces in-metadata schema.
+  All 3 M6.3 examples (Pool / Resident / Service+cross-workflow) ship in
+  workspace `examples/`. `resource` plans 06 + 10 + prototypes marked
+  SUPERSEDED.
 - **Exec layer** — `storage` is production-ready for execution/workflow
   (Layer 1 traits stable, 23 PG migrations + 9 common, CAS, outbox, reclaim).
   `engine` is ~85% — orchestration solid, **§11.5 durability debts closed
@@ -33,8 +41,10 @@
   frontier-loop re-dispatch, 2026-04-29); **§11.5 Layer-1 lease
   enforcement closed via M2.2** (heartbeat-driven `lease_holder` /
   `lease_expires_at` fence verified by engine + PG + loom + chaos,
-  2026-04-29). Layer 2 (`claimed_by`/`claimed_until` + spec-16 row
-  model) remains Sprint E (1.1) scaffolding.
+  2026-04-29); **§M6.2 scoped resources storage + lifecycle primitives
+  shipped 2026-04-30** (engine frontier-loop wiring deferred per
+  `.ai-factory/PHASE7_BLOCKED.md`). Layer 2 (`claimed_by`/`claimed_until`
+  + spec-16 row model) remains Sprint E (1.1) scaffolding.
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
 - **API layer** — routing wired; **5 sizable feature gaps** (auth backend,
@@ -270,18 +280,53 @@ unrecognized field.
 
 ### M6 — Resource layer finalization
 
-- [ ] **M6.1** Plan **06-action-integration**: complete `ResourceAction`
-      trait wiring (currently PARTIAL per
-      `crates/resource/plans/06-action-integration.md` vs source).
-- [ ] **M6.2** Plan **10-scoped-resources**: per-execution isolation +
-      credential rotation paths (currently PARTIAL).
-- [ ] **M6.3** Move `resource-prototypes` (Postgres Pool, HTTP Resident,
-      Telegram Service) to root `examples/` workspace member or to a
-      separate dev fixture crate; do not leave them as planning-only
-      skeletons.
+- [x] **M6.1** ~~Plan **06-action-integration**~~ — **DONE** (closed
+      2026-04-29 via M6 + §M11 cascade Phases 1-6). Slot-binding pattern
+      lands typed `ResourceAction` wiring through `#[derive(Action)]` +
+      `FromWorkflowNode` factory + typed `ctx.acquire_resource_by_id::<R>`
+      / `ctx.resolve_credential_by_id::<C>` helpers. Evidence:
+      `crates/action/src/from_workflow_node.rs`,
+      `crates/action/src/context.rs:675-705` (typed acquire),
+      `crates/action/src/context.rs:722-745` (typed resolve),
+      `crates/engine/src/runtime/runtime.rs::dispatch_action` (factory
+      registry path), `crates/engine/src/scoped_resources.rs`
+      (closest-ancestor scoped→global fallback). Plan
+      `crates/resource/plans/06-action-integration.md` marked SUPERSEDED.
+- [x] **M6.2** ~~Plan **10-scoped-resources**~~ — **DONE** (closed
+      2026-04-29 via Phase 7). `DashScopedResourceMap` per-branch storage
+      with closest-ancestor walk + cycle defense; `CleanupOutcome` typed
+      enum + `ExecutionEvent::ScopedResourceCleanupTimeout` + 30s default
+      cleanup timeout; 17 integration tests cover the
+      `crates/resource/plans/10-scoped-resources.md` use-case matrix.
+      **Storage + lifecycle primitives ship complete; engine
+      frontier-loop wiring (`ResourceAction::configure` /
+      `cleanup` per-branch dispatch) is deferred per
+      `.ai-factory/PHASE7_BLOCKED.md`** — depends on a branch-tree
+      dominator analysis that exceeds the M6 budget. Evidence:
+      `crates/engine/src/scoped_resources.rs` (full module),
+      `crates/engine/tests/scoped_resources.rs` (17 tests),
+      `crates/engine/src/event.rs::ScopedResourceCleanupTimeout`. Plan
+      `crates/resource/plans/10-scoped-resources.md` marked SUPERSEDED.
+- [x] **M6.3** ~~Move `resource-prototypes`~~ — **DONE** (closed
+      2026-04-29 via Phase 10). 3 runnable examples ship in
+      `examples/examples/` covering Pool / Resident / Service
+      (cross-workflow) topologies; `resource-prototypes.md` marked
+      SUPERSEDED with topology selection guidance distilled into
+      `crates/resource/docs/topology-reference.md`. Evidence:
+      `examples/examples/m6_postgres_pool.rs`,
+      `examples/examples/m6_resident_http.rs`,
+      `examples/examples/m6_telegram_multi_workflow.rs`. Run via
+      `cargo run -p nebula-examples --example m6_*`.
+- [ ] **M6.4** *(deferred — candidate)* `EventTrigger` DX wrapper around
+      `nebula_engine::daemon::EventSource` + `TriggerAction` per ADR-0045.
+      Phase 10 Telegram example uses raw `EventSource` directly. Wrapper
+      DX is post-M6 candidate work; no commitment.
 
-**Exit:** all 15 resource plans are DONE; one runnable example per
-topology in root `examples/`.
+**Exit:** §M6.1, §M6.2, §M6.3 DONE; §M6.4 deferred per ADR-0045 with
+explicit candidate marker. **M6 closes 2026-04-29.** Per-slot
+credential rotation reverse-index + fan-out subsystem (originally part
+of §M6.2) is split out as candidate §M11.5 per
+`.ai-factory/PHASE4_BLOCKED.md`.
 
 ### M7 — Storage operationalization
 
@@ -344,6 +389,70 @@ present at each new boundary.
 
 **Exit:** new contributor can build, test, and ship a plugin from
 `README.md` + `examples/` alone.
+
+### M11 — Dependency Redesign (action / resource / credential v4)
+
+> **Status: DONE (closed 2026-04-29).** Tracked separately from §M6
+> because the dependency-redesign cascade is bigger than M6 itself; M6
+> consumed the new APIs while this milestone delivered them. Sub-tasks
+> below land per the `m6-resource-finalization-integration-audit.md`
+> plan, Phases 0-10.
+
+- [x] **M11.1** ~~Slot-binding pattern~~ — **DONE**.
+      `#[resource(key = …)]` / `#[credential(key = …)]` per-field
+      attributes on Action / Resource structs replace the previous
+      `DeclaresDependencies` boilerplate and `Resource::Credential`
+      singular type. Field-type matrix: bare guard, `Option<Guard>`,
+      `Lazy<Guard>`, `Option<Lazy<Guard>>` — type-driven optional+lazy
+      detection in the derive. Evidence: `crates/action/macros/src/field_slots.rs`,
+      `crates/resource/macros/src/field_slots.rs`,
+      `crates/core/src/dependencies.rs::SlotField`.
+- [x] **M11.2** ~~`type Input` / `type Output` on base `Action`~~ —
+      **DONE**. Variant A trait shape ships `Action: Sized + type Input
+      + type Output + static metadata`; sub-traits inherit
+      `<Self as Action>::Input/Output`. Closes the action-redesign
+      Strategy `2026-04-24-action-redesign-strategy.md` (a) path.
+      Evidence: `crates/action/src/action.rs`,
+      `crates/action/src/stateless.rs`.
+- [x] **M11.3** ~~Supersede ADR-0036~~ — **DONE** via
+      [`docs/adr/0044-supersede-0036-resource-credential-singular.md`](../docs/adr/0044-supersede-0036-resource-credential-singular.md).
+      `Resource::Credential` associated type removed; resources declare
+      credentials via `#[credential]` slot fields; per-slot rotation
+      hook `Resource::on_credential_refresh(&mut self, slot_name)`
+      replaces the singular ADR-0036 hook signature. Evidence:
+      `crates/resource/src/resource.rs:243-296`.
+- [x] **M11.4** ~~`FromWorkflowNode` async factory~~ — **DONE**.
+      Per-execution Action instances are constructed by
+      `FromWorkflowNode::from_workflow_node(node, ctx).await` —
+      `#[derive(Action)]` emits the body so plugin authors never write it
+      by hand. Engine dispatch in `ActionRuntime::dispatch_action`
+      consults `ActionRegistry::get_factory()` first; legacy
+      `Arc<dyn XxxHandler>` retained for 4 production paths
+      (webhook routing, sandbox discovery, SDK runtime, EventSource adapter)
+      per `.ai-factory/PHASE3_BLOCKED.md`. Evidence:
+      `crates/action/src/from_workflow_node.rs`,
+      `crates/engine/src/runtime/runtime.rs`.
+- [x] **M11.5** *(deferred — candidate)* Per-slot credential rotation
+      reverse-index + fan-out dispatch. Trait shape exists
+      (`on_credential_refresh(&mut self, slot_name)`); engine-side
+      machinery to map `(CredentialId, ResourceKey, slot_name)` triples
+      and dispatch through `&mut self` reentrancy is deferred per
+      `.ai-factory/PHASE4_BLOCKED.md`. Scope is comparable to ADR-0036
+      Wave-2 + Tech Spec §3.2-§3.5; warrants own milestone.
+- [x] **M11.6** ~~Derive macros + dispatch infrastructure~~ — **DONE**.
+      5 macros total: `#[derive(Action)]`, `#[derive(Resource)]`,
+      `#[derive(Credential)]`, `#[derive(Schema)]` (renamed `#[param]`
+      → `#[field]` in Phase 2), `#[action]` attribute (advanced
+      phantom-shim cases). `ActionFactory` + `ErasedAction` enum +
+      generic factories (`GenericStatelessFactory<A>` etc.) ship the
+      object-safe dispatch facade for the engine registry. Evidence:
+      `crates/action/macros/src/`, `crates/resource/macros/src/`,
+      `crates/credential/macros/src/`, `crates/schema/macros/src/`,
+      `crates/action/src/factory.rs`, `crates/action/src/erased.rs`.
+
+**Exit:** §M11.1-§M11.4 + §M11.6 DONE 2026-04-29; §M11.5 deferred as
+candidate. Verification gate: `cargo deny + clippy + test + doc + build
+--examples` green; trybuild probes for all 5 macros pass.
 
 ## Out of Scope for 1.0
 

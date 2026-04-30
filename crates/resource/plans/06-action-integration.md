@@ -1,5 +1,27 @@
 # 06 — Action Integration & Plugin System
 
+> ⚠️ **SUPERSEDED — M6.1 closed 2026-04-29 via §M11 dependency redesign.**
+>
+> The shipped form of "Action ↔ Resource binding" lands per:
+>
+> - [`docs/adr/0042-node-binding-mechanism.md`](../../../docs/adr/0042-node-binding-mechanism.md) — hybrid (a)+(b) node→ResourceId/CredentialId binding.
+> - [`docs/adr/0043-dependency-declaration-dx.md`](../../../docs/adr/0043-dependency-declaration-dx.md) — `#[derive(Action)]` slot-binding form.
+> - [`docs/adr/0044-supersede-0036-resource-credential-singular.md`](../../../docs/adr/0044-supersede-0036-resource-credential-singular.md) — Resource::Credential supersession.
+> - [`docs/adr/0045-eventtrigger-scope-deferral.md`](../../../docs/adr/0045-eventtrigger-scope-deferral.md) — EventTrigger DX deferred to candidate §M6.4.
+>
+> The runtime surface differs from this plan:
+>
+> - **No `ctx.resource::<R>()` zero-id helper as the primary API.** That sketch (lines below) was based on the "zero topology knowledge" framing. The shipped path is **typed slot-binding fields** on action structs (`#[resource(key = "…")]` / `#[credential(key = "…")]`), resolved by the `FromWorkflowNode` factory before `execute` runs. The framework binds slot keys to `ResourceId`s via the ADR-0042 hybrid mechanism (default = slot key, explicit override via `node.slot_bindings`).
+> - **`ctx.acquire_resource_by_id::<R>(id)` and `ctx.resolve_credential_by_id::<C>(id)`** are the typed ad-hoc surface for actions that don't declare slots. See [`crates/action/src/context.rs:675-745`](../../../crates/action/src/context.rs).
+> - **`Manager::register_from_value::<R>(json, expr_engine, …)`** ships the JSON-driven registration path through schema → validator → expression (Phase 9).
+> - **Engine dispatch** routes through `Arc<dyn ActionFactory>` + `Box<dyn ErasedAction>` per `crates/action/src/factory.rs` + `crates/action/src/erased.rs`. The `ActionHandler` enum + `XxxHandler` traits remain for 4 production paths (webhook routing, sandbox discovery, SDK runtime, EventSource adapter) per `.ai-factory/PHASE3_BLOCKED.md`.
+>
+> The legacy contents below are kept as **historical design context** only —
+> the `ctx.resource::<R>()` / `ResourceContext` extension trait shape never
+> shipped. Do not copy from this document; reach for the typed slot-binding
+> form, the runnable examples (`examples/examples/m6_*.rs`), or the
+> per-crate READMEs (`crates/{action,resource,credential}/README.md`).
+
 ---
 
 ## ctx.resource() — THE primary API for action authors

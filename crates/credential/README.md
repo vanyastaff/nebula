@@ -2,7 +2,7 @@
 name: nebula-credential
 role: Credential Contract (stored state vs projected auth material; runtime orchestration lives in nebula-engine)
 status: frontier
-last-reviewed: 2026-04-23
+last-reviewed: 2026-04-29
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plugin]
 ---
@@ -11,11 +11,11 @@ related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plu
 
 ## Purpose
 
-In most workflow engines, credentials are blobs of JSON passed directly into node code — the author handles rotation, secret exposure, and multi-step flows ad hoc. `nebula-credential` replaces that pattern with a typed **Credential Contract**: the engine owns the split between **stored state** (what is persisted, possibly encrypted) and **projected auth material** (what action code receives). Runtime orchestration (resolver/executor/refresh coordination) now lives in `nebula-engine::credential`. Action authors bind to a `Credential` type; they never hand-roll token refresh, never hold plaintext secrets longer than necessary, and never see secrets in logs.
+In most workflow engines, credentials are blobs of JSON passed directly into node code — the author handles rotation, secret exposure, and multi-step flows ad hoc. `nebula-credential` replaces that pattern with a typed **Credential Contract**: the engine owns the split between **stored state** (what is persisted, possibly encrypted) and **projected auth material** (what action code receives). Runtime orchestration (resolver/executor/refresh coordination) now lives in `nebula-engine::credential`. Action authors bind to a `Credential` type via `#[credential]` slot fields; they never hand-roll token refresh, never hold plaintext secrets longer than necessary, and never see secrets in logs.
 
 ## Role
 
-**Credential Contract.** Stored-state vs consumer-facing auth-material split, pending-state contract, secret-handling primitives, and credential metadata/types. Each `Credential` type declares three associated types: `Scheme` (the auth protocol), `State` (what is persisted), and `Pending` (interactive flow state, e.g. OAuth2 PKCE). The engine resolves them; action code receives only the projected material.
+**Credential Contract.** Stored-state vs consumer-facing auth-material split, pending-state contract, secret-handling primitives, and credential metadata/types. Each `Credential` type declares three associated types: `Scheme` (the auth protocol), `State` (what is persisted), and `Properties` (the typed setup-form fields, replaces the pre-Phase-5 `Input`). The engine resolves them; action code receives only the projected material.
 
 **Integration credentials (Plane B):** this crate models **workflow integration** secrets (calls to Slack, cloud APIs, databases, …), not operator login to Nebula. The canonical boundary and rules for adding new auth mechanisms are documented in [`docs/adr/0033-integration-credentials-plane-b.md`](../../docs/adr/0033-integration-credentials-plane-b.md).
 
@@ -29,34 +29,138 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 **HTTP transport status:** `OAuth2Credential::resolve` (authorization URL construction) is pure — no HTTP. `OAuth2Credential::refresh` returns `CredentialError::Provider("OAuth2 HTTP transport has moved: ...")` per ADR-0031 — refresh HTTP lives in `nebula-engine`, token exchange в `nebula-api`. The crate has **no reqwest dependency**.
 
-## Public API
+## Public API (v4 — M6 / Phase 5, 2026-04-29)
 
-- `Credential` — base trait: `resolve()`, `project()`, `properties_schema()`, plus the three associated types (`Properties`, `State`, `Scheme`) and `KEY` const. Capability methods removed from base — see sub-traits below. (Phase 5 of the M6 redesign renamed `Input` → `Properties` to mirror `Action::Input` / `Resource::Config`; the schema lives on the typed companion struct rather than baked into instance metadata.)
-- `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic` — capability sub-traits added at П1 (Tech Spec §15.4). `Interactive` carries the `Pending` associated type; engine dispatchers bind `where C: <Capability>`.
-- `CredentialState` — supertrait `ZeroizeOnDrop` is now mandatory (Tech Spec §15.4 amendment); compile-fail probe `compile_fail_state_zeroize` enforces.
-- `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`. **`capabilities_enabled` field removed** (Tech Spec §15.8) — capability sets come from sub-trait membership at registration.
-- `Capabilities` (bitflags), `compute_capabilities::<C>() -> Capabilities`, `plugin_capability_report::*` — registration-time capability fold (Tech Spec §15.8).
+The v4 surface lands per Phase 5 of the M6 dependency redesign. The pre-Phase-5 `type Input` was renamed to `type Properties` to mirror `Action::Input` / `Resource::Config`; the schema lives on the typed companion struct rather than baked into instance metadata.
+
+### `Credential` trait — typed Properties / State / Scheme
+
+```rust
+pub trait Credential: Send + Sync + 'static {
+    type Properties: HasSchema;     // typed setup-form fields (replaces Input)
+    type State:      CredentialState;
+    type Scheme:     AuthScheme;
+
+    const KEY: &'static str;
+
+    fn metadata() -> CredentialMetadata;
+
+    fn properties_schema() -> ValidSchema {
+        <Self::Properties as HasSchema>::schema()  // default — derived from companion
+    }
+
+    fn project(state: &Self::State) -> Self::Scheme;
+
+    async fn resolve(values: &FieldValues, ctx: &CredentialContext<'_>)
+        -> Result<ResolveResult<Self::State, /* Pending = */ ()>, CredentialError>;
+}
+```
+
+Capability methods (`continue_resolve`, `refresh`, `revoke`, `test`, `release`) live on dedicated **sub-traits** per Tech Spec §15.4 — see "Capability sub-traits" below.
+
+### Properties companion struct — `#[derive(Schema, Deserialize)]`
+
+Authoring pattern: declare the setup form as a separate struct and reference it from the credential via `#[credential(properties = …)]`.
+
+```rust
+use nebula_credential::Credential;
+use nebula_schema::Schema;
+use serde::Deserialize;
+
+#[derive(Schema, Deserialize)]
+pub struct SlackBotProperties {
+    #[field(secret, label = "Bot token")]
+    #[validate(required)]
+    pub bot_token: String,
+
+    #[field(label = "Refresh URL")]
+    pub refresh_url: Option<String>,
+}
+
+#[derive(Credential)]
+#[credential(
+    key      = "slack_bot",
+    name     = "Slack bot",
+    scheme   = SecretToken,
+    properties = SlackBotProperties,
+)]
+pub struct SlackBotToken;
+
+// Implementor supplies project + resolve in a separate impl block when
+// using the `properties = ...` mode (the derive cannot synthesize them
+// without a StaticProtocol).
+```
+
+**Two derive modes:**
+
+- `properties = TypePath` — companion struct ownership of the schema. User implements `resolve` (and `project` when scheme ≠ state).
+- `protocol = TypePath` — for static credentials backed by a reusable `StaticProtocol`. The derive emits a `resolve` body that delegates to `<protocol as StaticProtocol>::build(values)`. `type Properties` is set to `<protocol as StaticProtocol>::Properties`.
+
+The two attributes are mutually exclusive.
+
+### Credential expressions are NOT allowed in property values
+
+Per canon §12.5 / Phase 9, credential property JSON flows through `<C::Properties as HasSchema>::schema().validate(...)` and then directly into `serde_json::from_value::<C::Properties>(...)` — the credential pipeline deliberately omits the `ValidValues::resolve(&dyn ExpressionContext)` step that the action input pipeline runs. Rationale: secrets must not depend on runtime workflow state. Defense in depth: even if a `{{ … }}` template survives validation as `FieldValue::Expression`, `serde_json::from_value` refuses to deserialize the `{"$expr": "..."}` envelope into the typed property field. Seam: `crates/credential/tests/properties_pipeline.rs`.
+
+### Capability sub-traits (Tech Spec §15.4)
+
+Capabilities are not const flags — they are **sub-traits**. A credential opts into a capability by `impl <Capability> for <Cred>`, and an engine dispatcher binds `where C: <Capability>`. Plugins cannot self-attest false capabilities (closes security-lead findings N1+N3+N5).
+
+| Capability | Sub-trait | Notes |
+|---|---|---|
+| Multi-step interactive resolve | `Interactive` | Carries `type Pending` (was on base trait pre-§15.4) |
+| Token refresh | `Refreshable` | |
+| Provider-side revocation | `Revocable` | |
+| Live health probe | `Testable` | |
+| Per-execution ephemeral lease | `Dynamic` | |
+
+`Capabilities` (bitflags), `compute_capabilities::<C>() -> Capabilities`, `plugin_capability_report::*` — registration-time capability fold (Tech Spec §15.8). The `#[derive(Credential)]` macro's `capabilities(...)` argument emits one `plugin_capability_report::IsX` impl per declared capability and a parity assertion that consumes the actual sub-trait bound, so a missing `impl Refreshable for X` fails to compile.
+
+### Slot field type for Action / Resource
+
+`#[credential(key = "…")]` slot fields on `#[derive(Action)]` and `#[derive(Resource)]` structs hold `CredentialGuard<C::Scheme>` (the projected auth scheme), not `CredentialGuard<C>` (the credential type). The framework projects `C::State` → `C::Scheme` before populating the slot.
+
+### Other public API
+
+- `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic` — capability sub-traits (Tech Spec §15.4). `Interactive` carries the `Pending` associated type.
+- `CredentialState` — supertrait `ZeroizeOnDrop` is mandatory (Tech Spec §15.4 amendment); compile-fail probe `compile_fail_state_zeroize` enforces.
+- `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`. `capabilities_enabled` field removed in §15.8 — capability sets come from sub-trait membership at registration.
 - `CredentialRegistry`, `RegisterError` — `register<C>(instance, registering_crate) -> Result<(), RegisterError>`; duplicates fatal in debug + release (Tech Spec §15.6). `iter_compatible(required: Capabilities)` for slot-picker / discovery code.
-- `AuthScheme` (base) + `SensitiveScheme: AuthScheme + ZeroizeOnDrop` + `PublicScheme: AuthScheme` — the П1 sensitivity dichotomy (Tech Spec §15.5). `AuthPattern` unchanged.
-- 9 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `ConnectionUri`, `InstanceBinding`, `SharedKey`. (Pruned 2026-04-24: `FederatedAssertion` → Plane A per ADR-0033; `ChallengeSecret` + `OtpSeed` → integration-internal, not projected.) Each scheme is now `SensitiveScheme` or `PublicScheme` per §15.5.
-- `SchemeGuard<'a, C>`, `SchemeFactory<C>` — refresh-hook surface (Tech Spec §15.7). `SchemeGuard` is `!Clone`, lifetime-pinned, and drop-zeroizes through the wrapped scheme's `ZeroizeOnDrop` impl. The refresh-notification hook itself is `Resource::on_credential_refresh` in `nebula-resource` per ADR-0036; the previously-defined parallel `OnCredentialRefresh<C>` trait was a transitional bridge and was removed in nebula-resource П2.
+- `AuthScheme` (base) + `SensitiveScheme: AuthScheme + ZeroizeOnDrop` + `PublicScheme: AuthScheme` — the П1 sensitivity dichotomy (Tech Spec §15.5).
+- 9 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `ConnectionUri`, `InstanceBinding`, `SharedKey`. Each is `SensitiveScheme` or `PublicScheme` per §15.5.
+- `SchemeGuard<'a, C>`, `SchemeFactory<C>` — refresh-hook surface (Tech Spec §15.7). `SchemeGuard` is `!Clone`, lifetime-pinned, drop-zeroizes through the wrapped scheme's `ZeroizeOnDrop` impl.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
 - `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
 - `InMemoryStore` — in-crate test/development store shim (canonical impl is `nebula_storage::credential::InMemoryStore`).
 - `SecretString` — string type with automatic zeroization on drop.
 - `CredentialGuard` — secure RAII wrapper with `Deref` + zeroize on drop; implements `Guard` and `TypedGuard` from `nebula-core`.
+- `CredentialRef<C>` — lazy reference type (`id: String` + `PhantomData<fn() -> C>`). New in Phase 1. Resolves to `CredentialGuard<C::Scheme>` via `.resolve(ctx).await`.
 - `NoPendingState`, `PendingState`, `PendingToken` — pending state for interactive flows (`Pending` lives on `Interactive` per §15.4).
 - `PendingStateStore`, `InMemoryPendingStore`, `PendingStoreError` — pending-state contract and in-memory shim.
-- `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM crypto primitives.
-- `#[derive(Credential)]`, `#[derive(AuthScheme)]` (with `sensitive` / `public` argument) — proc-macro derivations (low boilerplate).
+- `EncryptedData`, `EncryptionKey`, `encrypt_with_aad`, `encrypt_with_key_id`, `decrypt`, `decrypt_with_aad` — AES-256-GCM crypto primitives. The AAD-free `encrypt` path is intentionally not exposed (SEC-11 hardening 2026-04-27).
+- `#[derive(Credential)]`, `#[derive(AuthScheme)]` (with `sensitive` / `public` argument) — proc-macro derivations.
 - `#[capability]` (in `nebula-credential-macros`) — capability sub-trait declaration with sealed companion + phantom-shim companion per ADR-0035.
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
 - `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations.
-- `NoCredential` — opt-out for resources without an authenticated binding ([ADR-0036](../../docs/adr/0036-resource-credential-adoption-auth-retirement.md)).
 - `StaticProtocol` — reusable pattern for static credentials (State = Scheme).
 - `ExternalProvider`, `ExternalReference`, `ProviderKind`, `ProviderError` — external provider abstraction for Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and other secret managers.
 - `CredentialMetrics` — standardized credential operation metric names and label helpers (`resolve_total`, `refresh_total`, `rotations_total`, etc.).
 - `prelude` module — convenient re-exports of common credential types.
+
+## Migration recipe (pre-v4 → v4)
+
+The Phase 5 break renames `type Input` → `type Properties` and shifts schema ownership from instance metadata to a typed companion struct. Migration:
+
+1. **Extract a `<Name>Properties` struct** from the previous in-metadata schema definition. Annotate with `#[derive(Schema, Deserialize)]` and per-field `#[field(...)]` / `#[validate(...)]` attributes (Phase 2 namespace).
+2. **Rename `type Input = …` → `type Properties = …`** on the `Credential` impl. The default `Credential::properties_schema()` body reads `<Self::Properties as HasSchema>::schema()`.
+3. **Drop `CredentialMetadata.properties: ValidSchema`** in builder calls; the schema is now derived from the type, not baked into the metadata struct.
+4. **For capability traits**, ensure each declared capability has a matching `impl <Capability> for <Cred>`. Pre-§15.4 const flags are gone — declared-but-not-implemented capability is a compile error now.
+5. **For `#[derive(Credential)]`** (new), parse `#[credential(key, name, scheme, properties|protocol, capabilities(...))]`. Two modes: `properties = TypePath` (user supplies `resolve` + `project`) or `protocol = TypePath` (derive auto-emits `resolve` delegating to `StaticProtocol`).
+6. **For action / resource consumers**, update slot fields to `CredentialGuard<C::Scheme>` (not `CredentialGuard<C>`). The framework projects state→scheme before populating the slot.
+
+## Runnable examples
+
+- `cargo run -p nebula-examples --example m6_resident_http` — credential refresh hook on a Resident-topology HTTP client (OAuth2-style)
 
 ## Contract
 
@@ -80,7 +184,7 @@ The credential П1 phase landed the validated CP5/CP6 trait shape per Tech Spec 
 - **Capability sub-trait split (§15.4).** The 4 capability bools (`INTERACTIVE` / `REFRESHABLE` / `REVOCABLE` / `TESTABLE`) and the production `DYNAMIC` flag are gone. Credentials opt into capabilities by implementing `Interactive`, `Refreshable`, `Revocable`, `Testable`, or `Dynamic`. The `Pending` associated type lives on `Interactive` (was on the base trait). Engine dispatchers bind `where C: Refreshable` rather than reading a const; the silent-downgrade vector ("const says `true` but method defaults to `NotSupported`") is structurally absent. Closes security-lead N1+N3+N5.
 - **`AuthScheme` sensitivity dichotomy (§15.5).** `AuthScheme` is now the base; sensitive material implements `SensitiveScheme: AuthScheme + ZeroizeOnDrop`, public material implements `PublicScheme: AuthScheme`. Derive macros `#[auth_scheme(sensitive)]` / `#[auth_scheme(public)]` audit fields at expansion (forbid plain `String` for sensitive, forbid `SecretString` for public, name-based lint on `token` / `secret` / `key` / `password`). `OAuth2Token::bearer_header` returns `SecretString`; `ConnectionUri` exposes structured accessors only. Closes N2+N4+N10.
 - **Fatal duplicate-KEY registration (§15.6).** `CredentialRegistry::register<C>(instance, registering_crate)` returns `Result<(), RegisterError>` — duplicates are fatal in **both** debug and release builds. The previous "panic in debug, warn + overwrite in release" pattern is removed. Operators resolve via plugin uninstall, version pin, or namespace fix at startup rather than discovering silent credential takeover at runtime. Closes N7 (interim until signed-manifest infra lands).
-- **`SchemeGuard` + `SchemeFactory` refresh hook (§15.7).** Long-lived resources receive `SchemeGuard<'a, C>` (`!Clone`, drop-zeroizes via `SensitiveScheme: ZeroizeOnDrop`, lifetime-pinned by `PhantomData<&'a ()>`) instead of `&Scheme`. `SchemeFactory<C>` is the re-acquisition mechanism for connection pools / daemons that need fresh material per request. The refresh-notification hook itself lives on `nebula_resource::Resource::on_credential_refresh` per ADR-0036 + Tech Spec §15.4 (the previously-defined parallel `OnCredentialRefresh<C>` trait was a transitional bridge and was removed in nebula-resource П2). Closes N8 + tech-lead gap (i).
+- **`SchemeGuard` + `SchemeFactory` refresh hook (§15.7).** Long-lived resources receive `SchemeGuard<'a, C>` (`!Clone`, drop-zeroizes via `SensitiveScheme: ZeroizeOnDrop`, lifetime-pinned by `PhantomData<&'a ()>`) instead of `&Scheme`. `SchemeFactory<C>` is the re-acquisition mechanism for connection pools / daemons that need fresh material per request. The refresh-notification hook itself lives on `nebula_resource::Resource::on_credential_refresh` per ADR-0044 (which supersedes ADR-0036 — slot-binding lands the per-slot rotation hook with `&mut self` + slot_name).
 - **Capability-from-type (§15.8).** `CredentialMetadata::capabilities_enabled` is removed. Capability sets come from `compute_capabilities::<C>()` over the `plugin_capability_report::Is*` constants (set by sub-trait membership) at registration; plugins cannot self-attest false capabilities. `CredentialRegistry::iter_compatible(required: Capabilities) -> impl Iterator<Item = (&str, Capabilities)>` is the discovery surface for slot pickers. Closes N6.
 - **ADR-0035 phantom-shim canonical form.** `dyn ServiceCapability` requires a per-capability `mod sealed_caps` + `dyn ServiceCapabilityPhantom` rewrite — see [ADR-0035](../../docs/adr/0035-phantom-shim-capability-pattern.md) (amendments 2026-04-24-B + -C + 2026-04-26 rename). The `#[capability]` proc-macro and `#[action_phantom]` rewriter make this one-line for plugin authors.
 
@@ -90,16 +194,17 @@ Plugin authors: see [`crates/credential-builtin/`](../credential-builtin/) for c
 
 See `docs/MATURITY.md` row for `nebula-credential`.
 
-- API stability: `frontier` — П1 trait scaffolding landed (sub-trait capability split, sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` / `SchemeFactory` refresh hook, capability-from-type). 9 scheme types, store contract, and secret primitives implemented. Runtime resolver/registry/executor in `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving. nebula-resource П2 wired Manager-side `Resource::on_credential_refresh` fan-out (Tasks 4-5) and removed the deprecated parallel `OnCredentialRefresh<C>` trait (Task 12); engine `iter_compatible` consumer wiring tracked as a post-П1 follow-up (`stage7-followup-engine-discovery` in the credential concerns register).
+- API stability: `frontier` — Phase 5 / M6 trait shape lands `type Properties` (replacing `type Input`) and shifts schema ownership to typed companion structs (2026-04-29). П1 trait scaffolding (capability sub-trait split, sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` / `SchemeFactory` refresh hook, capability-from-type) preserved. 9 scheme types, store contract, and secret primitives implemented. Runtime resolver/registry/executor in `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving.
 - `#![forbid(unsafe_code)]` enforced.
 - Known gap: `CredentialRecord` placement is tracked for potential movement (see comment in `src/record.rs`); no canon revision required.
 
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (integration model — stored-state vs projected auth-material split), §12.5 (secrets + auth invariants), §13.2 (rotation/refresh seam).
+- ADRs: `docs/adr/0042-node-binding-mechanism.md`, `docs/adr/0043-dependency-declaration-dx.md`, `docs/adr/0044-supersede-0036-resource-credential-singular.md` (drops `Resource::Credential`; per-slot rotation hook).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-credential`.
 - ADR: `docs/adr/0004-rename-credential-metadata-description.md` (Metadata→Record, Description→Metadata).
-- Siblings: `nebula-core` (cross-cutting IDs/scopes), `nebula-schema` (`ValidSchema` consumed by `Credential::Properties` companion structs), `nebula-action` (binds to credential types in `ActionDependencies`), `nebula-engine` (`credential` module owns runtime resolution/orchestration), `nebula-storage` (`credential` module owns store impls/layers).
+- Siblings: `nebula-core` (cross-cutting IDs/scopes), `nebula-schema` (`ValidSchema` consumed by `Credential::Properties` companion structs), `nebula-action` (binds via `#[credential]` slot fields), `nebula-resource` (binds via `#[credential]` slot fields), `nebula-engine` (`credential` module owns runtime resolution/orchestration), `nebula-storage` (`credential` module owns store impls/layers).
 
 ## Appendix
 

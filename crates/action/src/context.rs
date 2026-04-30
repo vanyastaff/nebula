@@ -666,7 +666,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// # Errors
     ///
     /// Returns [`ActionError::Fatal`] if the id is not a valid
-    /// [`ResourceKey`](nebula_core::ResourceKey), the resource is not
+    /// [`ResourceKey`], the resource is not
     /// registered, or the accessor returns the wrong type.
     #[allow(
         clippy::type_complexity,

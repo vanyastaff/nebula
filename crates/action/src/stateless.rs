@@ -31,7 +31,7 @@ use crate::{
 /// for iterative or stateful behavior.
 ///
 /// `Self::Input` and `Self::Output` are inherited from
-/// [`Action`](crate::Action); concrete implementations declare them on the
+/// [`Action`]; concrete implementations declare them on the
 /// base trait.
 ///
 /// # Cancellation
