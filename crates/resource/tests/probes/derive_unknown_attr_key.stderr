@@ -1,0 +1,5 @@
+error: unknown attribute `mystery` in #[resource(...)] — allowed keys: key, topology, config, runtime, lease, error
+ --> tests/probes/derive_unknown_attr_key.rs:6:76
+  |
+6 | #[resource(key = "bad.unknown_attr", topology = "pool", config = MyConfig, mystery = "x")]
+  |                                                                            ^^^^^^^

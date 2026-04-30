@@ -1,11 +1,23 @@
-//! Resource derive macro implementation.
+//! `#[derive(Resource)]` macro implementation — Phase 4 / ADR-0044.
+//!
+//! Emits:
+//! - `impl Resource for Foo` with `key()` returning the `#[resource(key = ...)]` value, and the
+//!   four associated types (`Config`, `Runtime`, `Lease`, `Error`) read from the `#[resource(...)]`
+//!   attribute. The `create` body is left as `todo!()` so the implementor must provide one — the
+//!   macro emits the trait shape and the `key()` / metadata wiring only.
+//! - `impl DeclaresDependencies for Foo` enumerating credential slot fields.
+//!
+//! Field-level attributes recognised:
+//! - `#[credential]` / `#[credential(key = "...", purpose = "...")]` — declares a credential slot.
+//!   Field type must be `CredentialGuard<C>` (optionally wrapped in `Option<...>` and/or
+//!   `Lazy<...>`).
 
 use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, parse_macro_input};
 
-use crate::dependencies;
+use crate::{field_slots, resource_attrs::ResourceAttrs};
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -20,77 +32,85 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let resource_attrs = attrs::parse_attrs(&input.attrs, "resource")?;
-    let id = resource_attrs.require_string("id", struct_name)?;
-
-    let config_type = resource_attrs.get_type("config")?.ok_or_else(|| {
-        diag::error_spanned(struct_name, "missing required attribute `config = Type`")
-    })?;
-
-    let instance_type = resource_attrs
-        .get_type("instance")?
-        .unwrap_or_else(|| syn::parse_str("Self").expect("valid Self type"));
-
-    match &input.data {
-        Data::Struct(_) => {},
-        _ => {
+    let fields = match &input.data {
+        Data::Struct(s) => &s.fields,
+        Data::Enum(_) | Data::Union(_) => {
             return Err(syn::Error::new(
-                input.ident.span(),
-                "Resource derive can only be used on structs",
+                struct_name.span(),
+                "#[derive(Resource)] can only be used on structs",
             ));
         },
-    }
+    };
 
-    let deps_impl = dependencies::expand(struct_name, &input.generics, &input.attrs)?;
+    let attr_args = attrs::parse_attrs(&input.attrs, "resource")?;
+    let attrs = ResourceAttrs::parse(&attr_args, struct_name)?;
 
-    let expanded = quote! {
+    let slots = field_slots::parse_credential_slot_fields(fields)?;
+    let slot_registrations = field_slots::emit_slot_field_registrations(&slots);
+
+    let key_lit = &attrs.key;
+    let config_ty = &attrs.config;
+    let runtime_ty = &attrs.runtime;
+    let lease_ty = &attrs.lease;
+    let error_ty = &attrs.error;
+    let topology_ident = attrs.topology_ident();
+
+    // Resource trait impl — the `create()` body must be supplied by the implementor.
+    // The macro provides the trait shape + key() + metadata().
+    let resource_impl = quote! {
         impl #impl_generics ::nebula_resource::Resource for #struct_name #ty_generics #where_clause {
-            type Config = #config_type;
-            type Instance = #instance_type;
+            type Config = #config_ty;
+            type Runtime = #runtime_ty;
+            type Lease = #lease_ty;
+            type Error = #error_ty;
 
-            fn id(&self) -> &str {
-                #id
+            fn key() -> ::nebula_core::ResourceKey {
+                ::nebula_core::ResourceKey::new(#key_lit)
+                    .expect("invalid resource key in #[resource] attribute")
             }
 
             fn create(
                 &self,
                 _config: &Self::Config,
-                _ctx: &::nebula_resource::context::Context,
-            ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<Self::Instance>> + Send {
+                _ctx: &::nebula_resource::ResourceContext,
+            ) -> impl ::std::future::Future<Output = ::std::result::Result<Self::Runtime, Self::Error>> + Send {
                 async move {
                     ::std::todo!(
-                        "implement `create` for resource `{}`",
-                        stringify!(#struct_name)
+                        "implement `Resource::create` for `{}`",
+                        ::std::stringify!(#struct_name),
                     )
                 }
             }
-
-            fn is_reusable(
-                &self,
-                _instance: &Self::Instance,
-                _meta: &::nebula_resource::pool::InstanceMetadata,
-            ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<bool>> + Send {
-                async move { Ok(true) }
-            }
-
-            fn recycle(
-                &self,
-                _instance: &mut Self::Instance,
-                _meta: &::nebula_resource::pool::InstanceMetadata,
-            ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<()>> + Send {
-                async move { Ok(()) }
-            }
-
-            fn destroy(
-                &self,
-                _instance: Self::Instance,
-            ) -> impl ::std::future::Future<Output = ::nebula_resource::error::Result<()>> + Send {
-                async move { Ok(()) }
-            }
         }
-
-        #deps_impl
     };
 
-    Ok(expanded)
+    let deps_impl = quote! {
+        impl #impl_generics ::nebula_core::DeclaresDependencies for #struct_name #ty_generics #where_clause {
+            fn dependencies() -> ::nebula_core::Dependencies {
+                ::nebula_core::Dependencies::new()
+                    #slot_registrations
+            }
+        }
+    };
+
+    // Topology marker — the `topology = "..."` attribute is informational (used
+    // by catalog / UI); the actual topology implementation comes from
+    // separately impl'ing `Pooled` / `Resident` / `Service` / `Transport` /
+    // `Exclusive` for the type. Emit a const that exposes the chosen topology
+    // tag for runtime introspection.
+    let topology_const = quote! {
+        impl #impl_generics #struct_name #ty_generics #where_clause {
+            /// The topology this resource was declared with (per
+            /// `#[resource(topology = ...)]`). Used by catalog / UI for
+            /// dependency-graph rendering.
+            pub const RESOURCE_TOPOLOGY: ::nebula_resource::TopologyTag =
+                ::nebula_resource::TopologyTag::#topology_ident;
+        }
+    };
+
+    Ok(quote! {
+        #resource_impl
+        #deps_impl
+        #topology_const
+    })
 }

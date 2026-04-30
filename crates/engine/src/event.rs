@@ -7,9 +7,11 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_core::{NodeKey, ResourceKey, id::ExecutionId};
 use nebula_execution::status::ExecutionTerminationReason;
 use nebula_workflow::NodeState;
+
+use crate::scoped_resources::BranchId;
 
 /// Events emitted during workflow execution.
 #[derive(Debug, Clone)]
@@ -129,5 +131,35 @@ pub enum ExecutionEvent {
         /// `termination_reason` to distinguish attributed termination
         /// from unattributed system-driven failure (`None`).
         termination_reason: Option<ExecutionTerminationReason>,
+    },
+
+    /// A scoped resource's `Resource::destroy` future overran its
+    /// configured cleanup budget (default
+    /// [`crate::scoped_resources::DEFAULT_CLEANUP_TIMEOUT`]).
+    ///
+    /// Emitted by Phase 7 (M6.2) when the engine drives branch-exit
+    /// cleanup and a per-resource timeout fires. The runtime is dropped
+    /// without further awaiting; downstream observers (storage writer,
+    /// metrics collector, audit writer) use this event to attribute
+    /// resource leaks.
+    ///
+    /// # Observability triple
+    ///
+    /// - Typed event variant (`thiserror`-free; events are not errors).
+    /// - `tracing::warn!` span fires inside the cleanup driver before this event is bus-emitted.
+    /// - Engine asserts the invariant `elapsed >= budget` when constructing the event (timeout path
+    ///   only).
+    ScopedResourceCleanupTimeout {
+        /// Execution this branch belongs to.
+        execution_id: ExecutionId,
+        /// Branch that owned the timed-out resource.
+        branch_id: BranchId,
+        /// Resource key of the timed-out resource.
+        resource_key: ResourceKey,
+        /// Budget that elapsed before the future was dropped.
+        budget: Duration,
+        /// Wall-clock time spent in the cleanup body before the timeout
+        /// fired. Always `>= budget` modulo monotonic-clock skew.
+        elapsed: Duration,
     },
 }

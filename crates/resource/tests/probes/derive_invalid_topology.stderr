@@ -1,0 +1,5 @@
+error: invalid `topology = "wat"` — must be one of: pool, resident, service, transport, exclusive
+ --> tests/probes/derive_invalid_topology.rs:7:8
+  |
+7 | struct BadTopology;
+  |        ^^^^^^^^^^^

@@ -43,7 +43,9 @@ use std::{
 use serde_json::Value;
 pub use source::TriggerSource;
 
-use crate::{context::TriggerContext, error::ActionError, metadata::ActionMetadata};
+use crate::{
+    action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
+};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
@@ -76,7 +78,7 @@ use crate::{context::TriggerContext, error::ActionError, metadata::ActionMetadat
     message = "`{Self}` does not implement TriggerAction",
     note = "implement `Source`, `Error`, and the `start`/`stop`/`handle` methods"
 )]
-pub trait TriggerAction: Send + Sync + 'static {
+pub trait TriggerAction: Action {
     /// Trigger event family — see [`TriggerSource`] (e.g.
     /// `WebhookSource`, `PollSource`).
     type Source: TriggerSource;
@@ -87,9 +89,6 @@ pub trait TriggerAction: Send + Sync + 'static {
     /// Specialized triggers MAY use a richer typed error and let the
     /// adapter wrap it on the way to the dyn-layer.
     type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Static metadata for this trigger.
-    fn metadata(&self) -> &ActionMetadata;
 
     /// Start the trigger (register listener, schedule poll, etc.).
     ///
@@ -490,7 +489,7 @@ where
     A::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
+        <A as Action>::metadata()
     }
 
     /// Start the trigger by delegating to the typed action.
@@ -558,7 +557,7 @@ where
 impl<A: TriggerAction> fmt::Debug for TriggerActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TriggerActionAdapter")
-            .field("action", &self.action.metadata().base.key)
+            .field("action", &<A as Action>::metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -585,30 +584,52 @@ mod tests {
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 
     struct MockTriggerAction {
-        meta: ActionMetadata,
         started: AtomicBool,
     }
 
     impl MockTriggerAction {
         fn new() -> Self {
             Self {
-                meta: ActionMetadata::new(
+                started: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl Action for MockTriggerAction {
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            use std::sync::OnceLock;
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
                     nebula_core::action_key!("test.trigger_action"),
                     "MockTrigger",
                     "Tracks start/stop",
-                ),
-                started: AtomicBool::new(false),
-            }
+                )
+            })
+        }
+        fn input_schema() -> &'static nebula_schema::ValidSchema {
+            use std::sync::OnceLock;
+            static S: OnceLock<nebula_schema::ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as nebula_schema::HasSchema>::schema)
+        }
+        fn output_schema() -> &'static nebula_schema::ValidSchema {
+            use std::sync::OnceLock;
+            static S: OnceLock<nebula_schema::ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as nebula_schema::HasSchema>::schema)
+        }
+        fn dependencies() -> &'static nebula_core::Dependencies {
+            use std::sync::OnceLock;
+            static D: OnceLock<nebula_core::Dependencies> = OnceLock::new();
+            D.get_or_init(nebula_core::Dependencies::new)
         }
     }
 
     impl TriggerAction for MockTriggerAction {
         type Source = TestSource;
         type Error = ActionError;
-
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
-        }
 
         async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(true, Ordering::Release);
@@ -657,9 +678,9 @@ mod tests {
     #[test]
     fn trigger_adapter_into_inner_returns_action() {
         let adapter = TriggerActionAdapter::new(MockTriggerAction::new());
-        let action = adapter.into_inner();
+        let _action = adapter.into_inner();
         assert_eq!(
-            action.metadata().base.key,
+            <MockTriggerAction as Action>::metadata().base.key,
             nebula_core::action_key!("test.trigger_action")
         );
     }

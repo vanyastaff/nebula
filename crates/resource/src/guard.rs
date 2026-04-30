@@ -385,7 +385,6 @@ mod tests {
         type Runtime = ();
         type Lease = u32;
         type Error = std::convert::Infallible;
-        type Credential = nebula_credential::NoCredential;
         fn key() -> ResourceKey {
             nebula_core::resource_key!("dummy")
         }
@@ -393,7 +392,6 @@ mod tests {
         async fn create(
             &self,
             _config: &(),
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &crate::context::ResourceContext,
         ) -> Result<(), std::convert::Infallible> {
             Ok(())

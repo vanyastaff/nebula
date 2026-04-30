@@ -52,7 +52,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
     resolver::ParamResolver, resource_accessor::EngineResourceAccessor, result::ExecutionResult,
-    runtime::ActionRuntime,
+    runtime::ActionRuntime, scoped_resources::LayeredResourceAccessor,
 };
 
 /// Type alias for the optional event sender.
@@ -2788,9 +2788,17 @@ impl WorkflowEngine {
                 default_credential_accessor()
             };
 
-        // Build resource accessor: use the manager if configured, else noop.
+        // Build resource accessor: wrap the manager-backed global accessor in
+        // a LayeredResourceAccessor (M6.1 — Phase 6). Phase 6 plugs in the
+        // empty scoped map; Phase 7 (M6.2) swaps the inner scoped layer for
+        // the per-branch DashMap implementation. Action call sites
+        // (`ctx.acquire_resource_by_id`, `ctx.resource::<R>()`) consult the
+        // layered accessor transparently — `scoped → global`, closest
+        // ancestor wins.
         let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
-            Arc::new(EngineResourceAccessor::new(Arc::clone(manager)))
+            let global: Arc<dyn ResourceAccessor> =
+                Arc::new(EngineResourceAccessor::new(Arc::clone(manager)));
+            Arc::new(LayeredResourceAccessor::global_only(global))
         } else {
             default_resource_accessor()
         };
@@ -2823,6 +2831,7 @@ impl WorkflowEngine {
                 node_key: node_key.clone(),
                 workflow_id,
                 action_key,
+                node: Arc::new((*node_def).clone()),
                 interface_version,
                 input: action_input,
                 support_inputs,
@@ -3408,9 +3417,15 @@ struct NodeTask {
     node_key: NodeKey,
     workflow_id: WorkflowId,
     action_key: String,
+    /// Workflow node being executed. Passed through to
+    /// [`ActionRuntime::execute_action_with_node`] so the dispatch path
+    /// can hand the [`NodeDefinition`] to
+    /// [`nebula_action::ActionFactory::instantiate`] (slot bindings,
+    /// parameters, version pinning live on the node).
+    node: Arc<nebula_workflow::NodeDefinition>,
     /// Pinned interface version for versioned action lookup.
     ///
-    /// When `Some`, the runtime uses [`execute_action_versioned`] with this
+    /// When `Some`, the runtime uses [`execute_action_with_node`] with this
     /// exact version. When `None`, the latest registered handler is used.
     interface_version: Option<semver::Version>,
     input: serde_json::Value,
@@ -3525,15 +3540,19 @@ impl NodeTask {
             }
         }
 
-        // Use versioned action lookup when the node definition pins a version;
-        // fall back to the latest registered handler otherwise.
+        // Production dispatch via the factory path: the runtime calls
+        // `factory.instantiate(node, ctx)` to build a fresh erased
+        // action, then dispatches the matching variant. Falls back to
+        // the legacy `ActionHandler` path inside the runtime only when
+        // no factory is registered (test-escape registrations).
         let result = self
             .runtime
-            .execute_action_versioned(
-                &self.action_key,
+            .execute_action_with_node(
+                &self.node,
                 self.interface_version.as_ref(),
                 self.input,
                 &action_ctx,
+                None,
             )
             .await;
 
@@ -4537,13 +4556,20 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::atomic::AtomicU32, time::Duration};
+    use std::{
+        sync::{
+            OnceLock,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::Duration,
+    };
 
     use nebula_action::{
         ActionError, action::Action, context::CredentialContextExt, metadata::ActionMetadata,
         result::ActionResult, stateless::StatelessAction,
     };
-    use nebula_core::{DeclaresDependencies, action_key};
+    use nebula_core::{Dependencies, action_key};
+    use nebula_schema::{HasSchema, ValidSchema};
     use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -4554,77 +4580,115 @@ mod tests {
         ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
     };
 
-    // -- Test handlers --
+    // ── Variant A test fixtures ───────────────────────────────────────────
+    //
+    // Per Plan-agent R-NEW-7, fixtures register through
+    // [`ActionRegistry::legacy_register_stateless_with_metadata`] (the
+    // test-only escape) so each test can vary key/version while the static
+    // `<X as Action>::metadata()` keeps a placeholder default.
 
-    struct EchoHandler {
-        meta: ActionMetadata,
-    }
+    struct EchoHandler;
 
-    impl DeclaresDependencies for EchoHandler {}
     impl Action for EchoHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for EchoHandler {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
     }
 
-    struct FailHandler {
-        meta: ActionMetadata,
-    }
+    struct FailHandler;
 
-    impl DeclaresDependencies for FailHandler {}
     impl Action for FailHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| ActionMetadata::new(action_key!("test.fail.static"), "Fail", "fails"))
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for FailHandler {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: <Self as Action>::Input,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Err(ActionError::fatal("intentional failure"))
         }
     }
 
     struct SlowHandler {
-        meta: ActionMetadata,
         delay: Duration,
     }
 
-    impl DeclaresDependencies for SlowHandler {}
     impl Action for SlowHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| ActionMetadata::new(action_key!("test.slow.static"), "Slow", "delays"))
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for SlowHandler {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             tokio::select! {
                 () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
                 () = ctx.cancellation().cancelled() => Err(ActionError::Cancelled),
@@ -4706,9 +4770,10 @@ mod tests {
     #[tokio::test]
     async fn single_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -4730,9 +4795,10 @@ mod tests {
     #[tokio::test]
     async fn linear_two_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -4760,9 +4826,10 @@ mod tests {
     #[tokio::test]
     async fn diamond_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -4803,12 +4870,14 @@ mod tests {
     #[tokio::test]
     async fn failing_node_stops_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -4874,9 +4943,10 @@ mod tests {
     #[tokio::test]
     async fn telemetry_events_emitted() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, metrics) = make_engine(registry);
 
@@ -4908,9 +4978,10 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_failure() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let (engine, metrics) = make_engine(registry);
 
@@ -4964,51 +5035,74 @@ mod tests {
 
     // -- Frontier-specific test handlers --
 
-    struct SkipHandler {
-        meta: ActionMetadata,
-    }
+    struct SkipHandler;
 
-    impl DeclaresDependencies for SkipHandler {}
     impl Action for SkipHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| ActionMetadata::new(action_key!("test.skip.static"), "Skip", "skips"))
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for SkipHandler {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: <Self as Action>::Input,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::skip("skipped by test"))
         }
     }
 
     struct BranchHandler {
-        meta: ActionMetadata,
         selected: String,
     }
 
-    impl DeclaresDependencies for BranchHandler {}
     impl Action for BranchHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.branch.static"), "Branch", "branches")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for BranchHandler {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::Branch {
                 selected: self.selected.clone(),
                 output: nebula_action::output::ActionOutput::Value(input),
@@ -5024,13 +5118,16 @@ mod tests {
     #[tokio::test]
     async fn branch_workflow_only_selected_path_executes() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(BranchHandler {
-            meta: ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
-            selected: "true".into(),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
+            BranchHandler {
+                selected: "true".into(),
+            },
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5073,12 +5170,14 @@ mod tests {
     #[tokio::test]
     async fn skip_propagation() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(SkipHandler {
-            meta: ActionMetadata::new(action_key!("skip"), "Skip", "always skips"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("skip"), "Skip", "always skips"),
+            SkipHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5116,12 +5215,14 @@ mod tests {
     #[tokio::test]
     async fn error_routing_with_handler() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5160,12 +5261,14 @@ mod tests {
     #[tokio::test]
     async fn error_without_handler_fails_fast() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5199,9 +5302,10 @@ mod tests {
     #[tokio::test]
     async fn conditional_edge_on_result() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5231,9 +5335,10 @@ mod tests {
     #[tokio::test]
     async fn diamond_with_mixed_conditions() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5276,9 +5381,10 @@ mod tests {
     #[tokio::test]
     async fn persists_execution_state_on_success() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -5315,9 +5421,10 @@ mod tests {
     #[tokio::test]
     async fn persists_execution_state_on_failure() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -5346,9 +5453,10 @@ mod tests {
     #[tokio::test]
     async fn persists_node_outputs_for_multi_node_workflow() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -5383,13 +5491,16 @@ mod tests {
     #[tokio::test]
     async fn budget_max_duration_exceeded() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(SlowHandler {
-            meta: ActionMetadata::new(action_key!("slow"), "Slow", "sleeps"),
-            delay: Duration::from_millis(100),
-        });
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("slow"), "Slow", "sleeps"),
+            SlowHandler {
+                delay: Duration::from_millis(100),
+            },
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5419,9 +5530,10 @@ mod tests {
     #[tokio::test]
     async fn budget_max_output_bytes_exceeded() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5453,12 +5565,14 @@ mod tests {
     #[tokio::test]
     async fn error_strategy_continue_on_error_skips_dependents() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5508,12 +5622,14 @@ mod tests {
     #[tokio::test]
     async fn error_strategy_ignore_errors_continues_downstream() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "always fails"),
+            FailHandler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -5622,9 +5738,10 @@ mod tests {
     #[tokio::test]
     async fn resume_returns_error_for_terminal_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
@@ -5661,9 +5778,10 @@ mod tests {
         // before the crash. We manually inject the partially completed state into
         // the repos and verify that resume runs n2 and n3.
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -5771,9 +5889,10 @@ mod tests {
         use nebula_workflow::ParamValue;
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         // `ContinueOnError` ensures `handle_node_failure` returns `None`
         // so the frontier loop reaches the new setup-failure checkpoint.
@@ -6129,12 +6248,14 @@ mod tests {
     #[tokio::test]
     async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
-        });
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
+            FailHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+            EchoHandler,
+        );
 
         // A (fail) --OnError--> B (echo). ContinueOnError so the frontier
         // loop reaches the failure branch (FailFast would early-return
@@ -6217,9 +6338,10 @@ mod tests {
     #[tokio::test]
     async fn ignore_errors_persists_recovered_completed_state() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
+            FailHandler,
+        );
 
         let a = node_key!("a");
         let wf = make_workflow_with_config(
@@ -6290,9 +6412,10 @@ mod tests {
     async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
         use nebula_workflow::ParamValue;
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+            EchoHandler,
+        );
 
         let a = node_key!("a");
         let b = node_key!("b");
@@ -6354,12 +6477,14 @@ mod tests {
     #[tokio::test]
     async fn on_error_payload_is_persisted_before_checkpoint_commits() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailHandler {
-            meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
-        });
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
+            FailHandler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+            EchoHandler,
+        );
 
         let a = node_key!("a");
         let b = node_key!("b");
@@ -6430,36 +6555,51 @@ mod tests {
         let call_count_clone = call_count.clone();
 
         struct CountingHandler {
-            meta: ActionMetadata,
             count: Arc<AtomicU32>,
         }
 
-        impl DeclaresDependencies for CountingHandler {}
         impl Action for CountingHandler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("counting.static"), "Counting", "counts calls")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
 
         impl StatelessAction for CountingHandler {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
-
             async fn execute(
                 &self,
-                input: Self::Input,
+                input: <Self as Action>::Input,
                 _ctx: &(impl nebula_action::ActionContext + ?Sized),
-            ) -> Result<ActionResult<Self::Output>, ActionError> {
+            ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
                 self.count.fetch_add(1, AOrdering::Relaxed);
                 Ok(ActionResult::success(input))
             }
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(CountingHandler {
-            meta: ActionMetadata::new(action_key!("counting"), "Counting", "counts calls"),
-            count: call_count_clone,
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("counting"), "Counting", "counts calls"),
+            CountingHandler {
+                count: call_count_clone,
+            },
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -6539,51 +6679,75 @@ mod tests {
         use semver::Version;
 
         // V1 handler returns "v1".
-        struct V1Handler {
-            meta: ActionMetadata,
-        }
+        struct V1Handler;
 
-        impl DeclaresDependencies for V1Handler {}
         impl Action for V1Handler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("versioned.v1.static"), "V1", "v1 static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
 
         impl StatelessAction for V1Handler {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
-
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl nebula_action::ActionContext + ?Sized),
-            ) -> Result<ActionResult<Self::Output>, ActionError> {
+            ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
                 Ok(ActionResult::success(serde_json::json!("v1")))
             }
         }
 
         // V2 handler returns "v2".
-        struct V2Handler {
-            meta: ActionMetadata,
-        }
+        struct V2Handler;
 
-        impl DeclaresDependencies for V2Handler {}
         impl Action for V2Handler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("versioned.v2.static"), "V2", "v2 static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
 
         impl StatelessAction for V2Handler {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
-
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl nebula_action::ActionContext + ?Sized),
-            ) -> Result<ActionResult<Self::Output>, ActionError> {
+            ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
                 Ok(ActionResult::success(serde_json::json!("v2")))
             }
         }
@@ -6592,14 +6756,16 @@ mod tests {
         let v1 = Version::new(1, 0, 0);
         let v2 = Version::new(2, 0, 0);
         // Register v1 first; v2 will become the "latest" (handlers map entry).
-        registry.register_stateless(V1Handler {
-            meta: ActionMetadata::new(action_key!("versioned"), "V1", "v1 handler")
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("versioned"), "V1", "v1 handler")
                 .with_version_full(v1.clone()),
-        });
-        registry.register_stateless(V2Handler {
-            meta: ActionMetadata::new(action_key!("versioned"), "V2", "v2 handler")
+            V1Handler,
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("versioned"), "V2", "v2 handler")
                 .with_version_full(v2.clone()),
-        });
+            V2Handler,
+        );
 
         let (engine, _) = make_engine(registry);
 
@@ -6647,9 +6813,10 @@ mod tests {
         let refresh_count_clone = refresh_count.clone();
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         // The refresh hook is only called when a credential resolver is also set.
         let (engine, _) = make_engine(registry);
@@ -6704,9 +6871,10 @@ mod tests {
     #[tokio::test]
     async fn multi_edge_from_same_source_executes_target() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
         let (engine, _) = make_engine(registry);
 
         let a = node_key!("a");
@@ -7105,24 +7273,37 @@ mod tests {
         // dispatch despite a failed refresh, this will fire and surface
         // a different error than the one we expect.
         struct NeverRunHandler {
-            meta: ActionMetadata,
             invoked: Arc<AtomicU32>,
         }
-        impl DeclaresDependencies for NeverRunHandler {}
         impl Action for NeverRunHandler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
-            }
-        }
-        impl StatelessAction for NeverRunHandler {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("never.static"), "Never", "must not run")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+        impl StatelessAction for NeverRunHandler {
             async fn execute(
                 &self,
-                input: Self::Input,
+                input: <Self as Action>::Input,
                 _ctx: &(impl nebula_action::ActionContext + ?Sized),
-            ) -> Result<ActionResult<Self::Output>, ActionError> {
+            ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
                 self.invoked.fetch_add(1, AOrdering::Relaxed);
                 Ok(ActionResult::success(input))
             }
@@ -7130,10 +7311,12 @@ mod tests {
 
         let invoked = Arc::new(AtomicU32::new(0));
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(NeverRunHandler {
-            meta: ActionMetadata::new(action_key!("never"), "Never", "must not run"),
-            invoked: invoked.clone(),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("never"), "Never", "must not run"),
+            NeverRunHandler {
+                invoked: invoked.clone(),
+            },
+        );
 
         // Refresh hook always fails. Use `ActionError::retryable` for
         // the inner source so the `Arc<dyn Error>` wrapping in
@@ -7463,9 +7646,10 @@ mod tests {
         // Force parameter resolution to fail by referencing a node
         // that has no output in the shared outputs map.
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -7531,9 +7715,10 @@ mod tests {
     #[tokio::test]
     async fn resume_restores_original_workflow_input() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -7588,9 +7773,10 @@ mod tests {
         use std::time::Duration;
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         // Start an execution on "engine A" with a non-default budget
         // (max_concurrent_nodes=3 + retries + timeout + output cap),
@@ -7671,9 +7857,10 @@ mod tests {
     #[tokio::test]
     async fn resume_falls_back_to_default_budget_on_legacy_state() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let n1 = node_key!("n1");
@@ -7755,34 +7942,45 @@ mod tests {
     /// verified via a panicking handler.
     #[tokio::test]
     async fn panicked_task_reports_real_node_id() {
-        struct PanicHandler {
-            meta: ActionMetadata,
-        }
+        struct PanicHandler;
 
-        impl DeclaresDependencies for PanicHandler {}
         impl Action for PanicHandler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| ActionMetadata::new(action_key!("boom.static"), "Boom", "panics"))
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
 
         impl StatelessAction for PanicHandler {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
-
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl nebula_action::ActionContext + ?Sized),
-            ) -> Result<ActionResult<Self::Output>, ActionError> {
+            ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
                 panic!("intentional panic for test");
             }
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(PanicHandler {
-            meta: ActionMetadata::new(action_key!("boom"), "Boom", "panics"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("boom"), "Boom", "panics"),
+            PanicHandler,
+        );
 
         let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -7841,13 +8039,16 @@ mod tests {
     #[tokio::test]
     async fn idempotency_replay_preserves_branch_routing() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(BranchHandler {
-            meta: ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
-            selected: "true".into(),
-        });
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
+            BranchHandler {
+                selected: "true".into(),
+            },
+        );
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -8154,9 +8355,10 @@ mod tests {
     #[tokio::test]
     async fn final_cas_conflict_with_external_cancel_honors_external_status() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+            EchoHandler,
+        );
 
         let a = node_key!("a");
         let wf = make_workflow(
@@ -8227,9 +8429,10 @@ mod tests {
     #[tokio::test]
     async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+            EchoHandler,
+        );
 
         let a = node_key!("a");
         let wf = make_workflow(
@@ -8495,10 +8698,12 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         // Slow echo so the first runner is still inside the frontier
         // loop when the second call arrives.
-        registry.register_stateless(SlowHandler {
-            meta: ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
-            delay: Duration::from_millis(300),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
+            SlowHandler {
+                delay: Duration::from_millis(300),
+            },
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let n = node_key!("n");
@@ -8598,10 +8803,12 @@ mod tests {
     #[tokio::test]
     async fn overlapping_resume_losers_do_not_clobber_winners_registry_entry() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(SlowHandler {
-            meta: ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
-            delay: Duration::from_millis(500),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
+            SlowHandler {
+                delay: Duration::from_millis(500),
+            },
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let n = node_key!("n");
@@ -8702,9 +8909,10 @@ mod tests {
     #[tokio::test]
     async fn lease_is_released_after_terminal_completion_so_next_runner_can_acquire() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -8745,9 +8953,10 @@ mod tests {
     #[tokio::test]
     async fn execute_workflow_produces_independent_lease_per_execution_id() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoHandler {
-            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+            EchoHandler,
+        );
 
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
@@ -8774,6 +8983,166 @@ mod tests {
         assert_ne!(
             first.execution_id, second.execution_id,
             "each execute_workflow call must produce its own ExecutionId"
+        );
+    }
+
+    // ── Phase 3 dispatch crossover regression ─────────────────────────────────
+    //
+    // These tests pin the contract that production registrations via
+    // `register_*_factory::<A>()` actually flow through `factory.instantiate`
+    // at dispatch — not the legacy `ActionHandler` enum path. Without this,
+    // a regression that silently routed factory registrations through the
+    // legacy lookup would not be caught by the existing test fixtures
+    // (which all use `legacy_register_*_with_metadata`).
+
+    /// Variant A fixture — counts how many times `from_workflow_node` is
+    /// called so the test can assert the factory path was taken.
+    struct FactoryEcho;
+
+    impl Action for FactoryEcho {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
+                    action_key!("test.factory.echo"),
+                    "FactoryEcho",
+                    "echo via factory dispatch",
+                )
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl StatelessAction for FactoryEcho {
+        async fn execute(
+            &self,
+            input: <Self as Action>::Input,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+            Ok(ActionResult::success(input))
+        }
+    }
+
+    /// Global instantiation counter — every call to
+    /// [`FactoryEcho::from_workflow_node`] bumps it. Tests serialize on
+    /// [`FACTORY_TEST_LOCK`] (an async `tokio::sync::Mutex`, so the
+    /// guard can be held across `.await` points without tripping
+    /// `clippy::await_holding_lock`).
+    static FACTORY_INSTANTIATIONS: AtomicU32 = AtomicU32::new(0);
+    static FACTORY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    impl nebula_action::FromWorkflowNode for FactoryEcho {
+        type Error = ActionError;
+
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn nebula_action::ActionContext,
+        ) -> Result<Self, Self::Error> {
+            FACTORY_INSTANTIATIONS.fetch_add(1, Ordering::SeqCst);
+            Ok(Self)
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_node_dispatches_through_factory_path() {
+        let _guard = FACTORY_TEST_LOCK.lock().await;
+        let baseline = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+
+        let registry = Arc::new(ActionRegistry::new());
+        // Production registration helper — wires `Arc<dyn ActionFactory>`,
+        // not `ActionHandler`. The runtime's dispatch path MUST call
+        // `factory.instantiate(node, ctx)` for each dispatch, which in
+        // turn calls `FactoryEcho::from_workflow_node`, which bumps
+        // FACTORY_INSTANTIATIONS.
+        registry.register_stateless_factory::<FactoryEcho>();
+
+        let (engine, _) = make_engine(registry);
+
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "factory_echo", "test.factory.echo").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(
+                &wf,
+                serde_json::json!({"hello": "factory"}),
+                ExecutionBudget::default(),
+            )
+            .await
+            .expect("workflow should succeed");
+
+        assert!(result.is_success(), "workflow result should be Success");
+        assert_eq!(
+            result.node_output(&n),
+            Some(&serde_json::json!({"hello": "factory"}))
+        );
+
+        let after = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+        assert_eq!(
+            after - baseline,
+            1,
+            "factory.instantiate should have been called exactly once for the single dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn factory_path_takes_precedence_over_legacy_handler() {
+        // When BOTH a factory and a legacy handler are registered for the
+        // same key, the factory wins (production preference). This guards
+        // against regressions that flip the lookup order.
+        let _guard = FACTORY_TEST_LOCK.lock().await;
+        let baseline = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless_factory::<FactoryEcho>();
+        // Legacy registration with a *different* handler (FailHandler) so
+        // we can tell which path actually ran — if dispatch routed through
+        // the legacy path, the workflow would fail.
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
+                action_key!("test.factory.echo"),
+                "LegacyEcho",
+                "legacy fallback",
+            ),
+            FailHandler,
+        );
+
+        let (engine, _) = make_engine(registry);
+
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "factory_first", "test.factory.echo").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("ok"), ExecutionBudget::default())
+            .await
+            .expect("workflow should succeed via factory path");
+        assert!(result.is_success());
+        assert_eq!(result.node_output(&n), Some(&serde_json::json!("ok")));
+
+        let after = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+        assert_eq!(
+            after - baseline,
+            1,
+            "factory should have been preferred — would have used FailHandler legacy path otherwise"
         );
     }
 }

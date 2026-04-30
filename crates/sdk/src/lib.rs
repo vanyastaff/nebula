@@ -201,17 +201,15 @@ macro_rules! workflow {
 
 /// Macro for defining a simple stateless action with a unit struct.
 ///
-/// Generates a unit `struct $name`, derives [`Action`](nebula_action::Action)
-/// (which also wires [`DeclaresDependencies`](nebula_action::DeclaresDependencies)),
-/// and implements [`StatelessAction`](nebula_action::StatelessAction) over the
-/// supplied `input` / `output` types.
+/// Generates a unit `struct $name`, implements [`Action`](nebula_action::Action)
+/// (with static metadata + schemas + slot-binding [`Dependencies`](nebula_core::Dependencies),
+/// per ADR-0043 §6 / Variant A), and implements
+/// [`StatelessAction`](nebula_action::StatelessAction) over the supplied
+/// `input` / `output` types.
 ///
 /// # Requirements
 ///
-/// `Input` must implement [`HasSchema`](nebula_schema::HasSchema). Use
-/// [`stateless_fn`](nebula_action::stateless_fn) (with `serde_json::Value` or
-/// `()` input) when you want the lowest-boilerplate path without committing to
-/// a typed schema yet.
+/// `Input` and `Output` must implement [`HasSchema`](nebula_schema::HasSchema).
 ///
 /// # Examples
 ///
@@ -245,7 +243,10 @@ macro_rules! simple_action {
         pub struct $name;
 
         impl $crate::nebula_action::Action for $name {
-            fn metadata(&self) -> &$crate::nebula_action::ActionMetadata {
+            type Input = $input;
+            type Output = $output;
+
+            fn metadata() -> &'static $crate::nebula_action::ActionMetadata {
                 static METADATA: ::std::sync::OnceLock<$crate::nebula_action::ActionMetadata> =
                     ::std::sync::OnceLock::new();
                 METADATA.get_or_init(|| {
@@ -256,20 +257,37 @@ macro_rules! simple_action {
                     )
                 })
             }
+
+            fn input_schema() -> &'static $crate::nebula_action::ValidSchema {
+                static SCHEMA: ::std::sync::OnceLock<$crate::nebula_action::ValidSchema> =
+                    ::std::sync::OnceLock::new();
+                SCHEMA.get_or_init(|| {
+                    <$input as $crate::nebula_schema::HasSchema>::schema()
+                })
+            }
+
+            fn output_schema() -> &'static $crate::nebula_action::ValidSchema {
+                static SCHEMA: ::std::sync::OnceLock<$crate::nebula_action::ValidSchema> =
+                    ::std::sync::OnceLock::new();
+                SCHEMA.get_or_init(|| {
+                    <$output as $crate::nebula_schema::HasSchema>::schema()
+                })
+            }
+
+            fn dependencies() -> &'static $crate::nebula_core::Dependencies {
+                static DEPS: ::std::sync::OnceLock<$crate::nebula_core::Dependencies> =
+                    ::std::sync::OnceLock::new();
+                DEPS.get_or_init($crate::nebula_core::Dependencies::new)
+            }
         }
 
-        impl $crate::nebula_action::DeclaresDependencies for $name {}
-
         impl $crate::nebula_action::StatelessAction for $name {
-            type Input = $input;
-            type Output = $output;
-
             async fn execute(
                 &$self,
-                $input_param: Self::Input,
+                $input_param: <Self as $crate::nebula_action::Action>::Input,
                 $ctx_param: &(impl $crate::nebula_action::ActionContext + ?Sized),
             ) -> ::std::result::Result<
-                $crate::nebula_action::ActionResult<Self::Output>,
+                $crate::nebula_action::ActionResult<<Self as $crate::nebula_action::Action>::Output>,
                 $crate::nebula_action::ActionError,
             > {
                 $body

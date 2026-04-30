@@ -1,12 +1,17 @@
-//! `NoCredential` — idiomatic opt-out for resources without an authenticated binding.
+//! `NoCredential` — legacy no-auth credential marker.
 //!
-//! Per ADR-0036, `Resource` impls that don't need credential material write
-//! `type Credential = NoCredential;`. The associated `Scheme = ()` already
-//! implements `AuthScheme` (with `pattern() = AuthPattern::NoAuth`) and
-//! `PublicScheme` in `nebula_core::auth`, so no secret material flows.
+//! Per ADR-0044 (supersedes ADR-0036), the `Resource::Credential`
+//! associated type was removed in favor of typed `#[credential(...)]`
+//! slot fields on resource structs. Resources that do not bind any
+//! credential simply declare zero `#[credential]` fields — `NoCredential`
+//! is no longer used as an opt-out marker on the resource side and is
+//! no longer re-exported from `nebula-resource`.
 //!
-//! This is the credential-side mirror of the previous `type Auth = ();` pattern
-//! retired in the П1 trait reshape.
+//! The type itself is retained inside `nebula-credential` because its
+//! `Scheme = ()` projection (in `nebula_core::auth`) is referenced by
+//! credential-subsystem internals (capability sub-traits, registry
+//! diagnostics, etc.). It can be removed when those internal callers
+//! migrate.
 
 use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
@@ -35,48 +40,27 @@ impl CredentialState for NoCredentialState {
     const VERSION: u32 = 1;
 }
 
-/// Opt-out [`Credential`] for resources without an authenticated binding.
+/// Legacy no-auth credential type — retained for credential-subsystem
+/// internal use (registry diagnostics, capability sub-traits).
 ///
-/// Replaces the legacy `type Auth = ();` pattern from before the П1 trait
-/// reshape. Use as `type Credential = NoCredential;` on any `Resource` impl
-/// that does not need credential material in `create()`.
+/// Per ADR-0044 the `Resource::Credential` associated type was removed;
+/// `NoCredential` is no longer used as an opt-out marker. Resources that
+/// don't need credential material simply declare zero `#[credential]`
+/// slot fields.
 ///
 /// # Not registered with `CredentialRegistry`
 ///
-/// `NoCredential` is a type-level marker for `Resource` impls that don't bind
-/// authenticated material — it never enters
+/// `NoCredential` never enters
 /// [`CredentialRegistry`](crate::CredentialRegistry) (no UI catalog entry, no
 /// `register()` call, no capability-report impls). The five `IsInteractive` /
 /// `IsRefreshable` / `IsRevocable` / `IsTestable` / `IsDynamic` impls present
 /// on registered built-ins (see [`ApiKeyCredential`](crate::ApiKeyCredential))
 /// are intentionally absent here.
-///
-/// # Examples
-///
-/// Marked `ignore` because `nebula-resource` is not a dev-dependency of
-/// `nebula-credential` (would create a cyclic build dep); compile-time
-/// coverage of this snippet lives in `crates/resource/tests/`.
-///
-/// ```ignore
-/// use nebula_credential::NoCredential;
-/// use nebula_resource::Resource;
-///
-/// struct PingResource;
-///
-/// impl Resource for PingResource {
-///     type Config = ();
-///     type Runtime = ();
-///     type Lease = ();
-///     type Error = std::io::Error;
-///     type Credential = NoCredential;
-///     // create() receives `&()` as `scheme` — no secrets.
-/// }
-/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoCredential;
 
 impl Credential for NoCredential {
-    type Input = ();
+    type Properties = ();
     /// `()` — already implements `AuthScheme` with `AuthPattern::NoAuth` and
     /// `PublicScheme` in `nebula_core::auth`.
     type Scheme = ();
@@ -89,7 +73,7 @@ impl Credential for NoCredential {
             .key(nebula_core::credential_key!("no_credential"))
             .name("No credential")
             .description("Opt-out marker for resources without an authenticated binding.")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(AuthPattern::NoAuth)
             .build()
             .expect("NoCredential metadata is statically valid")

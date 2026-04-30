@@ -1107,7 +1107,7 @@ where
     A::State: Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
+        <A as Action>::metadata()
     }
 
     fn start<'life0, 'life1, 'a>(
@@ -1151,7 +1151,7 @@ where
             if let Some(orphan) = rollback_state {
                 if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
                     tracing::warn!(
-                        action = %self.action.metadata().base.key,
+                        action = %<A as Action>::metadata().base.key,
                         error = %e,
                         "webhook rollback on_deactivate failed after double-start race; \
                          external hook may leak"
@@ -1351,7 +1351,7 @@ where
 impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebhookTriggerAdapter")
-            .field("action", &self.action.metadata().base.key)
+            .field("action", &<A as Action>::metadata().base.key)
             .finish_non_exhaustive()
     }
 }

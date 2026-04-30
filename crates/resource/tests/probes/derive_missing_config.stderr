@@ -1,0 +1,5 @@
+error: missing required attribute `config = SomeType` — Phase 4 requires Self::Config to be specified
+ --> tests/probes/derive_missing_config.rs:7:8
+  |
+7 | struct MissingConfig;
+  |        ^^^^^^^^^^^^^

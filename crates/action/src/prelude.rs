@@ -5,7 +5,7 @@
 //! ```
 
 pub use nebula_core::{
-    Context, DeclaresDependencies,
+    Context, Dependencies,
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
@@ -39,7 +39,7 @@ pub use crate::{
         BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction,
         StatefulActionAdapter,
     },
-    stateless::{FnStatelessAction, StatelessAction, StatelessActionAdapter, stateless_fn},
+    stateless::{StatelessAction, StatelessActionAdapter},
     testing::{
         SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
         TriggerTestHarness,

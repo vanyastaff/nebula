@@ -10,7 +10,6 @@
 use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
-use nebula_credential::{Credential, NoCredential};
 use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, ResidentConfig, Resource, ResourceConfig, ResourceContext,
     ScopeLevel, ShutdownConfig,
@@ -96,7 +95,6 @@ impl Resource for HttpResource {
     type Runtime = HttpClient;
     type Lease = HttpClient; // same as Runtime — blanket From<T> for T covers the bounds
     type Error = MyError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -105,7 +103,6 @@ impl Resource for HttpResource {
     async fn create(
         &self,
         config: &HttpConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> Result<HttpClient, MyError> {
         Ok(HttpClient {
@@ -163,7 +160,7 @@ async fn use_case_1_pooled_http_client() {
     let opts = AcquireOptions::default();
 
     let handle = manager
-        .acquire_pooled::<HttpResource>(&(), &ctx, &opts)
+        .acquire_pooled::<HttpResource>(&ctx, &opts)
         .await
         .expect("acquire should succeed");
     // but doesn't say what Lease looks like in the pooled case.
@@ -228,7 +225,6 @@ impl Resource for ConfigStoreResource {
     type Runtime = ConfigStore;
     type Lease = ConfigStore;
     type Error = MyError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -237,7 +233,6 @@ impl Resource for ConfigStoreResource {
     async fn create(
         &self,
         config: &ConfigStoreConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> Result<ConfigStore, MyError> {
         let mut map = std::collections::HashMap::new();
@@ -286,7 +281,7 @@ async fn use_case_2_resident_config_store() {
     let opts = AcquireOptions::default();
 
     let handle = manager
-        .acquire_resident::<ConfigStoreResource>(&(), &ctx, &opts)
+        .acquire_resident::<ConfigStoreResource>(&ctx, &opts)
         .await
         .expect("acquire should succeed");
 
@@ -299,7 +294,7 @@ async fn use_case_2_resident_config_store() {
 
     // Second acquire returns a clone of the same instance
     let handle2 = manager
-        .acquire_resident::<ConfigStoreResource>(&(), &ctx, &opts)
+        .acquire_resident::<ConfigStoreResource>(&ctx, &opts)
         .await
         .expect("second acquire should succeed");
 
@@ -355,7 +350,6 @@ impl Resource for DbResource {
     type Runtime = DbConnection;
     type Lease = DbConnection;
     type Error = MyError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -364,7 +358,6 @@ impl Resource for DbResource {
     async fn create(
         &self,
         _config: &DbConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> Result<DbConnection, MyError> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
@@ -411,8 +404,6 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
             ScopeLevel::Global, // scope
             TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(pool_config, fingerprint)),
             Some(AcquireResilience::standard()), // resilience
-            None,                                // recovery gate
-            None,
             None,
         )
         .expect("registration should succeed");
@@ -430,10 +421,7 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
             CancellationToken::new(),
         );
         let opts = AcquireOptions::default();
-        let h = m1
-            .acquire_pooled::<DbResource>(&(), &ctx, &opts)
-            .await
-            .unwrap();
+        let h = m1.acquire_pooled::<DbResource>(&ctx, &opts).await.unwrap();
         assert!(h.id < 100); // just a sanity check
     });
 
@@ -446,10 +434,7 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
             CancellationToken::new(),
         );
         let opts = AcquireOptions::default();
-        let h = m2
-            .acquire_pooled::<DbResource>(&(), &ctx, &opts)
-            .await
-            .unwrap();
+        let h = m2.acquire_pooled::<DbResource>(&ctx, &opts).await.unwrap();
         assert!(h.id < 100);
     });
 
@@ -488,7 +473,7 @@ async fn error_not_found_on_missing_resource() {
     let opts = AcquireOptions::default();
 
     let err = manager
-        .acquire_pooled::<HttpResource>(&(), &ctx, &opts)
+        .acquire_pooled::<HttpResource>(&ctx, &opts)
         .await
         .unwrap_err();
 
@@ -521,7 +506,7 @@ async fn error_cancelled_after_shutdown() {
     let opts = AcquireOptions::default();
 
     let err = manager
-        .acquire_pooled::<HttpResource>(&(), &ctx, &opts)
+        .acquire_pooled::<HttpResource>(&ctx, &opts)
         .await
         .unwrap_err();
     // returns false for Cancelled, which is correct. The API is clean here.

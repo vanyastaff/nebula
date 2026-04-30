@@ -70,7 +70,7 @@ in-process / test fixtures.
 
 `nebula_resource::Schema` (re-exported from `nebula-schema`) is a derive
 macro that generates a real schema from struct fields. Field-level
-`#[param(...)]` attributes set labels, descriptions, and other catalog
+`#[field(...)]` attributes set labels, descriptions, and other catalog
 metadata. Use this whenever the config is meant to be visible in a UI:
 
 ```rust,ignore
@@ -82,13 +82,13 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Hash, Schema, Deserialize)]
 pub struct PostgresConfig {
-    #[param(label = "Host")]
+    #[field(label = "Host")]
     pub host: String,
-    #[param(label = "Port", default = 5432)]
+    #[field(label = "Port", default = 5432)]
     pub port: u16,
-    #[param(label = "Database")]
+    #[field(label = "Database")]
     pub database: String,
-    #[param(label = "Connect timeout (s)", default = 10)]
+    #[field(label = "Connect timeout (s)", default = 10)]
     pub connect_timeout_secs: u64,
 }
 

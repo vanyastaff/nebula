@@ -1,4 +1,4 @@
-//! Core [`StatelessAction`] trait and function-backed DX adapters.
+//! Core [`StatelessAction`] trait.
 //!
 //! Stateless actions are pure functions from input to result — no state is
 //! kept between executions, and the engine may run multiple instances in
@@ -11,17 +11,9 @@
 //! `execute` and `ctx.cancellation().cancelled()`). Implementations do not
 //! need to check cancellation unless they want cooperative checks at specific
 //! points.
-//!
-//! ## DX adapters
-//!
-//! - [`FnStatelessAction`] / [`stateless_fn`] — zero-boilerplate adapter for a plain `async
-//!   fn(Input) -> Result<Output, ActionError>`.
-//! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant for closures that need
-//!   credentials, resources, or the logger.
 
-use std::{fmt, future::Future, marker::PhantomData};
+use std::{fmt, future::Future};
 
-use nebula_core::DeclaresDependencies;
 use serde_json::Value;
 
 use crate::{
@@ -38,56 +30,21 @@ use crate::{
 /// instances in parallel. Use [`StatefulAction`](crate::stateful::StatefulAction)
 /// for iterative or stateful behavior.
 ///
+/// `Self::Input` and `Self::Output` are inherited from
+/// [`Action`]; concrete implementations declare them on the
+/// base trait.
+///
 /// # Cancellation
 ///
 /// Cancellation is handled by the runtime (e.g. `tokio::select!` between
 /// `execute` and `ctx.cancellation().cancelled()`). Implementations do not
 /// need to check cancellation unless they want cooperative checks at specific
 /// points.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use nebula_action::{Action, StatelessAction, ActionResult, ActionError};
-///
-/// struct MyAction { meta: ActionMetadata }
-/// impl Action for MyAction { /* ... */ }
-///
-/// impl StatelessAction for MyAction {
-///     type Input = serde_json::Value;
-///     type Output = serde_json::Value;
-///
-///     async fn execute(&self, input: Self::Input, _ctx: &(impl ActionContext + ?Sized))
-///         -> Result<ActionResult<Self::Output>, ActionError>
-///     {
-///         Ok(ActionResult::success(input))
-///     }
-/// }
-/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement StatelessAction",
-    note = "implement the `execute` method with matching Input/Output types"
+    note = "implement the `execute` method (Self::Input/Output declared on the base Action trait)"
 )]
 pub trait StatelessAction: Action {
-    /// Input type for this action.
-    ///
-    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
-    /// metadata can auto-derive its parameter schema from the input type.
-    /// Use `()` / `serde_json::Value` for schema-less inputs — both have
-    /// baseline `HasSchema` impls returning an empty schema.
-    type Input: nebula_schema::HasSchema + Send + Sync;
-    /// Output type produced on success (wrapped in [`ActionResult`]).
-    type Output: Send + Sync;
-
-    /// Returns the schema for this action's input parameters.
-    /// Default: derives from `Input` via `HasSchema`.
-    fn schema() -> nebula_schema::ValidSchema
-    where
-        Self: Sized,
-    {
-        <Self::Input as nebula_schema::HasSchema>::schema()
-    }
-
     /// Execute the action with the given input and context.
     ///
     /// Returns [`ActionResult`] for flow control (Success, Skip, Branch, Wait, etc.)
@@ -97,194 +54,9 @@ pub trait StatelessAction: Action {
     /// `tokio::select!` with cancellation (no per-action cancellation boilerplate).
     fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
-}
-
-// ── FnStatelessAction ───────────────────────────────────────────────────────
-
-/// Stateless action adapter backed by an async function/closure.
-///
-/// This removes boilerplate for the common "pure stateless transform" case.
-pub struct FnStatelessAction<F, Input, Output> {
-    metadata: ActionMetadata,
-    func: F,
-    _marker: PhantomData<fn(Input) -> Output>,
-}
-
-impl<F, Input, Output> FnStatelessAction<F, Input, Output> {
-    /// Create a new function-backed stateless action.
-    #[must_use]
-    pub fn new(metadata: ActionMetadata, func: F) -> Self {
-        Self {
-            metadata,
-            func,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<F, Input, Output> DeclaresDependencies for FnStatelessAction<F, Input, Output>
-where
-    F: Send + Sync + 'static,
-    Input: Send + Sync + 'static,
-    Output: Send + Sync + 'static,
-{
-}
-
-impl<F, Input, Output> Action for FnStatelessAction<F, Input, Output>
-where
-    F: Send + Sync + 'static,
-    Input: Send + Sync + 'static,
-    Output: Send + Sync + 'static,
-{
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
-    }
-}
-
-impl<F, Fut, Input, Output> StatelessAction for FnStatelessAction<F, Input, Output>
-where
-    F: Fn(Input) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
-    Input: nebula_schema::HasSchema + Send + Sync + 'static,
-    Output: Send + Sync + 'static,
-{
-    type Input = Input;
-    type Output = Output;
-
-    fn execute(
-        &self,
-        input: Self::Input,
-        _ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
-        let fut = (self.func)(input);
-        async move { fut.await.map(ActionResult::success) }
-    }
-}
-
-/// Build a function-backed stateless action.
-#[must_use]
-pub fn stateless_fn<F, Input, Output>(
-    metadata: ActionMetadata,
-    func: F,
-) -> FnStatelessAction<F, Input, Output> {
-    FnStatelessAction::new(metadata, func)
-}
-
-impl<F, Input, Output> fmt::Debug for FnStatelessAction<F, Input, Output> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FnStatelessAction")
-            .field("action", &self.metadata.base.key)
-            .finish_non_exhaustive()
-    }
-}
-
-// ── FnStatelessCtxAction ────────────────────────────────────────────────────
-
-/// Stateless action adapter backed by a context-aware async function/closure.
-///
-/// Unlike [`FnStatelessAction`], the closure receives both the input and a
-/// cloned [`ActionContext`], allowing credential/resource/logger access.
-///
-/// The closure signature is `Fn(Input, ActionContext) -> Future<...>`.
-/// The context is cloned before each call (cheap — all capabilities are
-/// behind `Arc`).
-///
-/// **Important:** Without a context-injection setup,
-/// `execute` builds a minimal context from the `Context` trait methods
-/// (noop capabilities). Call `with_context` to inject a base
-/// [`ActionContext`] whose credentials, resources, and logger are cloned
-/// into each invocation.
-pub struct FnStatelessCtxAction<F, Input, Output> {
-    metadata: ActionMetadata,
-    func: F,
-    _marker: PhantomData<fn(Input) -> Output>,
-}
-
-impl<F, Input, Output> FnStatelessCtxAction<F, Input, Output> {
-    /// Create a new context-aware function-backed stateless action.
-    #[must_use]
-    pub fn new(metadata: ActionMetadata, func: F) -> Self {
-        Self {
-            metadata,
-            func,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<F, Input, Output> DeclaresDependencies for FnStatelessCtxAction<F, Input, Output>
-where
-    F: Send + Sync + 'static,
-    Input: Send + Sync + 'static,
-    Output: Send + Sync + 'static,
-{
-}
-
-impl<F, Input, Output> Action for FnStatelessCtxAction<F, Input, Output>
-where
-    F: Send + Sync + 'static,
-    Input: Send + Sync + 'static,
-    Output: Send + Sync + 'static,
-{
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
-    }
-}
-
-impl<F, Fut, Input, Output> StatelessAction for FnStatelessCtxAction<F, Input, Output>
-where
-    F: Fn(Input) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
-    Input: nebula_schema::HasSchema + Send + Sync + 'static,
-    Output: Send + Sync + 'static,
-{
-    type Input = Input;
-    type Output = Output;
-
-    fn execute(
-        &self,
-        input: Self::Input,
-        _ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
-        let fut = (self.func)(input);
-        async move { fut.await.map(ActionResult::success) }
-    }
-}
-
-/// Build a context-aware stateless action from a function.
-///
-/// This adapter keeps the API shape for context-aware action constructors;
-/// the runtime context is supplied through the standard [`StatelessAction`]
-/// execution path.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// let action = stateless_ctx_fn(
-///     ActionMetadata::new(action_key!("example.ctx"), "Ctx", "Context-aware"),
-///     |input: serde_json::Value| async move {
-///         Ok(input)
-///     },
-/// );
-/// ```
-#[must_use]
-pub fn stateless_ctx_fn<F, Input, Output>(
-    metadata: ActionMetadata,
-    func: F,
-) -> FnStatelessCtxAction<F, Input, Output> {
-    FnStatelessCtxAction::new(metadata, func)
-}
-
-impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FnStatelessCtxAction")
-            .field("action", &self.metadata.base.key)
-            .field("ctx_mode", &"<borrowed>")
-            .finish_non_exhaustive()
-    }
+    ) -> impl Future<Output = Result<ActionResult<<Self as Action>::Output>, ActionError>> + Send;
 }
 
 // ── StatelessHandler trait ──────────────────────────────────────────────────
@@ -344,11 +116,9 @@ impl<A> StatelessActionAdapter<A> {
 impl<A> StatelessHandler for StatelessActionAdapter<A>
 where
     A: StatelessAction + Send + Sync + 'static,
-    A::Input: serde::de::DeserializeOwned + Send + Sync,
-    A::Output: serde::Serialize + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
+        <A as Action>::metadata()
     }
 
     async fn execute(
@@ -356,7 +126,7 @@ where
         input: Value,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
+        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
             ActionError::validation(
                 "input",
                 ValidationReason::MalformedJson,
@@ -376,15 +146,17 @@ where
 impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatelessActionAdapter")
-            .field("action", &self.action.metadata().base.key)
+            .field("action", &<A as Action>::metadata().base.key)
             .finish_non_exhaustive()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
+    use nebula_core::Dependencies;
+    use nebula_schema::{HasSchema, ValidSchema};
     use serde::{Deserialize, Serialize};
 
     use super::*;
@@ -392,59 +164,6 @@ mod tests {
 
     fn make_ctx() -> TestActionContext {
         TestContextBuilder::new().build()
-    }
-
-    #[tokio::test]
-    async fn fn_stateless_action_executes_with_low_boilerplate() {
-        let action = stateless_fn::<_, Value, Value>(
-            ActionMetadata::new(
-                nebula_core::action_key!("example.fn"),
-                "Fn",
-                "Function-backed action",
-            ),
-            |input| async move { Ok(input) },
-        );
-
-        let ctx = make_ctx();
-
-        let result = action
-            .execute(serde_json::json!({"hello":"world"}), &ctx)
-            .await
-            .unwrap();
-        match result {
-            ActionResult::Success { output } => {
-                assert_eq!(
-                    output.as_value(),
-                    Some(&serde_json::json!({"hello":"world"}))
-                );
-            },
-            other => panic!("expected Success, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn fn_stateless_ctx_action_receives_context() {
-        let action = stateless_ctx_fn::<_, Value, Value>(
-            ActionMetadata::new(
-                nebula_core::action_key!("example.ctx_fn"),
-                "CtxFn",
-                "Context-aware function action",
-            ),
-            |input| async move { Ok(input) },
-        );
-
-        let ctx = make_ctx();
-
-        let result = action
-            .execute(serde_json::json!({"ctx":"aware"}), &ctx)
-            .await
-            .unwrap();
-        match result {
-            ActionResult::Success { output } => {
-                assert_eq!(output.as_value(), Some(&serde_json::json!({"ctx":"aware"})));
-            },
-            other => panic!("expected Success, got {other:?}"),
-        }
     }
 
     // ── StatelessActionAdapter tests ──────────────────────────────────────
@@ -455,8 +174,8 @@ mod tests {
         b: i64,
     }
 
-    impl nebula_schema::HasSchema for AddInput {
-        fn schema() -> nebula_schema::ValidSchema {
+    impl HasSchema for AddInput {
+        fn schema() -> ValidSchema {
             use nebula_schema::{FieldCollector, Schema, field_key};
             Schema::builder()
                 .integer(field_key!("a"), |n| n)
@@ -471,39 +190,52 @@ mod tests {
         sum: i64,
     }
 
-    struct AddAction {
-        meta: ActionMetadata,
-    }
-
-    impl AddAction {
-        fn new() -> Self {
-            Self {
-                meta: ActionMetadata::new(
-                    nebula_core::action_key!("math.add"),
-                    "Add",
-                    "Adds two numbers",
-                ),
-            }
+    impl HasSchema for AddOutput {
+        fn schema() -> ValidSchema {
+            use nebula_schema::{FieldCollector, Schema, field_key};
+            Schema::builder()
+                .integer(field_key!("sum"), |n| n)
+                .build()
+                .expect("AddOutput schema is valid")
         }
     }
 
-    impl DeclaresDependencies for AddAction {}
+    struct AddAction;
 
     impl Action for AddAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = AddInput;
+        type Output = AddOutput;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
+                    nebula_core::action_key!("math.add"),
+                    "Add",
+                    "Adds two numbers",
+                )
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<AddInput as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<AddOutput as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for AddAction {
-        type Input = AddInput;
-        type Output = AddOutput;
-
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(AddOutput {
                 sum: input.a + input.b,
             }))
@@ -512,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_executes_typed_action() {
-        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let adapter = StatelessActionAdapter::new(AddAction);
         let ctx = make_ctx();
 
         let input = serde_json::json!({ "a": 3, "b": 7 });
@@ -532,7 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_returns_validation_error_on_bad_input() {
-        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let adapter = StatelessActionAdapter::new(AddAction);
         let ctx = make_ctx();
 
         let bad_input = serde_json::json!({ "x": "not a number" });
@@ -544,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_exposes_metadata() {
-        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let adapter = StatelessActionAdapter::new(AddAction);
         assert_eq!(
             StatelessHandler::metadata(&adapter).base.key,
             nebula_core::action_key!("math.add")
@@ -553,13 +285,13 @@ mod tests {
 
     #[test]
     fn adapter_is_dyn_compatible() {
-        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let adapter = StatelessActionAdapter::new(AddAction);
         let _: Arc<dyn StatelessHandler> = Arc::new(adapter);
     }
 
     #[tokio::test]
     async fn stateless_adapter_implements_stateless_handler() {
-        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let adapter = StatelessActionAdapter::new(AddAction);
         let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
         let ctx = make_ctx();
 
@@ -578,10 +310,10 @@ mod tests {
 
     #[test]
     fn stateless_adapter_into_inner_returns_action() {
-        let adapter = StatelessActionAdapter::new(AddAction::new());
-        let action = adapter.into_inner();
+        let adapter = StatelessActionAdapter::new(AddAction);
+        let _action = adapter.into_inner();
         assert_eq!(
-            action.metadata().base.key,
+            <AddAction as Action>::metadata().base.key,
             nebula_core::action_key!("math.add")
         );
     }

@@ -56,7 +56,7 @@ impl Metadata for CredentialMetadata {
 impl CredentialMetadata {
     /// Create credential metadata whose schema is pulled from a
     /// [`Credential`](crate::Credential) implementation's
-    /// `Input` type.
+    /// `Properties` type.
     #[must_use]
     pub fn for_credential<C>(
         key: CredentialKey,
@@ -68,7 +68,7 @@ impl CredentialMetadata {
         C: crate::Credential,
     {
         Self {
-            base: BaseMetadata::new(key, name, description, C::schema()),
+            base: BaseMetadata::new(key, name, description, C::properties_schema()),
             pattern,
         }
     }

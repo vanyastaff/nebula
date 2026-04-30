@@ -17,7 +17,7 @@
 //! and the failure modes easy to read.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -32,7 +32,8 @@ use nebula_action::{
     WebhookResponse, WebhookTriggerAdapter,
 };
 use nebula_api::services::webhook::{WebhookTransport, WebhookTransportConfig};
-use nebula_core::DeclaresDependencies;
+use nebula_core::Dependencies;
+use nebula_schema::{HasSchema, ValidSchema};
 use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -43,7 +44,6 @@ type HmacSha256 = Hmac<Sha256>;
 // ── Shared test helpers ──────────────────────────────────────────────────
 
 struct GitHubLikeWebhook {
-    meta: ActionMetadata,
     secret: Vec<u8>,
     captured_url: Arc<Mutex<Option<Url>>>,
 }
@@ -57,10 +57,31 @@ struct RegistrationState {
     hook_id: u64,
 }
 
-impl DeclaresDependencies for GitHubLikeWebhook {}
 impl Action for GitHubLikeWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.integration"),
+                "GitHub-like",
+                "Integration test webhook",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -164,11 +185,6 @@ async fn register_webhook(
 ) {
     let captured = Arc::new(Mutex::new(None));
     let webhook = GitHubLikeWebhook {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.webhook.integration"),
-            "GitHub-like",
-            "Integration test webhook",
-        ),
         secret,
         captured_url: captured.clone(),
     };
@@ -396,14 +412,33 @@ async fn rate_limit_returns_429_with_retry_after() {
 
 // ── Handler-timeout test with a hanging action ──────────────────────────
 
-struct HangingWebhook {
-    meta: ActionMetadata,
-}
+struct HangingWebhook;
 
-impl DeclaresDependencies for HangingWebhook {}
 impl Action for HangingWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.hang"),
+                "Hanging",
+                "Handler that never returns",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -442,13 +477,7 @@ async fn handler_timeout_returns_504() {
         rate_limit_per_minute: None,
     });
 
-    let hanging_adapter = WebhookTriggerAdapter::new(HangingWebhook {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.webhook.hang"),
-            "Hanging",
-            "Handler that never returns",
-        ),
-    });
+    let hanging_adapter = WebhookTriggerAdapter::new(HangingWebhook);
     let config = hanging_adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(hanging_adapter);
     let ctx_template = TriggerRuntimeContext::new(
@@ -602,14 +631,33 @@ async fn post_still_dispatches() {
 /// Opt-out fixture: signature policy is `OptionalAcceptUnsigned`.
 /// Locks in the regression guard that tightening the default later
 /// does NOT accidentally flip this webhook to 401.
-struct UnsignedWebhook {
-    meta: ActionMetadata,
-}
+struct UnsignedWebhook;
 
-impl DeclaresDependencies for UnsignedWebhook {}
 impl Action for UnsignedWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.unsigned"),
+                "Unsigned",
+                "OptionalAcceptUnsigned regression guard",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -640,14 +688,34 @@ impl WebhookAction for UnsignedWebhook {
 /// an empty secret. ADR-0022: the transport returns 500 without ever
 /// calling `handle_request`.
 struct DefaultConfigWebhook {
-    meta: ActionMetadata,
     reached_handler: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl DeclaresDependencies for DefaultConfigWebhook {}
 impl Action for DefaultConfigWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.default_config.static"),
+                "DefaultConfig",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -699,17 +767,7 @@ async fn register_typed<A: WebhookAction>(
 #[tokio::test]
 async fn optional_accept_unsigned_passes_through_unsigned_request() {
     let transport = make_transport(None, 1024 * 1024);
-    let handle = register_typed(
-        &transport,
-        UnsignedWebhook {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.unsigned"),
-                "Unsigned",
-                "OptionalAcceptUnsigned regression guard",
-            ),
-        },
-    )
-    .await;
+    let handle = register_typed(&transport, UnsignedWebhook).await;
 
     let router = transport.router();
     let request = Request::builder()
@@ -731,11 +789,6 @@ async fn default_config_with_empty_secret_returns_500() {
     let handle = register_typed(
         &transport,
         DefaultConfigWebhook {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.default_config"),
-                "DefaultConfig",
-                "fail-closed default enforcement",
-            ),
             reached_handler: reached.clone(),
         },
     )
@@ -861,11 +914,6 @@ async fn signature_failures_total_metric_increments_missing_secret() {
     let handle = register_typed(
         &transport,
         DefaultConfigWebhook {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.default_config_metric"),
-                "DefaultConfigMetric",
-                "missing_secret metric increment",
-            ),
             reached_handler: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )

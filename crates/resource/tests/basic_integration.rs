@@ -10,7 +10,6 @@ use std::sync::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
-use nebula_credential::{Credential, NoCredential};
 use nebula_resource::{
     AcquireOptions, Manager, ResourceContext, ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
@@ -107,7 +106,6 @@ impl Resource for PoolTestResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-pool")
@@ -116,7 +114,6 @@ impl Resource for PoolTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -181,7 +178,6 @@ impl Resource for ResidentTestResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-resident")
@@ -190,7 +186,6 @@ impl Resource for ResidentTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -256,7 +251,6 @@ async fn pool_acquire_use_release_reacquire() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -284,7 +278,6 @@ async fn pool_acquire_use_release_reacquire() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -323,7 +316,6 @@ async fn pool_broken_instance_gets_replaced() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -344,7 +336,6 @@ async fn pool_broken_instance_gets_replaced() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -382,13 +373,7 @@ async fn resident_acquire_creates_then_clones() {
 
     // First acquire creates.
     let h1 = rt
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &AcquireOptions::default(),
-        )
+        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
         .await
         .expect("first acquire");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -396,13 +381,7 @@ async fn resident_acquire_creates_then_clones() {
 
     // Second acquire clones (no new creation).
     let h2 = rt
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &AcquireOptions::default(),
-        )
+        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
         .await
         .expect("second acquire");
     assert_eq!(
@@ -426,13 +405,7 @@ async fn resident_recreates_when_not_alive() {
     let ctx = test_ctx();
 
     let _h1 = rt
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &AcquireOptions::default(),
-        )
+        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -442,13 +415,7 @@ async fn resident_recreates_when_not_alive() {
 
     // Next acquire should recreate.
     let _h2 = rt
-        .acquire(
-            &resource,
-            &test_config(),
-            &(),
-            &ctx,
-            &AcquireOptions::default(),
-        )
+        .acquire(&resource, &test_config(), &ctx, &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(
@@ -480,8 +447,6 @@ async fn manager_register_and_acquire_pooled() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
@@ -489,7 +454,7 @@ async fn manager_register_and_acquire_pooled() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -521,14 +486,12 @@ async fn manager_register_and_acquire_resident() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -554,8 +517,6 @@ async fn manager_shutdown_rejects_acquire() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -564,7 +525,7 @@ async fn manager_shutdown_rejects_acquire() {
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await;
 
     assert!(result.is_err());
@@ -623,7 +584,6 @@ impl Resource for SlowCreatePoolResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("slow-create-pool")
@@ -632,7 +592,6 @@ impl Resource for SlowCreatePoolResource {
     async fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, TestError> {
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -697,7 +656,7 @@ async fn pool_create_path_respects_max_concurrent_creates() {
         let mgr = Arc::clone(&manager);
         handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
-            mgr.acquire_pooled::<SlowCreatePoolResource>(&(), &ctx, &AcquireOptions::default())
+            mgr.acquire_pooled::<SlowCreatePoolResource>(&ctx, &AcquireOptions::default())
                 .await
                 .expect("acquire")
         }));
@@ -738,8 +697,6 @@ async fn register_transitions_phase_to_ready() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("register");
 
@@ -763,8 +720,6 @@ async fn reload_config_bumps_status_generation() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -802,8 +757,6 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -921,7 +874,6 @@ async fn tainted_handle_not_recycled() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -963,8 +915,6 @@ async fn register_emits_registered_event() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
@@ -988,8 +938,6 @@ async fn remove_emits_removed_event() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -1021,8 +969,6 @@ async fn acquire_emits_success_event() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -1032,7 +978,7 @@ async fn acquire_emits_success_event() {
 
     let ctx = test_ctx();
     let _handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -1068,7 +1014,6 @@ async fn pool_concurrent_acquire_respects_max_size() {
             .acquire(
                 &resource,
                 &test_config(),
-                &(),
                 &ctx,
                 &rq,
                 0,
@@ -1088,7 +1033,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let result = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0, &opts, None)
+        .acquire(&resource, &test_config(), &ctx, &rq, 0, &opts, None)
         .await;
     let err = match result {
         Err(e) => e,
@@ -1121,7 +1066,6 @@ async fn pool_backpressure_when_full() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -1135,7 +1079,7 @@ async fn pool_backpressure_when_full() {
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
     let result = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0, &opts, None)
+        .acquire(&resource, &test_config(), &ctx, &rq, 0, &opts, None)
         .await;
 
     let err = match result {
@@ -1172,8 +1116,6 @@ async fn manager_scope_exact_match() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
@@ -1188,7 +1130,7 @@ async fn manager_scope_exact_match() {
         CancellationToken::new(),
     );
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire with matching scope should succeed");
 
@@ -1212,8 +1154,6 @@ async fn manager_scope_fallback_to_global() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
@@ -1229,7 +1169,7 @@ async fn manager_scope_fallback_to_global() {
         CancellationToken::new(),
     );
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should fall back to Global");
 
@@ -1254,8 +1194,6 @@ async fn manager_scope_mismatch_not_found() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
@@ -1271,7 +1209,7 @@ async fn manager_scope_mismatch_not_found() {
         CancellationToken::new(),
     );
     let result = manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await;
 
     let err = match result {
@@ -1291,7 +1229,6 @@ async fn metrics_track_acquire_release_create_destroy() {
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 2,
         metrics_registry: Some(registry.clone()),
-        ..Default::default()
     });
     let resource = ResidentTestResource::new();
     let resident_rt =
@@ -1305,8 +1242,6 @@ async fn metrics_track_acquire_release_create_destroy() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
@@ -1317,7 +1252,7 @@ async fn metrics_track_acquire_release_create_destroy() {
     // Acquire.
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -1359,8 +1294,6 @@ async fn manager_multiple_resources_coexist() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("pool registration should succeed");
 
@@ -1377,8 +1310,6 @@ async fn manager_multiple_resources_coexist() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("resident registration should succeed");
 
@@ -1389,12 +1320,12 @@ async fn manager_multiple_resources_coexist() {
     // Acquire each independently.
     let ctx = test_ctx();
     let pool_handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire should succeed");
 
     let resident_handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("resident acquire should succeed");
 
@@ -1443,7 +1374,6 @@ async fn pool_acquire_with_deadline() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -1458,7 +1388,7 @@ async fn pool_acquire_with_deadline() {
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let start = std::time::Instant::now();
     let result = pool
-        .acquire(&resource, &test_config(), &(), &ctx, &rq, 0, &opts, None)
+        .acquire(&resource, &test_config(), &ctx, &rq, 0, &opts, None)
         .await;
 
     let elapsed = start.elapsed();
@@ -1500,7 +1430,6 @@ async fn pool_detach_removes_from_pool() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -1565,7 +1494,6 @@ impl Resource for ServiceTestResource {
     type Runtime = Arc<ServiceInner>;
     type Lease = ServiceToken;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-service")
@@ -1574,7 +1502,6 @@ impl Resource for ServiceTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<ServiceInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -1649,7 +1576,6 @@ impl Resource for TransportTestResource {
     type Runtime = Arc<TransportInner>;
     type Lease = SessionHandle;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-transport")
@@ -1658,7 +1584,6 @@ impl Resource for TransportTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<TransportInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -1727,7 +1652,6 @@ impl Resource for ExclusiveTestResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-exclusive")
@@ -1736,7 +1660,6 @@ impl Resource for ExclusiveTestResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -1823,8 +1746,6 @@ async fn service_acquire_via_manager() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Service(svc_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -2180,7 +2101,6 @@ impl Resource for SlowResetExclusive {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("slow-reset-exclusive")
@@ -2189,7 +2109,6 @@ impl Resource for SlowResetExclusive {
     async fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, TestError> {
         Ok(Arc::new(AtomicU64::new(0)))
@@ -2297,7 +2216,6 @@ async fn pool_permit_not_leaked_after_release() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -2316,7 +2234,6 @@ async fn pool_permit_not_leaked_after_release() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -2342,7 +2259,6 @@ async fn registry_backed_metrics_record_operations() {
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 1,
         metrics_registry: Some(registry.clone()),
-        ..Default::default()
     });
 
     // Register two resources.
@@ -2361,8 +2277,6 @@ async fn registry_backed_metrics_record_operations() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("pool registration should succeed");
 
@@ -2378,15 +2292,13 @@ async fn registry_backed_metrics_record_operations() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("resident registration should succeed");
 
     // Acquire the pooled resource once.
     let ctx = test_ctx();
     let handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire should succeed");
     drop(handle);
@@ -2443,8 +2355,6 @@ async fn graceful_shutdown_stops_new_acquires() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -2460,7 +2370,7 @@ async fn graceful_shutdown_stops_new_acquires() {
     // Acquire should fail with Cancelled.
     let ctx = test_ctx();
     match manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
     {
         Err(e) => assert!(
@@ -2484,8 +2394,6 @@ async fn graceful_shutdown_clears_registry() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -2546,7 +2454,6 @@ impl Resource for FailingResidentResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-failing-resident")
@@ -2555,7 +2462,6 @@ impl Resource for FailingResidentResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -2621,7 +2527,6 @@ impl Resource for PermanentFailResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = PermanentTestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-permanent-fail")
@@ -2630,7 +2535,6 @@ impl Resource for PermanentFailResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
         self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -2679,14 +2583,12 @@ async fn acquire_retries_on_transient_failure() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let handle: ResourceGuard<FailingResidentResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed after retry");
 
@@ -2722,14 +2624,12 @@ async fn acquire_no_retry_on_permanent_failure() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<PermanentFailResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<PermanentFailResource>(&ctx, &AcquireOptions::default())
         .await;
 
     assert!(result.is_err(), "acquire should fail on permanent error");
@@ -2756,14 +2656,12 @@ async fn acquire_succeeds_without_resilience() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire without resilience should succeed");
 
@@ -2798,14 +2696,12 @@ async fn acquire_timeout_fires() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
     // Should fail — either from timeout or from the transient error.
@@ -2831,8 +2727,6 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -2882,8 +2776,6 @@ async fn topology_mismatch_returns_permanent_error() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -2937,14 +2829,12 @@ async fn retry_exhaustion_returns_last_transient_error() {
             TopologyRuntime::Resident(resident_rt),
             Some(resilience),
             None,
-            None,
-            None,
         )
         .unwrap();
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
     // All 3 attempts should have been made.
@@ -2989,8 +2879,6 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(gate.clone()),
-            None,
-            None,
         )
         .unwrap();
 
@@ -2998,7 +2886,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
 
     // First acquire fails — should trigger the gate.
     let _ = manager
-        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
     // Gate should no longer be Idle.
@@ -3022,18 +2910,12 @@ impl Resource for HandleDummyResource {
     type Runtime = u32;
     type Lease = u32;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("handle-dummy")
     }
 
-    async fn create(
-        &self,
-        _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
-        _ctx: &ResourceContext,
-    ) -> Result<u32, TestError> {
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<u32, TestError> {
         Ok(1)
     }
 
@@ -3092,7 +2974,6 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -3115,7 +2996,6 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -3160,7 +3040,6 @@ async fn pool_max_lifetime_evicts_expired_entry() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -3183,7 +3062,6 @@ async fn pool_max_lifetime_evicts_expired_entry() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -3229,7 +3107,6 @@ impl Resource for DropOnRecycleResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("drop-on-recycle")
@@ -3238,7 +3115,6 @@ impl Resource for DropOnRecycleResource {
     fn create(
         &self,
         _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -3285,7 +3161,6 @@ async fn pool_recycle_drop_destroys_entry() {
         .acquire(
             &resource,
             &test_config(),
-            &(),
             &ctx,
             &rq,
             0,
@@ -3321,18 +3196,12 @@ impl Resource for FailingSessionTransport {
     type Runtime = u32;
     type Lease = u32;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("failing-session")
     }
 
-    async fn create(
-        &self,
-        _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
-        _ctx: &ResourceContext,
-    ) -> Result<u32, TestError> {
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<u32, TestError> {
         Ok(1)
     }
 
@@ -3411,18 +3280,12 @@ impl Resource for FailingResetExclusive {
     type Runtime = u32;
     type Lease = u32;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("failing-reset")
     }
 
-    async fn create(
-        &self,
-        _config: &TestConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
-        _ctx: &ResourceContext,
-    ) -> Result<u32, TestError> {
+    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<u32, TestError> {
         Ok(1)
     }
 
@@ -3506,14 +3369,12 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let result: Result<ResourceGuard<ResidentTestResource>, _> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await;
 
     let err = result.expect_err("acquire should fail when gate is permanently failed");
@@ -3543,14 +3404,12 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let result: Result<ResourceGuard<ResidentTestResource>, _> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await;
 
     let err = result.expect_err("acquire should fail when gate is in progress");
@@ -3578,14 +3437,12 @@ async fn recovery_gate_allows_acquire_when_idle() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed when gate is idle");
     drop(handle);
@@ -3614,15 +3471,13 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(Arc::new(gate)),
-            None,
-            None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     // Backoff expired, so acquire should proceed (caller acts as probe).
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed after backoff expires");
     drop(handle);
@@ -3642,15 +3497,13 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
             None,
-            None, // no recovery gate
-            None,
             None,
         )
         .expect("registration should succeed");
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed without recovery gate");
     drop(handle);
@@ -3718,7 +3571,6 @@ impl Resource for ReloadPoolResource {
     type Runtime = Arc<AtomicU64>;
     type Lease = Arc<AtomicU64>;
     type Error = TestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("test-reload-pool")
@@ -3727,7 +3579,6 @@ impl Resource for ReloadPoolResource {
     fn create(
         &self,
         _config: &ReloadConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
@@ -3766,8 +3617,6 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("register should succeed");
 
@@ -3803,8 +3652,6 @@ async fn reload_config_rejects_invalid_config() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -3851,8 +3698,6 @@ async fn reload_config_emits_event() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("register should succeed");
 
@@ -3888,8 +3733,6 @@ async fn reload_config_evicts_stale_pool_instances() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("register should succeed");
 
@@ -3897,7 +3740,7 @@ async fn reload_config_evicts_stale_pool_instances() {
 
     // Acquire and release to populate idle queue with fingerprint=1.
     let handle: ResourceGuard<ReloadPoolResource> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -3911,7 +3754,7 @@ async fn reload_config_evicts_stale_pool_instances() {
 
     // Next acquire should create a fresh instance (stale one evicted).
     let handle2: ResourceGuard<ReloadPoolResource> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -3955,8 +3798,6 @@ async fn reload_config_rejected_when_shutdown() {
             TopologyRuntime::Pool(pool_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("register should succeed");
 
@@ -3992,15 +3833,13 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
     // Hold a handle across the shutdown so drain cannot complete.
     let ctx = test_ctx();
     let _handle = manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -4054,8 +3893,6 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -4067,7 +3904,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
     // Hold a handle across the shutdown so drain cannot complete.
     let ctx = test_ctx();
     let _handle = manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -4141,14 +3978,12 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .unwrap();
 
     let ctx = test_ctx();
     let _handle = manager
-        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -4187,8 +4022,6 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
-            None,
-            None,
             None,
             None,
         )
@@ -4243,15 +4076,13 @@ async fn probe_boundary_serializes_callers_under_herd() {
             TopologyRuntime::Resident(resident_rt),
             None,
             Some(gate.clone()),
-            None,
-            None,
         )
         .unwrap();
 
     // First acquire becomes the probe and fails — gate transitions to Failed.
     let ctx = test_ctx();
     let first = manager
-        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
     assert!(first.is_err(), "first acquire must fail");
     assert_eq!(
@@ -4276,7 +4107,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
         let mgr = Arc::clone(&manager);
         handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
-            mgr.acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+            mgr.acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
                 .await
         }));
     }

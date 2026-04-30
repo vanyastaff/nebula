@@ -28,7 +28,7 @@ impl nebula_credential::CredentialState for DummyState {
 struct Dummy;
 
 impl Credential for Dummy {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = DummyState;
 

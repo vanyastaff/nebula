@@ -7,7 +7,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nebula_core::{CredentialId, ScopeLevel};
+use nebula_core::ScopeLevel;
 
 use crate::{integration::AcquireResilience, recovery::gate::RecoveryGate};
 
@@ -98,24 +98,6 @@ pub struct ManagerConfig {
     /// (`acquire_total`, `release_total`, etc.) into the registry.
     /// When `None`, metrics are silently skipped (zero overhead).
     pub metrics_registry: Option<Arc<nebula_telemetry::metrics::MetricsRegistry>>,
-    /// Default per-resource timeout budget for the FULL rotation dispatch.
-    ///
-    /// The budget covers `SchemeFactory::acquire` (engine-side credential
-    /// resolution that mints the per-call `SchemeGuard`) AND the resource's
-    /// `on_credential_refresh` / `on_credential_revoke` hook body — the
-    /// `tokio::time::timeout` sits OUTSIDE both, so a slow credential
-    /// resolution can consume most of the budget before the hook even
-    /// starts. Tune this with the credential-side resolution latency in
-    /// mind, not just the resource-side hook latency.
-    ///
-    /// Each registered resource may override this via
-    /// `RegisterOptions::credential_rotation_timeout` (Task 6). When the
-    /// budget elapses the dispatcher reports `RefreshOutcome::TimedOut` /
-    /// `RevokeOutcome::TimedOut` and the remaining sibling dispatches
-    /// continue unaffected (security amendment B-1: per-resource isolation).
-    ///
-    /// Defaults to 30 seconds.
-    pub credential_rotation_timeout: Duration,
 }
 
 impl Default for ManagerConfig {
@@ -123,7 +105,6 @@ impl Default for ManagerConfig {
         Self {
             release_queue_workers: 2,
             metrics_registry: None,
-            credential_rotation_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -132,6 +113,10 @@ impl Default for ManagerConfig {
 ///
 /// Used with the `register_*_with` convenience methods to configure
 /// resilience and recovery beyond the simple `register_*` defaults.
+///
+/// Per ADR-0044, credential bindings are no longer threaded through
+/// registration: the `resource: R` value handed to `Manager::register*`
+/// already carries resolved credentials in its slot fields.
 #[derive(Debug, Clone)]
 pub struct RegisterOptions {
     /// Scope level for the resource (default: `Global`).
@@ -140,28 +125,6 @@ pub struct RegisterOptions {
     pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
-    /// Credential ID this resource binds to.
-    ///
-    /// Required for resources where `R::Credential != NoCredential` —
-    /// `Manager::register` returns
-    /// [`Error::missing_credential_id`](crate::Error::missing_credential_id)
-    /// if a credential-bearing resource is registered without an ID. Ignored
-    /// for `NoCredential`-bound resources (the manager logs a warning if one
-    /// is supplied alongside `Credential = NoCredential`).
-    ///
-    /// Set via [`RegisterOptions::with_credential_id`].
-    pub credential_id: Option<CredentialId>,
-    /// Per-resource override for the default credential rotation timeout.
-    ///
-    /// Covers the FULL dispatch — `SchemeFactory::acquire` (engine-side
-    /// credential resolution) plus the resource's `on_credential_refresh` /
-    /// `on_credential_revoke` hook body. `None` falls back to
-    /// [`ManagerConfig::credential_rotation_timeout`] (default `30s`). Only
-    /// meaningful for credential-bearing resources; ignored for
-    /// `NoCredential`-bound resources.
-    ///
-    /// Set via [`RegisterOptions::with_rotation_timeout`].
-    pub credential_rotation_timeout: Option<Duration>,
 }
 
 impl Default for RegisterOptions {
@@ -170,34 +133,29 @@ impl Default for RegisterOptions {
             scope: ScopeLevel::Global,
             resilience: None,
             recovery_gate: None,
-            credential_id: None,
-            credential_rotation_timeout: None,
         }
     }
 }
 
 impl RegisterOptions {
-    /// Sets the credential ID this resource binds to.
-    ///
-    /// Required for credential-bearing resources (`R::Credential != NoCredential`).
-    /// `Manager::register` errors with
-    /// [`Error::missing_credential_id`](crate::Error::missing_credential_id)
-    /// if a credential-bearing resource is registered without an ID.
+    /// Override the scope level for this registration.
     #[must_use]
-    pub fn with_credential_id(mut self, id: CredentialId) -> Self {
-        self.credential_id = Some(id);
+    pub fn with_scope(mut self, scope: ScopeLevel) -> Self {
+        self.scope = scope;
         self
     }
 
-    /// Overrides the default credential rotation timeout for this resource.
-    ///
-    /// Covers the FULL dispatch — `SchemeFactory::acquire` plus the
-    /// resource hook (`on_credential_refresh` / `on_credential_revoke`).
-    /// Falls back to [`ManagerConfig::credential_rotation_timeout`] (default
-    /// `30s`) when not set. Only meaningful for credential-bearing resources.
+    /// Attach an acquire-resilience policy for this registration.
     #[must_use]
-    pub fn with_rotation_timeout(mut self, timeout: Duration) -> Self {
-        self.credential_rotation_timeout = Some(timeout);
+    pub fn with_resilience(mut self, resilience: AcquireResilience) -> Self {
+        self.resilience = Some(resilience);
+        self
+    }
+
+    /// Attach a recovery gate for this registration.
+    #[must_use]
+    pub fn with_recovery_gate(mut self, gate: Arc<RecoveryGate>) -> Self {
+        self.recovery_gate = Some(gate);
         self
     }
 }

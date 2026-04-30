@@ -48,7 +48,10 @@ use crate::{
 ///
 /// # Associated types
 ///
-/// - **`Input`** — typed shape of the setup-form fields ([`HasSchema`](nebula_schema::HasSchema)).
+/// - **`Properties`** — typed shape of the setup-form fields
+///   ([`HasSchema`](nebula_schema::HasSchema)). Mirrors `Action::Input` and `Resource::Config` —
+///   the schema-bearing companion type for credentials per Phase 5 of the M6 dependency redesign.
+///   Replaces the previous `Input` associated type.
 /// - **`Scheme`** — consumer-facing auth material ([`AuthScheme`]).
 /// - **`State`** — what gets encrypted and stored ([`CredentialState`]). May include refresh
 ///   internals not exposed to consumers.
@@ -80,13 +83,22 @@ use crate::{
 ///     scheme::SecretToken,
 ///     resolve::ResolveResult,
 /// };
+/// use nebula_schema::Schema;
+/// use serde::Deserialize;
+///
+/// #[derive(Schema, Deserialize)]
+/// struct SlackBotProperties {
+///     #[field(secret, label = "Bot token")]
+///     #[validate(required)]
+///     bot_token: String,
+/// }
 ///
 /// struct SlackBotToken;
 ///
 /// identity_state!(SecretToken, "secret_token", 1);
 ///
 /// impl Credential for SlackBotToken {
-///     type Input = SlackBotInput;
+///     type Properties = SlackBotProperties;
 ///     type Scheme = SecretToken;
 ///     type State = SecretToken;
 ///
@@ -105,14 +117,20 @@ use crate::{
 /// }
 /// ```
 pub trait Credential: Send + Sync + 'static {
-    /// Typed shape of the setup-form fields.
+    /// Typed shape of the credential setup-form fields.
     ///
-    /// The canonical [`schema()`](Credential::schema) is
-    /// auto-derived via `<Self::Input as HasSchema>::schema()`. Use
-    /// [`FieldValues`] for legacy credentials that do not yet declare a
-    /// typed input (the blanket [`HasSchema`](nebula_schema::HasSchema)
-    /// impl returns an empty schema).
-    type Input: nebula_schema::HasSchema + Send + Sync + 'static;
+    /// Mirrors `Action::Input` / `Resource::Config` — the canonical
+    /// schema-bearing companion struct. Per Phase 5 of the M6 redesign
+    /// the schema lives on this type rather than being baked into
+    /// [`CredentialMetadata`]: read it via
+    /// [`properties_schema()`](Credential::properties_schema), which
+    /// defaults to `<Self::Properties as HasSchema>::schema()`.
+    ///
+    /// Use [`FieldValues`] for legacy credentials that do not yet
+    /// declare a typed properties struct (the blanket
+    /// [`HasSchema`](nebula_schema::HasSchema) impl returns an empty
+    /// schema).
+    type Properties: nebula_schema::HasSchema + Send + Sync + 'static;
 
     /// What this credential produces — the consumer-facing auth material.
     type Scheme: AuthScheme;
@@ -131,17 +149,17 @@ pub trait Credential: Send + Sync + 'static {
     where
         Self: Sized;
 
-    /// Returns the schema for credential input parameters.
+    /// Returns the schema for credential setup parameters.
     ///
-    /// The default implementation derives the schema from
-    /// [`Self::Input`], which must implement
-    /// [`HasSchema`](nebula_schema::HasSchema). Override only if the
-    /// form layout must differ from the `Input` struct (rare).
-    fn schema() -> ValidSchema
+    /// Defaults to `<Self::Properties as HasSchema>::schema()`. Phase 5
+    /// shifts schema ownership from instance metadata to the type-level
+    /// properties struct; consumers should call this rather than
+    /// reading a baked schema from `metadata().schema`.
+    fn properties_schema() -> ValidSchema
     where
         Self: Sized,
     {
-        <Self::Input as nebula_schema::HasSchema>::schema()
+        <Self::Properties as nebula_schema::HasSchema>::schema()
     }
 
     /// Project the runtime [`Scheme`] from stored [`State`]. Synchronous,
@@ -154,8 +172,8 @@ pub trait Credential: Send + Sync + 'static {
     where
         Self: Sized;
 
-    /// Build initial [`State`] from user [`Input`]. Returns
-    /// `ResolveResult<State, ()>`.
+    /// Build initial [`State`] from user [`Properties`] (carried as
+    /// [`FieldValues`]). Returns `ResolveResult<State, ()>`.
     ///
     /// # Allowed return shapes
     ///
@@ -184,7 +202,7 @@ pub trait Credential: Send + Sync + 'static {
     ///
     /// [`Interactive::Pending`]: crate::Interactive::Pending
     /// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
-    /// [`Input`]: Credential::Input
+    /// [`Properties`]: Credential::Properties
     /// [`State`]: Credential::State
     fn resolve(
         values: &FieldValues,

@@ -102,10 +102,29 @@ deny = [
   { crate = "nebula-resource", wrappers = [
     "nebula-action",
     "nebula-engine",
+    "nebula-examples",
     "nebula-plugin",
     "nebula-sandbox",
     "nebula-sdk",
-  ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*)" },
+  ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*); examples demonstrate Resource impls for Pool/Resident topologies (M6.3)" },
+
+  # nebula-expression is a Core-tier expression evaluator. The wrapper
+  # allowlist locks the current consumer set so future PRs cannot quietly
+  # introduce upward deps from API or sandbox/storage tiers without a
+  # deliberate deny.toml change. ADR-0043 §9 / Phase 9 (R-040 R8): the
+  # `nebula-resource → nebula-expression` edge is the JSON-driven config
+  # path used by `Manager::register_from_value` to resolve `{{ }}` templates
+  # in resource configs before schema validation.
+  { crate = "nebula-expression", wrappers = [
+    "nebula-schema",
+    "nebula-resource",
+    "nebula-engine",
+    "nebula-examples",
+    # Dev-only: action / engine integration tests bridge schema and
+    # ExpressionContext through a real engine so Phase 9 pipeline probes
+    # exercise the same evaluator the runtime uses.
+    "nebula-action",
+  ], reason = "ADR-0043 §9 / Phase 9: register_from_value bridges resource config to expression engine for {{ }} template resolution; schema uses it for parse validation; engine resolver evaluates node parameters; examples consume both" },
 
   # nebula-credential-builtin is a Business-tier crate that ships first-party
   # concrete credential types. Plugin authors depend on the contract crate

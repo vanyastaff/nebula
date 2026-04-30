@@ -21,8 +21,10 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionError, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter,
-    ResourceAction, ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
+    Action, ActionError, ActionFactory, ActionHandler, ActionMetadata, ControlAction,
+    FromWorkflowNode, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
+    GenericStatelessFactory, GenericTriggerFactory, PollAction, PollTriggerAdapter, ResourceAction,
+    ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
     StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
     WebhookTriggerAdapter,
 };
@@ -36,11 +38,25 @@ struct ActionEntry {
     handler: ActionHandler,
 }
 
+/// A single factory entry in the parallel factory map (Phase 3 / Session 4).
+///
+/// Stored alongside the legacy `ActionEntry` so the engine can transition
+/// dispatch to factory-based instantiation incrementally per ADR-0043 §6.
+#[derive(Clone)]
+struct FactoryEntry {
+    metadata: ActionMetadata,
+    factory: Arc<dyn ActionFactory>,
+}
+
 /// Type-safe registry for action handlers, keyed by `ActionKey`.
 #[derive(Default)]
 pub struct ActionRegistry {
     /// Map from action key to list of entries, each at a distinct version.
     actions: DashMap<ActionKey, Vec<ActionEntry>>,
+    /// Parallel factory map per ADR-0043 §6 / Phase 3 Session 4. Engine
+    /// dispatch consults this first and falls back to `actions` when no
+    /// factory has been registered for the key.
+    factories: DashMap<ActionKey, Vec<FactoryEntry>>,
 }
 
 impl ActionRegistry {
@@ -123,10 +139,10 @@ impl ActionRegistry {
     pub fn register_stateless<A>(&self, action: A)
     where
         A: Action + StatelessAction + Send + Sync + 'static,
-        A::Input: serde::de::DeserializeOwned + Send + Sync,
-        A::Output: serde::Serialize + Send + Sync,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
     {
-        let metadata = action.metadata().clone();
+        let metadata = <A as Action>::metadata().clone();
         let handler = ActionHandler::Stateless(Arc::new(StatelessActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -141,11 +157,11 @@ impl ActionRegistry {
     pub fn register_stateful<A>(&self, action: A)
     where
         A: Action + StatefulAction + Send + Sync + 'static,
-        A::Input: serde::de::DeserializeOwned + Send + Sync,
-        A::Output: serde::Serialize + Send + Sync,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
         A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
     {
-        let metadata = action.metadata().clone();
+        let metadata = <A as Action>::metadata().clone();
         let handler = ActionHandler::Stateful(Arc::new(StatefulActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -162,7 +178,7 @@ impl ActionRegistry {
         A: TriggerAction + Send + Sync + 'static,
         A::Error: Into<ActionError>,
     {
-        let metadata = TriggerAction::metadata(&action).clone();
+        let metadata = <A as Action>::metadata().clone();
         let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -179,7 +195,7 @@ impl ActionRegistry {
         A: WebhookAction + Send + Sync + 'static,
         <A as WebhookAction>::State: Send + Sync,
     {
-        let metadata = action.metadata().clone();
+        let metadata = <A as Action>::metadata().clone();
         let handler = ActionHandler::Trigger(Arc::new(WebhookTriggerAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -197,7 +213,7 @@ impl ActionRegistry {
         <A as PollAction>::Cursor: Send + Sync,
         <A as PollAction>::Event: Send + Sync,
     {
-        let metadata = action.metadata().clone();
+        let metadata = <A as Action>::metadata().clone();
         let handler = ActionHandler::Trigger(Arc::new(PollTriggerAdapter::new(action)));
         self.register(metadata, handler);
     }
@@ -213,9 +229,118 @@ impl ActionRegistry {
     where
         A: Action + ResourceAction + Send + Sync + 'static,
     {
-        let metadata = action.metadata().clone();
+        let metadata = <A as Action>::metadata().clone();
         let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));
         self.register(metadata, handler);
+    }
+
+    /// Register an action factory (Phase 3 / Session 4 — ADR-0043 §6).
+    ///
+    /// The factory is consulted at dispatch time to instantiate a fresh
+    /// erased action per execution. This is the new path for actions that
+    /// implement [`Action`] + [`FromWorkflowNode`] (Variant A).
+    ///
+    /// Stored alongside any legacy `ActionHandler` registration; lookups
+    /// prefer the factory entry when present.
+    pub fn register_factory(&self, metadata: ActionMetadata, factory: Arc<dyn ActionFactory>) {
+        let version = metadata.base.version.clone();
+        let mut entries = self.factories.entry(metadata.base.key.clone()).or_default();
+
+        if let Some(pos) = entries
+            .iter()
+            .position(|e| e.metadata.base.version == version)
+        {
+            entries[pos] = FactoryEntry { metadata, factory };
+        } else {
+            entries.push(FactoryEntry { metadata, factory });
+            entries.sort_by(|a, b| a.metadata.base.version.cmp(&b.metadata.base.version));
+        }
+    }
+
+    /// Register a stateless action via the factory pipeline (Variant A).
+    ///
+    /// Requires the action to implement [`FromWorkflowNode`] (auto-emitted
+    /// by `#[derive(Action)]`). The factory builds a fresh `A` per
+    /// dispatch via `A::from_workflow_node(node, ctx)`.
+    pub fn register_stateless_factory<A>(&self)
+    where
+        A: StatelessAction + FromWorkflowNode<Error = ActionError>,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatelessFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a stateful action via the factory pipeline (Variant A).
+    pub fn register_stateful_factory<A>(&self)
+    where
+        A: StatefulAction + FromWorkflowNode<Error = ActionError>,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+        A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatefulFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a trigger action via the factory pipeline (Variant A).
+    pub fn register_trigger_factory<A>(&self)
+    where
+        A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+        <A as TriggerAction>::Error: Into<ActionError>,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericTriggerFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a resource action via the factory pipeline (Variant A).
+    pub fn register_resource_factory<A>(&self)
+    where
+        A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericResourceFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a control action via the factory pipeline (Variant A).
+    pub fn register_control_factory<A>(&self)
+    where
+        A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericControlFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Look up the factory for the given key, returning the latest version.
+    ///
+    /// Returns `None` if no factory has been registered for this key.
+    /// Engine dispatch falls back to [`get`](Self::get) for the legacy
+    /// `ActionHandler` path.
+    #[must_use]
+    pub fn get_factory(&self, key: &ActionKey) -> Option<(ActionMetadata, Arc<dyn ActionFactory>)> {
+        let entries = self.factories.get(key)?;
+        let last = entries.last()?;
+        Some((last.metadata.clone(), Arc::clone(&last.factory)))
+    }
+
+    /// Look up a factory by key and exact version.
+    #[must_use]
+    pub fn get_factory_versioned(
+        &self,
+        key: &ActionKey,
+        version: &Version,
+    ) -> Option<(ActionMetadata, Arc<dyn ActionFactory>)> {
+        let entries = self.factories.get(key)?;
+        let entry = entries
+            .iter()
+            .find(|e| e.metadata.base.version == *version)?;
+        Some((entry.metadata.clone(), Arc::clone(&entry.factory)))
     }
 
     /// All registered action keys.
@@ -245,56 +370,130 @@ impl std::fmt::Debug for ActionRegistry {
         let keys: Vec<ActionKey> = self.keys();
         f.debug_struct("ActionRegistry")
             .field("action_count", &self.actions.len())
+            .field("factory_count", &self.factories.len())
             .field("keys", &keys)
             .finish_non_exhaustive()
     }
 }
 
+// ── Test-only escape: dynamic metadata fixture registration ───────────────
+
+/// LEGACY test-only escape for fixtures that vary metadata per test.
+///
+/// Production code MUST use
+/// [`register_stateless_factory`](ActionRegistry::register_stateless_factory) (et al.) which
+/// require static `<A as Action>::metadata()`. Tests that need dynamic per-instance metadata
+/// (varying keys, version pairs, port lists) route through these helpers instead — see Plan-agent
+/// R-NEW-7.
+///
+/// These methods are public (instead of `pub(crate)`) because integration tests in
+/// `crates/engine/tests/`, `crates/plugin/tests/`, and `crates/api/tests/` need them too.
+/// Production callers should not invoke them — the doc strings explicitly say "LEGACY test-only".
+#[allow(dead_code, reason = "test escape API; not all variants used yet")]
+impl ActionRegistry {
+    /// Register a stateless action with caller-supplied metadata.
+    ///
+    /// Bypasses `<A as Action>::metadata()` so tests can vary key/version
+    /// per fixture without redeclaring an entire `impl Action`.
+    pub fn legacy_register_stateless_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: StatelessAction + Send + Sync + 'static,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+    {
+        let handler = ActionHandler::Stateless(Arc::new(StatelessActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a stateful action with caller-supplied metadata.
+    pub fn legacy_register_stateful_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: StatefulAction + Send + Sync + 'static,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+        A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+    {
+        let handler = ActionHandler::Stateful(Arc::new(StatefulActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a trigger action with caller-supplied metadata.
+    pub fn legacy_register_trigger_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: TriggerAction + Send + Sync + 'static,
+        A::Error: Into<ActionError>,
+    {
+        let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a resource action with caller-supplied metadata.
+    pub fn legacy_register_resource_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: ResourceAction + Send + Sync + 'static,
+    {
+        let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use nebula_action::{
         action::Action, error::ActionError, metadata::ActionMetadata, result::ActionResult,
         stateless::StatelessAction,
     };
-    use nebula_core::DeclaresDependencies;
+    use nebula_core::Dependencies;
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
 
-    struct NoopAction {
-        meta: ActionMetadata,
-    }
+    struct NoopAction;
 
-    impl NoopAction {
-        fn new(key: &'static str, major: u64, minor: u64) -> Self {
-            Self {
-                meta: ActionMetadata::new(ActionKey::new(key).unwrap(), "Noop", "Does nothing")
-                    .with_version(major, minor),
-            }
-        }
-    }
-
-    impl DeclaresDependencies for NoopAction {}
     impl Action for NoopAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(ActionKey::new("test.noop").unwrap(), "Noop", "Does nothing")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
     impl StatelessAction for NoopAction {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
+    }
+
+    fn meta_with(key: &'static str, major: u64, minor: u64) -> ActionMetadata {
+        ActionMetadata::new(ActionKey::new(key).unwrap(), "Noop", "Does nothing")
+            .with_version(major, minor)
     }
 
     #[test]
     fn register_and_get_action() {
         let registry = ActionRegistry::new();
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
         assert_eq!(registry.len(), 1);
         let key = ActionKey::new("test.noop").unwrap();
         let result = registry.get(&key);
@@ -304,16 +503,16 @@ mod tests {
     #[test]
     fn register_replaces_same_version() {
         let registry = ActionRegistry::new();
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
         assert_eq!(registry.len(), 1);
     }
 
     #[test]
     fn versioned_lookup() {
         let registry = ActionRegistry::new();
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
-        registry.register_stateless(NoopAction::new("test.noop", 2, 0));
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 2, 0), NoopAction);
 
         let key = ActionKey::new("test.noop").unwrap();
         let v1 = Version::new(1, 0, 0);

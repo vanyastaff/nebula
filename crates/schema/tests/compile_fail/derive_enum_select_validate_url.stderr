@@ -1,4 +1,4 @@
-error: on `#[param(enum_select)]` fields, `#[validate(...)]` supports only `required`; URL, email, pattern, length, and range rules apply to string or number fields
+error: on `#[field(enum_select)]` fields, `#[validate(...)]` supports only `required`; URL, email, pattern, length, and range rules apply to string or number fields
   --> tests/compile_fail/derive_enum_select_validate_url.rs:13:5
    |
 13 |     c: Color,

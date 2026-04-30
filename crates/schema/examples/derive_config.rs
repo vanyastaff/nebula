@@ -11,7 +11,7 @@ use serde_json::json;
 #[derive(Schema, Deserialize, Debug)]
 struct DemoConfig {
     /// Shown in generated schema metadata.
-    #[param(label = "Display title")]
+    #[field(label = "Display title")]
     title: String,
 }
 

@@ -1,5 +1,31 @@
 # Resource Prototypes — Architecture Validation
 
+> ⚠️ **SUPERSEDED — Phase 10 (M6.3) closed 2026-04-29.**
+>
+> The runnable form of these prototypes ships in the workspace `examples/`
+> member:
+>
+> - **Pool topology** → [`examples/examples/m6_postgres_pool.rs`](../../../examples/examples/m6_postgres_pool.rs)
+>   (run with `cargo run -p nebula-examples --example m6_postgres_pool`)
+> - **Resident topology** → [`examples/examples/m6_resident_http.rs`](../../../examples/examples/m6_resident_http.rs)
+>   (run with `cargo run -p nebula-examples --example m6_resident_http`)
+> - **Service topology + cross-workflow sharing** → [`examples/examples/m6_telegram_multi_workflow.rs`](../../../examples/examples/m6_telegram_multi_workflow.rs)
+>   (run with `cargo run -p nebula-examples --example m6_telegram_multi_workflow`)
+>
+> The friction-point analysis and topology selection guidance have been
+> distilled into [`crates/resource/docs/topology-reference.md`](../docs/topology-reference.md)
+> for future contributors.
+>
+> The legacy contents below are kept as **historical design context** only —
+> note that they predate Phase 4 / ADR-0044 supersession of `Resource::Credential`,
+> so the `type Credential = X` snippets in this file no longer reflect the
+> current `Resource` trait. Do not copy from this document; reach for the
+> runnable examples or the topology reference instead.
+
+---
+
+# Resource Prototypes — Architecture Validation (historical)
+
 > **Purpose:** Validate nebula-resource architecture against real-world resources.
 > Each prototype is a complete skeleton impl: types, traits, registration, action usage.
 > Comments mark friction points, design questions, and "this works well" confirmations.

@@ -15,7 +15,7 @@ use nebula_schema::FieldValues;
 struct DummyProtocol;
 
 impl StaticProtocol for DummyProtocol {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
 
     fn build(_values: &FieldValues) -> Result<SecretToken, CredentialError> {

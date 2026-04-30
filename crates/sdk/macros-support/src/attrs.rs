@@ -217,7 +217,7 @@ impl AttrArgs {
     }
 }
 
-/// Parse attribute like `#[param(...)]` (the whole Attribute, not only args).
+/// Parse attribute like `#[field(...)]` (the whole Attribute, not only args).
 pub fn parse_attr(attr: &Attribute, expected: &str) -> Result<Option<AttrArgs>> {
     if !attr.path().is_ident(expected) {
         return Ok(None);
@@ -247,6 +247,27 @@ pub fn parse_attrs(attrs: &[Attribute], name: &str) -> Result<AttrArgs> {
     }
 
     Ok(result)
+}
+
+/// Parse all attributes of a given type and merge them, returning `None` when
+/// the attribute is not present at all on `attrs`.
+///
+/// Differs from [`parse_attrs`] in that this returns `Option<AttrArgs>` —
+/// callers that need to distinguish "attribute absent" from "attribute
+/// present with no items" use this variant. `parse_attrs` is the
+/// permissive form that always returns an `AttrArgs` (possibly empty).
+pub fn parse_attr_optional(attrs: &[Attribute], name: &str) -> Result<Option<AttrArgs>> {
+    let mut found = false;
+    let mut result = AttrArgs { items: vec![] };
+
+    for attr in attrs {
+        if let Some(args) = parse_attr(attr, name)? {
+            found = true;
+            result.items.extend(args.items);
+        }
+    }
+
+    Ok(found.then_some(result))
 }
 
 struct AttrArgsParser(AttrArgs);

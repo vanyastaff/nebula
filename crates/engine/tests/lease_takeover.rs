@@ -10,7 +10,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -20,12 +20,13 @@ use nebula_action::{
     ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, DeclaresDependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, ControlDispatch,
     DataPassingPolicy, EngineControlDispatch, ExecutionEvent, InProcessSandbox, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
+use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
     ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo,
     repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo},
@@ -38,30 +39,54 @@ use tokio_util::sync::CancellationToken;
 // Test handlers
 // ---------------------------------------------------------------------------
 
+/// Macro to emit Variant A `impl Action` with placeholder static metadata.
+/// Real per-instance metadata flows through `legacy_register_stateless_with_metadata`.
+macro_rules! placeholder_action_impl {
+    ($ty:ty, $key:expr, $name:expr, $desc:expr) => {
+        impl Action for $ty {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| ActionMetadata::new($key, $name, $desc))
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+    };
+}
+
 /// Counts invocations and echoes input. Used for nodes that should NOT
 /// re-run after lease handoff (terminal-completed before the simulated
 /// crash).
 struct CountingEchoHandler {
-    meta: ActionMetadata,
     invocations: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for CountingEchoHandler {}
-impl Action for CountingEchoHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+placeholder_action_impl!(
+    CountingEchoHandler,
+    action_key!("placeholder.counting_echo"),
+    "CountingEchoPlaceholder",
+    "placeholder"
+);
 
 impl StatelessAction for CountingEchoHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(ActionResult::success(input))
     }
@@ -73,27 +98,23 @@ impl StatelessAction for CountingEchoHandler {
 /// the dropped future tears down the parked await) or the engine
 /// cancels via cooperative-cancel (e.g. a Cancel command).
 struct ParkHandler {
-    meta: ActionMetadata,
     started: Arc<tokio::sync::Notify>,
     invocations: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for ParkHandler {}
-impl Action for ParkHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+placeholder_action_impl!(
+    ParkHandler,
+    action_key!("placeholder.park"),
+    "ParkPlaceholder",
+    "placeholder"
+);
 
 impl StatelessAction for ParkHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
         ctx.cancellation().cancelled().await;
@@ -184,27 +205,35 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
 
     // Runner A — has a parking handler for "park" so it holds the lease.
     let registry_a = Arc::new(ActionRegistry::new());
-    registry_a.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("echo")),
-        invocations: Arc::clone(&echo_invocations),
-    });
-    registry_a.register_stateless(ParkHandler {
-        meta: meta(action_key!("park")),
-        started: Arc::clone(&started_a),
-        invocations: Arc::clone(&park_invocations),
-    });
+    registry_a.legacy_register_stateless_with_metadata(
+        meta(action_key!("echo")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        },
+    );
+    registry_a.legacy_register_stateless_with_metadata(
+        meta(action_key!("park")),
+        ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        },
+    );
 
     // Runner B — same action_keys, but "park" is a fast-completing
     // handler so the resumed workflow can finish.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("echo")),
-        invocations: Arc::clone(&echo_invocations),
-    });
-    registry_b.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("park")),
-        invocations: Arc::clone(&park_invocations),
-    });
+    registry_b.legacy_register_stateless_with_metadata(
+        meta(action_key!("echo")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        },
+    );
+    registry_b.legacy_register_stateless_with_metadata(
+        meta(action_key!("park")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&park_invocations),
+        },
+    );
 
     // Event bus on engine_a — used to capture the execution_id without
     // racing against repo internals.
@@ -394,27 +423,35 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
 
     // engine_a — parking Y so it holds the lease.
     let registry_a = Arc::new(ActionRegistry::new());
-    registry_a.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("echo")),
-        invocations: Arc::clone(&echo_invocations),
-    });
-    registry_a.register_stateless(ParkHandler {
-        meta: meta(action_key!("park")),
-        started: Arc::clone(&started_a),
-        invocations: Arc::clone(&park_invocations),
-    });
+    registry_a.legacy_register_stateless_with_metadata(
+        meta(action_key!("echo")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        },
+    );
+    registry_a.legacy_register_stateless_with_metadata(
+        meta(action_key!("park")),
+        ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        },
+    );
 
     // engine_b — also parking Y so the cancel signal has somewhere to land.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("echo")),
-        invocations: Arc::clone(&echo_invocations),
-    });
-    registry_b.register_stateless(ParkHandler {
-        meta: meta(action_key!("park")),
-        started: Arc::clone(&started_b),
-        invocations: Arc::clone(&park_invocations),
-    });
+    registry_b.legacy_register_stateless_with_metadata(
+        meta(action_key!("echo")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        },
+    );
+    registry_b.legacy_register_stateless_with_metadata(
+        meta(action_key!("park")),
+        ParkHandler {
+            started: Arc::clone(&started_b),
+            invocations: Arc::clone(&park_invocations),
+        },
+    );
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
@@ -552,9 +589,13 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     // Pending → next claim_pending picks it up → dispatch_cancel signals
     // engine_b's running registry → frontier cancels → parking handler
     // returns ActionError::Cancelled → engine finalizes Cancelled.
-    let result_b = tokio::time::timeout(Duration::from_secs(10), task_b)
+    //
+    // Budget: 30s headroom for slow CI runners (macOS GitHub-hosted runners
+    // were flaky at the original 10s budget — wall-clock-based reclaim
+    // sweep + real-time sleep make this test sensitive to runner load).
+    let result_b = tokio::time::timeout(Duration::from_secs(30), task_b)
         .await
-        .expect("engine_b.resume_execution must complete within 10s")
+        .expect("engine_b.resume_execution must complete within 30s")
         .expect("task_b joined")
         .expect("resume_execution Ok");
 
@@ -629,22 +670,28 @@ async fn replay_does_not_contend_for_held_lease() {
 
     // engine_a — parking workflow to hold the lease.
     let registry_a = Arc::new(ActionRegistry::new());
-    registry_a.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("echo")),
-        invocations: Arc::clone(&echo_invocations),
-    });
-    registry_a.register_stateless(ParkHandler {
-        meta: meta(action_key!("park")),
-        started: Arc::clone(&started_a),
-        invocations: Arc::clone(&park_invocations),
-    });
+    registry_a.legacy_register_stateless_with_metadata(
+        meta(action_key!("echo")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        },
+    );
+    registry_a.legacy_register_stateless_with_metadata(
+        meta(action_key!("park")),
+        ParkHandler {
+            started: Arc::clone(&started_a),
+            invocations: Arc::clone(&park_invocations),
+        },
+    );
 
     // engine_b — only needs the echo handler for its replay workflow.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.register_stateless(CountingEchoHandler {
-        meta: meta(action_key!("echo")),
-        invocations: Arc::clone(&echo_invocations),
-    });
+    registry_b.legacy_register_stateless_with_metadata(
+        meta(action_key!("echo")),
+        CountingEchoHandler {
+            invocations: Arc::clone(&echo_invocations),
+        },
+    );
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();

@@ -1,8 +1,63 @@
 //! Typed resource access extension trait.
 //!
-//! Provides ergonomic `ctx.resource::<R>().await?` pattern for any context
-//! implementing `HasResources`. This is the primary API for action/trigger
-//! authors to acquire resources.
+//! Provides the ergonomic `ctx.resource::<R>().await?` *ad-hoc* surface
+//! for any context implementing `HasResources`. Looks up the resource by
+//! the compile-time `R::key()` constant only — no per-node id binding.
+//!
+//! # When to use which surface
+//!
+//! Two surfaces resolve resources in actions; pick by binding shape:
+//!
+//! 1. **Slot binding** (preferred for production code) — declare an `#[resource(key = "...")]`
+//!    field on the action struct; the `#[derive(Action)]` macro emits a `FromWorkflowNode` factory
+//!    that calls `ActionContextExt::acquire_resource_by_id` (in `nebula-action`) with the per-node
+//!    binding from [ADR-0042](https://github.com/vanyastaff/nebula/blob/main/docs/adr/0042-node-binding-mechanism.md).
+//!    Per-node overrides via workflow JSON `node.slot_bindings` are honored automatically.
+//!
+//! 2. **`ctx.resource::<R>()` ad-hoc** (this module) — type-only lookup by `R::key()`. No per-node
+//!    binding, no slot definition required. Useful for actions that don't declare a slot, generic
+//!    helpers, and one-off resource probes. Does not pick up `node.slot_bindings` overrides — the
+//!    caller decides which type they want, the engine returns whatever matches `R::key()` in the
+//!    layered scope.
+//!
+//! Both paths route through the same `LayeredResourceAccessor` (in
+//! `nebula-engine::scoped_resources`) injected into the action context, so the `scoped → global`
+//! precedence (Phase 6 / M6.1) applies uniformly.
+//!
+//! # Examples
+//!
+//! Slot-binding form (preferred):
+//!
+//! ```rust,ignore
+//! #[derive(Action)]
+//! #[action(key = "send.report", input = SendReportInput, output = ReportId)]
+//! struct SendReport {
+//!     #[resource(key = "db")] db: ResourceGuard<Postgres>,
+//! }
+//!
+//! impl StatelessAction for SendReport {
+//!     async fn execute(&self, input: SendReportInput, _ctx: &impl ActionContext)
+//!         -> Result<ActionResult<ReportId>, ActionError>
+//!     {
+//!         // self.db already resolved by FromWorkflowNode factory.
+//!         let id = self.db.insert_report(&input).await?;
+//!         Ok(ActionResult::ok(id))
+//!     }
+//! }
+//! ```
+//!
+//! Ad-hoc form:
+//!
+//! ```rust,ignore
+//! use nebula_resource::HasResourcesExt;
+//!
+//! async fn write_audit(ctx: &impl ActionContext, line: &str) -> Result<(), ActionError> {
+//!     // Type-only lookup — searches by AuditLog::key() only.
+//!     let log = ctx.resource::<AuditLog>().await?;
+//!     log.append(line).await?;
+//!     Ok(())
+//! }
+//! ```
 
 use std::future::Future;
 
@@ -14,6 +69,12 @@ use crate::{
 };
 
 /// Typed resource access for any context implementing `HasResources`.
+///
+/// Ad-hoc form: looks up by `R::key()` only. For per-node slot binding,
+/// declare an `#[resource]` field on the action struct and let the
+/// derive-emitted `FromWorkflowNode` factory call
+/// `ActionContextExt::acquire_resource_by_id` instead — slot binding is
+/// the preferred path for production code (see crate-level docs).
 ///
 /// # Examples
 ///

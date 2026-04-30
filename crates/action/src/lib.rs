@@ -45,8 +45,17 @@ pub mod context;
 /// public contract for flow-control nodes (If, Switch, Router, Filter,
 /// NoOp, Stop, Fail).
 pub mod control;
+/// `ErasedAction` enum + per-variant object-safe sub-traits + `ActionFactory`
+/// (Phase 3 / Session 4) — engine-side dispatch facade.
+pub mod erased;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
+/// `ActionFactory` — engine-side per-execution factory that produces a
+/// `Box<dyn ErasedAction>` from a workflow node + context.
+pub mod factory;
+/// `FromWorkflowNode` async factory trait — resolves slot bindings against
+/// a workflow node + action context (Phase 3 / Session 2).
+pub mod from_workflow_node;
 /// Top-level [`ActionHandler`] enum dispatcher. Domain handler traits and
 /// adapters live in their respective domain files and are re-exported here
 /// for backwards compatibility of the `nebula_action::handler::*` path space.
@@ -68,6 +77,8 @@ pub mod port;
 pub mod prelude;
 /// [`ResourceAction`] DX trait, [`ResourceHandler`] dyn contract, and adapter.
 pub mod resource;
+/// `ResourceProduces<R>` — Output marker for `ResourceAction` (ADR-0043 §4 Variant A).
+pub mod resource_produces;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
 /// [`StatefulAction`] DX trait, [`StatefulHandler`] dyn contract, adapter,
@@ -95,23 +106,32 @@ pub mod webhook;
 pub use action::Action;
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
-    ActionContext, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
+    ActionContext, ActionContextExt, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
     HasTriggerScheduling, HasWebhookEndpoint, TriggerContext, TriggerRuntimeContext,
 };
 pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
+pub use erased::{
+    ErasedAction, ErasedControl, ErasedResource, ErasedStateful, ErasedStateless, ErasedTrigger,
+};
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
+pub use factory::{
+    ActionFactory, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
+    GenericStatelessFactory, GenericTriggerFactory,
+};
+pub use from_workflow_node::FromWorkflowNode;
 pub use handler::ActionHandler;
 pub use idempotency::IdempotencyKey;
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{
-    Context, DeclaresDependencies,
+    Context, Dependencies,
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
-pub use nebula_credential::CredentialGuard;
+pub use nebula_credential::{CredentialGuard, CredentialRef};
+pub use nebula_resource::ResourceRef;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
@@ -125,6 +145,7 @@ pub use poll::{
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
+pub use resource_produces::ResourceProduces;
 pub use result::{
     ActionResult, BranchKey, BreakReason, PortKey, TerminationCode, TerminationReason,
     WaitCondition,
@@ -133,10 +154,7 @@ pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
     StatefulAction, StatefulActionAdapter, StatefulHandler,
 };
-pub use stateless::{
-    FnStatelessAction, FnStatelessCtxAction, StatelessAction, StatelessActionAdapter,
-    StatelessHandler, stateless_ctx_fn, stateless_fn,
-};
+pub use stateless::{StatelessAction, StatelessActionAdapter, StatelessHandler};
 pub use testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
     TestContextBuilder, TestTriggerContext, TriggerTestHarness,

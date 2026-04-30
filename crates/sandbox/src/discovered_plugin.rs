@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use nebula_action::Action;
+use nebula_action::ActionFactory;
 use nebula_credential::AnyCredential;
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{Plugin, PluginError};
@@ -23,7 +23,7 @@ use nebula_resource::AnyResource;
 /// `ResolvedPlugin::from(discovered)` registers it in the host registry.
 pub struct DiscoveredPlugin {
     manifest: PluginManifest,
-    actions: Vec<Arc<dyn Action>>,
+    actions: Vec<Arc<dyn ActionFactory>>,
 }
 
 impl std::fmt::Debug for DiscoveredPlugin {
@@ -38,7 +38,7 @@ impl std::fmt::Debug for DiscoveredPlugin {
 
 impl DiscoveredPlugin {
     /// Create a new `DiscoveredPlugin`.
-    pub fn new(manifest: PluginManifest, actions: Vec<Arc<dyn Action>>) -> Self {
+    pub fn new(manifest: PluginManifest, actions: Vec<Arc<dyn ActionFactory>>) -> Self {
         Self { manifest, actions }
     }
 }
@@ -48,7 +48,7 @@ impl Plugin for DiscoveredPlugin {
         &self.manifest
     }
 
-    fn actions(&self) -> Vec<Arc<dyn Action>> {
+    fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
         self.actions.clone()
     }
 

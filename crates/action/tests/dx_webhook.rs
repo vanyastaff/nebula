@@ -1,7 +1,7 @@
 //! Integration tests for WebhookAction DX trait + WebhookTriggerAdapter.
 
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -10,7 +10,8 @@ use nebula_action::{
     TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest, WebhookResponse,
     WebhookTriggerAdapter, webhook::webhook_request_for_test,
 };
-use nebula_core::{DeclaresDependencies, context::Context};
+use nebula_core::{Dependencies, context::Context};
+use nebula_schema::{HasSchema, ValidSchema};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -18,17 +19,42 @@ struct WebhookReg {
     hook_id: String,
 }
 
+// ── TestWebhook ───────────────────────────────────────────────────────────
+
 struct TestWebhook {
-    meta: ActionMetadata,
     secret: String,
     activated: Arc<AtomicBool>,
     deactivated: Arc<AtomicBool>,
 }
 
-impl DeclaresDependencies for TestWebhook {}
 impl Action for TestWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook"),
+                "Test Webhook",
+                "Test webhook action",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -80,11 +106,6 @@ fn make_webhook() -> (TestWebhook, Arc<AtomicBool>, Arc<AtomicBool>) {
     let deactivated = Arc::new(AtomicBool::new(false));
     (
         TestWebhook {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.webhook"),
-                "Test Webhook",
-                "Test webhook action",
-            ),
             secret: "mysecret".into(),
             activated: activated.clone(),
             deactivated: deactivated.clone(),
@@ -169,15 +190,38 @@ async fn webhook_adapter_handle_event_before_start_fails() {
 // ── Double-start rejection (A2) ───────────────────────────────────────────
 
 struct CountingWebhook {
-    meta: ActionMetadata,
     activate_count: Arc<AtomicUsize>,
     deactivate_count: Arc<AtomicUsize>,
 }
 
-impl DeclaresDependencies for CountingWebhook {}
 impl Action for CountingWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.count"),
+                "Counting Webhook",
+                "Counts activate/deactivate",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -218,11 +262,6 @@ fn make_counting() -> (CountingWebhook, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let deactivate = Arc::new(AtomicUsize::new(0));
     (
         CountingWebhook {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.webhook.count"),
-                "Counting Webhook",
-                "Counts activate/deactivate",
-            ),
             activate_count: activate.clone(),
             deactivate_count: deactivate.clone(),
         },
@@ -272,14 +311,36 @@ async fn webhook_adapter_start_stop_start_succeeds() {
 
 // ── H1: handle_request error → 500 via oneshot ───────────────────────────
 
-struct ErroringWebhook {
-    meta: ActionMetadata,
-}
+struct ErroringWebhook;
 
-impl DeclaresDependencies for ErroringWebhook {}
 impl Action for ErroringWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.error"),
+                "Erroring Webhook",
+                "handle_request always returns Err",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -306,13 +367,7 @@ impl WebhookAction for ErroringWebhook {
 #[tokio::test]
 async fn handle_request_error_sends_500_via_oneshot() {
     use http::StatusCode;
-    let adapter = WebhookTriggerAdapter::new(ErroringWebhook {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.webhook.error"),
-            "Erroring Webhook",
-            "handle_request always returns Err",
-        ),
-    });
+    let adapter = WebhookTriggerAdapter::new(ErroringWebhook);
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
@@ -339,14 +394,37 @@ async fn handle_request_error_sends_500_via_oneshot() {
 // ── H6: cancellation mid-request ─────────────────────────────────────────
 
 struct HangingWebhook {
-    meta: ActionMetadata,
     entered: Arc<AtomicBool>,
 }
 
-impl DeclaresDependencies for HangingWebhook {}
 impl Action for HangingWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.hang"),
+                "Hanging Webhook",
+                "handle_request hangs forever",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -378,11 +456,6 @@ async fn handle_request_cancelled_mid_flight_returns_cleanly() {
     use http::StatusCode;
     let entered = Arc::new(AtomicBool::new(false));
     let adapter = Arc::new(WebhookTriggerAdapter::new(HangingWebhook {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.webhook.hang"),
-            "Hanging Webhook",
-            "handle_request hangs forever",
-        ),
         entered: entered.clone(),
     }));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
@@ -447,13 +520,7 @@ async fn webhook_adapter_records_health_success_on_emit() {
 
 #[tokio::test]
 async fn webhook_adapter_records_health_error_on_handler_failure() {
-    let adapter = WebhookTriggerAdapter::new(ErroringWebhook {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.webhook.error_health"),
-            "Erroring",
-            "error path health check",
-        ),
-    });
+    let adapter = WebhookTriggerAdapter::new(ErroringWebhook);
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
@@ -472,14 +539,37 @@ async fn webhook_adapter_records_health_error_on_handler_failure() {
 // ── H10: Notify wakes stop() instead of yield_now spin ───────────────────
 
 struct SlowWebhook {
-    meta: ActionMetadata,
     finish: Arc<AtomicBool>,
 }
 
-impl DeclaresDependencies for SlowWebhook {}
 impl Action for SlowWebhook {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.slow"),
+                "Slow Webhook",
+                "handle_request awaits a flag",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -511,11 +601,6 @@ impl WebhookAction for SlowWebhook {
 async fn in_flight_notify_wakes_stop() {
     let finish = Arc::new(AtomicBool::new(false));
     let adapter = Arc::new(WebhookTriggerAdapter::new(SlowWebhook {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.webhook.slow"),
-            "Slow Webhook",
-            "handle_request awaits a flag",
-        ),
         finish: finish.clone(),
     }));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();

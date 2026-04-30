@@ -50,6 +50,7 @@ pub mod registry;
 pub mod release_queue;
 pub mod reload;
 pub mod resource;
+pub mod resource_ref;
 pub mod runtime;
 pub mod state;
 pub mod topology;
@@ -57,7 +58,7 @@ pub mod topology_tag;
 
 pub use cell::Cell;
 pub use context::ResourceContext;
-pub use error::{Error, ErrorKind, ErrorScope, RefreshOutcome, RevokeOutcome, RotationOutcome};
+pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
@@ -68,11 +69,14 @@ pub use manager::{
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
-// Credential adoption surface per ADR-0036 — re-exported so resource
-// consumers don't need a direct nebula-credential dep for trait shape.
-pub use nebula_credential::{
-    Credential, CredentialContext, CredentialId, NoCredential, NoCredentialState, SchemeGuard,
-};
+// Credential surface re-exported so resource consumers don't need a
+// direct nebula-credential dep for trait shape.
+//
+// Per ADR-0044 the singular `Resource::Credential` associated type and
+// its `NoCredential` opt-out type are gone — credentials are declared
+// via `#[credential(key = ...)]` slot fields on the resource struct.
+// `NoCredential`/`NoCredentialState` are no longer re-exported.
+pub use nebula_credential::{Credential, CredentialContext, CredentialId};
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
@@ -96,6 +100,7 @@ pub use reload::ReloadOutcome;
 pub use resource::{
     AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
 };
+pub use resource_ref::ResourceRef;
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{

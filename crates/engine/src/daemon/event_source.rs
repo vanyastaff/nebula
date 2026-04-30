@@ -21,8 +21,7 @@
 use std::{future::Future, sync::Arc};
 
 use nebula_action::{
-    ActionError, ActionMetadata, DeclaresDependencies, TriggerAction, TriggerContext,
-    TriggerEventOutcome, TriggerSource,
+    ActionError, ActionMetadata, TriggerContext, TriggerEvent, TriggerEventOutcome, TriggerHandler,
 };
 use nebula_resource::{Resource, ResourceContext, error::ErrorKind as ResourceErrorKind};
 
@@ -143,9 +142,9 @@ where
     }
 }
 
-// ── EventSourceAdapter — bridges EventSource onto TriggerAction ─────────────
+// ── EventSourceAdapter — bridges EventSource onto TriggerHandler ────────────
 
-/// Adapts an `EventSource` impl as a [`TriggerAction`] so the engine can drive
+/// Adapts an `EventSource` impl as a `TriggerHandler` so the engine can drive
 /// it through the existing trigger lifecycle (`start`/`stop` + emit-via-context).
 ///
 /// # Construction
@@ -203,36 +202,24 @@ where
     }
 }
 
-impl<E> DeclaresDependencies for EventSourceAdapter<E> where E: EventSource {}
-
-/// `TriggerSource` marker for event-source-driven triggers.
-///
-/// `EventSourceAdapter` self-drives its event loop via
-/// `ctx.emitter()` inside `start()` and never receives events through
-/// `TriggerAction::handle()` (`accepts_events()` stays the default
-/// `false`). The typed `Event = ()` reflects that the event-stream
-/// slot has no caller for this family — same shape as
-/// [`nebula_action::PollSource`].
-#[derive(Debug, Clone, Copy)]
-pub struct EventSourceFamily;
-
-impl TriggerSource for EventSourceFamily {
-    type Event = ();
-}
-
-impl<E> TriggerAction for EventSourceAdapter<E>
+// `EventSourceAdapter<E>` carries per-instance dynamic metadata (the
+// host supplies `ActionMetadata` at construction). Per ADR-0043 §6 the
+// typed [`nebula_action::Action`] / [`nebula_action::TriggerAction`]
+// traits require **static** metadata, so the adapter implements the
+// dyn-erased [`nebula_action::TriggerHandler`] surface directly. The
+// engine registers it as `Arc<dyn TriggerHandler>` like any other
+// trigger, without going through a typed factory.
+#[async_trait::async_trait]
+impl<E> TriggerHandler for EventSourceAdapter<E>
 where
     E: EventSource + Send + Sync + 'static,
     E::Runtime: Send + Sync + 'static,
 {
-    type Source = EventSourceFamily;
-    type Error = ActionError;
-
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
     }
 
-    async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
         let resource_ctx =
             ResourceContext::minimal(ctx.scope().clone(), ctx.cancellation().clone());
         let mut subscription = match self.source.subscribe(&self.runtime, &resource_ctx).await {
@@ -277,7 +264,7 @@ where
         }
     }
 
-    async fn stop(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
         // Mirror PollTriggerAdapter::stop (poll.rs:1455) — cancel the trigger
         // context's cancellation token so the run-until-cancelled start() loop
         // observes the signal and returns Ok(()).
@@ -285,16 +272,19 @@ where
         Ok(())
     }
 
-    async fn handle(
-        &self,
-        _ctx: &(impl TriggerContext + ?Sized),
-        _event: (),
-    ) -> Result<TriggerEventOutcome, ActionError> {
+    fn accepts_events(&self) -> bool {
         // EventSourceAdapter is self-driving: events flow through
-        // `ctx.emitter()` inside `start()`'s loop. The engine never calls
-        // `handle()` on this adapter (`accepts_events()` defaults to
-        // false); this body is a defensive guard for direct
-        // `TriggerAction::handle` callers.
+        // `ctx.emitter()` inside `start()`'s loop, not through the
+        // `handle_event` push path.
+        false
+    }
+
+    async fn handle_event(
+        &self,
+        _event: TriggerEvent,
+        _ctx: &dyn TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        // Defensive guard for direct callers that bypass `accepts_events`.
         Err(ActionError::fatal(
             "EventSourceAdapter does not accept external events",
         ))
@@ -426,7 +416,6 @@ mod tests {
         type Runtime = ();
         type Lease = ();
         type Error = TestError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-three").unwrap()
@@ -435,7 +424,6 @@ mod tests {
         async fn create(
             &self,
             _config: &Self::Config,
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())
@@ -550,7 +538,6 @@ mod tests {
         type Runtime = ();
         type Lease = ();
         type Error = PermanentError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             ResourceKey::new("event-permanently-broken").unwrap()
@@ -559,7 +546,6 @@ mod tests {
         async fn create(
             &self,
             _config: &Self::Config,
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<(), PermanentError> {
             Ok(())

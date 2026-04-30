@@ -93,6 +93,7 @@ nebula-api = { path = ".", features = ["test-util"] }
 # `deny.toml` wrappers for the same reason. `InProcessSandbox` is re-exported
 # through `nebula-engine` so we don't need a direct `nebula-sandbox` dep.
 nebula-engine = { path = "../engine" }
+nebula-schema = { path = "../schema" }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }

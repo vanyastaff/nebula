@@ -1,0 +1,13 @@
+error: field with `#[resource]` must have type `ResourceGuard<T>` (optionally wrapped in `Option<...>` and/or `Lazy<...>`) — got: String
+  --> tests/probes/derive_resource_on_wrong_type.rs:16:18
+   |
+16 |     not_a_guard: String,
+   |                  ^^^^^^
+
+error: cannot find attribute `resource` in this scope
+  --> tests/probes/derive_resource_on_wrong_type.rs:15:7
+   |
+15 |     #[resource]
+   |       ^^^^^^^^
+   |
+   = note: `resource` is an attribute that can be used by the derive macro `Resource`, you might be missing a `derive` attribute

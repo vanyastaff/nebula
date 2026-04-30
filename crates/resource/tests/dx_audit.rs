@@ -25,7 +25,6 @@ use std::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
-use nebula_credential::{Credential, NoCredential};
 use nebula_resource::{
     AcquireOptions, AcquireResilience, Manager, PoolConfig, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig,
@@ -133,7 +132,6 @@ impl Resource for HttpClientResource {
     type Runtime = FakeHttpClient;
     type Lease = FakeHttpClient;
     type Error = DxTestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -142,7 +140,6 @@ impl Resource for HttpClientResource {
     fn create(
         &self,
         _config: &HttpClientConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -230,8 +227,6 @@ async fn use_case_1_http_client_pool() {
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
             None, // resilience
-            None, // recovery_gate
-            None,
             None,
         )
         .expect("registration should succeed");
@@ -250,7 +245,7 @@ async fn use_case_1_http_client_pool() {
     // SEVERITY: Minor
 
     let handle: ResourceGuard<HttpClientResource> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -301,7 +296,6 @@ impl Resource for ConfigStoreResource {
     type Runtime = ConfigStore;
     type Lease = ConfigStore;
     type Error = DxTestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("config.store")
@@ -310,7 +304,6 @@ impl Resource for ConfigStoreResource {
     fn create(
         &self,
         config: &ConfigStoreConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<ConfigStore, DxTestError>> + Send {
         let path = config.path.clone();
@@ -366,14 +359,12 @@ async fn use_case_2_resident_config_store() {
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
-            None,
-            None,
         )
         .expect("resident registration should succeed");
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ConfigStoreResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("resident acquire should succeed");
 
@@ -383,7 +374,7 @@ async fn use_case_2_resident_config_store() {
 
     // A second acquire gets the same shared instance (clone under the hood)
     let handle2: ResourceGuard<ConfigStoreResource> = manager
-        .acquire_resident(&(), &ctx, &AcquireOptions::default())
+        .acquire_resident(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
 
@@ -446,7 +437,6 @@ impl Resource for DbResource {
     type Runtime = FakeDbConnection;
     type Lease = FakeDbConnection;
     type Error = DxTestError;
-    type Credential = NoCredential;
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")
@@ -455,7 +445,6 @@ impl Resource for DbResource {
     fn create(
         &self,
         _config: &DbConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
         let count = self.create_count.clone();
@@ -510,8 +499,6 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             TopologyRuntime::Pool(pool_rt),
             Some(resilience),
             None,
-            None,
-            None,
         )
         .expect("db registration should succeed");
 
@@ -522,7 +509,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
         join_handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
             let handle: ResourceGuard<DbResource> = mgr
-                .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+                .acquire_pooled(&ctx, &AcquireOptions::default())
                 .await
                 .expect("task acquire should succeed");
 
@@ -562,7 +549,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
     // SEVERITY: Major
     let ctx = test_ctx();
     let result: Result<ResourceGuard<DbResource>, Error> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await;
     assert!(result.is_err());
     assert_eq!(*result.err().unwrap().kind(), ErrorKind::Cancelled);
@@ -585,7 +572,7 @@ async fn error_handling_not_found_on_unregistered_resource() {
     // SEVERITY: Nit (correct design, just notable)
 
     let result: Result<ResourceGuard<HttpClientResource>, Error> = manager
-        .acquire_pooled(&(), &ctx, &AcquireOptions::default())
+        .acquire_pooled(&ctx, &AcquireOptions::default())
         .await;
 
     // same ResourceGuard<R>: !Debug issue — must use .err().unwrap()

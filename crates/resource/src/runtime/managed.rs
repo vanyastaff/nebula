@@ -10,7 +10,6 @@ use std::sync::{
 };
 
 use arc_swap::ArcSwap;
-use nebula_core::CredentialId;
 
 use super::TopologyRuntime;
 use crate::{
@@ -46,16 +45,6 @@ pub struct ManagedResource<R: Resource> {
     /// When set, acquire calls check the gate before proceeding and
     /// trigger passive recovery on transient failures.
     pub(crate) recovery_gate: Option<Arc<RecoveryGate>>,
-    /// Optional credential backing this resource (for rotation tracking).
-    ///
-    /// Populated at `Manager::register()` time when the resource declares a
-    /// credential dependency. Consumed by the credential-rotation hook that
-    /// lands in the `nebula-resource` redesign (spec 25 — reload via
-    /// `ReloadOutcome`); kept behind `allow(dead_code)` until that wire-up
-    /// merges so the refactor can progress without a tree of dead-code
-    /// warnings along the critical path.
-    #[allow(dead_code, reason = "wired by the rotation hook in spec 25 / Wave 2")]
-    pub(crate) credential_id: Option<CredentialId>,
 }
 
 impl<R: Resource> ManagedResource<R> {

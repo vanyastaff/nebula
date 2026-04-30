@@ -18,9 +18,12 @@
 //!
 //! ## Key types
 //!
-//! - `Credential` — base trait: `resolve()`, `project()`, `schema()`. Capability methods
+//! - `Credential` — base trait: `resolve()`, `project()`, `properties_schema()`. Capability methods
 //!   (`continue_resolve`, `refresh`, `revoke`, `test`, `release`) live on dedicated sub-traits per
-//!   Tech Spec §15.4 — `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic`.
+//!   Tech Spec §15.4 — `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic`. Phase 5 of
+//!   the M6 redesign renamed `Credential::Input` → `Credential::Properties` to mirror
+//!   `Action::Input` / `Resource::Config` and shifted schema ownership from instance metadata to
+//!   the type-level properties struct (see `Credential::properties_schema`).
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
@@ -76,6 +79,8 @@ pub mod secrets;
 mod accessor;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
+/// Typed credential reference — `CredentialRef<C>` slot-binding handle (ADR-0043 §9).
+mod credential_ref;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
@@ -139,8 +144,10 @@ pub use contract::{
     StaticResolveResult, TestResult, UserInput,
 };
 // Built-in credential implementations
+pub use credential_ref::CredentialRef;
 pub use credentials::{
-    ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
+    ApiKeyCredential, ApiKeyProperties, BasicAuthCredential, BasicAuthProperties, OAuth2Credential,
+    OAuth2Pending, OAuth2Properties, OAuth2State,
 };
 pub use handle::CredentialHandle;
 pub use metrics::CredentialMetrics;

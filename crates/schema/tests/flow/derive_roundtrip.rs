@@ -28,12 +28,12 @@ fn serde_default_on_struct_aligns_with_empty_json() {
     }
 
     /// `#[derive(Schema)]` does not inject serde defaults; pair
-    /// `#[param(default = ...)]` with `#[serde(default = "...")]` when `{}`
+    /// `#[field(default = ...)]` with `#[serde(default = "...")]` when `{}`
     /// must deserialize to the same wire shape you validate against.
     #[derive(Schema, Deserialize)]
     struct WithSerdeDefault {
         #[serde(default = "default_seven")]
-        #[param(default = 7)]
+        #[field(default = 7)]
         n: i64,
     }
 

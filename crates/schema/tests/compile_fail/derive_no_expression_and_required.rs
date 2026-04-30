@@ -3,7 +3,7 @@ use nebula_schema::Schema;
 #[derive(Schema)]
 #[allow(dead_code)]
 struct Bad {
-    #[param(no_expression, expression_required)]
+    #[field(no_expression, expression_required)]
     name: String,
 }
 

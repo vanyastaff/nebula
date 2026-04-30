@@ -94,7 +94,7 @@ impl PluginRegistry {
     /// order (i.e., `HashMap`-unstable) × intra-plugin cache order.
     pub fn all_actions(
         &self,
-    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_action::Action>)> {
+    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_action::ActionFactory>)> {
         self.plugins
             .iter()
             .flat_map(|(pk, rp)| rp.actions().map(move |(_k, a)| (pk, a)))
@@ -126,7 +126,7 @@ impl PluginRegistry {
     pub fn resolve_action(
         &self,
         full: &nebula_core::ActionKey,
-    ) -> Option<Arc<dyn nebula_action::Action>> {
+    ) -> Option<Arc<dyn nebula_action::ActionFactory>> {
         self.plugins
             .values()
             .find_map(|rp| rp.action(full).cloned())

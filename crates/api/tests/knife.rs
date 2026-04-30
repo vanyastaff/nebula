@@ -681,27 +681,47 @@ async fn knife_step6_queue_failure_returns_error() {
 // step 5 runs), while this test spawns the consumer so the Start row is
 // drained end-to-end.
 
-/// A hand-built echo `Action` that the engine can dispatch. Mirrors the
-/// workflow definition saved below (`action_key = "echo"`).
-struct KnifeEcho {
-    meta: nebula_action::metadata::ActionMetadata,
-}
+/// A hand-built echo `Action` (Variant A) that the engine can dispatch.
+/// Mirrors the workflow definition saved below (`action_key = "echo"`).
+struct KnifeEcho;
 
-impl nebula_core::DeclaresDependencies for KnifeEcho {}
 impl nebula_action::action::Action for KnifeEcho {
-    fn metadata(&self) -> &nebula_action::metadata::ActionMetadata {
-        &self.meta
-    }
-}
-impl nebula_action::stateless::StatelessAction for KnifeEcho {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
+    fn metadata() -> &'static nebula_action::metadata::ActionMetadata {
+        static M: std::sync::OnceLock<nebula_action::metadata::ActionMetadata> =
+            std::sync::OnceLock::new();
+        M.get_or_init(|| {
+            nebula_action::metadata::ActionMetadata::new(
+                nebula_core::action_key!("knife.echo.static"),
+                "KnifeEcho",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static nebula_schema::ValidSchema {
+        static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
+        S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
+    }
+    fn output_schema() -> &'static nebula_schema::ValidSchema {
+        static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
+        S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
+    }
+    fn dependencies() -> &'static nebula_core::Dependencies {
+        static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
+        D.get_or_init(nebula_core::Dependencies::new)
+    }
+}
+impl nebula_action::stateless::StatelessAction for KnifeEcho {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as nebula_action::action::Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
+    ) -> Result<
+        nebula_action::result::ActionResult<<Self as nebula_action::action::Action>::Output>,
+        nebula_action::ActionError,
+    > {
         Ok(nebula_action::result::ActionResult::success(input))
     }
 }
@@ -774,13 +794,14 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
 
     // ── Build the engine bound to the same repos the API wrote to ────────────
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(KnifeEcho {
-        meta: nebula_action::metadata::ActionMetadata::new(
+    registry.legacy_register_stateless_with_metadata(
+        nebula_action::metadata::ActionMetadata::new(
             action_key!("echo"),
             "echo",
             "knife echo handler",
         ),
-    });
+        KnifeEcho,
+    );
 
     let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
         Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
@@ -908,25 +929,46 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
 // within a few seconds proves the signal reached the engine's live loop.
 
 struct KnifeSlow {
-    meta: nebula_action::metadata::ActionMetadata,
     started: Arc<tokio::sync::Notify>,
 }
 
-impl nebula_core::DeclaresDependencies for KnifeSlow {}
 impl nebula_action::action::Action for KnifeSlow {
-    fn metadata(&self) -> &nebula_action::metadata::ActionMetadata {
-        &self.meta
-    }
-}
-impl nebula_action::stateless::StatelessAction for KnifeSlow {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
+    fn metadata() -> &'static nebula_action::metadata::ActionMetadata {
+        static M: std::sync::OnceLock<nebula_action::metadata::ActionMetadata> =
+            std::sync::OnceLock::new();
+        M.get_or_init(|| {
+            nebula_action::metadata::ActionMetadata::new(
+                nebula_core::action_key!("knife.slow.static"),
+                "KnifeSlow",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static nebula_schema::ValidSchema {
+        static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
+        S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
+    }
+    fn output_schema() -> &'static nebula_schema::ValidSchema {
+        static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
+        S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
+    }
+    fn dependencies() -> &'static nebula_core::Dependencies {
+        static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
+        D.get_or_init(nebula_core::Dependencies::new)
+    }
+}
+impl nebula_action::stateless::StatelessAction for KnifeSlow {
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as nebula_action::action::Action>::Input,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
+    ) -> Result<
+        nebula_action::result::ActionResult<<Self as nebula_action::action::Action>::Output>,
+        nebula_action::ActionError,
+    > {
         self.started.notify_one();
         tokio::select! {
             () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
@@ -991,14 +1033,16 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     // ── Build the engine bound to the shared repos ──────────────────────────
     let slow_started = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(KnifeSlow {
-        meta: nebula_action::metadata::ActionMetadata::new(
+    registry.legacy_register_stateless_with_metadata(
+        nebula_action::metadata::ActionMetadata::new(
             action_key!("slow"),
             "slow",
             "knife A3 cancellable handler",
         ),
-        started: Arc::clone(&slow_started),
-    });
+        KnifeSlow {
+            started: Arc::clone(&slow_started),
+        },
+    );
 
     let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
         Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })

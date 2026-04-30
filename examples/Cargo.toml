@@ -17,9 +17,17 @@ doc = false
 
 [dependencies]
 nebula-expression = { path = "../crates/expression" }
+nebula-core = { path = "../crates/core" }
+nebula-resource = { path = "../crates/resource" }
+nebula-schema = { path = "../crates/schema" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
 
 [[example]]
 name = "expression_error_messages"
@@ -36,6 +44,18 @@ path = "examples/expression_template_advanced.rs"
 [[example]]
 name = "expression_template_rendering"
 path = "examples/expression_template_rendering.rs"
+
+[[example]]
+name = "m6_postgres_pool"
+path = "examples/m6_postgres_pool.rs"
+
+[[example]]
+name = "m6_telegram_multi_workflow"
+path = "examples/m6_telegram_multi_workflow.rs"
+
+[[example]]
+name = "m6_resident_http"
+path = "examples/m6_resident_http.rs"
 
 [lints]
 workspace = true

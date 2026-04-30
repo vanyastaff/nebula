@@ -4,12 +4,15 @@
 //! on ActionResult/ActionError. They do not test cancellation (that is the runtime's
 //! responsibility via tokio::select!).
 
+use std::sync::OnceLock;
+
 use nebula_action::{
     Action, ActionError, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
     StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction, TriggerSource,
     testing::TestContextBuilder,
 };
-use nebula_core::{DeclaresDependencies, action_key};
+use nebula_core::{Dependencies, action_key};
+use nebula_schema::{HasSchema, ValidSchema};
 
 // ── TestSource — generic trigger source for test fixtures ───────────────────
 
@@ -18,38 +21,56 @@ impl TriggerSource for TestSource {
     type Event = serde_json::Value;
 }
 
-// ── StatelessAction ─────────────────────────────────────────────────────────
-
-struct EchoAction {
-    meta: ActionMetadata,
+// Boilerplate helper used across fixtures.
+fn empty_deps() -> &'static Dependencies {
+    static D: OnceLock<Dependencies> = OnceLock::new();
+    D.get_or_init(Dependencies::new)
 }
 
-impl DeclaresDependencies for EchoAction {}
+fn json_schema() -> &'static ValidSchema {
+    static S: OnceLock<ValidSchema> = OnceLock::new();
+    S.get_or_init(<serde_json::Value as HasSchema>::schema)
+}
+
+// ── StatelessAction ─────────────────────────────────────────────────────────
+
+struct EchoAction;
 
 impl Action for EchoAction {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output")
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        json_schema()
+    }
+    fn output_schema() -> &'static ValidSchema {
+        json_schema()
+    }
+    fn dependencies() -> &'static Dependencies {
+        empty_deps()
     }
 }
 
 impl StatelessAction for EchoAction {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
     }
 }
 
 #[tokio::test]
 async fn stateless_action_execute_returns_success() {
-    let action = EchoAction {
-        meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output"),
-    };
+    let action = EchoAction;
     let ctx = TestContextBuilder::new().build();
     let input = serde_json::json!({ "x": 1 });
     let result = action.execute(input.clone(), &ctx).await.unwrap();
@@ -64,21 +85,42 @@ async fn stateless_action_execute_returns_success() {
 
 // ── StatefulAction ──────────────────────────────────────────────────────────
 
-struct CounterAction {
-    meta: ActionMetadata,
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+struct U32Out(u32);
+
+impl HasSchema for U32Out {
+    fn schema() -> ValidSchema {
+        ValidSchema::empty()
+    }
 }
 
-impl DeclaresDependencies for CounterAction {}
+struct CounterAction;
 
 impl Action for CounterAction {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = ();
+    type Output = U32Out;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break")
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<() as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<U32Out as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        empty_deps()
     }
 }
 
 impl StatefulAction for CounterAction {
-    type Input = ();
-    type Output = u32;
     type State = u32;
 
     fn init_state(&self) -> Self::State {
@@ -87,21 +129,21 @@ impl StatefulAction for CounterAction {
 
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let count = *state;
         *state += 1;
         if count < 2 {
             Ok(ActionResult::Continue {
-                output: ActionOutput::Value(count),
+                output: ActionOutput::Value(U32Out(count)),
                 progress: Some((count + 1) as f64 / 3.0),
                 delay: None,
             })
         } else {
             Ok(ActionResult::Break {
-                output: ActionOutput::Value(count),
+                output: ActionOutput::Value(U32Out(count)),
                 reason: BreakReason::Completed,
             })
         }
@@ -110,16 +152,14 @@ impl StatefulAction for CounterAction {
 
 #[tokio::test]
 async fn stateful_action_continue_then_break() {
-    let action = CounterAction {
-        meta: ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break"),
-    };
+    let action = CounterAction;
     let ctx = TestContextBuilder::new().build();
     let mut state = 0u32;
 
     let r0 = action.execute((), &mut state, &ctx).await.unwrap();
     match &r0 {
         ActionResult::Continue { output, .. } => {
-            assert_eq!(output.as_value(), Some(&0));
+            assert_eq!(output.as_value(), Some(&U32Out(0)));
         },
         _ => panic!("expected Continue, got {r0:?}"),
     }
@@ -128,7 +168,7 @@ async fn stateful_action_continue_then_break() {
     let r1 = action.execute((), &mut state, &ctx).await.unwrap();
     match &r1 {
         ActionResult::Continue { output, .. } => {
-            assert_eq!(output.as_value(), Some(&1));
+            assert_eq!(output.as_value(), Some(&U32Out(1)));
         },
         _ => panic!("expected Continue, got {r1:?}"),
     }
@@ -137,7 +177,7 @@ async fn stateful_action_continue_then_break() {
     let r2 = action.execute((), &mut state, &ctx).await.unwrap();
     match &r2 {
         ActionResult::Break { output, reason } => {
-            assert_eq!(output.as_value(), Some(&2));
+            assert_eq!(output.as_value(), Some(&U32Out(2)));
             assert_eq!(*reason, BreakReason::Completed);
         },
         _ => panic!("expected Break, got {r2:?}"),
@@ -147,25 +187,37 @@ async fn stateful_action_continue_then_break() {
 
 // ── TriggerAction ───────────────────────────────────────────────────────────
 
-struct NoOpTrigger {
-    meta: ActionMetadata,
-}
-
-impl DeclaresDependencies for NoOpTrigger {}
+struct NoOpTrigger;
 
 impl Action for NoOpTrigger {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.noop_trigger"),
+                "NoOp Trigger",
+                "Start/stop no-op",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        json_schema()
+    }
+    fn output_schema() -> &'static ValidSchema {
+        json_schema()
+    }
+    fn dependencies() -> &'static Dependencies {
+        empty_deps()
     }
 }
 
 impl TriggerAction for NoOpTrigger {
     type Source = TestSource;
     type Error = ActionError;
-
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
 
     async fn start(
         &self,
@@ -194,13 +246,7 @@ impl TriggerAction for NoOpTrigger {
 
 #[tokio::test]
 async fn trigger_action_start_stop_succeed() {
-    let action = NoOpTrigger {
-        meta: ActionMetadata::new(
-            action_key!("test.noop_trigger"),
-            "NoOp Trigger",
-            "Start/stop no-op",
-        ),
-    };
+    let action = NoOpTrigger;
     let ctx = TestContextBuilder::new().build_trigger().0;
     action.start(&ctx).await.unwrap();
     action.stop(&ctx).await.unwrap();
@@ -214,21 +260,35 @@ struct MigratableState {
     label: String,
 }
 
-struct MigratableAction {
-    meta: ActionMetadata,
-}
-
-impl DeclaresDependencies for MigratableAction {}
+struct MigratableAction;
 
 impl Action for MigratableAction {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.migratable"),
+                "Migratable",
+                "Migrates v1 state",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        json_schema()
+    }
+    fn output_schema() -> &'static ValidSchema {
+        json_schema()
+    }
+    fn dependencies() -> &'static Dependencies {
+        empty_deps()
     }
 }
 
 impl StatefulAction for MigratableAction {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
     type State = MigratableState;
 
     fn init_state(&self) -> Self::State {
@@ -249,10 +309,10 @@ impl StatefulAction for MigratableAction {
 
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         state.count += 1;
         Ok(ActionResult::Break {
             output: ActionOutput::Value(
@@ -265,13 +325,7 @@ impl StatefulAction for MigratableAction {
 
 #[tokio::test]
 async fn migrate_state_succeeds_from_v1() {
-    let action = MigratableAction {
-        meta: ActionMetadata::new(
-            action_key!("test.migratable"),
-            "Migratable",
-            "Migrates v1 state",
-        ),
-    };
+    let action = MigratableAction;
     let adapter = StatefulActionAdapter::new(action);
     let ctx = TestContextBuilder::new().build();
 
@@ -287,9 +341,7 @@ async fn migrate_state_succeeds_from_v1() {
 
 #[tokio::test]
 async fn migrate_state_propagates_error_when_none() {
-    let action = CounterAction {
-        meta: ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break"),
-    };
+    let action = CounterAction;
     let adapter = StatefulActionAdapter::new(action);
     let ctx = TestContextBuilder::new().build();
 

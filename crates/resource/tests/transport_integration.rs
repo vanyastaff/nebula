@@ -4,7 +4,7 @@
 //! Manager-level tests — only `TransportRuntime`-direct coverage existed
 //! in `basic_integration.rs`. This file exercises the public Manager
 //! dispatch path (`register_transport`, `register_transport_with`,
-//! `acquire_transport`, `acquire_transport_default`) end-to-end, plus
+//! `acquire_transport`, `acquire_transport`) end-to-end, plus
 //! cross-cutting concerns (graceful shutdown drain, recovery-gate
 //! admission, multiplexing semantics, session-limit backpressure,
 //! per-resource-key isolation).
@@ -23,7 +23,6 @@ use std::{
 };
 
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
-use nebula_credential::{Credential, NoCredential};
 use nebula_resource::{
     AcquireOptions, AcquireResilience, AcquireRetryConfig, Manager, RegisterOptions,
     ResourceContext, ScopeLevel, ShutdownConfig,
@@ -141,7 +140,6 @@ macro_rules! mock_transport_type {
             type Runtime    = Arc<MockTransportInner>;
             type Lease      = MockSession;
             type Error      = MockError;
-            type Credential = NoCredential;
 
             fn key() -> ResourceKey {
                 resource_key!($key)
@@ -150,7 +148,6 @@ macro_rules! mock_transport_type {
             fn create(
                 &self,
                 _config: &MockConfig,
-                _scheme: &<Self::Credential as Credential>::Scheme,
                 _ctx: &ResourceContext,
             ) -> impl std::future::Future<Output = Result<Arc<MockTransportInner>, MockError>> + Send {
                 let counter = self.create_counter();
@@ -235,7 +232,7 @@ async fn wait_for_releases(close: &Arc<AtomicU64>, expected: u64) {
 }
 
 // ---------------------------------------------------------------------------
-// register_transport / acquire_transport_default — happy path
+// register_transport / acquire_transport — happy path
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -261,9 +258,9 @@ async fn register_transport_then_acquire_via_manager() {
     assert!(manager.keys().contains(&TransportA::key()));
 
     let handle = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
-        .expect("acquire_transport_default should succeed");
+        .expect("acquire_transport should succeed");
 
     assert_eq!(handle.topology_tag(), TopologyTag::Transport);
     // Single open_session call so far.
@@ -302,12 +299,12 @@ async fn multiple_sessions_share_one_transport() {
         .expect("register");
 
     // Acquire 5 sessions in parallel — `join_all` issues all five
-    // `acquire_transport_default` futures concurrently, exercising the
+    // `acquire_transport` futures concurrently, exercising the
     // multiplexing path under real concurrency rather than serial awaits.
     let manager_ref = &manager;
     let acquires = (0..5).map(|_| async move {
         manager_ref
-            .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+            .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
             .await
             .expect("acquire")
     });
@@ -353,17 +350,17 @@ async fn session_limit_returns_backpressure_when_exhausted() {
         .expect("register");
 
     let h1 = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire");
     let h2 = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
         .expect("second acquire");
 
     // Third must time out as Backpressure (semaphore exhausted).
     let result = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await;
     let err = result.expect_err("third acquire must fail");
     assert!(
@@ -376,7 +373,7 @@ async fn session_limit_returns_backpressure_when_exhausted() {
     wait_for_releases(&resource.close_counter(), 1).await;
 
     let h3 = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
         .expect("third acquire after release");
     assert_eq!(h3.topology_tag(), TopologyTag::Transport);
@@ -416,7 +413,7 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
 
     // Gate is `Idle` by default — acquires pass through unimpeded.
     let handle = manager
-        .acquire_transport_default::<GatedTransport>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<GatedTransport>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire under healthy gate");
 
@@ -464,7 +461,7 @@ async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
         .expect("register_transport_with");
 
     let handle = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire under happy resilience");
 
@@ -517,11 +514,11 @@ async fn manager_isolates_transports_by_key() {
     assert_eq!(manager.keys().len(), 2);
 
     let h_a = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire A");
     let h_b = manager
-        .acquire_transport_default::<TransportB>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportB>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire B");
 
@@ -567,7 +564,7 @@ async fn remove_drops_transport_registration() {
 
     // Acquire on a removed key returns NotFound.
     let result = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await;
     let err = result.expect_err("acquire after remove must fail");
     assert!(
@@ -600,7 +597,7 @@ async fn graceful_shutdown_drains_held_sessions() {
         .expect("register");
 
     let handle = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire");
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);
@@ -627,7 +624,7 @@ async fn graceful_shutdown_drains_held_sessions() {
 
     // Acquire after shutdown is rejected.
     let result = manager
-        .acquire_transport_default::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
         .await;
     assert!(
         result.is_err(),
@@ -686,7 +683,7 @@ async fn register_transport_with_custom_scope() {
         ResourceContext::minimal(scope, CancellationToken::new())
     };
     let handle = manager
-        .acquire_transport_default::<TransportA>(&scoped_ctx, &AcquireOptions::default())
+        .acquire_transport::<TransportA>(&scoped_ctx, &AcquireOptions::default())
         .await
         .expect("acquire under matching workflow scope");
     assert_eq!(handle.topology_tag(), TopologyTag::Transport);

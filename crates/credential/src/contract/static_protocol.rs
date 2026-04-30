@@ -82,12 +82,12 @@ use crate::{AuthScheme, error::CredentialError};
 /// ```
 pub trait StaticProtocol: Send + Sync + 'static {
     /// Typed shape of the setup-form fields — same role as
-    /// [`Credential::Input`](crate::Credential::Input).
+    /// `Credential::Properties` (crate::Credential::Properties).
     ///
     /// The default [`parameters()`](StaticProtocol::parameters) impl derives
     /// the schema from this type. Use [`FieldValues`] for legacy protocols
-    /// that do not declare a typed input.
-    type Input: nebula_schema::HasSchema + Send + Sync + 'static;
+    /// that do not declare a typed properties struct.
+    type Properties: nebula_schema::HasSchema + Send + Sync + 'static;
 
     /// The auth scheme this protocol produces.
     type Scheme: AuthScheme;
@@ -95,12 +95,12 @@ pub trait StaticProtocol: Send + Sync + 'static {
     /// Parameter schema for the credential setup form.
     ///
     /// Returned as JSON to the frontend for form rendering. Default impl
-    /// delegates to [`<Self::Input as HasSchema>::schema()`](nebula_schema::HasSchema::schema).
+    /// delegates to `<Self::Properties as HasSchema>::schema()`.
     fn parameters() -> ValidSchema
     where
         Self: Sized,
     {
-        <Self::Input as nebula_schema::HasSchema>::schema()
+        <Self::Properties as nebula_schema::HasSchema>::schema()
     }
 
     /// Extract parameters and build auth material.
@@ -126,7 +126,7 @@ mod tests {
     struct TestProtocol;
 
     impl StaticProtocol for TestProtocol {
-        type Input = FieldValues;
+        type Properties = FieldValues;
         type Scheme = SecretToken;
 
         fn build(values: &FieldValues) -> Result<SecretToken, CredentialError> {

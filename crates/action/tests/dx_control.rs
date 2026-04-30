@@ -15,19 +15,19 @@
 //! the goal of this test is to validate the trait/adapter infrastructure,
 //! not to ship batteries-included nodes.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use nebula_action::{
     Action, ActionCategory, ActionError, ActionMetadata, ActionOutput, ActionResult,
-    ActionRuntimeContext as ActionContext, ControlAction, ControlActionAdapter, ControlInput,
-    ControlOutcome, OutputPort, StatelessHandler, TerminationReason, ValidationReason,
-    testing::TestContextBuilder,
+    ActionRuntimeContext, ControlAction, ControlActionAdapter, ControlInput, ControlOutcome,
+    OutputPort, StatelessHandler, TerminationReason, ValidationReason, testing::TestContextBuilder,
 };
-use nebula_core::{DeclaresDependencies, action_key};
+use nebula_core::{Dependencies, action_key};
+use nebula_schema::{HasSchema, ValidSchema};
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
-fn make_ctx() -> ActionContext {
+fn make_ctx() -> ActionRuntimeContext {
     TestContextBuilder::new().build()
 }
 
@@ -50,23 +50,33 @@ async fn run_err(adapter: &impl StatelessHandler, input: serde_json::Value) -> A
 
 // ── DemoIf ─ binary branch ─────────────────────────────────────────────────
 
-struct DemoIf {
-    metadata: ActionMetadata,
-}
+struct DemoIf;
 
-impl DemoIf {
-    fn new() -> Self {
-        Self {
-            metadata: ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch")
-                .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")]),
-        }
-    }
-}
-
-impl DeclaresDependencies for DemoIf {}
 impl Action for DemoIf {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(action_key!("demo.if"), "If", "Binary branch")
+                .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -87,7 +97,7 @@ impl ControlAction for DemoIf {
 
 #[tokio::test]
 async fn demo_if_routes_true() {
-    let adapter = ControlActionAdapter::new(DemoIf::new());
+    let adapter = ControlActionAdapter::new(DemoIf);
     let result = run(
         &adapter,
         serde_json::json!({ "condition": true, "value": 42 }),
@@ -109,7 +119,7 @@ async fn demo_if_routes_true() {
 
 #[tokio::test]
 async fn demo_if_routes_false() {
-    let adapter = ControlActionAdapter::new(DemoIf::new());
+    let adapter = ControlActionAdapter::new(DemoIf);
     let result = run(&adapter, serde_json::json!({ "condition": false })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected, "false"),
@@ -119,7 +129,7 @@ async fn demo_if_routes_false() {
 
 #[tokio::test]
 async fn demo_if_missing_condition_is_validation_error() {
-    let adapter = ControlActionAdapter::new(DemoIf::new());
+    let adapter = ControlActionAdapter::new(DemoIf);
     let err = run_err(&adapter, serde_json::json!({})).await;
     match err {
         ActionError::Validation { reason, .. } => {
@@ -131,7 +141,7 @@ async fn demo_if_missing_condition_is_validation_error() {
 
 #[tokio::test]
 async fn demo_if_wrong_type_is_validation_error() {
-    let adapter = ControlActionAdapter::new(DemoIf::new());
+    let adapter = ControlActionAdapter::new(DemoIf);
     let err = run_err(&adapter, serde_json::json!({ "condition": "yes" })).await;
     match err {
         ActionError::Validation { reason, .. } => {
@@ -143,20 +153,22 @@ async fn demo_if_wrong_type_is_validation_error() {
 
 #[test]
 fn demo_if_has_control_category() {
-    let adapter = ControlActionAdapter::new(DemoIf::new());
+    let adapter = ControlActionAdapter::new(DemoIf);
     assert_eq!(adapter.metadata().category, ActionCategory::Control);
 }
 
 // ── DemoSwitch ─ N-way static branch ───────────────────────────────────────
 
-struct DemoSwitch {
-    metadata: ActionMetadata,
-}
+struct DemoSwitch;
 
-impl DemoSwitch {
-    fn new() -> Self {
-        Self {
-            metadata: ActionMetadata::new(
+impl Action for DemoSwitch {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
                 action_key!("demo.switch"),
                 "Switch",
                 "N-way branch by status field",
@@ -166,15 +178,23 @@ impl DemoSwitch {
                 OutputPort::flow("pending"),
                 OutputPort::flow("archived"),
                 OutputPort::flow("default"),
-            ]),
-        }
+            ])
+        })
     }
-}
 
-impl DeclaresDependencies for DemoSwitch {}
-impl Action for DemoSwitch {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -198,7 +218,7 @@ impl ControlAction for DemoSwitch {
 
 #[tokio::test]
 async fn demo_switch_routes_known_case() {
-    let adapter = ControlActionAdapter::new(DemoSwitch::new());
+    let adapter = ControlActionAdapter::new(DemoSwitch);
     let result = run(&adapter, serde_json::json!({ "status": "pending" })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected, "pending"),
@@ -208,7 +228,7 @@ async fn demo_switch_routes_known_case() {
 
 #[tokio::test]
 async fn demo_switch_falls_back_to_default() {
-    let adapter = ControlActionAdapter::new(DemoSwitch::new());
+    let adapter = ControlActionAdapter::new(DemoSwitch);
     let result = run(&adapter, serde_json::json!({ "status": "unknown" })).await;
     match result {
         ActionResult::Branch { selected, .. } => assert_eq!(selected, "default"),
@@ -218,32 +238,19 @@ async fn demo_switch_falls_back_to_default() {
 
 // ── DemoRouter ─ multi-match routing ───────────────────────────────────────
 
-struct DemoRouter {
-    metadata: ActionMetadata,
-    mode: RouterMode,
-}
-
 #[derive(Clone, Copy)]
 enum RouterMode {
     FirstMatch,
     AllMatch,
 }
 
+struct DemoRouter {
+    mode: RouterMode,
+}
+
 impl DemoRouter {
     fn new(mode: RouterMode) -> Self {
-        Self {
-            metadata: ActionMetadata::new(
-                action_key!("demo.router"),
-                "Router",
-                "Multi-rule routing",
-            )
-            .with_outputs(vec![
-                OutputPort::flow("high"),
-                OutputPort::flow("medium"),
-                OutputPort::flow("low"),
-            ]),
-            mode,
-        }
+        Self { mode }
     }
 
     fn classify(priority: i64) -> Vec<&'static str> {
@@ -261,10 +268,35 @@ impl DemoRouter {
     }
 }
 
-impl DeclaresDependencies for DemoRouter {}
 impl Action for DemoRouter {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(action_key!("demo.router"), "Router", "Multi-rule routing")
+                .with_outputs(vec![
+                    OutputPort::flow("high"),
+                    OutputPort::flow("medium"),
+                    OutputPort::flow("low"),
+                ])
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -331,27 +363,37 @@ async fn demo_router_all_match_fires_multiple_ports() {
 /// Every i64 priority hits at least one of `DemoRouter`'s three classify
 /// ranges, so an independent fixture is required to exercise the
 /// `ControlOutcome::Drop` code path on a router-shaped action.
-struct NeverMatchRouter {
-    metadata: ActionMetadata,
-}
+struct NeverMatchRouter;
 
-impl NeverMatchRouter {
-    fn new() -> Self {
-        Self {
-            metadata: ActionMetadata::new(
+impl Action for NeverMatchRouter {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
                 action_key!("demo.never_match_router"),
                 "NeverMatchRouter",
                 "Drops every input — used to test Drop code path",
             )
-            .with_outputs(vec![OutputPort::flow("out")]),
-        }
+            .with_outputs(vec![OutputPort::flow("out")])
+        })
     }
-}
 
-impl DeclaresDependencies for NeverMatchRouter {}
-impl Action for NeverMatchRouter {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -369,7 +411,7 @@ impl ControlAction for NeverMatchRouter {
 
 #[tokio::test]
 async fn demo_router_no_rules_match_drops() {
-    let adapter = ControlActionAdapter::new(NeverMatchRouter::new());
+    let adapter = ControlActionAdapter::new(NeverMatchRouter);
     let result = run(&adapter, serde_json::json!({ "priority": 999 })).await;
     match result {
         ActionResult::Drop { reason } => assert_eq!(reason.as_deref(), Some("sentinel")),
@@ -379,27 +421,37 @@ async fn demo_router_no_rules_match_drops() {
 
 // ── DemoFilter ─ drop-or-pass gate ─────────────────────────────────────────
 
-struct DemoFilter {
-    metadata: ActionMetadata,
-}
+struct DemoFilter;
 
-impl DemoFilter {
-    fn new() -> Self {
-        Self {
-            metadata: ActionMetadata::new(
+impl Action for DemoFilter {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
                 action_key!("demo.filter"),
                 "Filter",
                 "Drop items below threshold",
             )
-            .with_outputs(vec![OutputPort::flow("out")]),
-        }
+            .with_outputs(vec![OutputPort::flow("out")])
+        })
     }
-}
 
-impl DeclaresDependencies for DemoFilter {}
-impl Action for DemoFilter {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -424,7 +476,7 @@ impl ControlAction for DemoFilter {
 
 #[tokio::test]
 async fn demo_filter_passes_above_threshold() {
-    let adapter = ControlActionAdapter::new(DemoFilter::new());
+    let adapter = ControlActionAdapter::new(DemoFilter);
     let result = run(&adapter, serde_json::json!({ "score": 75 })).await;
     match result {
         ActionResult::Success { output } => {
@@ -436,7 +488,7 @@ async fn demo_filter_passes_above_threshold() {
 
 #[tokio::test]
 async fn demo_filter_drops_below_threshold() {
-    let adapter = ControlActionAdapter::new(DemoFilter::new());
+    let adapter = ControlActionAdapter::new(DemoFilter);
     let result = run(&adapter, serde_json::json!({ "score": 10 })).await;
     match result {
         ActionResult::Drop { reason } => {
@@ -451,7 +503,7 @@ async fn demo_filter_distinguishes_drop_from_skip() {
     // Drop is semantically different from Skip. This test documents that
     // a ControlAction author must use Drop for "this item failed the
     // predicate" — not Skip, which would cancel the downstream subgraph.
-    let adapter = ControlActionAdapter::new(DemoFilter::new());
+    let adapter = ControlActionAdapter::new(DemoFilter);
     let result = run(&adapter, serde_json::json!({ "score": 5 })).await;
     assert!(result.is_drop(), "Filter must use Drop, not Skip");
     assert!(!matches!(result, ActionResult::Skip { .. }));
@@ -459,26 +511,32 @@ async fn demo_filter_distinguishes_drop_from_skip() {
 
 // ── DemoNoOp ─ pure passthrough ────────────────────────────────────────────
 
-struct DemoNoOp {
-    metadata: ActionMetadata,
-}
+struct DemoNoOp;
 
-impl DemoNoOp {
-    fn new() -> Self {
-        Self {
-            metadata: ActionMetadata::new(
-                action_key!("demo.noop"),
-                "NoOp",
-                "Pass-through placeholder",
-            ),
-        }
-    }
-}
-
-impl DeclaresDependencies for DemoNoOp {}
 impl Action for DemoNoOp {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(action_key!("demo.noop"), "NoOp", "Pass-through placeholder")
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -496,7 +554,7 @@ impl ControlAction for DemoNoOp {
 
 #[tokio::test]
 async fn demo_noop_preserves_input() {
-    let adapter = ControlActionAdapter::new(DemoNoOp::new());
+    let adapter = ControlActionAdapter::new(DemoNoOp);
     let input = serde_json::json!({ "arbitrary": { "nested": [1, 2, 3] } });
     let result = run(&adapter, input.clone()).await;
     match result {
@@ -510,35 +568,53 @@ async fn demo_noop_preserves_input() {
 #[test]
 fn demo_noop_has_control_category_with_default_port() {
     // NoOp uses default output ports (one main output) → Control, not Terminal.
-    let adapter = ControlActionAdapter::new(DemoNoOp::new());
+    let adapter = ControlActionAdapter::new(DemoNoOp);
     assert_eq!(adapter.metadata().category, ActionCategory::Control);
 }
 
 // ── DemoStop ─ explicit success termination ────────────────────────────────
 
 struct DemoStop {
-    metadata: ActionMetadata,
     note: Option<String>,
 }
 
 impl DemoStop {
     fn new(note: Option<&str>) -> Self {
         Self {
-            metadata: ActionMetadata::new(
-                action_key!("demo.stop"),
-                "Stop",
-                "Terminate execution with success",
-            )
-            .with_outputs(Vec::new()),
             note: note.map(ToOwned::to_owned),
         }
     }
 }
 
-impl DeclaresDependencies for DemoStop {}
 impl Action for DemoStop {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("demo.stop"),
+                "Stop",
+                "Terminate execution with success",
+            )
+            .with_outputs(Vec::new())
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -582,7 +658,6 @@ fn demo_stop_has_terminal_category() {
 // ── DemoFail ─ explicit error termination ──────────────────────────────────
 
 struct DemoFail {
-    metadata: ActionMetadata,
     code: String,
     message: String,
 }
@@ -590,22 +665,41 @@ struct DemoFail {
 impl DemoFail {
     fn new(code: &str, message: &str) -> Self {
         Self {
-            metadata: ActionMetadata::new(
-                action_key!("demo.fail"),
-                "Fail",
-                "Terminate execution with failure",
-            )
-            .with_outputs(Vec::new()),
             code: code.to_owned(),
             message: message.to_owned(),
         }
     }
 }
 
-impl DeclaresDependencies for DemoFail {}
 impl Action for DemoFail {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("demo.fail"),
+                "Fail",
+                "Terminate execution with failure",
+            )
+            .with_outputs(Vec::new())
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -656,13 +750,13 @@ fn all_demo_fixtures_are_dyn_stateless_handlers() {
     // This simulates what a downstream crate's `register_core_control_nodes`
     // helper would do when populating the ActionRegistry.
     let handlers: Vec<Arc<dyn StatelessHandler>> = vec![
-        Arc::new(ControlActionAdapter::new(DemoIf::new())),
-        Arc::new(ControlActionAdapter::new(DemoSwitch::new())),
+        Arc::new(ControlActionAdapter::new(DemoIf)),
+        Arc::new(ControlActionAdapter::new(DemoSwitch)),
         Arc::new(ControlActionAdapter::new(DemoRouter::new(
             RouterMode::FirstMatch,
         ))),
-        Arc::new(ControlActionAdapter::new(DemoFilter::new())),
-        Arc::new(ControlActionAdapter::new(DemoNoOp::new())),
+        Arc::new(ControlActionAdapter::new(DemoFilter)),
+        Arc::new(ControlActionAdapter::new(DemoNoOp)),
         Arc::new(ControlActionAdapter::new(DemoStop::new(None))),
         Arc::new(ControlActionAdapter::new(DemoFail::new("E", "m"))),
     ];
@@ -681,19 +775,19 @@ fn all_demo_fixtures_are_dyn_stateless_handlers() {
 fn category_inference_matches_expectation() {
     let cases: &[(Arc<dyn StatelessHandler>, ActionCategory)] = &[
         (
-            Arc::new(ControlActionAdapter::new(DemoIf::new())),
+            Arc::new(ControlActionAdapter::new(DemoIf)),
             ActionCategory::Control,
         ),
         (
-            Arc::new(ControlActionAdapter::new(DemoSwitch::new())),
+            Arc::new(ControlActionAdapter::new(DemoSwitch)),
             ActionCategory::Control,
         ),
         (
-            Arc::new(ControlActionAdapter::new(DemoFilter::new())),
+            Arc::new(ControlActionAdapter::new(DemoFilter)),
             ActionCategory::Control,
         ),
         (
-            Arc::new(ControlActionAdapter::new(DemoNoOp::new())),
+            Arc::new(ControlActionAdapter::new(DemoNoOp)),
             ActionCategory::Control,
         ),
         (
@@ -727,7 +821,7 @@ fn wrap_and_execute<A: ControlAction>(action: A) -> Arc<dyn StatelessHandler> {
 
 #[tokio::test]
 async fn generic_bound_accepts_any_control_action() {
-    let h = wrap_and_execute(DemoIf::new());
+    let h = wrap_and_execute(DemoIf);
     let ctx = make_ctx();
     let result = h
         .execute(serde_json::json!({ "condition": true }), &ctx)
@@ -742,7 +836,7 @@ async fn generic_bound_accepts_any_control_action() {
 async fn pass_and_drop_have_distinct_runtime_shapes() {
     // Pass carries an output in ActionOutput, Drop has no output at all.
     // Downstream consumers (engine, journal) must distinguish these shapes.
-    let filter = ControlActionAdapter::new(DemoFilter::new());
+    let filter = ControlActionAdapter::new(DemoFilter);
 
     let pass_result = run(&filter, serde_json::json!({ "score": 100 })).await;
     match pass_result {

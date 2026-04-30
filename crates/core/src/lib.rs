@@ -61,6 +61,8 @@ pub mod scope;
 pub mod serde_helpers;
 /// Validated slug strings for human-readable identifiers.
 pub mod slug;
+/// Async-aware lazy initialization wrapper (`Lazy<X>`) — ADR-0043 §3 (type-based optional + lazy).
+pub mod sync;
 /// Multi-tenant context and resolved IDs.
 pub mod tenancy;
 
@@ -86,6 +88,7 @@ pub use permission::Permission;
 pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
+pub use sync::Lazy;
 pub use tenancy::{PermissionDenied, ResolvedIds, TenantContext};
 
 /// Named parse-error type for [`PluginKey`] — `<PluginKey as std::str::FromStr>::Err`.

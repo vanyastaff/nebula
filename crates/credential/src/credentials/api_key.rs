@@ -4,7 +4,8 @@
 //! input. State and Scheme are the same type ([`SecretToken`]) via
 //! [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema, field_key};
+use nebula_schema::{FieldValues, Schema};
+use serde::Deserialize;
 
 use crate::{
     Credential, CredentialContext, SecretString, contract::plugin_capability_report,
@@ -12,31 +13,29 @@ use crate::{
     scheme::SecretToken,
 };
 
-/// Typed shape of the `api_key` credential setup form.
+/// Typed shape of the `api_key` credential setup form (Phase 5 — replaces
+/// the legacy `ApiKeyInput`).
 ///
-/// Used solely as the [`Credential::Input`] — the value is carried through
-/// the resolver as [`FieldValues`] for now; this struct exists to advertise
-/// the canonical schema via [`HasSchema`].
-pub struct ApiKeyInput;
-
-impl HasSchema for ApiKeyInput {
-    fn schema() -> ValidSchema {
-        Schema::builder()
-            .add(
-                Field::string(field_key!("server"))
-                    .label("Server URL")
-                    .description("Base URL of the service (e.g. https://api.example.com)")
-                    .placeholder("https://api.example.com"),
-            )
-            .add(
-                Field::secret(field_key!("api_key"))
-                    .label("API Key")
-                    .description("Secret API token or personal access token")
-                    .required(),
-            )
-            .build()
-            .expect("api_key schema is always valid")
-    }
+/// The struct is purely the schema-bearing companion: `#[derive(Schema)]`
+/// emits the `HasSchema` impl that [`Credential::properties_schema`]
+/// reads via the default body. The actual auth material conversion to
+/// [`SecretToken`] happens in [`Credential::resolve`].
+///
+/// The plaintext lives in a `String` here rather than `SecretString` so
+/// that the universal `#[derive(Schema)]` field-type inference applies
+/// (`SecretString` would land in the `UserDefined` bucket and require a
+/// hand-rolled `HasSchema` impl); the `#[field(secret)]` flag tells the
+/// schema layer to render this as a redacted/secret form field, while
+/// `resolve` immediately wraps the value in `SecretString` for storage.
+#[derive(Schema, Deserialize, Default)]
+pub struct ApiKeyProperties {
+    /// Optional base URL of the service (e.g. `https://api.example.com`).
+    #[field(label = "Server URL", placeholder = "https://api.example.com")]
+    pub server: Option<String>,
+    /// Secret API token or personal access token.
+    #[field(secret, label = "API Key")]
+    #[validate(required)]
+    pub api_key: String,
 }
 
 /// API Key credential -- resolves a single token into a [`SecretToken`].
@@ -59,7 +58,7 @@ impl HasSchema for ApiKeyInput {
 pub struct ApiKeyCredential;
 
 impl Credential for ApiKeyCredential {
-    type Input = ApiKeyInput;
+    type Properties = ApiKeyProperties;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -70,7 +69,7 @@ impl Credential for ApiKeyCredential {
             .key(nebula_core::credential_key!("api_key"))
             .name("API Key")
             .description("Static API key or bearer token for HTTP APIs.")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(crate::AuthPattern::SecretToken)
             .icon("key")
             .build()
@@ -165,7 +164,7 @@ mod tests {
 
     #[test]
     fn parameters_contains_server_and_api_key() {
-        let params = ApiKeyCredential::schema();
+        let params = ApiKeyCredential::properties_schema();
         assert!(params.fields().iter().any(|f| f.key().as_str() == "server"));
         assert!(
             params
@@ -178,7 +177,7 @@ mod tests {
 
     #[test]
     fn server_is_optional() {
-        let params = ApiKeyCredential::schema();
+        let params = ApiKeyCredential::properties_schema();
         let server = params
             .fields()
             .iter()

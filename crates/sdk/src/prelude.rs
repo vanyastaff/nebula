@@ -13,10 +13,9 @@
 // Testing harness — context builder, spy emitter/logger/scheduler.
 // Action traits and types
 pub use nebula_action::{
-    Action, ActionContext, ActionError, ActionResult, DeclaresDependencies, Field,
-    PollTriggerAdapter, Schema, StatefulActionAdapter, StatelessAction, StatelessActionAdapter,
-    TriggerContext, TriggerEvent, TriggerEventOutcome, ValidSchema, WebhookRequest,
-    WebhookTriggerAdapter, field_key,
+    Action, ActionContext, ActionError, ActionResult, Field, PollTriggerAdapter, Schema,
+    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, TriggerContext, TriggerEvent,
+    TriggerEventOutcome, ValidSchema, WebhookRequest, WebhookTriggerAdapter, field_key,
     metadata::ActionMetadata,
     poll::{DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult},
     port::{InputPort, OutputPort},

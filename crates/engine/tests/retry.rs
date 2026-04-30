@@ -11,7 +11,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -21,45 +21,73 @@ use nebula_action::{
     ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{DeclaresDependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{Dependencies, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent,
     InProcessSandbox, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
+use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::ExecutionRepo;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, RetryConfig, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
-// Test handlers
+// Test handlers — Variant A trait shape with placeholder static metadata.
+// Real per-instance metadata (varying action_key per test) flows through
+// `legacy_register_stateless_with_metadata` test escape (R-NEW-7).
 // ---------------------------------------------------------------------------
+
+/// Macro to emit Variant A `impl Action` with placeholder static metadata.
+/// Placeholder is never used at runtime — `legacy_register_*_with_metadata`
+/// supplies the real metadata at registration time.
+macro_rules! placeholder_action_impl {
+    ($ty:ty, $key:expr, $name:expr, $desc:expr) => {
+        impl Action for $ty {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| ActionMetadata::new($key, $name, $desc))
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+    };
+}
 
 /// Fails on attempts 1..fail_count, then succeeds with the input on
 /// attempt fail_count+1. The shared counter records each invocation
 /// so tests can assert exact attempt counts.
 struct FlakyHandler {
-    meta: ActionMetadata,
     fail_count: u32,
     invocations: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for FlakyHandler {}
-impl Action for FlakyHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+placeholder_action_impl!(
+    FlakyHandler,
+    action_key!("placeholder.flaky"),
+    "FlakyPlaceholder",
+    "placeholder"
+);
 
 impl StatelessAction for FlakyHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let n = self.invocations.fetch_add(1, Ordering::SeqCst) + 1;
         if n <= self.fail_count {
             Err(ActionError::retryable(format!("flaky: attempt {n} failed")))
@@ -71,26 +99,22 @@ impl StatelessAction for FlakyHandler {
 
 /// Always fails — used to verify retry exhaustion.
 struct AlwaysFailingHandler {
-    meta: ActionMetadata,
     invocations: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for AlwaysFailingHandler {}
-impl Action for AlwaysFailingHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+placeholder_action_impl!(
+    AlwaysFailingHandler,
+    action_key!("placeholder.doomed"),
+    "AlwaysFailingPlaceholder",
+    "placeholder"
+);
 
 impl StatelessAction for AlwaysFailingHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Err(ActionError::retryable("always fails"))
     }
@@ -98,26 +122,21 @@ impl StatelessAction for AlwaysFailingHandler {
 
 /// Returns `ActionResult::Terminate` to test cooperative shutdown
 /// while a sibling is parked in WaitingRetry.
-struct TerminateHandler {
-    meta: ActionMetadata,
-}
+struct TerminateHandler;
 
-impl DeclaresDependencies for TerminateHandler {}
-impl Action for TerminateHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+placeholder_action_impl!(
+    TerminateHandler,
+    action_key!("placeholder.terminate"),
+    "TerminatePlaceholder",
+    "placeholder"
+);
 
 impl StatelessAction for TerminateHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::terminate_success(Some(
             "test-stop".to_owned(),
         )))
@@ -176,11 +195,13 @@ fn make_workflow(
 async fn retry_succeeds_on_attempt_2() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(FlakyHandler {
-        meta: ActionMetadata::new(action_key!("flaky"), "Flaky", "fails once"),
-        fail_count: 1,
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("flaky"), "Flaky", "fails once"),
+        FlakyHandler {
+            fail_count: 1,
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let engine = make_engine(registry);
     let n = node_key!("flake");
@@ -208,10 +229,12 @@ async fn retry_succeeds_on_attempt_2() {
 async fn retry_exhausts_max_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(AlwaysFailingHandler {
-        meta: ActionMetadata::new(action_key!("doomed"), "Doomed", "always fails"),
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("doomed"), "Doomed", "always fails"),
+        AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let engine = make_engine(registry);
     let n = node_key!("d");
@@ -241,10 +264,12 @@ async fn retry_exhausts_max_attempts() {
 async fn cancel_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(AlwaysFailingHandler {
-        meta: ActionMetadata::new(action_key!("flaky_long"), "FlakyLong", "fails forever"),
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("flaky_long"), "FlakyLong", "fails forever"),
+        AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
@@ -312,13 +337,16 @@ async fn cancel_during_retry_wait() {
 async fn terminate_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(AlwaysFailingHandler {
-        meta: ActionMetadata::new(action_key!("flaky_t"), "FlakyT", "fails forever"),
-        invocations: Arc::clone(&invocations),
-    });
-    registry.register_stateless(TerminateHandler {
-        meta: ActionMetadata::new(action_key!("term"), "Term", "terminates"),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("flaky_t"), "FlakyT", "fails forever"),
+        AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        },
+    );
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("term"), "Term", "terminates"),
+        TerminateHandler,
+    );
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
@@ -378,10 +406,12 @@ async fn terminate_during_retry_wait() {
 async fn execution_budget_max_total_retries_caps_globally() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(AlwaysFailingHandler {
-        meta: ActionMetadata::new(action_key!("doomed_g"), "DoomedG", "always fails"),
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("doomed_g"), "DoomedG", "always fails"),
+        AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let engine = make_engine(registry);
     let n = node_key!("g");
@@ -410,11 +440,13 @@ async fn execution_budget_max_total_retries_caps_globally() {
 async fn idempotency_key_differentiates_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(FlakyHandler {
-        meta: ActionMetadata::new(action_key!("flaky_idem"), "FlakyIdem", "fails once"),
-        fail_count: 1,
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("flaky_idem"), "FlakyIdem", "fails once"),
+        FlakyHandler {
+            fail_count: 1,
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
     let engine = make_engine(registry).with_execution_repo(exec_repo.clone());
@@ -460,15 +492,17 @@ async fn idempotency_key_differentiates_attempts() {
 async fn per_node_retry_policy_overrides_workflow_default() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(FlakyHandler {
-        meta: ActionMetadata::new(
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(
             action_key!("flaky_o"),
             "FlakyO",
             "fails twice then succeeds",
         ),
-        fail_count: 2,
-        invocations: Arc::clone(&invocations),
-    });
+        FlakyHandler {
+            fail_count: 2,
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let engine = make_engine(registry);
     let n = node_key!("o");
@@ -499,11 +533,13 @@ async fn per_node_retry_policy_overrides_workflow_default() {
 async fn workflow_default_applies_when_node_has_none() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(FlakyHandler {
-        meta: ActionMetadata::new(action_key!("flaky_d"), "FlakyD", "fails once"),
-        fail_count: 1,
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("flaky_d"), "FlakyD", "fails once"),
+        FlakyHandler {
+            fail_count: 1,
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let engine = make_engine(registry);
     let n = node_key!("d");
@@ -534,10 +570,12 @@ async fn workflow_default_applies_when_node_has_none() {
 async fn no_retry_policy_means_one_shot_failure() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(AlwaysFailingHandler {
-        meta: ActionMetadata::new(action_key!("oneshot"), "OneShot", "fails"),
-        invocations: Arc::clone(&invocations),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        ActionMetadata::new(action_key!("oneshot"), "OneShot", "fails"),
+        AlwaysFailingHandler {
+            invocations: Arc::clone(&invocations),
+        },
+    );
 
     let engine = make_engine(registry);
     let n = node_key!("os");

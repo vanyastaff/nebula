@@ -8,8 +8,8 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionHandler, ActionMetadata, IsolationLevel, StatefulHandler,
-    StatelessHandler,
+    ActionContext, ActionError, ActionFactory, ActionHandler, ActionMetadata, ErasedAction,
+    IsolationLevel, StatefulHandler, StatelessHandler,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
@@ -20,6 +20,7 @@ use nebula_metrics::naming::{
 };
 use nebula_sandbox::{SandboxRunner, SandboxedContext};
 use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
+use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -206,6 +207,13 @@ impl ActionRuntime {
     /// do not need cross-dispatch resume — behaviour matches the original
     /// `execute_action_versioned` shape.
     ///
+    /// This entry point synthesizes a minimal [`NodeDefinition`] from the
+    /// supplied `action_key` (and optional `version`) for callers that do
+    /// not already have one (admin tooling, tests). Production engine
+    /// dispatch routes through [`Self::execute_action_with_node`] which
+    /// passes the real workflow node so [`ActionFactory::instantiate`] can
+    /// resolve slot bindings declared on the node.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::execute_action_versioned`], plus `save()` sink errors
@@ -227,16 +235,18 @@ impl ActionRuntime {
             }
         })?;
 
-        let (metadata, handler) = match version {
-            Some(v) => self.registry.get_versioned(&key, v),
-            None => self.registry.get(&key),
-        }
-        .ok_or_else(|| RuntimeError::ActionNotFound {
-            key: action_key.to_owned(),
-        })?;
+        let synthetic_node = synthesize_node_definition(action_key, version);
 
-        self.run_handler(action_key, metadata, handler, input, context, checkpoint)
-            .await
+        self.dispatch_action(
+            action_key,
+            &key,
+            version,
+            &synthetic_node,
+            input,
+            context,
+            checkpoint,
+        )
+        .await
     }
 
     /// Execute an action by key.
@@ -264,15 +274,110 @@ impl ActionRuntime {
             }
         })?;
 
-        let (metadata, handler) =
-            self.registry
-                .get(&key)
-                .ok_or_else(|| RuntimeError::ActionNotFound {
-                    key: action_key.to_owned(),
-                })?;
+        let synthetic_node = synthesize_node_definition(action_key, None);
 
-        self.run_handler(action_key, metadata, handler, input, context, None)
-            .await
+        self.dispatch_action(
+            action_key,
+            &key,
+            None,
+            &synthetic_node,
+            input,
+            context,
+            None,
+        )
+        .await
+    }
+
+    /// Execute an action by node (preferred entry point — production dispatch).
+    ///
+    /// Looks up the [`ActionFactory`] for `node.action_key` and invokes
+    /// [`ActionFactory::instantiate`] with the supplied [`NodeDefinition`] +
+    /// [`ActionContext`] so slot bindings declared on the node resolve
+    /// correctly. Falls back to the legacy [`ActionHandler`] dispatch path
+    /// only when no factory is registered for the key (test fixtures
+    /// registered via `legacy_register_*_with_metadata`).
+    ///
+    /// `version` is optional — when `Some`, an exact version match is
+    /// required; when `None`, the latest registered version of the action is
+    /// dispatched.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::execute_action_with_checkpoint`].
+    pub async fn execute_action_with_node(
+        &self,
+        node: &NodeDefinition,
+        version: Option<&semver::Version>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let action_key_str = node.action_key.as_str();
+        self.dispatch_action(
+            action_key_str,
+            &node.action_key,
+            version,
+            node,
+            input,
+            context,
+            checkpoint,
+        )
+        .await
+    }
+
+    /// Common dispatch entry — prefer factory path, fall back to legacy
+    /// [`ActionHandler`] path for the test-escape registrations
+    /// (`legacy_register_*_with_metadata`).
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_action(
+        &self,
+        action_key_str: &str,
+        action_key: &nebula_core::ActionKey,
+        version: Option<&semver::Version>,
+        node: &NodeDefinition,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        // Production path: factory dispatch via Arc<dyn ActionFactory>.
+        let factory_lookup = match version {
+            Some(v) => self.registry.get_factory_versioned(action_key, v),
+            None => self.registry.get_factory(action_key),
+        };
+        if let Some((metadata, factory)) = factory_lookup {
+            return self
+                .run_factory(
+                    action_key_str,
+                    metadata,
+                    factory,
+                    node,
+                    input,
+                    context,
+                    checkpoint,
+                )
+                .await;
+        }
+
+        // Legacy path: ActionHandler enum (kept for `legacy_register_*_with_metadata`
+        // test fixtures and currently-untouched dyn-handler registrations like
+        // EventSourceAdapter). Production registers via `register_*_factory::<A>()`.
+        let (metadata, handler) = match version {
+            Some(v) => self.registry.get_versioned(action_key, v),
+            None => self.registry.get(action_key),
+        }
+        .ok_or_else(|| RuntimeError::ActionNotFound {
+            key: action_key_str.to_owned(),
+        })?;
+
+        self.run_handler(
+            action_key_str,
+            metadata,
+            handler,
+            input,
+            context,
+            checkpoint,
+        )
+        .await
     }
 
     /// Dispatch a resolved handler through its kind-specific execution path.
@@ -364,6 +469,295 @@ impl ActionRuntime {
             },
             Err(runtime_err) => Err(runtime_err),
         }
+    }
+
+    /// Dispatch through the factory path — instantiate a fresh
+    /// [`ErasedAction`] for the supplied workflow node and dispatch it.
+    ///
+    /// Mirrors [`Self::run_handler`]'s metric contract:
+    ///
+    /// - Stateless / Stateful / Control variants observe the duration histogram and increment
+    ///   executions / failures.
+    /// - Trigger / Resource variants are early-rejected (not executable through `ActionRuntime`)
+    ///   and increment the dispatch-rejected counter only.
+    ///
+    /// `factory.instantiate` returning an error is treated as an action
+    /// failure (slot resolution, etc.). The duration histogram is observed
+    /// for instantiate failures so dashboards reflect the per-dispatch cost
+    /// regardless of whether the failure happened in instantiation or
+    /// during the action itself.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private dispatch entry — splitting into a struct hides the metric/observe contract from the call site"
+    )]
+    async fn run_factory(
+        &self,
+        action_key: &str,
+        metadata: ActionMetadata,
+        factory: Arc<dyn ActionFactory>,
+        node: &NodeDefinition,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
+        #[allow(
+            clippy::unwrap_or_default,
+            reason = "ExecutionId::new() != Default::default()"
+        )]
+        let execution_id = context
+            .scope()
+            .execution_id
+            .unwrap_or_else(ExecutionId::new);
+
+        let started = Instant::now();
+
+        // Instantiate the action via the factory. Slot-binding resolution
+        // (and any FromWorkflowNode user code) runs here.
+        let erased = match factory.instantiate(node, context).await {
+            Ok(e) => e,
+            Err(e) => {
+                let result: Result<ActionResult<serde_json::Value>, RuntimeError> =
+                    Err(RuntimeError::ActionError(e));
+                self.observe_dispatched(started, &result);
+                return result;
+            },
+        };
+
+        let result = match erased {
+            ErasedAction::Stateless(inner) => {
+                let r = self
+                    .execute_erased_stateless(&metadata, inner, input, context)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
+            ErasedAction::Stateful(inner) => {
+                let r = self
+                    .execute_erased_stateful(&metadata, inner, input, context, checkpoint)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
+            ErasedAction::Control(inner) => {
+                let r = self
+                    .execute_erased_control(&metadata, inner, input, context)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
+            ErasedAction::Trigger(_) => {
+                self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
+                return Err(RuntimeError::TriggerNotExecutable {
+                    key: action_key.to_owned(),
+                });
+            },
+            ErasedAction::Resource(_) => {
+                self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
+                return Err(RuntimeError::ResourceNotExecutable {
+                    key: action_key.to_owned(),
+                });
+            },
+            // `ErasedAction` is `#[non_exhaustive]`. Unknown future variants
+            // surface as an internal runtime error rather than silently
+            // succeeding.
+            _ => {
+                self.observe_rejected(dispatch_reject_reason::UNKNOWN_VARIANT);
+                return Err(RuntimeError::Internal(format!(
+                    "unknown ErasedAction variant for action '{action_key}'"
+                )));
+            },
+        };
+
+        match result {
+            Ok(mut action_result) => {
+                self.enforce_data_limit(
+                    action_key,
+                    execution_id,
+                    &mut action_result,
+                    &error_counter,
+                )
+                .await?;
+                Ok(action_result)
+            },
+            Err(runtime_err) => Err(runtime_err),
+        }
+    }
+
+    /// Stateless dispatch via `Box<dyn ErasedStateless>`.
+    ///
+    /// Mirrors [`Self::execute_stateless`] for the factory path. Honours
+    /// the same isolation contract (`None` runs in-process; sandboxed
+    /// dispatch routes through [`SandboxRunner`] using the same
+    /// `metadata`).
+    async fn execute_erased_stateless(
+        &self,
+        metadata: &ActionMetadata,
+        erased: Box<dyn nebula_action::ErasedStateless>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        match metadata.isolation_level {
+            IsolationLevel::None => Ok(erased.dispatch(input, context).await?),
+            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
+                let sandboxed = SandboxedContext::new(context);
+                Ok(self.sandbox.execute(sandboxed, metadata, input).await?)
+            },
+            // IsolationLevel is `#[non_exhaustive]`. Any future variant must
+            // fail-closed until we explicitly wire dispatch for it.
+            _ => Err(RuntimeError::Internal(format!(
+                "unknown isolation level for action '{}' — refusing to dispatch",
+                metadata.base.key.as_str()
+            ))),
+        }
+    }
+
+    /// Stateful dispatch via `Box<dyn ErasedStateful>`.
+    ///
+    /// Mirrors [`Self::execute_stateful`] for the factory path. The
+    /// erased trait works on `Value` state so the iteration body matches
+    /// 1:1 with the legacy `Arc<dyn StatefulHandler>` path — same cancel
+    /// race, same checkpoint contract, same iteration cap, same
+    /// stuck-state guard.
+    async fn execute_erased_stateful(
+        &self,
+        metadata: &ActionMetadata,
+        erased: Box<dyn nebula_action::ErasedStateful>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(ActionError::fatal(
+                "sandboxed stateful execution is not yet supported — \
+                 broker iteration protocol lands in sandbox slice 1d",
+            )
+            .into());
+        }
+
+        if context.cancellation().is_cancelled() {
+            return Err(ActionError::Cancelled.into());
+        }
+
+        let (mut state, mut iteration) = match checkpoint.as_deref() {
+            Some(sink) => match sink.load().await {
+                Ok(Some(cp)) => (cp.state, cp.iteration),
+                Ok(None) => (erased.init_state()?, 0u32),
+                Err(load_err) => {
+                    tracing::warn!(
+                        action_key = %metadata.base.key.as_str(),
+                        execution_id = ?context.scope().execution_id,
+                        node_key = %context.node_key(),
+                        error = %load_err,
+                        "stateful checkpoint load failed — falling back to init_state, \
+                         iteration progress (if any) is lost"
+                    );
+                    (erased.init_state()?, 0u32)
+                },
+            },
+            None => (erased.init_state()?, 0u32),
+        };
+
+        const MAX_ITERATIONS: u32 = 10_000;
+
+        loop {
+            if iteration >= MAX_ITERATIONS {
+                return Err(RuntimeError::IterationCapExceeded {
+                    action_key: metadata.base.key.clone(),
+                    node_key: context.node_key().clone(),
+                    cap: MAX_ITERATIONS,
+                });
+            }
+
+            if context.cancellation().is_cancelled() {
+                return Err(ActionError::Cancelled.into());
+            }
+
+            let state_digest_before = stateful_state_digest(&state);
+
+            let iteration_result = {
+                let exec_fut = erased.dispatch(&input, &mut state, context);
+                tokio::pin!(exec_fut);
+
+                tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        return Err(ActionError::Cancelled.into());
+                    }
+                    res = &mut exec_fut => res,
+                }
+            };
+
+            let result = iteration_result?;
+            iteration = iteration.saturating_add(1);
+
+            match result {
+                ActionResult::Continue { delay, .. } => {
+                    let state_digest_after = stateful_state_digest(&state);
+                    if state_digest_before == state_digest_after {
+                        return Err(RuntimeError::StatefulStuck {
+                            action_key: metadata.base.key.clone(),
+                            node_key: context.node_key().clone(),
+                            iteration,
+                        });
+                    }
+
+                    if let Some(sink) = checkpoint.as_deref() {
+                        let cp = StatefulCheckpoint::new(iteration, state.clone());
+                        sink.save(&cp).await?;
+                    }
+
+                    if let Some(d) = delay {
+                        tokio::select! {
+                            () = tokio::time::sleep(d) => {}
+                            () = context.cancellation().cancelled() => {
+                                return Err(ActionError::Cancelled.into());
+                            }
+                        }
+                    }
+                },
+                other => {
+                    if let Some(sink) = checkpoint.as_deref()
+                        && let Err(clear_err) = sink.clear().await
+                    {
+                        tracing::warn!(
+                            action_key = %metadata.base.key.as_str(),
+                            execution_id = ?context.scope().execution_id,
+                            node_key = %context.node_key(),
+                            error = %clear_err,
+                            "stateful checkpoint clear failed on terminal iteration; \
+                             orphaned row left for engine GC"
+                        );
+                    }
+                    return Ok(other);
+                },
+            }
+        }
+    }
+
+    /// Control dispatch via `Box<dyn ErasedControl>`.
+    ///
+    /// Control nodes (If / Switch / Router / Filter / NoOp / Stop / Fail)
+    /// dispatch as one-shot evaluators and never run sandboxed — they
+    /// produce flow-control [`ActionResult`] variants but no I/O. The
+    /// erased surface is intentionally identical to stateless from the
+    /// runtime's POV.
+    async fn execute_erased_control(
+        &self,
+        metadata: &ActionMetadata,
+        erased: Box<dyn nebula_action::ErasedControl>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(RuntimeError::Internal(format!(
+                "control action '{}' must run with IsolationLevel::None — \
+                 control nodes are flow-control desugared to stateless and \
+                 never sandboxed",
+                metadata.base.key.as_str()
+            )));
+        }
+        Ok(erased.dispatch(input, context).await?)
     }
 
     /// Observe a dispatched handler execution.
@@ -821,6 +1215,41 @@ impl ActionRuntime {
     }
 }
 
+/// Build a minimal [`NodeDefinition`] from an action key for synthetic
+/// dispatch entry points (admin tooling, tests, top-level
+/// `execute_action(_versioned|_with_checkpoint)`).
+///
+/// The synthesized node has no parameters, no slot bindings, and no rate
+/// limit — it carries just enough metadata for
+/// [`ActionFactory::instantiate`] to construct the action. Production
+/// dispatch routes through [`ActionRuntime::execute_action_with_node`]
+/// instead so the workflow node's `slot_bindings` reach the factory.
+///
+/// # Panics
+///
+/// Panics only if `action_key` is not a valid [`ActionKey`]. Production
+/// callers parse the key separately and never reach this function with an
+/// invalid key.
+fn synthesize_node_definition(
+    action_key: &str,
+    interface_version: Option<&semver::Version>,
+) -> NodeDefinition {
+    let mut node = NodeDefinition::new(
+        nebula_core::NodeKey::new("synthetic_runtime_dispatch")
+            .expect("synthetic node key is valid"),
+        action_key.to_owned(),
+        action_key,
+    )
+    .unwrap_or_else(|err| {
+        // Caller should have validated the key already; surface the error
+        // here as a clear panic rather than silently substituting another
+        // key — the synthetic-node path is admin tooling/tests only.
+        panic!("synthesize_node_definition: invalid action key '{action_key}': {err}");
+    });
+    node.interface_version = interface_version.cloned();
+    node
+}
+
 /// Best-effort size of all payload bytes represented by an output slot after
 /// per-node enforcement (including nested collections).
 fn estimated_action_output_payload_bytes(slot: &ActionOutput<serde_json::Value>) -> u64 {
@@ -913,64 +1342,95 @@ fn collect_output_slots_mut<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use nebula_action::{
         ActionRuntimeContext, TriggerRuntimeContext, action::Action, context::CredentialContextExt,
         error::ActionError, metadata::ActionMetadata, stateless::StatelessAction,
     };
     use nebula_core::{
-        BaseContext, DeclaresDependencies, action_key,
+        BaseContext, Dependencies, action_key,
         context::Context,
         id::{ExecutionId, WorkflowId},
         node_key,
     };
     use nebula_sandbox::{ActionExecutor, InProcessSandbox};
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
 
-    struct EchoAction {
-        meta: ActionMetadata,
-    }
+    /// Echo fixture — Variant A unit struct. Per-test metadata is supplied
+    /// via [`ActionRegistry::legacy_register_stateless_with_metadata`] (the
+    /// R-NEW-7 test escape), so the static `<Self as Action>::metadata()`
+    /// is only consulted when the test escape is bypassed.
+    struct EchoAction;
 
-    impl DeclaresDependencies for EchoAction {}
     impl Action for EchoAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for EchoAction {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
     }
 
-    struct FailAction {
-        meta: ActionMetadata,
-    }
+    struct FailAction;
 
-    impl DeclaresDependencies for FailAction {}
     impl Action for FailAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.fail.static"), "Fail", "always fails")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for FailAction {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: <Self as Action>::Input,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Err(ActionError::retryable("transient failure"))
         }
     }
@@ -1025,9 +1485,10 @@ mod tests {
     #[tokio::test]
     async fn max_total_execution_bytes_across_dispatches() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1079,9 +1540,10 @@ mod tests {
     #[tokio::test]
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+            EchoAction,
+        );
 
         let rt = make_runtime(registry);
         let input = serde_json::json!({"hello": "world"});
@@ -1110,9 +1572,10 @@ mod tests {
     #[tokio::test]
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailAction {
-            meta: ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
+            FailAction,
+        );
 
         let rt = make_runtime(registry);
         let result = rt
@@ -1125,9 +1588,10 @@ mod tests {
     #[tokio::test]
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1156,9 +1620,10 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1213,10 +1678,11 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
                 .with_isolation_level(IsolationLevel::CapabilityGated),
-        });
+            EchoAction,
+        );
 
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics);
@@ -1238,9 +1704,10 @@ mod tests {
     #[tokio::test]
     async fn spill_to_blob_rejects_when_no_storage() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1295,13 +1762,14 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
                 action_key!("test.spill_ok"),
                 "SpillOk",
                 "large output with storage",
             ),
-        });
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1353,23 +1821,40 @@ mod tests {
 
         use nebula_action::{PortKey, result::ActionResult as AR};
 
-        struct MultiOutAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for MultiOutAction {}
+        struct MultiOutAction;
         impl Action for MultiOutAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(
+                        action_key!("test.multi_out.static"),
+                        "MultiOut",
+                        "multi-port fan-out",
+                    )
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for MultiOutAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 // `main_output` is tiny; a fan-out port is huge. Before the
                 // fix, only `main_output` was checked and this result passed
                 // a byte limit of 16.
@@ -1388,13 +1873,14 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(MultiOutAction {
-            meta: ActionMetadata::new(
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
                 action_key!("test.multi_out"),
                 "MultiOut",
                 "multi-port fan-out",
             ),
-        });
+            MultiOutAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1431,23 +1917,36 @@ mod tests {
 
         use nebula_action::result::ActionResult as AR;
 
-        struct BranchAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for BranchAction {}
+        struct BranchAction;
         impl Action for BranchAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.branch.static"), "Branch", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for BranchAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 let mut alternatives = HashMap::new();
                 alternatives.insert(
                     "else".to_string(),
@@ -1464,9 +1963,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(BranchAction {
-            meta: ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
+            BranchAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1497,23 +1997,36 @@ mod tests {
     async fn collection_children_respect_reject_limit() {
         use nebula_action::result::ActionResult as AR;
 
-        struct CollectionAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for CollectionAction {}
+        struct CollectionAction;
         impl Action for CollectionAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.collection.static"), "Coll", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for CollectionAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Collection(vec![
                         ActionOutput::Value(serde_json::json!("ok")),
@@ -1526,13 +2039,14 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(CollectionAction {
-            meta: ActionMetadata::new(
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
                 action_key!("test.collection"),
                 "Collection",
                 "nested values",
             ),
-        });
+            CollectionAction,
+        );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -1565,23 +2079,36 @@ mod tests {
             result::ActionResult as AR,
         };
 
-        struct BinaryAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for BinaryAction {}
+        struct BinaryAction;
         impl Action for BinaryAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.binary.static"), "Bin", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for BinaryAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Binary(BinaryData {
                         content_type: "application/octet-stream".to_owned(),
@@ -1594,9 +2121,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(BinaryAction {
-            meta: ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
+            BinaryAction,
+        );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -1626,23 +2154,36 @@ mod tests {
     async fn reference_metadata_respects_reject_limit() {
         use nebula_action::result::ActionResult as AR;
 
-        struct RefAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for RefAction {}
+        struct RefAction;
         impl Action for RefAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.ref.static"), "Ref", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for RefAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Reference(DataReference {
                         storage_type: "blob".to_owned(),
@@ -1655,9 +2196,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(RefAction {
-            meta: ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
+            RefAction,
+        );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -1841,9 +2383,10 @@ mod tests {
     #[tokio::test]
     async fn dispatched_stateless_observes_histogram_and_counter() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.dispatched"), "Disp", "dispatched"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.dispatched"), "Disp", "dispatched"),
+            EchoAction,
+        );
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         rt.execute_action("test.dispatched", serde_json::json!("ok"), &test_context())

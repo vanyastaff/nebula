@@ -4,7 +4,7 @@
 //! Two errors fire here. Both are blockers for `dyn Credential`:
 //!
 //! - **`E0191`** at the bare `dyn Credential` site - the associated
-//!   types (`Input`/`Scheme`/`State`) must be specified for the trait
+//!   types (`Properties`/`Scheme`/`State`) must be specified for the trait
 //!   object to be well-formed as a Rust type.
 //! - **`E0038`** at the fully-qualified site - even with the assoc
 //!   types specified, `const KEY` is not dyn-compatible (no method
@@ -21,10 +21,10 @@ use nebula_credential::Credential;
 
 fn _take_bare(_c: &dyn Credential) {}
 
-fn _take_typed<I, S, St>(
-    _c: &dyn Credential<Input = I, Scheme = S, State = St>,
+fn _take_typed<P, S, St>(
+    _c: &dyn Credential<Properties = P, Scheme = S, State = St>,
 ) where
-    I: nebula_schema::HasSchema + Send + Sync + 'static,
+    P: nebula_schema::HasSchema + Send + Sync + 'static,
     S: nebula_credential::AuthScheme,
     St: nebula_credential::CredentialState,
 {

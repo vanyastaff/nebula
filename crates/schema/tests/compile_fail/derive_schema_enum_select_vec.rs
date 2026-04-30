@@ -8,7 +8,7 @@ enum Method {
 
 #[derive(Schema)]
 struct Bad {
-    #[param(enum_select)]
+    #[field(enum_select)]
     items: Vec<Method>,
 }
 

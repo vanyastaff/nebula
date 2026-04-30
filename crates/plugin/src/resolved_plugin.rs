@@ -11,7 +11,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nebula_action::Action;
+use nebula_action::ActionFactory;
 use nebula_core::{ActionKey, CredentialKey, PluginKey, ResourceKey};
 use nebula_credential::AnyCredential;
 use nebula_metadata::PluginManifest;
@@ -28,7 +28,7 @@ use crate::{ComponentKind, PluginError, plugin::Plugin};
 /// duplicate keys. Once constructed, component lookup is O(1).
 pub struct ResolvedPlugin {
     plugin: Arc<dyn Plugin>,
-    actions: HashMap<ActionKey, Arc<dyn Action>>,
+    actions: HashMap<ActionKey, Arc<dyn ActionFactory>>,
     credentials: HashMap<CredentialKey, Arc<dyn AnyCredential>>,
     resources: HashMap<ResourceKey, Arc<dyn AnyResource>>,
 }
@@ -91,7 +91,7 @@ impl ResolvedPlugin {
     }
 
     /// Look up an action by key.
-    pub fn action(&self, key: &ActionKey) -> Option<&Arc<dyn Action>> {
+    pub fn action(&self, key: &ActionKey) -> Option<&Arc<dyn ActionFactory>> {
         self.actions.get(key)
     }
 
@@ -106,7 +106,7 @@ impl ResolvedPlugin {
     }
 
     /// Iterate all registered actions.
-    pub fn actions(&self) -> impl Iterator<Item = (&ActionKey, &Arc<dyn Action>)> {
+    pub fn actions(&self) -> impl Iterator<Item = (&ActionKey, &Arc<dyn ActionFactory>)> {
         self.actions.iter()
     }
 
@@ -123,8 +123,8 @@ impl ResolvedPlugin {
     fn build_action_index(
         plugin_key: &PluginKey,
         prefix: &str,
-        raw: Vec<Arc<dyn Action>>,
-    ) -> Result<HashMap<ActionKey, Arc<dyn Action>>, PluginError> {
+        raw: Vec<Arc<dyn ActionFactory>>,
+    ) -> Result<HashMap<ActionKey, Arc<dyn ActionFactory>>, PluginError> {
         let mut out = HashMap::with_capacity(raw.len());
         for action in raw {
             let key = action.metadata().base.key.clone();

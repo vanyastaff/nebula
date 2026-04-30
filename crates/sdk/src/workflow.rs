@@ -225,6 +225,7 @@ impl WorkflowBuilder {
                     description: None,
                     enabled: true,
                     rate_limit: None,
+                    slot_bindings: HashMap::new(),
                 })
             })
             .collect::<crate::Result<Vec<_>>>()?;

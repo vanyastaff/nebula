@@ -21,6 +21,7 @@ nebula-plugin = { path = "../plugin" }
 nebula-plugin-sdk = { path = "../plugin-sdk" }
 nebula-resource = { path = "../resource" }
 nebula-schema = { path = "../schema" }
+nebula-workflow = { path = "../workflow" }
 
 async-trait = { workspace = true }
 semver = { workspace = true }

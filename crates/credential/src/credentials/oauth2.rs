@@ -11,7 +11,7 @@
 use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema, field_key};
+use nebula_schema::{FieldValues, Schema};
 // Re-exports for backward compatibility with `credentials::oauth2::` paths
 // used by external crates (nebula-api, nebula-storage).
 pub use oauth2_config::{
@@ -300,7 +300,7 @@ impl PendingState for OAuth2Pending {
 /// "credential type does not support revocation / testing."
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
-/// via [`parameters()`](OAuth2Credential::schema) and extracted from
+/// via [`OAuth2Credential::properties_schema`] and extracted from
 /// [`FieldValues`] when the OAuth2 flow is initiated.
 ///
 /// # Grant types and entry points
@@ -326,65 +326,63 @@ impl PendingState for OAuth2Pending {
 ///   the kickoff helper will land alongside the engine HTTP transport wiring.
 pub struct OAuth2Credential;
 
-/// Typed shape of the `oauth2` credential setup form.
-pub struct OAuth2Input;
-
-impl HasSchema for OAuth2Input {
-    fn schema() -> ValidSchema {
-        Schema::builder()
-            .add(
-                Field::string(field_key!("client_id"))
-                    .label("Client ID")
-                    .description("OAuth2 client identifier")
-                    .required(),
-            )
-            .add(
-                Field::secret(field_key!("client_secret"))
-                    .label("Client Secret")
-                    .description("OAuth2 client secret")
-                    .required(),
-            )
-            .add(
-                Field::string(field_key!("auth_url"))
-                    .label("Authorization URL")
-                    .description("OAuth2 authorization endpoint URL")
-                    .placeholder("https://provider.example.com/oauth2/authorize"),
-            )
-            .add(
-                Field::string(field_key!("token_url"))
-                    .label("Token URL")
-                    .description("OAuth2 token endpoint URL")
-                    .required()
-                    .placeholder("https://provider.example.com/oauth2/token"),
-            )
-            .add(
-                Field::string(field_key!("grant_type"))
-                    .label("Grant Type")
-                    .description(
-                        "OAuth2 grant type: authorization_code, client_credentials, or device_code",
-                    )
-                    .default(serde_json::json!("authorization_code")),
-            )
-            .add(
-                Field::string(field_key!("scopes"))
-                    .label("Scopes")
-                    .description("Space-separated list of OAuth2 scopes"),
-            )
-            .add(
-                Field::string(field_key!("redirect_uri"))
-                    .label("Redirect URI")
-                    .description(
-                        "OAuth2 redirect URI (required for authorization_code grant; must match the URI registered with the provider)",
-                    )
-                    .placeholder("https://app.example.com/oauth2/callback"),
-            )
-            .build()
-            .expect("oauth2 schema is always valid")
-    }
+/// Typed shape of the `oauth2` credential setup form (Phase 5 — replaces
+/// the legacy `OAuth2Input`).
+///
+/// `#[derive(Schema)]` emits the `HasSchema` impl that
+/// [`Credential::properties_schema`] reads. Secret fields use `String`
+/// here so that the universal Schema derivation applies; `resolve()` and
+/// the OAuth2 kickoff helpers wrap them into [`SecretString`] before they
+/// leave this module.
+#[derive(Schema, Deserialize, Default)]
+pub struct OAuth2Properties {
+    /// OAuth2 client identifier.
+    #[field(label = "Client ID", description = "OAuth2 client identifier")]
+    #[validate(required)]
+    pub client_id: String,
+    /// OAuth2 client secret.
+    #[field(secret, label = "Client Secret", description = "OAuth2 client secret")]
+    #[validate(required)]
+    pub client_secret: String,
+    /// OAuth2 authorization endpoint URL.
+    #[field(
+        label = "Authorization URL",
+        description = "OAuth2 authorization endpoint URL",
+        placeholder = "https://provider.example.com/oauth2/authorize"
+    )]
+    pub auth_url: Option<String>,
+    /// OAuth2 token endpoint URL.
+    #[field(
+        label = "Token URL",
+        description = "OAuth2 token endpoint URL",
+        placeholder = "https://provider.example.com/oauth2/token"
+    )]
+    #[validate(required)]
+    pub token_url: String,
+    /// OAuth2 grant type — `authorization_code`, `client_credentials`, or `device_code`.
+    #[field(
+        label = "Grant Type",
+        description = "OAuth2 grant type: authorization_code, client_credentials, or device_code",
+        default = "authorization_code"
+    )]
+    pub grant_type: Option<String>,
+    /// Space-separated list of OAuth2 scopes.
+    #[field(
+        label = "Scopes",
+        description = "Space-separated list of OAuth2 scopes"
+    )]
+    pub scopes: Option<String>,
+    /// OAuth2 redirect URI (required for `authorization_code` grant).
+    #[field(
+        label = "Redirect URI",
+        description = "OAuth2 redirect URI (required for authorization_code grant; must match the URI registered with the provider)",
+        placeholder = "https://app.example.com/oauth2/callback"
+    )]
+    pub redirect_uri: Option<String>,
 }
 
 impl Credential for OAuth2Credential {
-    type Input = OAuth2Input;
+    type Properties = OAuth2Properties;
     type Scheme = OAuth2Token;
     type State = OAuth2State;
 
@@ -395,7 +393,7 @@ impl Credential for OAuth2Credential {
             .key(nebula_core::credential_key!("oauth2"))
             .name("OAuth2")
             .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(crate::AuthPattern::OAuth2)
             .icon("oauth2")
             .build()
@@ -874,7 +872,7 @@ mod tests {
 
     #[test]
     fn parameters_has_all_fields() {
-        let params = OAuth2Credential::schema();
+        let params = OAuth2Credential::properties_schema();
         let has = |k: &str| params.fields().iter().any(|f| f.key().as_str() == k);
         assert!(has("client_id"));
         assert!(has("client_secret"));

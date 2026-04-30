@@ -9,6 +9,7 @@ use crate::{CredentialKey, ResourceKey};
 pub struct Dependencies {
     credentials: Vec<CredentialRequirement>,
     resources: Vec<ResourceRequirement>,
+    slot_fields: Vec<SlotField>,
 }
 
 impl Dependencies {
@@ -29,6 +30,14 @@ impl Dependencies {
         self
     }
 
+    /// Declare a slot-binding field (`#[resource]` / `#[credential]`) per
+    /// ADR-0042. The default id (the slot key) supplies the binding when
+    /// the workflow node does not override it via `slot_bindings`.
+    pub fn slot_field(mut self, field: SlotField) -> Self {
+        self.slot_fields.push(field);
+        self
+    }
+
     /// Get credential requirements.
     pub fn credentials(&self) -> &[CredentialRequirement] {
         &self.credentials
@@ -38,6 +47,57 @@ impl Dependencies {
     pub fn resources(&self) -> &[ResourceRequirement] {
         &self.resources
     }
+
+    /// Get declared slot-binding fields.
+    pub fn slot_fields(&self) -> &[SlotField] {
+        &self.slot_fields
+    }
+}
+
+/// A single slot-binding field declared by an action.
+///
+/// Slot fields capture the `(slot_key, default_id, kind, required, lazy)`
+/// tuple that `#[derive(Action)]` reads off `#[resource(...)]` /
+/// `#[credential(...)]` field-level attributes (per ADR-0043 §9). The
+/// engine uses this declaration to resolve the slot at dispatch time,
+/// applying the workflow's `slot_bindings` override (ADR-0042) when one
+/// is supplied for `slot_key`, falling back to `default_id` otherwise.
+#[derive(Debug, Clone)]
+pub struct SlotField {
+    /// The struct-field name (and default binding key, ADR-0042).
+    pub slot_key: &'static str,
+    /// Default id used when the workflow node does not override.
+    /// By convention this is `slot_key` itself.
+    pub default_id: &'static str,
+    /// Kind of slot — resource or credential — with attached type information.
+    pub kind: SlotKind,
+    /// Whether the slot must resolve successfully (required vs optional).
+    pub required: bool,
+    /// Whether the slot is lazy (resolution deferred until use).
+    pub lazy: bool,
+}
+
+/// The kind of slot a [`SlotField`] declares.
+#[derive(Debug, Clone)]
+pub enum SlotKind {
+    /// A resource slot — type erased to `TypeId` for runtime lookup.
+    Resource {
+        /// `TypeId` of the concrete `Resource` impl.
+        type_id: TypeId,
+        /// `type_name` of the concrete resource type — diagnostics only.
+        type_name: &'static str,
+        /// Default key for the slot binding.
+        key: ResourceKey,
+    },
+    /// A credential slot — type erased to `TypeId` for runtime lookup.
+    Credential {
+        /// `TypeId` of the concrete `Credential` impl.
+        type_id: TypeId,
+        /// `type_name` of the concrete credential type — diagnostics only.
+        type_name: &'static str,
+        /// Default key for the slot binding.
+        key: CredentialKey,
+    },
 }
 
 /// Single method dependency declaration trait.

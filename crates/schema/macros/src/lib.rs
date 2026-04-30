@@ -62,12 +62,12 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 /// Derive `HasSchema` (from `nebula-schema`) for a struct.
 ///
 /// Supported attributes:
-/// - `#[param(...)]` — label/description/placeholder/default/hint/secret/
+/// - `#[field(...)]` — label/description/placeholder/default/hint/secret/
 ///   multiline/no_expression/expression_required/enum_select/skip/group.
 /// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
 /// - `#[schema(...)]` — struct-level options; today: `custom = "..."` → the validator's
 ///   `Rule::custom` on the built schema (deferred wire hook).
-#[proc_macro_derive(Schema, attributes(param, validate, schema))]
+#[proc_macro_derive(Schema, attributes(field, validate, schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     derive_schema::expand(input)
@@ -77,8 +77,8 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 
 /// Derive `HasSelectOptions` (from `nebula-schema`) for a unit-only enum.
 /// Variant names snake_case into stored values; use
-/// `#[param(label = "...")]` to override the display label.
-#[proc_macro_derive(EnumSelect, attributes(param))]
+/// `#[field(label = "...")]` to override the display label.
+#[proc_macro_derive(EnumSelect, attributes(field))]
 pub fn derive_enum_select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     derive_enum::expand(input)

@@ -44,6 +44,15 @@ pub struct NodeDefinition {
     /// Engine throttles execution to stay within the limit.
     #[serde(default)]
     pub rate_limit: Option<RateLimit>,
+    /// Slot-binding overrides per ADR-0042 (hybrid binding mechanism).
+    ///
+    /// Map key is the action's `slot_key` (the struct field name on the
+    /// `#[derive(Action)]` type). Map value is a [`SlotBinding`] selecting
+    /// which concrete resource id or credential id to inject. When a slot
+    /// has no entry here, the action's declared default id (typically the
+    /// `slot_key` itself) is used.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub slot_bindings: HashMap<String, SlotBinding>,
 }
 
 /// Rate limit configuration for an action.
@@ -101,7 +110,57 @@ impl NodeDefinition {
             description: None,
             enabled: true,
             rate_limit: None,
+            slot_bindings: HashMap::new(),
         })
+    }
+
+    /// Override the binding for the resource slot named `slot`.
+    #[must_use]
+    pub fn with_resource_binding(
+        mut self,
+        slot: impl Into<String>,
+        resource_id: impl Into<String>,
+    ) -> Self {
+        self.slot_bindings
+            .insert(slot.into(), SlotBinding::ResourceId(resource_id.into()));
+        self
+    }
+
+    /// Override the binding for the credential slot named `slot`.
+    #[must_use]
+    pub fn with_credential_binding(
+        mut self,
+        slot: impl Into<String>,
+        credential_id: impl Into<String>,
+    ) -> Self {
+        self.slot_bindings
+            .insert(slot.into(), SlotBinding::CredentialId(credential_id.into()));
+        self
+    }
+
+    /// Look up the resource id bound to `slot`, if any.
+    ///
+    /// Returns `None` when no binding is set for the slot or the binding
+    /// is for a credential (slot kind mismatch is the action's default-id
+    /// fallback responsibility, not the workflow definition's).
+    #[must_use]
+    pub fn resource_binding(&self, slot: &str) -> Option<&str> {
+        match self.slot_bindings.get(slot)? {
+            SlotBinding::ResourceId(id) => Some(id.as_str()),
+            SlotBinding::CredentialId(_) => None,
+        }
+    }
+
+    /// Look up the credential id bound to `slot`, if any.
+    ///
+    /// Returns `None` when no binding is set for the slot or the binding
+    /// is for a resource.
+    #[must_use]
+    pub fn credential_binding(&self, slot: &str) -> Option<&str> {
+        match self.slot_bindings.get(slot)? {
+            SlotBinding::CredentialId(id) => Some(id.as_str()),
+            SlotBinding::ResourceId(_) => None,
+        }
     }
 
     /// Pin an interface version.
@@ -145,6 +204,23 @@ impl NodeDefinition {
         self.enabled = false;
         self
     }
+}
+
+/// Slot-binding override for an action's `#[resource]` / `#[credential]` field.
+///
+/// Per ADR-0042, action authors declare slots on their `#[derive(Action)]`
+/// struct fields. The default binding id is the slot key (the field name).
+/// Workflow authors override per-node by populating
+/// [`NodeDefinition::slot_bindings`]; each entry selects either a resource
+/// id (`SlotBinding::ResourceId`) or a credential id
+/// (`SlotBinding::CredentialId`) to inject for the named slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum SlotBinding {
+    /// Bind a resource slot to the named resource id.
+    ResourceId(String),
+    /// Bind a credential slot to the named credential id.
+    CredentialId(String),
 }
 
 /// A parameter value that can be a literal, expression, template, or reference.

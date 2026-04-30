@@ -121,7 +121,7 @@ where
     A: ResourceAction + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
+        <A as Action>::metadata()
     }
 
     /// Configure the resource by delegating to the typed action.
@@ -171,7 +171,7 @@ where
 impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResourceActionAdapter")
-            .field("action", &self.action.metadata().base.key)
+            .field("action", &<A as Action>::metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -180,34 +180,47 @@ impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
-    use nebula_core::DeclaresDependencies;
+    use nebula_core::Dependencies;
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
     use crate::testing::{TestActionContext, TestContextBuilder};
 
-    struct MockResourceAction {
-        meta: ActionMetadata,
-    }
+    struct MockResourceAction;
 
     impl MockResourceAction {
         fn new() -> Self {
-            Self {
-                meta: ActionMetadata::new(
-                    nebula_core::action_key!("test.resource_action"),
-                    "MockResource",
-                    "Creates a string pool",
-                ),
-            }
+            Self
         }
     }
 
-    impl DeclaresDependencies for MockResourceAction {}
-
     impl Action for MockResourceAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
+                    nebula_core::action_key!("test.resource_action"),
+                    "MockResource",
+                    "Creates a string pool",
+                )
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
@@ -278,9 +291,9 @@ mod tests {
     #[test]
     fn resource_adapter_into_inner_returns_action() {
         let adapter = ResourceActionAdapter::new(MockResourceAction::new());
-        let action = adapter.into_inner();
+        let _action = adapter.into_inner();
         assert_eq!(
-            action.metadata().base.key,
+            <MockResourceAction as Action>::metadata().base.key,
             nebula_core::action_key!("test.resource_action")
         );
     }

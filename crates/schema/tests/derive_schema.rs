@@ -10,25 +10,25 @@ use serde_json::json;
 #[derive(Schema)]
 #[expect(dead_code, reason = "fields are exercised via HasSchema::schema")]
 struct HttpInput {
-    #[param(label = "URL", hint = "url")]
+    #[field(label = "URL", hint = "url")]
     #[validate(required, url, length(max = 8192))]
     url: String,
 
-    #[param(label = "Method", description = "HTTP method", default = "GET")]
+    #[field(label = "Method", description = "HTTP method", default = "GET")]
     method: String,
 
-    #[param(label = "Body", multiline)]
+    #[field(label = "Body", multiline)]
     #[validate(length(max = 1024))]
     body: Option<String>,
 
-    #[param(label = "Timeout (seconds)")]
+    #[field(label = "Timeout (seconds)")]
     #[validate(range(1..=300))]
     timeout: Option<u32>,
 
-    #[param(label = "Verbose", no_expression)]
+    #[field(label = "Verbose", no_expression)]
     verbose: bool,
 
-    #[param(secret, label = "API Key")]
+    #[field(secret, label = "API Key")]
     #[validate(required)]
     api_key: String,
 }
@@ -93,7 +93,7 @@ fn derive_schema_matches_hand_written_schema() {
         other => panic!("expected BooleanField, got {other:?}"),
     }
 
-    // api_key — secret, because #[param(secret)] switched String → SecretField.
+    // api_key — secret, because #[field(secret)] switched String → SecretField.
     match &derived.fields()[5] {
         Field::Secret(s) => {
             assert_eq!(s.key.as_str(), "api_key");
@@ -160,7 +160,7 @@ fn derive_handles_vec_and_nested_user_type() {
 #[allow(dead_code)]
 struct WithSkip {
     keep: String,
-    #[param(skip)]
+    #[field(skip)]
     _internal: u64,
 }
 
@@ -179,7 +179,7 @@ enum HttpMethod {
     Get,
     Post,
     Put,
-    #[param(label = "HTTP DELETE")]
+    #[field(label = "HTTP DELETE")]
     Delete,
 }
 
@@ -197,9 +197,9 @@ fn derive_enum_select_generates_options() {
 #[derive(Schema)]
 #[expect(dead_code, reason = "fields exercised via HasSchema::schema")]
 struct RequestLine {
-    #[param(label = "HTTP method", enum_select, default = "get")]
+    #[field(label = "HTTP method", enum_select, default = "get")]
     method: HttpMethod,
-    #[param(label = "Optional override", enum_select)]
+    #[field(label = "Optional override", enum_select)]
     alt: Option<HttpMethod>,
 }
 
@@ -231,7 +231,7 @@ fn derive_enum_select_field_becomes_select() {
 #[derive(Schema)]
 #[allow(dead_code)]
 struct Uses {
-    #[param(label = "Plain string")]
+    #[field(label = "Plain string")]
     value: String,
 }
 

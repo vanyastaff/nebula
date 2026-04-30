@@ -6,7 +6,6 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nebula_credential::Credential;
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -78,7 +77,6 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         _options: &AcquireOptions,
     ) -> Result<ResourceGuard<R>, Error>
@@ -131,7 +129,7 @@ where
         // Create a new runtime.
         let runtime = match tokio::time::timeout(
             self.config.create_timeout,
-            resource.create(resource_config, scheme, ctx),
+            resource.create(resource_config, ctx),
         )
         .await
         {
@@ -203,7 +201,6 @@ mod tests {
         type Runtime = u32;
         type Lease = u32;
         type Error = MockError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("mock-resident")
@@ -212,7 +209,6 @@ mod tests {
         fn create(
             &self,
             _config: &bool,
-            _scheme: &<Self::Credential as Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
@@ -262,7 +258,7 @@ mod tests {
             let c = Arc::clone(&ctx);
             handles.push(tokio::spawn(async move {
                 runtime
-                    .acquire(&r, &true, &(), c.as_ref(), &AcquireOptions::default())
+                    .acquire(&r, &true, c.as_ref(), &AcquireOptions::default())
                     .await
                     .unwrap()
             }));
@@ -287,7 +283,7 @@ mod tests {
         let ctx = test_ctx();
 
         let handle = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await
             .unwrap();
         assert_eq!(*handle, 100);
@@ -301,11 +297,11 @@ mod tests {
         let ctx = test_ctx();
 
         let h1 = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await
             .unwrap();
         let h2 = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await
             .unwrap();
 
@@ -326,7 +322,7 @@ mod tests {
 
         // First acquire — creates.
         let h1 = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await
             .unwrap();
         assert_eq!(*h1, 100);
@@ -347,7 +343,7 @@ mod tests {
         // The acquire will destroy old, create new. The new one won't be checked
         // via is_alive_sync on the same acquire call — it's stored and returned.
         let h2 = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await
             .unwrap();
         assert_eq!(*h2, 101); // Second creation.
@@ -363,18 +359,12 @@ mod tests {
         type Runtime = u32;
         type Lease = u32;
         type Error = MockError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("hanging-resident")
         }
 
-        async fn create(
-            &self,
-            _config: &bool,
-            _scheme: &<Self::Credential as Credential>::Scheme,
-            _ctx: &ResourceContext,
-        ) -> Result<u32, MockError> {
+        async fn create(&self, _config: &bool, _ctx: &ResourceContext) -> Result<u32, MockError> {
             tokio::time::sleep(Duration::from_hours(1)).await;
             Ok(0)
         }
@@ -402,26 +392,14 @@ mod tests {
 
         // First acquire should fail quickly with a timeout, not hang.
         let result = rt
-            .acquire(
-                &resource,
-                &true,
-                &(),
-                ctx.as_ref(),
-                &AcquireOptions::default(),
-            )
+            .acquire(&resource, &true, ctx.as_ref(), &AcquireOptions::default())
             .await;
         assert!(result.is_err(), "first acquire should time out");
 
         // Second acquire must also fail quickly — the create_lock must have
         // been released after the first timeout.
         let result = rt
-            .acquire(
-                &resource,
-                &true,
-                &(),
-                ctx.as_ref(),
-                &AcquireOptions::default(),
-            )
+            .acquire(&resource, &true, ctx.as_ref(), &AcquireOptions::default())
             .await;
         assert!(
             result.is_err(),
@@ -441,7 +419,7 @@ mod tests {
 
         // First acquire — creates.
         let _h1 = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await
             .unwrap();
 
@@ -450,7 +428,7 @@ mod tests {
 
         // Second acquire — should fail.
         let result = rt
-            .acquire(&resource, &true, &(), &ctx, &AcquireOptions::default())
+            .acquire(&resource, &true, &ctx, &AcquireOptions::default())
             .await;
         assert!(result.is_err());
     }

@@ -1,4 +1,4 @@
-error: `#[param(no_expression)]` and `#[param(expression_required)]` are contradictory: pick exactly one expression-mode attribute
+error: `#[field(no_expression)]` and `#[field(expression_required)]` are contradictory: pick exactly one expression-mode attribute
  --> tests/compile_fail/derive_no_expression_and_required.rs:7:5
   |
 7 |     name: String,
