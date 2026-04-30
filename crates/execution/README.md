@@ -101,7 +101,7 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 
 - API stability: `stable` — state machine, journal, idempotency key, and plan types are
   in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
-- `execution_leases` schema may exist before full engine enforcement; see §11.5 debt.
+- Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
 - Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
   engine-level integration tests.
 - 5 `panic!` sites in `transition` and `status` modules serve as state-machine invariant
@@ -133,7 +133,29 @@ requires updating this README and the corresponding code; no canon revision. The
 | `execution_journal` | **Durable** (append-only) | Replayable history |
 | `execution_control_queue` | **Durable** (outbox) | At-least-once cancel/dispatch |
 | `stateful_checkpoints` | **Best-effort** | Failure logs, does not abort; may replay |
-| `execution_leases` | **Schema may precede enforcement** | Do not imply lease safety |
+| `executions.lease_holder` / `lease_expires_at` (Layer 1) | **Durable + enforced** (M2.2, ADR-0008/0015) | Heartbeat-driven; multi-runner takeover via TTL expiry |
+| `executions.claimed_by` / `claimed_until` (Layer 2, Sprint E) | **Schema may precede enforcement** | Spec-16 scaffolding, deferred to 1.1 — no engine consumers today |
+
+**Lease enforcement (Layer 1, shipped via M2.2):** the engine's
+`acquire_and_heartbeat_lease` (`crates/engine/src/engine.rs:815-859`)
+acquires a lease on `execute_workflow` / `resume_execution`, spawns a
+heartbeat task that renews every `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`
+(10s) within `DEFAULT_EXECUTION_LEASE_TTL` (30s), and tears the runner
+down on `Ok(false)` (lease stolen) or `Err(_)` (storage failure). The
+durable fence is `lease_holder` string match — a stale runner whose
+holder no longer matches gets rejected on `renew_lease`. Multi-runner
+takeover is verified by `crates/engine/tests/lease_takeover.rs`,
+`crates/storage/tests/execution_lease_pg_integration.rs`, and the
+loom probe in `crates/storage-loom-probe/src/lease_handoff.rs`.
+
+**Layer 2 status:** the `claimed_by` / `claimed_until` columns + the
+two indexes (`idx_executions_pending_claim`, `idx_executions_stale_lease`)
+defined by `migrations/postgres/0011_executions.sql` are **Sprint E
+(1.1) scaffolding**, intentionally inert until the spec-16 row-model
+engine refactor lands. See ROADMAP "Out of scope for 1.0" → "Storage
+Layer 2 / spec-16 multi-tenant row model (Sprint E)". The
+`Schema may precede enforcement` warning therefore applies to Layer 2
+only — Layer 1 is enforced today.
 
 ### Architecture notes
 

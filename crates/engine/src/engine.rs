@@ -595,6 +595,17 @@ impl WorkflowEngine {
     ///
     /// Nodes upstream of `replay_from` use pinned (stored) outputs.
     /// Nodes at and downstream are re-executed.
+    ///
+    /// # Lease semantics (intentional, ROADMAP §M2.2 / T5)
+    ///
+    /// `replay_execution` mints a **fresh** `ExecutionId` per call and
+    /// runs the frontier loop without acquiring a lease — there is no
+    /// `acquire_and_heartbeat_lease` call on this path. The replay is
+    /// a new logical execution: it does not contend with a sibling
+    /// runner that holds the lease for the source execution, and it
+    /// has its own (fresh) lease-less identity. This invariant is
+    /// locked down by the `replay_does_not_contend_for_held_lease`
+    /// integration test in `crates/engine/tests/lease_takeover.rs`.
     pub async fn replay_execution(
         &self,
         workflow: &WorkflowDefinition,

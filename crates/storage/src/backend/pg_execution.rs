@@ -162,7 +162,33 @@ impl ExecutionRepo for PgExecutionRepo {
         .await
         .map_err(map_err)?;
 
-        Ok(result.rows_affected() > 0)
+        let acquired = result.rows_affected() > 0;
+        if acquired {
+            tracing::debug!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                %holder,
+                ttl_secs = secs,
+                "acquire_lease: acquired"
+            );
+        } else {
+            // 0 rows affected covers BOTH "execution row exists with a
+            // live competing lease" and "execution row is missing".
+            // The SQL fence (`WHERE id = $1 AND (lease_holder IS NULL
+            // OR lease_expires_at < NOW())`) cannot distinguish those
+            // at the SQL layer without a second roundtrip; the message
+            // therefore stays neutral so an operator does not chase a
+            // "competing runner" theory when the row was simply never
+            // seeded.
+            tracing::warn!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                attempted_holder = %holder,
+                ttl_secs = secs,
+                "acquire_lease: rejected (contended or execution row missing)"
+            );
+        }
+        Ok(acquired)
     }
 
     async fn renew_lease(
@@ -184,7 +210,29 @@ impl ExecutionRepo for PgExecutionRepo {
         .await
         .map_err(map_err)?;
 
-        Ok(result.rows_affected() > 0)
+        let renewed = result.rows_affected() > 0;
+        if renewed {
+            tracing::trace!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                %holder,
+                ttl_secs = secs,
+                "renew_lease: extended"
+            );
+        } else {
+            // Holder mismatch OR row missing — engine heartbeat treats
+            // both as "lease lost" and aborts. Engine-side tracing in
+            // `engine.rs:899-927` records the typed `HEARTBEAT_LOST`
+            // metric.
+            tracing::error!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                attempted_holder = %holder,
+                ttl_secs = secs,
+                "renew_lease: rejected (holder mismatch or row missing — caller's lease is lost)"
+            );
+        }
+        Ok(renewed)
     }
 
     async fn release_lease(
@@ -203,7 +251,23 @@ impl ExecutionRepo for PgExecutionRepo {
         .await
         .map_err(map_err)?;
 
-        Ok(result.rows_affected() > 0)
+        let released = result.rows_affected() > 0;
+        if released {
+            tracing::debug!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                %holder,
+                "release_lease: released"
+            );
+        } else {
+            tracing::warn!(
+                target: "nebula_storage::lease",
+                execution_id = %id,
+                attempted_holder = %holder,
+                "release_lease: rejected (holder mismatch — caller no longer owns this lease)"
+            );
+        }
+        Ok(released)
     }
 
     async fn create(
