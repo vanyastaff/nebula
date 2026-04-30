@@ -1,0 +1,5 @@
+error: unknown attribute `typo_attribute` in #[action(...)] — allowed keys: key, name, description, version, input, output
+  --> tests/probes/derive_unknown_attr_key.rs:10:5
+   |
+10 |     typo_attribute = "oops"
+   |     ^^^^^^^^^^^^^^

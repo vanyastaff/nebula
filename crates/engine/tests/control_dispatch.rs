@@ -1,6 +1,3 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Unit tests for `EngineControlDispatch` (ADR-0008 A2 / A3).
 //!
 //! These tests mirror the API → consumer → engine seam without running the
@@ -14,7 +11,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -24,43 +21,60 @@ use nebula_action::{
     ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, DeclaresDependencies, action_key, id::ExecutionId, node_key};
+use nebula_core::{ActionKey, Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
     DataPassingPolicy, EngineControlDispatch, InProcessSandbox, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
+use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 use tokio::sync::Notify;
 
-// ── Test handler ──────────────────────────────────────────────────────────
+// ── Test handlers (Variant A) ─────────────────────────────────────────────
 
 /// Echo handler that counts invocations so idempotency tests can assert no
 /// second dispatch happened.
-#[derive(Clone)]
 struct CountingEchoHandler {
-    meta: ActionMetadata,
     count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for CountingEchoHandler {}
 impl Action for CountingEchoHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.counting_echo.static"),
+                "CountingEcho",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl StatelessAction for CountingEchoHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(ActionResult::success(input))
     }
@@ -69,27 +83,44 @@ impl StatelessAction for CountingEchoHandler {
 /// Cooperatively-cancellable handler. Notifies when it enters the sleep so
 /// tests know the frontier loop is live before delivering a `Cancel`.
 struct SlowCancellableHandler {
-    meta: ActionMetadata,
     started: Arc<Notify>,
     count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for SlowCancellableHandler {}
 impl Action for SlowCancellableHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.slow_cancellable.static"),
+                "SlowCancellable",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl StatelessAction for SlowCancellableHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
         tokio::select! {
@@ -122,15 +153,19 @@ impl Harness {
         let slow_count = Arc::new(AtomicU32::new(0));
         let slow_started = Arc::new(Notify::new());
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(CountingEchoHandler {
-            meta: meta(action_key!("echo")),
-            count: Arc::clone(&action_count),
-        });
-        registry.register_stateless(SlowCancellableHandler {
-            meta: meta(action_key!("slow")),
-            started: Arc::clone(&slow_started),
-            count: Arc::clone(&slow_count),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            meta(action_key!("echo")),
+            CountingEchoHandler {
+                count: Arc::clone(&action_count),
+            },
+        );
+        registry.legacy_register_stateless_with_metadata(
+            meta(action_key!("slow")),
+            SlowCancellableHandler {
+                started: Arc::clone(&slow_started),
+                count: Arc::clone(&slow_count),
+            },
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })

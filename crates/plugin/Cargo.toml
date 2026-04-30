@@ -28,6 +28,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 nebula-schema = { path = "../schema" }
+nebula-workflow = { path = "../workflow" }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }

@@ -1,0 +1,5 @@
+error: #[derive(Action)] does not support tuple structs — use a named-field struct or a unit struct
+  --> tests/probes/derive_tuple_struct.rs:11:19
+   |
+11 | struct TupleAction(u32, u32);
+   |                   ^^^^^^^^^^

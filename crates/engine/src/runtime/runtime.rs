@@ -911,67 +911,97 @@ fn collect_output_slots_mut<'a>(
     }
 }
 
-// phase3_disabled: Variant A migration of test fixtures pending — see PHASE3_BLOCKED.md
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use nebula_action::{
         ActionRuntimeContext, TriggerRuntimeContext, action::Action, context::CredentialContextExt,
         error::ActionError, metadata::ActionMetadata, stateless::StatelessAction,
     };
     use nebula_core::{
-        BaseContext, DeclaresDependencies, action_key,
+        BaseContext, Dependencies, action_key,
         context::Context,
         id::{ExecutionId, WorkflowId},
         node_key,
     };
     use nebula_sandbox::{ActionExecutor, InProcessSandbox};
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
 
-    struct EchoAction {
-        meta: ActionMetadata,
-    }
+    /// Echo fixture — Variant A unit struct. Per-test metadata is supplied
+    /// via [`ActionRegistry::legacy_register_stateless_with_metadata`] (the
+    /// R-NEW-7 test escape), so the static `<Self as Action>::metadata()`
+    /// is only consulted when the test escape is bypassed.
+    struct EchoAction;
 
-    impl DeclaresDependencies for EchoAction {}
     impl Action for EchoAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for EchoAction {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
     }
 
-    struct FailAction {
-        meta: ActionMetadata,
-    }
+    struct FailAction;
 
-    impl DeclaresDependencies for FailAction {}
     impl Action for FailAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.fail.static"), "Fail", "always fails")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatelessAction for FailAction {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
-
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: <Self as Action>::Input,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Err(ActionError::retryable("transient failure"))
         }
     }
@@ -1026,9 +1056,10 @@ mod tests {
     #[tokio::test]
     async fn max_total_execution_bytes_across_dispatches() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1080,9 +1111,10 @@ mod tests {
     #[tokio::test]
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+            EchoAction,
+        );
 
         let rt = make_runtime(registry);
         let input = serde_json::json!({"hello": "world"});
@@ -1111,9 +1143,10 @@ mod tests {
     #[tokio::test]
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(FailAction {
-            meta: ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
+            FailAction,
+        );
 
         let rt = make_runtime(registry);
         let result = rt
@@ -1126,9 +1159,10 @@ mod tests {
     #[tokio::test]
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1157,9 +1191,10 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1214,10 +1249,11 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
                 .with_isolation_level(IsolationLevel::CapabilityGated),
-        });
+            EchoAction,
+        );
 
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics);
@@ -1239,9 +1275,10 @@ mod tests {
     #[tokio::test]
     async fn spill_to_blob_rejects_when_no_storage() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1296,13 +1333,14 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
                 action_key!("test.spill_ok"),
                 "SpillOk",
                 "large output with storage",
             ),
-        });
+            EchoAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1354,23 +1392,40 @@ mod tests {
 
         use nebula_action::{PortKey, result::ActionResult as AR};
 
-        struct MultiOutAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for MultiOutAction {}
+        struct MultiOutAction;
         impl Action for MultiOutAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(
+                        action_key!("test.multi_out.static"),
+                        "MultiOut",
+                        "multi-port fan-out",
+                    )
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for MultiOutAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 // `main_output` is tiny; a fan-out port is huge. Before the
                 // fix, only `main_output` was checked and this result passed
                 // a byte limit of 16.
@@ -1389,13 +1444,14 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(MultiOutAction {
-            meta: ActionMetadata::new(
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
                 action_key!("test.multi_out"),
                 "MultiOut",
                 "multi-port fan-out",
             ),
-        });
+            MultiOutAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1432,23 +1488,36 @@ mod tests {
 
         use nebula_action::result::ActionResult as AR;
 
-        struct BranchAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for BranchAction {}
+        struct BranchAction;
         impl Action for BranchAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.branch.static"), "Branch", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for BranchAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 let mut alternatives = HashMap::new();
                 alternatives.insert(
                     "else".to_string(),
@@ -1465,9 +1534,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(BranchAction {
-            meta: ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
+            BranchAction,
+        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -1498,23 +1568,36 @@ mod tests {
     async fn collection_children_respect_reject_limit() {
         use nebula_action::result::ActionResult as AR;
 
-        struct CollectionAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for CollectionAction {}
+        struct CollectionAction;
         impl Action for CollectionAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.collection.static"), "Coll", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for CollectionAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Collection(vec![
                         ActionOutput::Value(serde_json::json!("ok")),
@@ -1527,13 +1610,14 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(CollectionAction {
-            meta: ActionMetadata::new(
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
                 action_key!("test.collection"),
                 "Collection",
                 "nested values",
             ),
-        });
+            CollectionAction,
+        );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -1566,23 +1650,36 @@ mod tests {
             result::ActionResult as AR,
         };
 
-        struct BinaryAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for BinaryAction {}
+        struct BinaryAction;
         impl Action for BinaryAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.binary.static"), "Bin", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for BinaryAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Binary(BinaryData {
                         content_type: "application/octet-stream".to_owned(),
@@ -1595,9 +1692,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(BinaryAction {
-            meta: ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
+            BinaryAction,
+        );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -1627,23 +1725,36 @@ mod tests {
     async fn reference_metadata_respects_reject_limit() {
         use nebula_action::result::ActionResult as AR;
 
-        struct RefAction {
-            meta: ActionMetadata,
-        }
-        impl DeclaresDependencies for RefAction {}
+        struct RefAction;
         impl Action for RefAction {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| {
+                    ActionMetadata::new(action_key!("test.ref.static"), "Ref", "static")
+                })
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
             }
         }
         impl StatelessAction for RefAction {
-            type Input = serde_json::Value;
-            type Output = serde_json::Value;
             async fn execute(
                 &self,
-                _input: Self::Input,
+                _input: <Self as Action>::Input,
                 _ctx: &(impl ActionContext + ?Sized),
-            ) -> Result<AR<Self::Output>, ActionError> {
+            ) -> Result<AR<<Self as Action>::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Reference(DataReference {
                         storage_type: "blob".to_owned(),
@@ -1656,9 +1767,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(RefAction {
-            meta: ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
+            RefAction,
+        );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -1842,9 +1954,10 @@ mod tests {
     #[tokio::test]
     async fn dispatched_stateless_observes_histogram_and_counter() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless(EchoAction {
-            meta: ActionMetadata::new(action_key!("test.dispatched"), "Disp", "dispatched"),
-        });
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(action_key!("test.dispatched"), "Disp", "dispatched"),
+            EchoAction,
+        );
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         rt.execute_action("test.dispatched", serde_json::json!("ok"), &test_context())

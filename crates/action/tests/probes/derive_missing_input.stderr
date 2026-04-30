@@ -1,0 +1,5 @@
+error: missing required attribute `input = SomeType` — Variant A requires Self::Input to be specified
+ --> tests/probes/derive_missing_input.rs:7:8
+  |
+7 | struct MissingInput;
+  |        ^^^^^^^^^^^^

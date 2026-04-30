@@ -1,19 +1,22 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Integration tests for `ResolvedPlugin` — namespace enforcement and lookup.
 
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
-use nebula_action::{Action, ActionMetadata, DeclaresDependencies};
+use nebula_action::{ActionContext, ActionError, ActionFactory, ActionMetadata, ErasedAction};
 use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{AnyResource, ResourceMetadata};
 use nebula_schema::ValidSchema;
+use nebula_workflow::NodeDefinition;
 
-// ── Stub Action ──────────────────────────────────────────────────────────────
+// ── Stub ActionFactory ───────────────────────────────────────────────────────
+//
+// The plugin contract returns `Vec<Arc<dyn ActionFactory>>`. For these tests
+// we only need the metadata side — `instantiate` is never invoked because
+// the tests only check namespace / dedup / registration. A stub factory that
+// errors on `instantiate` is sufficient.
 
 struct StubAction {
     metadata: ActionMetadata,
@@ -39,11 +42,21 @@ impl std::fmt::Debug for StubAction {
     }
 }
 
-impl DeclaresDependencies for StubAction {}
-
-impl Action for StubAction {
+impl ActionFactory for StubAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
+    }
+
+    fn instantiate<'a>(
+        &'a self,
+        _node: &'a NodeDefinition,
+        _ctx: &'a dyn ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(ActionError::fatal(
+                "StubAction::instantiate is a test stub — should never be invoked",
+            ))
+        })
     }
 }
 
@@ -125,7 +138,7 @@ impl AnyResource for StubResource {
 
 struct StubPlugin {
     manifest: PluginManifest,
-    actions: Vec<Arc<dyn Action>>,
+    actions: Vec<Arc<dyn ActionFactory>>,
     credentials: Vec<Arc<dyn AnyCredential>>,
     resources: Vec<Arc<dyn AnyResource>>,
 }
@@ -170,7 +183,7 @@ impl Plugin for StubPlugin {
         &self.manifest
     }
 
-    fn actions(&self) -> Vec<Arc<dyn Action>> {
+    fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
         self.actions.clone()
     }
 

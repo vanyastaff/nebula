@@ -1,6 +1,3 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! End-to-end integration test: action acquires a resource through the engine.
 //!
 //! Proves the full chain:
@@ -10,24 +7,28 @@
 //!         -> gets ResourceHandle
 //!           -> downcasts to the concrete instance type
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use nebula_action::{
     ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, DeclaresDependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
     WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::Manager;
+use nebula_schema::{HasSchema, ValidSchema};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
-// Action handler that acquires a resource
+// Action handler that acquires a resource (Variant A)
 // ---------------------------------------------------------------------------
 
 /// Placeholder handler used by the smoke tests below — returns a fixed
@@ -35,26 +36,42 @@ use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinitio
 /// attaching a resource manager does not break end-to-end dispatch; it
 /// does not exercise resource acquisition (see [`ResourceProbeHandler`]
 /// for that).
-struct ResourceConsumerHandler {
-    meta: ActionMetadata,
-}
+struct ResourceConsumerHandler;
 
-impl DeclaresDependencies for ResourceConsumerHandler {}
 impl Action for ResourceConsumerHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.resource_consumer.static"),
+                "ResourceConsumer",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl StatelessAction for ResourceConsumerHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         // Smoke-path action: does NOT call ctx.resource(). The
         // attached-manager tests (below) verify that engine dispatch
         // still works with a resource manager wired in; a parallel
@@ -70,26 +87,42 @@ impl StatelessAction for ResourceConsumerHandler {
 /// [`ActionContext`]. Used by the no-manager failure test to pin the
 /// contract that `ctx.resource(..)` returns an error when the engine
 /// was not wired with a resource manager.
-struct ResourceProbeHandler {
-    meta: ActionMetadata,
-}
+struct ResourceProbeHandler;
 
-impl DeclaresDependencies for ResourceProbeHandler {}
 impl Action for ResourceProbeHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.resource_probe.static"),
+                "ResourceProbe",
+                "static",
+            )
+        })
+    }
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl StatelessAction for ResourceProbeHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         // Let ctx.resource() return its natural error when the accessor
         // is the no-op default (no manager attached) — the engine then
         // translates the action failure into a failed workflow run.
@@ -152,9 +185,10 @@ async fn action_acquires_resource_through_engine() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(ResourceConsumerHandler {
-        meta: meta(action_key!("resource-consumer")),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        meta(action_key!("resource-consumer")),
+        ResourceConsumerHandler,
+    );
 
     // 3. Build the engine with the resource manager attached
     let executor: ActionExecutor =
@@ -199,9 +233,10 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(ResourceConsumerHandler {
-        meta: meta(action_key!("resource-consumer")),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        meta(action_key!("resource-consumer")),
+        ResourceConsumerHandler,
+    );
 
     // 3. Build the engine with the resource manager attached
     let executor: ActionExecutor =
@@ -251,9 +286,10 @@ async fn full_resource_lifecycle_with_shutdown() {
 #[tokio::test]
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(ResourceProbeHandler {
-        meta: meta(action_key!("resource-probe")),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        meta(action_key!("resource-probe")),
+        ResourceProbeHandler,
+    );
 
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));

@@ -376,51 +376,124 @@ impl std::fmt::Debug for ActionRegistry {
     }
 }
 
-// phase3_disabled: Variant A migration of test fixtures pending — see PHASE3_BLOCKED.md
-#[cfg(any())]
+// ── Test-only escape: dynamic metadata fixture registration ───────────────
+
+/// LEGACY test-only escape for fixtures that vary metadata per test.
+///
+/// Production code MUST use
+/// [`register_stateless_factory`](ActionRegistry::register_stateless_factory) (et al.) which
+/// require static `<A as Action>::metadata()`. Tests that need dynamic per-instance metadata
+/// (varying keys, version pairs, port lists) route through these helpers instead — see Plan-agent
+/// R-NEW-7.
+///
+/// These methods are public (instead of `pub(crate)`) because integration tests in
+/// `crates/engine/tests/`, `crates/plugin/tests/`, and `crates/api/tests/` need them too.
+/// Production callers should not invoke them — the doc strings explicitly say "LEGACY test-only".
+#[allow(dead_code, reason = "test escape API; not all variants used yet")]
+impl ActionRegistry {
+    /// Register a stateless action with caller-supplied metadata.
+    ///
+    /// Bypasses `<A as Action>::metadata()` so tests can vary key/version
+    /// per fixture without redeclaring an entire `impl Action`.
+    pub fn legacy_register_stateless_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: StatelessAction + Send + Sync + 'static,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+    {
+        let handler = ActionHandler::Stateless(Arc::new(StatelessActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a stateful action with caller-supplied metadata.
+    pub fn legacy_register_stateful_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: StatefulAction + Send + Sync + 'static,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+        A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+    {
+        let handler = ActionHandler::Stateful(Arc::new(StatefulActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a trigger action with caller-supplied metadata.
+    pub fn legacy_register_trigger_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: TriggerAction + Send + Sync + 'static,
+        A::Error: Into<ActionError>,
+    {
+        let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+
+    /// Register a resource action with caller-supplied metadata.
+    pub fn legacy_register_resource_with_metadata<A>(&self, metadata: ActionMetadata, action: A)
+    where
+        A: ResourceAction + Send + Sync + 'static,
+    {
+        let handler = ActionHandler::Resource(Arc::new(ResourceActionAdapter::new(action)));
+        self.register(metadata, handler);
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use nebula_action::{
         action::Action, error::ActionError, metadata::ActionMetadata, result::ActionResult,
         stateless::StatelessAction,
     };
+    use nebula_core::Dependencies;
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
 
-    struct NoopAction {
-        meta: ActionMetadata,
-    }
+    struct NoopAction;
 
-    impl NoopAction {
-        fn new(key: &'static str, major: u64, minor: u64) -> Self {
-            Self {
-                meta: ActionMetadata::new(ActionKey::new(key).unwrap(), "Noop", "Does nothing")
-                    .with_version(major, minor),
-            }
-        }
-    }
-
-    impl DeclaresDependencies for NoopAction {}
     impl Action for NoopAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(ActionKey::new("test.noop").unwrap(), "Noop", "Does nothing")
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
     impl StatelessAction for NoopAction {
-        type Input = serde_json::Value;
-        type Output = serde_json::Value;
         async fn execute(
             &self,
-            input: Self::Input,
+            input: <Self as Action>::Input,
             _ctx: &(impl nebula_action::ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
+    }
+
+    fn meta_with(key: &'static str, major: u64, minor: u64) -> ActionMetadata {
+        ActionMetadata::new(ActionKey::new(key).unwrap(), "Noop", "Does nothing")
+            .with_version(major, minor)
     }
 
     #[test]
     fn register_and_get_action() {
         let registry = ActionRegistry::new();
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
         assert_eq!(registry.len(), 1);
         let key = ActionKey::new("test.noop").unwrap();
         let result = registry.get(&key);
@@ -430,16 +503,16 @@ mod tests {
     #[test]
     fn register_replaces_same_version() {
         let registry = ActionRegistry::new();
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
         assert_eq!(registry.len(), 1);
     }
 
     #[test]
     fn versioned_lookup() {
         let registry = ActionRegistry::new();
-        registry.register_stateless(NoopAction::new("test.noop", 1, 0));
-        registry.register_stateless(NoopAction::new("test.noop", 2, 0));
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 1, 0), NoopAction);
+        registry.legacy_register_stateless_with_metadata(meta_with("test.noop", 2, 0), NoopAction);
 
         let key = ActionKey::new("test.noop").unwrap();
         let v1 = Version::new(1, 0, 0);

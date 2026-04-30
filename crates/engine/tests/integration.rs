@@ -1,6 +1,3 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! End-to-end integration tests for the workflow engine.
 //!
 //! These tests exercise the full stack: workflow → engine → runtime → sandbox → handler.
@@ -8,7 +5,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -18,7 +15,7 @@ use nebula_action::{
     ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
     stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, DeclaresDependencies, NodeKey, action_key, id::WorkflowId, node_key};
+use nebula_core::{ActionKey, Dependencies, NodeKey, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
     WorkflowEngine,
@@ -28,59 +25,75 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
+use nebula_schema::{HasSchema, ValidSchema};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
-// Test action handlers
+// Test action handlers (Variant A)
 // ---------------------------------------------------------------------------
 
-/// Echoes input unchanged.
-struct EchoHandler {
-    meta: ActionMetadata,
+/// Macro to reduce boilerplate for unit-struct fixtures.
+macro_rules! variant_a_action {
+    ($ty:ident, $key:expr, $name:expr, $desc:expr) => {
+        impl Action for $ty {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> &'static ActionMetadata {
+                static M: OnceLock<ActionMetadata> = OnceLock::new();
+                M.get_or_init(|| ActionMetadata::new($key, $name, $desc))
+            }
+            fn input_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn output_schema() -> &'static ValidSchema {
+                static S: OnceLock<ValidSchema> = OnceLock::new();
+                S.get_or_init(<serde_json::Value as HasSchema>::schema)
+            }
+            fn dependencies() -> &'static Dependencies {
+                static D: OnceLock<Dependencies> = OnceLock::new();
+                D.get_or_init(Dependencies::new)
+            }
+        }
+    };
 }
 
-impl DeclaresDependencies for EchoHandler {}
-impl Action for EchoHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+/// Echoes input unchanged.
+struct EchoHandler;
+variant_a_action!(
+    EchoHandler,
+    action_key!("test.echo.static"),
+    "Echo",
+    "echoes input"
+);
 
 impl StatelessAction for EchoHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::success(input))
     }
 }
 
 /// Wraps the input in `{"doubled": <input * 2>}` (numeric only).
-struct DoubleHandler {
-    meta: ActionMetadata,
-}
-
-impl DeclaresDependencies for DoubleHandler {}
-impl Action for DoubleHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+struct DoubleHandler;
+variant_a_action!(
+    DoubleHandler,
+    action_key!("test.double.static"),
+    "Double",
+    "doubles input"
+);
 
 impl StatelessAction for DoubleHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let n = input
             .as_i64()
             .ok_or_else(|| ActionError::fatal("expected number"))?;
@@ -89,26 +102,20 @@ impl StatelessAction for DoubleHandler {
 }
 
 /// Adds 10 to a numeric input.
-struct Add10Handler {
-    meta: ActionMetadata,
-}
-
-impl DeclaresDependencies for Add10Handler {}
-impl Action for Add10Handler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+struct Add10Handler;
+variant_a_action!(
+    Add10Handler,
+    action_key!("test.add10.static"),
+    "Add10",
+    "adds 10"
+);
 
 impl StatelessAction for Add10Handler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         let n = input
             .as_i64()
             .ok_or_else(|| ActionError::fatal("expected number"))?;
@@ -118,26 +125,21 @@ impl StatelessAction for Add10Handler {
 
 /// Sleeps then echoes — used for cancellation testing.
 struct SlowHandler {
-    meta: ActionMetadata,
     delay: Duration,
 }
-
-impl DeclaresDependencies for SlowHandler {}
-impl Action for SlowHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+variant_a_action!(
+    SlowHandler,
+    action_key!("test.slow.static"),
+    "Slow",
+    "sleeps"
+);
 
 impl StatelessAction for SlowHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         tokio::select! {
             () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
             () = ctx.cancellation().cancelled() => Err(ActionError::Cancelled),
@@ -146,52 +148,41 @@ impl StatelessAction for SlowHandler {
 }
 
 /// Always fails.
-struct FailHandler {
-    meta: ActionMetadata,
-}
-
-impl DeclaresDependencies for FailHandler {}
-impl Action for FailHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+struct FailHandler;
+variant_a_action!(
+    FailHandler,
+    action_key!("test.fail.static"),
+    "Fail",
+    "always fails"
+);
 
 impl StatelessAction for FailHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
     }
 }
 
 /// Counts how many times it has been called (globally).
 struct CounterHandler {
-    meta: ActionMetadata,
     count: Arc<AtomicUsize>,
 }
-
-impl DeclaresDependencies for CounterHandler {}
-impl Action for CounterHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+variant_a_action!(
+    CounterHandler,
+    action_key!("test.counter.static"),
+    "Counter",
+    "counts calls"
+);
 
 impl StatelessAction for CounterHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         // Small yield to allow concurrency observation
         tokio::task::yield_now().await;
@@ -203,26 +194,15 @@ impl StatelessAction for CounterHandler {
 /// recursive ladder. A skipped node's outgoing edges do not activate (per
 /// `evaluate_edge`), so successors with no other active source are
 /// transitively skipped.
-struct SkipHandler {
-    meta: ActionMetadata,
-}
-
-impl DeclaresDependencies for SkipHandler {}
-impl Action for SkipHandler {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
-    }
-}
+struct SkipHandler;
+variant_a_action!(SkipHandler, action_key!("test.skip.static"), "Skip", "skip");
 
 impl StatelessAction for SkipHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
     async fn execute(
         &self,
-        _input: Self::Input,
+        _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<ActionResult<Self::Output>, ActionError> {
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::skip("test skip"))
     }
 }
@@ -275,9 +255,7 @@ async fn engine_and_runtime_share_metrics_registry() {
     let metrics = MetricsRegistry::new();
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
 
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
@@ -319,12 +297,8 @@ fn meta(key: ActionKey) -> ActionMetadata {
 #[tokio::test]
 async fn linear_pipeline_data_flows_through() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(DoubleHandler {
-        meta: meta(action_key!("double")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("double")), DoubleHandler);
 
     let (engine, _) = make_engine(registry);
 
@@ -353,15 +327,9 @@ async fn linear_pipeline_data_flows_through() {
 #[tokio::test]
 async fn fan_out_parallel_execution() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(DoubleHandler {
-        meta: meta(action_key!("double")),
-    });
-    registry.register_stateless(Add10Handler {
-        meta: meta(action_key!("add10")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("double")), DoubleHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("add10")), Add10Handler);
 
     let (engine, _) = make_engine(registry);
 
@@ -396,15 +364,9 @@ async fn fan_out_parallel_execution() {
 #[tokio::test]
 async fn diamond_merge_receives_combined_outputs() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(DoubleHandler {
-        meta: meta(action_key!("double")),
-    });
-    registry.register_stateless(Add10Handler {
-        meta: meta(action_key!("add10")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("double")), DoubleHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("add10")), Add10Handler);
 
     let (engine, _) = make_engine(registry);
 
@@ -451,12 +413,8 @@ async fn diamond_merge_receives_combined_outputs() {
 #[tokio::test]
 async fn error_propagation_stops_downstream() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(FailHandler {
-        meta: meta(action_key!("fail")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("fail")), FailHandler);
 
     let (engine, _) = make_engine(registry);
 
@@ -496,16 +454,14 @@ async fn error_propagation_stops_downstream() {
 #[tokio::test]
 async fn cancellation_via_sibling_failure() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(SlowHandler {
-        meta: meta(action_key!("slow")),
-        delay: Duration::from_secs(10),
-    });
-    registry.register_stateless(FailHandler {
-        meta: meta(action_key!("fail")),
-    });
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        meta(action_key!("slow")),
+        SlowHandler {
+            delay: Duration::from_secs(10),
+        },
+    );
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("fail")), FailHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
 
     let (engine, _) = make_engine(registry);
 
@@ -552,9 +508,7 @@ async fn cancellation_via_sibling_failure() {
 #[tokio::test]
 async fn metrics_cover_full_lifecycle() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
 
     let (engine, metrics) = make_engine(registry);
 
@@ -597,10 +551,12 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
     let counter = Arc::new(AtomicUsize::new(0));
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(CounterHandler {
-        meta: meta(action_key!("counter")),
-        count: counter.clone(),
-    });
+    registry.legacy_register_stateless_with_metadata(
+        meta(action_key!("counter")),
+        CounterHandler {
+            count: counter.clone(),
+        },
+    );
 
     let (engine, _) = make_engine(registry);
 
@@ -634,9 +590,7 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 #[tokio::test]
 async fn zero_concurrency_budget_returns_planning_error() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
 
     let (engine, _) = make_engine(registry);
 
@@ -664,12 +618,8 @@ async fn zero_concurrency_budget_returns_planning_error() {
 #[tokio::test]
 async fn deep_chain_propagates_outputs() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(DoubleHandler {
-        meta: meta(action_key!("double")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("double")), DoubleHandler);
 
     let (engine, _) = make_engine(registry);
 
@@ -707,9 +657,7 @@ async fn deep_chain_propagates_outputs() {
 #[tokio::test]
 async fn metrics_accurate_on_failure() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(FailHandler {
-        meta: meta(action_key!("fail")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("fail")), FailHandler);
 
     let (engine, metrics) = make_engine(registry);
 
@@ -753,9 +701,7 @@ async fn metrics_accurate_on_failure() {
 #[tokio::test]
 async fn disabled_node_is_skipped_and_successor_executes() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
 
     let (engine, _) = make_engine(registry);
 
@@ -827,12 +773,8 @@ async fn disabled_node_is_skipped_and_successor_executes() {
 #[tokio::test]
 async fn skip_propagates_transitively_through_three_hop_chain() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(SkipHandler {
-        meta: meta(action_key!("skip")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("skip")), SkipHandler);
     let (engine, _) = make_engine(registry);
 
     let a = node_key!("a");
@@ -890,12 +832,8 @@ async fn skip_propagates_transitively_through_three_hop_chain() {
 #[tokio::test]
 async fn diamond_with_one_skipped_branch_still_completes() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(SkipHandler {
-        meta: meta(action_key!("skip")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("skip")), SkipHandler);
     let (engine, _) = make_engine(registry);
 
     let a = node_key!("a");
@@ -944,12 +882,8 @@ async fn diamond_with_one_skipped_branch_still_completes() {
 #[tokio::test]
 async fn aggregate_with_one_skipped_source_fires() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(SkipHandler {
-        meta: meta(action_key!("skip")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("skip")), SkipHandler);
     let (engine, _) = make_engine(registry);
 
     let x = node_key!("x");
@@ -992,12 +926,8 @@ async fn aggregate_with_one_skipped_source_fires() {
 #[tokio::test]
 async fn aggregate_with_all_sources_skipped_propagates_skip() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(SkipHandler {
-        meta: meta(action_key!("skip")),
-    });
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("skip")), SkipHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
     let (engine, _) = make_engine(registry);
 
     let x = node_key!("x");
@@ -1052,12 +982,8 @@ async fn aggregate_with_all_sources_skipped_propagates_skip() {
 #[tokio::test]
 async fn multi_hop_skip_with_sibling_activation_still_runs() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
-    registry.register_stateless(SkipHandler {
-        meta: meta(action_key!("skip")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("skip")), SkipHandler);
     let (engine, _) = make_engine(registry);
 
     let a = node_key!("a");
@@ -1118,12 +1044,8 @@ async fn multi_hop_skip_with_sibling_activation_still_runs() {
 #[tokio::test]
 async fn duplicate_edges_from_skipped_source_count_per_edge() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(SkipHandler {
-        meta: meta(action_key!("skip")),
-    });
-    registry.register_stateless(EchoHandler {
-        meta: meta(action_key!("echo")),
-    });
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("skip")), SkipHandler);
+    registry.legacy_register_stateless_with_metadata(meta(action_key!("echo")), EchoHandler);
     let (engine, _) = make_engine(registry);
 
     let x = node_key!("x");

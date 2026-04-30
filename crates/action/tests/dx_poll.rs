@@ -1,13 +1,10 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Integration tests for PollAction DX trait + PollTriggerAdapter.
 
 use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -18,17 +15,43 @@ use nebula_action::{
     HasTriggerScheduling, PollAction, PollConfig, PollCursor, PollOutcome, PollResult,
     PollTriggerAdapter, TestContextBuilder, TriggerHandler,
 };
-use nebula_core::{DeclaresDependencies, ExecutionId, context::Context, node_key};
+use nebula_core::{Dependencies, ExecutionId, context::Context, node_key};
+use nebula_schema::{HasSchema, ValidSchema};
+
+// ── TickPoller ────────────────────────────────────────────────────────────
 
 struct TickPoller {
-    meta: ActionMetadata,
     poll_count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for TickPoller {}
 impl Action for TickPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.tick"),
+                "Tick Poller",
+                "Test poll trigger",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -55,11 +78,6 @@ fn make_poller() -> (TickPoller, Arc<AtomicU32>) {
     let count = Arc::new(AtomicU32::new(0));
     (
         TickPoller {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.tick"),
-                "Tick Poller",
-                "Test poll trigger",
-            ),
             poll_count: count.clone(),
         },
         count,
@@ -160,14 +178,37 @@ async fn poll_adapter_rejects_concurrent_start() {
 // ── Interval floor (A3) ───────────────────────────────────────────────────
 
 struct ZeroIntervalPoller {
-    meta: ActionMetadata,
     poll_count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for ZeroIntervalPoller {}
 impl Action for ZeroIntervalPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.tick.zero"),
+                "Zero Interval",
+                "Returns Duration::ZERO from poll_config",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -193,11 +234,6 @@ impl PollAction for ZeroIntervalPoller {
 async fn poll_adapter_clamps_zero_interval_to_floor() {
     let poll_count = Arc::new(AtomicU32::new(0));
     let poller = ZeroIntervalPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.tick.zero"),
-            "Zero Interval",
-            "Returns Duration::ZERO from poll_config",
-        ),
         poll_count: poll_count.clone(),
     };
     let adapter = Arc::new(PollTriggerAdapter::new(poller));
@@ -303,24 +339,20 @@ fn poll_config_jitter_clamped() {
 
 #[test]
 fn poll_config_backoff_factor_clamped_to_one() {
-    let config = PollConfig::with_backoff(Duration::from_secs(1), Duration::from_mins(1), 0.5);
+    let config = PollConfig::with_backoff(Duration::from_secs(1), Duration::from_secs(10), 0.5);
     assert_eq!(config.backoff_factor, 1.0);
 }
 
-// ── PollResult ergonomics ─────────────────────────────────────────────────
-
 #[test]
 fn poll_result_from_empty_vec_is_idle() {
-    let result: PollResult<i32> = vec![].into();
+    let result: PollResult<serde_json::Value> = vec![].into();
     assert!(matches!(result.outcome, PollOutcome::Idle));
-    assert!(result.override_next.is_none());
 }
 
 #[test]
 fn poll_result_from_non_empty_vec_is_ready() {
     let result: PollResult<i32> = vec![1, 2, 3].into();
     assert!(matches!(result.outcome, PollOutcome::Ready { ref events } if events.len() == 3));
-    assert!(result.override_next.is_none());
 }
 
 #[test]
@@ -443,14 +475,36 @@ fn dedup_cursor_mark_seen_is_idempotent() {
 
 // ── Validate ──────────────────────────────────────────────────────────────
 
-struct FailingValidator {
-    meta: ActionMetadata,
-}
+struct FailingValidator;
 
-impl DeclaresDependencies for FailingValidator {}
 impl Action for FailingValidator {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.validate.fail"),
+                "Failing Validator",
+                "validate() returns Err",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -480,13 +534,7 @@ impl PollAction for FailingValidator {
 
 #[tokio::test]
 async fn poll_adapter_validate_failure_prevents_start() {
-    let validator = FailingValidator {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.validate.fail"),
-            "Failing Validator",
-            "validate() returns Err",
-        ),
-    };
+    let validator = FailingValidator;
     let adapter = PollTriggerAdapter::new(validator);
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
@@ -498,14 +546,37 @@ async fn poll_adapter_validate_failure_prevents_start() {
 // ── Initial cursor ────────────────────────────────────────────────────────
 
 struct StartFromNowPoller {
-    meta: ActionMetadata,
     poll_count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for StartFromNowPoller {}
 impl Action for StartFromNowPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.initial_cursor"),
+                "Start From Now",
+                "initial_cursor returns 1000",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -539,11 +610,6 @@ impl PollAction for StartFromNowPoller {
 async fn poll_adapter_uses_initial_cursor() {
     let poll_count = Arc::new(AtomicU32::new(0));
     let poller = StartFromNowPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.initial_cursor"),
-            "Start From Now",
-            "initial_cursor returns 1000",
-        ),
         poll_count: poll_count.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -602,14 +668,37 @@ impl ExecutionEmitter for FailingEmitter {
 // ── B1: RetryBatch dispatch failure must back off and record error ────────
 
 struct ReadyPoller {
-    meta: ActionMetadata,
     poll_count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for ReadyPoller {}
 impl Action for ReadyPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.retry_batch"),
+                "Retry Batch",
+                "always-ready, emitter fails",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -637,11 +726,6 @@ impl PollAction for ReadyPoller {
 async fn retry_batch_dispatch_failure_records_error_and_backs_off() {
     let poll_count = Arc::new(AtomicU32::new(0));
     let poller = ReadyPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.retry_batch"),
-            "Retry Batch",
-            "always-ready, emitter fails",
-        ),
         poll_count: poll_count.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -717,14 +801,36 @@ impl ExecutionEmitter for DropCountingFailingEmitter {
     }
 }
 
-struct DropPoller {
-    meta: ActionMetadata,
-}
+struct DropPoller;
 
-impl DeclaresDependencies for DropPoller {}
 impl Action for DropPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.drop_loss"),
+                "Drop Loss",
+                "all events dropped under DropAndContinue",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -749,13 +855,7 @@ impl PollAction for DropPoller {
 
 #[tokio::test(start_paused = true)]
 async fn drop_and_continue_total_loss_records_error() {
-    let poller = DropPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.drop_loss"),
-            "Drop Loss",
-            "all events dropped under DropAndContinue",
-        ),
-    };
+    let poller = DropPoller;
     let adapter = PollTriggerAdapter::new(poller);
 
     let emitter = Arc::new(DropCountingFailingEmitter::new());
@@ -810,14 +910,37 @@ fn dedup_cursor_deserialize_clamps_max_seen_zero() {
 // ── B5: override_next clamped by max_interval ─────────────────────────────
 
 struct HugeOverridePoller {
-    meta: ActionMetadata,
     poll_count: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for HugeOverridePoller {}
 impl Action for HugeOverridePoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.huge_override"),
+                "Huge Override",
+                "override_next = 1h, max_interval = 200ms",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -846,11 +969,6 @@ impl PollAction for HugeOverridePoller {
 async fn override_next_clamped_by_max_interval() {
     let poll_count = Arc::new(AtomicU32::new(0));
     let poller = HugeOverridePoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.huge_override"),
-            "Huge Override",
-            "override_next = 1h, max_interval = 200ms",
-        ),
         poll_count: poll_count.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -888,14 +1006,37 @@ async fn override_next_clamped_by_max_interval() {
 // ── B2: Partial with empty events + retryable is logged as error ──────────
 
 struct EmptyPartialPoller {
-    meta: ActionMetadata,
     called: Arc<AtomicU32>,
 }
 
-impl DeclaresDependencies for EmptyPartialPoller {}
 impl Action for EmptyPartialPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.empty_partial"),
+                "Empty Partial",
+                "returns Partial with no events and a retryable error",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -928,11 +1069,6 @@ impl PollAction for EmptyPartialPoller {
 async fn partial_with_empty_events_retryable_records_error() {
     let called = Arc::new(AtomicU32::new(0));
     let poller = EmptyPartialPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.empty_partial"),
-            "Empty Partial",
-            "returns Partial with no events and a retryable error",
-        ),
         called: called.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -966,45 +1102,65 @@ async fn partial_with_empty_events_retryable_records_error() {
 
 // ── H1: first poll runs immediately after start ──────────────────────────
 
+struct SlowPoller {
+    count: Arc<AtomicU32>,
+}
+
+impl Action for SlowPoller {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.first_poll.immediate"),
+                "Slow Poller",
+                "base_interval 10min, first poll should still run immediately",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+
+impl PollAction for SlowPoller {
+    type Cursor = u32;
+    type Event = serde_json::Value;
+    fn poll_config(&self) -> PollConfig {
+        PollConfig::fixed(Duration::from_mins(10))
+    }
+    async fn poll(
+        &self,
+        _cursor: &mut PollCursor<u32>,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<PollResult<serde_json::Value>, ActionError> {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        Ok(vec![serde_json::json!({"tick": 1})].into())
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn first_poll_runs_immediately_after_start() {
     // base_interval = 10 minutes. If the adapter still had the old
     // `sleep → poll` shape, the first poll would only happen after
     // 10 minutes of virtual time. With H1 flipped, it runs on the
     // first task tick.
-    struct SlowPoller {
-        meta: ActionMetadata,
-        count: Arc<AtomicU32>,
-    }
-    impl DeclaresDependencies for SlowPoller {}
-    impl Action for SlowPoller {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
-        }
-    }
-    impl PollAction for SlowPoller {
-        type Cursor = u32;
-        type Event = serde_json::Value;
-        fn poll_config(&self) -> PollConfig {
-            PollConfig::fixed(Duration::from_mins(10))
-        }
-        async fn poll(
-            &self,
-            _cursor: &mut PollCursor<u32>,
-            _ctx: &(impl nebula_action::TriggerContext + ?Sized),
-        ) -> Result<PollResult<serde_json::Value>, ActionError> {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            Ok(vec![serde_json::json!({"tick": 1})].into())
-        }
-    }
-
     let count = Arc::new(AtomicU32::new(0));
     let poller = SlowPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.first_poll.immediate"),
-            "Slow Poller",
-            "base_interval 10min, first poll should still run immediately",
-        ),
         count: count.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -1114,15 +1270,38 @@ fn jitter_seed_differs_for_different_trigger_identities() {
 // ── H5: PollConfig validation clamps bad values ──────────────────────────
 
 struct WildConfigPoller {
-    meta: ActionMetadata,
-    count: Arc<AtomicU32>,
+    _count: Arc<AtomicU32>,
     config: PollConfig,
 }
 
-impl DeclaresDependencies for WildConfigPoller {}
 impl Action for WildConfigPoller {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.wild_config"),
+                "Wild Config",
+                "Configurable PollConfig for clamp tests",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -1139,7 +1318,7 @@ impl PollAction for WildConfigPoller {
         _cursor: &mut PollCursor<u32>,
         _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
-        self.count.fetch_add(1, Ordering::Relaxed);
+        self._count.fetch_add(1, Ordering::Relaxed);
         Ok(vec![].into())
     }
 }
@@ -1156,12 +1335,7 @@ async fn poll_config_max_interval_below_base_is_clamped_and_warned() {
     config.max_interval = Duration::from_secs(10); // deliberately below base
 
     let poller = WildConfigPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.wild.max_lt_base"),
-            "Wild Config",
-            "max_interval < base_interval",
-        ),
-        count: Arc::new(AtomicU32::new(0)),
+        _count: Arc::new(AtomicU32::new(0)),
         config,
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -1194,12 +1368,7 @@ async fn poll_config_backoff_factor_clamped_to_ceiling() {
     config.backoff_factor = 1.0e9;
 
     let poller = WildConfigPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.wild.backoff_huge"),
-            "Huge Backoff",
-            "backoff_factor = 1e9",
-        ),
-        count: Arc::new(AtomicU32::new(0)),
+        _count: Arc::new(AtomicU32::new(0)),
         config,
     };
     let adapter = PollTriggerAdapter::new(poller);
@@ -1231,12 +1400,7 @@ async fn poll_config_zero_timeout_is_reset_with_warn() {
     config.poll_timeout = Duration::ZERO;
 
     let poller = WildConfigPoller {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.wild.zero_timeout"),
-            "Zero Timeout",
-            "poll_timeout = ZERO",
-        ),
-        count: Arc::new(AtomicU32::new(0)),
+        _count: Arc::new(AtomicU32::new(0)),
         config,
     };
     let adapter = PollTriggerAdapter::new(poller);

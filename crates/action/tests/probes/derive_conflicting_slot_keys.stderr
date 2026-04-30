@@ -1,0 +1,49 @@
+error: duplicate slot key `shared` on this field — same slot key is already declared on field `cred_a`
+  --> tests/probes/derive_conflicting_slot_keys.rs:18:5
+   |
+18 |     cred_b: CredentialGuard<FakeCred>,
+   |     ^^^^^^
+
+error: cannot find attribute `credential` in this scope
+  --> tests/probes/derive_conflicting_slot_keys.rs:15:7
+   |
+15 |     #[credential(key = "shared")]
+   |       ^^^^^^^^^^
+   |
+   = note: `credential` is an attribute that can be used by the derive macro `Credential`, you might be missing a `derive` attribute
+
+error: cannot find attribute `credential` in this scope
+  --> tests/probes/derive_conflicting_slot_keys.rs:17:7
+   |
+17 |     #[credential(key = "shared")]
+   |       ^^^^^^^^^^
+   |
+   = note: `credential` is an attribute that can be used by the derive macro `Credential`, you might be missing a `derive` attribute
+
+error[E0277]: the trait bound `FakeCred: zeroize::DefaultIsZeroes` is not satisfied
+  --> tests/probes/derive_conflicting_slot_keys.rs:16:13
+   |
+16 |     cred_a: CredentialGuard<FakeCred>,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `zeroize::DefaultIsZeroes` is not implemented for `FakeCred`
+  --> tests/probes/derive_conflicting_slot_keys.rs:6:1
+   |
+ 6 | struct FakeCred;
+   | ^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `zeroize::DefaultIsZeroes`:
+             ()
+             PhantomPinned
+             bool
+             char
+             f32
+             f64
+             i128
+             i16
+           and $N others
+   = note: required for `FakeCred` to implement `zeroize::Zeroize`
+note: required by a bound in `CredentialGuard`
+  --> $WORKSPACE/crates/credential/src/secrets/guard.rs
+   |
+   | pub struct CredentialGuard<S: Zeroize> {
+   |                               ^^^^^^^ required by this bound in `CredentialGuard`

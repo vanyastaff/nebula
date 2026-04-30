@@ -1,0 +1,5 @@
+error: missing required attribute `output = SomeType` — Variant A requires Self::Output to be specified
+ --> tests/probes/derive_missing_output.rs:7:8
+  |
+7 | struct MissingOutput;
+  |        ^^^^^^^^^^^^^
