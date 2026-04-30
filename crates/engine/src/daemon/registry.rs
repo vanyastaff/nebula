@@ -352,7 +352,6 @@ mod tests {
         type Runtime = ();
         type Lease = ();
         type Error = TestError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted").unwrap()
@@ -361,7 +360,6 @@ mod tests {
         async fn create(
             &self,
             _config: &Self::Config,
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())
@@ -465,14 +463,12 @@ mod tests {
         type Runtime = ();
         type Lease = ();
         type Error = TestError;
-        type Credential = nebula_credential::NoCredential;
         fn key() -> ResourceKey {
             ResourceKey::new("registry-counted-b").unwrap()
         }
         async fn create(
             &self,
             _config: &Self::Config,
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())

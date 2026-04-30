@@ -4,6 +4,14 @@
 //! the registry, recovery-group registry, and a [`CancellationToken`] for
 //! coordinated shutdown.
 //!
+//! Phase 4 / ADR-0044: the public API drops the `R::Credential` projection
+//! that ADR-0036 used to thread `scheme: &<R::Credential as Credential>::Scheme`
+//! through every acquire/warmup/register call. Resources now declare
+//! credential dependencies as typed slot fields on the struct (via
+//! `#[credential]` attributes), and the framework resolves them BEFORE
+//! `Resource::create` is invoked. The `acquire_*` family is therefore
+//! credential-agnostic at the manager level.
+//!
 //! # Lifecycle
 //!
 //! ```text
@@ -17,23 +25,19 @@
 //! # Submodule layout (Tech Spec §5.4)
 //!
 //! - `options` — `ManagerConfig`, `RegisterOptions`, `ShutdownConfig`, `DrainTimeoutPolicy`
-//! - `registration` — `register_inner` private helper + reverse-index write
 //! - `gate` — `GateAdmission` + `admit_through_gate` + `settle_gate_admission`
 //! - `execute` — resilience pipeline + register-time pool config validation
-//! - `rotation` — `ResourceDispatcher` trampoline + `on_credential_*` fan-out
 //! - `shutdown` — `graceful_shutdown` + drain helpers + `set_phase_all*`
 
 use std::{
-    any::TypeId,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use nebula_core::{CredentialId, LayerLifecycle, ResourceKey, ScopeLevel};
-use nebula_credential::Credential;
+use nebula_core::{LayerLifecycle, ResourceKey, ScopeLevel};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -58,8 +62,6 @@ use crate::{
 mod execute;
 mod gate;
 pub(crate) mod options;
-mod registration;
-pub(crate) mod rotation;
 mod shutdown;
 
 use execute::{execute_with_resilience, validate_pool_config};
@@ -104,22 +106,6 @@ pub struct Manager {
     /// false → true by the winning caller; losers return
     /// [`ShutdownError::AlreadyShuttingDown`].
     pub(super) shutting_down: AtomicBool,
-    /// Reverse index: credential_id → dispatchers for resources that bind to this credential.
-    ///
-    /// Populated at register time when `R::Credential != NoCredential`. Read by
-    /// `Manager::on_credential_refreshed` / `_revoked` to fan out rotation hooks
-    /// in parallel via `join_all` (per Tech Spec §3.2).
-    ///
-    /// `Arc<dyn ResourceDispatcher>` provides type-erased dispatch — see
-    /// `crate::manager::rotation::TypedDispatcher<R>`.
-    pub(super) credential_resources:
-        dashmap::DashMap<CredentialId, Vec<Arc<dyn rotation::ResourceDispatcher>>>,
-    /// Default per-resource timeout budget for credential rotation hooks.
-    ///
-    /// Sourced from [`ManagerConfig::credential_rotation_timeout`] at
-    /// construction. Per-resource overrides flow through
-    /// `TypedDispatcher::timeout_override()` (set at register time, Task 6).
-    pub(super) credential_rotation_timeout: Duration,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     pub(super) lifecycle: Option<LayerLifecycle>,
 }
@@ -150,8 +136,6 @@ impl Manager {
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             shutting_down: AtomicBool::new(false),
-            credential_resources: dashmap::DashMap::new(),
-            credential_rotation_timeout: config.credential_rotation_timeout,
             lifecycle: None,
         }
     }
@@ -182,8 +166,15 @@ impl Manager {
         self.event_tx.subscribe()
     }
 
-    /// Registers a resource with its config, auth, scope, topology,
-    /// optional resilience configuration, and optional recovery gate.
+    /// Registers a resource with its config, scope, topology, and optional
+    /// resilience / recovery gate configuration.
+    ///
+    /// Per ADR-0044 the `resource: R` value passed in is expected to have
+    /// **all `#[credential]` slot fields already resolved and populated**.
+    /// `Manager::register` does not itself resolve credential bindings —
+    /// that is the responsibility of the caller (typically the engine
+    /// dispatch layer that assembles `R` via the `FromConfig` trait emitted
+    /// by `#[derive(Resource)]`).
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
     /// registry under `R::key()`. If a resource with the same key and scope
@@ -192,36 +183,9 @@ impl Manager {
     /// The manager's internal [`ReleaseQueue`] is automatically shared with
     /// the managed resource — callers never need to create or manage it.
     ///
-    /// When `resilience` is `Some`, acquire calls are wrapped with
-    /// timeout and retry logic from [`AcquireResilience`].
-    ///
-    /// When `recovery_gate` is `Some`, acquire calls check the gate before
-    /// proceeding. If the backend is recovering or permanently failed,
-    /// callers receive an immediate error instead of hitting the dead
-    /// backend. On transient acquire failures the gate is passively
-    /// triggered so subsequent callers fast-fail.
-    ///
-    /// `credential_id` binds the resource into the credential rotation
-    /// reverse-index. Must be `Some` for credential-bearing resources
-    /// (`R::Credential != NoCredential`); ignored (with a warning) for
-    /// `NoCredential`-bound resources. Sourced from
-    /// [`RegisterOptions::credential_id`] in the `_with` shorthand variants.
-    ///
-    /// `credential_rotation_timeout` overrides
-    /// [`ManagerConfig::credential_rotation_timeout`] (default `30s`) for
-    /// this resource only. `None` keeps the manager-wide default. Sourced
-    /// from [`RegisterOptions::credential_rotation_timeout`] in the `_with`
-    /// shorthand variants.
-    ///
     /// # Errors
     ///
-    /// Returns an error if config validation fails on the provided config,
-    /// or if a credential-bearing resource is registered without a
-    /// `credential_id` (see [`Error::missing_credential_id`]).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "consolidation into `RegisterOptions` deferred; the `_with` shorthand variants already use the consolidated form"
-    )]
+    /// Returns an error if config validation fails on the provided config.
     pub fn register<R: Resource>(
         &self,
         resource: R,
@@ -230,18 +194,9 @@ impl Manager {
         topology: TopologyRuntime<R>,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
-        credential_id: Option<CredentialId>,
-        credential_rotation_timeout: Option<Duration>,
     ) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
         config.validate()?;
-
-        // Validate credential-binding contract BEFORE registry mutation.
-        // Without this ordering, a credential-bearing resource without a
-        // `credential_id` would land in the registry first and only THEN
-        // surface `Error::missing_credential_id` — leaving an orphan entry
-        // that retries would see as "already registered" (CodeRabbit 🔴 #1).
-        registration::validate_credential_binding::<R>(credential_id.as_ref())?;
 
         let key = R::key();
 
@@ -254,10 +209,9 @@ impl Manager {
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             resilience,
             recovery_gate,
-            credential_id,
         });
 
-        let type_id = TypeId::of::<ManagedResource<R>>();
+        let type_id = std::any::TypeId::of::<ManagedResource<R>>();
         self.registry
             .register(key.clone(), type_id, scope, managed.clone());
 
@@ -273,17 +227,6 @@ impl Manager {
         let _ = self
             .event_tx
             .send(ResourceEvent::Registered { key: key.clone() });
-
-        // Reverse-index write — populates `credential_resources` for
-        // credential-bearing resources, no-op for `NoCredential`-bound ones.
-        // Validation already passed in `validate_credential_binding` above,
-        // so this path is infallible by construction.
-        registration::write_reverse_index::<R>(
-            self,
-            Arc::clone(&managed),
-            credential_id,
-            credential_rotation_timeout,
-        );
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -306,7 +249,7 @@ impl Manager {
         pool_config: crate::topology::pooled::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -321,8 +264,6 @@ impl Manager {
                 pool_config,
                 fingerprint,
             )),
-            None,
-            None,
             None,
             None,
         )
@@ -343,7 +284,7 @@ impl Manager {
         resident_config: crate::topology::resident::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -352,8 +293,6 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
-            None,
-            None,
             None,
             None,
         )
@@ -375,7 +314,7 @@ impl Manager {
         service_config: crate::topology::service::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -385,8 +324,6 @@ impl Manager {
                 runtime,
                 service_config,
             )),
-            None,
-            None,
             None,
             None,
         )
@@ -408,7 +345,7 @@ impl Manager {
         exclusive_config: crate::topology::exclusive::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -418,8 +355,6 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
-            None,
-            None,
             None,
             None,
         )
@@ -441,7 +376,7 @@ impl Manager {
         transport_config: crate::topology::transport::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -453,16 +388,13 @@ impl Manager {
             )),
             None,
             None,
-            None,
-            None,
         )
     }
 
     /// Registers a pooled resource with extended options.
     ///
     /// Like [`register_pooled`](Self::register_pooled) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
-    /// credential rotation binding.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate.
     ///
     /// # Errors
     ///
@@ -475,7 +407,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -492,16 +424,13 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
-            options.credential_id,
-            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a resident resource with extended options.
     ///
     /// Like [`register_resident`](Self::register_resident) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
-    /// credential rotation binding.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate.
     ///
     /// # Errors
     ///
@@ -514,7 +443,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -525,16 +454,13 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
-            options.credential_id,
-            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a service resource with extended options.
     ///
     /// Like [`register_service`](Self::register_service) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
-    /// credential rotation binding.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate.
     ///
     /// # Errors
     ///
@@ -548,7 +474,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -560,16 +486,13 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
-            options.credential_id,
-            options.credential_rotation_timeout,
         )
     }
 
     /// Registers a transport resource with extended options.
     ///
     /// Like [`register_transport`](Self::register_transport) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
-    /// credential rotation binding.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate.
     ///
     /// # Errors
     ///
@@ -583,7 +506,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -595,16 +518,13 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
-            options.credential_id,
-            options.credential_rotation_timeout,
         )
     }
 
     /// Registers an exclusive resource with extended options.
     ///
     /// Like [`register_exclusive`](Self::register_exclusive) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate, and
-    /// credential rotation binding.
+    /// [`RegisterOptions`] for scope, resilience, recovery gate.
     ///
     /// # Errors
     ///
@@ -618,7 +538,7 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource<Credential = nebula_credential::NoCredential>,
+        R: Resource,
     {
         self.register(
             resource,
@@ -630,8 +550,6 @@ impl Manager {
             )),
             options.resilience,
             options.recovery_gate,
-            options.credential_id,
-            options.credential_rotation_timeout,
         )
     }
 
@@ -681,7 +599,6 @@ impl Manager {
     /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
-        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
@@ -711,7 +628,6 @@ impl Manager {
                         rt.acquire(
                             &managed.resource,
                             &config,
-                            scheme,
                             ctx,
                             &managed.release_queue,
                             generation,
@@ -743,28 +659,6 @@ impl Manager {
         }
     }
 
-    /// Acquires a pooled resource handle without scheme material.
-    ///
-    /// Shorthand for [`acquire_pooled`](Self::acquire_pooled) with `scheme = &()`.
-    /// Only available when `R::Credential = NoCredential` (so
-    /// `<R::Credential as Credential>::Scheme = ()`).
-    pub async fn acquire_pooled_default<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-    {
-        self.acquire_pooled::<R>(&(), ctx, options).await
-    }
-
     /// Acquires a handle to a resident resource.
     ///
     /// # Errors
@@ -776,7 +670,6 @@ impl Manager {
     /// - Propagates resident-specific acquire errors.
     pub async fn acquire_resident<R>(
         &self,
-        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
@@ -798,8 +691,7 @@ impl Manager {
             async move {
                 match &managed.topology {
                     TopologyRuntime::Resident(rt) => {
-                        rt.acquire(&managed.resource, &config, scheme, ctx, options)
-                            .await
+                        rt.acquire(&managed.resource, &config, ctx, options).await
                     },
                     _ => Err(Error::permanent(format!(
                         "{}: expected Resident topology, registered as {}",
@@ -817,26 +709,6 @@ impl Manager {
             Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
             Err(e) => Err(e),
         }
-    }
-
-    /// Acquires a resident resource handle without scheme material.
-    ///
-    /// Shorthand for [`acquire_resident`](Self::acquire_resident) with `scheme = &()`.
-    /// Only available when `R::Credential = NoCredential`.
-    pub async fn acquire_resident_default<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::resident::Resident<Credential = nebula_credential::NoCredential>
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
-    {
-        self.acquire_resident::<R>(&(), ctx, options).await
     }
 
     /// Acquires a handle to a service resource.
@@ -899,27 +771,6 @@ impl Manager {
         }
     }
 
-    /// Acquires a service resource handle without scheme material.
-    ///
-    /// Shorthand for [`acquire_service`](Self::acquire_service); only available
-    /// when `R::Credential = NoCredential`.
-    pub async fn acquire_service_default<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::service::Service<Credential = nebula_credential::NoCredential>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.acquire_service::<R>(ctx, options).await
-    }
-
     /// Acquires a handle to a transport resource.
     ///
     /// # Errors
@@ -978,27 +829,6 @@ impl Manager {
             Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
             Err(e) => Err(e),
         }
-    }
-
-    /// Acquires a transport resource handle without scheme material.
-    ///
-    /// Shorthand for [`acquire_transport`](Self::acquire_transport); only available
-    /// when `R::Credential = NoCredential`.
-    pub async fn acquire_transport_default<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::transport::Transport<Credential = nebula_credential::NoCredential>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.acquire_transport::<R>(ctx, options).await
     }
 
     /// Acquires a handle to an exclusive resource.
@@ -1060,27 +890,6 @@ impl Manager {
         }
     }
 
-    /// Acquires an exclusive resource handle without scheme material.
-    ///
-    /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive); only available
-    /// when `R::Credential = NoCredential`.
-    pub async fn acquire_exclusive_default<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::exclusive::Exclusive<Credential = nebula_credential::NoCredential>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.acquire_exclusive::<R>(ctx, options).await
-    }
-
     /// Attempts a non-blocking acquire of a pooled resource.
     ///
     /// Returns immediately with [`ErrorKind::Backpressure`](crate::error::ErrorKind::Backpressure)
@@ -1099,7 +908,6 @@ impl Manager {
     ///   pool topology.
     pub async fn try_acquire_pooled<R>(
         &self,
-        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         options: &AcquireOptions,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
@@ -1121,7 +929,6 @@ impl Manager {
                 rt.try_acquire(
                     &managed.resource,
                     &config,
-                    scheme,
                     ctx,
                     &managed.release_queue,
                     generation,
@@ -1145,41 +952,9 @@ impl Manager {
         }
     }
 
-    /// Non-blocking pooled acquire without scheme material.
-    ///
-    /// Shorthand for [`try_acquire_pooled`](Self::try_acquire_pooled) with `scheme = &()`.
-    /// Only available when `R::Credential = NoCredential`.
-    pub async fn try_acquire_pooled_default<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-    {
-        self.try_acquire_pooled::<R>(&(), ctx, options).await
-    }
-
     /// Returns a snapshot of current pool utilization for a registered Pool resource.
     ///
     /// Returns `None` if the resource is not registered or does not use Pool topology.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nebula_resource::{Manager, ScopeLevel};
-    /// # async fn example(manager: &Manager) {
-    /// // if let Some(stats) = manager.pool_stats::<MyDb>(&ScopeLevel::Global).await {
-    /// //     println!("pool: {}/{} slots in use, {} idle", stats.in_use, stats.capacity, stats.idle);
-    /// // }
-    /// # }
-    /// ```
     pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<crate::runtime::pool::PoolStats>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
@@ -1193,17 +968,11 @@ impl Manager {
         }
     }
 
-    /// Pre-warms a registered Pool resource that opts out of credential binding.
+    /// Pre-warms a registered Pool resource.
     ///
-    /// Restricted to `R: Resource<Credential = NoCredential>` — compile-time
-    /// gate that makes the unit scheme (`Scheme = ()`) the only callable shape.
-    /// Internally passes `&()` to the runtime's warmup path.
-    ///
-    /// Per Tech Spec §5.2 and security-lead amendment B-3: kept separate from
-    /// the credential-bearing [`warmup_pool`](Self::warmup_pool) so the
-    /// production hot path never calls `Scheme::default()`. The `NoCredential`
-    /// bound is unfaultable at compile time — a credential-bearing resource
-    /// cannot be pre-warmed via this method.
+    /// Per ADR-0044, the resource's `#[credential]` slot fields are
+    /// already populated on the resource value — `Pool::warmup` calls
+    /// `R::create(config, ctx)` directly, no scheme parameter required.
     ///
     /// This fills the idle queue before production traffic hits, eliminating
     /// cold-start latency on the first batch of requests. Warmup follows the
@@ -1216,76 +985,7 @@ impl Manager {
     ///   registered.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   pool topology.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nebula_resource::{Manager, ScopeLevel};
-    /// # async fn example(manager: &Manager) {
-    /// # let ctx = nebula_resource::context::ResourceContext::minimal(
-    /// #     Default::default(),
-    /// #     tokio_util::sync::CancellationToken::new(),
-    /// # );
-    /// // manager.warmup_pool_no_credential::<MyDb>(&ctx).await.unwrap();
-    /// # }
-    /// ```
-    pub async fn warmup_pool_no_credential<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
-    where
-        R: crate::topology::pooled::Pooled<Credential = nebula_credential::NoCredential>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-    {
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
-        let config = managed.config();
-        // `NoCredential::Scheme = ()` — pass the unit value directly. NO call
-        // to `Scheme::default()` (security amendment B-3).
-        let scheme = ();
-        match &managed.topology {
-            TopologyRuntime::Pool(rt) => {
-                let count = rt.warmup(&managed.resource, &config, &scheme, ctx).await;
-                Ok(count)
-            },
-            _ => Err(Error::permanent(format!(
-                "{}: warmup_pool_no_credential requires Pool topology, registered as {}",
-                R::key(),
-                managed.topology.tag()
-            ))),
-        }
-    }
-
-    /// Pre-warms a registered credential-bearing Pool resource.
-    ///
-    /// The caller resolves the credential first (e.g. via `CredentialAccessor`)
-    /// and passes a borrowed scheme; the manager forwards it to `R::create` for
-    /// each pre-warmed instance. The borrow does not outlive the call.
-    ///
-    /// Per Tech Spec §5.2 and security-lead amendment B-3: NO `Default` bound
-    /// on `Scheme`, NO `Scheme::default()` call. Forces the caller to supply a
-    /// real credential, eliminating the "warm with empty credential → 401
-    /// storm on first acquire" footgun. Use
-    /// [`warmup_pool_no_credential`](Self::warmup_pool_no_credential) for
-    /// resources that opt out of credential binding (`Credential = NoCredential`).
-    ///
-    /// Caller flow:
-    /// 1. Resolve credential → obtain `<R::Credential as Credential>::Scheme`.
-    /// 2. Call `warmup_pool::<R>(&scheme, &ctx)`.
-    /// 3. Manager threads the scheme through to `R::create` for each instance.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
-    ///   registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   pool topology.
-    pub async fn warmup_pool<R>(
-        &self,
-        scheme: &<R::Credential as Credential>::Scheme,
-        ctx: &ResourceContext,
-    ) -> Result<usize, Error>
+    pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -1295,7 +995,7 @@ impl Manager {
         let config = managed.config();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
-                let count = rt.warmup(&managed.resource, &config, scheme, ctx).await;
+                let count = rt.warmup(&managed.resource, &config, ctx).await;
                 Ok(count)
             },
             _ => Err(Error::permanent(format!(
@@ -1379,12 +1079,6 @@ impl Manager {
 
     /// Removes a resource from the registry by key.
     ///
-    /// Also prunes any matching dispatchers from the credential rotation
-    /// reverse-index so a future credential refresh / revoke does not fan out
-    /// to a resource that no longer exists. We compare by `resource_key()` on
-    /// each dispatcher because the original `credential_id` is not preserved
-    /// outside the dispatcher trampoline at remove-time (CodeRabbit 🔴 #2).
-    ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
@@ -1393,15 +1087,6 @@ impl Manager {
         if !self.registry.remove(key) {
             return Err(Error::not_found(key));
         }
-
-        // Prune reverse-index: drop dispatchers whose `resource_key()`
-        // matches the removed key, then drop empty CredentialId buckets so
-        // future lookups don't see hollow Vecs.
-        self.credential_resources.iter_mut().for_each(|mut entry| {
-            entry.value_mut().retain(|d| d.resource_key() != *key);
-        });
-        self.credential_resources
-            .retain(|_id, dispatchers| !dispatchers.is_empty());
 
         if let Some(m) = &self.metrics {
             m.record_destroy();
@@ -1538,69 +1223,38 @@ impl Default for Manager {
 // complete *after* `wait_for_drain()` saw `0` and the registry was cleared
 // — the caller would end up holding a `ResourceGuard` to a registry that
 // has been torn down.
-//
-// The counter slot lifecycle is *exactly* one increment + one decrement
-// across the (acquire, guard) pair, with no transient gaps:
-//
-// 1. `InFlightCounter::new` increments.
-// 2. The acquire runs (any number of `await` points).
-// 3a. Success — `release_to_guard()` returns the `Arc<(AtomicU64, Notify)>` and
-//     suppresses the Drop decrement; the caller hands the slot to
-//     `ResourceGuard::with_drain_tracker`, which decrements + notifies on
-//     guard Drop. Net effect across the pair: +1 on enter, -1 on guard Drop.
-// 3b. Failure / panic / cancel — Drop runs and decrements + notifies. Net
-//     effect: +1 on enter, -1 on early return.
-struct InFlightCounter {
+
+pub(crate) struct InFlightCounter {
     tracker: Arc<(AtomicU64, Notify)>,
-    /// Set true by `release_to_guard` to skip the Drop decrement once the
-    /// slot has been transferred.
-    released: bool,
+    armed: bool,
 }
 
 impl InFlightCounter {
-    /// Increments the in-flight counter immediately.
-    fn new(tracker: Arc<(AtomicU64, Notify)>) -> Self {
-        // `AcqRel` matches the `Acquire` load in `wait_for_drain` so the
-        // increment is visible to a concurrent `wait_for_drain` snapshot
-        // before that snapshot can return `Ok(())`.
+    pub(crate) fn new(tracker: Arc<(AtomicU64, Notify)>) -> Self {
         tracker.0.fetch_add(1, AtomicOrdering::AcqRel);
         Self {
             tracker,
-            released: false,
+            armed: true,
         }
     }
 
-    /// Hands the counter slot off to the resulting `ResourceGuard`.
+    /// Hand off the in-flight slot to a `ResourceGuard`. The drain tracker
+    /// remains incremented; the guard's drop will decrement it.
     ///
-    /// The returned `Arc` is then passed to
-    /// [`ResourceGuard::with_drain_tracker`] which assumes the increment has
-    /// already happened. This method suppresses the Drop decrement so the
-    /// counter is owned by exactly one entity at all times — no double
-    /// counting, no transient gap.
-    fn release_to_guard(mut self) -> Arc<(AtomicU64, Notify)> {
-        self.released = true;
+    /// Disarms this counter so the slot is NOT decremented on drop.
+    pub(crate) fn release_to_guard(mut self) -> Arc<(AtomicU64, Notify)> {
+        self.armed = false;
         self.tracker.clone()
     }
 }
 
 impl Drop for InFlightCounter {
     fn drop(&mut self) {
-        if self.released {
-            return;
+        if self.armed {
+            let prev = self.tracker.0.fetch_sub(1, AtomicOrdering::AcqRel);
+            if prev == 1 {
+                self.tracker.1.notify_waiters();
+            }
         }
-        // The acquire failed / was cancelled / panicked. Decrement and notify
-        // so `wait_for_drain` does not block forever on a phantom in-flight.
-        if self.tracker.0.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
-            self.tracker.1.notify_waiters();
-        }
-    }
-}
-
-impl std::fmt::Debug for Manager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Manager")
-            .field("registered_count", &self.registry.keys().len())
-            .field("is_shutdown", &self.is_shutdown())
-            .finish_non_exhaustive()
     }
 }

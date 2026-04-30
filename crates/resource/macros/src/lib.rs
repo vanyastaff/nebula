@@ -1,29 +1,45 @@
 //! # nebula-resource-macros
 //!
-//! Proc-macros for the nebula-resource crate.
+//! Proc-macros for the `nebula-resource` crate (Phase 4 / ADR-0044).
 //!
-//! Provides the [`ClassifyError`] derive macro that auto-generates
-//! `From<UserError> for nebula_resource::Error` based on `#[classify(...)]`
-//! attributes on enum variants.
+//! ## `#[derive(Resource)]`
 //!
-//! ## Example
+//! Generates `impl Resource` and `impl DeclaresDependencies` for a struct
+//! whose fields enumerate the credentials it depends on via `#[credential]`
+//! slot attributes.
 //!
 //! ```ignore
-//! #[derive(Debug, thiserror::Error, ClassifyError)]
-//! pub enum PgError {
-//!     #[error("auth failed")]
-//!     #[classify(permanent)]
-//!     Auth(String),
+//! use nebula_credential::CredentialGuard;
+//! use nebula_resource::Resource;
 //!
-//!     #[error("connection failed")]
-//!     #[classify(transient)]
-//!     Connect(#[from] std::io::Error),
+//! #[derive(Resource)]
+//! #[resource(
+//!     key = "postgres",
+//!     topology = "pool",
+//!     config = PostgresConfig,
+//!     runtime = PgConnection,
+//!     lease = PgConnection,
+//!     error = PgError,
+//! )]
+//! struct Postgres {
+//!     #[credential(key = "db_auth", purpose = "Main DB auth")]
+//!     db_auth: CredentialGuard<DatabaseCredential>,
 //!
-//!     #[error("rate limited")]
-//!     #[classify(exhausted, retry_after = "30s")]
-//!     RateLimit,
+//!     #[credential(key = "audit", purpose = "Audit log auth")]
+//!     audit: Option<CredentialGuard<AuditCredential>>,
 //! }
 //! ```
+//!
+//! The macro emits the trait shape with a `todo!()` body for `create()`;
+//! the implementor supplies the `create` implementation reading credentials
+//! directly off `&self.<field>`.
+//!
+//! ## `#[derive(ClassifyError)]`
+//!
+//! Generates `From<UserError> for nebula_resource::Error` based on
+//! `#[classify(...)]` attributes on enum variants. Independent of the
+//! Resource derive — used by resource implementors to bridge their domain
+//! errors into the framework's `Error` type.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -35,40 +51,41 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 
-mod dependencies;
+mod field_slots;
 mod resource;
+mod resource_attrs;
 
-/// Derive macro for the `Resource` trait.
+/// Derive macro for the `Resource` trait (Phase 4 / ADR-0044).
 ///
-/// # Attributes
+/// Emits `impl Resource for Foo` (with `todo!()` `create` body — the
+/// implementor supplies it) and `impl DeclaresDependencies for Foo`
+/// enumerating credential slot fields declared via `#[credential]`.
 ///
-/// ## Container attributes (`#[resource(...)]` on the struct)
+/// # Container attribute
 ///
-/// - `id = "..."` - Unique resource identifier (required)
-/// - `config = Type` - Associated config type (required)
-/// - `instance = Type` - Associated instance type (default: Self)
+/// `#[resource(key = "...", topology = "...", config = Type, runtime = Type, lease = Type, error =
+/// Type)]`
 ///
-/// # Example
+/// - `key = "..."` — required. Unique resource identifier (lowercase + underscores).
+/// - `topology = "pool" | "resident" | "service" | "transport" | "exclusive"` — required.
+/// - `config = ConfigType` — required. The `Self::Config` associated type.
+/// - `runtime = RuntimeType` — optional. Defaults to `()`.
+/// - `lease = LeaseType` — optional. Defaults to `Self::Runtime`.
+/// - `error = ErrorType` — optional. Defaults to `nebula_resource::Error`.
 ///
-/// ```ignore
-/// #[derive(Resource)]
-/// #[resource(
-///     id = "postgres",
-///     config = PgConfig,
-///     instance = PgPool
-/// )]
-/// pub struct PostgresResource;
-/// ```
-#[proc_macro_derive(
-    Resource,
-    attributes(
-        resource,
-        uses_credential,
-        uses_resource,
-        uses_credentials,
-        uses_resources
-    )
-)]
+/// # Field attributes
+///
+/// `#[credential]` / `#[credential(key = "...", purpose = "...")]`
+///
+/// Field types:
+/// - `CredentialGuard<C>` — required + eager
+/// - `Option<CredentialGuard<C>>` — optional + eager
+/// - `Lazy<CredentialGuard<C>>` — required + lazy
+/// - `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
+///
+/// `#[resource]` field attributes are rejected — resources cannot depend
+/// on other resources via slot binding.
+#[proc_macro_derive(Resource, attributes(resource, credential))]
 pub fn derive_resource(input: TokenStream) -> TokenStream {
     resource::derive(input)
 }

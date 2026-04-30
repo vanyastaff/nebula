@@ -10,7 +10,7 @@ error: cannot find attribute `credential` in this scope
 15 |     #[credential(key = "shared")]
    |       ^^^^^^^^^^
    |
-   = note: `credential` is an attribute that can be used by the derive macro `Credential`, you might be missing a `derive` attribute
+   = note: `credential` is an attribute that can be used by the derive macros `Credential` and `Resource`, you might be missing a `derive` attribute
 
 error: cannot find attribute `credential` in this scope
   --> tests/probes/derive_conflicting_slot_keys.rs:17:7
@@ -18,7 +18,7 @@ error: cannot find attribute `credential` in this scope
 17 |     #[credential(key = "shared")]
    |       ^^^^^^^^^^
    |
-   = note: `credential` is an attribute that can be used by the derive macro `Credential`, you might be missing a `derive` attribute
+   = note: `credential` is an attribute that can be used by the derive macros `Credential` and `Resource`, you might be missing a `derive` attribute
 
 error[E0277]: the trait bound `FakeCred: zeroize::DefaultIsZeroes` is not satisfied
   --> tests/probes/derive_conflicting_slot_keys.rs:16:13

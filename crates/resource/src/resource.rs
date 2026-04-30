@@ -2,15 +2,27 @@
 //!
 //! [`Resource`] is the central abstraction: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! five associated types and six lifecycle methods. The `Credential`
-//! associated type carries the credential-binding contract per ADR-0036;
-//! resources without an authenticated binding use
-//! `type Credential = NoCredential` (re-exported from `nebula_credential`).
+//! four associated types and the lifecycle methods (Phase 4 / ADR-0044).
+//!
+//! Per ADR-0044 (supersedes ADR-0036) the singular `type Credential`
+//! associated type was deleted in favor of typed credential **slot fields**
+//! declared on the resource struct via `#[credential(key = "...")]` (the
+//! `#[derive(Resource)]` macro emits a `DeclaresDependencies` impl that
+//! enumerates them).
+//!
+//! `Resource::create(&self, ctx)` no longer takes an explicit
+//! `scheme: &<R::Credential as Credential>::Scheme` argument: the framework
+//! resolves every declared `#[credential]` slot **before** invoking
+//! `create`, so the implementation reads credentials directly off `&self`.
+//!
+//! Per-credential rotation is exposed via
+//! [`Resource::on_credential_refresh`], which receives the **slot name**
+//! that rotated (so multi-credential resources can choose to refresh only
+//! the affected pool, headers, etc.).
 
 use std::future::Future;
 
 use nebula_core::ResourceKey;
-use nebula_credential::{Credential, CredentialContext, CredentialId, SchemeGuard};
 
 use crate::context::ResourceContext;
 
@@ -194,16 +206,19 @@ impl ResourceMetadataBuilder {
     }
 }
 
-/// Core resource trait — 5 associated types + 6 lifecycle methods.
+/// Core resource trait — 4 associated types + lifecycle methods (Phase 4 / ADR-0044).
 ///
 /// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
 /// which avoids the `Box<dyn Future>` allocation on every call.
 ///
-/// Implementors supply five associated types and six lifecycle methods.
-/// The `Credential` associated type carries the credential-binding
-/// contract per ADR-0036; resources without an authenticated binding
-/// use `type Credential = NoCredential` (re-exported from
-/// `nebula_credential`).
+/// Per ADR-0044 (supersedes ADR-0036) the singular `type Credential`
+/// associated type was removed in favor of typed credential **slot
+/// fields** on the resource struct (declared via `#[credential(...)]`
+/// field attributes; the `#[derive(Resource)]` macro emits an impl of
+/// [`nebula_core::DeclaresDependencies`] enumerating them). The
+/// framework resolves slot fields **before** calling
+/// [`create`](Self::create) — implementors read credentials directly
+/// off `&self`.
 ///
 /// # Associated types
 ///
@@ -213,12 +228,11 @@ impl ResourceMetadataBuilder {
 /// | `Runtime` | The live resource handle (connection, client, etc.) |
 /// | `Lease` | What callers hold while using the resource |
 /// | `Error` | Resource-specific error, convertible to [`crate::Error`] |
-/// | `Credential` | Credential binding per ADR-0036 (use `NoCredential` to opt out) |
 ///
 /// # Lifecycle
 ///
 /// ```text
-/// create() → Runtime
+/// create() → Runtime    (slot fields already resolved)
 ///   ↓
 /// check()  → Ok(()) | Err
 ///   ↓
@@ -235,74 +249,48 @@ pub trait Resource: Send + Sync + 'static {
     type Lease: Send + Sync + 'static;
     /// Resource-specific error type.
     type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
-    /// The credential type bound to this resource per ADR-0036.
-    ///
-    /// Resources without an authenticated binding use
-    /// [`NoCredential`](nebula_credential::NoCredential). The runtime
-    /// projects `<Self::Credential as Credential>::Scheme` and threads it
-    /// through [`create`](Self::create) and rotation hooks.
-    type Credential: Credential;
 
     /// Returns the unique key identifying this resource type.
     fn key() -> ResourceKey;
 
-    /// Creates a new runtime instance from config and projected scheme material.
+    /// Creates a new runtime instance from config.
     ///
-    /// `scheme` is borrowed from the credential subsystem; resources MUST NOT
-    /// retain it past the returned future per `PRODUCT_CANON.md §12.5`
-    /// (secret-handling discipline).
+    /// Credential slot fields declared via `#[credential(key = "...")]`
+    /// are already populated on `&self` by the framework before this
+    /// call (per ADR-0044). Implementations read them directly off
+    /// `self.<field_name>`.
     fn create(
         &self,
         config: &Self::Config,
-        scheme: &<Self::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
-    /// Called by the engine after a successful credential refresh.
+    /// Called by the engine after a successful credential refresh on
+    /// one of this resource's `#[credential]` slot fields.
     ///
-    /// Default: no-op. Connection-bound resources (Pool, Service, Transport)
-    /// override with the blue-green pool swap pattern per credential Tech
-    /// Spec §15.7 — build a fresh pool from `new_scheme`, atomically swap
-    /// into the resource's `Arc<RwLock<Pool>>`, let RAII drain old handles.
+    /// `slot_name` identifies which slot rotated — multi-credential
+    /// resources can choose to refresh only the affected sub-system
+    /// (e.g. swap a single pool, refresh a single header) rather than
+    /// recycling the whole runtime.
     ///
-    /// `new_scheme` and `ctx` share the lifetime `'a`. The shared lifetime
-    /// is the compile-time barrier preventing retention — see
-    /// [`SchemeGuard`] Probe 6.
-    /// Implementations MUST NOT store either argument past this call.
+    /// Default: no-op. Override per resource for hot-reload behavior.
+    /// Connection-bound resources (Pool, Service, Transport) typically
+    /// override with the blue-green swap pattern: build a fresh pool
+    /// from the rotated credential, atomically swap into an
+    /// `Arc<RwLock<Pool>>`, let RAII drain old handles.
     ///
-    /// Cancellation safety: implementations MUST be cancel-safe — if the
-    /// returned future is dropped mid-await, the resource MUST remain
-    /// consistent (`SchemeGuard`'s `ZeroizeOnDrop` fires deterministically
-    /// across the cancellation boundary).
+    /// **Invariant** per ADR-0044 §Seam: implementer must handle every
+    /// declared credential slot name; the engine emits a `WARN
+    /// [resource]` if rotation arrives for an unhandled slot.
     ///
-    /// **П1 status:** Manager-side dispatch is not wired in this PR; this
-    /// method exists for impl ergonomics and forward-compat. П2 lands the
-    /// reverse-index write + parallel `join_all` dispatcher.
-    fn on_credential_refresh<'a>(
-        &self,
-        new_scheme: SchemeGuard<'a, Self::Credential>,
-        ctx: &'a CredentialContext,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
-        let _ = (new_scheme, ctx);
-        async { Ok(()) }
-    }
-
-    /// Called by the engine after a credential is revoked.
-    ///
-    /// Default: no-op. Override invariant per ADR-0036 §Decision:
-    /// post-invocation, the resource MUST emit no further authenticated
-    /// traffic on the revoked credential. The mechanism (destroy pool /
-    /// mark-tainted / wait-for-drain / reject-new-acquires) is the
-    /// implementor's choice; П2 Tech Spec §5 specifies typical patterns.
-    ///
-    /// **П1 status:** Manager-side dispatch is not wired in this PR; this
-    /// method exists for impl ergonomics and forward-compat. П2 lands the
-    /// reverse-index write + revocation dispatcher.
-    fn on_credential_revoke(
-        &self,
-        credential_id: &CredentialId,
+    /// Cancellation safety: implementations MUST be cancel-safe — if
+    /// the returned future is dropped mid-await, the resource MUST
+    /// remain consistent.
+    fn on_credential_refresh(
+        &mut self,
+        slot_name: &str,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let _ = credential_id;
+        let _ = slot_name;
         async { Ok(()) }
     }
 

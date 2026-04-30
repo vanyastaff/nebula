@@ -155,7 +155,6 @@ mod tests {
         type Runtime = String;
         type Lease = String;
         type Error = SvcError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("cloned-svc")
@@ -164,7 +163,6 @@ mod tests {
         async fn create(
             &self,
             _config: &String,
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<String, SvcError> {
             Ok("runtime".into())
@@ -200,7 +198,6 @@ mod tests {
         type Runtime = String;
         type Lease = String;
         type Error = SvcError;
-        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("tracked-svc")
@@ -209,7 +206,6 @@ mod tests {
         async fn create(
             &self,
             _config: &String,
-            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> Result<String, SvcError> {
             Ok("tracked-runtime".into())

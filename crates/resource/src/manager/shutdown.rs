@@ -187,13 +187,11 @@ impl Manager {
         self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
 
         // Phase 3: CLEAR — drop all ManagedResources so their
-        // Arc<ReleaseQueue> refs are released. Also clear the
-        // `credential_resources` reverse-index so its dispatchers (which
-        // each hold an `Arc<ManagedResource<R>>` via `TypedDispatcher`)
-        // do not pin the now-removed resources alive across any surviving
-        // `Arc<Manager>` clones (CodeRabbit 🔴 #2).
+        // Arc<ReleaseQueue> refs are released. The credential reverse-
+        // index (used by ADR-0036's singular rotation dispatch) was
+        // removed in Phase 4 / ADR-0044; per-slot rotation will be
+        // wired in a follow-up (.ai-factory/PHASE4_BLOCKED.md).
         self.registry.clear();
-        self.credential_resources.clear();
 
         // Phase 4: AWAIT WORKERS — workers are already draining (from
         // Phase 1 cancel signal). Await with a bounded timeout; failure
