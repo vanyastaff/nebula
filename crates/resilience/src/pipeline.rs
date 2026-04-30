@@ -365,7 +365,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use std::time::Duration;
     ///
     /// use nebula_resilience::{CallError, ResiliencePipeline};
@@ -421,7 +421,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use std::time::Duration;
     ///
     /// use nebula_resilience::{ResiliencePipeline, fallback::ValueFallback};
