@@ -32,8 +32,13 @@ pub struct LeaseRow {
     /// Runner that currently holds the lease.
     pub holder: u32,
     /// Generation counter, bumped on each acquire that overwrites a
-    /// prior (expired or absent) lease. Lets tests prove handoff
-    /// happened by observing a strictly-increasing value.
+    /// **still-present** prior lease (typically the expiry-takeover
+    /// path: prior holder's row is flagged expired, new holder's
+    /// acquire bumps generation). After `release_lease` removes the
+    /// row, a subsequent acquire starts at generation 0 again — the
+    /// counter is per-row, not a manager-scoped monotonic. Tests that
+    /// rely on monotonicity should restrict themselves to the
+    /// expiry-takeover scenario.
     pub generation: u64,
     /// Whether the lease has been logically expired (modelling TTL).
     pub expired: bool,

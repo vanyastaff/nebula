@@ -124,9 +124,13 @@ async fn no_double_holder_under_concurrent_acquire_release() {
                     tracker.enter(exec_idx);
                     // Yield to the runtime to maximize the chance of
                     // another runner observing the holder before we
-                    // release.
+                    // release. The tracker decrement MUST happen after
+                    // `release_lease` returns Ok(true) — decrementing
+                    // earlier creates a window where the repo lease is
+                    // still held but the test no longer counts the
+                    // holder, hiding any double-acquire violation that
+                    // lands in that gap.
                     tokio::task::yield_now().await;
-                    tracker.leave(exec_idx);
 
                     let released = repo
                         .release_lease(exec_id, &holder)
@@ -136,6 +140,7 @@ async fn no_double_holder_under_concurrent_acquire_release() {
                         released,
                         "runner {holder} acquired exec[{exec_idx}] but release returned false"
                     );
+                    tracker.leave(exec_idx);
                 }
                 // If contended, just spin to the next iteration —
                 // production runners would back off; for chaos load

@@ -101,7 +101,7 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 
 - API stability: `stable` — state machine, journal, idempotency key, and plan types are
   in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
-- `execution_leases` schema may exist before full engine enforcement; see §11.5 debt.
+- Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
 - Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
   engine-level integration tests.
 - 5 `panic!` sites in `transition` and `status` modules serve as state-machine invariant

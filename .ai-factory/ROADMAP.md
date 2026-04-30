@@ -176,7 +176,7 @@ verification + dead-field cleanup + doc audit.
 - [x] **M2.2** ~~Verify `execution_leases` heartbeat enforcement across runner
       restarts~~ — **DONE** (closed 2026-04-29, Layer 1 only — Layer 2
       remains Sprint E (1.1) per "Out of scope for 1.0").
-      Sequencing across four commits on
+      Sequencing across five commits on
       `feature/m2-2-execution-leases-heartbeat`:
       - **Commit 1** (`309e773c`) — T0 verification + T1' Sprint-E
         boundary doc-comments on `repos/execution.rs` and migration

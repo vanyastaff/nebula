@@ -172,12 +172,20 @@ impl ExecutionRepo for PgExecutionRepo {
                 "acquire_lease: acquired"
             );
         } else {
+            // 0 rows affected covers BOTH "execution row exists with a
+            // live competing lease" and "execution row is missing".
+            // The SQL fence (`WHERE id = $1 AND (lease_holder IS NULL
+            // OR lease_expires_at < NOW())`) cannot distinguish those
+            // at the SQL layer without a second roundtrip; the message
+            // therefore stays neutral so an operator does not chase a
+            // "competing runner" theory when the row was simply never
+            // seeded.
             tracing::warn!(
                 target: "nebula_storage::lease",
                 execution_id = %id,
                 attempted_holder = %holder,
                 ttl_secs = secs,
-                "acquire_lease: contended (existing lease still live)"
+                "acquire_lease: rejected (contended or execution row missing)"
             );
         }
         Ok(acquired)
