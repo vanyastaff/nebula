@@ -1,12 +1,12 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! DX tests for `PaginatedAction` trait and `impl_paginated_action!` macro.
 //!
 //! Validates that the macro-generated `StatefulAction` impl correctly drives
 //! cursor-based pagination through the `StatefulTestHarness`.
 
+use std::sync::OnceLock;
+
 use nebula_action::{
+    ActionContext,
     action::Action,
     error::ActionError,
     metadata::ActionMetadata,
@@ -14,26 +14,57 @@ use nebula_action::{
     stateful::{PageResult, PaginatedAction},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::{DeclaresDependencies, action_key};
+use nebula_core::{Dependencies, action_key};
+use nebula_schema::{HasSchema, ValidSchema};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NumberPage(Vec<i32>);
+
+impl HasSchema for NumberPage {
+    fn schema() -> ValidSchema {
+        ValidSchema::empty()
+    }
+}
 
 // ── NumberPaginator ────────────────────────────────────────────────────────
 
 struct NumberPaginator {
-    meta: ActionMetadata,
     total_pages: u32,
 }
 
-impl DeclaresDependencies for NumberPaginator {}
-
 impl Action for NumberPaginator {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = NumberPage;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.number_paginator"),
+                "NumberPaginator",
+                "Paginate numbers",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<NumberPage as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl PaginatedAction for NumberPaginator {
-    type Input = serde_json::Value;
-    type Output = Vec<i32>;
     type Cursor = u32;
 
     fn max_pages(&self) -> u32 {
@@ -44,8 +75,8 @@ impl PaginatedAction for NumberPaginator {
         &self,
         _input: &serde_json::Value,
         cursor: Option<&u32>,
-        _ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<PageResult<NumberPage, u32>, ActionError> {
         let page = cursor.copied().unwrap_or(0);
         let data: Vec<i32> = ((page * 10)..((page + 1) * 10)).map(|i| i as i32).collect();
         let next = if page + 1 < self.total_pages {
@@ -54,7 +85,7 @@ impl PaginatedAction for NumberPaginator {
             None
         };
         Ok(PageResult {
-            data,
+            data: NumberPage(data),
             next_cursor: next,
         })
     }
@@ -65,21 +96,41 @@ nebula_action::impl_paginated_action!(NumberPaginator);
 // ── LimitedPaginator ───────────────────────────────────────────────────────
 
 struct LimitedPaginator {
-    meta: ActionMetadata,
     inner: NumberPaginator,
 }
 
-impl DeclaresDependencies for LimitedPaginator {}
-
 impl Action for LimitedPaginator {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = NumberPage;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.limited_paginator"),
+                "LimitedPaginator",
+                "Paginate with limit",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<NumberPage as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl PaginatedAction for LimitedPaginator {
-    type Input = serde_json::Value;
-    type Output = Vec<i32>;
     type Cursor = u32;
 
     fn max_pages(&self) -> u32 {
@@ -90,8 +141,8 @@ impl PaginatedAction for LimitedPaginator {
         &self,
         input: &serde_json::Value,
         cursor: Option<&u32>,
-        ctx: &(impl nebula_action::ActionContext + ?Sized),
-    ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<PageResult<NumberPage, u32>, ActionError> {
         self.inner.fetch_page(input, cursor, ctx).await
     }
 }
@@ -102,14 +153,7 @@ nebula_action::impl_paginated_action!(LimitedPaginator);
 
 #[tokio::test]
 async fn paginated_fetches_all_pages() {
-    let action = NumberPaginator {
-        meta: ActionMetadata::new(
-            action_key!("test.number_paginator"),
-            "NumberPaginator",
-            "Paginate numbers",
-        ),
-        total_pages: 3,
-    };
+    let action = NumberPaginator { total_pages: 3 };
     let ctx = TestContextBuilder::minimal().build();
     let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
     let input = serde_json::json!({});
@@ -132,19 +176,7 @@ async fn paginated_fetches_all_pages() {
 #[tokio::test]
 async fn paginated_respects_max_pages() {
     let action = LimitedPaginator {
-        meta: ActionMetadata::new(
-            action_key!("test.limited_paginator"),
-            "LimitedPaginator",
-            "Paginate with limit",
-        ),
-        inner: NumberPaginator {
-            meta: ActionMetadata::new(
-                action_key!("test.number_paginator"),
-                "NumberPaginator",
-                "Paginate numbers",
-            ),
-            total_pages: 100,
-        },
+        inner: NumberPaginator { total_pages: 100 },
     };
     let ctx = TestContextBuilder::minimal().build();
     let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
@@ -164,14 +196,7 @@ async fn paginated_respects_max_pages() {
 
 #[tokio::test]
 async fn paginated_single_page() {
-    let action = NumberPaginator {
-        meta: ActionMetadata::new(
-            action_key!("test.number_paginator"),
-            "NumberPaginator",
-            "Paginate numbers",
-        ),
-        total_pages: 1,
-    };
+    let action = NumberPaginator { total_pages: 1 };
     let ctx = TestContextBuilder::minimal().build();
     let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
     let input = serde_json::json!({});

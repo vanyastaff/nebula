@@ -21,8 +21,10 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionError, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter,
-    ResourceAction, ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
+    Action, ActionError, ActionFactory, ActionHandler, ActionMetadata, ControlAction,
+    FromWorkflowNode, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
+    GenericStatelessFactory, GenericTriggerFactory, PollAction, PollTriggerAdapter, ResourceAction,
+    ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
     StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
     WebhookTriggerAdapter,
 };
@@ -36,11 +38,25 @@ struct ActionEntry {
     handler: ActionHandler,
 }
 
+/// A single factory entry in the parallel factory map (Phase 3 / Session 4).
+///
+/// Stored alongside the legacy `ActionEntry` so the engine can transition
+/// dispatch to factory-based instantiation incrementally per ADR-0043 §6.
+#[derive(Clone)]
+struct FactoryEntry {
+    metadata: ActionMetadata,
+    factory: Arc<dyn ActionFactory>,
+}
+
 /// Type-safe registry for action handlers, keyed by `ActionKey`.
 #[derive(Default)]
 pub struct ActionRegistry {
     /// Map from action key to list of entries, each at a distinct version.
     actions: DashMap<ActionKey, Vec<ActionEntry>>,
+    /// Parallel factory map per ADR-0043 §6 / Phase 3 Session 4. Engine
+    /// dispatch consults this first and falls back to `actions` when no
+    /// factory has been registered for the key.
+    factories: DashMap<ActionKey, Vec<FactoryEntry>>,
 }
 
 impl ActionRegistry {
@@ -218,6 +234,115 @@ impl ActionRegistry {
         self.register(metadata, handler);
     }
 
+    /// Register an action factory (Phase 3 / Session 4 — ADR-0043 §6).
+    ///
+    /// The factory is consulted at dispatch time to instantiate a fresh
+    /// erased action per execution. This is the new path for actions that
+    /// implement [`Action`] + [`FromWorkflowNode`] (Variant A).
+    ///
+    /// Stored alongside any legacy `ActionHandler` registration; lookups
+    /// prefer the factory entry when present.
+    pub fn register_factory(&self, metadata: ActionMetadata, factory: Arc<dyn ActionFactory>) {
+        let version = metadata.base.version.clone();
+        let mut entries = self.factories.entry(metadata.base.key.clone()).or_default();
+
+        if let Some(pos) = entries
+            .iter()
+            .position(|e| e.metadata.base.version == version)
+        {
+            entries[pos] = FactoryEntry { metadata, factory };
+        } else {
+            entries.push(FactoryEntry { metadata, factory });
+            entries.sort_by(|a, b| a.metadata.base.version.cmp(&b.metadata.base.version));
+        }
+    }
+
+    /// Register a stateless action via the factory pipeline (Variant A).
+    ///
+    /// Requires the action to implement [`FromWorkflowNode`] (auto-emitted
+    /// by `#[derive(Action)]`). The factory builds a fresh `A` per
+    /// dispatch via `A::from_workflow_node(node, ctx)`.
+    pub fn register_stateless_factory<A>(&self)
+    where
+        A: StatelessAction + FromWorkflowNode<Error = ActionError>,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatelessFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a stateful action via the factory pipeline (Variant A).
+    pub fn register_stateful_factory<A>(&self)
+    where
+        A: StatefulAction + FromWorkflowNode<Error = ActionError>,
+        <A as Action>::Input: serde::de::DeserializeOwned + Send + Sync,
+        <A as Action>::Output: serde::Serialize + Send + Sync,
+        A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericStatefulFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a trigger action via the factory pipeline (Variant A).
+    pub fn register_trigger_factory<A>(&self)
+    where
+        A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+        <A as TriggerAction>::Error: Into<ActionError>,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericTriggerFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a resource action via the factory pipeline (Variant A).
+    pub fn register_resource_factory<A>(&self)
+    where
+        A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericResourceFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Register a control action via the factory pipeline (Variant A).
+    pub fn register_control_factory<A>(&self)
+    where
+        A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+    {
+        let metadata = <A as Action>::metadata().clone();
+        let factory: Arc<dyn ActionFactory> = Arc::new(GenericControlFactory::<A>::new());
+        self.register_factory(metadata, factory);
+    }
+
+    /// Look up the factory for the given key, returning the latest version.
+    ///
+    /// Returns `None` if no factory has been registered for this key.
+    /// Engine dispatch falls back to [`get`](Self::get) for the legacy
+    /// `ActionHandler` path.
+    #[must_use]
+    pub fn get_factory(&self, key: &ActionKey) -> Option<(ActionMetadata, Arc<dyn ActionFactory>)> {
+        let entries = self.factories.get(key)?;
+        let last = entries.last()?;
+        Some((last.metadata.clone(), Arc::clone(&last.factory)))
+    }
+
+    /// Look up a factory by key and exact version.
+    #[must_use]
+    pub fn get_factory_versioned(
+        &self,
+        key: &ActionKey,
+        version: &Version,
+    ) -> Option<(ActionMetadata, Arc<dyn ActionFactory>)> {
+        let entries = self.factories.get(key)?;
+        let entry = entries
+            .iter()
+            .find(|e| e.metadata.base.version == *version)?;
+        Some((entry.metadata.clone(), Arc::clone(&entry.factory)))
+    }
+
     /// All registered action keys.
     #[must_use]
     pub fn keys(&self) -> Vec<ActionKey> {
@@ -245,6 +370,7 @@ impl std::fmt::Debug for ActionRegistry {
         let keys: Vec<ActionKey> = self.keys();
         f.debug_struct("ActionRegistry")
             .field("action_count", &self.actions.len())
+            .field("factory_count", &self.factories.len())
             .field("keys", &keys)
             .finish_non_exhaustive()
     }

@@ -1,12 +1,12 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! DX tests for `BatchAction` trait and `impl_batch_action!` macro.
 //!
 //! Validates that the macro-generated `StatefulAction` impl correctly drives
 //! fixed-size batch processing through the `StatefulTestHarness`.
 
+use std::sync::OnceLock;
+
 use nebula_action::{
+    ActionContext,
     action::Action,
     error::ActionError,
     metadata::ActionMetadata,
@@ -14,22 +14,21 @@ use nebula_action::{
     stateful::{BatchAction, BatchItemResult},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::{DeclaresDependencies, action_key};
+use nebula_core::{Dependencies, action_key};
+use nebula_schema::{HasSchema, ValidSchema};
 use serde::{Deserialize, Serialize};
 
 // ── DoublerBatch ──────────────────────────────────────────────────────────
 
-struct DoublerBatch {
-    meta: ActionMetadata,
-}
+struct DoublerBatch;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NumberList {
     numbers: Vec<i32>,
 }
 
-impl nebula_schema::HasSchema for NumberList {
-    fn schema() -> nebula_schema::ValidSchema {
+impl HasSchema for NumberList {
+    fn schema() -> ValidSchema {
         use nebula_schema::{FieldCollector, Schema, field_key};
         Schema::builder()
             .list(field_key!("numbers"), |l| {
@@ -46,17 +45,44 @@ struct BatchOutput {
     errors: usize,
 }
 
-impl DeclaresDependencies for DoublerBatch {}
+impl HasSchema for BatchOutput {
+    fn schema() -> ValidSchema {
+        ValidSchema::empty()
+    }
+}
 
 impl Action for DoublerBatch {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = NumberList;
+    type Output = BatchOutput;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.doubler_batch"),
+                "DoublerBatch",
+                "Batch doubler",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<NumberList as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<BatchOutput as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
 impl BatchAction for DoublerBatch {
-    type Input = NumberList;
-    type Output = BatchOutput;
     type Item = i32;
 
     fn batch_size(&self) -> usize {
@@ -70,7 +96,7 @@ impl BatchAction for DoublerBatch {
     async fn process_item(
         &self,
         item: i32,
-        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+        _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<BatchOutput, ActionError> {
         if item < 0 {
             return Err(ActionError::retryable(format!("negative: {item}")));
@@ -100,13 +126,7 @@ nebula_action::impl_batch_action!(DoublerBatch);
 
 #[tokio::test]
 async fn batch_processes_in_chunks() {
-    let action = DoublerBatch {
-        meta: ActionMetadata::new(
-            action_key!("test.doubler_batch"),
-            "DoublerBatch",
-            "Batch doubler",
-        ),
-    };
+    let action = DoublerBatch;
     let ctx = TestContextBuilder::minimal().build();
     let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
 
@@ -135,13 +155,7 @@ async fn batch_processes_in_chunks() {
 
 #[tokio::test]
 async fn batch_handles_per_item_errors() {
-    let action = DoublerBatch {
-        meta: ActionMetadata::new(
-            action_key!("test.doubler_batch"),
-            "DoublerBatch",
-            "Batch doubler",
-        ),
-    };
+    let action = DoublerBatch;
     let ctx = TestContextBuilder::minimal().build();
     let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
 
@@ -163,13 +177,7 @@ async fn batch_handles_per_item_errors() {
 
 #[tokio::test]
 async fn batch_single_chunk() {
-    let action = DoublerBatch {
-        meta: ActionMetadata::new(
-            action_key!("test.doubler_batch"),
-            "DoublerBatch",
-            "Batch doubler",
-        ),
-    };
+    let action = DoublerBatch;
     let ctx = TestContextBuilder::minimal().build();
     let mut harness = StatefulTestHarness::new(action, ctx).unwrap();
 

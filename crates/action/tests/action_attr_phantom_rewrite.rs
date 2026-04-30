@@ -1,6 +1,3 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Integration test - `#[action_phantom] + #[derive(Action)]` end-to-end.
 //!
 //! Verifies the documented "apply attribute first, derive sees rewritten
@@ -151,7 +148,9 @@ impl<C: ?Sized> Default for CredentialRef<C> {
 #[action(
     key = "local.bearer.fetch",
     name = "Fetch Local Bearer",
-    description = "Test fixture exercising #[action_phantom] + #[derive(Action)] coexistence"
+    description = "Test fixture exercising #[action_phantom] + #[derive(Action)] coexistence",
+    input = serde_json::Value,
+    output = serde_json::Value
 )]
 pub struct LocalBearerAction {
     /// Pattern 2 field - typed against the capability trait. The
@@ -168,22 +167,23 @@ fn action_attr_with_derive_pattern2_compiles_and_metadata_roundtrips() {
     // If `dyn LocalServiceBearer` had reached the derive unrewritten,
     // this `Default::default()` call would not compile (E0191 on the
     // `dyn` projection). The fact that it compiles is the proof.
-    let action = LocalBearerAction {
+    let _action = LocalBearerAction {
         bearer: CredentialRef::default(),
     };
-    let meta = action.metadata();
+    let meta = LocalBearerAction::metadata();
     assert_eq!(meta.base.key.as_str(), "local.bearer.fetch");
     assert_eq!(meta.base.name, "Fetch Local Bearer");
 }
 
 #[test]
 fn action_attr_with_derive_pattern2_dependencies_are_empty() {
-    // Pattern 2 fields don't auto-register as #[action(credential = ...)]
-    // dependencies (the type is `dyn`, not a concrete Credential). The
-    // dependency list reflects the `#[action(...)]` attribute args, which
-    // declared none. Verifies the derive's DeclaresDependencies impl
-    // executed against the rewritten struct without rejecting it.
-    use nebula_core::DeclaresDependencies;
+    // Pattern 2 fields don't auto-register as `#[credential]` slots —
+    // the field type is `CredentialRef<dyn ...>`, not `CredentialGuard<C>`.
+    // The dependency list reflects the absence of `#[credential]` /
+    // `#[resource]` annotations on the field. Verifies the derive's
+    // dependencies-builder executed against the rewritten struct without
+    // rejecting it.
+    assert!(LocalBearerAction::dependencies().slot_fields().is_empty());
     assert!(LocalBearerAction::dependencies().credentials().is_empty());
     assert!(LocalBearerAction::dependencies().resources().is_empty());
 }

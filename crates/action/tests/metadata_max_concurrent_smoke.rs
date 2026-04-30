@@ -1,6 +1,3 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Smoke tests for ActionMetadata::max_concurrent (Q8 F9).
 
 use std::num::NonZeroU32;

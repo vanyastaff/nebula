@@ -116,7 +116,10 @@ pub use erased::{
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
-pub use factory::ActionFactory;
+pub use factory::{
+    ActionFactory, GenericControlFactory, GenericResourceFactory, GenericStatefulFactory,
+    GenericStatelessFactory, GenericTriggerFactory,
+};
 pub use from_workflow_node::FromWorkflowNode;
 pub use handler::ActionHandler;
 pub use idempotency::IdempotencyKey;

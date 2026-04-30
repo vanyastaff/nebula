@@ -1,19 +1,12 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Integration test for [`ResourceAction`] single-type roundtrip.
 //!
 //! Proves that a `ResourceAction` with a non-trivial `Resource` type
 //! (a struct that implements neither `Default` nor `Clone`) can be
 //! boxed by `ResourceActionAdapter::configure` and successfully
-//! downcast back by `ResourceActionAdapter::cleanup`. Before the A4
-//! fix, this test would have compiled against the old trait with
-//! `type Config = PoolConfig; type Instance = PoolHandle;` and failed
-//! at runtime with `ActionError::Fatal("resource instance downcast
-//! failed")` on every `cleanup` call.
+//! downcast back by `ResourceActionAdapter::cleanup`.
 
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -21,7 +14,8 @@ use nebula_action::{
     Action, ActionError, ActionMetadata, ActionRuntimeContext, ResourceAction,
     ResourceActionAdapter, ResourceHandler, TestContextBuilder,
 };
-use nebula_core::DeclaresDependencies;
+use nebula_core::Dependencies;
+use nebula_schema::{HasSchema, ValidSchema};
 
 /// Handle to a fictitious pool. Non-trivial enough to expose any
 /// downcast mismatch as a test failure rather than a spurious pass.
@@ -38,15 +32,38 @@ impl Drop for PoolHandle {
 }
 
 struct PoolAction {
-    meta: ActionMetadata,
     cleanup_observed: Arc<AtomicBool>,
     cleanup_ran: Arc<AtomicBool>,
 }
 
-impl DeclaresDependencies for PoolAction {}
 impl Action for PoolAction {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.meta
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                nebula_core::action_key!("test.resource.pool"),
+                "Pool",
+                "Typed pool resource",
+            )
+        })
+    }
+
+    fn input_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn output_schema() -> &'static ValidSchema {
+        static S: OnceLock<ValidSchema> = OnceLock::new();
+        S.get_or_init(<serde_json::Value as HasSchema>::schema)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
     }
 }
 
@@ -84,11 +101,6 @@ async fn resource_action_configure_cleanup_roundtrip() {
     let cleanup_ran = Arc::new(AtomicBool::new(false));
 
     let action = PoolAction {
-        meta: ActionMetadata::new(
-            nebula_core::action_key!("test.resource.pool"),
-            "Pool",
-            "Typed pool resource",
-        ),
         cleanup_observed: cleanup_observed.clone(),
         cleanup_ran: cleanup_ran.clone(),
     };

@@ -1,6 +1,3 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
 //! Resume/recovery scenarios for deferred ActionOutput.
 //!
 //! These tests model engine persistence boundaries:

@@ -23,6 +23,7 @@ use proc_macro::TokenStream;
 mod action;
 mod action_attr;
 mod action_attrs;
+mod field_slots;
 
 /// Derive macro for the `Action` trait.
 ///

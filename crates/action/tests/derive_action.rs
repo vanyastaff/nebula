@@ -1,78 +1,82 @@
-// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
-#![cfg(any())]
-
-//! Integration tests for `#[derive(Action)]` macro.
+//! Integration tests for `#[derive(Action)]` macro (Variant A).
 //!
-//! Tests verify that the macro correctly generates `DeclaresDependencies`
-//! and `Action` trait implementations.
+//! Tests verify that the macro correctly emits the `Action` trait impl
+//! plus a `FromWorkflowNode` factory body that resolves slot fields.
 
 use nebula_action::Action;
-use nebula_core::DeclaresDependencies;
+use nebula_schema::HasSchema;
 
-// -- No credentials ---------------------------------------------------------
+// -- No slot fields ---------------------------------------------------------
 
 #[derive(Action)]
-#[action(key = "test.no_cred", name = "No Cred", description = "no credentials")]
+#[action(
+    key = "test.no_cred",
+    name = "No Cred",
+    description = "no credentials",
+    input = serde_json::Value,
+    output = serde_json::Value
+)]
 struct NoCredAction;
 
 #[test]
-fn no_credentials_returns_empty_type_ids() {
-    assert!(NoCredAction::dependencies().credentials().is_empty());
+fn no_credentials_returns_empty_slot_fields() {
+    assert!(NoCredAction::dependencies().slot_fields().is_empty());
 }
 
 #[test]
-fn no_credentials_returns_none() {
-    assert!(NoCredAction::dependencies().credentials().is_empty());
-}
-
-#[test]
-fn no_credentials_returns_empty_resources() {
+fn no_resources_in_dependencies() {
     assert!(NoCredAction::dependencies().resources().is_empty());
 }
 
 #[test]
 fn metadata_key_matches_attribute() {
-    let action = NoCredAction;
-    let meta = action.metadata();
+    let meta = NoCredAction::metadata();
     assert_eq!(meta.base.key.as_str(), "test.no_cred");
     assert_eq!(meta.base.name, "No Cred");
     assert_eq!(meta.base.description, "no credentials");
 }
 
-// -- Struct with fields -----------------------------------------------------
-
-#[derive(Action, Clone, serde::Deserialize)]
-#[action(
-    key = "with_fields",
-    name = "Fields Action",
-    description = "action with fields"
-)]
-#[expect(
-    dead_code,
-    reason = "fields exist only to exercise #[derive(Action)] on a non-unit struct; test asserts on metadata"
-)]
-// Fields exist only to exercise `#[derive(Action)]` expansion on a
-// non-unit struct — the test asserts on metadata, not on field values.
-struct ActionWithFields {
-    url: String,
-    timeout: u32,
+#[test]
+fn input_schema_matches_input_type() {
+    let schema = NoCredAction::input_schema();
+    let direct = <serde_json::Value as HasSchema>::schema();
+    // Both schemas come from the same HasSchema impl — pointers may differ
+    // but shape must match.
+    assert_eq!(format!("{schema:?}"), format!("{direct:?}"));
 }
+
+// -- Default name + description (omitted attrs) ----------------------------
+
+#[derive(Action)]
+#[action(
+    key = "test.defaults",
+    input = serde_json::Value,
+    output = serde_json::Value
+)]
+struct DefaultsAction;
 
 #[test]
-fn derive_works_on_struct_with_fields() {
-    let action = ActionWithFields {
-        url: "https://example.com".into(),
-        timeout: 30,
-    };
-    let meta = action.metadata();
-    assert_eq!(meta.base.key.as_str(), "with_fields");
-    assert_eq!(meta.base.name, "Fields Action");
+fn name_defaults_to_struct_name() {
+    let meta = DefaultsAction::metadata();
+    assert_eq!(meta.base.name, "DefaultsAction");
+    assert_eq!(meta.base.description, "");
 }
 
-// -- Credential type IDs (compile-time verification) ------------------------
-//
-// Full integration tests with `#[action(credential = Type)]` require types
-// that implement `nebula_credential::Credential` + `Default`. Those are
-// tested via the `ScopedCredentialAccessor` and `dependency` module unit
-// tests. Here we verify the no-credential default behavior, which exercises
-// the derive macro's code path for `credential_types()`.
+// -- Default version --------------------------------------------------------
+
+#[derive(Action)]
+#[action(
+    key = "test.versioned",
+    version = "2.5.0",
+    input = serde_json::Value,
+    output = serde_json::Value
+)]
+struct VersionedAction;
+
+#[test]
+fn explicit_version_is_propagated() {
+    let meta = VersionedAction::metadata();
+    assert_eq!(meta.base.version.major, 2);
+    assert_eq!(meta.base.version.minor, 5);
+    assert_eq!(meta.base.version.patch, 0);
+}
