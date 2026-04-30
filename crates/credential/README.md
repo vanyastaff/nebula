@@ -31,7 +31,7 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 ## Public API
 
-- `Credential` — base trait: `resolve()`, `project()`, plus the three associated types (`Input`, `State`, `Scheme`) and `KEY` const. Capability methods removed from base — see sub-traits below.
+- `Credential` — base trait: `resolve()`, `project()`, `properties_schema()`, plus the three associated types (`Properties`, `State`, `Scheme`) and `KEY` const. Capability methods removed from base — see sub-traits below. (Phase 5 of the M6 redesign renamed `Input` → `Properties` to mirror `Action::Input` / `Resource::Config`; the schema lives on the typed companion struct rather than baked into instance metadata.)
 - `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic` — capability sub-traits added at П1 (Tech Spec §15.4). `Interactive` carries the `Pending` associated type; engine dispatchers bind `where C: <Capability>`.
 - `CredentialState` — supertrait `ZeroizeOnDrop` is now mandatory (Tech Spec §15.4 amendment); compile-fail probe `compile_fail_state_zeroize` enforces.
 - `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`. **`capabilities_enabled` field removed** (Tech Spec §15.8) — capability sets come from sub-trait membership at registration.
@@ -70,7 +70,7 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 - Not a secret manager (Vault, AWS Secrets Manager) — this is the domain contract layer, not a storage backend.
 - Not responsible for secret storage backends — composable layers (`EncryptionLayer`, etc.) wrap any `CredentialStore`.
 - Not an OAuth2 server — PKCE and device-code flows are client-side helpers; the OAuth2 authorization endpoint is external.
-- Not the schema system — field definitions use `nebula-schema`; `CredentialMetadata.properties` is a `ValidSchema`.
+- Not the schema system — field definitions use `nebula-schema`. Phase 5: schema lives on `Self::Properties` (a `#[derive(Schema)]` companion struct) rather than baked into `CredentialMetadata`; the engine reads it via `Credential::properties_schema()`.
 
 ## П1 trait shape (2026-04-26)
 
@@ -98,7 +98,7 @@ See `docs/MATURITY.md` row for `nebula-credential`.
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (integration model — stored-state vs projected auth-material split), §12.5 (secrets + auth invariants), §13.2 (rotation/refresh seam).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-credential`.
 - ADR: `docs/adr/0004-rename-credential-metadata-description.md` (Metadata→Record, Description→Metadata).
-- Siblings: `nebula-core` (cross-cutting IDs/scopes), `nebula-schema` (`ValidSchema` for `CredentialMetadata.properties`), `nebula-action` (binds to credential types in `ActionDependencies`), `nebula-engine` (`credential` module owns runtime resolution/orchestration), `nebula-storage` (`credential` module owns store impls/layers).
+- Siblings: `nebula-core` (cross-cutting IDs/scopes), `nebula-schema` (`ValidSchema` consumed by `Credential::Properties` companion structs), `nebula-action` (binds to credential types in `ActionDependencies`), `nebula-engine` (`credential` module owns runtime resolution/orchestration), `nebula-storage` (`credential` module owns store impls/layers).
 
 ## Appendix
 

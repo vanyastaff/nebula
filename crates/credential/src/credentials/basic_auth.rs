@@ -3,7 +3,8 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema, field_key};
+use nebula_schema::{FieldValues, Schema};
+use serde::Deserialize;
 
 use crate::{
     Credential, CredentialContext, SecretString, contract::plugin_capability_report,
@@ -11,27 +12,24 @@ use crate::{
     scheme::IdentityPassword,
 };
 
-/// Typed shape of the `basic_auth` credential setup form.
-pub struct BasicAuthInput;
-
-impl HasSchema for BasicAuthInput {
-    fn schema() -> ValidSchema {
-        Schema::builder()
-            .add(
-                Field::string(field_key!("username"))
-                    .label("Username")
-                    .description("Username for HTTP Basic authentication")
-                    .required(),
-            )
-            .add(
-                Field::secret(field_key!("password"))
-                    .label("Password")
-                    .description("Password for HTTP Basic authentication")
-                    .required(),
-            )
-            .build()
-            .expect("basic_auth schema is always valid")
-    }
+/// Typed shape of the `basic_auth` credential setup form (Phase 5 — replaces
+/// the legacy `BasicAuthInput`).
+///
+/// `#[derive(Schema)]` provides the `HasSchema` impl that
+/// [`Credential::properties_schema`] reads. The plaintext password lives
+/// in a `String` here for schema derivation and is wrapped into
+/// [`SecretString`] inside [`Credential::resolve`] before it leaves the
+/// resolver.
+#[derive(Schema, Deserialize, Default)]
+pub struct BasicAuthProperties {
+    /// Username for HTTP Basic authentication.
+    #[field(label = "Username")]
+    #[validate(required)]
+    pub username: String,
+    /// Password for HTTP Basic authentication.
+    #[field(secret, label = "Password")]
+    #[validate(required)]
+    pub password: String,
 }
 
 /// HTTP Basic Auth credential -- resolves username + password into
@@ -45,7 +43,7 @@ impl HasSchema for BasicAuthInput {
 pub struct BasicAuthCredential;
 
 impl Credential for BasicAuthCredential {
-    type Input = BasicAuthInput;
+    type Properties = BasicAuthProperties;
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
 
@@ -56,7 +54,7 @@ impl Credential for BasicAuthCredential {
             .key(nebula_core::credential_key!("basic_auth"))
             .name("Basic Auth")
             .description("HTTP Basic authentication (username + password).")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(crate::AuthPattern::IdentityPassword)
             .icon("lock")
             .build()

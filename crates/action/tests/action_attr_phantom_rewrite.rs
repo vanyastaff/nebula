@@ -93,7 +93,7 @@ pub trait LocalServiceBearer: LocalService {}
 pub struct LocalCredential;
 
 impl Credential for LocalCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = LocalBearerScheme;
     type State = LocalState;
 

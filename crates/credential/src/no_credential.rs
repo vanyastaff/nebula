@@ -60,7 +60,7 @@ impl CredentialState for NoCredentialState {
 pub struct NoCredential;
 
 impl Credential for NoCredential {
-    type Input = ();
+    type Properties = ();
     /// `()` — already implements `AuthScheme` with `AuthPattern::NoAuth` and
     /// `PublicScheme` in `nebula_core::auth`.
     type Scheme = ();
@@ -73,7 +73,7 @@ impl Credential for NoCredential {
             .key(nebula_core::credential_key!("no_credential"))
             .name("No credential")
             .description("Opt-out marker for resources without an authenticated binding.")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(AuthPattern::NoAuth)
             .build()
             .expect("NoCredential metadata is statically valid")

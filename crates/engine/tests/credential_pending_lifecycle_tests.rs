@@ -88,7 +88,7 @@ impl nebula_credential::CredentialState for TestInteractiveState {
 struct InteractiveTestCredential;
 
 impl Credential for InteractiveTestCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
 
@@ -99,7 +99,7 @@ impl Credential for InteractiveTestCredential {
             nebula_core::credential_key!("interactive_test"),
             "Interactive Test",
             "Test credential for pending lifecycle",
-            Self::schema(),
+            Self::properties_schema(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }
@@ -155,7 +155,7 @@ impl Interactive for InteractiveTestCredential {
 struct RetryAwareCredential;
 
 impl Credential for RetryAwareCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
 
@@ -166,7 +166,7 @@ impl Credential for RetryAwareCredential {
             nebula_core::credential_key!("retry_aware"),
             "Retry Aware",
             "Test credential for retry-poll pending lifecycle",
-            Self::schema(),
+            Self::properties_schema(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

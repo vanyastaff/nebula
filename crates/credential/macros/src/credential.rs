@@ -1,4 +1,94 @@
-//! Credential derive macro implementation (v2).
+//! `#[derive(Credential)]` macro implementation — Phase 5 / ADR-0044 / M6 redesign.
+//!
+//! Mirrors `#[derive(Resource)]` (Phase 4) and `#[derive(Action)]` (Phase 3) on
+//! the slot-binding family. Credentials are the *leaf* of the dependency
+//! graph (they don't depend on other credentials per spec 23) and so the
+//! macro's surface is simpler than the Resource / Action variants — most
+//! of the work is metadata + type-aliasing.
+//!
+//! # Container attribute
+//!
+//! `#[credential(key, name, scheme, properties|protocol, ...)]`
+//!
+//! - `key = "..."` — Unique credential type key (required).
+//! - `name = "..."` — Human-readable name (required).
+//! - `scheme = TypePath` — Auth scheme produced by `Credential::project` (required). Also doubles
+//!   as the storage `State` (identity-state pattern).
+//! - `properties = TypePath` — Direct path to the `<Name>Properties` struct that owns the
+//!   setup-form schema. Mutually exclusive with `protocol`. The macro emits `type Properties =
+//!   #properties` and reuses `<#properties as HasSchema>::schema()` through the default
+//!   [`Credential::properties_schema`](nebula_credential::Credential::properties_schema) impl. When
+//!   `properties` is supplied, the user is responsible for implementing [`Credential::resolve`]
+//!   (and [`Credential::project`] when scheme ≠ state) on a separate inherent impl block.
+//! - `protocol = TypePath` — Reusable [`StaticProtocol`](nebula_credential::StaticProtocol) for
+//!   static (non-interactive) credentials. Mutually exclusive with `properties`. The macro emits
+//!   `type Properties = <protocol as StaticProtocol>::Properties` and a `resolve` body that
+//!   delegates to `<protocol as StaticProtocol>::build(values)`.
+//! - `icon = "..."` — Catalog icon identifier (optional).
+//! - `doc_url = "..."` — Documentation URL (optional).
+//! - `capabilities(...)` — Sub-traits the credential implements; accepts `interactive`,
+//!   `refreshable`, `revocable`, `testable`, `dynamic`. The macro emits one
+//!   `plugin_capability_report::IsX` impl per capability and a parity assertion that consumes the
+//!   actual sub-trait bound, so a missing `impl Refreshable for X` fails to compile.
+//!
+//! # Outer attributes (struct-level helpers)
+//!
+//! - `#[uses_resource(TypeName, purpose = "...")]` — Declare a resource dependency (repeatable).
+//! - `#[uses_credential(...)]` — Forbidden (spec 23): credential-to-credential static dependencies
+//!   are not allowed; use `ctx.credential::<C>()` for runtime composition. Emits a compile error.
+//!
+//! # Phase 5 changes
+//!
+//! - Renamed emitted `type Input` → `type Properties` to mirror `Action::Input` /
+//!   `Resource::Config` and shift schema ownership from instance metadata to a type-level companion
+//!   struct. The default `Credential::properties_schema()` body reads the schema via
+//!   `<Self::Properties as HasSchema>::schema()`.
+//! - Added a `properties = TypePath` attribute as the canonical, direct way to specify the
+//!   companion struct (no longer requires plumbing through a `StaticProtocol` indirection when the
+//!   user only wants the schema bridge — `protocol` is retained for the canonical static-resolve
+//!   delegation pattern).
+//!
+//! # Examples
+//!
+//! Properties-mode (manual `resolve`):
+//! ```ignore
+//! use nebula_credential::Credential;
+//! use nebula_schema::Schema;
+//! use serde::Deserialize;
+//!
+//! #[derive(Schema, Deserialize)]
+//! pub struct GithubOAuthProperties {
+//!     #[field(label = "Client ID")]
+//!     #[validate(required)]
+//!     pub client_id: String,
+//! }
+//!
+//! #[derive(Credential)]
+//! #[credential(
+//!     key = "github_oauth",
+//!     name = "GitHub OAuth",
+//!     scheme = OAuth2Token,
+//!     properties = GithubOAuthProperties,
+//!     icon = "github",
+//! )]
+//! pub struct GithubOAuthCredential;
+//!
+//! // The user provides a separate inherent impl with `project` / `resolve`
+//! // when `properties` is supplied, since the macro cannot synthesize them.
+//! ```
+//!
+//! Protocol-mode (auto-emitted `resolve`):
+//! ```ignore
+//! #[derive(Credential)]
+//! #[credential(
+//!     key = "postgres",
+//!     name = "PostgreSQL",
+//!     scheme = ConnectionUri,
+//!     protocol = PostgresProtocol,
+//!     icon = "postgres",
+//! )]
+//! pub struct PostgresCredential;
+//! ```
 
 use nebula_macro_support::{
     attrs::{self, AttrItem, AttrValue},
@@ -32,12 +122,20 @@ struct DeclaredCapabilities {
     dynamic: bool,
 }
 
-/// Parsed `#[credential(...)]` attributes for v2 derive.
-struct CredentialAttrsV2 {
+/// Source of `Self::Properties`:
+/// - `Direct(Type)` — supplied via `#[credential(properties = TypePath)]`
+/// - `ViaProtocol(Type)` — taken from `<protocol as StaticProtocol>::Properties`
+enum PropertiesSource {
+    Direct(syn::Type),
+    ViaProtocol(syn::Type),
+}
+
+/// Parsed `#[credential(...)]` attributes.
+struct CredentialAttrs {
     key: String,
     name: String,
     scheme: syn::Type,
-    protocol: syn::Type,
+    properties_source: PropertiesSource,
     icon: Option<String>,
     doc_url: Option<String>,
     capabilities: DeclaredCapabilities,
@@ -46,7 +144,35 @@ struct CredentialAttrsV2 {
 fn parse_credential_attrs(
     attr_args: &attrs::AttrArgs,
     struct_name: &syn::Ident,
-) -> syn::Result<CredentialAttrsV2> {
+) -> syn::Result<CredentialAttrs> {
+    const ALLOWED: &[&str] = &[
+        "key",
+        "name",
+        "scheme",
+        "properties",
+        "protocol",
+        "icon",
+        "doc_url",
+        "capabilities",
+    ];
+    for item in &attr_args.items {
+        let key = match item {
+            AttrItem::KeyValue { key, .. } | AttrItem::Flag(key) | AttrItem::List { key, .. } => {
+                key
+            },
+        };
+        if !ALLOWED.iter().any(|allowed| key == allowed) {
+            return Err(syn::Error::new_spanned(
+                key,
+                format!(
+                    "unknown attribute `{key}` in #[credential(...)] \
+                     — allowed keys: {}",
+                    ALLOWED.join(", "),
+                ),
+            ));
+        }
+    }
+
     let key = attr_args.require_string("key", struct_name)?;
     let name = attr_args.require_string("name", struct_name)?;
 
@@ -57,23 +183,39 @@ fn parse_credential_attrs(
         )
     })?;
 
-    let protocol = attr_args.get_type("protocol")?.ok_or_else(|| {
-        diag::error_spanned(
-            struct_name,
-            "#[derive(Credential)] requires `protocol = Type` attribute",
-        )
-    })?;
+    let properties = attr_args.get_type("properties")?;
+    let protocol = attr_args.get_type("protocol")?;
+
+    let properties_source = match (properties, protocol) {
+        (Some(_), Some(_)) => {
+            return Err(diag::error_spanned(
+                struct_name,
+                "#[derive(Credential)] cannot mix `properties = ...` and `protocol = ...` — \
+                 supply exactly one (use `properties` for direct schema-only bridging, \
+                 `protocol` for the canonical static-resolve delegation)",
+            ));
+        },
+        (Some(p), None) => PropertiesSource::Direct(p),
+        (None, Some(p)) => PropertiesSource::ViaProtocol(p),
+        (None, None) => {
+            return Err(diag::error_spanned(
+                struct_name,
+                "#[derive(Credential)] requires either `properties = TypePath` (direct) \
+                 or `protocol = TypePath` (StaticProtocol delegation) — neither was supplied",
+            ));
+        },
+    };
 
     let icon = attr_args.get_string("icon");
     let doc_url = attr_args.get_string("doc_url");
 
     let capabilities = parse_capabilities(attr_args)?;
 
-    Ok(CredentialAttrsV2 {
+    Ok(CredentialAttrs {
         key,
         name,
         scheme,
-        protocol,
+        properties_source,
         icon,
         doc_url,
         capabilities,
@@ -271,7 +413,6 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let key = &attrs.key;
     let name = &attrs.name;
     let scheme = &attrs.scheme;
-    let protocol = &attrs.protocol;
     let caps = attrs.capabilities;
 
     // Generate DeclaresDependencies impl.
@@ -333,7 +474,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     .key(::nebula_core::credential_key!(#key))
                     .name(#name)
                     .description(#name)
-                    .schema(Self::schema())
+                    .schema(Self::properties_schema())
                     .pattern(<#scheme as ::nebula_credential::AuthScheme>::pattern())
             };
             if let Some(icon) = &attrs.icon {
@@ -462,58 +603,121 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         };
     }
 
-    let expanded = quote! {
-        impl #impl_generics ::nebula_credential::Credential
-            for #struct_name #ty_generics #where_clause
-        {
-            type Input = <#protocol as ::nebula_credential::StaticProtocol>::Input;
-            type Scheme = #scheme;
-            type State = #scheme;
-
-            const KEY: &'static str = #key;
-
-            fn metadata() -> ::nebula_credential::CredentialMetadata
-            where
-                Self: Sized,
+    // Emit `Credential` impl per Phase 5: `type Properties` resolved per
+    // `PropertiesSource` (direct vs StaticProtocol-bridged); `resolve` body
+    // delegates to `StaticProtocol::build` in protocol-mode and is a typed
+    // `todo!()` placeholder in properties-mode (the user supplies their own
+    // `resolve` via a separate inherent impl block — Rust's coherence
+    // forbids splitting a single trait impl, so properties-mode users
+    // omit `#[derive(Credential)]` and write the full `impl Credential`
+    // by hand. The properties-mode here exists so diagnostics line up at
+    // the macro call site if a user forgets the manual impl).
+    let credential_impl = match &attrs.properties_source {
+        PropertiesSource::ViaProtocol(protocol) => quote! {
+            impl #impl_generics ::nebula_credential::Credential
+                for #struct_name #ty_generics #where_clause
             {
-                #metadata_body
-            }
+                type Properties = <#protocol as ::nebula_credential::StaticProtocol>::Properties;
+                type Scheme = #scheme;
+                type State = #scheme;
 
-            fn project(state: &#scheme) -> #scheme
-            where
-                Self: Sized,
-            {
-                state.clone()
-            }
+                const KEY: &'static str = #key;
 
-            fn resolve(
-                values: &::nebula_schema::FieldValues,
-                _ctx: &::nebula_credential::CredentialContext,
-            ) -> impl ::std::future::Future<
-                Output = ::std::result::Result<
-                    ::nebula_credential::resolve::ResolveResult<#scheme, ()>,
-                    ::nebula_credential::CredentialError,
-                >,
-            > + ::std::marker::Send
-            where
-                Self: Sized,
-            {
-                async {
-                    let scheme =
-                        <#protocol as ::nebula_credential::StaticProtocol>::build(values)?;
-                    ::std::result::Result::Ok(
-                        ::nebula_credential::resolve::ResolveResult::Complete(scheme),
-                    )
+                fn metadata() -> ::nebula_credential::CredentialMetadata
+                where
+                    Self: Sized,
+                {
+                    #metadata_body
+                }
+
+                fn project(state: &#scheme) -> #scheme
+                where
+                    Self: Sized,
+                {
+                    state.clone()
+                }
+
+                fn resolve(
+                    values: &::nebula_schema::FieldValues,
+                    _ctx: &::nebula_credential::CredentialContext,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<
+                        ::nebula_credential::resolve::ResolveResult<#scheme, ()>,
+                        ::nebula_credential::CredentialError,
+                    >,
+                > + ::std::marker::Send
+                where
+                    Self: Sized,
+                {
+                    async {
+                        let scheme =
+                            <#protocol as ::nebula_credential::StaticProtocol>::build(values)?;
+                        ::std::result::Result::Ok(
+                            ::nebula_credential::resolve::ResolveResult::Complete(scheme),
+                        )
+                    }
                 }
             }
-        }
+        },
+        PropertiesSource::Direct(properties) => quote! {
+            impl #impl_generics ::nebula_credential::Credential
+                for #struct_name #ty_generics #where_clause
+            {
+                type Properties = #properties;
+                type Scheme = #scheme;
+                type State = #scheme;
+
+                const KEY: &'static str = #key;
+
+                fn metadata() -> ::nebula_credential::CredentialMetadata
+                where
+                    Self: Sized,
+                {
+                    #metadata_body
+                }
+
+                fn project(state: &#scheme) -> #scheme
+                where
+                    Self: Sized,
+                {
+                    state.clone()
+                }
+
+                fn resolve(
+                    _values: &::nebula_schema::FieldValues,
+                    _ctx: &::nebula_credential::CredentialContext,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<
+                        ::nebula_credential::resolve::ResolveResult<#scheme, ()>,
+                        ::nebula_credential::CredentialError,
+                    >,
+                > + ::std::marker::Send
+                where
+                    Self: Sized,
+                {
+                    async move {
+                        ::std::todo!(
+                            "implement `Credential::resolve` for `{}` — the macro `properties` \
+                             mode does not synthesize a resolver. Either: \
+                             (a) skip `#[derive(Credential)]` and write the full `impl Credential` \
+                                 by hand (preferred for non-trivial logic), or \
+                             (b) switch to `protocol = TypePath` so the macro can delegate to \
+                                 `<TypePath as StaticProtocol>::build`.",
+                            ::std::stringify!(#struct_name),
+                        )
+                    }
+                }
+            }
+        },
+    };
+
+    Ok(quote! {
+        #credential_impl
 
         #deps_impl
 
         #capability_impls
 
         #parity_checks
-    };
-
-    Ok(expanded)
+    })
 }

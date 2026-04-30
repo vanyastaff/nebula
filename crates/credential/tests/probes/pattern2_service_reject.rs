@@ -67,7 +67,7 @@ impl nebula_credential::CredentialState for WrongState {
 struct WrongCredential;
 
 impl Credential for WrongCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = BasicScheme;
     type State = WrongState;
 

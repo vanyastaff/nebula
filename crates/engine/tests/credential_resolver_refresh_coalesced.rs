@@ -116,7 +116,7 @@ impl nebula_credential::CredentialState for TwoTierState {
 struct TwoTierCredential;
 
 impl Credential for TwoTierCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = TwoTierState;
 
@@ -127,7 +127,7 @@ impl Credential for TwoTierCredential {
             nebula_core::credential_key!("two_tier_test"),
             "Two-tier test",
             "Test credential for two-tier coalesce wiring",
-            Self::schema(),
+            Self::properties_schema(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

@@ -83,7 +83,7 @@ impl nebula_credential::CredentialState for DummyState {
 struct BaseResolvePendingCredential;
 
 impl Credential for BaseResolvePendingCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = DummyState;
 
@@ -94,7 +94,7 @@ impl Credential for BaseResolvePendingCredential {
             nebula_core::credential_key!("base_resolve_pending_test"),
             "Base Resolve Pending Test",
             "Fixture credential exercising the §15.4 base-resolve-Pending rejection path",
-            Self::schema(),
+            Self::properties_schema(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

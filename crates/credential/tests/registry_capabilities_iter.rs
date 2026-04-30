@@ -28,7 +28,7 @@ use nebula_schema::FieldValues;
 pub struct StaticProbe;
 
 impl Credential for StaticProbe {
-    type Input = ();
+    type Properties = ();
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -39,7 +39,7 @@ impl Credential for StaticProbe {
             .key(nebula_core::credential_key!("probe.static"))
             .name("StaticProbe")
             .description("zero-capability probe credential")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(nebula_credential::AuthPattern::SecretToken)
             .build()
             .expect("StaticProbe metadata is valid")
@@ -80,7 +80,7 @@ impl plugin_capability_report::IsDynamic for StaticProbe {
 pub struct RefreshableProbe;
 
 impl Credential for RefreshableProbe {
-    type Input = ();
+    type Properties = ();
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -91,7 +91,7 @@ impl Credential for RefreshableProbe {
             .key(nebula_core::credential_key!("probe.refreshable"))
             .name("RefreshableProbe")
             .description("refreshable + revocable probe credential")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(nebula_credential::AuthPattern::SecretToken)
             .build()
             .expect("RefreshableProbe metadata is valid")

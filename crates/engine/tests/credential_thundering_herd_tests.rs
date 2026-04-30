@@ -41,7 +41,7 @@ impl nebula_credential::CredentialState for ThunderingHerdState {
 struct ThunderingHerdCredential;
 
 impl Credential for ThunderingHerdCredential {
-    type Input = FieldValues;
+    type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = ThunderingHerdState;
 
@@ -52,7 +52,7 @@ impl Credential for ThunderingHerdCredential {
             nebula_core::credential_key!("thundering_herd_test"),
             "Thundering Herd Test",
             "Test credential for thundering herd prevention",
-            Self::schema(),
+            Self::properties_schema(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

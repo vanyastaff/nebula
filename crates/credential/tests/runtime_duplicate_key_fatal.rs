@@ -31,7 +31,7 @@ const SHARED_KEY: &str = "shared.duplicate";
 pub struct CredA;
 
 impl Credential for CredA {
-    type Input = ();
+    type Properties = ();
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -42,7 +42,7 @@ impl Credential for CredA {
             .key(nebula_core::credential_key!("shared.duplicate"))
             .name("CredA")
             .description("first credential — wins on collision")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(nebula_credential::AuthPattern::SecretToken)
             .build()
             .expect("CredA metadata is valid")
@@ -85,7 +85,7 @@ impl plugin_capability_report::IsDynamic for CredA {
 pub struct CredB;
 
 impl Credential for CredB {
-    type Input = ();
+    type Properties = ();
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -96,7 +96,7 @@ impl Credential for CredB {
             .key(nebula_core::credential_key!("shared.duplicate"))
             .name("CredB")
             .description("second credential — rejected on collision")
-            .schema(Self::schema())
+            .schema(Self::properties_schema())
             .pattern(nebula_credential::AuthPattern::SecretToken)
             .build()
             .expect("CredB metadata is valid")
