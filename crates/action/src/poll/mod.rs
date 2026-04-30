@@ -1136,7 +1136,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                             &format!(
                                 "poll trigger {}: partial with no events, \
                                  retryable error: {error}",
-                                self.action.metadata().base.key,
+                                <A as Action>::metadata().base.key,
                             ),
                         );
                     }
@@ -1173,7 +1173,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                             return Err(ActionError::fatal(format!(
                                 "poll trigger {}: dispatch failed, \
                                  stopping (StopTrigger policy)",
-                                self.action.metadata().base.key,
+                                <A as Action>::metadata().base.key,
                             )));
                         },
                     }
@@ -1189,7 +1189,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         &format!(
                             "poll trigger {}: partial error \
                              after dispatching {event_count} events: {error}",
-                            self.action.metadata().base.key,
+                            <A as Action>::metadata().base.key,
                         ),
                     );
                 }
@@ -1236,7 +1236,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             }),
             EmitFailurePolicy::StopTrigger => Err(ActionError::fatal(format!(
                 "poll trigger {}: dispatch failed, stopping (StopTrigger policy)",
-                self.action.metadata().base.key,
+                <A as Action>::metadata().base.key,
             ))),
         }
     }
@@ -1250,7 +1250,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
     where
         A::Event: Send + Sync,
     {
-        let action_key = &self.action.metadata().base.key;
+        let action_key = &<A as Action>::metadata().base.key;
         let mut emitted: usize = 0;
         let mut dropped: usize = 0;
         for event in events {
@@ -1296,7 +1296,7 @@ where
     A::Event: Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
+        <A as Action>::metadata()
     }
 
     fn start<'life0, 'life1, 'a>(
@@ -1322,7 +1322,7 @@ where
 
             self.action.validate(ctx).await?;
 
-            let action_key = self.action.metadata().base.key.clone();
+            let action_key = <A as Action>::metadata().base.key.clone();
             let mut config = self.action.poll_config();
             config.validate_and_clamp(ctx.logger(), &action_key);
 
@@ -1462,7 +1462,7 @@ where
 impl<A: PollAction> std::fmt::Debug for PollTriggerAdapter<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PollTriggerAdapter")
-            .field("action", &self.action.metadata().base.key)
+            .field("action", &<A as Action>::metadata().base.key)
             .finish_non_exhaustive()
     }
 }

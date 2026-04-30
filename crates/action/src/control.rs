@@ -466,7 +466,7 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     /// in an `Arc` so subsequent `metadata()` calls are cheap.
     #[must_use]
     pub fn new(action: A) -> Self {
-        let mut meta = action.metadata().clone();
+        let mut meta = <A as Action>::metadata().clone();
         meta.category = derive_category(&meta);
         Self {
             action,
@@ -538,7 +538,10 @@ fn derive_category(meta: &ActionMetadata) -> ActionCategory {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{DeclaresDependencies, action_key};
+    use std::sync::OnceLock;
+
+    use nebula_core::{Dependencies, action_key};
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
     use crate::{
@@ -746,25 +749,37 @@ mod tests {
     // ── ControlActionAdapter smoke test ────────────────────────────
 
     /// Minimal control action used for smoke tests.
-    struct TestIf {
-        metadata: ActionMetadata,
-    }
+    struct TestIf;
 
     impl TestIf {
         fn new() -> Self {
-            Self {
-                metadata: ActionMetadata::new(action_key!("test.if"), "TestIf", "Binary branch")
-                    .with_inputs(default_input_ports())
-                    .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")]),
-            }
+            Self
         }
     }
 
-    impl DeclaresDependencies for TestIf {}
-
     impl Action for TestIf {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.metadata
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.if"), "TestIf", "Binary branch")
+                    .with_inputs(default_input_ports())
+                    .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
@@ -784,24 +799,36 @@ mod tests {
     }
 
     /// Terminal-only action for category-inference smoke tests.
-    struct TestStop {
-        metadata: ActionMetadata,
-    }
+    struct TestStop;
 
     impl TestStop {
         fn new() -> Self {
-            Self {
-                metadata: ActionMetadata::new(action_key!("test.stop"), "TestStop", "Terminate")
-                    .with_outputs(Vec::new()),
-            }
+            Self
         }
     }
 
-    impl DeclaresDependencies for TestStop {}
-
     impl Action for TestStop {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.metadata
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(action_key!("test.stop"), "TestStop", "Terminate")
+                    .with_outputs(Vec::new())
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
@@ -822,19 +849,28 @@ mod tests {
     #[test]
     fn adapter_stamps_control_category() {
         let adapter = ControlActionAdapter::new(TestIf::new());
-        assert_eq!(adapter.metadata().category, ActionCategory::Control);
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).category,
+            ActionCategory::Control
+        );
     }
 
     #[test]
     fn adapter_stamps_terminal_category_for_zero_output_action() {
         let adapter = ControlActionAdapter::new(TestStop::new());
-        assert_eq!(adapter.metadata().category, ActionCategory::Terminal);
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).category,
+            ActionCategory::Terminal
+        );
     }
 
     #[test]
     fn adapter_preserves_action_key() {
         let adapter = ControlActionAdapter::new(TestIf::new());
-        assert_eq!(adapter.metadata().base.key, action_key!("test.if"));
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).base.key,
+            action_key!("test.if")
+        );
     }
 
     #[tokio::test]
@@ -921,17 +957,23 @@ mod tests {
     #[test]
     fn adapter_into_inner_returns_action() {
         let adapter = ControlActionAdapter::new(TestIf::new());
-        let action = adapter.into_inner();
-        assert_eq!(action.metadata().base.key, action_key!("test.if"));
+        let _action = adapter.into_inner();
+        assert_eq!(
+            <TestIf as Action>::metadata().base.key,
+            action_key!("test.if")
+        );
     }
 
     #[test]
     fn adapter_preserves_original_outputs_after_stamp() {
         // The adapter only rewrites `category`; it must not touch `outputs`
         // or any other metadata field.
-        let original_outputs = TestIf::new().metadata.outputs;
+        let original_outputs = <TestIf as Action>::metadata().outputs.clone();
         let adapter = ControlActionAdapter::new(TestIf::new());
-        assert_eq!(adapter.metadata().outputs, original_outputs);
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).outputs,
+            original_outputs
+        );
     }
 
     // ── default_output_ports parity ────────────────────────────────

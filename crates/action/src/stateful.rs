@@ -36,13 +36,6 @@ use crate::{
     note = "implement `init_state` and `execute` methods with matching Input/Output/State types"
 )]
 pub trait StatefulAction: Action {
-    /// Input type for each iteration.
-    ///
-    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
-    /// metadata can auto-derive its parameter schema from the input type.
-    type Input: nebula_schema::HasSchema + Send + Sync;
-    /// Output type (wrapped in [`ActionResult`]); `Continue` and `Break` carry output.
-    type Output: Send + Sync;
     /// Persistent state type (saved between iterations by the engine).
     ///
     /// Must be serializable for engine checkpointing and cloneable for
@@ -71,10 +64,10 @@ pub trait StatefulAction: Action {
     /// or `Break { output, reason }` when finished.
     fn execute(
         &self,
-        input: Self::Input,
+        input: <Self as Action>::Input,
         state: &mut Self::State,
         ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
+    ) -> impl Future<Output = Result<ActionResult<<Self as Action>::Output>, ActionError>> + Send;
 }
 
 // ── PaginatedAction ─────────────────────────────────────────────────────────
@@ -119,13 +112,6 @@ pub struct PaginationState<C> {
 /// nebula_action::impl_paginated_action!(ListRepos);
 /// ```
 pub trait PaginatedAction: Action {
-    /// Input type for the paginated request.
-    ///
-    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
-    /// metadata can auto-derive its parameter schema from the input type.
-    type Input: nebula_schema::HasSchema + Send + Sync;
-    /// Output type produced per page.
-    type Output: Send + Sync;
     /// Cursor type for tracking pagination position.
     type Cursor: Serialize + DeserializeOwned + Clone + Send + Sync;
 
@@ -148,10 +134,12 @@ pub trait PaginatedAction: Action {
     /// [`ActionError::Fatal`] for permanent failures.
     fn fetch_page(
         &self,
-        input: &Self::Input,
+        input: &<Self as Action>::Input,
         cursor: Option<&Self::Cursor>,
         ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<PageResult<Self::Output, Self::Cursor>, ActionError>> + Send;
+    ) -> impl Future<
+        Output = Result<PageResult<<Self as Action>::Output, Self::Cursor>, ActionError>,
+    > + Send;
 }
 
 /// Generate `impl StatefulAction` for a type that implements [`PaginatedAction`].
@@ -170,8 +158,6 @@ pub trait PaginatedAction: Action {
 macro_rules! impl_paginated_action {
     ($ty:ty) => {
         impl $crate::stateful::StatefulAction for $ty {
-            type Input = <$ty as $crate::stateful::PaginatedAction>::Input;
-            type Output = <$ty as $crate::stateful::PaginatedAction>::Output;
             type State = $crate::stateful::PaginationState<
                 <$ty as $crate::stateful::PaginatedAction>::Cursor,
             >;
@@ -265,15 +251,8 @@ pub struct BatchState<I, T> {
 /// [`ActionError::Fatal`] from `process_item` aborts the entire batch.
 /// Other errors are captured as [`BatchItemResult::Failed`].
 pub trait BatchAction: Action {
-    /// Input type containing the items to process.
-    ///
-    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
-    /// metadata can auto-derive its parameter schema from the input type.
-    type Input: nebula_schema::HasSchema + Send + Sync;
     /// Individual work item type.
     type Item: Serialize + DeserializeOwned + Clone + Send + Sync;
-    /// Output type per item and as the final merged result.
-    type Output: Serialize + DeserializeOwned + Clone + Send + Sync;
 
     /// Items per iteration. Default: 50.
     fn batch_size(&self) -> usize {
@@ -281,7 +260,7 @@ pub trait BatchAction: Action {
     }
 
     /// Extract work items from input. Called once on the first iteration.
-    fn extract_items(&self, input: &Self::Input) -> Vec<Self::Item>;
+    fn extract_items(&self, input: &<Self as Action>::Input) -> Vec<Self::Item>;
 
     /// Process a single item.
     ///
@@ -294,10 +273,13 @@ pub trait BatchAction: Action {
         &self,
         item: Self::Item,
         ctx: &(impl ActionContext + ?Sized),
-    ) -> impl Future<Output = Result<Self::Output, ActionError>> + Send;
+    ) -> impl Future<Output = Result<<Self as Action>::Output, ActionError>> + Send;
 
     /// Merge per-item results into the final output.
-    fn merge_results(&self, results: Vec<BatchItemResult<Self::Output>>) -> Self::Output;
+    fn merge_results(
+        &self,
+        results: Vec<BatchItemResult<<Self as Action>::Output>>,
+    ) -> <Self as Action>::Output;
 }
 
 /// Generate `impl StatefulAction` for a type that implements [`BatchAction`].
@@ -305,11 +287,9 @@ pub trait BatchAction: Action {
 macro_rules! impl_batch_action {
     ($ty:ty) => {
         impl $crate::stateful::StatefulAction for $ty {
-            type Input = <$ty as $crate::stateful::BatchAction>::Input;
-            type Output = <$ty as $crate::stateful::BatchAction>::Output;
             type State = $crate::stateful::BatchState<
                 <$ty as $crate::stateful::BatchAction>::Item,
-                <$ty as $crate::stateful::BatchAction>::Output,
+                <$ty as $crate::Action>::Output,
             >;
 
             fn init_state(&self) -> Self::State {
@@ -503,7 +483,7 @@ where
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
-        self.action.metadata()
+        <A as Action>::metadata()
     }
 
     fn init_state(&self) -> Result<Value, ActionError> {
@@ -595,7 +575,7 @@ where
                 // Log the serde failure forensically and let the original
                 // error propagate — masking it would break retry classification.
                 tracing::error!(
-                    action = %self.action.metadata().base.key,
+                    action = %<A as Action>::metadata().base.key,
                     serialization_error = %ser_err,
                     action_error = %action_err,
                     "stateful adapter: state serialization failed on error path; \
@@ -616,7 +596,7 @@ where
 impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatefulActionAdapter")
-            .field("action", &self.action.metadata().base.key)
+            .field("action", &<A as Action>::metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -625,9 +605,10 @@ impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
-    use nebula_core::DeclaresDependencies;
+    use nebula_core::Dependencies;
+    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
     use crate::{
@@ -647,33 +628,37 @@ mod tests {
         count: u32,
     }
 
-    struct CounterAction {
-        meta: ActionMetadata,
-    }
+    struct CounterAction;
 
-    impl CounterAction {
-        fn new() -> Self {
-            Self {
-                meta: ActionMetadata::new(
+    impl Action for CounterAction {
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
                     nebula_core::action_key!("test.counter"),
                     "Counter",
                     "Counts up to 3",
-                ),
-            }
+                )
+            })
         }
-    }
-
-    impl DeclaresDependencies for CounterAction {}
-
-    impl Action for CounterAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatefulAction for CounterAction {
-        type Input = Value;
-        type Output = Value;
         type State = CounterState;
 
         fn init_state(&self) -> CounterState {
@@ -682,10 +667,10 @@ mod tests {
 
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: <Self as Action>::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             state.count += 1;
             if state.count >= 3 {
                 Ok(ActionResult::Break {
@@ -704,13 +689,13 @@ mod tests {
 
     #[test]
     fn stateful_adapter_is_dyn_compatible() {
-        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let adapter = StatefulActionAdapter::new(CounterAction);
         let _: Arc<dyn StatefulHandler> = Arc::new(adapter);
     }
 
     #[tokio::test]
     async fn stateful_adapter_init_state_serializes() {
-        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let adapter = StatefulActionAdapter::new(CounterAction);
         let state = adapter.init_state().unwrap();
         let cs: CounterState = serde_json::from_value(state).unwrap();
         assert_eq!(cs.count, 0);
@@ -718,7 +703,7 @@ mod tests {
 
     #[tokio::test]
     async fn stateful_adapter_iterates_with_state() {
-        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let adapter = StatefulActionAdapter::new(CounterAction);
         let handler: Arc<dyn StatefulHandler> = Arc::new(adapter);
         let ctx = make_ctx();
         let mut state = handler.init_state().unwrap();
@@ -753,7 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn stateful_adapter_returns_validation_error_on_bad_state() {
-        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let adapter = StatefulActionAdapter::new(CounterAction);
         let ctx = make_ctx();
         let mut bad_state = serde_json::json!("not a counter state");
 
@@ -770,22 +755,39 @@ mod tests {
     /// back to JSON before propagating errors — critical for avoiding
     /// duplicated side effects on retry.
     struct MutateThenFailAction {
-        meta: ActionMetadata,
         fail_with: ActionError,
         mark: u32,
     }
 
-    impl DeclaresDependencies for MutateThenFailAction {}
-
     impl Action for MutateThenFailAction {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
+        type Input = Value;
+        type Output = Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
+                    nebula_core::action_key!("test.mutate_fail"),
+                    "MutateFail",
+                    "Mutates state then fails",
+                )
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
         }
     }
 
     impl StatefulAction for MutateThenFailAction {
-        type Input = Value;
-        type Output = Value;
         type State = CounterState;
 
         fn init_state(&self) -> CounterState {
@@ -794,25 +796,17 @@ mod tests {
 
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: <Self as Action>::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
-        ) -> Result<ActionResult<Self::Output>, ActionError> {
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
             state.count = self.mark;
             Err(self.fail_with.clone())
         }
     }
 
     fn mutate_fail(fail_with: ActionError, mark: u32) -> MutateThenFailAction {
-        MutateThenFailAction {
-            meta: ActionMetadata::new(
-                nebula_core::action_key!("test.mutate_fail"),
-                "MutateFail",
-                "Mutates state then fails",
-            ),
-            fail_with,
-            mark,
-        }
+        MutateThenFailAction { fail_with, mark }
     }
 
     #[tokio::test]
@@ -866,7 +860,7 @@ mod tests {
         // typed_state never existed and nothing should be written back. The
         // input JSON must remain verbatim so the engine can decide how to
         // recover (e.g., schema migration path outside the adapter).
-        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let adapter = StatefulActionAdapter::new(CounterAction);
         let ctx = make_ctx();
         let bad = serde_json::json!("not a counter state");
         let mut state = bad.clone();
@@ -882,10 +876,10 @@ mod tests {
 
     #[test]
     fn stateful_adapter_into_inner_returns_action() {
-        let adapter = StatefulActionAdapter::new(CounterAction::new());
-        let action = adapter.into_inner();
+        let adapter = StatefulActionAdapter::new(CounterAction);
+        let _action = adapter.into_inner();
         assert_eq!(
-            action.metadata().base.key,
+            <CounterAction as Action>::metadata().base.key,
             nebula_core::action_key!("test.counter")
         );
     }

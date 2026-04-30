@@ -28,7 +28,7 @@
 
 use std::{path::Path, sync::Arc, time::Duration};
 
-use nebula_action::{Action, ActionHandler, ActionMetadata, StatelessHandler};
+use nebula_action::{ActionFactory, ActionHandler, ActionMetadata, StatelessHandler};
 use nebula_core::ActionKey;
 use nebula_plugin::{PluginRegistry, ResolvedPlugin};
 use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
@@ -39,6 +39,7 @@ use crate::{
     handler::ProcessSandboxHandler,
     plugin_toml::{PluginTomlError, parse_plugin_toml},
     process::ProcessSandbox,
+    remote_action::RemoteActionFactory,
 };
 
 // ── Wire-response parse ──────────────────────────────────────────────────────
@@ -368,8 +369,9 @@ async fn discover_one(
     ));
 
     // Concrete `Arc<RemoteAction>` — kept before type-erasure so we can
-    // simultaneously coerce to `Arc<dyn Action>` (for DiscoveredPlugin) and
-    // to `Arc<dyn StatelessHandler>` (for the returned handler list).
+    // simultaneously wrap as `Arc<dyn ActionFactory>` (for DiscoveredPlugin via
+    // RemoteActionFactory, post-Variant A) and coerce to `Arc<dyn StatelessHandler>`
+    // (for the returned handler list).
     let mut remote_actions: Vec<Arc<RemoteAction>> = Vec::new();
     for descriptor in &wire.actions {
         let action_key = match resolve_action_key(&namespace_prefix, &descriptor.key) {
@@ -405,23 +407,23 @@ async fn discover_one(
         remote_actions.push(Arc::new(RemoteAction::new(metadata, handler)));
     }
 
-    // Build the flat handler list before erasing to `dyn Action`.
-    // `RemoteAction: StatelessHandler` — coerce each Arc to the trait object.
+    // Build the flat handler list — coerce each Arc<RemoteAction> to dyn StatelessHandler.
     let action_handlers: Vec<(ActionMetadata, ActionHandler)> = remote_actions
         .iter()
         .map(|r| {
-            // Both `Action` and `StatelessHandler` define `metadata()`.
-            // Disambiguate via the `Action` impl.
-            let meta = <RemoteAction as Action>::metadata(r).clone();
+            let meta = r.metadata().clone();
             let h: Arc<dyn StatelessHandler> = Arc::clone(r) as Arc<dyn StatelessHandler>;
             (meta, ActionHandler::Stateless(h))
         })
         .collect();
 
-    // Erase to `Arc<dyn Action>` for the DiscoveredPlugin / Plugin trait.
-    let actions: Vec<Arc<dyn Action>> = remote_actions
+    // Wrap each in `RemoteActionFactory` for `DiscoveredPlugin` / `Plugin` trait.
+    let actions: Vec<Arc<dyn ActionFactory>> = remote_actions
         .into_iter()
-        .map(|r| r as Arc<dyn Action>)
+        .map(|r| {
+            let factory = RemoteActionFactory::new(r);
+            Arc::new(factory) as Arc<dyn ActionFactory>
+        })
         .collect();
 
     tracing::info!(
@@ -451,12 +453,13 @@ async fn discover_one(
 ///
 /// ## Why two outputs?
 ///
-/// The engine's `PluginRegistry` stores `Arc<dyn Action>` (type-erased). The
-/// runtime's `ActionRegistry` stores `Arc<dyn StatelessHandler>`. Both coercions
-/// require the concrete `Arc<RemoteAction>` — which is available during
-/// construction but lost after coercion. `discover_directory` performs both
-/// coercions at construction time and returns the handler list to callers that
-/// need to populate a runtime registry.
+/// The engine's `PluginRegistry` stores `Arc<dyn ActionFactory>` (per
+/// ADR-0043 §6 / Variant A). The runtime's `ActionRegistry` stores
+/// `Arc<dyn StatelessHandler>`. Both wrappings require the concrete
+/// `Arc<RemoteAction>` — which is available during construction but lost
+/// after coercion. `discover_directory` performs both at construction time
+/// and returns the handler list to callers that need to populate a runtime
+/// registry.
 ///
 /// `default_capabilities` is applied to every discovered plugin's **runtime**
 /// sandbox (the long-lived one used for action dispatch). The metadata probe
@@ -614,7 +617,6 @@ fn can_non_unix_executable_extension(extension: &str) -> bool {
 mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
 
-    use nebula_action::Action;
     use nebula_metadata::PluginManifest;
     use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION};
     use nebula_schema::Schema;

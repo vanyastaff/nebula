@@ -681,3 +681,114 @@ pub trait CredentialContextExt: HasCredentials {
 
 /// Blanket impl — any type carrying `HasCredentials` gets the helpers.
 impl<T: ?Sized + HasCredentials> CredentialContextExt for T {}
+
+// ── ActionContextExt — typed slot acquisition (Phase 3 / Session 2) ────────
+
+/// Typed slot-acquisition helpers used by `#[derive(Action)]` factories.
+///
+/// `FromWorkflowNode::from_workflow_node` (the auto-generated factory)
+/// resolves each `#[resource]` / `#[credential]` field by calling these
+/// methods with the concrete slot id (either the action's declared
+/// `default_id` or the per-node `slot_bindings` override per ADR-0042).
+///
+/// Plugin authors normally do not call these methods directly; the
+/// derive macro emits the call sites. They are public so authors who
+/// hand-roll a factory (advanced cases) can use the same pipeline.
+pub trait ActionContextExt: HasResources + HasCredentials {
+    /// Acquire a [`nebula_resource::ResourceGuard<R>`] by string id.
+    ///
+    /// Mirrors [`nebula_resource::ResourceRef::resolve`] but takes the id
+    /// directly so the derive-generated factory can pass the ADR-0042
+    /// slot binding without constructing an intermediate `ResourceRef<R>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the id is not a valid
+    /// [`ResourceKey`](nebula_core::ResourceKey), the resource is not
+    /// registered, or the accessor returns the wrong type.
+    #[allow(
+        clippy::type_complexity,
+        reason = "object-safe Pin<Box<dyn Future>> is required so derive-emitted call sites can dispatch through &dyn ActionContext"
+    )]
+    fn acquire_resource_by_id<'a, R>(
+        &'a self,
+        id: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<nebula_resource::ResourceGuard<R>, ActionError>> + Send + 'a,
+        >,
+    >
+    where
+        R: nebula_resource::Resource + 'a,
+        Self: Sync,
+    {
+        Box::pin(async move {
+            let key = ResourceKey::new(id)
+                .map_err(|e| ActionError::fatal(format!("invalid resource id `{id}`: {e}")))?;
+            let boxed = self
+                .resources()
+                .acquire_any(&key)
+                .await
+                .map_err(ActionError::from)?;
+            boxed
+                .downcast::<nebula_resource::ResourceGuard<R>>()
+                .map(|b| *b)
+                .map_err(|_| {
+                    ActionError::fatal(format!(
+                        "resource `{id}`: type mismatch (expected ResourceGuard<{ty}>)",
+                        ty = std::any::type_name::<R>(),
+                    ))
+                })
+        })
+    }
+
+    /// Resolve a [`CredentialGuard<C::Scheme>`] by string id.
+    ///
+    /// Mirrors [`nebula_credential::CredentialRef::resolve`] but takes the
+    /// id directly so the derive-generated factory can pass the ADR-0042
+    /// slot binding without constructing an intermediate `CredentialRef<C>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the id is not a valid
+    /// [`CredentialKey`], the credential is not registered, or the auth
+    /// scheme does not match `C::Scheme`.
+    #[allow(
+        clippy::type_complexity,
+        reason = "object-safe Pin<Box<dyn Future>> is required so derive-emitted call sites can dispatch through &dyn ActionContext"
+    )]
+    fn resolve_credential_by_id<'a, C>(
+        &'a self,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<CredentialGuard<C::Scheme>, ActionError>> + Send + 'a>>
+    where
+        C: nebula_credential::Credential + 'a,
+        C::Scheme: zeroize::Zeroize + 'a,
+        Self: Sync,
+    {
+        Box::pin(async move {
+            let key = CredentialKey::new(id)
+                .map_err(|e| ActionError::fatal(format!("invalid credential id `{id}`: {e}")))?;
+            let boxed = self
+                .credentials()
+                .resolve_any(&key)
+                .await
+                .map_err(ActionError::from)?;
+            let snapshot = boxed
+                .downcast::<CredentialSnapshot>()
+                .map(|b| *b)
+                .map_err(|_| {
+                    ActionError::fatal(format!(
+                        "credential `{id}`: resolve_any returned unexpected type"
+                    ))
+                })?;
+            let scheme = snapshot
+                .into_project::<C::Scheme>()
+                .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))?;
+            Ok(CredentialGuard::new(scheme))
+        })
+    }
+}
+
+/// Blanket impl — any type with both `HasResources` and `HasCredentials` gets the helpers.
+impl<T: ?Sized + HasResources + HasCredentials> ActionContextExt for T {}

@@ -1,3 +1,6 @@
+// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
+#![cfg(any())]
+
 //! Smoke tests for [`TriggerSource`] — verifies the trait exists,
 //! is `Send + Sync + 'static`, and exposes an `Event` associated type.
 

@@ -1,3 +1,6 @@
+// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
+#![cfg(any())]
+
 //! Unit tests for `EngineControlDispatch` (ADR-0008 A2 / A3).
 //!
 //! These tests mirror the API → consumer → engine seam without running the

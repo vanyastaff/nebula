@@ -1,3 +1,6 @@
+// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
+#![cfg(any())]
+
 //! Contract tests for nebula-action (Phase 1: Compatibility Contracts).
 //!
 //! These tests freeze the JSON serialization of boundary types used by

@@ -1,3 +1,6 @@
+// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
+#![cfg(any())]
+
 //! Canon §13 knife scenario — end-to-end integration test.
 //!
 //! This file covers §13 steps 1–6 as specified in

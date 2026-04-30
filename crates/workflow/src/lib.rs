@@ -47,7 +47,7 @@ pub use error::WorkflowError;
 pub use graph::DependencyGraph;
 /// Re-export the shared serde helper so internal `crate::serde_duration_opt` still resolves.
 pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt;
-pub use node::{NodeDefinition, ParamValue, RateLimit};
+pub use node::{NodeDefinition, ParamValue, RateLimit, SlotBinding};
 pub use state::NodeState;
 pub use validate::validate_workflow;
 pub use version::Version;

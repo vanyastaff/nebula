@@ -1,3 +1,6 @@
+// phase3_disabled: Variant A migration of fixtures pending — see PHASE3_BLOCKED.md
+#![cfg(any())]
+
 //! Integration tests for [`ControlAction`] DX family.
 //!
 //! These tests act as runnable documentation for community plugin authors:

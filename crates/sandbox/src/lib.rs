@@ -51,5 +51,5 @@ pub use error::SandboxError;
 pub use handler::ProcessSandboxHandler;
 pub use in_process::InProcessSandbox;
 pub use process::ProcessSandbox;
-pub use remote_action::RemoteAction;
+pub use remote_action::{RemoteAction, RemoteActionFactory};
 pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};

@@ -32,7 +32,12 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// Called once at registration time by [`crate::ResolvedPlugin::from`].
     /// Returns an empty list by default.
-    fn actions(&self) -> Vec<Arc<dyn nebula_action::Action>> {
+    ///
+    /// Each entry is a typed factory that the engine registry will use to
+    /// construct an [`nebula_action::ErasedAction`] per dispatch (per
+    /// ADR-0043 §6 / Phase 3 — the typed [`nebula_action::Action`] trait
+    /// is `Sized`/object-unsafe, so plugins return factories not actions).
+    fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
         vec![]
     }
 
