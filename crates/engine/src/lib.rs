@@ -36,8 +36,11 @@
 //! - `EngineCredentialAccessor` / `EngineResourceAccessor` — scoped accessors injected into action
 //!   contexts.
 //! - `LayeredResourceAccessor` / `ScopedResourceMap` — Phase 6 (M6.1) precedence wiring. `scoped →
-//!   global` lookup; closest-ancestor wins. Phase 7 fills in the per-branch `DashMap` storage
-//!   behind `ScopedResourceMap`.
+//!   global` lookup; closest-ancestor wins.
+//! - `DashScopedResourceMap` / `BranchId` / `ScopedResourceGuard` — Phase 7 (M6.2) per-branch
+//!   storage, RAII cleanup, and inner-to-outer + LIFO destroy ordering with 30s timeout per
+//!   resource. Engine wiring of `ResourceAction::configure`/`cleanup` per branch is deferred (see
+//!   `.ai-factory/PHASE7_BLOCKED.md`); the API surface is in place.
 //!
 //! ## Canon
 //!
@@ -96,5 +99,7 @@ pub use runtime::{
     TaskQueue,
 };
 pub use scoped_resources::{
-    EmptyScopedResourceMap, LayeredResourceAccessor, ScopedLookup, ScopedResourceMap,
+    BranchId, CleanupOutcome, DEFAULT_CLEANUP_TIMEOUT, DashScopedResourceMap,
+    EmptyScopedResourceMap, LayeredResourceAccessor, MAX_ANCESTOR_DEPTH, PoppedEntry, ScopedLookup,
+    ScopedResourceGuard, ScopedResourceMap, run_cleanup, run_cleanup_with_timeout,
 };
