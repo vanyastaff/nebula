@@ -8,6 +8,29 @@
 //! already-spawned `tokio::spawn` tasks continue running in the background until they
 //! complete or are individually aborted. This is intentional: the hedge pattern assumes
 //! speculative work is cheap to abandon at the infrastructure level.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use std::time::Duration;
+//!
+//! use nebula_resilience::hedge::{HedgeConfig, HedgeExecutor};
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let executor = HedgeExecutor::new(HedgeConfig {
+//!     hedge_delay: Duration::from_millis(50),
+//!     max_hedges: 2,
+//!     ..Default::default()
+//! })
+//! .expect("valid config");
+//!
+//! let result = executor
+//!     .call(|| Box::pin(async { Ok::<_, &str>("primary response") }))
+//!     .await;
+//! assert_eq!(result.unwrap(), "primary response");
+//! # }
+//! ```
 
 use std::{collections::VecDeque, fmt, future::Future, sync::Arc, time::Duration};
 
@@ -79,6 +102,31 @@ impl HedgeConfig {
 
 /// Executes an operation with hedging: fires duplicate requests after a delay and returns
 /// the first successful result, aborting all other in-flight requests.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::hedge::{HedgeConfig, HedgeExecutor};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let executor = HedgeExecutor::new(HedgeConfig {
+///     hedge_delay: Duration::from_millis(20),
+///     max_hedges: 1,
+///     ..Default::default()
+/// })
+/// .expect("valid config");
+///
+/// // The first ready response wins; the loser is aborted.
+/// let value = executor
+///     .call(|| Box::pin(async { Ok::<_, &str>(7u32) }))
+///     .await
+///     .unwrap();
+/// assert_eq!(value, 7);
+/// # }
+/// ```
 pub struct HedgeExecutor {
     config: HedgeConfig,
     sink: Arc<dyn MetricsSink>,
@@ -190,6 +238,28 @@ impl HedgeExecutor {
 // ── AdaptiveHedgeExecutor ─────────────────────────────────────────────────────
 
 /// Hedge executor that adjusts delay based on observed latency percentiles.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_resilience::hedge::{AdaptiveHedgeExecutor, HedgeConfig};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // Aim hedges at the p95 latency; with no samples yet the configured
+/// // `hedge_delay` is used as a fallback.
+/// let executor = AdaptiveHedgeExecutor::new(HedgeConfig::default())
+///     .expect("valid config")
+///     .with_target_percentile(0.95)
+///     .expect("0.95 ∈ 0.0..=1.0");
+///
+/// let value = executor
+///     .call(|| Box::pin(async { Ok::<_, &str>(42u32) }))
+///     .await
+///     .unwrap();
+/// assert_eq!(value, 42);
+/// # }
+/// ```
 pub struct AdaptiveHedgeExecutor {
     base_config: HedgeConfig,
     // RwLock: percentile() only needs a shared ref; write lock taken only for record().

@@ -79,6 +79,29 @@ pub enum ResilienceEventKind {
 ///
 /// This trait is designed to be implemented by downstream crates.
 /// New methods will always have default implementations to avoid breaking changes.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+///
+/// use nebula_resilience::{MetricsSink, ResilienceEvent};
+///
+/// #[derive(Default)]
+/// struct CountingSink {
+///     calls: AtomicUsize,
+/// }
+///
+/// impl MetricsSink for CountingSink {
+///     fn record(&self, _event: ResilienceEvent) {
+///         self.calls.fetch_add(1, Ordering::Relaxed);
+///     }
+/// }
+///
+/// let sink = CountingSink::default();
+/// sink.record(ResilienceEvent::LoadShed);
+/// assert_eq!(sink.calls.load(Ordering::Relaxed), 1);
+/// ```
 pub trait MetricsSink: Send + Sync {
     /// Record a resilience event.
     fn record(&self, event: ResilienceEvent);
@@ -93,6 +116,22 @@ impl MetricsSink for NoopSink {
 }
 
 /// Test sink — records all events for assertion.
+///
+/// Cheap to clone; all clones share the same backing buffer, so a sink handed
+/// to a pattern under test can be inspected from the test thread.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{MetricsSink, RecordingSink, ResilienceEvent, ResilienceEventKind};
+///
+/// let sink = RecordingSink::new();
+/// sink.record(ResilienceEvent::BulkheadRejected);
+/// sink.record(ResilienceEvent::LoadShed);
+///
+/// assert_eq!(sink.count(ResilienceEventKind::BulkheadRejected), 1);
+/// assert_eq!(sink.count(ResilienceEventKind::LoadShed), 1);
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct RecordingSink {
     events: Arc<Mutex<Vec<ResilienceEvent>>>,

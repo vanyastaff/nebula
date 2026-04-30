@@ -14,6 +14,16 @@ use std::time::Duration;
 ///
 /// Static configs implement this automatically via the blanket impl below.
 /// Adaptive sources compute the config at call-time based on runtime signals.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::PolicySource;
+///
+/// // Static configs are policy sources for free.
+/// let limit: u32 = 64;
+/// assert_eq!(<u32 as PolicySource<u32>>::current(&limit), 64);
+/// ```
 pub trait PolicySource<C: Clone>: Send + Sync {
     /// Returns the current configuration.
     fn current(&self) -> C;
@@ -41,6 +51,18 @@ pub trait LoadSignal: Send + Sync {
 }
 
 /// A constant load signal for testing adaptive policies.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{ConstantLoad, LoadSignal};
+///
+/// let idle = ConstantLoad::idle();
+/// assert!(idle.load_factor() < f64::EPSILON);
+///
+/// let saturated = ConstantLoad::saturated();
+/// assert!((saturated.load_factor() - 1.0).abs() < f64::EPSILON);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstantLoad {
     /// Load factor: 0.0 = idle, 1.0 = saturated.

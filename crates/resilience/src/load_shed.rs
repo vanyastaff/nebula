@@ -16,6 +16,26 @@ use crate::{
 ///
 /// Returns `Err(CallError::LoadShed)` when the shed predicate fires,
 /// or `Err(CallError::Operation)` if the operation itself fails.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{CallError, load_shed};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// // Shed when the system reports overload.
+/// let overloaded = || true;
+/// let result: Result<u32, CallError<()>> = load_shed(overloaded, || async { Ok(42) }).await;
+/// assert!(matches!(result, Err(CallError::LoadShed)));
+///
+/// // Pass through when healthy.
+/// let healthy = || false;
+/// let result: Result<u32, CallError<()>> = load_shed(healthy, || async { Ok(42) }).await;
+/// assert_eq!(result.unwrap(), 42);
+/// # Ok(())
+/// # }
+/// ```
 pub async fn load_shed<T, E, S, Fut, F>(should_shed: S, f: F) -> Result<T, CallError<E>>
 where
     S: Fn() -> bool,

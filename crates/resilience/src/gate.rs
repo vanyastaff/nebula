@@ -111,6 +111,25 @@ impl Drop for GateGuard {
 /// outstanding guards. The guards remain live until they are dropped by their
 /// respective owners. Call `close().await` explicitly during shutdown to ensure
 /// all work has finished before proceeding.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_resilience::gate::{Gate, GateClosed};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let gate = Gate::new();
+///
+/// // While open, callers can enter and hold a guard for the duration of work.
+/// let guard = gate.enter().expect("gate is open");
+/// drop(guard);
+///
+/// // After close(), new entries are rejected.
+/// gate.close().await;
+/// assert!(matches!(gate.enter(), Err(GateClosed)));
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Gate {
     inner: Arc<GateInner>,

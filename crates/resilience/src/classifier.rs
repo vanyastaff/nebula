@@ -223,6 +223,33 @@ impl<E, F: Fn(&E) -> ErrorClass + Send + Sync> ErrorClassifier<E> for FnClassifi
 
 /// Bridges [`nebula_error::Classify`] to [`ErrorClassifier`].
 ///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_error::{Classify, ErrorCategory, ErrorCode};
+/// use nebula_resilience::{ErrorClass, ErrorClassifier, NebulaClassifier};
+///
+/// #[derive(Debug)]
+/// struct DownstreamUnavailable;
+///
+/// impl Classify for DownstreamUnavailable {
+///     fn category(&self) -> ErrorCategory {
+///         ErrorCategory::Unavailable
+///     }
+///     fn code(&self) -> ErrorCode {
+///         ErrorCode::new("APP:DOWN")
+///     }
+/// }
+///
+/// let classifier = NebulaClassifier;
+/// assert_eq!(
+///     classifier.classify(&DownstreamUnavailable),
+///     ErrorClass::Unavailable,
+/// );
+/// ```
+///
+/// Category mapping:
+///
 /// Maps [`ErrorCategory`](nebula_error::ErrorCategory) to [`ErrorClass`]:
 ///
 /// | `ErrorCategory` | `ErrorClass` | Rationale |
