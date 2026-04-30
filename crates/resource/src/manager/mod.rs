@@ -553,6 +553,127 @@ impl Manager {
         )
     }
 
+    /// JSON-driven registration with `{{ ... }}` template resolution + schema validation (Phase 9
+    /// of M6 / closes the tail deferred from Phase 4).
+    ///
+    /// The flow:
+    ///
+    /// 1. Recursively resolve every `{{ … }}` template inside `config_json` against `expr_engine` +
+    ///    an evaluation context populated with the caller-supplied variables.
+    /// 2. Deserialize the resolved JSON into `R::Config`.
+    /// 3. Validate the deserialized config via [`<R::Config as
+    ///    ResourceConfig>::validate`](crate::resource::ResourceConfig::validate) AND against
+    ///    `<R::Config as HasSchema>::schema()` (a structural schema pass that catches
+    ///    missing/invalid fields a `serde::Deserialize` impl would silently default).
+    /// 4. Dispatch into the typed [`register`](Self::register) with the pre-built `resource: R`
+    ///    (slots already filled by the caller), `topology`, `scope`, and optional
+    ///    `resilience`/`recovery_gate`.
+    ///
+    /// `slot_bindings` carries the slot-name → credential id map per ADR-0042 hybrid binding.
+    /// Credential resolution is the engine dispatch layer's responsibility; the manager itself is
+    /// credential-agnostic post-ADR-0044 (see Phase 4 — `R::Credential` was deleted), so this
+    /// argument is recorded for tracing only and asserted to match the slot fields the resource
+    /// declared via [`DeclaresDependencies`](nebula_core::DeclaresDependencies). The caller
+    /// (engine) is expected to have already used these bindings to resolve credentials into the
+    /// `resource: R` it hands in.
+    ///
+    /// `nebula-resource → nebula-expression` is allowed under deny.toml's `[[bans]]`
+    /// `nebula-resource` wrapper allowlist (Business → Core layer edge per ADR-0043 §9 / Phase 9,
+    /// R-040 R8).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::permanent`] when expression resolution, JSON deserialization, or schema
+    ///   validation fails.
+    /// - [`Error::permanent`] when a `slot_bindings` key does not correspond to a declared
+    ///   credential slot on `R`.
+    /// - Any [`Error`](Error) returned by the underlying typed [`register`](Self::register).
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_resource::register_from_value",
+        skip_all,
+        fields(
+            resource_key = %R::key(),
+            slot_count = slot_bindings.len(),
+        )
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "JSON-driven registration must thread (config_json, expr_engine, slot_bindings, resource, scope, topology, resilience, recovery_gate); collapsing into an options struct would force callers through a builder when the typed register<R> path next door already takes 6 args"
+    )]
+    pub async fn register_from_value<R>(
+        &self,
+        config_json: serde_json::Value,
+        expr_engine: &nebula_expression::ExpressionEngine,
+        slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
+        resource: R,
+        scope: ScopeLevel,
+        topology: TopologyRuntime<R>,
+        resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
+    ) -> Result<(), Error>
+    where
+        R: Resource + nebula_core::DeclaresDependencies,
+        R::Config: serde::de::DeserializeOwned,
+    {
+        // 0. Validate that every binding matches a declared credential slot. Hard error on unknown
+        //    slot — refuses to register a resource whose credential surface diverged from the one
+        //    the workflow JSON specified, so misconfiguration surfaces at register time rather than
+        //    as a confusing rotation no-op later.
+        let deps = R::dependencies();
+        for slot_name in slot_bindings.keys() {
+            let known = deps.slot_fields().iter().any(|sf| {
+                sf.slot_key == slot_name.as_str()
+                    && matches!(
+                        sf.kind,
+                        nebula_core::dependencies::SlotKind::Credential { .. }
+                    )
+            });
+            if !known {
+                return Err(Error::permanent(format!(
+                    "register_from_value: slot binding `{slot_name}` does not match any declared credential slot on `{}`",
+                    std::any::type_name::<R>()
+                )));
+            }
+        }
+
+        // 1. Resolve `{{ … }}` templates inside the JSON tree.
+        let ctx = nebula_expression::EvaluationContext::new();
+        let resolved = resolve_json_templates(config_json, expr_engine, &ctx)?;
+
+        // 2. Schema-validate the resolved JSON against <R::Config as HasSchema>::schema(). This is
+        //    independent of serde::Deserialize: it surfaces missing/invalid fields a serde default
+        //    impl would silently accept, and runs the schema's `#[validate(...)]` rules (length,
+        //    pattern, …). Schema check runs FIRST so structural errors are reported as schema
+        //    violations rather than confusingly re-routed through serde.
+        let schema = <R::Config as nebula_schema::HasSchema>::schema();
+        let field_values =
+            nebula_schema::FieldValues::from_json(resolved.clone()).map_err(|e| {
+                Error::permanent(format!("register_from_value: invalid field tree: {e}"))
+            })?;
+        if let Err(report) = schema.validate(&field_values) {
+            return Err(Error::permanent(format!(
+                "register_from_value: schema validation failed: {report:?}"
+            )));
+        }
+
+        // 3. Deserialize R::Config from the resolved JSON.
+        let config: R::Config = serde_json::from_value(resolved).map_err(|e| {
+            Error::permanent(format!(
+                "register_from_value: failed to deserialize {ty} config from JSON: {e}",
+                ty = std::any::type_name::<R::Config>()
+            ))
+        })?;
+
+        // 4. Dispatch into the typed register. ResourceConfig::validate() runs inside register, so
+        //    domain-level rules (e.g. PoolConfig sanity, host non-empty) are still enforced.
+        tracing::debug!(
+            target: "nebula_resource::register_from_value",
+            "all pre-register checks passed; dispatching into typed register"
+        );
+        self.register(resource, config, scope, topology, resilience, recovery_gate)
+    }
+
     /// Looks up a registered `ManagedResource<R>` by type and scope.
     ///
     /// This is the building block for acquire: callers retrieve the managed
@@ -1208,6 +1329,58 @@ impl Manager {
 impl Default for Manager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Recursively resolve `{{ … }}` expression templates inside a JSON tree.
+///
+/// Strings that contain template markers are routed through
+/// [`ExpressionEngine::parse_template`] +
+/// [`render_template`](nebula_expression::ExpressionEngine::render_template); strings without
+/// markers, and all non-string scalars, pass through untouched. Object and array containers are
+/// walked recursively.
+///
+/// Used by [`Manager::register_from_value`] to evaluate dynamic config values before serde
+/// deserialization. This is the resource-side mirror of the engine's `ParamResolver` — it resolves
+/// at register time rather than at node dispatch time.
+fn resolve_json_templates(
+    value: serde_json::Value,
+    engine: &nebula_expression::ExpressionEngine,
+    ctx: &nebula_expression::EvaluationContext,
+) -> Result<serde_json::Value, Error> {
+    use serde_json::Value;
+    match value {
+        Value::String(s) => {
+            if !s.contains("{{") {
+                return Ok(Value::String(s));
+            }
+            let template = engine.parse_template(&s).map_err(|e| {
+                Error::permanent(format!(
+                    "register_from_value: template parse failed for `{s}`: {e}"
+                ))
+            })?;
+            let rendered = engine.render_template(&template, ctx).map_err(|e| {
+                Error::permanent(format!(
+                    "register_from_value: template render failed for `{s}`: {e}"
+                ))
+            })?;
+            Ok(Value::String(rendered))
+        },
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(resolve_json_templates(item, engine, ctx)?);
+            }
+            Ok(Value::Array(out))
+        },
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k, resolve_json_templates(v, engine, ctx)?);
+            }
+            Ok(Value::Object(out))
+        },
+        other => Ok(other),
     }
 }
 

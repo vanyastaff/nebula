@@ -18,12 +18,14 @@ default = []
 # Nebula ecosystem
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
+nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
 nebula-resilience = { path = "../resilience" }
 nebula-metadata = { path = "../metadata" }
 nebula-resource-macros = { path = "macros" }
 nebula-schema = { path = "../schema" }
 nebula-telemetry = { path = "../telemetry" }
+serde_json = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
@@ -33,6 +35,7 @@ futures = { workspace = true }
 # Core
 nebula-error = { workspace = true }
 arc-swap = { workspace = true }
+serde = { workspace = true }
 semver = { workspace = true }
 dashmap = { workspace = true }
 smallvec = { workspace = true }

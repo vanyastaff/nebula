@@ -53,6 +53,8 @@ subtle = { workspace = true }
 [dev-dependencies]
 nebula-core = { path = "../core" }
 nebula-credential-macros = { path = "../credential/macros" }
+# Phase 9 / Task 9.1: pipeline test exercises the expression engine end-to-end.
+nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 hex = { workspace = true }
 insta = { workspace = true }
