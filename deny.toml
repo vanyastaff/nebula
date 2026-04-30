@@ -102,10 +102,11 @@ deny = [
   { crate = "nebula-resource", wrappers = [
     "nebula-action",
     "nebula-engine",
+    "nebula-examples",
     "nebula-plugin",
     "nebula-sandbox",
     "nebula-sdk",
-  ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*)" },
+  ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*); examples demonstrate Resource impls for Pool/Resident topologies (M6.3)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper
   # allowlist locks the current consumer set so future PRs cannot quietly

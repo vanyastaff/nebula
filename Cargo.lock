@@ -3524,9 +3524,17 @@ name = "nebula-examples"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
+ "nebula-core",
  "nebula-expression",
+ "nebula-resource",
+ "nebula-schema",
+ "parking_lot",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
