@@ -589,9 +589,13 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     // Pending → next claim_pending picks it up → dispatch_cancel signals
     // engine_b's running registry → frontier cancels → parking handler
     // returns ActionError::Cancelled → engine finalizes Cancelled.
-    let result_b = tokio::time::timeout(Duration::from_secs(10), task_b)
+    //
+    // Budget: 30s headroom for slow CI runners (macOS GitHub-hosted runners
+    // were flaky at the original 10s budget — wall-clock-based reclaim
+    // sweep + real-time sleep make this test sensitive to runner load).
+    let result_b = tokio::time::timeout(Duration::from_secs(30), task_b)
         .await
-        .expect("engine_b.resume_execution must complete within 10s")
+        .expect("engine_b.resume_execution must complete within 30s")
         .expect("task_b joined")
         .expect("resume_execution Ok");
 
