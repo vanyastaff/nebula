@@ -52,7 +52,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
     resolver::ParamResolver, resource_accessor::EngineResourceAccessor, result::ExecutionResult,
-    runtime::ActionRuntime,
+    runtime::ActionRuntime, scoped_resources::LayeredResourceAccessor,
 };
 
 /// Type alias for the optional event sender.
@@ -2788,9 +2788,17 @@ impl WorkflowEngine {
                 default_credential_accessor()
             };
 
-        // Build resource accessor: use the manager if configured, else noop.
+        // Build resource accessor: wrap the manager-backed global accessor in
+        // a LayeredResourceAccessor (M6.1 — Phase 6). Phase 6 plugs in the
+        // empty scoped map; Phase 7 (M6.2) swaps the inner scoped layer for
+        // the per-branch DashMap implementation. Action call sites
+        // (`ctx.acquire_resource_by_id`, `ctx.resource::<R>()`) consult the
+        // layered accessor transparently — `scoped → global`, closest
+        // ancestor wins.
         let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
-            Arc::new(EngineResourceAccessor::new(Arc::clone(manager)))
+            let global: Arc<dyn ResourceAccessor> =
+                Arc::new(EngineResourceAccessor::new(Arc::clone(manager)));
+            Arc::new(LayeredResourceAccessor::global_only(global))
         } else {
             default_resource_accessor()
         };

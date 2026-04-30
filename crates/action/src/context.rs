@@ -624,44 +624,6 @@ pub trait CredentialContextExt: HasCredentials {
         })
     }
 
-    /// Retrieve a typed credential by [`AuthScheme`] type. Returns a
-    /// zeroizing [`CredentialGuard<S>`].
-    fn credential<'a, S>(
-        &'a self,
-    ) -> Pin<Box<dyn Future<Output = Result<CredentialGuard<S>, ActionError>> + Send + 'a>>
-    where
-        S: AuthScheme + zeroize::Zeroize + 'a,
-        Self: Sync,
-    {
-        Box::pin(async move {
-            let type_name = std::any::type_name::<S>();
-            let short_name = type_name.rsplit("::").next().unwrap_or(type_name);
-            let key_str = short_name.to_lowercase();
-            let key = CredentialKey::new(&key_str).map_err(|_| {
-                ActionError::fatal(format!(
-                    "type-based credential access not supported for `{type_name}` (could not derive valid key)"
-                ))
-            })?;
-            let boxed = self
-                .credentials()
-                .resolve_any(&key)
-                .await
-                .map_err(ActionError::from)?;
-            let snapshot = boxed
-                .downcast::<CredentialSnapshot>()
-                .map(|b| *b)
-                .map_err(|_| {
-                    ActionError::fatal(format!(
-                        "credential type mismatch for `{type_name}`: resolve_any returned unexpected type"
-                    ))
-                })?;
-            let scheme = snapshot.into_project::<S>().map_err(|e| {
-                ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
-            })?;
-            Ok(CredentialGuard::new(scheme))
-        })
-    }
-
     /// Check whether a credential exists by id.
     fn has_credential_id<'a>(
         &'a self,

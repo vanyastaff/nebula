@@ -35,6 +35,9 @@
 //! - `ExecutionEvent` — broadcast event type for `nebula-eventbus`.
 //! - `EngineCredentialAccessor` / `EngineResourceAccessor` — scoped accessors injected into action
 //!   contexts.
+//! - `LayeredResourceAccessor` / `ScopedResourceMap` — Phase 6 (M6.1) precedence wiring. `scoped →
+//!   global` lookup; closest-ancestor wins. Phase 7 fills in the per-branch `DashMap` storage
+//!   behind `ScopedResourceMap`.
 //!
 //! ## Canon
 //!
@@ -59,6 +62,7 @@ pub(crate) mod resolver;
 pub mod resource_accessor;
 pub mod result;
 pub mod runtime;
+pub mod scoped_resources;
 
 // Re-export the absorbed `nebula-engine` public surface at the crate root so
 // every downstream caller can migrate `use crate::runtime::X` → `use
@@ -90,4 +94,7 @@ pub use runtime::{
     DataPassingPolicy, InProcessSandbox, LargeDataStrategy, MemoryQueue, PushOutcome, QueueError,
     RuntimeError, SandboxRunner, SandboxedContext, StatefulCheckpoint, StatefulCheckpointSink,
     TaskQueue,
+};
+pub use scoped_resources::{
+    EmptyScopedResourceMap, LayeredResourceAccessor, ScopedLookup, ScopedResourceMap,
 };
