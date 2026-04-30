@@ -18,6 +18,22 @@ use crate::{
 /// # Errors
 ///
 /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{CallError, timeout};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let value: Result<&str, CallError<&str>> =
+///     timeout(Duration::from_millis(100), async { Ok("ready") }).await;
+/// assert_eq!(value.unwrap(), "ready");
+/// # Ok(())
+/// # }
+/// ```
 pub async fn timeout<T, E, F>(duration: Duration, future: F) -> Result<T, CallError<E>>
 where
     F: Future<Output = Result<T, E>>,
@@ -49,6 +65,28 @@ where
 }
 
 /// A timeout executor with an injectable [`MetricsSink`].
+///
+/// Construct once and reuse across many calls when you want a stable timeout
+/// budget plus uniform observability. For one-off use, prefer the free
+/// [`timeout`] function.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{CallError, RecordingSink, TimeoutExecutor};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let sink = RecordingSink::new();
+/// let executor = TimeoutExecutor::new(Duration::from_millis(50)).with_sink(sink.clone());
+///
+/// let value: Result<&str, CallError<&str>> = executor.call(async { Ok("ready") }).await;
+/// assert_eq!(value.unwrap(), "ready");
+/// # Ok(())
+/// # }
+/// ```
 pub struct TimeoutExecutor {
     duration: Duration,
     sink: Arc<dyn MetricsSink>,

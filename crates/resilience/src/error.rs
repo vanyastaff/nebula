@@ -7,6 +7,21 @@ use std::{borrow::Cow, time::Duration};
 /// `E` is the caller's own error type — never forced to map into a resilience error.
 /// Errors produced by the patterns themselves (circuit open, bulkhead full, etc.)
 /// are separate variants.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{CallError, CallErrorKind};
+///
+/// let err: CallError<&str> = CallError::Timeout(Duration::from_millis(50));
+/// assert!(err.is_retryable());
+/// assert_eq!(err.kind(), CallErrorKind::Timeout);
+///
+/// let err: CallError<&str> = CallError::Operation("downstream failed");
+/// assert_eq!(err.operation(), Some(&"downstream failed"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CallError<E> {

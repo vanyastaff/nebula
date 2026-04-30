@@ -43,6 +43,28 @@ pub trait FallbackStrategy<T, E>: Send + Sync {
 /// Simple value fallback.
 ///
 /// Returns a predetermined value when the primary operation fails.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{
+///     CallError,
+///     fallback::{FallbackStrategy, ValueFallback},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let fb = ValueFallback::new(42u32);
+///
+/// // On failure the fallback returns the configured value.
+/// let recovered: Result<u32, CallError<&str>> = fb
+///     .fallback(CallError::Timeout(Duration::from_secs(1)))
+///     .await;
+/// assert_eq!(recovered.unwrap(), 42);
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 #[must_use = "ValueFallback should be used as a fallback strategy"]
 pub struct ValueFallback<T: Clone + Send + Sync> {
@@ -73,6 +95,29 @@ impl<T: Clone + Send + Sync, E> FallbackStrategy<T, E> for ValueFallback<T> {
 }
 
 /// Function fallback — executes a closure to produce a fallback value.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{
+///     CallError,
+///     fallback::{FallbackStrategy, FunctionFallback},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // The closure receives the original error (operation type erased) and
+/// // returns either a recovered value or a `CallError`.
+/// let fb = FunctionFallback::new(|_err: CallError<()>| async { Ok::<u32, CallError<()>>(7) });
+///
+/// let recovered: Result<u32, CallError<&str>> = fb
+///     .fallback(CallError::Timeout(Duration::from_secs(1)))
+///     .await;
+/// assert_eq!(recovered.unwrap(), 7);
+/// # }
+/// ```
 pub struct FunctionFallback<T, F, Fut>
 where
     F: Fn(CallError<()>) -> Fut + Send + Sync,
@@ -151,6 +196,33 @@ struct CacheEntry<T> {
 }
 
 /// Cache fallback — returns a previously cached value on error.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{
+///     CallError,
+///     fallback::{CacheFallback, FallbackStrategy},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let fb: CacheFallback<String> = CacheFallback::new()
+///     .with_ttl(Duration::from_secs(60))
+///     .with_stale_if_error(true);
+///
+/// // Populate the cache after a successful primary call.
+/// fb.update("last good response".into()).await;
+///
+/// // On a subsequent failure the cached value is returned.
+/// let recovered: Result<String, CallError<&str>> = fb
+///     .fallback(CallError::Timeout(Duration::from_secs(1)))
+///     .await;
+/// assert_eq!(recovered.unwrap(), "last good response");
+/// # }
+/// ```
 pub struct CacheFallback<T: Clone + Send + Sync> {
     cache: Arc<RwLock<Option<CacheEntry<T>>>>,
     ttl: Option<std::time::Duration>,
@@ -243,6 +315,31 @@ impl<T: Clone + Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 /// before calling [`fallback()`](FallbackStrategy::fallback). If a strategy declines
 /// (returns `false`), the **same error** is passed unchanged to the next strategy in the
 /// chain — the declining strategy does not get to modify or wrap the error.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::{sync::Arc, time::Duration};
+///
+/// use nebula_resilience::{
+///     CallError,
+///     fallback::{CacheFallback, ChainFallback, FallbackStrategy, ValueFallback},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let cache: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(CacheFallback::new());
+/// let default: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(0u32));
+///
+/// // Try the cache first; if it has no value, fall back to a constant.
+/// let chain = ChainFallback::new().then(cache).then(default);
+///
+/// let recovered = chain
+///     .fallback(CallError::Timeout(Duration::from_secs(1)))
+///     .await;
+/// assert_eq!(recovered.unwrap(), 0);
+/// # }
+/// ```
 pub struct ChainFallback<T, E> {
     fallbacks: Vec<Arc<dyn FallbackStrategy<T, E>>>,
 }
@@ -304,6 +401,33 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E> for Cha
 ///
 /// Uses a `Vec` internally — `CallErrorKind` has few variants, so linear
 /// scan is faster than `HashMap` and avoids hashing overhead.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::{sync::Arc, time::Duration};
+///
+/// use nebula_resilience::{
+///     CallError,
+///     error::CallErrorKind,
+///     fallback::{FallbackStrategy, PriorityFallback, ValueFallback},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let on_timeout: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(1u32));
+/// let on_other: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(0u32));
+///
+/// let pf = PriorityFallback::new()
+///     .register(CallErrorKind::Timeout, on_timeout)
+///     .with_default(on_other);
+///
+/// let recovered = pf
+///     .fallback(CallError::Timeout(Duration::from_secs(1)))
+///     .await;
+/// assert_eq!(recovered.unwrap(), 1);
+/// # }
+/// ```
 pub struct PriorityFallback<T, E> {
     fallbacks: Vec<(CallErrorKind, Arc<dyn FallbackStrategy<T, E>>)>,
     default: Option<Arc<dyn FallbackStrategy<T, E>>>,
@@ -383,6 +507,29 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 }
 
 /// Fallback with operation — combines primary and fallback operations.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::{sync::Arc, time::Duration};
+///
+/// use nebula_resilience::{
+///     CallError,
+///     fallback::{FallbackOperation, ValueFallback},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let op: FallbackOperation<u32, &str> =
+///     FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+///
+/// // The primary operation fails, so the fallback value is returned.
+/// let recovered = op
+///     .call(|| async { Err::<u32, _>(CallError::Timeout(Duration::from_secs(1))) })
+///     .await;
+/// assert_eq!(recovered.unwrap(), 99);
+/// # }
+/// ```
 pub struct FallbackOperation<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
 }

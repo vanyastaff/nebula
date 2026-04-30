@@ -18,6 +18,26 @@ use crate::CallError;
 /// Cancellation-aware operation wrapper.
 ///
 /// Provides structured cancellation support for resilience operations.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{CallError, CancellationContext};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let ctx = CancellationContext::with_reason("shutdown");
+/// let child = ctx.child();
+///
+/// // Cancelling the parent propagates to the child.
+/// ctx.cancel();
+/// assert!(child.is_cancelled());
+///
+/// let result: Result<i32, CallError<&str>> = child.call(|| async { Ok(1) }).await;
+/// assert!(matches!(result, Err(CallError::Cancelled { .. })));
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct CancellationContext {
     /// Primary cancellation token
@@ -162,6 +182,26 @@ impl Default for CancellationContext {
 ///
 /// The cancellation future is created once at construction and reused across
 /// polls — no per-poll allocation.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{CallError, CancellationExt};
+/// use tokio_util::sync::CancellationToken;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let token = CancellationToken::new();
+/// let work = async { 42_u32 };
+///
+/// let cancellable = work.with_cancellation(token.clone());
+/// token.cancel();
+///
+/// let result: Result<u32, CallError<()>> = cancellable.await;
+/// assert!(matches!(result, Err(CallError::Cancelled { .. })));
+/// # Ok(())
+/// # }
+/// ```
 pub struct CancellableFuture<F> {
     future: Pin<Box<F>>,
     /// We use `tokio::select!` internally via a helper that owns the token.
@@ -225,6 +265,21 @@ where
 }
 
 /// Extension trait for adding cancellation support to futures.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{CallError, CancellationExt};
+/// use tokio_util::sync::CancellationToken;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let token = CancellationToken::new();
+/// let value: Result<u32, CallError<()>> = async { 42 }.with_cancellation(token).await;
+/// assert_eq!(value.unwrap(), 42);
+/// # Ok(())
+/// # }
+/// ```
 pub trait CancellationExt<T>: Future<Output = T> + Sized {
     /// Add cancellation support to this future.
     fn with_cancellation(self, token: CancellationToken) -> CancellableFuture<Self> {

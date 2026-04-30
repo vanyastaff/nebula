@@ -18,6 +18,23 @@ use crate::{
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Configuration for the bulkhead pattern.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{Bulkhead, BulkheadConfig};
+///
+/// // Fail-fast bulkhead: no queue, reject on saturation.
+/// let cfg = BulkheadConfig {
+///     max_concurrency: 8,
+///     queue_size: 0,
+///     timeout: Some(Duration::from_secs(5)),
+/// };
+///
+/// let _bulkhead = Bulkhead::new(cfg).expect("config is valid");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations. Min: 1.
@@ -62,6 +79,25 @@ impl BulkheadConfig {
 ///
 /// Shared state via `Arc<Bulkhead>`. Add a [`RecordingSink`](crate::RecordingSink) for test
 /// observability.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use nebula_resilience::{Bulkhead, BulkheadConfig, CallError};
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let bulkhead = Bulkhead::new(BulkheadConfig {
+///     max_concurrency: 4,
+///     queue_size: 8,
+///     timeout: None,
+/// })?;
+///
+/// let value: Result<&str, CallError<&str>> = bulkhead.call(|| async { Ok("ok") }).await;
+/// assert_eq!(value.unwrap(), "ok");
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Bulkhead {
     config: BulkheadConfig,

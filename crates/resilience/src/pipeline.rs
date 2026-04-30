@@ -4,6 +4,35 @@
 //! `load_shed → rate_limiter → timeout → retry → circuit_breaker → bulkhead`
 //!
 //! Layers are applied in the order added: first added = outermost.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use std::time::Duration;
+//!
+//! use nebula_resilience::{
+//!     ResiliencePipeline,
+//!     retry::{BackoffConfig, RetryConfig},
+//! };
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let pipeline = ResiliencePipeline::<&str>::builder()
+//!     .timeout(Duration::from_secs(2))
+//!     .retry(
+//!         RetryConfig::new(3)
+//!             .expect("max_attempts >= 1")
+//!             .backoff(BackoffConfig::Fixed(Duration::from_millis(10))),
+//!     )
+//!     .build();
+//!
+//! let value = pipeline
+//!     .call(|| Box::pin(async { Ok::<_, &str>(42u32) }))
+//!     .await
+//!     .unwrap();
+//! assert_eq!(value, 42);
+//! # }
+//! ```
 
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
@@ -54,6 +83,27 @@ enum Step<E: 'static> {
 // ── Builder ───────────────────────────────────────────────────────────────────
 
 /// Builder for [`ResiliencePipeline`].
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{PipelineBuilder, ResiliencePipeline};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let builder: PipelineBuilder<&str> =
+///     ResiliencePipeline::<&str>::builder().timeout(Duration::from_secs(1));
+///
+/// let pipeline = builder.build();
+/// let value = pipeline
+///     .call(|| Box::pin(async { Ok::<_, &str>(7u32) }))
+///     .await
+///     .unwrap();
+/// assert_eq!(value, 7);
+/// # }
+/// ```
 pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
@@ -264,6 +314,27 @@ fn validate_order<E>(steps: &[Step<E>]) {
 /// A composed resilience pipeline that applies multiple patterns in order.
 ///
 /// Build via [`ResiliencePipeline::builder()`].
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::ResiliencePipeline;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let pipeline = ResiliencePipeline::<&str>::builder()
+///     .timeout(Duration::from_millis(50))
+///     .build();
+///
+/// let value = pipeline
+///     .call(|| Box::pin(async { Ok::<_, &str>("ok") }))
+///     .await
+///     .unwrap();
+/// assert_eq!(value, "ok");
+/// # }
+/// ```
 pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
@@ -291,6 +362,33 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// Returns the appropriate `CallError` variant depending on which pipeline
     /// step fails (timeout, retry exhaustion, circuit open, bulkhead full, or operation error).
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::time::Duration;
+    ///
+    /// use nebula_resilience::{CallError, ResiliencePipeline};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let pipeline = ResiliencePipeline::<&str>::builder()
+    ///     .timeout(Duration::from_millis(20))
+    ///     .build();
+    ///
+    /// // The operation never finishes inside the budget, so the pipeline returns Timeout.
+    /// let err: CallError<&str> = pipeline
+    ///     .call(|| {
+    ///         Box::pin(async {
+    ///             tokio::time::sleep(Duration::from_millis(200)).await;
+    ///             Ok::<u32, &str>(42)
+    ///         })
+    ///     })
+    ///     .await
+    ///     .unwrap_err();
+    /// assert!(matches!(err, CallError::Timeout(_)));
+    /// # }
+    /// ```
     pub async fn call<T, F, Fut>(&self, f: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -320,6 +418,37 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// # Errors
     ///
     /// Returns the fallback's error if both the pipeline and fallback fail.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use std::time::Duration;
+    ///
+    /// use nebula_resilience::{ResiliencePipeline, fallback::ValueFallback};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let pipeline = ResiliencePipeline::<&str>::builder()
+    ///     .timeout(Duration::from_millis(10))
+    ///     .build();
+    /// let fallback = ValueFallback::new(99u32);
+    ///
+    /// // The pipeline times out, so the fallback value is returned instead.
+    /// let value = pipeline
+    ///     .call_with_fallback(
+    ///         || {
+    ///             Box::pin(async {
+    ///                 tokio::time::sleep(Duration::from_millis(50)).await;
+    ///                 Ok::<u32, &str>(42)
+    ///             })
+    ///         },
+    ///         &fallback,
+    ///     )
+    ///     .await
+    ///     .unwrap();
+    /// assert_eq!(value, 99);
+    /// # }
+    /// ```
     pub async fn call_with_fallback<T, F, Fut>(
         &self,
         f: F,

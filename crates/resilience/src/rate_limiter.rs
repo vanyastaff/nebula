@@ -364,6 +364,20 @@ struct LeakyBucketState {
 /// Use [`LeakyBucket`] when the downstream service requires a smooth,
 /// constant request rate and cannot tolerate sudden bursts — for example,
 /// a third-party API that enforces strict per-second billing quotas.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_resilience::{RateLimiter, rate_limiter::LeakyBucket};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // Capacity of 10 in-flight requests, draining at 5 req/s.
+/// let limiter = LeakyBucket::new(10, 5.0).expect("valid config");
+///
+/// limiter.acquire().await.expect("first slot is free");
+/// # }
+/// ```
 pub struct LeakyBucket {
     /// Bucket capacity
     capacity: usize,
@@ -479,6 +493,22 @@ impl RateLimiter for LeakyBucket {
 /// enforcing "at most 100 calls per minute" with no double-counting at the
 /// minute boundary. The trade-off is O(N) memory proportional to
 /// `max_requests`.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::{RateLimiter, rate_limiter::SlidingWindow};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // At most 100 acquisitions in any rolling 1-minute window.
+/// let limiter = SlidingWindow::new(Duration::from_secs(60), 100).expect("valid config");
+///
+/// limiter.acquire().await.expect("under cap");
+/// # }
+/// ```
 pub struct SlidingWindow {
     /// Window duration
     window_duration: Duration,
@@ -618,6 +648,22 @@ struct AdaptiveState {
 /// upfront or changes over time — for example, calling a service that
 /// returns `429 Too Many Requests` under load and you want automatic back-off
 /// without manual tuning.
+///
+/// # Examples
+///
+/// ```rust
+/// use nebula_resilience::{RateLimiter, rate_limiter::AdaptiveRateLimiter};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // Start at 50 req/s; auto-tune within [10, 100] based on observed errors.
+/// let limiter = AdaptiveRateLimiter::new(50.0, 10.0, 100.0).expect("valid config");
+///
+/// // Using `call()` automatically records success / error outcomes for tuning.
+/// let value = limiter.call(|| async { Ok::<u32, &str>(7) }).await.unwrap();
+/// assert_eq!(value, 7);
+/// # }
+/// ```
 pub struct AdaptiveRateLimiter {
     state: Arc<RwLock<AdaptiveState>>,
     /// Lock-free copy of `current_rate` for cheap reads without taking the lock.

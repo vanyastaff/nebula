@@ -3,6 +3,36 @@
 //! When `E` implements [`Classify`](nebula_error::Classify), retry automatically skips
 //! non-retryable errors (authentication, validation, etc.) and respects
 //! [`retry_hint()`](nebula_error::Classify::retry_hint) as a backoff delay floor.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use std::time::Duration;
+//!
+//! use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
+//!
+//! # #[derive(Debug)]
+//! # struct MyError;
+//! # impl std::fmt::Display for MyError {
+//! #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "error") }
+//! # }
+//! # impl std::error::Error for MyError {}
+//! # impl nebula_error::Classify for MyError {
+//! #     fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::External }
+//! #     fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
+//! # }
+//! # #[tokio::main]
+//! # async fn main() {
+//! let config = RetryConfig::<MyError>::new(3)
+//!     .expect("max_attempts >= 1")
+//!     .backoff(BackoffConfig::Fixed(Duration::from_millis(10)));
+//!
+//! let value = retry_with(config, || Box::pin(async { Ok::<_, MyError>(7u32) }))
+//!     .await
+//!     .unwrap();
+//! assert_eq!(value, 7);
+//! # }
+//! ```
 
 use std::{fmt, future::Future, num::NonZeroU32, sync::Arc, time::Duration};
 
@@ -17,6 +47,23 @@ use crate::{
 // ── Backoff ───────────────────────────────────────────────────────────────────
 
 /// Backoff strategy for retry delays.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::retry::BackoffConfig;
+///
+/// // Standard exponential: 100 ms base, 2× multiplier, capped at 30 s.
+/// let exp = BackoffConfig::exponential_default();
+/// assert_eq!(exp.delay_for(0), Duration::from_millis(100));
+/// assert_eq!(exp.delay_for(1), Duration::from_millis(200));
+///
+/// // Fixed delay between every attempt.
+/// let fixed = BackoffConfig::Fixed(Duration::from_millis(50));
+/// assert_eq!(fixed.delay_for(5), Duration::from_millis(50));
+/// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum BackoffConfig {
@@ -143,6 +190,25 @@ type RetryNotify<E> = Arc<dyn Fn(&E, Duration, u32) + Send + Sync>;
 ///
 /// Use [`retry_if`](RetryConfig::retry_if) as shorthand for a bool-based classifier,
 /// or [`with_classifier`](RetryConfig::with_classifier) for full [`ErrorClass`] control.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
+///
+/// // Up to 5 attempts, exponential backoff, full jitter, 10 s total budget.
+/// let config = RetryConfig::<&str>::new(5)
+///     .expect("max_attempts >= 1")
+///     .backoff(BackoffConfig::exponential_default())
+///     .jitter(JitterConfig::Full {
+///         factor: 0.5,
+///         seed: None,
+///     })
+///     .total_budget(Duration::from_secs(10));
+/// # let _ = config;
+/// ```
 pub struct RetryConfig<E = ()> {
     /// Maximum number of attempts (including the first).
     pub max_attempts: u32,
@@ -299,6 +365,36 @@ impl<E: 'static> RetryConfig<E> {
 /// # Panics
 ///
 /// Panics if `config.max_attempts` is 0 (this is prevented by [`RetryConfig::new`]).
+///
+/// # Examples
+///
+/// ```rust
+/// use std::time::Duration;
+///
+/// use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
+///
+/// # #[derive(Debug)]
+/// # struct MyError;
+/// # impl std::fmt::Display for MyError {
+/// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "err") }
+/// # }
+/// # impl std::error::Error for MyError {}
+/// # impl nebula_error::Classify for MyError {
+/// #     fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::External }
+/// #     fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
+/// # }
+/// # #[tokio::main]
+/// # async fn main() {
+/// let config = RetryConfig::<MyError>::new(3)
+///     .expect("max_attempts >= 1")
+///     .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
+///
+/// let value = retry_with(config, || Box::pin(async { Ok::<_, MyError>(42u32) }))
+///     .await
+///     .unwrap();
+/// assert_eq!(value, 42);
+/// # }
+/// ```
 pub async fn retry_with<T, E, F, Fut>(config: RetryConfig<E>, f: F) -> Result<T, CallError<E>>
 where
     E: nebula_error::Classify + 'static,
@@ -426,6 +522,33 @@ where
 ///
 /// Returns `Err(CallError::RetriesExhausted)` when all `n` attempts are exhausted,
 /// or `Err(CallError::Operation)` if the error is not retryable.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::num::NonZeroU32;
+///
+/// use nebula_resilience::retry::retry;
+///
+/// # #[derive(Debug)]
+/// # struct MyError;
+/// # impl std::fmt::Display for MyError {
+/// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "err") }
+/// # }
+/// # impl std::error::Error for MyError {}
+/// # impl nebula_error::Classify for MyError {
+/// #     fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::External }
+/// #     fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
+/// # }
+/// # #[tokio::main]
+/// # async fn main() {
+/// let attempts = NonZeroU32::new(3).expect("3 != 0");
+/// let value = retry(attempts, || Box::pin(async { Ok::<_, MyError>(7u32) }))
+///     .await
+///     .unwrap();
+/// assert_eq!(value, 7);
+/// # }
+/// ```
 pub async fn retry<T, E, F, Fut>(n: NonZeroU32, f: F) -> Result<T, CallError<E>>
 where
     E: nebula_error::Classify + 'static,

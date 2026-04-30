@@ -1,4 +1,29 @@
 //! Circuit breaker pattern — plain-struct config, injectable sink and clock.
+//!
+//! # Examples
+//!
+//! ```rust
+//! use std::time::Duration;
+//!
+//! use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let cb = CircuitBreaker::new(CircuitBreakerConfig {
+//!     failure_threshold: 3,
+//!     reset_timeout: Duration::from_secs(30),
+//!     min_operations: 1,
+//!     ..Default::default()
+//! })
+//! .expect("valid config");
+//!
+//! let value = cb
+//!     .call(|| Box::pin(async { Ok::<_, &str>("ok") }))
+//!     .await
+//!     .unwrap();
+//! assert_eq!(value, "ok");
+//! # }
+//! ```
 
 #[cfg(not(loom))]
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -191,6 +216,44 @@ type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>
 /// with the start of `config`, instead of sitting alone on a 5th line.
 /// `repr(C)` locks field order — without it, rustc pushes `AtomicU32`
 /// (align 4) to the end after all 8-byte-aligned fields.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::{sync::Arc, time::Duration};
+///
+/// use nebula_resilience::{
+///     CallError,
+///     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+/// };
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let cb = Arc::new(
+///     CircuitBreaker::new(CircuitBreakerConfig {
+///         failure_threshold: 2,
+///         reset_timeout: Duration::from_millis(100),
+///         min_operations: 1,
+///         ..Default::default()
+///     })
+///     .expect("valid config"),
+/// );
+///
+/// // Drive it through a couple of failures to trip the circuit.
+/// for _ in 0..2 {
+///     let _: Result<(), CallError<&str>> = cb
+///         .call(|| Box::pin(async { Err::<(), _>("upstream down") }))
+///         .await;
+/// }
+///
+/// // Subsequent calls are short-circuited until reset_timeout elapses.
+/// let err: CallError<&str> = cb
+///     .call::<(), _, _>(|| Box::pin(async { Ok(()) }))
+///     .await
+///     .unwrap_err();
+/// assert!(matches!(err, CallError::CircuitOpen));
+/// # }
+/// ```
 #[repr(C)]
 pub struct CircuitBreaker {
     /// Lock-free state mirror for observability. Offset 0 = cache line 0.
@@ -544,6 +607,23 @@ impl CircuitBreaker {
     ///
     /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
     /// or `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).expect("valid config");
+    ///
+    /// let value = cb
+    ///     .call(|| Box::pin(async { Ok::<_, &str>(42u32) }))
+    ///     .await
+    ///     .unwrap();
+    /// assert_eq!(value, 42);
+    /// # }
+    /// ```
     pub async fn call<T, E, Fut>(&self, f: impl FnOnce() -> Fut) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, E>> + Send,
