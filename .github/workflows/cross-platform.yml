@@ -50,5 +50,5 @@ jobs:
       - name: Run platform-sensitive crate tests
         run: |
           cargo test -p nebula-sandbox
-          cargo test -p nebula-runtime
+          cargo test -p nebula-engine
           cargo test -p nebula-plugin-sdk
