@@ -155,15 +155,21 @@ struct authored via `#[derive(Schema)]` (decision 6 below).
 struct SendTelegram {
     #[resource(key = "bot")]    bot: ResourceGuard<TelegramBot>,
     #[credential(key = "auth")] token: CredentialGuard<TelegramCredential>,
-    // No #[param] fields on Self
+    // No #[field] fields on Self
 }
 
-#[derive(Schema)]
-#[schema(role = "input")]
+#[derive(Schema, Deserialize)]
 struct SendTelegramInput {
-    #[field(label = "Chat ID")] chat_id: i64,
-    #[field(label = "Text", max_length = 4096)] text: String,
-    #[field(label = "Reply to", optional = true)] reply_to: Option<i64>,
+    #[field(label = "Chat ID")]
+    #[validate(required)]
+    chat_id: i64,
+
+    #[field(label = "Text")]
+    #[validate(required, length(max = 4096))]
+    text: String,
+
+    #[field(label = "Reply to")]
+    reply_to: Option<i64>,
 }
 
 impl StatelessAction for SendTelegram {
@@ -183,31 +189,61 @@ The "Self IS Input" mixed-struct alternative was rejected because it surfaces
 `#[serde(skip)]` games on slot fields). Separation makes per-field semantics
 explicit at the type system level.
 
-### 6. Unified `#[derive(Schema)]` with role flag
+### 6. Unified `#[derive(Schema)]` (single namespace, no role flag)
 
-One macro for all schema-producing structs (Input / Config / Properties):
+One derive for all schema-producing structs (Action `<Name>Input`,
+ResourceConfig, CredentialProperties, etc.). The macro emits a `HasSchema`
+impl; serde `Deserialize` and `nebula_validator::Validator` stay separate
+derives so authors can layer `#[serde(...)]` and `#[validator(message = ...)]`
+attributes idiomatically.
 
 ```rust
-#[derive(Schema)]
-#[schema(role = "input")]      // emits Deserialize + Validate + HasSchema
-struct SendTelegramInput { /* #[field(...)] fields */ }
+#[derive(Schema, Deserialize)]
+struct SendTelegramInput {
+    #[field(label = "Chat ID")]
+    #[validate(required)]
+    chat_id: i64,
 
-#[derive(Schema)]
-#[schema(role = "config")]
-struct PostgresConfig { /* #[field(...)] operational fields */ }
+    #[field(label = "Text")]
+    #[validate(required, length(max = 4096))]
+    text: String,
 
-#[derive(Schema)]
-#[schema(role = "properties")] // also emits redacted Debug for #[secret] fields
+    #[field(label = "Reply to")]
+    reply_to: Option<i64>,
+}
+
+#[derive(Schema, Deserialize)]
+struct PostgresConfig {
+    #[field(label = "Host")]
+    #[validate(required)]
+    host: String,
+    #[field(label = "Port", default = 5432)]
+    port: u16,
+}
+
+#[derive(Schema, Deserialize)]
 struct TelegramProperties {
-    #[secret(label = "Bot token")] token: SecretString,
-    #[field(label = "Refresh URL")] refresh_url: Option<String>,
+    #[field(secret, label = "Bot token")]
+    token: SecretString,
+    #[field(label = "Refresh URL")]
+    refresh_url: Option<String>,
 }
 ```
 
-Field-level attributes:
-- `#[field(label, description, min, max, pattern, default, optional)]` — non-secret form fields.
-- `#[secret(label, placeholder)]` — secret fields. Macro enforces
-  `SecretString` type, emits redacted `Debug`.
+Field-level attribute namespaces stay aligned across every Schema-derived
+type — no role gating, no per-role attribute split:
+
+- `#[field(label, description, placeholder, default, hint, group, secret,
+  multiline, no_expression, expression_required, enum_select, skip)]` —
+  schema metadata (`secret` flag forces `SecretString` mapping).
+- `#[validate(required, length(min, max), range(min..=max), pattern, url,
+  email)]` — value rules feeding `ValidSchema::validate(...)`.
+
+`#[derive(serde::Deserialize)]` provides field-level `#[serde(rename, default)]`
+ergonomics; `#[derive(nebula_validator::Validator)]` (when needed) provides
+the `Validate<Self>` trait via its own `#[validate(...)]` parser. The two
+`#[validate(...)]` namespaces are scoped to whichever derive consumes them
+(serde-style: each derive parses only its own attribute keys).
 
 ### 7. `FromWorkflowNode` async factory pattern
 
@@ -231,8 +267,9 @@ Engine dispatch becomes:
 // Per execution:
 let action = SendTelegram::from_workflow_node(node, ctx).await?;          // slots resolved
 let input: SendTelegramInput = serde_json::from_value(node.input_json)?;
-let validated = input.validate()?;                                        // per Schema derive
-let result = action.execute(validated, ctx).await?;
+let values = FieldValues::from_struct(&input)?;                           // FieldValues bridge
+SendTelegramInput::schema().validate(&values)?;                           // value-rule check
+let result = action.execute(input, ctx).await?;
 ```
 
 A factory `Box<dyn ErasedAction>` is allocated per execution; alloc cost is
@@ -346,7 +383,7 @@ common case. `#[derive(Action)]` is the established Rust pattern (serde,
 diesel, clap) and authors are familiar with it. Reserve `#[action]` for
 the dyn-trait minority.
 
-### Alternative C — Mixed struct (Self IS Input, `#[param]` on Self)
+### Alternative C — Mixed struct (Self IS Input, `#[field]` on Self)
 
 Rejected: surfaces `self.text` *and* `input.text` ambiguity, forces
 custom serde skip logic on slot fields, mixes "action infra" and "user

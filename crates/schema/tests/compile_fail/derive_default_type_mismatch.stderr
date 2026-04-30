@@ -1,4 +1,4 @@
-error: #[param(default = ..)]: field expects a bool literal, got non-bool literal
+error: #[field(default = ..)]: field expects a bool literal, got non-bool literal
   --> tests/compile_fail/derive_default_type_mismatch.rs:10:5
    |
 10 |     flag: bool,

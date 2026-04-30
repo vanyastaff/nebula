@@ -21,7 +21,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DataEnum, DeriveInput, Fields};
 
-use crate::attrs::ParamAttrs;
+use crate::attrs::FieldAttrs;
 
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let crate_path = crate::crate_path();
@@ -49,9 +49,9 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
         let variant_name = &variant.ident;
         let value = snake_case(&variant_name.to_string());
-        let param = ParamAttrs::from_attrs(&variant.attrs)?;
-        let label = param.label.unwrap_or_else(|| variant_name.to_string());
-        let description = param.description;
+        let field_attr = FieldAttrs::from_attrs(&variant.attrs)?;
+        let label = field_attr.label.unwrap_or_else(|| variant_name.to_string());
+        let description = field_attr.description;
         let mut expr = quote! {
             #crate_path::SelectOption::new(::serde_json::Value::String(#value.to_owned()), #label)
         };

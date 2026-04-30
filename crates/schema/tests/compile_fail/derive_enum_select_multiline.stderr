@@ -1,4 +1,4 @@
-error: `#[param(multiline)]` applies only to string fields, not to `#[param(enum_select)]`
+error: `#[field(multiline)]` applies only to string fields, not to `#[field(enum_select)]`
   --> tests/compile_fail/derive_enum_select_multiline.rs:12:5
    |
 12 |     c: Color,

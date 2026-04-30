@@ -217,7 +217,7 @@ impl AttrArgs {
     }
 }
 
-/// Parse attribute like `#[param(...)]` (the whole Attribute, not only args).
+/// Parse attribute like `#[field(...)]` (the whole Attribute, not only args).
 pub fn parse_attr(attr: &Attribute, expected: &str) -> Result<Option<AttrArgs>> {
     if !attr.path().is_ident(expected) {
         return Ok(None);

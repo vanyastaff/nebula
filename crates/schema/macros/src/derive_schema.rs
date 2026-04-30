@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{Data, DataStruct, DeriveInput, Fields, Ident};
 
 use crate::{
-    attrs::{DefaultLit, ParamAttrs, SchemaStructAttrs, ValidateAttrs},
+    attrs::{DefaultLit, FieldAttrs, SchemaStructAttrs, ValidateAttrs},
     type_infer::{FieldKind, classify},
 };
 
@@ -54,13 +54,13 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             .ident
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(f, "anonymous struct field"))?;
-        let param = ParamAttrs::from_attrs(&f.attrs)?;
-        if param.skip {
+        let field_attr = FieldAttrs::from_attrs(&f.attrs)?;
+        if field_attr.skip {
             continue;
         }
         let validate = ValidateAttrs::from_attrs(&f.attrs)?;
         let kind = classify(&f.ty);
-        let expr = build_field_expr(field_name, &kind, &param, &validate, &crate_path)?;
+        let expr = build_field_expr(field_name, &kind, &field_attr, &validate, &crate_path)?;
         field_exprs.push(expr);
     }
 
@@ -95,7 +95,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                                 ::core::panic!(
                                     "#[derive(Schema)] on `{}` produced an invalid schema — \
                                      attribute combinations conflict with a schema-level lint. \
-                                     Fix the `#[param(..)]` / `#[validate(..)]` attributes on this type. \
+                                     Fix the `#[field(..)]` / `#[validate(..)]` attributes on this type. \
                                      Report: {:?}",
                                     #ty_name_str,
                                     report,
@@ -113,7 +113,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 fn build_field_expr(
     field_name: &Ident,
     kind: &FieldKind,
-    param: &ParamAttrs,
+    field_attr: &FieldAttrs,
     validate: &ValidateAttrs,
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
@@ -128,58 +128,58 @@ fn build_field_expr(
     let optional = kind.is_optional();
     let inner = kind.inner();
 
-    if param.enum_select && param.secret {
+    if field_attr.enum_select && field_attr.secret {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(enum_select)]` cannot be combined with `#[param(secret)]`",
+            "`#[field(enum_select)]` cannot be combined with `#[field(secret)]`",
         ));
     }
-    if param.no_expression && param.expression_required {
+    if field_attr.no_expression && field_attr.expression_required {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(no_expression)]` and `#[param(expression_required)]` are contradictory: \
+            "`#[field(no_expression)]` and `#[field(expression_required)]` are contradictory: \
              pick exactly one expression-mode attribute",
         ));
     }
-    if param.secret && param.multiline {
+    if field_attr.secret && field_attr.multiline {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(multiline)]` does not apply to secret fields — secret values are always \
+            "`#[field(multiline)]` does not apply to secret fields — secret values are always \
              rendered as masked single-line input",
         ));
     }
-    if param.secret && param.default.is_some() {
+    if field_attr.secret && field_attr.default.is_some() {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(default = ..)]` on a secret field hard-codes plaintext into the schema; \
+            "`#[field(default = ..)]` on a secret field hard-codes plaintext into the schema; \
              configure the value via the credential setup form instead",
         ));
     }
-    if param.enum_select && matches!(kind, FieldKind::List(_)) {
+    if field_attr.enum_select && matches!(kind, FieldKind::List(_)) {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(enum_select)]` on `Vec<...>` is not supported yet — build the list field manually or omit `enum_select`",
+            "`#[field(enum_select)]` on `Vec<...>` is not supported yet — build the list field manually or omit `enum_select`",
         ));
     }
-    if param.enum_select && !matches!(inner, FieldKind::UserDefined(_)) {
+    if field_attr.enum_select && !matches!(inner, FieldKind::UserDefined(_)) {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(enum_select)]` only applies to enums (or `Option<Enum>`) that implement `HasSelectOptions` via `#[derive(EnumSelect)]`",
+            "`#[field(enum_select)]` only applies to enums (or `Option<Enum>`) that implement `HasSelectOptions` via `#[derive(EnumSelect)]`",
         ));
     }
-    if param.enum_select {
+    if field_attr.enum_select {
         ensure_enum_select_validate_attrs(field_name, validate)?;
     }
-    if param.enum_select && param.multiline {
+    if field_attr.enum_select && field_attr.multiline {
         return Err(syn::Error::new_spanned(
             field_name,
-            "`#[param(multiline)]` applies only to string fields, not to `#[param(enum_select)]`",
+            "`#[field(multiline)]` applies only to string fields, not to `#[field(enum_select)]`",
         ));
     }
 
-    // Pick the constructor by inner kind. `param.secret` forces String → Secret.
+    // Pick the constructor by inner kind. `field_attr.secret` forces String → Secret.
     let mut expr = match inner {
-        FieldKind::String if param.secret => quote! {
+        FieldKind::String if field_attr.secret => quote! {
             #crate_path::Field::secret(#key)
         },
         FieldKind::String => quote! {
@@ -202,7 +202,7 @@ fn build_field_expr(
                 "nested `Option<Option<..>>` is not supported",
             ));
         },
-        FieldKind::UserDefined(ty) if param.enum_select => quote! {
+        FieldKind::UserDefined(ty) if field_attr.enum_select => quote! {
             #crate_path::Field::select(#key).extend_options(
                 <#ty as #crate_path::HasSelectOptions>::select_options(),
             )
@@ -228,17 +228,17 @@ fn build_field_expr(
         },
     };
 
-    if let Some(label) = &param.label {
+    if let Some(label) = &field_attr.label {
         expr = quote! { #expr.label(#label) };
     }
-    if let Some(desc) = &param.description {
+    if let Some(desc) = &field_attr.description {
         expr = quote! { #expr.description(#desc) };
     }
-    if let Some(placeholder) = &param.placeholder {
+    if let Some(placeholder) = &field_attr.placeholder {
         expr = quote! { #expr.placeholder(#placeholder) };
     }
-    if let Some(default) = &param.default {
-        if param.enum_select {
+    if let Some(default) = &field_attr.default {
+        if field_attr.enum_select {
             match default {
                 DefaultLit::Str(s) => {
                     expr = quote! { #expr.default(::serde_json::Value::String(#s.to_owned())) };
@@ -246,7 +246,7 @@ fn build_field_expr(
                 _ => {
                     return Err(syn::Error::new_spanned(
                         field_name,
-                        "#[param(default = ..)] on `#[param(enum_select)]` fields expects a string literal matching the wire JSON for one variant (for example `\"get\"` for `HttpMethod::Get`).",
+                        "#[field(default = ..)] on `#[field(enum_select)]` fields expects a string literal matching the wire JSON for one variant (for example `\"get\"` for `HttpMethod::Get`).",
                     ));
                 },
             }
@@ -255,26 +255,26 @@ fn build_field_expr(
             expr = quote! { #expr.default(#default_tokens) };
         }
     }
-    if let Some(hint) = &param.hint {
-        if param.enum_select {
+    if let Some(hint) = &field_attr.hint {
+        if field_attr.enum_select {
             return Err(syn::Error::new_spanned(
                 field_name,
-                "`#[param(hint = ...)]` is not applicable to `#[param(enum_select)]` fields",
+                "`#[field(hint = ...)]` is not applicable to `#[field(enum_select)]` fields",
             ));
         }
         let hint_ident = input_hint_ident(hint, field_name)?;
         expr = quote! { #expr.hint(#crate_path::InputHint::#hint_ident) };
     }
-    if let Some(group) = &param.group {
+    if let Some(group) = &field_attr.group {
         expr = quote! { #expr.group(#group) };
     }
-    if param.multiline && matches!(inner, FieldKind::String) && !param.secret {
+    if field_attr.multiline && matches!(inner, FieldKind::String) && !field_attr.secret {
         expr = quote! { #expr.widget(#crate_path::StringWidget::Multiline) };
     }
-    if param.no_expression {
+    if field_attr.no_expression {
         expr = quote! { #expr.no_expression() };
     }
-    if param.expression_required {
+    if field_attr.expression_required {
         expr = quote! {
             #expr.expression_mode(#crate_path::ExpressionMode::Required)
         };
@@ -320,7 +320,7 @@ fn build_field_expr(
     Ok(quote! { #expr.into_field() })
 }
 
-/// `#[param(enum_select)]` maps to a `SelectField`; only `#[validate(required)]` is meaningful
+/// `#[field(enum_select)]` maps to a `SelectField`; only `#[validate(required)]` is meaningful
 /// there.
 fn ensure_enum_select_validate_attrs(
     field_name: &Ident,
@@ -336,7 +336,7 @@ fn ensure_enum_select_validate_attrs(
     {
         return Err(syn::Error::new_spanned(
             field_name,
-            "on `#[param(enum_select)]` fields, `#[validate(...)]` supports only `required`; \
+            "on `#[field(enum_select)]` fields, `#[validate(...)]` supports only `required`; \
              URL, email, pattern, length, and range rules apply to string or number fields",
         ));
     }
@@ -403,7 +403,7 @@ fn default_lit_tokens(
     let mismatch = |expected: &str, got: &str| {
         syn::Error::new_spanned(
             field_name,
-            format!("#[param(default = ..)]: field expects {expected}, got {got}"),
+            format!("#[field(default = ..)]: field expects {expected}, got {got}"),
         )
     };
     match (inner, lit) {
@@ -439,16 +439,16 @@ fn default_lit_tokens(
         // List / Optional / UserDefined / UnsupportedInteger defaults are
         // explicitly out of scope — container defaults need JSON literals,
         // which aren't expressible through the simple-literal attribute
-        // surface. Callers should drop `#[param(default = ..)]` for those.
+        // surface. Callers should drop `#[field(default = ..)]` for those.
         _ => Err(syn::Error::new_spanned(
             field_name,
-            "#[param(default = ..)] is only supported on String / Number / Boolean fields; \
+            "#[field(default = ..)] is only supported on String / Number / Boolean fields; \
              Vec / nested object / Option fields cannot carry a literal default",
         )),
     }
 }
 
-/// Map `#[param(hint = "...")]` string to the corresponding `InputHint` variant.
+/// Map `#[field(hint = "...")]` string to the corresponding `InputHint` variant.
 fn input_hint_ident(hint: &str, span_source: &Ident) -> syn::Result<Ident> {
     let variant = match hint {
         "text" => "Text",
@@ -470,7 +470,7 @@ fn input_hint_ident(hint: &str, span_source: &Ident) -> syn::Result<Ident> {
             return Err(syn::Error::new(
                 span_source.span(),
                 format!(
-                    "unknown #[param(hint = \"{other}\")]; expected one of: \
+                    "unknown #[field(hint = \"{other}\")]; expected one of: \
                      text, url, email, password, phone, ip, regex, markdown, cron, \
                      date, date_time, time, color, duration, uuid"
                 ),

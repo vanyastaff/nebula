@@ -2,7 +2,7 @@
 //!
 //! Two namespaces are recognised today:
 //!
-//! - `#[param(...)]` — UI / metadata options (label, hint, default, secret, multiline,
+//! - `#[field(...)]` — UI / metadata options (label, hint, default, secret, multiline,
 //!   `enum_select`, …)
 //! - `#[validate(...)]`  — value rules (required, length, range, pattern, url, email)
 //!
@@ -21,9 +21,9 @@ use syn::{
     punctuated::Punctuated,
 };
 
-/// Options gathered from `#[param(...)]` on a struct field or enum variant.
+/// Options gathered from `#[field(...)]` on a struct field or enum variant.
 #[derive(Default, Debug)]
-pub(crate) struct ParamAttrs {
+pub(crate) struct FieldAttrs {
     pub label: Option<String>,
     pub description: Option<String>,
     pub placeholder: Option<String>,
@@ -43,7 +43,7 @@ pub(crate) struct ParamAttrs {
     pub skip: bool,
 }
 
-/// Typed literal carried by `#[param(default = ...)]`.
+/// Typed literal carried by `#[field(default = ...)]`.
 #[derive(Debug, Clone)]
 pub(crate) enum DefaultLit {
     Str(String),
@@ -65,11 +65,11 @@ pub(crate) struct ValidateAttrs {
     pub email: bool,
 }
 
-impl ParamAttrs {
+impl FieldAttrs {
     pub(crate) fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
         let mut out = Self::default();
-        for attr in attrs.iter().filter(|a| a.path().is_ident("param")) {
-            let entries: Punctuated<ParamEntry, Token![,]> =
+        for attr in attrs.iter().filter(|a| a.path().is_ident("field")) {
+            let entries: Punctuated<FieldEntry, Token![,]> =
                 attr.parse_args_with(Punctuated::parse_terminated)?;
             for entry in entries {
                 entry.apply(&mut out)?;
@@ -95,15 +95,15 @@ impl ValidateAttrs {
 
 // ── Per-namespace entry enums ─────────────────────────────────────────────
 
-enum ParamEntry {
+enum FieldEntry {
     KeyValue { name: syn::Ident, value: Lit },
     Flag(syn::Ident),
 }
 
-impl ParamEntry {
-    fn apply(self, out: &mut ParamAttrs) -> syn::Result<()> {
+impl FieldEntry {
+    fn apply(self, out: &mut FieldAttrs) -> syn::Result<()> {
         match self {
-            ParamEntry::KeyValue { name, value } => {
+            FieldEntry::KeyValue { name, value } => {
                 let key = name.to_string();
                 let string_lit = |lit: &Lit, field: &str| -> syn::Result<String> {
                     if let Lit::Str(s) = lit {
@@ -128,7 +128,7 @@ impl ParamEntry {
                             other => {
                                 return Err(syn::Error::new_spanned(
                                     other,
-                                    "#[param(default = ..)] expects a string, integer, \
+                                    "#[field(default = ..)] expects a string, integer, \
                                      float, or bool literal",
                                 ));
                             },
@@ -139,13 +139,13 @@ impl ParamEntry {
                     other => {
                         return Err(syn::Error::new(
                             name.span(),
-                            format!("unknown #[param(..)] option `{other}`"),
+                            format!("unknown #[field(..)] option `{other}`"),
                         ));
                     },
                 }
                 Ok(())
             },
-            ParamEntry::Flag(name) => {
+            FieldEntry::Flag(name) => {
                 match name.to_string().as_str() {
                     "secret" => out.secret = true,
                     "multiline" => out.multiline = true,
@@ -156,7 +156,7 @@ impl ParamEntry {
                     other => {
                         return Err(syn::Error::new(
                             name.span(),
-                            format!("unknown #[param(..)] flag `{other}`"),
+                            format!("unknown #[field(..)] flag `{other}`"),
                         ));
                     },
                 }
@@ -166,15 +166,15 @@ impl ParamEntry {
     }
 }
 
-impl Parse for ParamEntry {
+impl Parse for FieldEntry {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: syn::Ident = input.parse()?;
         if input.peek(Token![=]) {
             input.parse::<Token![=]>()?;
             let value: Lit = input.parse()?;
-            Ok(ParamEntry::KeyValue { name, value })
+            Ok(FieldEntry::KeyValue { name, value })
         } else {
-            Ok(ParamEntry::Flag(name))
+            Ok(FieldEntry::Flag(name))
         }
     }
 }

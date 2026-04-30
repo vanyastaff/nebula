@@ -8,7 +8,7 @@ enum Color {
 #[derive(Schema)]
 #[allow(dead_code)]
 struct Bad {
-    #[param(enum_select)]
+    #[field(enum_select)]
     #[validate(url)]
     c: Color,
 }
