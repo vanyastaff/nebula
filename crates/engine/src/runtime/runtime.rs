@@ -8,8 +8,8 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionHandler, ActionMetadata, IsolationLevel, StatefulHandler,
-    StatelessHandler,
+    ActionContext, ActionError, ActionFactory, ActionHandler, ActionMetadata, ErasedAction,
+    IsolationLevel, StatefulHandler, StatelessHandler,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
@@ -20,6 +20,7 @@ use nebula_metrics::naming::{
 };
 use nebula_sandbox::{SandboxRunner, SandboxedContext};
 use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
+use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -206,6 +207,13 @@ impl ActionRuntime {
     /// do not need cross-dispatch resume — behaviour matches the original
     /// `execute_action_versioned` shape.
     ///
+    /// This entry point synthesizes a minimal [`NodeDefinition`] from the
+    /// supplied `action_key` (and optional `version`) for callers that do
+    /// not already have one (admin tooling, tests). Production engine
+    /// dispatch routes through [`Self::execute_action_with_node`] which
+    /// passes the real workflow node so [`ActionFactory::instantiate`] can
+    /// resolve slot bindings declared on the node.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::execute_action_versioned`], plus `save()` sink errors
@@ -227,16 +235,18 @@ impl ActionRuntime {
             }
         })?;
 
-        let (metadata, handler) = match version {
-            Some(v) => self.registry.get_versioned(&key, v),
-            None => self.registry.get(&key),
-        }
-        .ok_or_else(|| RuntimeError::ActionNotFound {
-            key: action_key.to_owned(),
-        })?;
+        let synthetic_node = synthesize_node_definition(action_key, version);
 
-        self.run_handler(action_key, metadata, handler, input, context, checkpoint)
-            .await
+        self.dispatch_action(
+            action_key,
+            &key,
+            version,
+            &synthetic_node,
+            input,
+            context,
+            checkpoint,
+        )
+        .await
     }
 
     /// Execute an action by key.
@@ -264,15 +274,110 @@ impl ActionRuntime {
             }
         })?;
 
-        let (metadata, handler) =
-            self.registry
-                .get(&key)
-                .ok_or_else(|| RuntimeError::ActionNotFound {
-                    key: action_key.to_owned(),
-                })?;
+        let synthetic_node = synthesize_node_definition(action_key, None);
 
-        self.run_handler(action_key, metadata, handler, input, context, None)
-            .await
+        self.dispatch_action(
+            action_key,
+            &key,
+            None,
+            &synthetic_node,
+            input,
+            context,
+            None,
+        )
+        .await
+    }
+
+    /// Execute an action by node (preferred entry point — production dispatch).
+    ///
+    /// Looks up the [`ActionFactory`] for `node.action_key` and invokes
+    /// [`ActionFactory::instantiate`] with the supplied [`NodeDefinition`] +
+    /// [`ActionContext`] so slot bindings declared on the node resolve
+    /// correctly. Falls back to the legacy [`ActionHandler`] dispatch path
+    /// only when no factory is registered for the key (test fixtures
+    /// registered via `legacy_register_*_with_metadata`).
+    ///
+    /// `version` is optional — when `Some`, an exact version match is
+    /// required; when `None`, the latest registered version of the action is
+    /// dispatched.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::execute_action_with_checkpoint`].
+    pub async fn execute_action_with_node(
+        &self,
+        node: &NodeDefinition,
+        version: Option<&semver::Version>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let action_key_str = node.action_key.as_str();
+        self.dispatch_action(
+            action_key_str,
+            &node.action_key,
+            version,
+            node,
+            input,
+            context,
+            checkpoint,
+        )
+        .await
+    }
+
+    /// Common dispatch entry — prefer factory path, fall back to legacy
+    /// [`ActionHandler`] path for the test-escape registrations
+    /// (`legacy_register_*_with_metadata`).
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_action(
+        &self,
+        action_key_str: &str,
+        action_key: &nebula_core::ActionKey,
+        version: Option<&semver::Version>,
+        node: &NodeDefinition,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        // Production path: factory dispatch via Arc<dyn ActionFactory>.
+        let factory_lookup = match version {
+            Some(v) => self.registry.get_factory_versioned(action_key, v),
+            None => self.registry.get_factory(action_key),
+        };
+        if let Some((metadata, factory)) = factory_lookup {
+            return self
+                .run_factory(
+                    action_key_str,
+                    metadata,
+                    factory,
+                    node,
+                    input,
+                    context,
+                    checkpoint,
+                )
+                .await;
+        }
+
+        // Legacy path: ActionHandler enum (kept for `legacy_register_*_with_metadata`
+        // test fixtures and currently-untouched dyn-handler registrations like
+        // EventSourceAdapter). Production registers via `register_*_factory::<A>()`.
+        let (metadata, handler) = match version {
+            Some(v) => self.registry.get_versioned(action_key, v),
+            None => self.registry.get(action_key),
+        }
+        .ok_or_else(|| RuntimeError::ActionNotFound {
+            key: action_key_str.to_owned(),
+        })?;
+
+        self.run_handler(
+            action_key_str,
+            metadata,
+            handler,
+            input,
+            context,
+            checkpoint,
+        )
+        .await
     }
 
     /// Dispatch a resolved handler through its kind-specific execution path.
@@ -364,6 +469,295 @@ impl ActionRuntime {
             },
             Err(runtime_err) => Err(runtime_err),
         }
+    }
+
+    /// Dispatch through the factory path — instantiate a fresh
+    /// [`ErasedAction`] for the supplied workflow node and dispatch it.
+    ///
+    /// Mirrors [`Self::run_handler`]'s metric contract:
+    ///
+    /// - Stateless / Stateful / Control variants observe the duration histogram and increment
+    ///   executions / failures.
+    /// - Trigger / Resource variants are early-rejected (not executable through `ActionRuntime`)
+    ///   and increment the dispatch-rejected counter only.
+    ///
+    /// `factory.instantiate` returning an error is treated as an action
+    /// failure (slot resolution, etc.). The duration histogram is observed
+    /// for instantiate failures so dashboards reflect the per-dispatch cost
+    /// regardless of whether the failure happened in instantiation or
+    /// during the action itself.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private dispatch entry — splitting into a struct hides the metric/observe contract from the call site"
+    )]
+    async fn run_factory(
+        &self,
+        action_key: &str,
+        metadata: ActionMetadata,
+        factory: Arc<dyn ActionFactory>,
+        node: &NodeDefinition,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
+        #[allow(
+            clippy::unwrap_or_default,
+            reason = "ExecutionId::new() != Default::default()"
+        )]
+        let execution_id = context
+            .scope()
+            .execution_id
+            .unwrap_or_else(ExecutionId::new);
+
+        let started = Instant::now();
+
+        // Instantiate the action via the factory. Slot-binding resolution
+        // (and any FromWorkflowNode user code) runs here.
+        let erased = match factory.instantiate(node, context).await {
+            Ok(e) => e,
+            Err(e) => {
+                let result: Result<ActionResult<serde_json::Value>, RuntimeError> =
+                    Err(RuntimeError::ActionError(e));
+                self.observe_dispatched(started, &result);
+                return result;
+            },
+        };
+
+        let result = match erased {
+            ErasedAction::Stateless(inner) => {
+                let r = self
+                    .execute_erased_stateless(&metadata, inner, input, context)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
+            ErasedAction::Stateful(inner) => {
+                let r = self
+                    .execute_erased_stateful(&metadata, inner, input, context, checkpoint)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
+            ErasedAction::Control(inner) => {
+                let r = self
+                    .execute_erased_control(&metadata, inner, input, context)
+                    .await;
+                self.observe_dispatched(started, &r);
+                r
+            },
+            ErasedAction::Trigger(_) => {
+                self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
+                return Err(RuntimeError::TriggerNotExecutable {
+                    key: action_key.to_owned(),
+                });
+            },
+            ErasedAction::Resource(_) => {
+                self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
+                return Err(RuntimeError::ResourceNotExecutable {
+                    key: action_key.to_owned(),
+                });
+            },
+            // `ErasedAction` is `#[non_exhaustive]`. Unknown future variants
+            // surface as an internal runtime error rather than silently
+            // succeeding.
+            _ => {
+                self.observe_rejected(dispatch_reject_reason::UNKNOWN_VARIANT);
+                return Err(RuntimeError::Internal(format!(
+                    "unknown ErasedAction variant for action '{action_key}'"
+                )));
+            },
+        };
+
+        match result {
+            Ok(mut action_result) => {
+                self.enforce_data_limit(
+                    action_key,
+                    execution_id,
+                    &mut action_result,
+                    &error_counter,
+                )
+                .await?;
+                Ok(action_result)
+            },
+            Err(runtime_err) => Err(runtime_err),
+        }
+    }
+
+    /// Stateless dispatch via `Box<dyn ErasedStateless>`.
+    ///
+    /// Mirrors [`Self::execute_stateless`] for the factory path. Honours
+    /// the same isolation contract (`None` runs in-process; sandboxed
+    /// dispatch routes through [`SandboxRunner`] using the same
+    /// `metadata`).
+    async fn execute_erased_stateless(
+        &self,
+        metadata: &ActionMetadata,
+        erased: Box<dyn nebula_action::ErasedStateless>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        match metadata.isolation_level {
+            IsolationLevel::None => Ok(erased.dispatch(input, context).await?),
+            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
+                let sandboxed = SandboxedContext::new(context);
+                Ok(self.sandbox.execute(sandboxed, metadata, input).await?)
+            },
+            // IsolationLevel is `#[non_exhaustive]`. Any future variant must
+            // fail-closed until we explicitly wire dispatch for it.
+            _ => Err(RuntimeError::Internal(format!(
+                "unknown isolation level for action '{}' — refusing to dispatch",
+                metadata.base.key.as_str()
+            ))),
+        }
+    }
+
+    /// Stateful dispatch via `Box<dyn ErasedStateful>`.
+    ///
+    /// Mirrors [`Self::execute_stateful`] for the factory path. The
+    /// erased trait works on `Value` state so the iteration body matches
+    /// 1:1 with the legacy `Arc<dyn StatefulHandler>` path — same cancel
+    /// race, same checkpoint contract, same iteration cap, same
+    /// stuck-state guard.
+    async fn execute_erased_stateful(
+        &self,
+        metadata: &ActionMetadata,
+        erased: Box<dyn nebula_action::ErasedStateful>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+        checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(ActionError::fatal(
+                "sandboxed stateful execution is not yet supported — \
+                 broker iteration protocol lands in sandbox slice 1d",
+            )
+            .into());
+        }
+
+        if context.cancellation().is_cancelled() {
+            return Err(ActionError::Cancelled.into());
+        }
+
+        let (mut state, mut iteration) = match checkpoint.as_deref() {
+            Some(sink) => match sink.load().await {
+                Ok(Some(cp)) => (cp.state, cp.iteration),
+                Ok(None) => (erased.init_state()?, 0u32),
+                Err(load_err) => {
+                    tracing::warn!(
+                        action_key = %metadata.base.key.as_str(),
+                        execution_id = ?context.scope().execution_id,
+                        node_key = %context.node_key(),
+                        error = %load_err,
+                        "stateful checkpoint load failed — falling back to init_state, \
+                         iteration progress (if any) is lost"
+                    );
+                    (erased.init_state()?, 0u32)
+                },
+            },
+            None => (erased.init_state()?, 0u32),
+        };
+
+        const MAX_ITERATIONS: u32 = 10_000;
+
+        loop {
+            if iteration >= MAX_ITERATIONS {
+                return Err(RuntimeError::IterationCapExceeded {
+                    action_key: metadata.base.key.clone(),
+                    node_key: context.node_key().clone(),
+                    cap: MAX_ITERATIONS,
+                });
+            }
+
+            if context.cancellation().is_cancelled() {
+                return Err(ActionError::Cancelled.into());
+            }
+
+            let state_digest_before = stateful_state_digest(&state);
+
+            let iteration_result = {
+                let exec_fut = erased.dispatch(&input, &mut state, context);
+                tokio::pin!(exec_fut);
+
+                tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        return Err(ActionError::Cancelled.into());
+                    }
+                    res = &mut exec_fut => res,
+                }
+            };
+
+            let result = iteration_result?;
+            iteration = iteration.saturating_add(1);
+
+            match result {
+                ActionResult::Continue { delay, .. } => {
+                    let state_digest_after = stateful_state_digest(&state);
+                    if state_digest_before == state_digest_after {
+                        return Err(RuntimeError::StatefulStuck {
+                            action_key: metadata.base.key.clone(),
+                            node_key: context.node_key().clone(),
+                            iteration,
+                        });
+                    }
+
+                    if let Some(sink) = checkpoint.as_deref() {
+                        let cp = StatefulCheckpoint::new(iteration, state.clone());
+                        sink.save(&cp).await?;
+                    }
+
+                    if let Some(d) = delay {
+                        tokio::select! {
+                            () = tokio::time::sleep(d) => {}
+                            () = context.cancellation().cancelled() => {
+                                return Err(ActionError::Cancelled.into());
+                            }
+                        }
+                    }
+                },
+                other => {
+                    if let Some(sink) = checkpoint.as_deref()
+                        && let Err(clear_err) = sink.clear().await
+                    {
+                        tracing::warn!(
+                            action_key = %metadata.base.key.as_str(),
+                            execution_id = ?context.scope().execution_id,
+                            node_key = %context.node_key(),
+                            error = %clear_err,
+                            "stateful checkpoint clear failed on terminal iteration; \
+                             orphaned row left for engine GC"
+                        );
+                    }
+                    return Ok(other);
+                },
+            }
+        }
+    }
+
+    /// Control dispatch via `Box<dyn ErasedControl>`.
+    ///
+    /// Control nodes (If / Switch / Router / Filter / NoOp / Stop / Fail)
+    /// dispatch as one-shot evaluators and never run sandboxed — they
+    /// produce flow-control [`ActionResult`] variants but no I/O. The
+    /// erased surface is intentionally identical to stateless from the
+    /// runtime's POV.
+    async fn execute_erased_control(
+        &self,
+        metadata: &ActionMetadata,
+        erased: Box<dyn nebula_action::ErasedControl>,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            return Err(RuntimeError::Internal(format!(
+                "control action '{}' must run with IsolationLevel::None — \
+                 control nodes are flow-control desugared to stateless and \
+                 never sandboxed",
+                metadata.base.key.as_str()
+            )));
+        }
+        Ok(erased.dispatch(input, context).await?)
     }
 
     /// Observe a dispatched handler execution.
@@ -819,6 +1213,41 @@ impl ActionRuntime {
 
         Ok(())
     }
+}
+
+/// Build a minimal [`NodeDefinition`] from an action key for synthetic
+/// dispatch entry points (admin tooling, tests, top-level
+/// `execute_action(_versioned|_with_checkpoint)`).
+///
+/// The synthesized node has no parameters, no slot bindings, and no rate
+/// limit — it carries just enough metadata for
+/// [`ActionFactory::instantiate`] to construct the action. Production
+/// dispatch routes through [`ActionRuntime::execute_action_with_node`]
+/// instead so the workflow node's `slot_bindings` reach the factory.
+///
+/// # Panics
+///
+/// Panics only if `action_key` is not a valid [`ActionKey`]. Production
+/// callers parse the key separately and never reach this function with an
+/// invalid key.
+fn synthesize_node_definition(
+    action_key: &str,
+    interface_version: Option<&semver::Version>,
+) -> NodeDefinition {
+    let mut node = NodeDefinition::new(
+        nebula_core::NodeKey::new("synthetic_runtime_dispatch")
+            .expect("synthetic node key is valid"),
+        action_key.to_owned(),
+        action_key,
+    )
+    .unwrap_or_else(|err| {
+        // Caller should have validated the key already; surface the error
+        // here as a clear panic rather than silently substituting another
+        // key — the synthetic-node path is admin tooling/tests only.
+        panic!("synthesize_node_definition: invalid action key '{action_key}': {err}");
+    });
+    node.interface_version = interface_version.cloned();
+    node
 }
 
 /// Best-effort size of all payload bytes represented by an output slot after

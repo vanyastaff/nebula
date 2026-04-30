@@ -2823,6 +2823,7 @@ impl WorkflowEngine {
                 node_key: node_key.clone(),
                 workflow_id,
                 action_key,
+                node: Arc::new((*node_def).clone()),
                 interface_version,
                 input: action_input,
                 support_inputs,
@@ -3408,9 +3409,15 @@ struct NodeTask {
     node_key: NodeKey,
     workflow_id: WorkflowId,
     action_key: String,
+    /// Workflow node being executed. Passed through to
+    /// [`ActionRuntime::execute_action_with_node`] so the dispatch path
+    /// can hand the [`NodeDefinition`] to
+    /// [`nebula_action::ActionFactory::instantiate`] (slot bindings,
+    /// parameters, version pinning live on the node).
+    node: Arc<nebula_workflow::NodeDefinition>,
     /// Pinned interface version for versioned action lookup.
     ///
-    /// When `Some`, the runtime uses [`execute_action_versioned`] with this
+    /// When `Some`, the runtime uses [`execute_action_with_node`] with this
     /// exact version. When `None`, the latest registered handler is used.
     interface_version: Option<semver::Version>,
     input: serde_json::Value,
@@ -3525,15 +3532,19 @@ impl NodeTask {
             }
         }
 
-        // Use versioned action lookup when the node definition pins a version;
-        // fall back to the latest registered handler otherwise.
+        // Production dispatch via the factory path: the runtime calls
+        // `factory.instantiate(node, ctx)` to build a fresh erased
+        // action, then dispatches the matching variant. Falls back to
+        // the legacy `ActionHandler` path inside the runtime only when
+        // no factory is registered (test-escape registrations).
         let result = self
             .runtime
-            .execute_action_versioned(
-                &self.action_key,
+            .execute_action_with_node(
+                &self.node,
                 self.interface_version.as_ref(),
                 self.input,
                 &action_ctx,
+                None,
             )
             .await;
 
@@ -4538,7 +4549,10 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{OnceLock, atomic::AtomicU32},
+        sync::{
+            OnceLock,
+            atomic::{AtomicU32, Ordering},
+        },
         time::Duration,
     };
 
@@ -8961,6 +8975,166 @@ mod tests {
         assert_ne!(
             first.execution_id, second.execution_id,
             "each execute_workflow call must produce its own ExecutionId"
+        );
+    }
+
+    // ── Phase 3 dispatch crossover regression ─────────────────────────────────
+    //
+    // These tests pin the contract that production registrations via
+    // `register_*_factory::<A>()` actually flow through `factory.instantiate`
+    // at dispatch — not the legacy `ActionHandler` enum path. Without this,
+    // a regression that silently routed factory registrations through the
+    // legacy lookup would not be caught by the existing test fixtures
+    // (which all use `legacy_register_*_with_metadata`).
+
+    /// Variant A fixture — counts how many times `from_workflow_node` is
+    /// called so the test can assert the factory path was taken.
+    struct FactoryEcho;
+
+    impl Action for FactoryEcho {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static ActionMetadata {
+            static M: OnceLock<ActionMetadata> = OnceLock::new();
+            M.get_or_init(|| {
+                ActionMetadata::new(
+                    action_key!("test.factory.echo"),
+                    "FactoryEcho",
+                    "echo via factory dispatch",
+                )
+            })
+        }
+        fn input_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn output_schema() -> &'static ValidSchema {
+            static S: OnceLock<ValidSchema> = OnceLock::new();
+            S.get_or_init(<serde_json::Value as HasSchema>::schema)
+        }
+        fn dependencies() -> &'static Dependencies {
+            static D: OnceLock<Dependencies> = OnceLock::new();
+            D.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl StatelessAction for FactoryEcho {
+        async fn execute(
+            &self,
+            input: <Self as Action>::Input,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
+        ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+            Ok(ActionResult::success(input))
+        }
+    }
+
+    /// Global instantiation counter — every call to
+    /// [`FactoryEcho::from_workflow_node`] bumps it. Tests serialize on
+    /// [`FACTORY_TEST_LOCK`] (an async `tokio::sync::Mutex`, so the
+    /// guard can be held across `.await` points without tripping
+    /// `clippy::await_holding_lock`).
+    static FACTORY_INSTANTIATIONS: AtomicU32 = AtomicU32::new(0);
+    static FACTORY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    impl nebula_action::FromWorkflowNode for FactoryEcho {
+        type Error = ActionError;
+
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn nebula_action::ActionContext,
+        ) -> Result<Self, Self::Error> {
+            FACTORY_INSTANTIATIONS.fetch_add(1, Ordering::SeqCst);
+            Ok(Self)
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_node_dispatches_through_factory_path() {
+        let _guard = FACTORY_TEST_LOCK.lock().await;
+        let baseline = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+
+        let registry = Arc::new(ActionRegistry::new());
+        // Production registration helper — wires `Arc<dyn ActionFactory>`,
+        // not `ActionHandler`. The runtime's dispatch path MUST call
+        // `factory.instantiate(node, ctx)` for each dispatch, which in
+        // turn calls `FactoryEcho::from_workflow_node`, which bumps
+        // FACTORY_INSTANTIATIONS.
+        registry.register_stateless_factory::<FactoryEcho>();
+
+        let (engine, _) = make_engine(registry);
+
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "factory_echo", "test.factory.echo").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(
+                &wf,
+                serde_json::json!({"hello": "factory"}),
+                ExecutionBudget::default(),
+            )
+            .await
+            .expect("workflow should succeed");
+
+        assert!(result.is_success(), "workflow result should be Success");
+        assert_eq!(
+            result.node_output(&n),
+            Some(&serde_json::json!({"hello": "factory"}))
+        );
+
+        let after = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+        assert_eq!(
+            after - baseline,
+            1,
+            "factory.instantiate should have been called exactly once for the single dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn factory_path_takes_precedence_over_legacy_handler() {
+        // When BOTH a factory and a legacy handler are registered for the
+        // same key, the factory wins (production preference). This guards
+        // against regressions that flip the lookup order.
+        let _guard = FACTORY_TEST_LOCK.lock().await;
+        let baseline = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless_factory::<FactoryEcho>();
+        // Legacy registration with a *different* handler (FailHandler) so
+        // we can tell which path actually ran — if dispatch routed through
+        // the legacy path, the workflow would fail.
+        registry.legacy_register_stateless_with_metadata(
+            ActionMetadata::new(
+                action_key!("test.factory.echo"),
+                "LegacyEcho",
+                "legacy fallback",
+            ),
+            FailHandler,
+        );
+
+        let (engine, _) = make_engine(registry);
+
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "factory_first", "test.factory.echo").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("ok"), ExecutionBudget::default())
+            .await
+            .expect("workflow should succeed via factory path");
+        assert!(result.is_success());
+        assert_eq!(result.node_output(&n), Some(&serde_json::json!("ok")));
+
+        let after = FACTORY_INSTANTIATIONS.load(Ordering::SeqCst);
+        assert_eq!(
+            after - baseline,
+            1,
+            "factory should have been preferred — would have used FailHandler legacy path otherwise"
         );
     }
 }
