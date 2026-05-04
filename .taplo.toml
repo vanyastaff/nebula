@@ -6,6 +6,8 @@ exclude = [
   "**/node_modules/**",
   ".worktrees/**",
   ".claude/worktrees/**",
+  # Local Codex plugin cache — third-party TOML; not Nebula formatting policy.
+  ".codex/**",
   "apps/desktop/src-tauri/gen/**",
   # Competitor research v2 — harvested upstream Cargo.toml content, not Nebula style.
   "findings/**",
