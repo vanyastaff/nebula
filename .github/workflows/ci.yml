@@ -81,7 +81,7 @@ jobs:
           toolchain: "1.95"
           components: clippy
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           shared-key: ci-clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -103,7 +103,7 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           shared-key: ci-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -137,7 +137,7 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           shared-key: ci-doctests
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -164,7 +164,7 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           shared-key: ci-msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -193,7 +193,7 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           shared-key: ci-doc
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -216,7 +216,7 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           shared-key: ci-bench
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -242,7 +242,7 @@ jobs:
         with:
           toolchain: "1.95"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@db5fb34fa772531a3ece57ca434f579eb334e0fb # v2.75.30
         with:
           tool: cargo-deny
       - name: Run cargo deny
