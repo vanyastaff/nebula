@@ -95,9 +95,10 @@ pub struct InMemoryAuthBackend {
     verification_tokens: DashMap<String, VerificationToken>,
     mfa_challenges: DashMap<String, MfaChallenge>,
     oauth_state: DashMap<String, OAuthStateEntry>,
-    /// Optional sink for outbound emails (test hook). When `None`, emails
-    /// are silently discarded — useful for local dev / test runs that
-    /// only care about the API contract.
+    /// In-memory capture of outbound emails for tests and local inspection.
+    ///
+    /// Every verification / password-reset email is appended here; there is
+    /// no separate "disabled" mode — use [`Self::emails`] to assert flows.
     email_sink: Arc<RwLock<Vec<EmailEnvelope>>>,
 }
 
@@ -150,8 +151,12 @@ impl InMemoryAuthBackend {
         self.users.insert(user.id, user);
     }
 
-    fn issue_verification_token(&self, user_id: UserId, kind: VerificationKind) -> String {
-        let token = session::random_token(24).unwrap_or_else(|_| "fallback".to_owned());
+    fn issue_verification_token(
+        &self,
+        user_id: UserId,
+        kind: VerificationKind,
+    ) -> Result<String, AuthError> {
+        let token = session::random_token(24)?;
         self.verification_tokens.insert(
             token.clone(),
             VerificationToken {
@@ -160,7 +165,7 @@ impl InMemoryAuthBackend {
                 expires_at: Self::now_secs() + VERIFICATION_TTL.as_secs(),
             },
         );
-        token
+        Ok(token)
     }
 
     fn record_email(&self, to: &str, token: &str, kind: &'static str) {
@@ -222,7 +227,7 @@ impl AuthBackend for InMemoryAuthBackend {
         let profile = record.profile();
         self.put_user(record);
 
-        let token = self.issue_verification_token(id, VerificationKind::EmailVerify);
+        let token = self.issue_verification_token(id, VerificationKind::EmailVerify)?;
         self.record_email(&email, &token, "EmailVerify");
 
         tracing::info!(user_id = %id, "user registered");
@@ -367,8 +372,20 @@ impl AuthBackend for InMemoryAuthBackend {
 
     async fn request_password_reset(&self, email: &str) -> Result<(), AuthError> {
         if let Some(user) = self.lookup_user_by_email(email) {
-            let token = self.issue_verification_token(user.id, VerificationKind::PasswordReset);
-            self.record_email(&user.email, &token, "PasswordReset");
+            match self.issue_verification_token(user.id, VerificationKind::PasswordReset) {
+                Ok(token) => {
+                    self.record_email(&user.email, &token, "PasswordReset");
+                },
+                Err(err) => {
+                    // Do not surface token-mint failures to the caller (enumeration-safe),
+                    // but never fall back to a predictable token.
+                    tracing::error!(
+                        error = %err,
+                        user_id = %user.id,
+                        "failed to mint password reset token",
+                    );
+                },
+            }
         }
         // Always return Ok to avoid account-existence enumeration.
         Ok(())

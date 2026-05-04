@@ -169,13 +169,13 @@ mod tests {
     fn lookup_hash_rejects_wrong_prefix() {
         let err =
             hash_for_lookup("nbl_sk_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap_err();
-        matches!(err, AuthError::InvalidCredentials);
+        assert!(matches!(err, AuthError::InvalidCredentials));
     }
 
     #[test]
     fn lookup_hash_rejects_wrong_length() {
         let err = hash_for_lookup("pat_short").unwrap_err();
-        matches!(err, AuthError::InvalidCredentials);
+        assert!(matches!(err, AuthError::InvalidCredentials));
     }
 
     #[test]

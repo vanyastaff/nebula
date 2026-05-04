@@ -110,9 +110,10 @@ pub struct DispatchedEvent {
 }
 
 impl MpscSink {
-    /// Build a sink with the given channel capacity. `capacity` of `0`
-    /// is rejected by the underlying `mpsc::channel`, so callers should
-    /// pass at least `1`.
+    /// Build a sink with the given channel capacity.
+    ///
+    /// `tokio::sync::mpsc::channel` rejects a capacity of `0`; values below
+    /// `1` are therefore clamped to `1`.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         let (tx, rx) = mpsc::channel(capacity.max(1));

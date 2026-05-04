@@ -16,7 +16,8 @@
 //! - HTTP method (uppercase ASCII)
 //! - Request URI path (without query string)
 //! - The validated `Idempotency-Key` header value
-//! - A fingerprint of identity-bearing headers (`Authorization`, `X-API-Key`)
+//! - A fingerprint of identity-bearing material (`Authorization`, `X-API-Key`, and the raw `Cookie`
+//!   header when present so session-cookie auth does not collide across principals)
 //!
 //! Including the identity fingerprint is **mandatory** because this layer sits
 //! in the outer middleware stack — it runs *before* `auth_middleware` resolves
@@ -40,10 +41,13 @@
 //!
 //! ## Position in the middleware stack
 //!
-//! Place this layer **inside** `request_id` and `security_headers` so that
-//! cached replays still acquire fresh `X-Request-ID` and security headers
-//! when they leave the server. See `crates/api/src/app.rs` for the wired
-//! ordering.
+//! When mounted on the production router, place this layer **inside**
+//! `request_id` and `security_headers` so cached replays still acquire fresh
+//! `X-Request-ID` and security headers when they leave the server.
+//!
+//! **Note:** the layer is not yet merged into `crate::app::build_app` /
+//! `crate::routes::create_routes` — integration tests mount `IdempotencyLayer` directly on
+//! minimal routers until the composition root wires a shared store.
 
 use std::{
     fmt,
@@ -496,10 +500,11 @@ fn fingerprint_request_body(body: &[u8]) -> [u8; 32] {
 }
 
 fn identity_fingerprint(headers: &HeaderMap) -> [u8; 32] {
-    // Mix in any header that proves caller identity. Order is fixed so the
-    // hash is stable across requests. Missing headers contribute an empty
-    // segment — the resulting hash still differs from "no headers at all"
-    // because the segment separators stay in the input.
+    // Mix in any material that distinguishes callers before `auth_middleware`
+    // runs (`Authorization`, `X-API-Key`, raw `Cookie` for session flows).
+    // Order is fixed so the hash is stable across requests. Missing headers
+    // contribute an empty segment — the resulting hash still differs from "no
+    // headers at all" because the segment separators stay in the input.
     let mut hasher = Sha256::new();
     let auth = headers
         .get(header::AUTHORIZATION)
@@ -509,10 +514,16 @@ fn identity_fingerprint(headers: &HeaderMap) -> [u8; 32] {
         .get("x-api-key")
         .map(HeaderValue::as_bytes)
         .unwrap_or_default();
+    let cookie = headers
+        .get(header::COOKIE)
+        .map(HeaderValue::as_bytes)
+        .unwrap_or_default();
     hasher.update(b"authorization=");
     hasher.update(auth);
     hasher.update(b"\nx-api-key=");
     hasher.update(api_key);
+    hasher.update(b"\ncookie=");
+    hasher.update(cookie);
     hasher.finalize().into()
 }
 
