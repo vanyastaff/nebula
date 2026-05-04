@@ -19,13 +19,16 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use nebula_core::UserId;
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::{auth::PAT_PREFIX as AUTH_PAT_PREFIX, state::AppState};
 
 /// The canonical prefix for Nebula API keys.
 pub const API_KEY_PREFIX: &str = "nbl_sk_";
 
 /// The canonical prefix for personal access tokens.
-pub const PAT_PREFIX: &str = "pat_";
+///
+/// Re-exported for the auth middleware; the authoritative definition lives
+/// in [`crate::auth::PAT_PREFIX`].
+pub const PAT_PREFIX: &str = AUTH_PAT_PREFIX;
 
 /// Cookie name for session-based authentication.
 pub const SESSION_COOKIE: &str = "nebula_session";
@@ -86,8 +89,9 @@ pub enum AuthMethod {
 ///
 /// The middleware tries each path in order:
 ///
-/// 1. **Session cookie** (`nebula_session`) — resolved via [`SessionStore`] port.
-/// 2. **PAT** — `Authorization: Bearer pat_…`, resolved via hash lookup (stub).
+/// 1. **Session cookie** (`nebula_session`) — resolved via [`AuthBackend`] port.
+/// 2. **PAT** — `Authorization: Bearer pat_…`, resolved via SHA-256 hash lookup against the same
+///    [`AuthBackend`].
 /// 3. **`X-API-Key` header** — compared in constant time against configured keys.
 /// 4. **JWT Bearer** — validated against the server JWT secret with HS256.
 ///
@@ -96,7 +100,7 @@ pub enum AuthMethod {
 /// Both [`AuthenticatedUser`] (legacy) and [`AuthContext`] are inserted into
 /// request extensions on success.
 ///
-/// [`SessionStore`]: crate::state::SessionStore
+/// [`AuthBackend`]: crate::auth::AuthBackend
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
@@ -104,9 +108,9 @@ pub async fn auth_middleware(
 ) -> Result<Response, StatusCode> {
     // ── Path 1: Session cookie ──────────────────────────────────────────────
     if let Some(session_id) = extract_cookie(&request, SESSION_COOKIE)
-        && let Some(ref store) = state.session_store
+        && let Some(ref backend) = state.auth_backend
     {
-        match store.get_principal_by_session(&session_id).await {
+        match backend.get_principal_by_session(&session_id).await {
             Ok(Some(principal)) => {
                 let user_id = principal_user_id(&principal);
                 request.extensions_mut().insert(AuthenticatedUser {
@@ -122,7 +126,7 @@ pub async fn auth_middleware(
                 // Session not found or expired — fall through to other methods
             },
             Err(_) => {
-                // Store error — fall through
+                // Backend error — fall through
             },
         }
     }
@@ -131,10 +135,28 @@ pub async fn auth_middleware(
     if let Some(bearer_value) = extract_bearer(&request)
         && bearer_value.starts_with(PAT_PREFIX)
     {
-        // TODO: Resolve PAT via hash lookup when PAT store is available.
-        // For now, parse the suffix as a user ID for development purposes.
-        // In production, PATs will be hashed and looked up in the database.
-        return Err(StatusCode::UNAUTHORIZED);
+        // Resolve via the auth backend's SHA-256 lookup. Bad shape returns
+        // None / Err and we fall through to a 401 to avoid leaking which
+        // bucket failed.
+        let backend = state
+            .auth_backend
+            .as_ref()
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let record = backend
+            .lookup_pat(bearer_value)
+            .await
+            .map_err(|_| StatusCode::UNAUTHORIZED)?
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+
+        let principal = nebula_core::Principal::User(record.user_id);
+        request.extensions_mut().insert(AuthenticatedUser {
+            user_id: record.user_id.to_string(),
+        });
+        request.extensions_mut().insert(AuthContext {
+            principal,
+            auth_method: AuthMethod::Pat,
+        });
+        return Ok(next.run(request).await);
     }
 
     // ── Path 3: X-API-Key header ─────────────────────────────────────────────

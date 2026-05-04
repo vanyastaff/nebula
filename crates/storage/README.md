@@ -145,8 +145,14 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - API stability: `partial` — Layer 1 (`ExecutionRepo`, `WorkflowRepo`) is `stable` and the
   production contract; Layer 2 (`repos::*` except `ControlQueueRepo`) is `planned` and not
   yet implementable without a broader engine + API refactor.
-- `execution_leases` schema may exist before full engine enforcement (§11.5 debt) — do not
-  imply lease safety until enforcement is wired.
+- `execution_leases` (Layer 1: `lease_holder` / `lease_expires_at`) is **enforced** as of
+  M2.2 — heartbeat + multi-runner takeover verified by
+  `crates/engine/tests/lease_takeover.rs`,
+  `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at
+  `crates/storage-loom-probe/src/lease_handoff.rs`.
+- `executions.claimed_by` / `claimed_until` (Layer 2, Sprint E scaffolding) — schema may
+  precede enforcement; do not imply lease safety. Deferred to 1.1 per ROADMAP "Out of scope
+  for 1.0".
 - S3 and Redis features are optional and experimental; local filesystem backend is `planned`.
 - `repos::InMemoryControlQueueRepo` is the only implemented Layer-2 type that should be
   depended on today.
@@ -191,7 +197,8 @@ contract consumers should depend on today.
 | `execution_journal` (append-only) | **Durable** | Replayable history |
 | `execution_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch (§12.2) |
 | `stateful_checkpoints` | **Best-effort** | Write failure logs, does not abort; may replay |
-| `execution_leases` | **Schema may precede enforcement** | Do not imply lease safety |
+| `executions.lease_holder` / `lease_expires_at` (Layer 1) | **Durable + enforced** (M2.2, ADR-0008/0015) | Heartbeat-driven; multi-runner takeover via TTL expiry. Verified by `crates/engine/tests/lease_takeover.rs` + `crates/storage/tests/execution_lease_pg_integration.rs` + loom probe at `crates/storage-loom-probe/src/lease_handoff.rs` |
+| `executions.claimed_by` / `claimed_until` (Layer 2, Sprint E) | **Schema may precede enforcement** | Spec-16 scaffolding, deferred to 1.1 — no engine consumers today |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 
 ### Supported backends

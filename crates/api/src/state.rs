@@ -18,7 +18,9 @@ use nebula_storage::{
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
 
-use crate::{config::JwtSecret, errors::ApiError, services::webhook::WebhookTransport};
+use crate::{
+    auth::AuthBackend, config::JwtSecret, errors::ApiError, services::webhook::WebhookTransport,
+};
 
 // ── Port traits ──────────────────────────────────────────────────────────────
 
@@ -34,16 +36,6 @@ pub trait OrgResolver: Send + Sync {
 pub trait WorkspaceResolver: Send + Sync {
     /// Look up a workspace by its slug within the given org.
     async fn resolve_by_slug(&self, org_id: OrgId, slug: &str) -> Result<WorkspaceId, ApiError>;
-}
-
-/// Session storage for cookie-based authentication.
-#[async_trait]
-pub trait SessionStore: Send + Sync {
-    /// Retrieve the [`Principal`] associated with a session ID, if any.
-    async fn get_principal_by_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Principal>, ApiError>;
 }
 
 /// Loads membership roles for RBAC middleware.
@@ -127,8 +119,15 @@ pub struct AppState {
     /// Optional workspace-slug → [`WorkspaceId`] resolver.
     pub workspace_resolver: Option<Arc<dyn WorkspaceResolver>>,
 
-    /// Optional session store for cookie-based auth.
-    pub session_store: Option<Arc<dyn SessionStore>>,
+    /// Optional Plane-A authentication backend.
+    ///
+    /// When `Some`, the auth middleware resolves session cookies and PATs
+    /// through this single contract. When `None`, only JWT and `X-API-Key`
+    /// authentication paths are available.
+    ///
+    /// See [`crate::auth::AuthBackend`] for the trait surface and
+    /// [`crate::auth::InMemoryAuthBackend`] for the default impl.
+    pub auth_backend: Option<Arc<dyn AuthBackend>>,
 
     /// Optional membership store for RBAC role lookups.
     pub membership_store: Option<Arc<dyn MembershipStore>>,
@@ -161,7 +160,7 @@ impl AppState {
             oauth_credential_store: Arc::new(InMemoryStore::new()),
             org_resolver: None,
             workspace_resolver: None,
-            session_store: None,
+            auth_backend: None,
             membership_store: None,
         }
     }
@@ -219,10 +218,14 @@ impl AppState {
         self
     }
 
-    /// Attach a session store for cookie-based authentication.
+    /// Attach a Plane-A authentication backend.
+    ///
+    /// Replaces the older `with_session_store` builder; the same slot now
+    /// drives session resolution, password login, MFA, PATs, and Plane-A
+    /// OAuth via [`crate::auth::AuthBackend`].
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
-        self.session_store = Some(store);
+    pub fn with_auth_backend(mut self, backend: Arc<dyn AuthBackend>) -> Self {
+        self.auth_backend = Some(backend);
         self
     }
 

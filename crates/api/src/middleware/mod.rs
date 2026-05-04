@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod csrf;
+pub mod idempotency;
 pub mod rate_limit;
 pub mod rbac;
 pub mod request_id;
@@ -14,6 +15,7 @@ pub mod webhook_ratelimit;
 
 pub use auth::auth_middleware;
 pub use csrf::csrf_middleware;
+pub use idempotency::{IdempotencyLayer, IdempotencyStore, InMemoryIdempotencyStore};
 pub use rate_limit::RateLimitState;
 pub use rbac::rbac_middleware;
 pub use request_id::RequestIdLayer;
