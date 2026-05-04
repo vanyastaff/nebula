@@ -28,10 +28,11 @@ use super::error::WebhookAuthError;
 
 /// Default header name carrying the HMAC-SHA-256 signature.
 ///
-/// Mirrors the canonical Nebula header used by the typed-action surface
-/// when the action does not override [`with_signature_header`]. Custom
-/// headers (e.g. `X-Hub-Signature-256` for GitHub-compatible flows) are
-/// supplied per-registration via [`WebhookAuthConfig::HmacSha256.header`].
+/// Mirrors the canonical Nebula header used by the typed-action surface when the
+/// action leaves the default signature header in place (see `WebhookConfig::with_header_str` /
+/// `WebhookConfig::with_header` in `nebula_action`). Custom headers (e.g. `X-Hub-Signature-256`
+/// for GitHub-compatible flows) are supplied per registration via the `header` field on
+/// [`WebhookAuthConfig::HmacSha256`].
 pub const DEFAULT_SIGNATURE_HEADER: &str = "X-Nebula-Signature";
 
 /// Authentication policy attached to a registered trigger.
