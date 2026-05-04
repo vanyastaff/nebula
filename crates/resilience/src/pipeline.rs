@@ -42,7 +42,7 @@ use crate::{
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
     retry::{RetryConfig, retry_with},
-    sink::{CircuitState, MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -161,10 +161,9 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 
     /// Inject a pipeline-wide metrics sink.
     ///
-    /// The sink receives events emitted by pipeline-managed wrappers and is also
-    /// used for retry attempts configured through this builder. Circuit breakers
-    /// and bulkheads passed in as pre-built `Arc`s keep their own sinks, but the
-    /// pipeline mirrors boundary events it observes.
+    /// The sink receives events emitted by pipeline-managed wrappers and is used
+    /// for retry attempts configured through this builder. Circuit breakers and
+    /// bulkheads passed in as pre-built `Arc`s keep their own sinks.
     #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Some(Arc::new(sink));
@@ -603,37 +602,20 @@ where
             },
             Step::Retry(config) => run_retry_step(config, ctx, idx, f).await,
             Step::CircuitBreaker(cb) => {
-                let before_acquire = cb.circuit_state();
                 cb.try_acquire()?;
-                emit_circuit_transition(
-                    ctx.sink.as_ref(),
-                    ctx.sink_overrides_steps,
-                    before_acquire,
-                    cb.circuit_state(),
-                );
 
                 let mut guard = ProbeGuard::new(cb);
                 let result = run_operation_with_shells(ctx.clone(), idx + 1, Arc::clone(&f)).await;
                 guard.defuse();
 
                 let outcome = classify_cb_outcome(&result, ctx.classifier.as_ref());
-                let before_record = cb.circuit_state();
                 cb.record_outcome(outcome);
-                emit_circuit_transition(
-                    ctx.sink.as_ref(),
-                    ctx.sink_overrides_steps,
-                    before_record,
-                    cb.circuit_state(),
-                );
                 result
             },
             Step::Bulkhead(bh) => {
                 let _permit = match bh.acquire().await {
                     Ok(permit) => permit,
-                    Err(err) => {
-                        emit_bulkhead_error(ctx.sink.as_ref(), ctx.sink_overrides_steps, &err);
-                        return Err(err);
-                    },
+                    Err(err) => return Err(err),
                 };
                 run_operation_with_shells(ctx, idx + 1, f).await
             },
@@ -656,30 +638,6 @@ where
             },
         }
     })
-}
-
-fn emit_circuit_transition(
-    sink: &dyn MetricsSink,
-    enabled: bool,
-    from: CircuitState,
-    to: CircuitState,
-) {
-    if enabled && from != to {
-        sink.record(ResilienceEvent::CircuitStateChanged { from, to });
-    }
-}
-
-fn emit_bulkhead_error<E>(sink: &dyn MetricsSink, enabled: bool, err: &CallError<E>) {
-    if !enabled {
-        return;
-    }
-    match err {
-        CallError::BulkheadFull => sink.record(ResilienceEvent::BulkheadRejected),
-        CallError::Timeout(duration) => sink.record(ResilienceEvent::TimeoutElapsed {
-            duration: *duration,
-        }),
-        _ => {},
-    }
 }
 
 /// Classify the outcome of an inner pipeline result for the CB step.
@@ -718,6 +676,7 @@ where
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
     let config_classifier = config.classifier.clone();
+    let has_explicit_retry_classifier = config_classifier.is_some();
     let pipeline_classifier = ctx.classifier.clone();
     let mut inner_config = RetryConfig::<RetryStepError<E>>::new_unchecked(config.max_attempts)
         .backoff(config.backoff.clone())
@@ -740,6 +699,9 @@ where
                 },
                 |classifier| classifier.classify(error),
             ),
+            RetryStepError::RetryablePattern(_) if has_explicit_retry_classifier => {
+                ErrorClass::Permanent
+            },
             RetryStepError::RetryablePattern(_) => ErrorClass::Transient,
             RetryStepError::FatalPattern(_) => ErrorClass::Permanent,
         },
@@ -1228,6 +1190,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pipeline_retry_classifier_blocks_inner_pattern_retries() {
+        let checks = Arc::new(AtomicU32::new(0));
+        let seen_checks = Arc::clone(&checks);
+        let rate_limiter: RateLimitCheck = Arc::new(move || {
+            let seen_checks = Arc::clone(&seen_checks);
+            Box::pin(async move {
+                reject_first_rate_limit_check(&seen_checks, Duration::from_millis(50))
+            })
+        });
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(RetryConfig::new(3).unwrap().retry_if(|_: &&str| false))
+            .rate_limiter(rate_limiter)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert!(matches!(result, Err(CallError::RateLimited { .. })));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn pipeline_retry_preserves_retry_hooks() {
         let sink = RecordingSink::new();
         let notifications: Arc<StdMutex<Vec<(u32, Duration)>>> =
@@ -1372,7 +1358,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_with_sink_mirrors_bulkhead_rejection() {
+    async fn pipeline_with_sink_does_not_double_count_prebuilt_bulkhead_rejection() {
         let sink = RecordingSink::new();
         let bh = Arc::new(
             Bulkhead::new(crate::BulkheadConfig {
@@ -1380,7 +1366,8 @@ mod tests {
                 queue_size: 0,
                 timeout: None,
             })
-            .unwrap(),
+            .unwrap()
+            .with_sink(sink.clone()),
         );
         let _permit = bh.acquire::<&str>().await.unwrap();
 
@@ -1398,7 +1385,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pipeline_with_sink_mirrors_circuit_state_change() {
+    async fn pipeline_with_sink_does_not_double_count_prebuilt_circuit_state_change() {
+        use crate::sink::CircuitState;
+
         let sink = RecordingSink::new();
         let cb = Arc::new(
             CircuitBreaker::new(crate::CircuitBreakerConfig {
@@ -1406,7 +1395,8 @@ mod tests {
                 min_operations: 1,
                 ..Default::default()
             })
-            .unwrap(),
+            .unwrap()
+            .with_sink(sink.clone()),
         );
 
         let pipeline = ResiliencePipeline::<&str>::builder()
@@ -1420,6 +1410,7 @@ mod tests {
 
         assert!(matches!(result, Err(CallError::Operation("fail"))));
         assert!(sink.has_state_change(CircuitState::Open));
+        assert_eq!(sink.count(ResilienceEventKind::CircuitStateChanged), 1);
     }
 
     #[tokio::test]
