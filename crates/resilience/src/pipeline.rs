@@ -150,7 +150,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// retry step, when neither a pipeline nor a per-retry classifier is set, treats every
     /// operation error as retryable (the historical pipeline default). For
     /// [`Classify`](nebula_error::Classify) semantics like standalone
-    /// [`retry_with`](crate::retry::retry_with), set [`classify_errors()`](Self::classify_errors)
+    /// [`retry_with`], set [`classify_errors()`](Self::classify_errors)
     /// and/or per-retry [`retry_if`](crate::retry::RetryConfig::retry_if) /
     /// [`with_classifier`](crate::retry::RetryConfig::with_classifier).
     #[must_use]
