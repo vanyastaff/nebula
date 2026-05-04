@@ -49,7 +49,8 @@ pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,
     /// How long to wait in Open state before transitioning to `HalfOpen`.
     pub reset_timeout: Duration,
-    /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
+    /// Max concurrent probe operations allowed in `HalfOpen` state. Also the number of
+    /// successful probes required before the circuit closes again. Default: 1.
     pub max_half_open_operations: u32,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
     pub min_operations: u32,
@@ -455,6 +456,8 @@ struct InnerState {
     total: u32,
     /// Number of active probe operations in `HalfOpen` state.
     half_open_probes: u32,
+    /// Number of successful probes completed in the current `HalfOpen` window.
+    half_open_successes: u32,
     /// Number of consecutive times the circuit has opened (for dynamic break duration).
     consecutive_opens: u32,
     /// Number of slow calls in the current window.
@@ -480,6 +483,7 @@ impl CircuitBreaker {
                 failures: 0,
                 total: 0,
                 half_open_probes: 0,
+                half_open_successes: 0,
                 consecutive_opens: 0,
                 slow_calls: 0,
                 window: if window_size > 0 {
@@ -545,6 +549,7 @@ impl CircuitBreaker {
             opened_at: self.clock.now(),
         };
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         drop(inner);
         if prev != CircuitState::Open {
@@ -698,7 +703,10 @@ impl CircuitBreaker {
         let result = match inner.state {
             State::Closed => Ok(()),
             State::HalfOpen => {
-                if inner.half_open_probes >= self.config.max_half_open_operations {
+                let admitted = inner
+                    .half_open_successes
+                    .saturating_add(inner.half_open_probes);
+                if admitted >= self.config.max_half_open_operations {
                     Err(CallError::CircuitOpen)
                 } else {
                     inner.half_open_probes = inner.half_open_probes.saturating_add(1);
@@ -715,6 +723,7 @@ impl CircuitBreaker {
                     inner.total = 0;
                     inner.slow_calls = 0;
                     inner.half_open_probes = 1; // this call is the first probe
+                    inner.half_open_successes = 0;
                     if let Some(ref mut window) = inner.window {
                         window.reset();
                     }
@@ -771,6 +780,8 @@ impl CircuitBreaker {
         inner.state = State::Open {
             opened_at: self.clock.now(),
         };
+        inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         inner.consecutive_opens += 1;
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         (prev, CircuitState::Open)
@@ -780,6 +791,7 @@ impl CircuitBreaker {
     /// Extracted to deduplicate the identical reset+trip pattern in `record_outcome`.
     fn trip_open_from_half_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         self.trip_open(inner)
     }
 
@@ -790,6 +802,7 @@ impl CircuitBreaker {
         inner.total = 0;
         inner.slow_calls = 0;
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         inner.consecutive_opens = 0;
         if let Some(ref mut window) = inner.window {
             window.reset();
@@ -802,6 +815,22 @@ impl CircuitBreaker {
         Self::reset_counters(inner);
         self.atomic_state.store(STATE_CLOSED, Ordering::Relaxed);
         (prev, CircuitState::Closed)
+    }
+
+    /// Record a successful half-open probe.
+    ///
+    /// The circuit closes only after `max_half_open_operations` successful probes have completed.
+    fn record_half_open_success(
+        &self,
+        inner: &mut InnerState,
+    ) -> Option<(CircuitState, CircuitState)> {
+        inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
+        inner.half_open_successes = inner.half_open_successes.saturating_add(1);
+        if inner.half_open_successes >= self.config.max_half_open_operations {
+            Some(self.close_from_half_open(inner))
+        } else {
+            None
+        }
     }
 
     /// Record an operation outcome directly (useful when driving the CB from external code).
@@ -820,7 +849,7 @@ impl CircuitBreaker {
             },
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.close_from_half_open(&mut inner));
+                    transition = self.record_half_open_success(&mut inner);
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
@@ -855,7 +884,7 @@ impl CircuitBreaker {
                     window.record(false, true);
                 }
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.close_from_half_open(&mut inner));
+                    transition = self.record_half_open_success(&mut inner);
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     if self.slow_rate_trips(&inner) {
@@ -1081,6 +1110,34 @@ mod tests {
         cb.record_outcome(Outcome::Success);
         assert_eq!(cb.circuit_state(), CS::Closed);
         assert!(cb.try_acquire::<&str>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn half_open_requires_configured_successful_probes_before_closing() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            max_half_open_operations: 2,
+            ..default_config()
+        })
+        .unwrap();
+
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        assert!(cb.try_acquire::<&str>().is_ok());
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(
+            cb.circuit_state(),
+            CS::HalfOpen,
+            "one successful probe should not close when two are configured"
+        );
+
+        assert!(cb.try_acquire::<&str>().is_ok());
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
     }
 
     #[tokio::test]
