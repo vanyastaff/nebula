@@ -19,7 +19,7 @@
 //!   `EndpointProviderImpl`, `WebhookRateLimiter` (§11.3 / §13.4). Located under
 //!   [`services::webhook`] with rate limiting in [`middleware::webhook_ratelimit`].
 //! - `state` — `AppState` holds port trait references: `WorkflowRepo`, `ExecutionRepo`,
-//!   `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `SessionStore`, `MembershipStore`.
+//!   `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `AuthBackend`, `MembershipStore`.
 //! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CookieConfig`, `CorsConfig`,
 //!   `VersioningConfig`, `PaginationConfig`) / `JwtSecret`; startup fails hard on a missing or
 //!   short secret — no `Default` impl (§4.5 operational honesty).
@@ -32,7 +32,9 @@
 //! Keep **Plane A** (who may call this API) separate from **Plane B** (integration credentials
 //! for workflows talking to *external* systems):
 //!
-//! - **`middleware::auth`** — **Plane A**: JWT bearer and `X-API-Key` for the Nebula API itself.
+//! - **`auth`** + **`middleware::auth`** — **Plane A**: identity, sessions, MFA, PATs, and the
+//!   user-facing OAuth sign-in flow plus the cookie / JWT / `X-API-Key` middleware that gates the
+//!   Nebula API itself.
 //! - **`credential`** — **Plane B infrastructure**: OAuth2 flow helpers (PKCE, signed state, token
 //!   exchange) and input validators for integration credentials. Located under [`services::oauth`]
 //!   with validators in [`extractors::credential`]. HTTP handlers live in [`handlers::credential`];
@@ -54,6 +56,7 @@
 #![warn(clippy::all)]
 
 pub mod app;
+pub mod auth;
 pub mod config;
 pub mod errors;
 pub mod extractors;
@@ -65,6 +68,7 @@ pub mod routes;
 pub mod server;
 pub mod services;
 pub mod state;
+pub mod webhook;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
