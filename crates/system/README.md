@@ -60,7 +60,8 @@ processes, or act as a security boundary. Metrics recording belongs in callers s
 - `disk::disk_for_path(path)` and `disk::pressure_for_path(path)` - path-specific disk lookup and
   pressure for persistence directories, checkpoint storage, and database volumes.
 - `disk::io_stats(device)` and `disk::filesystem_info(path)` - platform-specific details exposed
-  as `Availability<T>` rather than fake zero counters or silent `None`.
+  as `Availability<T>` rather than fake zero counters or silent `None`; Linux I/O stats require a
+  sysfs block-device basename such as `sda` or `nvme0n1`.
 - `network::interfaces()` and `network::usage()` - interface metadata and sampled counter rates.
   First samples, counter resets, and unimplemented metadata are explicit.
 - `process::current()`, `process::get_process(pid)`, `process::list()`, `process::stats()`, and

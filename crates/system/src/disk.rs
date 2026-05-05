@@ -4,9 +4,10 @@
 //!
 //! - **`DiskStats` I/O counters** are not part of `DiskInfo` because sysinfo does not expose
 //!   portable disk I/O counters. Use `io_stats(device)` when callers explicitly need them.
-//! - **`io_stats(device)`** currently reads `/sys/block/<device>/stat` on Linux and returns
-//!   `Availability<DiskStats>`. Unsupported platforms, unreadable devices, and parse failures are
-//!   explicit availability states, not zero counters.
+//! - **`io_stats(device)`** currently reads `/sys/block/<device>/stat` on Linux, where `device`
+//!   must be a sysfs block-device basename such as `sda` or `nvme0n1`, and returns
+//!   `Availability<DiskStats>`. Unsupported platforms, invalid device names, unreadable devices,
+//!   and parse failures are explicit availability states, not zero counters.
 //! - **`detect_disk_type`** maps only `HDD` and `SSD`; `Network`, `Removable`, and `RamDisk`
 //!   variants of `sysinfo::DiskKind` all map to `DiskType::Unknown`.
 //! - **Workaround for I/O counters on Linux**: Read `/sys/block/*/stat` directly or use
@@ -16,6 +17,20 @@
 use serde::{Deserialize, Serialize};
 
 use crate::availability::Availability;
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_linux_block_device_name(device: &str) -> Result<&str, &'static str> {
+    if device.is_empty() {
+        return Err("device name is empty");
+    }
+    if matches!(device, "." | "..") {
+        return Err("device name cannot be a traversal component");
+    }
+    if device.contains('/') || device.contains('\\') || device.contains('\0') {
+        return Err("device name must be a sysfs block-device basename");
+    }
+    Ok(device)
+}
 
 /// Disk information
 #[derive(Debug, Clone)]
@@ -210,15 +225,24 @@ pub fn is_ssd(mount_point: Option<&str>) -> bool {
     }
 }
 
-/// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`)
+/// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`).
+///
+/// `device` must be a sysfs block-device basename such as `sda` or `nvme0n1`.
+/// Paths, separators, empty strings, and traversal components are rejected.
 #[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(target_os = "linux")]; #[expect] would be unfulfilled on Linux
 pub fn io_stats(device: &str) -> Availability<DiskStats> {
     #[cfg(target_os = "linux")]
     {
         use std::fs;
 
-        // Try to read from /sys/block/{device}/stat
-        let device_name = device.rsplit('/').next().unwrap_or(device);
+        let device_name = match validate_linux_block_device_name(device) {
+            Ok(device_name) => device_name,
+            Err(reason) => {
+                return Availability::unavailable(format!(
+                    "invalid Linux block device name for /sys/block lookup: {reason}"
+                ));
+            },
+        };
         let stat_path = format!("/sys/block/{}/stat", device_name);
 
         if let Ok(content) = fs::read_to_string(&stat_path) {
@@ -432,4 +456,30 @@ fn detect_fs_type(path: &str) -> String {
     }
 
     "unknown".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_linux_block_device_name;
+
+    #[test]
+    fn linux_block_device_name_must_be_a_basename() {
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "/dev/sda",
+            "sda/../stat",
+            r"sda\..\stat",
+            "sda\0",
+        ] {
+            assert!(
+                validate_linux_block_device_name(invalid).is_err(),
+                "{invalid:?} must not be accepted as a sysfs block device basename"
+            );
+        }
+
+        assert_eq!(validate_linux_block_device_name("sda"), Ok("sda"));
+        assert_eq!(validate_linux_block_device_name("nvme0n1"), Ok("nvme0n1"));
+    }
 }
