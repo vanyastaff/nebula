@@ -12,9 +12,11 @@
 //! - **`cpu_usage`** requires previous backend refresh state. First and stale samples are explicit
 //!   availability states, not measured `0.0` values.
 
+use std::time::{Duration, Instant};
+#[cfg(feature = "process")]
 use std::{
+    collections::{HashMap, HashSet},
     sync::LazyLock,
-    time::{Duration, Instant},
 };
 
 use parking_lot::RwLock;
@@ -109,14 +111,89 @@ pub struct ProcessTree {
 }
 
 #[cfg(feature = "process")]
-static PROCESS_CPU_SAMPLE_STATE: LazyLock<RwLock<Option<Instant>>> =
-    LazyLock::new(|| RwLock::new(None));
+type ProcessCpuSampleKey = (u32, u64);
 
 #[cfg(feature = "process")]
-fn next_process_cpu_sample_status() -> AvailabilityStatus {
+static PROCESS_CPU_SAMPLE_STATE: LazyLock<RwLock<HashMap<ProcessCpuSampleKey, Instant>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+#[cfg(feature = "process")]
+fn process_cpu_sample_status_for_key(
+    now: Instant,
+    samples: &mut HashMap<ProcessCpuSampleKey, Instant>,
+    key: ProcessCpuSampleKey,
+) -> AvailabilityStatus {
+    let mut last_sample = samples.get(&key).copied();
+    let status =
+        sample_status_for_interval(now, &mut last_sample, sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+
+    if let Some(last_sample) = last_sample {
+        samples.insert(key, last_sample);
+    }
+
+    status
+}
+
+#[cfg(feature = "process")]
+fn process_cpu_sample_key(pid: u32, process: &sysinfo::Process) -> ProcessCpuSampleKey {
+    (pid, process.start_time())
+}
+
+#[cfg(feature = "process")]
+fn next_process_cpu_sample_status(key: ProcessCpuSampleKey) -> AvailabilityStatus {
     let now = Instant::now();
-    let mut last_sample = PROCESS_CPU_SAMPLE_STATE.write();
-    sample_status_for_interval(now, &mut last_sample, sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
+    let mut samples = PROCESS_CPU_SAMPLE_STATE.write();
+    process_cpu_sample_status_for_key(now, &mut samples, key)
+}
+
+#[cfg(feature = "process")]
+fn process_cpu_sample_statuses(
+    active_keys: &HashSet<ProcessCpuSampleKey>,
+) -> HashMap<ProcessCpuSampleKey, AvailabilityStatus> {
+    let now = Instant::now();
+    let mut samples = PROCESS_CPU_SAMPLE_STATE.write();
+    let mut statuses = HashMap::with_capacity(active_keys.len());
+
+    for key in active_keys {
+        statuses.insert(
+            *key,
+            process_cpu_sample_status_for_key(now, &mut samples, *key),
+        );
+    }
+
+    samples.retain(|key, _| active_keys.contains(key));
+    statuses
+}
+
+#[cfg(feature = "process")]
+fn combine_process_cpu_sample_status(
+    current: AvailabilityStatus,
+    next: AvailabilityStatus,
+) -> AvailabilityStatus {
+    use AvailabilityStatus::{
+        Available, NotImplemented, NotSampled, PermissionDenied, Stale, Unavailable, Unsupported,
+    };
+
+    match (current, next) {
+        (PermissionDenied, _) | (_, PermissionDenied) => PermissionDenied,
+        (Unsupported, _) | (_, Unsupported) => Unsupported,
+        (NotImplemented, _) | (_, NotImplemented) => NotImplemented,
+        (Unavailable, _) | (_, Unavailable) => Unavailable,
+        (NotSampled, _) | (_, NotSampled) => NotSampled,
+        (Stale, _) | (_, Stale) => Stale,
+        (Available, Available) => Available,
+    }
+}
+
+#[cfg(feature = "process")]
+fn aggregate_process_cpu_sample_status<I>(statuses: I) -> AvailabilityStatus
+where
+    I: IntoIterator<Item = AvailabilityStatus>,
+{
+    statuses
+        .into_iter()
+        .reduce(combine_process_cpu_sample_status)
+        .unwrap_or(AvailabilityStatus::Available)
 }
 
 #[cfg(feature = "process")]
@@ -225,11 +302,13 @@ pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
 
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
-        let cpu_status = next_process_cpu_sample_status();
 
-        sys.process(Pid::from_u32(pid))
-            .map(|p| process_from_sysinfo(pid, p, cpu_status))
-            .ok_or_else(|| SystemError::resource_not_found(format!("Process {pid} not found")))
+        let process = sys
+            .process(Pid::from_u32(pid))
+            .ok_or_else(|| SystemError::resource_not_found(format!("Process {pid} not found")))?;
+        let cpu_status = next_process_cpu_sample_status(process_cpu_sample_key(pid, process));
+
+        Ok(process_from_sysinfo(pid, process, cpu_status))
     }
 
     #[cfg(not(feature = "process"))]
@@ -248,11 +327,25 @@ pub fn list() -> Vec<ProcessInfo> {
 
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-        let cpu_status = next_process_cpu_sample_status();
+        let active_keys: HashSet<ProcessCpuSampleKey> = sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| process_cpu_sample_key(pid.as_u32(), process))
+            .collect();
+        let cpu_statuses = process_cpu_sample_statuses(&active_keys);
 
         sys.processes()
             .iter()
-            .map(|(pid, process)| process_from_sysinfo(pid.as_u32(), process, cpu_status))
+            .map(|(pid, process)| {
+                let pid = pid.as_u32();
+                let key = process_cpu_sample_key(pid, process);
+                let cpu_status = cpu_statuses
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(AvailabilityStatus::Unavailable);
+
+                process_from_sysinfo(pid, process, cpu_status)
+            })
             .collect()
     }
 
@@ -272,7 +365,13 @@ pub fn stats() -> ProcessStats {
 
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-        let cpu_status = next_process_cpu_sample_status();
+        let active_keys: HashSet<ProcessCpuSampleKey> = sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| process_cpu_sample_key(pid.as_u32(), process))
+            .collect();
+        let cpu_statuses = process_cpu_sample_statuses(&active_keys);
+        let cpu_status = aggregate_process_cpu_sample_status(cpu_statuses.values().copied());
 
         let mut total = 0;
         let mut running = 0;
@@ -472,5 +571,106 @@ impl ProcessMonitor {
     #[must_use]
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+}
+
+#[cfg(all(test, feature = "process"))]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{
+        AvailabilityStatus, aggregate_process_cpu_sample_status, process_cpu_sample_status_for_key,
+    };
+
+    #[test]
+    fn process_cpu_sample_readiness_is_tracked_per_process_identity() {
+        let minimum_interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+        let first = std::time::Instant::now();
+        let stale = first + (minimum_interval / 2);
+        let ready = first + minimum_interval;
+        let mut samples = HashMap::new();
+        let old_process = (10, 100);
+        let reused_pid_process = (10, 200);
+        let other_process = (20, 100);
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(first, &mut samples, old_process),
+            AvailabilityStatus::NotSampled
+        );
+        assert_eq!(samples.get(&old_process), Some(&first));
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(stale, &mut samples, old_process),
+            AvailabilityStatus::Stale
+        );
+        assert_eq!(
+            samples.get(&old_process),
+            Some(&first),
+            "stale samples must not advance the readiness baseline"
+        );
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(ready, &mut samples, old_process),
+            AvailabilityStatus::Available
+        );
+        assert_eq!(samples.get(&old_process), Some(&ready));
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(ready, &mut samples, other_process),
+            AvailabilityStatus::NotSampled,
+            "a new PID must not inherit readiness from an older sampled PID"
+        );
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(ready, &mut samples, reused_pid_process),
+            AvailabilityStatus::NotSampled,
+            "a reused PID must not inherit readiness from the old process identity"
+        );
+    }
+
+    #[test]
+    fn aggregate_process_cpu_status_preserves_unsampled_or_stale_evidence() {
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::Available,
+                AvailabilityStatus::NotSampled,
+            ]),
+            AvailabilityStatus::NotSampled
+        );
+
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::Available,
+                AvailabilityStatus::Stale,
+            ]),
+            AvailabilityStatus::Stale
+        );
+
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::Available,
+                AvailabilityStatus::Available,
+            ]),
+            AvailabilityStatus::Available
+        );
+    }
+
+    #[test]
+    fn aggregate_process_cpu_status_keeps_permission_denied_visible() {
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::NotSampled,
+                AvailabilityStatus::PermissionDenied,
+            ]),
+            AvailabilityStatus::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn aggregate_process_cpu_status_for_empty_set_is_zero_process_measurement() {
+        assert_eq!(
+            aggregate_process_cpu_sample_status([]),
+            AvailabilityStatus::Available
+        );
     }
 }
