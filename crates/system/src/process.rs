@@ -5,15 +5,32 @@
 //!
 //! # Known Limitations
 //!
-//! - **`thread_count`**: always `1` — sysinfo does not expose thread count portably.
-//! - **`uid` / `gid`**: always `None` — not populated even on Unix.
+//! - **`thread_count`** is exposed as `Availability<usize>`. Linux task metadata is reported when
+//!   sysinfo exposes it; other platforms return an explicit unsupported/unavailable status.
+//! - **`uid` / `gid`** are exposed as `Availability<u32>` because platform and permission support
+//!   differs. Unknown identifiers must not be interpreted as UID/GID zero.
+//! - **`cpu_usage`** requires previous backend refresh state. First and stale samples are explicit
+//!   availability states, not measured `0.0` values.
 
 use std::time::{Duration, Instant};
+#[cfg(feature = "process")]
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+};
 
+use parking_lot::RwLock;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::core::{SystemError, SystemResult};
+#[cfg(feature = "process")]
+use crate::availability::{
+    AvailabilityStatusMessages, availability_from_status, sample_status_for_interval,
+};
+use crate::{
+    availability::{Availability, AvailabilityStatus},
+    error::{SystemError, SystemResult},
+};
 
 /// Process information
 #[derive(Debug, Clone)]
@@ -35,14 +52,18 @@ pub struct ProcessInfo {
     pub memory: usize,
     /// Virtual memory size in bytes
     pub virtual_memory: usize,
-    /// CPU usage percentage
-    pub cpu_usage: f32,
+    /// CPU usage percentage.
+    ///
+    /// Process CPU usage requires previous refresh state in the backend, so
+    /// first/stale samples are represented explicitly instead of returning
+    /// `0.0` as if it were a measured value.
+    pub cpu_usage: Availability<f32>,
     /// Number of threads
-    pub thread_count: usize,
-    /// User ID (Unix only, always None currently)
-    pub uid: Option<u32>,
-    /// Group ID (Unix only, always None currently)
-    pub gid: Option<u32>,
+    pub thread_count: Availability<usize>,
+    /// User ID where the platform/backend exposes it
+    pub uid: Availability<u32>,
+    /// Group ID where the platform/backend exposes it
+    pub gid: Availability<u32>,
 }
 
 /// Process status
@@ -78,7 +99,7 @@ pub struct ProcessStats {
     /// Total memory used by all processes
     pub total_memory: usize,
     /// Total CPU usage by all processes
-    pub total_cpu: f32,
+    pub total_cpu: Availability<f32>,
 }
 
 /// Process tree node
@@ -89,6 +110,153 @@ pub struct ProcessTree {
     pub process: ProcessInfo,
     /// Child processes
     pub children: Vec<ProcessTree>,
+}
+
+#[cfg(feature = "process")]
+type ProcessCpuSampleKey = (u32, u64);
+
+#[cfg(feature = "process")]
+static PROCESS_CPU_SAMPLE_STATE: LazyLock<RwLock<HashMap<ProcessCpuSampleKey, Instant>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+#[cfg(feature = "process")]
+fn process_cpu_sample_status_for_key(
+    now: Instant,
+    samples: &mut HashMap<ProcessCpuSampleKey, Instant>,
+    key: ProcessCpuSampleKey,
+) -> AvailabilityStatus {
+    let mut last_sample = samples.get(&key).copied();
+    let status =
+        sample_status_for_interval(now, &mut last_sample, sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+
+    if let Some(last_sample) = last_sample {
+        samples.insert(key, last_sample);
+    }
+
+    status
+}
+
+#[cfg(feature = "process")]
+fn process_cpu_sample_key(pid: u32, process: &sysinfo::Process) -> ProcessCpuSampleKey {
+    (pid, process.start_time())
+}
+
+#[cfg(feature = "process")]
+fn next_process_cpu_sample_status(key: ProcessCpuSampleKey) -> AvailabilityStatus {
+    let now = Instant::now();
+    let mut samples = PROCESS_CPU_SAMPLE_STATE.write();
+    process_cpu_sample_status_for_key(now, &mut samples, key)
+}
+
+#[cfg(feature = "process")]
+fn process_cpu_sample_statuses(
+    active_keys: &HashSet<ProcessCpuSampleKey>,
+) -> HashMap<ProcessCpuSampleKey, AvailabilityStatus> {
+    let now = Instant::now();
+    let mut samples = PROCESS_CPU_SAMPLE_STATE.write();
+    let mut statuses = HashMap::with_capacity(active_keys.len());
+
+    for key in active_keys {
+        statuses.insert(
+            *key,
+            process_cpu_sample_status_for_key(now, &mut samples, *key),
+        );
+    }
+
+    samples.retain(|key, _| active_keys.contains(key));
+    statuses
+}
+
+#[cfg(feature = "process")]
+fn combine_process_cpu_sample_status(
+    current: AvailabilityStatus,
+    next: AvailabilityStatus,
+) -> AvailabilityStatus {
+    use AvailabilityStatus::{
+        Available, NotImplemented, NotSampled, PermissionDenied, Stale, Unavailable, Unsupported,
+    };
+
+    match (current, next) {
+        (PermissionDenied, _) | (_, PermissionDenied) => PermissionDenied,
+        (Unsupported, _) | (_, Unsupported) => Unsupported,
+        (NotImplemented, _) | (_, NotImplemented) => NotImplemented,
+        (Unavailable, _) | (_, Unavailable) => Unavailable,
+        (NotSampled, _) | (_, NotSampled) => NotSampled,
+        (Stale, _) | (_, Stale) => Stale,
+        (Available, Available) => Available,
+    }
+}
+
+#[cfg(feature = "process")]
+fn aggregate_process_cpu_sample_status<I>(statuses: I) -> AvailabilityStatus
+where
+    I: IntoIterator<Item = AvailabilityStatus>,
+{
+    statuses
+        .into_iter()
+        .reduce(combine_process_cpu_sample_status)
+        .unwrap_or(AvailabilityStatus::Available)
+}
+
+#[cfg(feature = "process")]
+fn sampled_cpu_usage(value: f32, status: AvailabilityStatus) -> Availability<f32> {
+    availability_from_status(
+        status,
+        value,
+        Some(value),
+        AvailabilityStatusMessages {
+            not_sampled: "first process CPU sample has no previous backend refresh",
+            stale: "process CPU sample refreshed before backend minimum interval",
+            unsupported: "process CPU sampling is unsupported",
+            unavailable: "process CPU sample is unavailable",
+            permission_denied: "process CPU sample probe was denied",
+            not_implemented: "process CPU sampling is not implemented",
+        },
+    )
+}
+
+#[cfg(feature = "process")]
+fn uid_availability(uid: Option<&sysinfo::Uid>) -> Availability<u32> {
+    #[cfg(windows)]
+    {
+        let _ = uid;
+        Availability::unsupported("process uid is not available on Windows")
+    }
+
+    #[cfg(not(windows))]
+    {
+        match uid {
+            Some(uid) => Availability::available(**uid),
+            None => Availability::unavailable("backend did not return process uid"),
+        }
+    }
+}
+
+#[cfg(feature = "process")]
+fn gid_availability(gid: Option<sysinfo::Gid>) -> Availability<u32> {
+    #[cfg(windows)]
+    {
+        let _ = gid;
+        Availability::unsupported("process gid is not available on Windows")
+    }
+
+    #[cfg(not(windows))]
+    {
+        match gid {
+            Some(gid) => Availability::available(*gid),
+            None => Availability::unavailable("backend did not return process gid"),
+        }
+    }
+}
+
+#[cfg(feature = "process")]
+fn thread_count_availability(process: &sysinfo::Process) -> Availability<usize> {
+    match process.tasks() {
+        Some(tasks) => Availability::available(tasks.len()),
+        None => Availability::unsupported(
+            "process thread/task count is exposed only on platforms where sysinfo reports tasks",
+        ),
+    }
 }
 
 #[cfg(feature = "process")]
@@ -104,20 +272,24 @@ fn map_status(status: sysinfo::ProcessStatus) -> ProcessStatus {
 }
 
 #[cfg(feature = "process")]
-fn process_from_sysinfo(pid: u32, process: &sysinfo::Process) -> ProcessInfo {
+fn process_from_sysinfo(
+    pid: u32,
+    process: &sysinfo::Process,
+    cpu_status: AvailabilityStatus,
+) -> ProcessInfo {
     ProcessInfo {
         pid,
-        parent_pid: process.parent().map(|p| p.as_u32()),
+        parent_pid: process.parent().map(sysinfo::Pid::as_u32),
         name: process.name().to_string_lossy().to_string(),
         exe_path: process.exe().map(|p| p.to_string_lossy().to_string()),
         cwd: process.cwd().map(|p| p.to_string_lossy().to_string()),
         status: map_status(process.status()),
         memory: process.memory() as usize,
         virtual_memory: process.virtual_memory() as usize,
-        cpu_usage: process.cpu_usage(),
-        thread_count: 1,
-        uid: None,
-        gid: None,
+        cpu_usage: sampled_cpu_usage(process.cpu_usage(), cpu_status),
+        thread_count: thread_count_availability(process),
+        uid: uid_availability(process.user_id()),
+        gid: gid_availability(process.group_id()),
     }
 }
 
@@ -147,9 +319,12 @@ pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
 
-        sys.process(Pid::from_u32(pid))
-            .map(|p| process_from_sysinfo(pid, p))
-            .ok_or_else(|| SystemError::resource_not_found(format!("Process {pid} not found")))
+        let process = sys
+            .process(Pid::from_u32(pid))
+            .ok_or_else(|| SystemError::resource_not_found(format!("Process {pid} not found")))?;
+        let cpu_status = next_process_cpu_sample_status(process_cpu_sample_key(pid, process));
+
+        Ok(process_from_sysinfo(pid, process, cpu_status))
     }
 
     #[cfg(not(feature = "process"))]
@@ -168,10 +343,25 @@ pub fn list() -> Vec<ProcessInfo> {
 
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let active_keys: HashSet<ProcessCpuSampleKey> = sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| process_cpu_sample_key(pid.as_u32(), process))
+            .collect();
+        let cpu_statuses = process_cpu_sample_statuses(&active_keys);
 
         sys.processes()
             .iter()
-            .map(|(pid, process)| process_from_sysinfo(pid.as_u32(), process))
+            .map(|(pid, process)| {
+                let pid = pid.as_u32();
+                let key = process_cpu_sample_key(pid, process);
+                let cpu_status = cpu_statuses
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(AvailabilityStatus::Unavailable);
+
+                process_from_sysinfo(pid, process, cpu_status)
+            })
             .collect()
     }
 
@@ -191,6 +381,13 @@ pub fn stats() -> ProcessStats {
 
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let active_keys: HashSet<ProcessCpuSampleKey> = sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| process_cpu_sample_key(pid.as_u32(), process))
+            .collect();
+        let cpu_statuses = process_cpu_sample_statuses(&active_keys);
+        let cpu_status = aggregate_process_cpu_sample_status(cpu_statuses.values().copied());
 
         let mut total = 0;
         let mut running = 0;
@@ -214,7 +411,7 @@ pub fn stats() -> ProcessStats {
             running,
             sleeping,
             total_memory,
-            total_cpu,
+            total_cpu: sampled_cpu_usage(total_cpu, cpu_status),
         }
     }
 
@@ -225,7 +422,7 @@ pub fn stats() -> ProcessStats {
             running: 0,
             sleeping: 0,
             total_memory: 0,
-            total_cpu: 0.0,
+            total_cpu: Availability::unsupported("Process feature not enabled"),
         }
     }
 }
@@ -297,7 +494,7 @@ pub struct ProcessSample {
     /// Process ID
     pub pid: u32,
     /// CPU usage percentage (0–100+ for multi-core)
-    pub cpu_usage: f32,
+    pub cpu_usage: Availability<f32>,
     /// Resident memory in bytes
     pub memory: usize,
     /// Virtual memory in bytes
@@ -319,7 +516,7 @@ pub struct ProcessSample {
 /// let mut monitor = ProcessMonitor::new(std::process::id()).unwrap();
 /// if let Some(sample) = monitor.sample() {
 ///     println!(
-///         "memory: {} bytes, cpu: {:.1}%",
+///         "memory: {} bytes, cpu: {:?}",
 ///         sample.memory, sample.cpu_usage
 ///     );
 /// }
@@ -390,5 +587,106 @@ impl ProcessMonitor {
     #[must_use]
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+}
+
+#[cfg(all(test, feature = "process"))]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{
+        AvailabilityStatus, aggregate_process_cpu_sample_status, process_cpu_sample_status_for_key,
+    };
+
+    #[test]
+    fn process_cpu_sample_readiness_is_tracked_per_process_identity() {
+        let minimum_interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+        let first = std::time::Instant::now();
+        let stale = first + (minimum_interval / 2);
+        let ready = first + minimum_interval;
+        let mut samples = HashMap::new();
+        let old_process = (10, 100);
+        let reused_pid_process = (10, 200);
+        let other_process = (20, 100);
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(first, &mut samples, old_process),
+            AvailabilityStatus::NotSampled
+        );
+        assert_eq!(samples.get(&old_process), Some(&first));
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(stale, &mut samples, old_process),
+            AvailabilityStatus::Stale
+        );
+        assert_eq!(
+            samples.get(&old_process),
+            Some(&first),
+            "stale samples must not advance the readiness baseline"
+        );
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(ready, &mut samples, old_process),
+            AvailabilityStatus::Available
+        );
+        assert_eq!(samples.get(&old_process), Some(&ready));
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(ready, &mut samples, other_process),
+            AvailabilityStatus::NotSampled,
+            "a new PID must not inherit readiness from an older sampled PID"
+        );
+
+        assert_eq!(
+            process_cpu_sample_status_for_key(ready, &mut samples, reused_pid_process),
+            AvailabilityStatus::NotSampled,
+            "a reused PID must not inherit readiness from the old process identity"
+        );
+    }
+
+    #[test]
+    fn aggregate_process_cpu_status_preserves_unsampled_or_stale_evidence() {
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::Available,
+                AvailabilityStatus::NotSampled,
+            ]),
+            AvailabilityStatus::NotSampled
+        );
+
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::Available,
+                AvailabilityStatus::Stale,
+            ]),
+            AvailabilityStatus::Stale
+        );
+
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::Available,
+                AvailabilityStatus::Available,
+            ]),
+            AvailabilityStatus::Available
+        );
+    }
+
+    #[test]
+    fn aggregate_process_cpu_status_keeps_permission_denied_visible() {
+        assert_eq!(
+            aggregate_process_cpu_sample_status([
+                AvailabilityStatus::NotSampled,
+                AvailabilityStatus::PermissionDenied,
+            ]),
+            AvailabilityStatus::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn aggregate_process_cpu_status_for_empty_set_is_zero_process_measurement() {
+        assert_eq!(
+            aggregate_process_cpu_sample_status([]),
+            AvailabilityStatus::Available
+        );
     }
 }

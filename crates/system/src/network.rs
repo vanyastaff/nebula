@@ -2,11 +2,12 @@
 //!
 //! # Known Limitations
 //!
-//! - **Rate tracking** via the `NETWORK_STATS` lazy global may not reflect accurate rates on the
-//!   first tick (before any previous snapshot exists), returning `rx_rate = 0.0` and `tx_rate =
-//!   0.0` for newly seen interfaces.
-//! - **`ip_addresses`** is always empty (`vec![]`); populating it requires additional
-//!   platform-specific code beyond sysinfo's network API.
+//! - **Rate tracking** via the `NETWORK_STATS` lazy global requires a previous snapshot. First
+//!   samples, stale samples, and counter resets are represented with `Availability<T>` instead of
+//!   `0.0`.
+//! - **`ip_addresses`** comes from sysinfo network metadata. A real empty vector means sysinfo
+//!   reported no addresses for that interface; unsupported or unavailable metadata must be exposed
+//!   through `Availability<T>` rather than a fake empty vector.
 //! - **`is_loopback`** detection is name-based (`"lo"` / `"lo0"`) and may miss renamed loopback
 //!   interfaces on non-standard configurations.
 
@@ -20,6 +21,8 @@ use parking_lot::RwLock;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::availability::Availability;
+
 /// Network interface information
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -27,17 +30,17 @@ pub struct NetworkInterface {
     /// Interface name (e.g., "eth0", "wlan0", "lo")
     pub name: String,
     /// MAC address
-    pub mac_address: Option<String>,
+    pub mac_address: Availability<String>,
     /// IP addresses (v4 and v6)
-    pub ip_addresses: Vec<IpAddress>,
+    pub ip_addresses: Availability<Vec<IpAddress>>,
     /// Whether the interface is up
-    pub is_up: bool,
+    pub is_up: Availability<bool>,
     /// Whether the interface is a loopback
     pub is_loopback: bool,
     /// MTU (Maximum Transmission Unit)
-    pub mtu: Option<u32>,
+    pub mtu: Availability<u64>,
     /// Link speed in Mbps (if available)
-    pub speed: Option<u64>,
+    pub speed: Availability<u64>,
     /// Network statistics
     pub stats: NetworkStats,
 }
@@ -83,9 +86,9 @@ pub struct NetworkUsage {
     /// Interface name
     pub interface: String,
     /// Receive rate (bytes/sec)
-    pub rx_rate: f64,
+    pub rx_rate: Availability<f64>,
     /// Transmit rate (bytes/sec)
-    pub tx_rate: f64,
+    pub tx_rate: Availability<f64>,
     /// Total received since measurement start
     pub total_rx: u64,
     /// Total transmitted since measurement start
@@ -125,14 +128,38 @@ pub fn interfaces() -> Vec<NetworkInterface> {
                     tx_dropped: 0,
                 };
 
+                let mac = network.mac_address();
+                let mac_address = if mac.is_unspecified() {
+                    Availability::unavailable("backend reported an unspecified MAC address")
+                } else {
+                    Availability::available(mac.to_string())
+                };
+                let ip_addresses = network
+                    .ip_networks()
+                    .iter()
+                    .map(|ip| IpAddress {
+                        address: ip.addr.to_string(),
+                        prefix_len: ip.prefix,
+                        is_ipv6: ip.addr.is_ipv6(),
+                    })
+                    .collect();
+                let mtu = network.mtu();
+                let mtu = if mtu == 0 {
+                    Availability::unavailable("backend reported zero MTU")
+                } else {
+                    Availability::available(mtu)
+                };
+
                 NetworkInterface {
-                    name: name.to_string(),
-                    mac_address: Some(network.mac_address().to_string()),
-                    ip_addresses: vec![],
-                    is_up: true,
+                    name: name.clone(),
+                    mac_address,
+                    ip_addresses: Availability::available(ip_addresses),
+                    is_up: Availability::not_implemented(
+                        "sysinfo does not expose interface up/down status",
+                    ),
                     is_loopback: name == "lo" || name == "lo0",
-                    mtu: None,
-                    speed: None,
+                    mtu,
+                    speed: Availability::not_implemented("link speed probing is not implemented"),
                     stats,
                 }
             })
@@ -152,8 +179,9 @@ pub fn get_interface(name: &str) -> Option<NetworkInterface> {
 
 /// Get network usage statistics with rate tracking
 ///
-/// On the first call for a given interface, rates will be `0.0` because
-/// there is no previous snapshot to compute a delta from.
+/// On the first call for a given interface, rates are
+/// [`Availability::not_sampled`] because there is no previous snapshot to
+/// compute a delta from.
 pub fn usage() -> Vec<NetworkUsage> {
     #[cfg(feature = "network")]
     {
@@ -166,7 +194,7 @@ pub fn usage() -> Vec<NetworkUsage> {
             .iter()
             .map(|(name, network)| {
                 (
-                    name.to_string(),
+                    name.clone(),
                     NetworkStats {
                         rx_bytes: network.total_received(),
                         tx_bytes: network.total_transmitted(),
@@ -206,15 +234,32 @@ fn apply_network_snapshot(
                 .saturating_duration_since(prev.observed_at)
                 .as_secs_f64();
             if elapsed > 0.0 {
-                (
-                    current_stats.rx_bytes.saturating_sub(prev.stats.rx_bytes) as f64 / elapsed,
-                    current_stats.tx_bytes.saturating_sub(prev.stats.tx_bytes) as f64 / elapsed,
-                )
+                let rx_rate = if current_stats.rx_bytes >= prev.stats.rx_bytes {
+                    Availability::available(
+                        current_stats.rx_bytes.saturating_sub(prev.stats.rx_bytes) as f64 / elapsed,
+                    )
+                } else {
+                    Availability::unavailable("receive counter reset between samples")
+                };
+                let tx_rate = if current_stats.tx_bytes >= prev.stats.tx_bytes {
+                    Availability::available(
+                        current_stats.tx_bytes.saturating_sub(prev.stats.tx_bytes) as f64 / elapsed,
+                    )
+                } else {
+                    Availability::unavailable("transmit counter reset between samples")
+                };
+                (rx_rate, tx_rate)
             } else {
-                (0.0, 0.0)
+                (
+                    Availability::stale(None, "network sample interval was zero"),
+                    Availability::stale(None, "network sample interval was zero"),
+                )
             }
         } else {
-            (0.0, 0.0)
+            (
+                Availability::not_sampled("first network sample has no previous counter"),
+                Availability::not_sampled("first network sample has no previous counter"),
+            )
         };
 
         usage_list.push(NetworkUsage {
@@ -263,42 +308,58 @@ pub fn total_stats() -> NetworkStats {
 mod tests {
     use super::*;
 
+    fn stats(rx_bytes: u64, tx_bytes: u64) -> NetworkStats {
+        NetworkStats {
+            rx_bytes,
+            tx_bytes,
+            ..NetworkStats::default()
+        }
+    }
+
     #[test]
     fn usage_rates_are_normalized_to_seconds() {
         let mut cache = HashMap::new();
         let t0 = Instant::now();
 
-        let first = apply_network_snapshot(
-            &mut cache,
-            vec![(
-                "eth0".to_owned(),
-                NetworkStats {
-                    rx_bytes: 100,
-                    tx_bytes: 50,
-                    ..NetworkStats::default()
-                },
-            )],
-            t0,
-        );
+        let first =
+            apply_network_snapshot(&mut cache, vec![("eth0".to_owned(), stats(100, 50))], t0);
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].rx_rate, 0.0);
-        assert_eq!(first[0].tx_rate, 0.0);
+        assert!(!first[0].rx_rate.is_available());
+        assert!(!first[0].tx_rate.is_available());
 
         let second = apply_network_snapshot(
             &mut cache,
-            vec![(
-                "eth0".to_owned(),
-                NetworkStats {
-                    rx_bytes: 300,
-                    tx_bytes: 250,
-                    ..NetworkStats::default()
-                },
-            )],
+            vec![("eth0".to_owned(), stats(300, 250))],
             t0 + std::time::Duration::from_secs(2),
         );
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].rx_rate, 100.0);
-        assert_eq!(second[0].tx_rate, 100.0);
+        assert_eq!(second[0].rx_rate.value().copied(), Some(100.0));
+        assert_eq!(second[0].tx_rate.value().copied(), Some(100.0));
+    }
+
+    #[test]
+    fn counter_reset_is_not_reported_as_zero_rate() {
+        let mut cache = HashMap::new();
+        let t0 = Instant::now();
+
+        let _ = apply_network_snapshot(&mut cache, vec![("eth0".to_string(), stats(500, 500))], t0);
+        let second = apply_network_snapshot(
+            &mut cache,
+            vec![("eth0".to_string(), stats(100, 100))],
+            t0 + std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(second.len(), 1);
+        assert!(!second[0].rx_rate.is_available());
+        assert!(!second[0].tx_rate.is_available());
+        assert_eq!(
+            second[0].rx_rate.reason(),
+            Some("receive counter reset between samples")
+        );
+        assert_eq!(
+            second[0].tx_rate.reason(),
+            Some("transmit counter reset between samples")
+        );
     }
 
     #[test]

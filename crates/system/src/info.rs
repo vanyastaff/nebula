@@ -1,18 +1,20 @@
 //! System information gathering
 
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 #[cfg(feature = "sysinfo")]
 use parking_lot::RwLock;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::core::SystemResult;
+use crate::{availability::Availability, error::SystemResult};
 
 /// Complete system information
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SystemInfo {
+    /// Metadata describing how this snapshot was captured.
+    pub metadata: SnapshotMetadata,
     /// Operating system information
     pub os: OsInfo,
     /// CPU information
@@ -21,6 +23,30 @@ pub struct SystemInfo {
     pub memory: MemoryInfo,
     /// Hardware information
     pub hardware: HardwareInfo,
+}
+
+/// Freshness semantics for a system snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum SnapshotFreshness {
+    /// Snapshot is cached for the process lifetime.
+    Cached,
+    /// Snapshot was freshly observed when returned.
+    Fresh,
+    /// Snapshot is known to be stale.
+    Stale,
+}
+
+/// Metadata attached to a system snapshot.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SnapshotMetadata {
+    /// Wall-clock time when the snapshot was observed.
+    pub observed_at: SystemTime,
+    /// Freshness contract for this snapshot.
+    pub freshness: SnapshotFreshness,
+    /// Backend/source used to create the snapshot.
+    pub source: String,
 }
 
 /// Operating system information
@@ -79,6 +105,8 @@ pub struct CpuInfo {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MemoryInfo {
+    /// Metadata describing how this memory snapshot was captured.
+    pub metadata: SnapshotMetadata,
     /// Total physical memory in bytes
     pub total: usize,
     /// Available physical memory in bytes
@@ -89,6 +117,46 @@ pub struct MemoryInfo {
     pub swap_total: usize,
     /// Available swap space in bytes
     pub swap_available: usize,
+    /// Effective memory capacity for scheduling decisions.
+    pub effective: EffectiveMemoryInfo,
+    /// Linux cgroup memory limit if detected.
+    pub cgroup: Availability<CgroupMemoryInfo>,
+}
+
+/// Source used for effective memory capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MemoryCapacitySource {
+    /// Effective capacity is the host memory reported by the OS.
+    Host,
+    /// Effective capacity comes from Linux cgroup limits.
+    Cgroup,
+}
+
+/// Effective memory capacity for scheduling-facing probes.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct EffectiveMemoryInfo {
+    /// Effective total memory in bytes.
+    pub total: usize,
+    /// Effective available memory in bytes.
+    pub available: usize,
+    /// Source used to derive effective capacity.
+    pub source: MemoryCapacitySource,
+}
+
+/// Linux cgroup memory data.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CgroupMemoryInfo {
+    /// Total memory limit in bytes for the cgroup.
+    pub total: usize,
+    /// Free memory in bytes for the cgroup.
+    pub free: usize,
+    /// Free swap in bytes for the cgroup.
+    pub free_swap: usize,
+    /// Resident set size in bytes for the cgroup.
+    pub rss: usize,
 }
 
 /// Hardware information
@@ -116,7 +184,11 @@ impl SystemInfo {
         Arc::clone(&SYSTEM_INFO)
     }
 
-    /// Get current memory information (always fresh)
+    /// Get current memory information.
+    ///
+    /// With the `sysinfo` backend enabled, this refreshes memory and returns
+    /// `SnapshotFreshness::Fresh` metadata. Without it, this returns the cached
+    /// fallback snapshot and preserves cached freshness metadata.
     pub fn current_memory() -> MemoryInfo {
         #[cfg(feature = "sysinfo")]
         {
@@ -124,11 +196,18 @@ impl SystemInfo {
             sys.refresh_memory();
 
             MemoryInfo {
-                total: sys.total_memory() as usize,
-                available: sys.available_memory() as usize,
+                metadata: SnapshotMetadata {
+                    observed_at: SystemTime::now(),
+                    freshness: SnapshotFreshness::Fresh,
+                    source: "sysinfo".to_string(),
+                },
+                total: to_usize_saturating(sys.total_memory()),
+                available: to_usize_saturating(sys.available_memory()),
                 page_size: page_size(),
-                swap_total: sys.total_swap() as usize,
-                swap_available: sys.free_swap() as usize,
+                swap_total: to_usize_saturating(sys.total_swap()),
+                swap_available: to_usize_saturating(sys.free_swap()),
+                effective: effective_memory_info(&sys),
+                cgroup: cgroup_memory_info(&sys),
             }
         }
 
@@ -151,6 +230,82 @@ pub(crate) static SYSINFO_SYSTEM: std::sync::LazyLock<RwLock<sysinfo::System>> =
         sys.refresh_all();
         RwLock::new(sys)
     });
+
+#[cfg(feature = "sysinfo")]
+fn to_usize_saturating(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+#[cfg(feature = "sysinfo")]
+fn cgroup_memory_info(sys: &sysinfo::System) -> Availability<CgroupMemoryInfo> {
+    #[cfg(target_os = "linux")]
+    {
+        sys.cgroup_limits().map_or_else(
+            || Availability::unavailable("no Linux cgroup memory limit detected"),
+            |limits| {
+                Availability::available(CgroupMemoryInfo {
+                    total: to_usize_saturating(limits.total_memory),
+                    free: to_usize_saturating(limits.free_memory),
+                    free_swap: to_usize_saturating(limits.free_swap),
+                    rss: to_usize_saturating(limits.rss),
+                })
+            },
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = sys;
+        Availability::unsupported("cgroup memory limits are Linux-only")
+    }
+}
+
+#[cfg(feature = "sysinfo")]
+fn effective_memory_info(sys: &sysinfo::System) -> EffectiveMemoryInfo {
+    let host_total = sys.total_memory();
+    let host_available = sys.available_memory();
+
+    #[cfg(target_os = "linux")]
+    {
+        effective_memory_from_values(
+            host_total,
+            host_available,
+            sys.cgroup_limits()
+                .map(|limits| (limits.total_memory, limits.free_memory)),
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        effective_memory_from_values(host_total, host_available, None)
+    }
+}
+
+#[cfg(feature = "sysinfo")]
+fn effective_memory_from_values(
+    host_total: u64,
+    host_available: u64,
+    cgroup: Option<(u64, u64)>,
+) -> EffectiveMemoryInfo {
+    if let Some((cgroup_total, cgroup_available)) = cgroup {
+        // sysinfo reports unbounded cgroups as very large pseudo-limits.
+        // Treat values larger than physical host memory as unlimited and
+        // fall back to the host capacity rather than exposing usize::MAX.
+        if cgroup_total > 0 && cgroup_total <= host_total {
+            return EffectiveMemoryInfo {
+                total: to_usize_saturating(cgroup_total),
+                available: to_usize_saturating(cgroup_available),
+                source: MemoryCapacitySource::Cgroup,
+            };
+        }
+    }
+
+    EffectiveMemoryInfo {
+        total: to_usize_saturating(host_total),
+        available: to_usize_saturating(host_available),
+        source: MemoryCapacitySource::Host,
+    }
+}
 
 fn detect_system_info() -> SystemInfo {
     #[cfg(feature = "sysinfo")]
@@ -184,11 +339,18 @@ fn detect_system_info() -> SystemInfo {
         };
 
         let memory = MemoryInfo {
-            total: sys.total_memory() as usize,
-            available: sys.available_memory() as usize,
+            metadata: SnapshotMetadata {
+                observed_at: SystemTime::now(),
+                freshness: SnapshotFreshness::Cached,
+                source: "sysinfo".to_string(),
+            },
+            total: to_usize_saturating(sys.total_memory()),
+            available: to_usize_saturating(sys.available_memory()),
             page_size: page_size(),
-            swap_total: sys.total_swap() as usize,
-            swap_available: sys.free_swap() as usize,
+            swap_total: to_usize_saturating(sys.total_swap()),
+            swap_available: to_usize_saturating(sys.free_swap()),
+            effective: effective_memory_info(&sys),
+            cgroup: cgroup_memory_info(&sys),
         };
 
         let hardware = HardwareInfo {
@@ -199,6 +361,11 @@ fn detect_system_info() -> SystemInfo {
         };
 
         SystemInfo {
+            metadata: SnapshotMetadata {
+                observed_at: SystemTime::now(),
+                freshness: SnapshotFreshness::Cached,
+                source: "sysinfo".to_string(),
+            },
             os,
             cpu,
             memory,
@@ -210,6 +377,11 @@ fn detect_system_info() -> SystemInfo {
     {
         // Fallback implementation without sysinfo
         SystemInfo {
+            metadata: SnapshotMetadata {
+                observed_at: SystemTime::now(),
+                freshness: SnapshotFreshness::Cached,
+                source: "fallback:no-sysinfo".to_string(),
+            },
             os: OsInfo {
                 name: std::env::consts::OS.to_string(),
                 version: "Unknown".to_string(),
@@ -230,11 +402,22 @@ fn detect_system_info() -> SystemInfo {
                 vendor: "Unknown".to_string(),
             },
             memory: MemoryInfo {
+                metadata: SnapshotMetadata {
+                    observed_at: SystemTime::now(),
+                    freshness: SnapshotFreshness::Cached,
+                    source: "fallback:no-sysinfo".to_string(),
+                },
                 total: 0,
                 available: 0,
                 page_size: page_size(),
                 swap_total: 0,
                 swap_available: 0,
+                effective: EffectiveMemoryInfo {
+                    total: 0,
+                    available: 0,
+                    source: MemoryCapacitySource::Host,
+                },
+                cgroup: Availability::unsupported("sysinfo feature is disabled"),
             },
             hardware: HardwareInfo {
                 cache_line_size: 64,
@@ -262,11 +445,13 @@ fn page_size() -> usize {
     4096
 }
 
+#[cfg(feature = "sysinfo")]
 fn detect_cache_line_size() -> usize {
     // Most modern processors use 64-byte cache lines
     64
 }
 
+#[cfg(feature = "sysinfo")]
 fn detect_allocation_granularity() -> usize {
     #[cfg(windows)]
     return 65536; // Windows uses 64KB
@@ -275,6 +460,7 @@ fn detect_allocation_granularity() -> usize {
     return page_size();
 }
 
+#[cfg(feature = "sysinfo")]
 fn detect_numa_nodes() -> usize {
     #[cfg(target_os = "linux")]
     {
@@ -300,6 +486,7 @@ fn detect_numa_nodes() -> usize {
     1
 }
 
+#[cfg(feature = "sysinfo")]
 #[allow(clippy::unnecessary_wraps)] // target-dependent: each cfg branch sees only one return flavour; #[expect] would be unfulfilled on targets where only Some(_) or only None is visible
 fn detect_huge_page_size() -> Option<usize> {
     #[cfg(target_os = "linux")]
@@ -350,4 +537,27 @@ pub fn summary() -> String {
         info.os.arch,
         info.memory.page_size
     )
+}
+
+#[cfg(all(test, feature = "sysinfo"))]
+mod tests {
+    use super::{MemoryCapacitySource, effective_memory_from_values};
+
+    #[test]
+    fn unbounded_cgroup_limit_falls_back_to_host_memory() {
+        let info = effective_memory_from_values(64 * 1024, 32 * 1024, Some((u64::MAX, u64::MAX)));
+
+        assert_eq!(info.source, MemoryCapacitySource::Host);
+        assert_eq!(info.total, 64 * 1024);
+        assert_eq!(info.available, 32 * 1024);
+    }
+
+    #[test]
+    fn bounded_cgroup_limit_is_effective_memory() {
+        let info = effective_memory_from_values(64 * 1024, 32 * 1024, Some((2048, 1024)));
+
+        assert_eq!(info.source, MemoryCapacitySource::Cgroup);
+        assert_eq!(info.total, 2048);
+        assert_eq!(info.available, 1024);
+    }
 }

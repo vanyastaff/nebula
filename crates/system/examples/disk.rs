@@ -33,6 +33,15 @@ fn main() -> nebula_system::SystemResult<()> {
             sys::disk::format_bytes(total.available_space),
             total.usage_percent
         );
+
+        println!(
+            "\nCurrent directory pressure: {:?}",
+            sys::disk::pressure_for_path(".")
+        );
+        println!(
+            "Current directory filesystem: {:?}",
+            sys::disk::filesystem_info(".")
+        );
     }
 
     #[cfg(not(feature = "disk"))]

@@ -2,10 +2,12 @@
 //!
 //! # Known Limitations
 //!
-//! - **`DiskStats` I/O counters** (`read_bytes`, `write_bytes`, `read_count`, `write_count`, etc.)
-//!   are always `Default::default()` (all zeros) when obtained via the `list()` path because
-//!   `sysinfo` does not expose I/O counters. Use `io_stats(device)` on Linux, which reads directly
-//!   from `/sys/block/<device>/stat`. On macOS and Windows, `io_stats()` returns `None`.
+//! - **`DiskStats` I/O counters** are not part of `DiskInfo` because sysinfo does not expose
+//!   portable disk I/O counters. Use `io_stats(device)` when callers explicitly need them.
+//! - **`io_stats(device)`** currently reads `/sys/block/<device>/stat` on Linux, where `device`
+//!   must be a sysfs block-device basename such as `sda` or `nvme0n1`, and returns
+//!   `Availability<DiskStats>`. Unsupported platforms, invalid device names, unreadable devices,
+//!   and parse failures are explicit availability states, not zero counters.
 //! - **`detect_disk_type`** maps only `HDD` and `SSD`; `Network`, `Removable`, and `RamDisk`
 //!   variants of `sysinfo::DiskKind` all map to `DiskType::Unknown`.
 //! - **Workaround for I/O counters on Linux**: Read `/sys/block/*/stat` directly or use
@@ -13,6 +15,22 @@
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::availability::Availability;
+
+#[cfg(any(target_os = "linux", test))]
+fn validate_linux_block_device_name(device: &str) -> Result<&str, &'static str> {
+    if device.is_empty() {
+        return Err("device name is empty");
+    }
+    if matches!(device, "." | "..") {
+        return Err("device name cannot be a traversal component");
+    }
+    if device.contains('/') || device.contains('\\') || device.contains('\0') {
+        return Err("device name must be a sysfs block-device basename");
+    }
+    Ok(device)
+}
 
 /// Disk information
 #[derive(Debug, Clone)]
@@ -121,7 +139,7 @@ pub fn list() -> Vec<DiskInfo> {
                 DiskInfo {
                     mount_point: disk.mount_point().to_string_lossy().to_string(),
                     device: disk.name().to_string_lossy().to_string(),
-                    filesystem: format!("{:?}", disk.file_system()).replace("\"", ""),
+                    filesystem: disk.file_system().to_string_lossy().into_owned(),
                     total_space: total,
                     available_space: available,
                     used_space: used,
@@ -207,35 +225,58 @@ pub fn is_ssd(mount_point: Option<&str>) -> bool {
     }
 }
 
-/// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`)
+/// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`).
+///
+/// `device` must be a sysfs block-device basename such as `sda` or `nvme0n1`.
+/// Paths, separators, empty strings, and traversal components are rejected.
 #[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(target_os = "linux")]; #[expect] would be unfulfilled on Linux
-pub fn io_stats(device: &str) -> Option<DiskStats> {
+pub fn io_stats(device: &str) -> Availability<DiskStats> {
     #[cfg(target_os = "linux")]
     {
         use std::fs;
 
-        // Try to read from /sys/block/{device}/stat
-        let device_name = device.rsplit('/').next().unwrap_or(device);
-        let stat_path = format!("/sys/block/{}/stat", device_name);
+        let device_name = match validate_linux_block_device_name(device) {
+            Ok(device_name) => device_name,
+            Err(reason) => {
+                return Availability::unavailable(format!(
+                    "invalid Linux block device name for /sys/block lookup: {reason}"
+                ));
+            },
+        };
+        let stat_path = format!("/sys/block/{device_name}/stat");
 
         if let Ok(content) = fs::read_to_string(&stat_path) {
             let parts: Vec<&str> = content.split_whitespace().collect();
 
             if parts.len() >= 11 {
-                return Some(DiskStats {
-                    read_count: parts[0].parse().unwrap_or(0),
-                    write_count: parts[4].parse().unwrap_or(0),
-                    read_bytes: parts[2].parse::<u64>().unwrap_or(0) * 512, // sectors to bytes
-                    write_bytes: parts[6].parse::<u64>().unwrap_or(0) * 512,
-                    read_time: parts[3].parse().unwrap_or(0),
-                    write_time: parts[7].parse().unwrap_or(0),
-                    io_in_progress: parts[8].parse().unwrap_or(0),
-                });
+                let parse = || -> Option<DiskStats> {
+                    Some(DiskStats {
+                        read_count: parts[0].parse().ok()?,
+                        write_count: parts[4].parse().ok()?,
+                        read_bytes: parts[2].parse::<u64>().ok()?.saturating_mul(512),
+                        write_bytes: parts[6].parse::<u64>().ok()?.saturating_mul(512),
+                        read_time: parts[3].parse().ok()?,
+                        write_time: parts[7].parse().ok()?,
+                        io_in_progress: parts[8].parse().ok()?,
+                    })
+                };
+                return parse().map_or_else(
+                    || Availability::unavailable(format!("failed to parse {stat_path}")),
+                    Availability::available,
+                );
             }
+            return Availability::unavailable(format!(
+                "disk stats file {stat_path} had too few fields"
+            ));
         }
+
+        Availability::unavailable(format!("failed to read {stat_path}"))
     }
 
-    None
+    #[cfg(not(target_os = "linux"))]
+    {
+        Availability::unsupported("disk I/O stats are currently implemented only on Linux")
+    }
 }
 
 /// Monitor disk pressure
@@ -273,14 +314,20 @@ impl DiskPressure {
 }
 
 /// Get disk pressure for a specific mount point
-pub fn pressure(mount_point: Option<&str>) -> DiskPressure {
+pub fn pressure(mount_point: Option<&str>) -> Availability<DiskPressure> {
     if let Some(mp) = mount_point {
-        get_disk(mp)
-            .map(|d| DiskPressure::from_usage(d.usage_percent))
-            .unwrap_or(DiskPressure::Low)
+        get_disk(mp).map_or_else(
+            || Availability::unavailable(format!("mount point {mp} was not found")),
+            |d| Availability::available(DiskPressure::from_usage(d.usage_percent)),
+        )
     } else {
         // Check overall disk usage
-        DiskPressure::from_usage(total_usage().usage_percent)
+        let usage = total_usage();
+        if usage.total_space == 0 {
+            Availability::unavailable("no disks were available for aggregate pressure")
+        } else {
+            Availability::available(DiskPressure::from_usage(usage.usage_percent))
+        }
     }
 }
 
@@ -310,15 +357,28 @@ pub fn optimal_block_size(mount_point: Option<&str>) -> usize {
 /// Re-exported from utils for convenience.
 pub use crate::utils::format_bytes;
 
-/// Check if a path has enough free space
-pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
+/// Check if a path has enough free space.
+///
+/// Returns unavailable when the containing disk cannot be resolved, rather
+/// than collapsing probe failure into `false`.
+pub fn has_enough_space(path: &str, required_bytes: u64) -> Availability<bool> {
+    disk_for_path(path).map(|disk| disk.available_space >= required_bytes)
+}
+
+/// Find the disk containing a path.
+pub fn disk_for_path(path: impl AsRef<std::path::Path>) -> Availability<DiskInfo> {
+    use std::path::PathBuf;
+
     // Find the disk containing this path
     let mut best_match = None;
     let mut best_match_len = 0;
+    let path = canonicalize_nearest_existing(path.as_ref());
 
     for disk in list() {
-        if path.starts_with(&disk.mount_point) {
-            let mount_len = disk.mount_point.len();
+        let mount = PathBuf::from(&disk.mount_point);
+        let mount = std::fs::canonicalize(&mount).unwrap_or(mount);
+        if path.starts_with(&mount) {
+            let mount_len = mount.components().count();
             if mount_len > best_match_len {
                 best_match = Some(disk);
                 best_match_len = mount_len;
@@ -326,31 +386,57 @@ pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
         }
     }
 
-    best_match
-        .map(|disk| disk.available_space >= required_bytes)
-        .unwrap_or(false)
+    best_match.map_or_else(
+        || Availability::unavailable(format!("no mounted disk matched path {}", path.display())),
+        Availability::available,
+    )
+}
+
+fn canonicalize_nearest_existing(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    };
+
+    absolute
+        .ancestors()
+        .find_map(|ancestor| std::fs::canonicalize(ancestor).ok())
+        .unwrap_or(absolute)
+}
+
+/// Get disk pressure for the disk containing a path.
+pub fn pressure_for_path(path: impl AsRef<std::path::Path>) -> Availability<DiskPressure> {
+    disk_for_path(path).map(|disk| DiskPressure::from_usage(disk.usage_percent))
 }
 
 /// Get filesystem information for a path (Unix only — uses `statvfs`)
 #[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(unix)]; #[expect] would be unfulfilled on Unix
-pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
+pub fn filesystem_info(path: &str) -> Availability<FileSystemInfo> {
     #[cfg(unix)]
     {
         use std::ffi::CString;
 
         use libc::statvfs;
 
-        let c_path = CString::new(path).ok()?;
+        let c_path = match CString::new(path) {
+            Ok(path) => path,
+            Err(_) => {
+                return Availability::unavailable(
+                    "path contained an interior NUL byte and cannot be passed to statvfs",
+                );
+            },
+        };
         // SAFETY: `statvfs` is a C struct with no Drop implementation or pointers.
         // Zeroing it creates a valid (though uninitialized) instance that statvfs() will fill.
-        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        let mut stat: statvfs = unsafe { std::mem::zeroed() };
 
         // SAFETY: `c_path.as_ptr()` is a valid null-terminated C string from CString.
         // `stat` is a valid mutable reference to an allocated statvfs struct.
         // The statvfs() syscall will either fill it (return 0) or fail (return -1).
         unsafe {
-            if statvfs(c_path.as_ptr(), &mut stat) == 0 {
-                return Some(FileSystemInfo {
+            if statvfs(c_path.as_ptr(), std::ptr::addr_of_mut!(stat)) == 0 {
+                return Availability::available(FileSystemInfo {
                     fs_type: detect_fs_type(path),
                     is_readonly: stat.f_flag & libc::ST_RDONLY != 0,
                     supports_compression: false, // Would need filesystem-specific checks
@@ -360,19 +446,76 @@ pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
                 });
             }
         }
+
+        Availability::unavailable(format!(
+            "statvfs failed for {path}: {}",
+            std::io::Error::last_os_error()
+        ))
     }
 
-    None
+    #[cfg(not(unix))]
+    {
+        Availability::unsupported("filesystem_info is currently implemented only with Unix statvfs")
+    }
 }
 
 #[cfg(unix)]
 fn detect_fs_type(path: &str) -> String {
-    // Find disk for this path
+    use std::path::Path;
+
+    let path = Path::new(path);
+    let mut best_match = None;
+    let mut best_match_len = 0;
+
     for disk in list() {
-        if path.starts_with(&disk.mount_point) {
-            return disk.filesystem;
+        let mount = Path::new(&disk.mount_point);
+        if path.starts_with(mount) {
+            let mount_len = mount.components().count();
+            if mount_len > best_match_len {
+                best_match = Some(disk.filesystem);
+                best_match_len = mount_len;
+            }
         }
     }
 
-    "unknown".to_string()
+    best_match.unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{canonicalize_nearest_existing, validate_linux_block_device_name};
+
+    #[test]
+    fn linux_block_device_name_must_be_a_basename() {
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "/dev/sda",
+            "sda/../stat",
+            r"sda\..\stat",
+            "sda\0",
+        ] {
+            assert!(
+                validate_linux_block_device_name(invalid).is_err(),
+                "{invalid:?} must not be accepted as a sysfs block device basename"
+            );
+        }
+
+        assert_eq!(validate_linux_block_device_name("sda"), Ok("sda"));
+        assert_eq!(validate_linux_block_device_name("nvme0n1"), Ok("nvme0n1"));
+    }
+
+    #[test]
+    fn missing_relative_path_resolves_to_nearest_existing_ancestor() {
+        let missing_path = PathBuf::from(format!("nebula-system-missing-{}", std::process::id()))
+            .join("checkpoint.db");
+
+        let resolved = canonicalize_nearest_existing(&missing_path);
+
+        assert_eq!(resolved, std::fs::canonicalize(".").unwrap());
+        assert!(resolved.is_absolute());
+    }
 }

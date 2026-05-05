@@ -13,16 +13,20 @@ fn bench_system_load(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("system_load");
 
-    group.bench_function("system_load (single lock)", |b| {
+    group.bench_function("load::system_load", |b| {
         b.iter(|| black_box(nebula_system::load::system_load()));
     });
 
-    group.bench_function("cpu::usage (with Vec alloc)", |b| {
+    group.bench_function("cpu::usage", |b| {
         b.iter(|| black_box(nebula_system::cpu::usage()));
     });
 
-    group.bench_function("cpu::pressure (zero alloc)", |b| {
+    group.bench_function("cpu::pressure", |b| {
         b.iter(|| black_box(nebula_system::cpu::pressure()));
+    });
+
+    group.bench_function("cpu::pressure_report", |b| {
+        b.iter(|| black_box(nebula_system::cpu::pressure_report()));
     });
 
     group.bench_function("memory::current", |b| {
@@ -33,10 +37,8 @@ fn bench_system_load(c: &mut Criterion) {
         b.iter(|| black_box(nebula_system::memory::pressure()));
     });
 
-    group.bench_function("cpu::features (cached)", |b| {
-        // First call warms LazyLock
-        let _ = nebula_system::cpu::features();
-        b.iter(|| black_box(nebula_system::cpu::features()));
+    group.bench_function("memory::pressure_report", |b| {
+        b.iter(|| black_box(nebula_system::memory::pressure_report()));
     });
 
     group.bench_function("SystemInfo::get (Arc clone)", |b| {
@@ -49,13 +51,18 @@ fn bench_system_load(c: &mut Criterion) {
 }
 
 fn bench_headroom(c: &mut Criterion) {
-    use nebula_system::{cpu::CpuPressure, load::SystemLoad, memory::MemoryPressure};
+    use nebula_system::{
+        Availability, AvailabilityStatus, cpu::CpuPressure, info::MemoryCapacitySource,
+        load::SystemLoad, memory::MemoryPressure,
+    };
 
     let load = SystemLoad {
         cpu: CpuPressure::Medium,
         memory: MemoryPressure::Low,
-        cpu_usage_percent: 55.0,
-        memory_usage_percent: 30.0,
+        cpu_usage_percent: Availability::available(55.0),
+        memory_usage_percent: Availability::available(30.0),
+        cpu_sample_status: AvailabilityStatus::Available,
+        memory_capacity_source: MemoryCapacitySource::Host,
     };
 
     c.bench_function("SystemLoad::headroom", |b| {

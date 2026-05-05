@@ -30,8 +30,8 @@ fn main() -> nebula_system::SystemResult<()> {
     for _ in 0..5 {
         let u = sys::cpu::usage();
         println!(
-            "avg={:.1}%  peak={:.1}%  cores_under_pressure={}",
-            u.average, u.peak, u.cores_under_pressure
+            "avg={:.1}%  peak={:.1}%  cores_under_pressure={} status={:?}",
+            u.average, u.peak, u.cores_under_pressure, u.sample_status
         );
         std::thread::sleep(Duration::from_millis(500));
     }

@@ -23,10 +23,18 @@ mod tests {
                 info.available,
                 info.total
             );
+            let usage_percent = info
+                .usage_percent
+                .value()
+                .copied()
+                .expect("usage percent should be available when total memory is available");
             assert!(
-                (0.0..=100.0).contains(&info.usage_percent),
-                "usage_percent {} must be in [0.0, 100.0]",
-                info.usage_percent
+                (0.0..=100.0).contains(&usage_percent),
+                "usage_percent {usage_percent} must be in [0.0, 100.0]",
+            );
+            assert!(
+                !info.pressure_report.reasons.is_empty(),
+                "pressure report must explain the classifier decision"
             );
         }
 
@@ -65,10 +73,8 @@ mod tests {
         }
 
         #[test]
-        fn pressure_ordering() {
-            assert!(MemoryPressure::Low < MemoryPressure::Medium);
-            assert!(MemoryPressure::Medium < MemoryPressure::High);
-            assert!(MemoryPressure::High < MemoryPressure::Critical);
+        fn unavailable_pressure_is_concerning_without_ordering_semantics() {
+            assert!(MemoryPressure::Unavailable.is_concerning());
         }
     }
 
@@ -94,6 +100,15 @@ mod tests {
                 (0.0..=100.0).contains(&usage.average),
                 "average {} must be in [0.0, 100.0]",
                 usage.average
+            );
+            assert!(
+                matches!(
+                    usage.sample_status,
+                    nebula_system::AvailabilityStatus::Available
+                        | nebula_system::AvailabilityStatus::NotSampled
+                        | nebula_system::AvailabilityStatus::Stale
+                ),
+                "cpu usage sample status must describe backend freshness"
             );
         }
 
@@ -237,11 +252,60 @@ mod tests {
         }
 
         #[test]
+        fn missing_mount_pressure_is_unavailable_not_low() {
+            let pressure = disk::pressure(Some("__definitely_not_a_mount__"));
+            assert!(
+                !pressure.is_available(),
+                "missing mount must not be reported as Low pressure"
+            );
+        }
+
+        #[test]
+        fn current_path_pressure_is_available() {
+            let disk = disk::disk_for_path(".");
+            assert!(
+                disk.is_available(),
+                "disk_for_path('.') should locate the current directory mount"
+            );
+            let disk = disk.value().expect("available disk value");
+            assert!(
+                disk.total_space > 0,
+                "current directory disk must report total space"
+            );
+
+            let pressure = disk::pressure_for_path(".");
+            assert!(
+                pressure.is_available(),
+                "pressure_for_path('.') should locate the current directory mount"
+            );
+        }
+
+        #[test]
+        fn filesystem_info_reports_availability_explicitly() {
+            let info = disk::filesystem_info(".");
+
+            #[cfg(unix)]
+            assert!(
+                info.is_available(),
+                "filesystem_info('.') should be available on Unix"
+            );
+
+            #[cfg(windows)]
+            assert!(
+                !info.is_available(),
+                "filesystem_info must not fake data on unsupported platforms"
+            );
+        }
+
+        #[test]
         fn has_enough_space_for_zero_bytes() {
             // Zero bytes required should always succeed on any existing mount point
             let disks = disk::list();
             if let Some(d) = disks.first() {
-                assert!(disk::has_enough_space(&d.mount_point, 0));
+                assert_eq!(
+                    disk::has_enough_space(&d.mount_point, 0).value().copied(),
+                    Some(true)
+                );
             }
         }
 
@@ -250,7 +314,12 @@ mod tests {
             // u64::MAX bytes should never be available
             let disks = disk::list();
             if let Some(d) = disks.first() {
-                assert!(!disk::has_enough_space(&d.mount_point, u64::MAX));
+                assert_eq!(
+                    disk::has_enough_space(&d.mount_point, u64::MAX)
+                        .value()
+                        .copied(),
+                    Some(false)
+                );
             }
         }
     }
@@ -275,6 +344,14 @@ mod tests {
             let ifaces = network::interfaces();
             for iface in &ifaces {
                 assert!(!iface.name.is_empty(), "interface name must not be empty");
+                assert!(
+                    iface.ip_addresses.is_available(),
+                    "ip address probing must report availability explicitly"
+                );
+                assert!(
+                    !iface.is_up.is_available(),
+                    "interface up/down is not implemented and must be explicit"
+                );
             }
         }
 
@@ -318,6 +395,17 @@ mod tests {
         fn current_name_non_empty() {
             let info = process::current().expect("current() must succeed");
             assert!(!info.name.is_empty(), "process name must not be empty");
+            if let Some(thread_count) = info.thread_count.value() {
+                assert!(
+                    *thread_count >= 1,
+                    "available thread_count must be positive"
+                );
+            } else {
+                assert!(
+                    !info.thread_count.is_available(),
+                    "unknown thread_count must be explicit"
+                );
+            }
         }
 
         #[test]
@@ -369,8 +457,14 @@ mod tests {
         #[test]
         fn uid_gid_none_on_windows() {
             let info = process::current().expect("current() must succeed");
-            assert!(info.uid.is_none(), "uid must be None on Windows");
-            assert!(info.gid.is_none(), "gid must be None on Windows");
+            assert!(
+                !info.uid.is_available(),
+                "uid must be marked unavailable/unsupported on Windows"
+            );
+            assert!(
+                !info.gid.is_available(),
+                "gid must be marked unavailable/unsupported on Windows"
+            );
         }
     }
 
@@ -429,7 +523,7 @@ mod tests {
 
     #[cfg(feature = "sysinfo")]
     mod info_tests {
-        use nebula_system::info::{OsFamily, SystemInfo};
+        use nebula_system::info::{OsFamily, SnapshotFreshness, SystemInfo};
 
         #[test]
         fn get_returns_consistent_data() {
@@ -476,6 +570,13 @@ mod tests {
         }
 
         #[test]
+        fn current_memory_reports_fresh_snapshot_metadata() {
+            let memory = SystemInfo::current_memory();
+            assert_eq!(memory.metadata.freshness, SnapshotFreshness::Fresh);
+            assert_eq!(memory.metadata.source, "sysinfo");
+        }
+
+        #[test]
         fn hardware_info_sane() {
             let info = SystemInfo::get();
             assert!(info.hardware.cache_line_size > 0);
@@ -489,7 +590,9 @@ mod tests {
     #[cfg(feature = "sysinfo")]
     mod load_tests {
         use nebula_system::{
+            Availability, AvailabilityStatus,
             cpu::CpuPressure,
+            info::MemoryCapacitySource,
             load::{self, SystemLoad},
             memory::MemoryPressure,
         };
@@ -498,30 +601,83 @@ mod tests {
         fn system_load_values_in_range() {
             let load = load::system_load();
             assert!(
-                (0.0..=100.0).contains(&load.cpu_usage_percent),
-                "cpu_usage_percent {} out of range",
-                load.cpu_usage_percent
+                matches!(
+                    load.cpu_sample_status,
+                    AvailabilityStatus::Available
+                        | AvailabilityStatus::NotSampled
+                        | AvailabilityStatus::Stale
+                ),
+                "CPU sample status should describe freshness"
             );
+            if let Some(cpu_usage_percent) = load.cpu_usage_percent.value().copied() {
+                assert!(
+                    (0.0..=100.0).contains(&cpu_usage_percent),
+                    "cpu_usage_percent {cpu_usage_percent} out of range",
+                );
+            }
+            let memory_usage_percent = load
+                .memory_usage_percent
+                .value()
+                .copied()
+                .expect("memory usage should be available when sysinfo memory is available");
             assert!(
-                (0.0..=100.0).contains(&load.memory_usage_percent),
-                "memory_usage_percent {} out of range",
-                load.memory_usage_percent
+                (0.0..=100.0).contains(&memory_usage_percent),
+                "memory_usage_percent {memory_usage_percent} out of range",
             );
         }
 
         #[test]
         fn headroom_in_unit_range() {
             let load = load::system_load();
-            let h = load.headroom();
-            assert!(
-                (0.0..=1.0).contains(&h),
-                "headroom {h} must be in [0.0, 1.0]"
-            );
+            if let Some(h) = load.headroom().value().copied() {
+                assert!(
+                    (0.0..=1.0).contains(&h),
+                    "headroom {h} must be in [0.0, 1.0]"
+                );
+            } else {
+                assert!(
+                    !load.can_accept_work().is_available(),
+                    "unavailable headroom should make work admission unavailable"
+                );
+            }
         }
 
         #[test]
-        fn can_accept_work_returns_bool() {
+        fn can_accept_work_returns_availability() {
             let _ = load::system_load().can_accept_work();
+        }
+
+        #[test]
+        fn unavailable_usage_rejects_work_and_headroom() {
+            let load = SystemLoad {
+                cpu: CpuPressure::Low,
+                memory: MemoryPressure::Low,
+                cpu_usage_percent: Availability::not_sampled("first sample"),
+                memory_usage_percent: Availability::available(20.0),
+                cpu_sample_status: AvailabilityStatus::NotSampled,
+                memory_capacity_source: MemoryCapacitySource::Host,
+            };
+
+            assert_eq!(
+                load.can_accept_work().status(),
+                AvailabilityStatus::NotSampled
+            );
+            assert!(!load.headroom().is_available());
+
+            let load = SystemLoad {
+                cpu: CpuPressure::Low,
+                memory: MemoryPressure::Low,
+                cpu_usage_percent: Availability::available(20.0),
+                memory_usage_percent: Availability::not_sampled("first sample"),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
+            };
+
+            assert_eq!(
+                load.can_accept_work().status(),
+                AvailabilityStatus::NotSampled
+            );
+            assert!(!load.headroom().is_available());
         }
 
         #[test]
@@ -529,18 +685,30 @@ mod tests {
             let load = SystemLoad {
                 cpu: CpuPressure::Critical,
                 memory: MemoryPressure::Low,
-                cpu_usage_percent: 95.0,
-                memory_usage_percent: 20.0,
+                cpu_usage_percent: Availability::available(95.0),
+                memory_usage_percent: Availability::available(20.0),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(!load.can_accept_work(), "Critical CPU must reject work");
+            assert_eq!(
+                load.can_accept_work().value().copied(),
+                Some(false),
+                "Critical CPU must reject work"
+            );
 
             let load = SystemLoad {
                 cpu: CpuPressure::Low,
                 memory: MemoryPressure::Critical,
-                cpu_usage_percent: 10.0,
-                memory_usage_percent: 95.0,
+                cpu_usage_percent: Availability::available(10.0),
+                memory_usage_percent: Availability::available(95.0),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(!load.can_accept_work(), "Critical memory must reject work");
+            assert_eq!(
+                load.can_accept_work().value().copied(),
+                Some(false),
+                "Critical memory must reject work"
+            );
         }
 
         #[test]
@@ -548,10 +716,12 @@ mod tests {
             let load = SystemLoad {
                 cpu: CpuPressure::Low,
                 memory: MemoryPressure::Low,
-                cpu_usage_percent: 10.0,
-                memory_usage_percent: 20.0,
+                cpu_usage_percent: Availability::available(10.0),
+                memory_usage_percent: Availability::available(20.0),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(load.can_accept_work());
+            assert_eq!(load.can_accept_work().value().copied(), Some(true));
         }
 
         #[test]
@@ -559,18 +729,22 @@ mod tests {
             let idle = SystemLoad {
                 cpu: CpuPressure::Low,
                 memory: MemoryPressure::Low,
-                cpu_usage_percent: 0.0,
-                memory_usage_percent: 0.0,
+                cpu_usage_percent: Availability::available(0.0),
+                memory_usage_percent: Availability::available(0.0),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!((idle.headroom() - 1.0).abs() < f64::EPSILON);
+            assert!((idle.headroom().value().copied().unwrap() - 1.0).abs() < f64::EPSILON);
 
             let full = SystemLoad {
                 cpu: CpuPressure::Critical,
                 memory: MemoryPressure::Critical,
-                cpu_usage_percent: 100.0,
-                memory_usage_percent: 100.0,
+                cpu_usage_percent: Availability::available(100.0),
+                memory_usage_percent: Availability::available(100.0),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(full.headroom().abs() < f64::EPSILON);
+            assert!(full.headroom().value().copied().unwrap().abs() < f64::EPSILON);
         }
     }
 }

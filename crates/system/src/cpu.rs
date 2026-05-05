@@ -1,10 +1,19 @@
 //! CPU information and utilities
 
+use std::{
+    sync::LazyLock,
+    time::{Duration, Instant, SystemTime},
+};
+
+use parking_lot::RwLock;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "sysinfo")]
+use crate::availability::sample_status_for_interval;
 use crate::{
-    core::{SystemError, SystemResult},
+    availability::AvailabilityStatus,
+    error::{SystemError, SystemResult},
     info::SystemInfo,
 };
 
@@ -20,6 +29,22 @@ pub struct CpuUsage {
     pub peak: f32,
     /// Number of cores above threshold (default 80%)
     pub cores_under_pressure: usize,
+    /// Sampling status for this reading.
+    pub sample_status: AvailabilityStatus,
+    /// Wall-clock time when this sample was observed.
+    pub observed_at: SystemTime,
+    /// Backend minimum interval before CPU usage samples are trustworthy.
+    pub minimum_sample_interval: Duration,
+}
+
+/// CPU pressure with raw usage evidence.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CpuPressureReport {
+    /// CPU pressure level.
+    pub pressure: CpuPressure,
+    /// Usage sample used to derive the pressure.
+    pub usage: CpuUsage,
 }
 
 /// CPU features detection
@@ -130,6 +155,17 @@ impl CpuPressure {
     }
 }
 
+#[cfg(feature = "sysinfo")]
+static CPU_USAGE_SAMPLE_STATE: LazyLock<RwLock<Option<Instant>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+#[cfg(feature = "sysinfo")]
+fn next_cpu_sample_status() -> AvailabilityStatus {
+    let now = Instant::now();
+    let mut last_sample = CPU_USAGE_SAMPLE_STATE.write();
+    sample_status_for_interval(now, &mut last_sample, sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
+}
+
 /// Get current CPU usage
 pub fn usage() -> CpuUsage {
     #[cfg(feature = "sysinfo")]
@@ -138,6 +174,7 @@ pub fn usage() -> CpuUsage {
 
         let mut sys = SYSINFO_SYSTEM.write();
         sys.refresh_cpu_usage();
+        let sample_status = next_cpu_sample_status();
 
         // Single pass: collect per-core values while computing sum, peak, and
         // pressure count. Avoids 3 extra iterations over the same data.
@@ -170,6 +207,9 @@ pub fn usage() -> CpuUsage {
             average,
             peak,
             cores_under_pressure,
+            sample_status,
+            observed_at: SystemTime::now(),
+            minimum_sample_interval: sysinfo::MINIMUM_CPU_UPDATE_INTERVAL,
         }
     }
 
@@ -180,36 +220,29 @@ pub fn usage() -> CpuUsage {
             average: 0.0,
             peak: 0.0,
             cores_under_pressure: 0,
+            sample_status: AvailabilityStatus::Unsupported,
+            observed_at: SystemTime::now(),
+            minimum_sample_interval: Duration::ZERO,
         }
     }
 }
 
-/// Get CPU pressure level
+/// Get CPU pressure level.
 ///
-/// Computes average CPU usage directly without allocating a `Vec<f32>`.
-/// Use [`usage()`] if you also need per-core breakdown.
+/// Calls [`pressure_report()`] internally and may allocate for per-core sample
+/// evidence through [`usage()`]. Use [`usage()`] when callers need the per-core
+/// breakdown directly.
 #[must_use]
 pub fn pressure() -> CpuPressure {
-    #[cfg(feature = "sysinfo")]
-    {
-        use crate::info::SYSINFO_SYSTEM;
+    pressure_report().pressure
+}
 
-        let mut sys = SYSINFO_SYSTEM.write();
-        sys.refresh_cpu_usage();
-
-        let cpus = sys.cpus();
-        if cpus.is_empty() {
-            return CpuPressure::Low;
-        }
-
-        let sum: f32 = cpus.iter().map(sysinfo::Cpu::cpu_usage).sum();
-        CpuPressure::from_usage(sum / cpus.len() as f32)
-    }
-
-    #[cfg(not(feature = "sysinfo"))]
-    {
-        CpuPressure::Low
-    }
+/// Get CPU pressure with sampling evidence.
+#[must_use]
+pub fn pressure_report() -> CpuPressureReport {
+    let usage = usage();
+    let pressure = CpuPressure::from_usage(usage.average);
+    CpuPressureReport { pressure, usage }
 }
 
 /// Get CPU features
@@ -217,7 +250,7 @@ pub fn pressure() -> CpuPressure {
 /// Results are cached on first call — CPU features don't change at runtime.
 #[must_use]
 pub fn features() -> CpuFeatures {
-    static FEATURES: std::sync::LazyLock<CpuFeatures> = std::sync::LazyLock::new(detect_features);
+    static FEATURES: LazyLock<CpuFeatures> = LazyLock::new(detect_features);
     *FEATURES
 }
 
@@ -411,12 +444,27 @@ pub mod affinity {
     pub fn set_current_thread(cpus: &[usize]) -> SystemResult<()> {
         use std::mem;
 
-        use libc::{CPU_SET, CPU_ZERO, cpu_set_t, sched_setaffinity};
+        use libc::{CPU_SET, CPU_SETSIZE, CPU_ZERO, cpu_set_t, sched_setaffinity};
+
+        if cpus.is_empty() {
+            return Err(SystemError::platform_error(
+                "Cannot set CPU affinity to an empty CPU set",
+            ));
+        }
+
+        let max_cpu = CPU_SETSIZE as usize;
+        for &cpu in cpus {
+            if cpu >= max_cpu {
+                return Err(SystemError::platform_error(format!(
+                    "CPU index {cpu} exceeds CPU_SETSIZE ({max_cpu})"
+                )));
+            }
+        }
 
         // SAFETY: Using libc CPU affinity macros and syscalls:
         // - `cpu_set_t` is a C struct with no Drop or pointers, safe to zero-initialize
         // - `CPU_ZERO` macro safely initializes the cpu_set_t
-        // - `CPU_SET` macro safely sets individual CPU bits (cpus validated by caller)
+        // - `CPU_SET` macro safely sets individual CPU bits (validated above)
         // - `sched_setaffinity(0, ...)` targets current thread (PID=0)
         // - Size and pointer to `set` are valid for the duration of the syscall
         // Returns 0 on success, -1 on failure (sets errno).
