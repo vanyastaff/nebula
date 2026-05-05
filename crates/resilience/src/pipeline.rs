@@ -669,10 +669,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     }
 
     fn record_pipeline_completed(&self, outcome: PipelineOutcome) {
+        if !self.sink_overrides_steps {
+            return;
+        }
         self.record_pipeline_completed_for_scope(self.scope.clone(), outcome);
     }
 
     fn record_pipeline_completed_for_scope(&self, scope: PolicyScope, outcome: PipelineOutcome) {
+        if !self.sink_overrides_steps {
+            return;
+        }
         self.sink
             .record(ResilienceEvent::PipelineCompleted { scope, outcome });
     }
@@ -1015,9 +1021,9 @@ where
                 cb.try_acquire()?;
 
                 let mut guard = ProbeGuard::new(cb);
-                let start = cb.clock_now();
+                let start = cb.tracks_slow_calls().then(|| cb.clock_now());
                 let result = run_operation_with_shells(ctx.clone(), idx + 1, Arc::clone(&f)).await;
-                let duration = cb.clock_now().duration_since(start);
+                let duration = start.map(|start| cb.clock_now().duration_since(start));
                 guard.defuse();
 
                 let outcome = classify_cb_outcome(cb, &result, ctx.classifier.as_ref(), duration);
@@ -1076,21 +1082,42 @@ fn classify_cb_outcome<T, E>(
     cb: &CircuitBreaker,
     result: &Result<T, CallError<E>>,
     classifier: Option<&Arc<dyn ErrorClassifier<E>>>,
-    duration: Duration,
+    duration: Option<Duration>,
 ) -> Outcome {
     match result {
-        Ok(_) => cb.classify_outcome(true, duration),
+        Ok(_) => duration.map_or(Outcome::Success, |duration| {
+            cb.classify_outcome(true, duration)
+        }),
         Err(CallError::Operation(e)) => classifier.map_or_else(
-            || cb.classify_outcome(false, duration),
-            |c| cb.classify_error_outcome(c.classify(e), duration),
+            || {
+                duration.map_or(Outcome::Failure, |duration| {
+                    cb.classify_outcome(false, duration)
+                })
+            },
+            |c| classify_error_cb_outcome(cb, c.classify(e), duration),
         ),
         Err(CallError::RetriesExhausted { last, .. }) => classifier.map_or_else(
-            || cb.classify_outcome(false, duration),
-            |c| cb.classify_error_outcome(c.classify(last), duration),
+            || {
+                duration.map_or(Outcome::Failure, |duration| {
+                    cb.classify_outcome(false, duration)
+                })
+            },
+            |c| classify_error_cb_outcome(cb, c.classify(last), duration),
         ),
         Err(CallError::Timeout(_)) => Outcome::Timeout,
         Err(_) => Outcome::Cancelled,
     }
+}
+
+fn classify_error_cb_outcome(
+    cb: &CircuitBreaker,
+    class: ErrorClass,
+    duration: Option<Duration>,
+) -> Outcome {
+    duration.map_or_else(
+        || class.into(),
+        |duration| cb.classify_error_outcome(class, duration),
+    )
 }
 
 /// Execute the Retry step of the pipeline.

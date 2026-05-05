@@ -566,6 +566,12 @@ impl CircuitBreaker {
         }
     }
 
+    /// Returns true when operation duration must be measured for slow-call accounting.
+    #[must_use]
+    pub(crate) const fn tracks_slow_calls(&self) -> bool {
+        self.config.slow_call_threshold.is_some()
+    }
+
     /// Return the current instant from the breaker clock.
     #[must_use]
     pub(crate) fn clock_now(&self) -> std::time::Instant {
