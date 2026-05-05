@@ -73,10 +73,8 @@ mod tests {
         }
 
         #[test]
-        fn pressure_ordering() {
-            assert!(MemoryPressure::Low < MemoryPressure::Medium);
-            assert!(MemoryPressure::Medium < MemoryPressure::High);
-            assert!(MemoryPressure::High < MemoryPressure::Critical);
+        fn unavailable_pressure_is_concerning_without_ordering_semantics() {
+            assert!(MemoryPressure::Unavailable.is_concerning());
         }
     }
 
@@ -525,7 +523,7 @@ mod tests {
 
     #[cfg(feature = "sysinfo")]
     mod info_tests {
-        use nebula_system::info::{OsFamily, SystemInfo};
+        use nebula_system::info::{OsFamily, SnapshotFreshness, SystemInfo};
 
         #[test]
         fn get_returns_consistent_data() {
@@ -569,6 +567,13 @@ mod tests {
         fn init_is_idempotent() {
             nebula_system::init().expect("first init must succeed");
             nebula_system::init().expect("second init must also succeed");
+        }
+
+        #[test]
+        fn current_memory_reports_fresh_snapshot_metadata() {
+            let memory = SystemInfo::current_memory();
+            assert_eq!(memory.metadata.freshness, SnapshotFreshness::Fresh);
+            assert_eq!(memory.metadata.source, "sysinfo");
         }
 
         #[test]
@@ -654,7 +659,22 @@ mod tests {
             };
 
             assert_eq!(
-                load.can_accept_work().status,
+                load.can_accept_work().status(),
+                AvailabilityStatus::NotSampled
+            );
+            assert!(!load.headroom().is_available());
+
+            let load = SystemLoad {
+                cpu: CpuPressure::Low,
+                memory: MemoryPressure::Low,
+                cpu_usage_percent: Availability::available(20.0),
+                memory_usage_percent: Availability::not_sampled("first sample"),
+                cpu_sample_status: AvailabilityStatus::Available,
+                memory_capacity_source: MemoryCapacitySource::Host,
+            };
+
+            assert_eq!(
+                load.can_accept_work().status(),
                 AvailabilityStatus::NotSampled
             );
             assert!(!load.headroom().is_available());

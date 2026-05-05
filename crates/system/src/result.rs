@@ -27,7 +27,7 @@ where
     E: std::error::Error,
 {
     fn or_system_error<S: Into<String>>(self, msg: S) -> SystemResult<T> {
-        self.map_err(|_| SystemError::platform_error(msg))
+        self.map_err(|e| SystemError::platform_error(format!("{}: {e}", msg.into())))
     }
 
     fn with_system_context<S: Into<String>, F>(self, f: F) -> SystemResult<T>
@@ -137,5 +137,16 @@ mod tests {
         assert!(system_result.is_err());
         let error = system_result.unwrap_err();
         assert!(matches!(error, SystemError::PlatformError(_)));
+    }
+
+    #[test]
+    fn system_result_ext_preserves_source_error() {
+        let result: Result<(), io::Error> = Err(io::Error::other("backend failed"));
+        let system_result = SystemResultExt::or_system_error(result, "Probe failed");
+
+        assert!(system_result.is_err());
+        let message = system_result.unwrap_err().to_string();
+        assert!(message.contains("Probe failed"));
+        assert!(message.contains("backend failed"));
     }
 }

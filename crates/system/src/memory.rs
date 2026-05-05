@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Memory pressure levels
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MemoryPressure {
     /// Memory pressure could not be classified from a valid sample
@@ -199,17 +199,19 @@ fn classify_memory_with_thresholds(
     }
 
     let usage_percent = calculate_usage_percent(used, total);
-    let level = if total == 0 {
-        reasons.push(MemoryPressureReason::MemoryUnavailable);
-        MemoryPressure::Unavailable
-    } else if usage_percent.value().copied().unwrap_or(0.0) > thresholds.critical_percent {
-        MemoryPressure::Critical
-    } else if usage_percent.value().copied().unwrap_or(0.0) > thresholds.high_percent {
-        MemoryPressure::High
-    } else if usage_percent.value().copied().unwrap_or(0.0) > thresholds.medium_percent {
-        MemoryPressure::Medium
-    } else {
-        MemoryPressure::Low
+    let level = match usage_percent.value().copied() {
+        _ if total == 0 => {
+            reasons.push(MemoryPressureReason::MemoryUnavailable);
+            MemoryPressure::Unavailable
+        },
+        Some(percent) if percent > thresholds.critical_percent => MemoryPressure::Critical,
+        Some(percent) if percent > thresholds.high_percent => MemoryPressure::High,
+        Some(percent) if percent > thresholds.medium_percent => MemoryPressure::Medium,
+        Some(_) => MemoryPressure::Low,
+        None => {
+            reasons.push(MemoryPressureReason::MemoryUnavailable);
+            MemoryPressure::Unavailable
+        },
     };
 
     if level != MemoryPressure::Unavailable {
@@ -276,6 +278,8 @@ pub use crate::utils::format_bytes_usize as format_bytes;
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::{
         MemoryPressure, MemoryPressureReason, MemoryPressureThresholds, classify_memory,
         classify_memory_with_thresholds,
@@ -284,12 +288,21 @@ mod tests {
         Availability,
         info::{
             CgroupMemoryInfo, EffectiveMemoryInfo, MemoryCapacitySource,
-            MemoryInfo as SystemMemoryInfo,
+            MemoryInfo as SystemMemoryInfo, SnapshotFreshness, SnapshotMetadata,
         },
     };
 
+    fn fresh_test_metadata() -> SnapshotMetadata {
+        SnapshotMetadata {
+            observed_at: SystemTime::UNIX_EPOCH,
+            freshness: SnapshotFreshness::Fresh,
+            source: "test".to_string(),
+        }
+    }
+
     fn system_memory(total: usize, available: usize) -> SystemMemoryInfo {
         SystemMemoryInfo {
+            metadata: fresh_test_metadata(),
             total,
             available,
             page_size: 4096,
@@ -306,6 +319,7 @@ mod tests {
 
     fn system_memory_with_cgroup(total: usize, available: usize) -> SystemMemoryInfo {
         SystemMemoryInfo {
+            metadata: fresh_test_metadata(),
             total: 64 * 1024,
             available: 48 * 1024,
             page_size: 4096,

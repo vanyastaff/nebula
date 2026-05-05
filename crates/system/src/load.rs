@@ -20,7 +20,7 @@
 //!     Some(false) => println!("system under pressure - shedding load"),
 //!     None => println!(
 //!         "load signal unavailable: {:?}",
-//!         load.can_accept_work().status
+//!         load.can_accept_work().status()
 //!     ),
 //! }
 //! ```
@@ -29,7 +29,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    availability::{Availability, AvailabilityStatus},
+    availability::{
+        Availability, AvailabilityStatus, AvailabilityStatusMessages, availability_from_status,
+    },
     cpu::{self, CpuPressure},
     info::MemoryCapacitySource,
     memory::{self, MemoryPressure},
@@ -71,8 +73,8 @@ impl SystemLoad {
             return Availability::available(false);
         }
 
-        let cpu_status = self.cpu_usage_percent.status;
-        let memory_status = self.memory_usage_percent.status;
+        let cpu_status = self.cpu_usage_percent.status();
+        let memory_status = self.memory_usage_percent.status();
 
         if cpu_status == AvailabilityStatus::Available
             && memory_status == AvailabilityStatus::Available
@@ -155,26 +157,19 @@ pub fn system_load() -> SystemLoad {
     let cpu_usage = cpu::usage();
     let memory_report = memory::pressure_report();
 
-    let cpu_usage_percent = match cpu_usage.sample_status {
-        AvailabilityStatus::Available => Availability::available(cpu_usage.average),
-        AvailabilityStatus::NotSampled => {
-            Availability::not_sampled("first CPU sample has no previous backend refresh")
+    let cpu_usage_percent = availability_from_status(
+        cpu_usage.sample_status,
+        cpu_usage.average,
+        Some(cpu_usage.average),
+        AvailabilityStatusMessages {
+            not_sampled: "first CPU sample has no previous backend refresh",
+            stale: "CPU sample refreshed before backend minimum interval",
+            unsupported: "CPU usage sampling is unsupported",
+            unavailable: "CPU usage is unavailable",
+            permission_denied: "CPU usage probe was denied",
+            not_implemented: "CPU usage sampling is not implemented",
         },
-        AvailabilityStatus::Stale => Availability::stale(
-            Some(cpu_usage.average),
-            "CPU sample refreshed before backend minimum interval",
-        ),
-        AvailabilityStatus::Unsupported => {
-            Availability::unsupported("CPU usage sampling is unsupported")
-        },
-        AvailabilityStatus::Unavailable => Availability::unavailable("CPU usage is unavailable"),
-        AvailabilityStatus::PermissionDenied => {
-            Availability::permission_denied("CPU usage probe was denied")
-        },
-        AvailabilityStatus::NotImplemented => {
-            Availability::not_implemented("CPU usage sampling is not implemented")
-        },
-    };
+    );
 
     let cpu_sample_status = cpu_usage.sample_status;
 

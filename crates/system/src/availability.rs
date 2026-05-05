@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// Availability state for a probe field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,14 +33,58 @@ pub enum AvailabilityStatus {
 
 /// A probe value with explicit availability status.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Availability<T> {
     /// Availability status for this field.
-    pub status: AvailabilityStatus,
+    status: AvailabilityStatus,
     /// Measured value, present only when the status carries usable data.
-    pub value: Option<T>,
+    value: Option<T>,
     /// Human-readable reason for unavailable, unsupported, stale, or partial data.
-    pub reason: Option<String>,
+    reason: Option<String>,
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T> Deserialize<'de> for Availability<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct AvailabilityWire<T> {
+            status: AvailabilityStatus,
+            value: Option<T>,
+            reason: Option<String>,
+        }
+
+        let wire = AvailabilityWire::deserialize(deserializer)?;
+
+        match wire.status {
+            AvailabilityStatus::Available if wire.value.is_none() => Err(de::Error::custom(
+                "available probe value must contain a value",
+            )),
+            AvailabilityStatus::Stale => Ok(Self {
+                status: wire.status,
+                value: wire.value,
+                reason: wire.reason,
+            }),
+            AvailabilityStatus::Available => Ok(Self {
+                status: wire.status,
+                value: wire.value,
+                reason: wire.reason,
+            }),
+            _ if wire.value.is_some() => Err(de::Error::custom(
+                "non-available probe value must not contain measured data",
+            )),
+            _ => Ok(Self {
+                status: wire.status,
+                value: None,
+                reason: wire.reason,
+            }),
+        }
+    }
 }
 
 impl<T> Availability<T> {
@@ -93,10 +137,22 @@ impl<T> Availability<T> {
         self.status == AvailabilityStatus::Available
     }
 
+    /// Return the availability status.
+    #[must_use]
+    pub fn status(&self) -> AvailabilityStatus {
+        self.status
+    }
+
     /// Borrow the measured value if one is present.
     #[must_use]
     pub fn value(&self) -> Option<&T> {
         self.value.as_ref()
+    }
+
+    /// Borrow the reason if this value is not fully available.
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
     }
 
     /// Convert into the measured value if one is present.
@@ -126,6 +182,38 @@ impl<T> Availability<T> {
 impl<T> From<T> for Availability<T> {
     fn from(value: T) -> Self {
         Self::available(value)
+    }
+}
+
+#[cfg(any(feature = "sysinfo", feature = "process"))]
+pub(crate) struct AvailabilityStatusMessages {
+    pub not_sampled: &'static str,
+    pub stale: &'static str,
+    pub unsupported: &'static str,
+    pub unavailable: &'static str,
+    pub permission_denied: &'static str,
+    pub not_implemented: &'static str,
+}
+
+#[cfg(any(feature = "sysinfo", feature = "process"))]
+pub(crate) fn availability_from_status<T>(
+    status: AvailabilityStatus,
+    available_value: T,
+    stale_value: Option<T>,
+    messages: AvailabilityStatusMessages,
+) -> Availability<T> {
+    match status {
+        AvailabilityStatus::Available => Availability::available(available_value),
+        AvailabilityStatus::NotSampled => Availability::not_sampled(messages.not_sampled),
+        AvailabilityStatus::Stale => Availability::stale(stale_value, messages.stale),
+        AvailabilityStatus::Unsupported => Availability::unsupported(messages.unsupported),
+        AvailabilityStatus::Unavailable => Availability::unavailable(messages.unavailable),
+        AvailabilityStatus::PermissionDenied => {
+            Availability::permission_denied(messages.permission_denied)
+        },
+        AvailabilityStatus::NotImplemented => {
+            Availability::not_implemented(messages.not_implemented)
+        },
     }
 }
 
@@ -161,33 +249,30 @@ mod tests {
         let available = Availability::available(42);
         assert!(available.is_available());
         assert_eq!(available.value(), Some(&42));
-        assert_eq!(available.status, AvailabilityStatus::Available);
-        assert!(available.reason.is_none());
+        assert_eq!(available.status(), AvailabilityStatus::Available);
+        assert!(available.reason().is_none());
 
         let unavailable = Availability::<u32>::unavailable("backend did not return a value");
         assert!(!unavailable.is_available());
         assert_eq!(unavailable.value(), None);
-        assert_eq!(unavailable.status, AvailabilityStatus::Unavailable);
-        assert_eq!(
-            unavailable.reason.as_deref(),
-            Some("backend did not return a value")
-        );
+        assert_eq!(unavailable.status(), AvailabilityStatus::Unavailable);
+        assert_eq!(unavailable.reason(), Some("backend did not return a value"));
     }
 
     #[test]
     fn stale_values_can_carry_last_known_reading() {
         let stale = Availability::stale(Some(17), "sample interval was too short");
         assert!(!stale.is_available());
-        assert_eq!(stale.status, AvailabilityStatus::Stale);
+        assert_eq!(stale.status(), AvailabilityStatus::Stale);
         assert_eq!(stale.value(), Some(&17));
     }
 
     #[test]
     fn map_preserves_status_and_reason() {
         let mapped = Availability::not_sampled("first sample").map(|value: u32| value + 1);
-        assert_eq!(mapped.status, AvailabilityStatus::NotSampled);
+        assert_eq!(mapped.status(), AvailabilityStatus::NotSampled);
         assert_eq!(mapped.value(), None);
-        assert_eq!(mapped.reason.as_deref(), Some("first sample"));
+        assert_eq!(mapped.reason(), Some("first sample"));
 
         let mapped = Availability::available(2).map(|value| value * 10);
         assert_eq!(mapped.value(), Some(&20));

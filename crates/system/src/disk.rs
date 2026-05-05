@@ -449,14 +449,24 @@ pub fn filesystem_info(path: &str) -> Availability<FileSystemInfo> {
 
 #[cfg(unix)]
 fn detect_fs_type(path: &str) -> String {
-    // Find disk for this path
+    use std::path::Path;
+
+    let path = Path::new(path);
+    let mut best_match = None;
+    let mut best_match_len = 0;
+
     for disk in list() {
-        if path.starts_with(&disk.mount_point) {
-            return disk.filesystem;
+        let mount = Path::new(&disk.mount_point);
+        if path.starts_with(mount) {
+            let mount_len = mount.components().count();
+            if mount_len > best_match_len {
+                best_match = Some(disk.filesystem);
+                best_match_len = mount_len;
+            }
         }
     }
 
-    "unknown".to_string()
+    best_match.unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]

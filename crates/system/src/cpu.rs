@@ -227,10 +227,11 @@ pub fn usage() -> CpuUsage {
     }
 }
 
-/// Get CPU pressure level
+/// Get CPU pressure level.
 ///
-/// Computes average CPU usage directly without allocating a `Vec<f32>`.
-/// Use [`usage()`] if you also need per-core breakdown.
+/// Calls [`pressure_report()`] internally and may allocate for per-core sample
+/// evidence through [`usage()`]. Use [`usage()`] when callers need the per-core
+/// breakdown directly.
 #[must_use]
 pub fn pressure() -> CpuPressure {
     pressure_report().pressure

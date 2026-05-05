@@ -24,7 +24,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "process")]
-use crate::availability::sample_status_for_interval;
+use crate::availability::{
+    AvailabilityStatusMessages, availability_from_status, sample_status_for_interval,
+};
 use crate::{
     availability::{Availability, AvailabilityStatus},
     error::{SystemError, SystemResult},
@@ -198,38 +200,52 @@ where
 
 #[cfg(feature = "process")]
 fn sampled_cpu_usage(value: f32, status: AvailabilityStatus) -> Availability<f32> {
-    match status {
-        AvailabilityStatus::Available => Availability::available(value),
-        AvailabilityStatus::NotSampled => {
-            Availability::not_sampled("first process CPU sample has no previous backend refresh")
+    availability_from_status(
+        status,
+        value,
+        Some(value),
+        AvailabilityStatusMessages {
+            not_sampled: "first process CPU sample has no previous backend refresh",
+            stale: "process CPU sample refreshed before backend minimum interval",
+            unsupported: "process CPU sampling is unsupported",
+            unavailable: "process CPU sample is unavailable",
+            permission_denied: "process CPU sample probe was denied",
+            not_implemented: "process CPU sampling is not implemented",
         },
-        AvailabilityStatus::Stale => Availability::stale(
-            Some(value),
-            "process CPU sample refreshed before backend minimum interval",
-        ),
-        _ => Availability::unavailable("process CPU sample is unavailable"),
-    }
+    )
 }
 
 #[cfg(feature = "process")]
 fn uid_availability(uid: Option<&sysinfo::Uid>) -> Availability<u32> {
-    match uid.and_then(|id| id.to_string().parse::<u32>().ok()) {
-        Some(uid) => Availability::available(uid),
-        None if cfg!(windows) => {
-            Availability::unsupported("process uid is not available on Windows")
-        },
-        None => Availability::unavailable("backend did not return process uid"),
+    #[cfg(windows)]
+    {
+        let _ = uid;
+        Availability::unsupported("process uid is not available on Windows")
+    }
+
+    #[cfg(not(windows))]
+    {
+        match uid {
+            Some(uid) => Availability::available(**uid),
+            None => Availability::unavailable("backend did not return process uid"),
+        }
     }
 }
 
 #[cfg(feature = "process")]
 fn gid_availability(gid: Option<sysinfo::Gid>) -> Availability<u32> {
-    match gid.and_then(|id| id.to_string().parse::<u32>().ok()) {
-        Some(gid) => Availability::available(gid),
-        None if cfg!(windows) => {
-            Availability::unsupported("process gid is not available on Windows")
-        },
-        None => Availability::unavailable("backend did not return process gid"),
+    #[cfg(windows)]
+    {
+        let _ = gid;
+        Availability::unsupported("process gid is not available on Windows")
+    }
+
+    #[cfg(not(windows))]
+    {
+        match gid {
+            Some(gid) => Availability::available(*gid),
+            None => Availability::unavailable("backend did not return process gid"),
+        }
     }
 }
 

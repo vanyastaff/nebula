@@ -179,8 +179,9 @@ pub fn get_interface(name: &str) -> Option<NetworkInterface> {
 
 /// Get network usage statistics with rate tracking
 ///
-/// On the first call for a given interface, rates will be `0.0` because
-/// there is no previous snapshot to compute a delta from.
+/// On the first call for a given interface, rates are
+/// [`Availability::not_sampled`] because there is no previous snapshot to
+/// compute a delta from.
 pub fn usage() -> Vec<NetworkUsage> {
     #[cfg(feature = "network")]
     {
@@ -352,11 +353,11 @@ mod tests {
         assert!(!second[0].rx_rate.is_available());
         assert!(!second[0].tx_rate.is_available());
         assert_eq!(
-            second[0].rx_rate.reason.as_deref(),
+            second[0].rx_rate.reason(),
             Some("receive counter reset between samples")
         );
         assert_eq!(
-            second[0].tx_rate.reason.as_deref(),
+            second[0].tx_rate.reason(),
             Some("transmit counter reset between samples")
         );
     }

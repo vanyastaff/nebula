@@ -110,15 +110,20 @@ jobs:
           cache-on-failure: true
       - name: Run cargo check
         run: cargo check --workspace --all-features --all-targets
-      - name: Check no-default-features
-        run: |
-          cargo check -p nebula-resilience --no-default-features
-          cargo check -p nebula-system --no-default-features
-          cargo check -p nebula-system --no-default-features --features "full serde"
-          cargo check -p nebula-log --no-default-features
-          cargo check -p nebula-expression --no-default-features
-          cargo check -p nebula-api --no-default-features
-          cargo check -p nebula-credential --no-default-features
+      - name: Check nebula-resilience (no-default-features)
+        run: cargo check -p nebula-resilience --no-default-features
+      - name: Check nebula-system (no-default-features)
+        run: cargo check -p nebula-system --no-default-features
+      - name: Check nebula-system (full + serde)
+        run: cargo check -p nebula-system --no-default-features --features "full serde"
+      - name: Check nebula-log (no-default-features)
+        run: cargo check -p nebula-log --no-default-features
+      - name: Check nebula-expression (no-default-features)
+        run: cargo check -p nebula-expression --no-default-features
+      - name: Check nebula-api (no-default-features)
+        run: cargo check -p nebula-api --no-default-features
+      - name: Check nebula-credential (no-default-features)
+        run: cargo check -p nebula-credential --no-default-features
 
   # ── Doctests (workspace-wide, off the critical path) ──────────────────────
   # Tier 2: skipped on draft PRs — re-runs on `ready_for_review`.

@@ -105,6 +105,8 @@ pub struct CpuInfo {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MemoryInfo {
+    /// Metadata describing how this memory snapshot was captured.
+    pub metadata: SnapshotMetadata,
     /// Total physical memory in bytes
     pub total: usize,
     /// Available physical memory in bytes
@@ -182,7 +184,11 @@ impl SystemInfo {
         Arc::clone(&SYSTEM_INFO)
     }
 
-    /// Get current memory information (always fresh)
+    /// Get current memory information.
+    ///
+    /// With the `sysinfo` backend enabled, this refreshes memory and returns
+    /// `SnapshotFreshness::Fresh` metadata. Without it, this returns the cached
+    /// fallback snapshot and preserves cached freshness metadata.
     pub fn current_memory() -> MemoryInfo {
         #[cfg(feature = "sysinfo")]
         {
@@ -190,6 +196,11 @@ impl SystemInfo {
             sys.refresh_memory();
 
             MemoryInfo {
+                metadata: SnapshotMetadata {
+                    observed_at: SystemTime::now(),
+                    freshness: SnapshotFreshness::Fresh,
+                    source: "sysinfo".to_string(),
+                },
                 total: sys.total_memory() as usize,
                 available: sys.available_memory() as usize,
                 page_size: page_size(),
@@ -328,6 +339,11 @@ fn detect_system_info() -> SystemInfo {
         };
 
         let memory = MemoryInfo {
+            metadata: SnapshotMetadata {
+                observed_at: SystemTime::now(),
+                freshness: SnapshotFreshness::Cached,
+                source: "sysinfo".to_string(),
+            },
             total: sys.total_memory() as usize,
             available: sys.available_memory() as usize,
             page_size: page_size(),
@@ -386,6 +402,11 @@ fn detect_system_info() -> SystemInfo {
                 vendor: "Unknown".to_string(),
             },
             memory: MemoryInfo {
+                metadata: SnapshotMetadata {
+                    observed_at: SystemTime::now(),
+                    freshness: SnapshotFreshness::Cached,
+                    source: "fallback:no-sysinfo".to_string(),
+                },
                 total: 0,
                 available: 0,
                 page_size: page_size(),
