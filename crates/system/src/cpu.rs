@@ -9,6 +9,8 @@ use parking_lot::RwLock;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "sysinfo")]
+use crate::availability::sample_status_for_interval;
 use crate::{
     availability::AvailabilityStatus,
     error::{SystemError, SystemResult},
@@ -161,17 +163,7 @@ static CPU_USAGE_SAMPLE_STATE: LazyLock<RwLock<Option<Instant>>> =
 fn next_cpu_sample_status() -> AvailabilityStatus {
     let now = Instant::now();
     let mut last_sample = CPU_USAGE_SAMPLE_STATE.write();
-    let status = match *last_sample {
-        None => AvailabilityStatus::NotSampled,
-        Some(previous)
-            if now.saturating_duration_since(previous) < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL =>
-        {
-            AvailabilityStatus::Stale
-        },
-        Some(_) => AvailabilityStatus::Available,
-    };
-    *last_sample = Some(now);
-    status
+    sample_status_for_interval(now, &mut last_sample, sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
 }
 
 /// Get current CPU usage

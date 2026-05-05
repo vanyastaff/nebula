@@ -21,6 +21,8 @@ use parking_lot::RwLock;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "process")]
+use crate::availability::sample_status_for_interval;
 use crate::{
     availability::{Availability, AvailabilityStatus},
     error::{SystemError, SystemResult},
@@ -114,17 +116,7 @@ static PROCESS_CPU_SAMPLE_STATE: LazyLock<RwLock<Option<Instant>>> =
 fn next_process_cpu_sample_status() -> AvailabilityStatus {
     let now = Instant::now();
     let mut last_sample = PROCESS_CPU_SAMPLE_STATE.write();
-    let status = match *last_sample {
-        None => AvailabilityStatus::NotSampled,
-        Some(previous)
-            if now.saturating_duration_since(previous) < sysinfo::MINIMUM_CPU_UPDATE_INTERVAL =>
-        {
-            AvailabilityStatus::Stale
-        },
-        Some(_) => AvailabilityStatus::Available,
-    };
-    *last_sample = Some(now);
-    status
+    sample_status_for_interval(now, &mut last_sample, sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
 }
 
 #[cfg(feature = "process")]
@@ -296,9 +288,7 @@ pub fn stats() -> ProcessStats {
                 _ => {},
             }
             total_memory += process.memory() as usize;
-            if cpu_status == AvailabilityStatus::Available {
-                total_cpu += process.cpu_usage();
-            }
+            total_cpu += process.cpu_usage();
         }
 
         ProcessStats {

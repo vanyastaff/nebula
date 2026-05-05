@@ -5,6 +5,9 @@
 //! permission-denied. This module provides a small wrapper so those states are
 //! not represented as misleading zeros, `None`, or empty collections.
 
+#[cfg(any(feature = "sysinfo", feature = "process", test))]
+use std::time::{Duration, Instant};
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -126,9 +129,32 @@ impl<T> From<T> for Availability<T> {
     }
 }
 
+#[cfg(any(feature = "sysinfo", feature = "process", test))]
+pub(crate) fn sample_status_for_interval(
+    now: Instant,
+    last_sample: &mut Option<Instant>,
+    minimum_interval: Duration,
+) -> AvailabilityStatus {
+    match *last_sample {
+        None => {
+            *last_sample = Some(now);
+            AvailabilityStatus::NotSampled
+        },
+        Some(previous) if now.saturating_duration_since(previous) < minimum_interval => {
+            AvailabilityStatus::Stale
+        },
+        Some(_) => {
+            *last_sample = Some(now);
+            AvailabilityStatus::Available
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Availability, AvailabilityStatus};
+    use std::time::{Duration, Instant};
+
+    use super::{Availability, AvailabilityStatus, sample_status_for_interval};
 
     #[test]
     fn available_value_is_distinguishable_from_unavailable() {
@@ -166,5 +192,32 @@ mod tests {
         let mapped = Availability::available(2).map(|value| value * 10);
         assert_eq!(mapped.value(), Some(&20));
         assert!(mapped.is_available());
+    }
+
+    #[test]
+    fn stale_sample_does_not_advance_baseline() {
+        let minimum_interval = Duration::from_millis(100);
+        let first = Instant::now();
+        let stale = first + Duration::from_millis(10);
+        let ready = first + minimum_interval;
+        let mut last_sample = None;
+
+        assert_eq!(
+            sample_status_for_interval(first, &mut last_sample, minimum_interval),
+            AvailabilityStatus::NotSampled
+        );
+        assert_eq!(last_sample, Some(first));
+
+        assert_eq!(
+            sample_status_for_interval(stale, &mut last_sample, minimum_interval),
+            AvailabilityStatus::Stale
+        );
+        assert_eq!(last_sample, Some(first));
+
+        assert_eq!(
+            sample_status_for_interval(ready, &mut last_sample, minimum_interval),
+            AvailabilityStatus::Available
+        );
+        assert_eq!(last_sample, Some(ready));
     }
 }
