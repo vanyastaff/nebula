@@ -1,12 +1,8 @@
 //! Benchmarks for the `load_shed` function.
 //!
 //! `load_shed` runs on every incoming request, so its predicate evaluation
-//! and control-flow overhead must be minimal.  Two scenarios:
+//! and control-flow overhead must be minimal. Scenarios:
 //!
-//! - **Pass-through** — predicate always returns `false`; measures the overhead of the extra
-//!   `async` wrapper + closure call when no shedding occurs.
-//! - **Reject** — predicate always returns `true`; measures the fast rejection path where the
-//!   operation is never started.
 //! - **Atomic predicate** — realistic production pattern: predicate reads an `AtomicBool` set
 //!   externally (e.g., by a health-check loop).
 //!
@@ -25,26 +21,6 @@ use std::{
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resilience::load_shed;
-
-fn bench_pass_through(c: &mut Criterion) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    c.bench_function("load_shed/pass_through", |b| {
-        b.to_async(&rt).iter(|| async {
-            let result = load_shed(|| false, || async { Ok::<u64, ()>(black_box(42)) }).await;
-            black_box(result.unwrap());
-        });
-    });
-}
-
-fn bench_reject(c: &mut Criterion) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    c.bench_function("load_shed/reject", |b| {
-        b.to_async(&rt).iter(|| async {
-            let result = load_shed(|| true, || async { Ok::<u64, ()>(black_box(42)) }).await;
-            black_box(result.is_err());
-        });
-    });
-}
 
 fn bench_atomic_predicate(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -85,10 +61,5 @@ fn bench_atomic_predicate(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_pass_through,
-    bench_reject,
-    bench_atomic_predicate
-);
+criterion_group!(benches, bench_atomic_predicate);
 criterion_main!(benches);
