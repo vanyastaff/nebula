@@ -35,7 +35,7 @@ use loom::sync::atomic::{AtomicU32, Ordering};
 use parking_lot::Mutex;
 
 use crate::{
-    CallError, ConfigError,
+    CallError, ConfigError, PolicyContext,
     clock::{Clock, SystemClock},
     sink::{CircuitState, MetricsSink, NoopSink, ResilienceEvent},
 };
@@ -51,6 +51,11 @@ pub struct CircuitBreakerConfig {
     pub reset_timeout: Duration,
     /// Max concurrent probe operations allowed in `HalfOpen` state. Default: 1.
     pub max_half_open_operations: u32,
+    /// Successful half-open probes required before closing.
+    ///
+    /// `None` means use `max_half_open_operations`, so configurations that admit multiple
+    /// concurrent probes also require multiple successful probes before recovery.
+    pub half_open_success_threshold: Option<u32>,
     /// Minimum number of operations required before failures can trip the breaker. Default: 5.
     pub min_operations: u32,
     /// Whether timeouts count as failures **and toward `total` operations**.
@@ -79,6 +84,7 @@ impl Default for CircuitBreakerConfig {
             failure_threshold: 5,
             reset_timeout: Duration::from_secs(30),
             max_half_open_operations: 1,
+            half_open_success_threshold: None,
             min_operations: 5,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 1.0,
@@ -107,6 +113,12 @@ impl CircuitBreakerConfig {
         }
         if self.max_half_open_operations == 0 {
             return Err(ConfigError::new("max_half_open_operations", "must be >= 1"));
+        }
+        if self.half_open_success_threshold == Some(0) {
+            return Err(ConfigError::new(
+                "half_open_success_threshold",
+                "must be >= 1 when set",
+            ));
         }
         if self.min_operations == 0 {
             return Err(ConfigError::new("min_operations", "must be >= 1"));
@@ -455,6 +467,8 @@ struct InnerState {
     total: u32,
     /// Number of active probe operations in `HalfOpen` state.
     half_open_probes: u32,
+    /// Number of successful probes observed in the current `HalfOpen` recovery round.
+    half_open_successes: u32,
     /// Number of consecutive times the circuit has opened (for dynamic break duration).
     consecutive_opens: u32,
     /// Number of slow calls in the current window.
@@ -480,6 +494,7 @@ impl CircuitBreaker {
                 failures: 0,
                 total: 0,
                 half_open_probes: 0,
+                half_open_successes: 0,
                 consecutive_opens: 0,
                 slow_calls: 0,
                 window: if window_size > 0 {
@@ -536,6 +551,33 @@ impl CircuitBreaker {
         }
     }
 
+    /// Map a classified error to a circuit-breaker outcome while preserving
+    /// timeout-specific config and slow-call accounting.
+    #[must_use]
+    pub(crate) fn classify_error_outcome(
+        &self,
+        class: crate::classifier::ErrorClass,
+        duration: Duration,
+    ) -> Outcome {
+        match class {
+            crate::classifier::ErrorClass::Timeout => Outcome::Timeout,
+            class if class.counts_as_failure() => self.classify_outcome(false, duration),
+            class => class.into(),
+        }
+    }
+
+    /// Returns true when operation duration must be measured for slow-call accounting.
+    #[must_use]
+    pub(crate) const fn tracks_slow_calls(&self) -> bool {
+        self.config.slow_call_threshold.is_some()
+    }
+
+    /// Return the current instant from the breaker clock.
+    #[must_use]
+    pub(crate) fn clock_now(&self) -> std::time::Instant {
+        self.clock.now()
+    }
+
     /// Manually force the circuit open, rejecting all calls until reset timeout or
     /// [`force_close`](Self::force_close).
     pub fn force_open(&self) {
@@ -545,6 +587,7 @@ impl CircuitBreaker {
             opened_at: self.clock.now(),
         };
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         drop(inner);
         if prev != CircuitState::Open {
@@ -593,6 +636,12 @@ impl CircuitBreaker {
         Duration::from_secs_f64(multiplied)
     }
 
+    fn required_half_open_successes(&self) -> u32 {
+        self.config
+            .half_open_success_threshold
+            .unwrap_or(self.config.max_half_open_operations)
+    }
+
     /// Execute a closure under the circuit breaker.
     ///
     /// All errors count as failures (equivalent to
@@ -639,6 +688,30 @@ impl CircuitBreaker {
         result.map_err(CallError::Operation)
     }
 
+    /// Execute a closure under the circuit breaker with a shared policy context.
+    ///
+    /// Context cancellation/deadline bounds the operation while preserving the
+    /// circuit breaker state-machine guarantees. Context cancellation is recorded
+    /// as a cancelled outcome and does not trip the breaker; context deadline
+    /// expiry is recorded as a timeout outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
+    /// `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline expires,
+    /// or `Err(CallError::Operation)` if the operation itself fails.
+    pub async fn call_with_policy_context<T, E, Fut>(
+        &self,
+        context: &PolicyContext,
+        f: impl FnOnce() -> Fut + Send,
+    ) -> Result<T, CallError<E>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send,
+    {
+        self.call_with_policy_context_inner(context, None, f).await
+    }
+
     /// Execute a closure under the circuit breaker with error classification.
     ///
     /// Uses the provided `ErrorClassifier` to determine how each error
@@ -671,19 +744,67 @@ impl CircuitBreaker {
 
         let outcome = match &result {
             Ok(_) => self.classify_outcome(true, duration),
-            Err(e) => {
-                let class = classifier.classify(e);
-                if class.counts_as_failure() {
-                    self.classify_outcome(false, duration)
-                } else {
-                    class.into()
-                }
-            },
+            Err(e) => self.classify_error_outcome(classifier.classify(e), duration),
         };
 
         guard.defuse();
         self.record_outcome(outcome);
         result.map_err(CallError::Operation)
+    }
+
+    /// Execute a closure under the circuit breaker with both error
+    /// classification and a shared policy context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::CircuitOpen)` if the breaker is open,
+    /// `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline expires,
+    /// or `Err(CallError::Operation)` if the operation itself fails.
+    pub async fn call_with_classifier_and_policy_context<T, E, Fut>(
+        &self,
+        classifier: &dyn crate::classifier::ErrorClassifier<E>,
+        context: &PolicyContext,
+        f: impl FnOnce() -> Fut + Send,
+    ) -> Result<T, CallError<E>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send,
+    {
+        self.call_with_policy_context_inner(context, Some(classifier), f)
+            .await
+    }
+
+    async fn call_with_policy_context_inner<T, E, Fut>(
+        &self,
+        context: &PolicyContext,
+        classifier: Option<&dyn crate::classifier::ErrorClassifier<E>>,
+        f: impl FnOnce() -> Fut + Send,
+    ) -> Result<T, CallError<E>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send,
+    {
+        self.try_acquire()?;
+        let mut guard = ProbeGuard::new(self);
+        let start = self.clock.now();
+        let result = context
+            .run_result(async { f().await.map_err(CallError::Operation) })
+            .await;
+        let duration = self.clock.now().duration_since(start);
+
+        let outcome = match &result {
+            Ok(_) => self.classify_outcome(true, duration),
+            Err(CallError::Operation(error)) => classifier.map_or_else(
+                || self.classify_outcome(false, duration),
+                |classifier| self.classify_error_outcome(classifier.classify(error), duration),
+            ),
+            Err(CallError::Timeout(_)) => Outcome::Timeout,
+            Err(CallError::Cancelled { .. }) => Outcome::Cancelled,
+            Err(_) => self.classify_outcome(false, duration),
+        };
+
+        guard.defuse();
+        self.record_outcome(outcome);
+        result
     }
 
     /// Check if the circuit allows execution.
@@ -714,6 +835,7 @@ impl CircuitBreaker {
                     inner.failures = 0;
                     inner.total = 0;
                     inner.slow_calls = 0;
+                    inner.half_open_successes = 0;
                     inner.half_open_probes = 1; // this call is the first probe
                     if let Some(ref mut window) = inner.window {
                         window.reset();
@@ -772,6 +894,7 @@ impl CircuitBreaker {
             opened_at: self.clock.now(),
         };
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         inner.consecutive_opens += 1;
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         (prev, CircuitState::Open)
@@ -781,6 +904,7 @@ impl CircuitBreaker {
     /// Extracted to deduplicate the identical reset+trip pattern in `record_outcome`.
     fn trip_open_from_half_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         self.trip_open(inner)
     }
 
@@ -791,6 +915,7 @@ impl CircuitBreaker {
         inner.total = 0;
         inner.slow_calls = 0;
         inner.half_open_probes = 0;
+        inner.half_open_successes = 0;
         inner.consecutive_opens = 0;
         if let Some(ref mut window) = inner.window {
             window.reset();
@@ -806,12 +931,17 @@ impl CircuitBreaker {
     }
 
     /// Record a successful half-open probe.
-    ///
-    /// `max_half_open_operations` is only an admission limit; the first successful probe closes
-    /// the circuit, preserving the historical config meaning.
-    fn record_half_open_success(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
+    fn record_half_open_success(
+        &self,
+        inner: &mut InnerState,
+    ) -> Option<(CircuitState, CircuitState)> {
         inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
-        self.close_from_half_open(inner)
+        inner.half_open_successes = inner.half_open_successes.saturating_add(1);
+        if inner.half_open_successes >= self.required_half_open_successes() {
+            Some(self.close_from_half_open(inner))
+        } else {
+            None
+        }
     }
 
     /// Record an operation outcome directly (useful when driving the CB from external code).
@@ -830,7 +960,7 @@ impl CircuitBreaker {
             },
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.record_half_open_success(&mut inner));
+                    transition = self.record_half_open_success(&mut inner);
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
@@ -844,18 +974,18 @@ impl CircuitBreaker {
                     // Don't count as failure, but still release the probe slot
                     // so half-open probes aren't permanently leaked.
                     inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
-                    return;
-                }
-                inner.failures = inner.failures.saturating_add(1);
-                inner.total = inner.total.saturating_add(1);
-                if let Some(ref mut window) = inner.window {
-                    window.record(true, false);
-                }
+                } else {
+                    inner.failures = inner.failures.saturating_add(1);
+                    inner.total = inner.total.saturating_add(1);
+                    if let Some(ref mut window) = inner.window {
+                        window.record(true, false);
+                    }
 
-                if inner.state == State::HalfOpen {
-                    transition = Some(self.trip_open_from_half_open(&mut inner));
-                } else if self.should_trip_on_failure(&inner) {
-                    transition = Some(self.trip_open(&mut inner));
+                    if inner.state == State::HalfOpen {
+                        transition = Some(self.trip_open_from_half_open(&mut inner));
+                    } else if self.should_trip_on_failure(&inner) {
+                        transition = Some(self.trip_open(&mut inner));
+                    }
                 }
             },
             Outcome::SlowSuccess => {
@@ -865,7 +995,7 @@ impl CircuitBreaker {
                     window.record(false, true);
                 }
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.record_half_open_success(&mut inner));
+                    transition = self.record_half_open_success(&mut inner);
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     if self.slow_rate_trips(&inner) {
@@ -994,13 +1124,19 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::{CallError, RecordingSink, sink::CircuitState as CS};
+    use crate::{
+        CallError, PolicyContext, RecordingSink,
+        cancellation::CancellationContext,
+        classifier::{ErrorClass, FnClassifier},
+        sink::CircuitState as CS,
+    };
 
     fn default_config() -> CircuitBreakerConfig {
         CircuitBreakerConfig {
             failure_threshold: 3,
             reset_timeout: Duration::from_millis(100),
             max_half_open_operations: 1,
+            half_open_success_threshold: None,
             min_operations: 1,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 1.0,
@@ -1035,6 +1171,77 @@ mod tests {
         }
         let result = cb.call::<u32, &str, _>(|| Box::pin(async { Ok(42) })).await;
         assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn policy_context_cancellation_does_not_trip_breaker() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            ..default_config()
+        })
+        .unwrap();
+        let cancellation = CancellationContext::with_reason("shutdown");
+        let context = PolicyContext::from_cancellation(cancellation.clone());
+        cancellation.cancel();
+
+        let result = cb
+            .call_with_policy_context::<(), &str, _>(&context, || {
+                Box::pin(async { Ok::<(), &str>(()) })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Cancelled { .. })));
+        assert_eq!(cb.circuit_state(), CS::Closed);
+        assert_eq!(cb.stats().total, 0);
+    }
+
+    #[tokio::test]
+    async fn policy_context_deadline_records_timeout_outcome() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            min_operations: 1,
+            count_timeouts_as_failures: true,
+            ..default_config()
+        })
+        .unwrap();
+        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+
+        let result = cb
+            .call_with_policy_context::<(), &str, _>(&context, || {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_mins(1)).await;
+                    Ok::<(), &str>(())
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Timeout(_))));
+        assert_eq!(cb.circuit_state(), CS::Open);
+    }
+
+    #[tokio::test]
+    async fn classified_timeout_respects_timeout_counting_config() {
+        #[derive(Debug)]
+        struct TimeoutErr;
+
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            min_operations: 1,
+            count_timeouts_as_failures: false,
+            ..default_config()
+        })
+        .unwrap();
+        let classifier = FnClassifier::new(|_: &TimeoutErr| ErrorClass::Timeout);
+
+        let result = cb
+            .call_with_classifier(&classifier, || {
+                Box::pin(async { Err::<(), TimeoutErr>(TimeoutErr) })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Operation(_))));
+        assert_eq!(cb.circuit_state(), CS::Closed);
+        assert_eq!(cb.stats().total, 0);
     }
 
     #[tokio::test]
@@ -1094,7 +1301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn half_open_max_operations_is_concurrency_limit_only() {
+    async fn half_open_requires_success_threshold_before_closing() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
             max_half_open_operations: 2,
             ..default_config()
@@ -1115,6 +1322,35 @@ mod tests {
             Err(CallError::CircuitOpen)
         ));
 
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
+    }
+
+    #[tokio::test]
+    async fn ignored_timeout_in_half_open_releases_probe_without_reopening() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            count_timeouts_as_failures: false,
+            ..default_config()
+        })
+        .unwrap();
+
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        assert!(cb.try_acquire::<&str>().is_ok());
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        cb.record_outcome(Outcome::Timeout);
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        assert!(cb.try_acquire::<&str>().is_ok());
         cb.record_outcome(Outcome::Success);
         assert_eq!(cb.circuit_state(), CS::Closed);
     }
@@ -1246,6 +1482,7 @@ mod tests {
             failure_threshold: 2,
             reset_timeout: Duration::from_millis(100),
             max_half_open_operations: 1,
+            half_open_success_threshold: None,
             min_operations: 1,
             count_timeouts_as_failures: true,
             break_duration_multiplier: 2.0,

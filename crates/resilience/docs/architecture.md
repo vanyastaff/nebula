@@ -33,11 +33,20 @@ pub enum CallError<E> {
     LoadShed,
     RateLimited { retry_after: Option<Duration> },
     FallbackFailed { reason: Option<String> },
+    FallbackFailedWithContext { primary, fallback },
 }
 ```
 
 This design replaces the previous `ResilienceError` monolithic enum, which required
 callers to convert their errors into a resilience type and back.
+`FallbackFailedWithContext` is used where the crate can preserve both sides of a
+failed degradation path, for example `FunctionFallback` failures. The generic
+`FallbackStrategy::fallback(error)` method is a safe wrapper that checks
+`should_fallback()` before recovery, so cancellation and overload-style policy
+rejections are not recovered by built-in strategies, chains, or priority dispatch
+unless a custom strategy explicitly opts in. Strategy recovery still receives the
+primary error by value, so universal primary-error preservation for custom fallback
+failures remains a future trait-level correction.
 
 ### 2. Plain-struct config — no const generics
 
@@ -75,14 +84,18 @@ pub enum BackoffConfig {
 
 ### 4. `PipelineBuilder` / `ResiliencePipeline` composition model
 
-`PipelineBuilder<E>` collects steps as a `Vec<Step<E>>`. `build()` validates order
-and returns a `ResiliencePipeline<E>`. Execution recurses through the step list:
+`PipelineBuilder<E>` collects steps as a `Vec<Step<E>>`. `build()` keeps compatibility
+and warns on dangerous order, `build_checked()` rejects order inversions with
+`ConfigError`, and `build_recommended_order()` sorts config-driven policies into the
+safe order. Execution recurses through the step list:
 
-```
+```text
 pipeline.call(f)
   │
+  ├── Step::LoadShed → reject before expensive policy work
+  ├── Step::RateLimiter → reject once before retry unless explicitly ordered inside retry
   ├── Step::Timeout  → tokio::time::timeout wrapping remaining steps
-  ├── Step::Retry    → classify_inner + retry_with loop
+  ├── Step::Retry    → classifier-aware retry_with loop
   ├── Step::CircuitBreaker → cb.call(remaining steps)
   └── Step::Bulkhead → bh.call(remaining steps)
         └── f()
@@ -90,14 +103,36 @@ pipeline.call(f)
 
 `build()` emits a `tracing::warn!` if timeout appears **inside** retry (each attempt
 would get its own deadline instead of a single budget across all attempts).
+`build_checked()` returns a config error for any deviation from the recommended order.
 
 The recommended order is:
-```
-timeout → retry → circuit_breaker → bulkhead
+
+```text
+load_shed → rate_limiter → timeout → retry → circuit_breaker → bulkhead
 ```
 
 Note: this differs from the legacy `LayerBuilder` which recommended
 `timeout → bulkhead → circuit_breaker → retry`.
+
+Operation errors are permanent by default in a pipeline retry. Callers must opt into
+replay with `RetryConfig::retry_if`, `RetryConfig::with_classifier`,
+`PipelineBuilder::classifier`, or `PipelineBuilder::classify_errors()`. This avoids
+accidentally retrying non-idempotent workflow actions.
+
+`ResiliencePipeline::call_with_context()` threads cooperative cancellation through
+the operation and major policy waits. `call_with_context_and_fallback()` extends
+that contract to fallback execution: cancellation wins before fallback starts and
+while the fallback future is running, preventing shutdown from being reported as a
+successful fallback recovery.
+
+`PolicyContext` is the forward-compatible runtime context for Nebula engine
+integration. It groups cancellation, a total monotonic deadline, and
+low-cardinality `PolicyScope`. `call_with_policy_context()` and
+`call_with_policy_context_and_fallback()` apply the deadline to the whole call and
+use context scope for `PipelineCompleted` when provided.
+Standalone `Bulkhead`, `RateLimiter`, `CircuitBreaker`, and `FallbackOperation`
+also expose context-aware entry points so callers that do not use a pipeline still
+preserve the same cancellation/deadline contract.
 
 ### 5. `MetricsSink` — event sink for observability
 
@@ -118,11 +153,20 @@ pub enum ResilienceEvent {
     HedgeFired { hedge_number: u32 },
     RateLimitExceeded,
     LoadShed,
+    FallbackAttempted { primary_error: CallErrorKind },
+    FallbackSucceeded { primary_error: CallErrorKind },
+    FallbackFailed {
+        primary_error: CallErrorKind,
+        fallback_error: CallErrorKind,
+    },
+    PipelineCompleted { scope: PolicyScope, outcome: PipelineOutcome },
 }
 ```
 
 `ResilienceEvent::kind()` returns a `ResilienceEventKind` enum for counting/filtering.
 `RecordingSink::count()` takes a `ResilienceEventKind` variant (not a string).
+`PipelineCompleted` is the high-level event that distinguishes primary success,
+primary failure, fallback success, and fallback failure for a caller-provided scope.
 
 ### 6. Injectable `Clock` for deterministic testing
 
@@ -153,11 +197,15 @@ forgets one permit; `close()` acquires all `u32::MAX / 2` permits back, blocking
 every outstanding guard is dropped. An `AtomicBool` marks the gate as closing so new
 `enter()` calls are rejected immediately.
 
+`close_with_timeout()` is the bounded shutdown variant for runtime owners that cannot
+wait forever. It leaves the gate closing, returns `GateCloseTimeout`, and reports a
+best-effort active guard count for diagnostics.
+
 ---
 
 ## Module Map
 
-```
+```text
 crates/resilience/src/
 │
 │  ── Core types ────────────────────────────────────────────────────────────
@@ -169,6 +217,11 @@ crates/resilience/src/
 │
 ├── cancellation.rs    CancellationContext — wraps tokio_util CancellationToken.
 │                      CancellableFuture, CancellationExt.
+│
+├── context.rs         PolicyContext — cancellation + deadline + scope.
+│
+├── deadline.rs        Deadline — monotonic start + budget helper used for
+│                      remaining-budget enforcement.
 │
 ├── policy.rs          PolicySource<C> trait + blanket impl for Clone types.
 │                      LoadSignal trait — load_factor(), error_rate(), p99_latency().
@@ -185,13 +238,14 @@ crates/resilience/src/
 │                      ResilienceEvent — typed events emitted by patterns.
 │                      ResilienceEventKind — discriminant enum for counting/filtering.
 │                      CircuitState — Closed | Open | HalfOpen.
+│                      PolicyScope, ScopeValue, PipelineOutcome.
 │
 │  ── Patterns ────────────────────────────────────────────────────────────────
 │
 ├── circuit_breaker.rs CircuitBreakerConfig — plain struct, serde, validate().
 │                      CircuitBreaker — Clock + MetricsSink injectable.
 │                      Outcome — Success | Failure | Timeout.
-│                      call() returning Result<T, CallError<E>>.
+│                      call() and context-aware call methods.
 │
 ├── retry.rs           BackoffConfig enum — Fixed / Linear / Exponential.
 │                      JitterConfig enum — None / Full { factor }.
@@ -201,9 +255,11 @@ crates/resilience/src/
 │
 ├── bulkhead.rs        BulkheadConfig — max_concurrency, queue_size, timeout.
 │                      Bulkhead — semaphore + optional queue.
-│                      call() returning Result<T, CallError<E>>.
+│                      call()/acquire() plus context-aware variants.
 │
-├── rate_limiter.rs    RateLimiter trait — acquire(), call() (default impl).
+├── rate_limiter.rs    RateLimiter trait — acquire(), call() (default impl),
+│                      context-aware acquire/call.
+│                      ErasedRateLimiter — object-safe facade for registries.
 │                      TokenBucket — capacity + refill rate.
 │                      LeakyBucket — constant leak rate.
 │                      SlidingWindow — time-window counter.
@@ -212,23 +268,28 @@ crates/resilience/src/
 ├── timeout.rs         timeout(duration, future) — wraps tokio::time::timeout.
 │                      TimeoutExecutor — struct-based alternative.
 │
-├── fallback.rs        FallbackStrategy<T, E> trait — fallback() + should_fallback().
+├── fallback.rs        FallbackStrategy<T, E> trait — safe fallback() + recover().
 │                      ValueFallback<T> — cloned constant value.
 │                      ChainFallback<T, E> — chains multiple fallbacks via then().
 │
-├── hedge.rs           HedgeConfig — hedge_delay, max_hedges, exponential_backoff.
-│                      HedgeExecutor — FuturesUnordered parallel dispatch.
+├── hedge.rs           HedgeConfig — hedge_delay, max_hedges, exponential_backoff,
+│                      duplicate_safety.
+│                      HedgeSafety — requires Idempotent before duplicate execution.
+│                      HedgeExecutor — JoinSet parallel dispatch.
 │                      AdaptiveHedgeExecutor — adaptive hedge timing.
 │
 ├── load_shed.rs       load_shed(should_shed, f) — free function predicate-based rejection.
+│                      load_shed_with_policy_context() — cancellation/deadline-aware.
 │
 │  ── Infrastructure ─────────────────────────────────────────────────────────
 │
 ├── pipeline.rs        PipelineBuilder<E> — collects steps, validates order on build().
 │                      ResiliencePipeline<E> — executes steps recursively.
-│                      Step<E> — Timeout | Retry | CircuitBreaker | Bulkhead.
+│                      Step<E> — LoadShed | RateLimiter | Timeout | Retry |
+│                      CircuitBreaker | Bulkhead.
 │
 └── gate.rs            GateClosed — error when gate is already closing.
+│                      GateCloseTimeout — bounded close diagnostic error.
 │                      GateGuard — RAII exit token; returns permit on drop.
 │                      Gate — cooperative shutdown barrier (Semaphore + AtomicBool).
 ```
@@ -239,19 +300,25 @@ crates/resilience/src/
 
 ### Pipeline execution path
 
-```
+```text
 Caller
   │  pipeline.call(|| async { ... })
   ▼
 ResiliencePipeline::call
   │  run_steps(steps, idx=0, f)
   │
+  ├── Step::LoadShed(predicate)
+  │     predicate()? Err(LoadShed) : run_steps(idx+1)
+  │
+  ├── Step::RateLimiter(check)
+  │     check()? run_steps(idx+1) : Err(RateLimited { retry_after })
+  │
   ├── Step::Timeout(d)
   │     tokio::time::timeout(d, run_steps(steps, idx+1, f))
   │
   ├── Step::Retry(config)
   │     retry_with(inner_config, || classify_inner(run_steps(idx+1)))
-  │     classify_inner: Ok→Ok, Operation(e)→Err(Some(e)), other→stash in bail + Err(None)
+  │     classify_inner: Ok→Ok, retryable error→Err(e), permanent error→return directly
   │
   ├── Step::CircuitBreaker(cb)
   │     cb.call(|| run_inner_unwrapped(steps, idx+1, f))
@@ -264,7 +331,7 @@ ResiliencePipeline::call
 
 ### Circuit breaker execution path
 
-```
+```text
 Caller
   │  cb.call(|| async { ... })
   ▼
@@ -276,7 +343,7 @@ CircuitBreaker::call
   │  3. record_outcome(Outcome::Success | Failure | Timeout)
   │     └─ failures >= failure_threshold → transition to Open
   │     └─ any failure in HalfOpen → back to Open
-  │     └─ success in HalfOpen → transition to Closed
+  │     └─ enough successes in HalfOpen → transition to Closed
   │     └─ sink.record(CircuitStateChanged { from, to })
   ▼
 Result<T, CallError<E>>
@@ -284,7 +351,7 @@ Result<T, CallError<E>>
 
 ### Retry execution path
 
-```
+```text
 Caller
   │  retry_with(config, || async { ... })
   ▼
@@ -297,7 +364,7 @@ retry_with
   │       b. backoff.delay_for(attempt) + jitter → tokio::time::sleep
   │       c. sink.record(RetryAttempt { attempt, will_retry })
   │       d. attempt += 1; continue
-  │    4. Budget exhausted → Err(CallError::RetriesExhausted { attempts, last })
+  │    4. Total budget exhausted before/during attempt or sleep → Err(CallError::Timeout(budget))
   ▼
 Result<T, CallError<E>>
 ```

@@ -1,8 +1,8 @@
-//! Benchmarks for timeout pattern overhead and cancellation latency
+//! Benchmarks for timeout pattern overhead and timeout firing latency
 //!
 //! Measures:
 //! - Success-path wrapper overhead for `timeout`
-//! - Cancellation-path latency when timeout expires
+//! - Runtime timer latency and overshoot when timeout expires before a pending future
 
 use std::{
     hint::black_box,
@@ -41,8 +41,8 @@ fn timeout_wrapper_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-fn timeout_cancellation_latency(c: &mut Criterion) {
-    let mut group = c.benchmark_group("timeout/cancellation");
+fn timeout_firing_latency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("timeout/firing_latency");
     group.measurement_time(Duration::from_secs(12));
     group.sample_size(30);
 
@@ -83,9 +83,5 @@ fn timeout_cancellation_latency(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    timeout_wrapper_overhead,
-    timeout_cancellation_latency
-);
+criterion_group!(benches, timeout_wrapper_overhead, timeout_firing_latency);
 criterion_main!(benches);

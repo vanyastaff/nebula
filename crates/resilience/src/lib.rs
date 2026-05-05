@@ -27,6 +27,10 @@
 //!
 //! Every pattern returns [`CallError<E>`] where `E` is your own error type —
 //! no forced mapping, no type erasure.
+//! [`Deadline`] is the shared monotonic helper for policies that need to enforce
+//! remaining time budgets across attempts and sleeps.
+//! [`PolicyContext`] groups cancellation, deadline, and observability scope for
+//! workflow-runtime pipeline calls.
 //!
 //! # Quick Start — Pipeline
 //!
@@ -110,7 +114,7 @@
 //! | `RetriesExhausted { attempts, last }` | no | retry |
 //! | `Cancelled { reason }` | no | cancellation |
 //! | `LoadShed` | no | load shedder |
-//! | `FallbackFailed { reason }` | no | fallback |
+//! | `FallbackFailed { reason }` / `FallbackFailedWithContext { .. }` | no | fallback |
 //!
 //! # Observability
 //!
@@ -128,6 +132,8 @@
 // Core
 pub mod cancellation;
 pub mod classifier;
+pub mod context;
+pub mod deadline;
 pub mod error;
 pub mod policy;
 
@@ -162,22 +168,32 @@ pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use classifier::{
     AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,
 };
+pub use context::PolicyContext;
+pub use deadline::Deadline;
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
 pub use fallback::{FallbackStrategy, ValueFallback};
 // Infrastructure
-pub use gate::{Gate, GateClosed, GateGuard};
+pub use gate::{Gate, GateCloseTimeout, GateClosed, GateGuard};
 #[doc(hidden)]
 pub use hedge::LatencyTracker;
-pub use hedge::{HedgeConfig, HedgeExecutor};
-pub use load_shed::{load_shed, load_shed_with_sink};
+pub use hedge::{HedgeConfig, HedgeExecutor, HedgeSafety};
+pub use load_shed::{
+    load_shed, load_shed_with_policy_context, load_shed_with_policy_context_and_sink,
+    load_shed_with_sink,
+};
 pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
-pub use policy::{ConstantLoad, LoadSignal, PolicySource};
-pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};
+pub use policy::{ConstantLoad, LoadSignal, LoadSnapshot, PolicySource};
+pub use rate_limiter::{
+    AdaptiveRateLimiter, ErasedRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
+};
 #[doc(hidden)]
 pub use retry::retry_with_inner;
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 // Observability
 pub use sink::{
-    CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent, ResilienceEventKind,
+    CircuitState, MetricsSink, NoopSink, PipelineOutcome, PolicyScope, RecordingSink,
+    ResilienceEvent, ResilienceEventKind, ScopeValue,
 };
-pub use timeout::{TimeoutExecutor, timeout};
+pub use timeout::{
+    TimeoutExecutor, timeout, timeout_with_policy_context, timeout_with_policy_context_and_sink,
+};

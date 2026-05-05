@@ -43,7 +43,9 @@ impl Gate {
     pub fn new() -> Self;
     pub fn enter(&self) -> Result<GateGuard, GateClosed>;
     pub async fn close(&self);
+    pub async fn close_with_timeout(&self, timeout: Duration) -> Result<(), GateCloseTimeout>;
     pub fn is_closed(&self) -> bool;
+    pub fn active_count(&self) -> u32;
 }
 
 impl Clone for Gate { /* clones the Arc */ }
@@ -82,26 +84,52 @@ pub struct GateClosed;
 
 ---
 
+### `GateCloseTimeout`
+
+Error returned by `Gate::close_with_timeout` when active guards do not drain within
+the caller's shutdown budget.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub struct GateCloseTimeout {
+    pub timeout: Duration,
+    pub active_guards: u32,
+}
+```
+
+The gate remains closing after this error. New `enter()` calls are rejected, and the
+owner can call `close()` again later to finish draining.
+
+---
+
 ## How It Works
 
 Internally `Gate` uses a Tokio `Semaphore` pre-loaded with `u32::MAX / 2` permits and
 an `AtomicBool` marking the closing state.
 
 **`enter()`** — non-blocking:
-1. Check `AtomicBool::closing`. If true, return `Err(GateClosed)` immediately.
-2. Call `semaphore.try_acquire()`. A successfully acquired permit is immediately
+1. Call `semaphore.try_acquire()` first to reserve a permit slot.
+2. Check `AtomicBool::closing`. If true, drop the permit and return
+   `Err(GateClosed)` immediately.
+3. A successfully acquired permit is immediately
    `forget()`-ed so it is not automatically returned.
-3. Return a `GateGuard` that holds an `Arc` to the internal state.
+4. Return a `GateGuard` that holds an `Arc` to the internal state.
 
 **`GateGuard::drop()`**:
-1. Optionally warn if dropping during active close.
-2. Call `semaphore.add_permits(1)` to return the forgotten permit.
+1. Call `semaphore.add_permits(1)` to return the forgotten permit.
 
 **`close()`** — async:
 1. Set `AtomicBool::closing = true` so new `enter()` calls fail immediately.
 2. Attempt to acquire all `u32::MAX / 2` permits. Because existing guards hold `N`
    permits, this blocks until all `N` guards have been dropped.
 3. Logs progress at `WARN` level every second while waiting.
+
+**`close_with_timeout()`** — async:
+1. Performs the same close/drain sequence but wraps it in a caller-provided timeout.
+2. On timeout, returns `GateCloseTimeout { timeout, active_guards }`.
+3. Leaves the gate in the closing state so no new work starts while the owner decides
+   whether to wait longer or force process shutdown.
 
 ---
 
@@ -170,6 +198,8 @@ Typical production shutdown order for a service using `Gate`:
 ```
 
 `close()` is idempotent — calling it more than once is safe.
+Use `close_with_timeout()` when the runtime has a bounded graceful-shutdown budget and
+needs typed diagnostics instead of an indefinitely pending future.
 
 ---
 
@@ -247,14 +277,21 @@ gate.close().await; // drain all in-flight work
 
 ### Timeout-bounded drain
 
-If you need to enforce a maximum drain time, race `close()` against a deadline:
+Prefer `close_with_timeout()` when shutdown has a bounded graceful-drain budget;
+it returns typed diagnostics instead of discarding the active-guard count:
 
 ```rust
+use nebula_resilience::gate::GateCloseTimeout;
 use std::time::Duration;
 
-let drain = tokio::time::timeout(Duration::from_secs(30), gate.close()).await;
-
-if drain.is_err() {
-    tracing::warn!("graceful drain timed out after 30s; forcing shutdown");
+match gate.close_with_timeout(Duration::from_secs(30)).await {
+    Ok(()) => tracing::info!("gate drained"),
+    Err(GateCloseTimeout { timeout, active_guards }) => {
+        tracing::warn!(
+            ?timeout,
+            active_guards,
+            "graceful drain timed out; forcing shutdown"
+        );
+    }
 }
 ```

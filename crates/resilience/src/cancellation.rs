@@ -97,6 +97,12 @@ impl CancellationContext {
         self.reason.as_deref()
     }
 
+    pub(crate) fn cancelled_error<E>(&self) -> CallError<E> {
+        CallError::Cancelled {
+            reason: self.reason.clone(),
+        }
+    }
+
     /// Call an operation with cancellation support.
     ///
     /// # Errors

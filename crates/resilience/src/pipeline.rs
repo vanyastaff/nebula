@@ -37,12 +37,14 @@
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use crate::{
-    CallError,
+    CallError, PolicyContext,
     bulkhead::Bulkhead,
+    cancellation::CancellationContext,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
+    rate_limiter::{ErasedRateLimiter, map_acquire_error},
     retry::{RetryConfig, retry_with},
-    sink::{MetricsSink, NoopSink, ResilienceEvent},
+    sink::{MetricsSink, NoopSink, PipelineOutcome, PolicyScope, ResilienceEvent},
 };
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -109,6 +111,7 @@ pub struct PipelineBuilder<E: 'static> {
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     sink: Option<Arc<dyn MetricsSink>>,
     retry_hint: Option<RetryHintFn<E>>,
+    scope: PolicyScope,
 }
 
 impl<E: 'static> fmt::Debug for PipelineBuilder<E> {
@@ -134,6 +137,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
             classifier: None,
             sink: None,
             retry_hint: None,
+            scope: PolicyScope::empty(),
         }
     }
 
@@ -147,12 +151,12 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     ///
     /// Without a **pipeline** classifier, operation errors that reach the circuit breaker are
     /// all counted as [`Failure`](crate::circuit_breaker::Outcome::Failure) for CB state. The
-    /// retry step, when neither a pipeline nor a per-retry classifier is set, treats every
-    /// operation error as retryable (the historical pipeline default). For
-    /// [`Classify`](nebula_error::Classify) semantics like standalone
-    /// [`retry_with`], set [`classify_errors()`](Self::classify_errors)
-    /// and/or per-retry [`retry_if`](crate::retry::RetryConfig::retry_if) /
-    /// [`with_classifier`](crate::retry::RetryConfig::with_classifier).
+    /// retry step, when neither a pipeline nor a per-retry classifier is set, treats operation
+    /// errors as permanent. To retry caller errors, set
+    /// [`classify_errors()`](Self::classify_errors) and/or per-retry
+    /// [`retry_if`](crate::retry::RetryConfig::retry_if) /
+    /// [`with_classifier`](crate::retry::RetryConfig::with_classifier), ideally only for
+    /// idempotent operations.
     #[must_use]
     pub fn classifier(mut self, classifier: Arc<dyn ErrorClassifier<E>>) -> Self {
         self.classifier = Some(classifier);
@@ -167,6 +171,15 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Some(Arc::new(sink));
+        self
+    }
+
+    /// Attach workflow/resource scope to pipeline completion events.
+    ///
+    /// Keep values low-cardinality when forwarding these events to metrics.
+    #[must_use]
+    pub fn scope(mut self, scope: PolicyScope) -> Self {
+        self.scope = scope;
         self
     }
 
@@ -251,6 +264,41 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self.rate_limiter(check)
     }
 
+    /// Add a rate limiter step from an object-safe rate limiter registry entry.
+    ///
+    /// Use this when policies are selected dynamically and stored as
+    /// `Arc<dyn ErasedRateLimiter>`, for example tenant- or resource-scoped
+    /// limiters loaded from runtime configuration. Prefer
+    /// [`rate_limiter_from`](Self::rate_limiter_from) when the concrete limiter
+    /// type is known at compile time.
+    ///
+    /// ```rust,no_run
+    /// use std::{sync::Arc, time::Duration};
+    ///
+    /// use nebula_resilience::{
+    ///     ErasedRateLimiter, ResiliencePipeline,
+    ///     rate_limiter::{SlidingWindow, TokenBucket},
+    /// };
+    ///
+    /// let registry: Vec<Arc<dyn ErasedRateLimiter>> = vec![
+    ///     Arc::new(TokenBucket::new(100, 10.0).unwrap()),
+    ///     Arc::new(SlidingWindow::new(Duration::from_secs(60), 100).unwrap()),
+    /// ];
+    ///
+    /// let pipeline = ResiliencePipeline::<String>::builder()
+    ///     .rate_limiter_erased(Arc::clone(&registry[0]))
+    ///     .build();
+    /// # let _ = pipeline;
+    /// ```
+    #[must_use]
+    pub fn rate_limiter_erased(self, rl: Arc<dyn ErasedRateLimiter>) -> Self {
+        let check: RateLimitCheck = Arc::new(move || {
+            let rl = Arc::clone(&rl);
+            Box::pin(async move { rl.acquire_boxed().await })
+        });
+        self.rate_limiter(check)
+    }
+
     /// Add a rate limiter step with a custom check closure.
     ///
     /// Prefer [`rate_limiter_from`](Self::rate_limiter_from) for standard `RateLimiter`
@@ -275,6 +323,20 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self.build_inner()
     }
 
+    /// Build the pipeline only if steps are already in the recommended order.
+    ///
+    /// This is intended for config/schema-driven construction where warnings are
+    /// too easy to miss. Use [`build_recommended_order`](Self::build_recommended_order)
+    /// when policy declarations may arrive in arbitrary order and sorting is acceptable.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if a later step should be outside an earlier one.
+    pub fn build_checked(self) -> Result<ResiliencePipeline<E>, crate::ConfigError> {
+        validate_recommended_order(&self.steps)?;
+        Ok(self.build_inner())
+    }
+
     /// Build the pipeline after sorting layers into the recommended order.
     ///
     /// This preserves insertion order among steps of the same kind and orders
@@ -294,6 +356,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
             sink: self.sink.unwrap_or_else(|| Arc::new(NoopSink)),
             sink_overrides_steps,
             retry_hint: self.retry_hint,
+            scope: self.scope,
         }
     }
 }
@@ -325,6 +388,43 @@ const fn step_rank<E>(step: &Step<E>) -> u8 {
         Step::CircuitBreaker(_) => 4,
         Step::Bulkhead(_) => 5,
     }
+}
+
+const fn step_name<E>(step: &Step<E>) -> &'static str {
+    match step {
+        Step::LoadShed(_) => "load_shed",
+        Step::RateLimiter(_) => "rate_limiter",
+        Step::Timeout(_) => "timeout",
+        Step::Retry(_) => "retry",
+        Step::CircuitBreaker(_) => "circuit_breaker",
+        Step::Bulkhead(_) => "bulkhead",
+    }
+}
+
+fn validate_recommended_order<E>(steps: &[Step<E>]) -> Result<(), crate::ConfigError> {
+    let mut highest_rank = 0u8;
+    let mut highest_name = None;
+
+    for step in steps {
+        let rank = step_rank(step);
+        if rank < highest_rank {
+            let earlier = highest_name.unwrap_or("earlier policy");
+            return Err(crate::ConfigError::new(
+                "pipeline_order",
+                format!(
+                    "{} must be added before {}; use build_recommended_order() to sort config-driven pipelines",
+                    step_name(step),
+                    earlier
+                ),
+            ));
+        }
+        if rank > highest_rank {
+            highest_rank = rank;
+            highest_name = Some(step_name(step));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_order<E>(steps: &[Step<E>]) {
@@ -395,6 +495,7 @@ pub struct ResiliencePipeline<E: 'static> {
     sink: Arc<dyn MetricsSink>,
     sink_overrides_steps: bool,
     retry_hint: Option<RetryHintFn<E>>,
+    scope: PolicyScope,
 }
 
 struct PipelineRunContext<E: 'static> {
@@ -403,6 +504,7 @@ struct PipelineRunContext<E: 'static> {
     sink: Arc<dyn MetricsSink>,
     sink_overrides_steps: bool,
     retry_hint: Option<RetryHintFn<E>>,
+    cancellation: Option<CancellationContext>,
 }
 
 impl<E: 'static> Clone for PipelineRunContext<E> {
@@ -413,6 +515,7 @@ impl<E: 'static> Clone for PipelineRunContext<E> {
             sink: Arc::clone(&self.sink),
             sink_overrides_steps: self.sink_overrides_steps,
             retry_hint: self.retry_hint.clone(),
+            cancellation: self.cancellation.clone(),
         }
     }
 }
@@ -471,6 +574,83 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         F: Fn() -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
+        let result = self.call_inner(None, f).await;
+        self.record_pipeline_completed(match &result {
+            Ok(_) => PipelineOutcome::Success,
+            Err(err) => PipelineOutcome::Failure { error: err.kind() },
+        });
+        result
+    }
+
+    /// Execute `f` through all pipeline steps, stopping promptly when `cancellation`
+    /// is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if cancellation fires before the pipeline
+    /// completes, or the normal pipeline error otherwise.
+    pub async fn call_with_context<T, F, Fut>(
+        &self,
+        cancellation: &CancellationContext,
+        f: F,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        let result = self.call_inner(Some(cancellation.clone()), f).await;
+        self.record_pipeline_completed(match &result {
+            Ok(_) => PipelineOutcome::Success,
+            Err(err) => PipelineOutcome::Failure { error: err.kind() },
+        });
+        result
+    }
+
+    /// Execute `f` through all pipeline steps using a shared policy context.
+    ///
+    /// `PolicyContext` groups cancellation, deadline, and observability scope so
+    /// a workflow runtime can pass one execution contract through the policy
+    /// stack. If the context has a deadline, it bounds the whole pipeline call.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline expires, or the normal
+    /// pipeline error otherwise.
+    pub async fn call_with_policy_context<T, F, Fut>(
+        &self,
+        context: &PolicyContext,
+        f: F,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        let result = self
+            .run_with_policy_deadline(context, self.call_inner(context.cancellation_cloned(), f))
+            .await;
+        self.record_pipeline_completed_for_scope(
+            self.effective_scope(Some(context)),
+            match &result {
+                Ok(_) => PipelineOutcome::Success,
+                Err(err) => PipelineOutcome::Failure { error: err.kind() },
+            },
+        );
+        result
+    }
+
+    async fn call_inner<T, F, Fut>(
+        &self,
+        cancellation: Option<CancellationContext>,
+        f: F,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
         // Wrap the generic future factory in a single Box::pin adapter so the
         // internal pipeline machinery (which needs to erase the concrete Fut
         // type for Arc<F> sharing across retry iterations) only allocates
@@ -482,9 +662,61 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
             Arc::clone(&self.sink),
             self.sink_overrides_steps,
             self.retry_hint.clone(),
+            cancellation,
             Arc::new(boxed),
         )
         .await
+    }
+
+    fn record_pipeline_completed(&self, outcome: PipelineOutcome) {
+        if !self.sink_overrides_steps {
+            return;
+        }
+        self.record_pipeline_completed_for_scope(self.scope.clone(), outcome);
+    }
+
+    fn record_pipeline_completed_for_scope(&self, scope: PolicyScope, outcome: PipelineOutcome) {
+        if !self.sink_overrides_steps {
+            return;
+        }
+        self.sink
+            .record(ResilienceEvent::PipelineCompleted { scope, outcome });
+    }
+
+    fn effective_scope(&self, context: Option<&PolicyContext>) -> PolicyScope {
+        context.map_or_else(
+            || self.scope.clone(),
+            |context| {
+                if context.scope().is_empty() {
+                    self.scope.clone()
+                } else {
+                    context.scope().clone()
+                }
+            },
+        )
+    }
+
+    async fn run_with_policy_deadline<T, Fut>(
+        &self,
+        context: &PolicyContext,
+        future: Fut,
+    ) -> Result<T, CallError<E>>
+    where
+        Fut: Future<Output = Result<T, CallError<E>>> + Send,
+    {
+        if let Some(deadline) = context.deadline() {
+            match deadline.timeout(future).await {
+                Ok(result) => result,
+                Err(err) => {
+                    self.sink.record(ResilienceEvent::TimeoutElapsed {
+                        duration: deadline.budget(),
+                    });
+                    Err(err)
+                },
+            }
+        } else {
+            future.await
+        }
     }
 
     /// Execute `f` through the pipeline with a fallback strategy.
@@ -537,12 +769,167 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         F: Fn() -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
     {
-        match self.call(f).await {
-            Ok(v) => Ok(v),
+        self.call_with_fallback_inner(None, self.scope.clone(), f, fallback)
+            .await
+    }
+
+    /// Execute `f` through the pipeline with both cancellation and fallback.
+    ///
+    /// Cancellation wins over fallback: if the context is cancelled before or
+    /// during fallback execution, the method returns [`CallError::Cancelled`].
+    /// This prevents engine shutdown from being reported as a successful
+    /// fallback recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if cancellation fires before the
+    /// pipeline/fallback completes, or the normal pipeline/fallback error
+    /// otherwise.
+    pub async fn call_with_context_and_fallback<T, F, Fut>(
+        &self,
+        cancellation: &CancellationContext,
+        f: F,
+        fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + Sync + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        self.call_with_fallback_inner(Some(cancellation.clone()), self.scope.clone(), f, fallback)
+            .await
+    }
+
+    /// Execute `f` through the pipeline with shared context and fallback.
+    ///
+    /// This is the most explicit workflow-runtime entry point: cancellation,
+    /// deadline, scope, primary pipeline execution, and fallback recovery all
+    /// share one context. Cancellation wins over fallback, and the context
+    /// deadline bounds both the primary path and fallback path.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline expires, or the normal
+    /// pipeline/fallback error otherwise.
+    pub async fn call_with_policy_context_and_fallback<T, F, Fut>(
+        &self,
+        context: &PolicyContext,
+        f: F,
+        fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + Sync + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        let scope = self.effective_scope(Some(context));
+        let future = self.call_with_fallback_inner(
+            context.cancellation_cloned(),
+            scope.clone(),
+            f,
+            fallback,
+        );
+
+        if let Some(deadline) = context.deadline() {
+            match deadline.timeout(future).await {
+                Ok(result) => result,
+                Err(err) => {
+                    self.sink.record(ResilienceEvent::TimeoutElapsed {
+                        duration: deadline.budget(),
+                    });
+                    self.record_pipeline_completed_for_scope(
+                        scope,
+                        PipelineOutcome::Failure { error: err.kind() },
+                    );
+                    Err(err)
+                },
+            }
+        } else {
+            future.await
+        }
+    }
+
+    async fn call_with_fallback_inner<T, F, Fut>(
+        &self,
+        cancellation: Option<CancellationContext>,
+        completion_scope: PolicyScope,
+        f: F,
+        fallback: &dyn crate::fallback::FallbackStrategy<T, E>,
+    ) -> Result<T, CallError<E>>
+    where
+        T: Send + Sync + 'static,
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        match self.call_inner(cancellation.clone(), f).await {
+            Ok(v) => {
+                self.record_pipeline_completed_for_scope(
+                    completion_scope,
+                    PipelineOutcome::Success,
+                );
+                Ok(v)
+            },
             Err(err) => {
+                let primary_error = err.kind();
+                if matches!(err, CallError::Cancelled { .. }) {
+                    self.record_pipeline_completed_for_scope(
+                        completion_scope,
+                        PipelineOutcome::Failure {
+                            error: primary_error,
+                        },
+                    );
+                    return Err(err);
+                }
+                if let Some(cancellation) = &cancellation
+                    && cancellation.is_cancelled()
+                {
+                    let cancelled = cancellation.cancelled_error();
+                    self.record_pipeline_completed_for_scope(
+                        completion_scope,
+                        PipelineOutcome::Failure {
+                            error: cancelled.kind(),
+                        },
+                    );
+                    return Err(cancelled);
+                }
                 if fallback.should_fallback(&err) {
-                    fallback.fallback(err).await
+                    self.sink
+                        .record(ResilienceEvent::FallbackAttempted { primary_error });
+                    let result = if let Some(cancellation) = cancellation.clone() {
+                        tokio::select! {
+                            result = fallback.recover(err) => result,
+                            () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
+                        }
+                    } else {
+                        fallback.recover(err).await
+                    };
+                    let pipeline_outcome = match &result {
+                        Ok(_) => {
+                            self.sink
+                                .record(ResilienceEvent::FallbackSucceeded { primary_error });
+                            PipelineOutcome::FallbackSucceeded { primary_error }
+                        },
+                        Err(fallback_error) => {
+                            self.sink.record(ResilienceEvent::FallbackFailed {
+                                primary_error,
+                                fallback_error: fallback_error.kind(),
+                            });
+                            PipelineOutcome::FallbackFailed {
+                                primary_error,
+                                fallback_error: fallback_error.kind(),
+                            }
+                        },
+                    };
+                    self.record_pipeline_completed_for_scope(completion_scope, pipeline_outcome);
+                    result
                 } else {
+                    self.record_pipeline_completed_for_scope(
+                        completion_scope,
+                        PipelineOutcome::Failure {
+                            error: primary_error,
+                        },
+                    );
                     Err(err)
                 }
             },
@@ -556,6 +943,7 @@ async fn execute_pipeline<T, E, F>(
     sink: Arc<dyn MetricsSink>,
     sink_overrides_steps: bool,
     retry_hint: Option<RetryHintFn<E>>,
+    cancellation: Option<CancellationContext>,
     f: Arc<F>,
 ) -> Result<T, CallError<E>>
 where
@@ -569,6 +957,7 @@ where
         sink,
         sink_overrides_steps,
         retry_hint,
+        cancellation,
     };
     run_operation_with_shells(ctx, 0, f).await
 }
@@ -587,46 +976,88 @@ where
 {
     let steps = Arc::clone(&ctx.steps);
     Box::pin(async move {
+        if let Some(cancellation) = &ctx.cancellation
+            && cancellation.is_cancelled()
+        {
+            return Err(cancellation.cancelled_error());
+        }
+
         if idx >= steps.len() {
-            return f().await.map_err(CallError::Operation);
+            return if let Some(cancellation) = ctx.cancellation.clone() {
+                tokio::select! {
+                    result = f() => result.map_err(CallError::Operation),
+                    () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
+                }
+            } else {
+                f().await.map_err(CallError::Operation)
+            };
         }
 
         match &steps[idx] {
             Step::Timeout(d) => {
                 let d = *d;
-                tokio::time::timeout(d, run_operation_with_shells(ctx.clone(), idx + 1, f))
-                    .await
-                    .unwrap_or_else(|_| {
+                let inner = run_operation_with_shells(ctx.clone(), idx + 1, f);
+                if let Some(cancellation) = ctx.cancellation.clone() {
+                    tokio::select! {
+                        result = tokio::time::timeout(d, inner) => {
+                            result.unwrap_or_else(|_| {
+                                ctx.sink
+                                    .record(ResilienceEvent::TimeoutElapsed { duration: d });
+                                Err(CallError::Timeout(d))
+                            })
+                        },
+                        () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
+                    }
+                } else {
+                    tokio::time::timeout(d, inner).await.unwrap_or_else(|_| {
                         ctx.sink
                             .record(ResilienceEvent::TimeoutElapsed { duration: d });
                         Err(CallError::Timeout(d))
                     })
+                }
             },
             Step::Retry(config) => run_retry_step(config, ctx, idx, f).await,
             Step::CircuitBreaker(cb) => {
                 cb.try_acquire()?;
 
                 let mut guard = ProbeGuard::new(cb);
+                let start = cb.tracks_slow_calls().then(|| cb.clock_now());
                 let result = run_operation_with_shells(ctx.clone(), idx + 1, Arc::clone(&f)).await;
+                let duration = start.map(|start| cb.clock_now().duration_since(start));
                 guard.defuse();
 
-                let outcome = classify_cb_outcome(&result, ctx.classifier.as_ref());
+                let outcome = classify_cb_outcome(cb, &result, ctx.classifier.as_ref(), duration);
                 cb.record_outcome(outcome);
                 result
             },
             Step::Bulkhead(bh) => {
-                let _permit = match bh.acquire().await {
-                    Ok(permit) => permit,
-                    Err(err) => return Err(err),
+                let acquire = bh.acquire();
+                let _permit = if let Some(cancellation) = ctx.cancellation.clone() {
+                    tokio::select! {
+                        result = acquire => result?,
+                        () = cancellation.token().cancelled() => return Err(cancellation.cancelled_error()),
+                    }
+                } else {
+                    acquire.await?
                 };
                 run_operation_with_shells(ctx, idx + 1, f).await
             },
             Step::RateLimiter(check) => {
-                if let Err(e) = check().await {
-                    ctx.sink.record(ResilienceEvent::RateLimitExceeded);
-                    return Err(CallError::RateLimited {
-                        retry_after: e.retry_after(),
-                    });
+                let check_result = if let Some(cancellation) = ctx.cancellation.clone() {
+                    tokio::select! {
+                        result = check() => result,
+                        () = cancellation.token().cancelled() => return Err(cancellation.cancelled_error()),
+                    }
+                } else {
+                    check().await
+                };
+                match check_result {
+                    Ok(()) => {},
+                    Err(CallError::RateLimited { retry_after }) => {
+                        ctx.sink.record(ResilienceEvent::RateLimitExceeded);
+                        return Err(CallError::RateLimited { retry_after });
+                    },
+                    Err(error) => return Err(map_acquire_error(error)),
                 }
                 run_operation_with_shells(ctx, idx + 1, f).await
             },
@@ -648,20 +1079,45 @@ where
 /// `ErrorClass` → Outcome. Without a classifier, falls back to the
 /// previous behavior (all operation errors = `Failure`).
 fn classify_cb_outcome<T, E>(
+    cb: &CircuitBreaker,
     result: &Result<T, CallError<E>>,
     classifier: Option<&Arc<dyn ErrorClassifier<E>>>,
+    duration: Option<Duration>,
 ) -> Outcome {
     match result {
-        Ok(_) => Outcome::Success,
-        Err(CallError::Operation(e)) => {
-            classifier.map_or(Outcome::Failure, |c| c.classify(e).into())
-        },
-        Err(CallError::RetriesExhausted { last, .. }) => {
-            classifier.map_or(Outcome::Failure, |c| c.classify(last).into())
-        },
+        Ok(_) => duration.map_or(Outcome::Success, |duration| {
+            cb.classify_outcome(true, duration)
+        }),
+        Err(CallError::Operation(e)) => classifier.map_or_else(
+            || {
+                duration.map_or(Outcome::Failure, |duration| {
+                    cb.classify_outcome(false, duration)
+                })
+            },
+            |c| classify_error_cb_outcome(cb, c.classify(e), duration),
+        ),
+        Err(CallError::RetriesExhausted { last, .. }) => classifier.map_or_else(
+            || {
+                duration.map_or(Outcome::Failure, |duration| {
+                    cb.classify_outcome(false, duration)
+                })
+            },
+            |c| classify_error_cb_outcome(cb, c.classify(last), duration),
+        ),
         Err(CallError::Timeout(_)) => Outcome::Timeout,
         Err(_) => Outcome::Cancelled,
     }
+}
+
+fn classify_error_cb_outcome(
+    cb: &CircuitBreaker,
+    class: ErrorClass,
+    duration: Option<Duration>,
+) -> Outcome {
+    duration.map_or_else(
+        || class.into(),
+        |duration| cb.classify_error_outcome(class, duration),
+    )
 }
 
 /// Execute the Retry step of the pipeline.
@@ -680,10 +1136,13 @@ where
     let config_classifier = config.classifier.clone();
     let has_explicit_retry_classifier = config_classifier.is_some();
     let pipeline_classifier = ctx.classifier.clone();
-    let mut inner_config = RetryConfig::<RetryStepError<E>>::new_unchecked(config.max_attempts)
-        .backoff(config.backoff.clone())
-        .jitter(config.jitter.clone());
-    inner_config.total_budget = config.total_budget;
+    let mut inner_config =
+        RetryConfig::<RetryStepError<E>>::from_nonzero_attempts(config.max_attempts())
+            .backoff(config.backoff_config().clone())
+            .jitter(config.jitter_config().clone());
+    if let Some(total_budget) = config.total_budget_config() {
+        inner_config = inner_config.total_budget(total_budget);
+    }
     inner_config.sink = if ctx.sink_overrides_steps {
         Arc::clone(&ctx.sink)
     } else {
@@ -695,7 +1154,7 @@ where
                 || {
                     pipeline_classifier
                         .as_ref()
-                        .map_or(ErrorClass::Transient, |classifier| {
+                        .map_or(ErrorClass::Permanent, |classifier| {
                             classifier.classify(error)
                         })
                 },
@@ -719,7 +1178,7 @@ where
         ) as Arc<dyn Fn(&RetryStepError<E>, Duration, u32) + Send + Sync>
     });
 
-    let result = retry_with(inner_config, {
+    let retry_future = retry_with(inner_config, {
         let ctx = ctx.clone();
         let f = Arc::clone(&f);
         move || {
@@ -733,8 +1192,16 @@ where
                 )
             })
         }
-    })
-    .await;
+    });
+
+    let result = if let Some(cancellation) = ctx.cancellation.clone() {
+        tokio::select! {
+            result = retry_future => result,
+            () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
+        }
+    } else {
+        retry_future.await
+    };
 
     map_retry_result(result)
 }
@@ -851,6 +1318,7 @@ fn map_retry_result<T, E>(
 mod tests {
     use std::{
         fmt,
+        future::ready,
         sync::{
             Mutex as StdMutex,
             atomic::{AtomicU32, Ordering},
@@ -862,7 +1330,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallError, CircuitBreaker, RecordingSink, ResilienceEventKind, retry::BackoffConfig,
+        CallError, CancellationContext, CircuitBreaker, PolicyContext, RecordingSink,
+        ResilienceEventKind, retry::BackoffConfig,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -894,6 +1363,15 @@ mod tests {
         }
     }
 
+    fn fail_transient_after_count(
+        seen: Arc<AtomicU32>,
+    ) -> Pin<Box<dyn Future<Output = Result<u32, &'static str>> + Send>> {
+        Box::pin(async move {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err("transient")
+        })
+    }
+
     fn reject_first_rate_limit_check(
         checks: &AtomicU32,
         retry_after: Duration,
@@ -917,6 +1395,30 @@ mod tests {
         Ok(42)
     }
 
+    fn boxed_ok_static_operation(
+        value: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<u32, &'static str>> + Send>> {
+        Box::pin(ready(Ok(value)))
+    }
+
+    async fn long_static_operation() -> Result<u32, &'static str> {
+        tokio::time::sleep(Duration::from_mins(1)).await;
+        Ok(42)
+    }
+
+    fn boxed_long_static_operation()
+    -> Pin<Box<dyn Future<Output = Result<u32, &'static str>> + Send>> {
+        Box::pin(long_static_operation())
+    }
+
+    async fn long_fallback_after_notify(
+        started: Arc<tokio::sync::Notify>,
+    ) -> Result<u32, CallError<()>> {
+        started.notify_one();
+        tokio::time::sleep(Duration::from_mins(1)).await;
+        Ok(99)
+    }
+
     #[tokio::test]
     async fn pipeline_timeout_wraps_retry() {
         let counter = Arc::new(AtomicU32::new(0));
@@ -927,7 +1429,8 @@ mod tests {
             .retry(
                 RetryConfig::new(3)
                     .unwrap()
-                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1))),
+                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
+                    .retry_if(|_: &&str| true),
             )
             .build();
 
@@ -959,6 +1462,29 @@ mod tests {
             )
             .timeout(Duration::from_secs(1))
             .build();
+    }
+
+    #[test]
+    fn build_checked_rejects_out_of_order_steps() {
+        let err = ResiliencePipeline::<&str>::builder()
+            .retry(RetryConfig::new(2).unwrap())
+            .rate_limiter(Arc::new(|| Box::pin(async { Ok(()) })))
+            .build_checked()
+            .unwrap_err();
+
+        assert_eq!(err.field, "pipeline_order");
+    }
+
+    #[test]
+    fn build_checked_accepts_recommended_order() {
+        let result = ResiliencePipeline::<&str>::builder()
+            .load_shed(Arc::new(|| false))
+            .rate_limiter(Arc::new(|| Box::pin(async { Ok(()) })))
+            .timeout(Duration::from_secs(1))
+            .retry(RetryConfig::new(2).unwrap())
+            .build_checked();
+
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -1151,7 +1677,8 @@ mod tests {
             .retry(
                 RetryConfig::new(2)
                     .unwrap()
-                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO))
+                    .retry_if(|_: &&str| true),
             )
             .build();
 
@@ -1180,6 +1707,74 @@ mod tests {
             .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
             .await;
         assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn pipeline_retry_does_not_replay_unknown_operation_errors_by_default() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&attempts);
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .build();
+
+        let result = pipeline
+            .call(move || {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Err::<u32, &str>("unknown")
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Operation("unknown"))));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_context_cancels_retry_sleep() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&attempts);
+        let cancellation = CancellationContext::with_reason("shutdown");
+        let cancellation_for_call = cancellation.clone();
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::from_secs(10)))
+                    .retry_if(|_: &&str| true),
+            )
+            .build();
+
+        let task = tokio::spawn(async move {
+            pipeline
+                .call_with_context(&cancellation_for_call, move || {
+                    fail_transient_after_count(Arc::clone(&seen))
+                })
+                .await
+        });
+
+        while attempts.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        cancellation.cancel();
+
+        let result = tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .expect("pipeline should stop during retry sleep")
+            .expect("task should not panic");
+
+        assert!(matches!(
+            result,
+            Err(CallError::Cancelled { reason: Some(reason) }) if reason == "shutdown"
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1244,6 +1839,7 @@ mod tests {
                     .unwrap()
                     .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
                     .with_sink(sink.clone())
+                    .retry_if(|_: &&str| true)
                     .on_retry(move |_err: &&str, delay: Duration, attempt: u32| {
                         seen_notifications.lock().unwrap().push((attempt, delay));
                     }),
@@ -1498,7 +2094,9 @@ mod tests {
     async fn pipeline_call_with_fallback_recovers() {
         use crate::fallback::ValueFallback;
 
+        let sink = RecordingSink::new();
         let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
             .timeout(Duration::from_millis(10))
             .build();
 
@@ -1508,7 +2106,7 @@ mod tests {
             .call_with_fallback(
                 || {
                     Box::pin(async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        std::future::pending::<()>().await;
                         Ok::<u32, &str>(42)
                     })
                 },
@@ -1517,6 +2115,212 @@ mod tests {
             .await;
 
         assert_eq!(result.unwrap(), 99);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackAttempted), 1);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackSucceeded), 1);
+        assert_eq!(sink.count(ResilienceEventKind::PipelineCompleted), 1);
+
+        let events = sink.events();
+        let completed = events.iter().find_map(|event| {
+            if let ResilienceEvent::PipelineCompleted { scope, outcome } = event {
+                Some((scope, outcome))
+            } else {
+                None
+            }
+        });
+        assert!(matches!(
+            completed,
+            Some((
+                _,
+                PipelineOutcome::FallbackSucceeded {
+                    primary_error: crate::CallErrorKind::Timeout,
+                }
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn pipeline_context_fallback_does_not_recover_cancellation() {
+        struct AlwaysFallback {
+            calls: Arc<AtomicU32>,
+        }
+
+        impl crate::fallback::FallbackStrategy<u32, &'static str> for AlwaysFallback {
+            fn recover<'a>(
+                &'a self,
+                _error: CallError<&'static str>,
+            ) -> Pin<Box<dyn Future<Output = Result<u32, CallError<&'static str>>> + Send + 'a>>
+            {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(ready(Ok(99)))
+            }
+
+            fn should_fallback(&self, _error: &CallError<&'static str>) -> bool {
+                true
+            }
+        }
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let fallback = AlwaysFallback {
+            calls: Arc::clone(&calls),
+        };
+        let cancellation = CancellationContext::with_reason("shutdown");
+        cancellation.cancel();
+        let pipeline = ResiliencePipeline::<&'static str>::builder().build();
+
+        let result = pipeline
+            .call_with_context_and_fallback(
+                &cancellation,
+                || boxed_ok_static_operation(42),
+                &fallback,
+            )
+            .await;
+
+        assert!(matches!(result, Err(CallError::Cancelled { .. })));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pipeline_context_cancels_inflight_fallback() {
+        use crate::fallback::FunctionFallback;
+
+        let cancellation = CancellationContext::with_reason("shutdown");
+        let cancellation_for_call = cancellation.clone();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_for_fallback = Arc::clone(&started);
+
+        let task = tokio::spawn(async move {
+            let pipeline = ResiliencePipeline::<&'static str>::builder()
+                .timeout(Duration::from_millis(1))
+                .build();
+            let fallback = FunctionFallback::new(move |_err: CallError<()>| {
+                let started = Arc::clone(&started_for_fallback);
+                long_fallback_after_notify(started)
+            });
+
+            pipeline
+                .call_with_context_and_fallback(
+                    &cancellation_for_call,
+                    boxed_long_static_operation,
+                    &fallback,
+                )
+                .await
+        });
+
+        started.notified().await;
+        cancellation.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(result, Err(CallError::Cancelled { .. })));
+    }
+
+    #[tokio::test]
+    async fn policy_context_deadline_bounds_entire_pipeline() {
+        let sink = RecordingSink::new();
+        let context = PolicyContext::with_timeout(Duration::from_millis(1))
+            .with_scope(PolicyScope::empty().tenant_id("tenant-context"));
+        let pipeline = ResiliencePipeline::<&'static str>::builder()
+            .with_sink(sink.clone())
+            .scope(PolicyScope::empty().tenant_id("tenant-builder"))
+            .build();
+
+        let result = pipeline
+            .call_with_policy_context(&context, boxed_long_static_operation)
+            .await;
+
+        assert!(matches!(result, Err(CallError::Timeout(_))));
+        assert_eq!(sink.count(ResilienceEventKind::TimeoutElapsed), 1);
+
+        let events = sink.events();
+        let completed = events.iter().find_map(|event| {
+            if let ResilienceEvent::PipelineCompleted { scope, outcome } = event {
+                Some((scope, outcome))
+            } else {
+                None
+            }
+        });
+        assert!(matches!(
+            completed,
+            Some((
+                scope,
+                PipelineOutcome::Failure {
+                    error: crate::CallErrorKind::Timeout,
+                }
+            )) if scope.tenant_id.as_deref() == Some("tenant-context")
+        ));
+    }
+
+    #[tokio::test]
+    async fn policy_context_deadline_bounds_inflight_fallback() {
+        use crate::fallback::FunctionFallback;
+
+        let sink = RecordingSink::new();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_for_fallback = Arc::clone(&started);
+        let context = PolicyContext::with_timeout(Duration::from_millis(50));
+        let pipeline = ResiliencePipeline::<&'static str>::builder()
+            .with_sink(sink.clone())
+            .timeout(Duration::from_millis(1))
+            .build();
+        let fallback = FunctionFallback::new(move |_err: CallError<()>| {
+            let started = Arc::clone(&started_for_fallback);
+            long_fallback_after_notify(started)
+        });
+
+        let call = pipeline.call_with_policy_context_and_fallback(
+            &context,
+            boxed_long_static_operation,
+            &fallback,
+        );
+        tokio::pin!(call);
+        tokio::select! {
+            () = started.notified() => {},
+            result = &mut call => panic!("fallback did not start before call completed: {result:?}"),
+        }
+
+        let result = call.await;
+
+        assert!(matches!(result, Err(CallError::Timeout(_))));
+        assert_eq!(sink.count(ResilienceEventKind::FallbackAttempted), 1);
+        assert_eq!(sink.count(ResilienceEventKind::TimeoutElapsed), 2);
+        assert_eq!(sink.count(ResilienceEventKind::PipelineCompleted), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_completion_event_carries_scope() {
+        let sink = RecordingSink::new();
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .scope(
+                PolicyScope::empty()
+                    .tenant_id("tenant-a")
+                    .operation("gmail.poll"),
+            )
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        let events = sink.events();
+        let completed = events.iter().find_map(|event| {
+            if let ResilienceEvent::PipelineCompleted { scope, outcome } = event {
+                Some((scope, outcome))
+            } else {
+                None
+            }
+        });
+
+        assert!(matches!(
+            completed,
+            Some((scope, PipelineOutcome::Success))
+                if scope.tenant_id.as_deref() == Some("tenant-a")
+                    && scope.operation.as_deref() == Some("gmail.poll")
+        ));
     }
 
     #[tokio::test]

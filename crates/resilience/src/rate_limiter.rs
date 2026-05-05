@@ -78,6 +78,7 @@ use std::{
     collections::VecDeque,
     fmt,
     future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -87,7 +88,50 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::CallError;
+use crate::{CallError, PolicyContext};
+
+fn retry_after_from_rate(units_needed: f64, units_per_second: f64) -> Option<Duration> {
+    if !units_needed.is_finite() || !units_per_second.is_finite() || units_per_second <= 0.0 {
+        return None;
+    }
+    if units_needed <= 0.0 {
+        return Some(Duration::ZERO);
+    }
+
+    let seconds = units_needed / units_per_second;
+    if !seconds.is_finite() {
+        return None;
+    }
+
+    Some(Duration::from_secs_f64(seconds).max(Duration::from_nanos(1)))
+}
+
+fn duration_as_nanos_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn rate_limited_with_retry_after(retry_after: Option<Duration>) -> CallError<()> {
+    retry_after.map_or_else(CallError::rate_limited, CallError::rate_limited_after)
+}
+
+pub(crate) fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
+    match err {
+        CallError::RateLimited { retry_after } => CallError::RateLimited { retry_after },
+        CallError::Timeout(duration) => CallError::Timeout(duration),
+        CallError::CircuitOpen => CallError::CircuitOpen,
+        CallError::BulkheadFull => CallError::BulkheadFull,
+        CallError::Cancelled { reason } => CallError::Cancelled { reason },
+        CallError::LoadShed => CallError::LoadShed,
+        CallError::FallbackFailed { reason } => CallError::FallbackFailed { reason },
+        CallError::FallbackFailedWithContext { primary, fallback } => {
+            CallError::FallbackFailedWithContext {
+                primary: Box::new(map_acquire_error(*primary)),
+                fallback: Box::new(map_acquire_error(*fallback)),
+            }
+        },
+        CallError::Operation(()) | CallError::RetriesExhausted { .. } => CallError::rate_limited(),
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT
@@ -122,6 +166,18 @@ pub trait RateLimiter: Send + Sync {
     /// that want to back off before retrying.
     fn acquire(&self) -> impl Future<Output = Result<(), CallError<()>>> + Send;
 
+    /// Attempt to consume one permit with cancellation/deadline from a shared
+    /// policy context.
+    ///
+    /// Implementations do not need to override this unless they can enforce the
+    /// context more efficiently internally.
+    fn acquire_with_policy_context<'a>(
+        &'a self,
+        context: &'a PolicyContext,
+    ) -> impl Future<Output = Result<(), CallError<()>>> + Send + 'a {
+        async move { context.run_result(self.acquire()).await }
+    }
+
     /// Acquire a permit and, if successful, execute `operation`.
     ///
     /// Returns <code>Err([`CallError::RateLimited`])</code> without calling `operation`
@@ -143,10 +199,34 @@ pub trait RateLimiter: Send + Sync {
         T: Send,
     {
         async {
-            self.acquire()
-                .await
-                .map_err(|_| CallError::rate_limited())?;
+            self.acquire().await.map_err(map_acquire_error)?;
             operation().await.map_err(CallError::Operation)
+        }
+    }
+
+    /// Acquire a permit using `context`, then execute `operation` under the
+    /// same cancellation/deadline contract.
+    ///
+    /// The operation is not invoked when the limiter rejects, the context is
+    /// cancelled, or the context deadline expires before a permit is acquired.
+    fn call_with_policy_context<'a, T, E, F, Fut>(
+        &'a self,
+        context: &'a PolicyContext,
+        operation: F,
+    ) -> impl Future<Output = Result<T, CallError<E>>> + Send + 'a
+    where
+        F: FnOnce() -> Fut + Send + 'a,
+        Fut: Future<Output = Result<T, E>> + Send + 'a,
+        T: Send + 'a,
+        E: Send + 'a,
+    {
+        async move {
+            self.acquire_with_policy_context(context)
+                .await
+                .map_err(map_acquire_error)?;
+            context
+                .run_result(async { operation().await.map_err(CallError::Operation) })
+                .await
         }
     }
 
@@ -155,6 +235,63 @@ pub trait RateLimiter: Send + Sync {
 
     /// Clears all state and resets to initial conditions.
     fn reset(&self) -> impl Future<Output = ()> + Send;
+}
+
+type BoxRateLimiterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Object-safe facade for storing heterogeneous rate limiters in registries.
+///
+/// [`RateLimiter`] keeps `impl Future` methods for static dispatch and zero
+/// allocation in direct calls, which makes that trait intentionally not
+/// object-safe. Use `Arc<dyn ErasedRateLimiter>` when a tenant/resource registry
+/// needs to store multiple limiter implementations behind one type.
+///
+/// The facade exposes only non-generic operations. To run an operation through a
+/// limiter, acquire through this trait and then call the operation yourself, or
+/// pass the object to
+/// [`PipelineBuilder::rate_limiter_erased`](crate::PipelineBuilder::rate_limiter_erased).
+pub trait ErasedRateLimiter: Send + Sync {
+    /// Attempt to consume one permit from the rate limiter.
+    fn acquire_boxed(&self) -> BoxRateLimiterFuture<'_, Result<(), CallError<()>>>;
+
+    /// Attempt to consume one permit with cancellation/deadline from a shared
+    /// policy context.
+    fn acquire_with_policy_context_boxed<'a>(
+        &'a self,
+        context: &'a PolicyContext,
+    ) -> BoxRateLimiterFuture<'a, Result<(), CallError<()>>> {
+        Box::pin(context.run_result(self.acquire_boxed()))
+    }
+
+    /// Returns the current rate or available capacity (implementation-dependent).
+    fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64>;
+
+    /// Clears all state and resets to initial conditions.
+    fn reset_boxed(&self) -> BoxRateLimiterFuture<'_, ()>;
+}
+
+impl<T> ErasedRateLimiter for T
+where
+    T: RateLimiter,
+{
+    fn acquire_boxed(&self) -> BoxRateLimiterFuture<'_, Result<(), CallError<()>>> {
+        Box::pin(self.acquire())
+    }
+
+    fn acquire_with_policy_context_boxed<'a>(
+        &'a self,
+        context: &'a PolicyContext,
+    ) -> BoxRateLimiterFuture<'a, Result<(), CallError<()>>> {
+        Box::pin(self.acquire_with_policy_context(context))
+    }
+
+    fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64> {
+        Box::pin(self.current_rate())
+    }
+
+    fn reset_boxed(&self) -> BoxRateLimiterFuture<'_, ()> {
+        Box::pin(self.reset())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -263,7 +400,11 @@ impl TokenBucket {
     /// The new rate is applied on the next `acquire()` call.
     /// `new_rate` is clamped to the same range accepted by `new()`.
     pub fn update_rate(&self, new_rate: f64) {
-        let clamped = new_rate.clamp(0.001, 10_000.0);
+        let clamped = if new_rate.is_finite() {
+            new_rate.clamp(0.001, 10_000.0)
+        } else {
+            0.001
+        };
         self.refill_rate.store(clamped.to_bits(), Ordering::Release);
     }
 
@@ -299,8 +440,9 @@ impl RateLimiter for TokenBucket {
             drop(state);
             Ok(())
         } else {
+            let retry_after = retry_after_from_rate(1.0 - state.tokens, refill_rate);
             drop(state);
-            Err(CallError::rate_limited())
+            Err(rate_limited_with_retry_after(retry_after))
         }
     }
 
@@ -453,6 +595,16 @@ impl LeakyBucket {
         let drain_duration = Duration::from_secs_f64(leaked_secs);
         state.last_leak = state.last_leak.checked_add(drain_duration).unwrap_or(now);
     }
+
+    fn retry_after_locked(
+        state: &LeakyBucketState,
+        leak_rate: f64,
+        now: Instant,
+    ) -> Option<Duration> {
+        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
+        let units_until_next_leak = elapsed.mul_add(-leak_rate, 1.0).max(0.0);
+        retry_after_from_rate(units_until_next_leak, leak_rate)
+    }
 }
 
 impl RateLimiter for LeakyBucket {
@@ -469,8 +621,9 @@ impl RateLimiter for LeakyBucket {
             drop(state);
             Ok(())
         } else {
+            let retry_after = Self::retry_after_locked(&state, self.leak_rate, now);
             drop(state);
-            Err(CallError::rate_limited())
+            Err(rate_limited_with_retry_after(retry_after))
         }
     }
 
@@ -578,12 +731,26 @@ impl SlidingWindow {
 
     fn clean_old_requests_locked(requests: &mut VecDeque<Instant>, cutoff: Instant) {
         while let Some(&front) = requests.front() {
-            if front < cutoff {
+            if front <= cutoff {
                 requests.pop_front();
             } else {
                 break;
             }
         }
+    }
+
+    fn retry_after_locked(
+        requests: &VecDeque<Instant>,
+        window_duration: Duration,
+        now: Instant,
+    ) -> Option<Duration> {
+        let oldest = *requests.front()?;
+        let expires_at = oldest.checked_add(window_duration)?;
+        Some(
+            expires_at
+                .checked_duration_since(now)
+                .unwrap_or(Duration::ZERO),
+        )
     }
 }
 
@@ -604,8 +771,9 @@ impl RateLimiter for SlidingWindow {
             drop(requests);
             Ok(())
         } else {
+            let retry_after = Self::retry_after_locked(&requests, self.window_duration, now);
             drop(requests);
-            Err(CallError::rate_limited())
+            Err(rate_limited_with_retry_after(retry_after))
         }
     }
 
@@ -657,8 +825,9 @@ struct AdaptiveState {
 /// | 1 % ≤ error rate ≤ 10 % | No change |
 ///
 /// Adjustments happen at most once per stats window (default: 1 minute).
-/// Lock-free atomics are used for the counters so recording outcomes is
-/// contention-free; the write lock is only taken when the window elapses.
+/// Lock-free atomics are used for the counters and fast-path window check, so
+/// recording outcomes does not take the rate-adjustment lock until the window
+/// elapses.
 ///
 /// The [`call()`](RateLimiter::call) override automatically records success/
 /// error outcomes, so manual calls to `record_*` are only needed when you
@@ -694,6 +863,8 @@ struct AdaptiveState {
 /// ```
 pub struct AdaptiveRateLimiter {
     state: Arc<RwLock<AdaptiveState>>,
+    adjustment_origin: Instant,
+    next_adjust_after_ns: AtomicU64,
     /// Lock-free copy of `current_rate` for cheap reads without taking the lock.
     /// Stored as `f64::to_bits()` / read via `f64::from_bits()`.
     atomic_rate: AtomicU64,
@@ -759,17 +930,21 @@ impl AdaptiveRateLimiter {
                 )
             })?;
 
+        let now = Instant::now();
+        let stats_window = Duration::from_mins(1);
         Ok(Self {
             state: Arc::new(RwLock::new(AdaptiveState {
                 inner: Arc::new(token_bucket),
-                last_stats_reset: Instant::now(),
+                last_stats_reset: now,
                 current_rate: initial_rate,
                 initial_rate,
             })),
+            adjustment_origin: now,
+            next_adjust_after_ns: AtomicU64::new(duration_as_nanos_u64(stats_window)),
             atomic_rate: AtomicU64::new(initial_rate.to_bits()),
             success_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
-            stats_window: Duration::from_mins(1),
+            stats_window,
             min_rate,
             max_rate,
         })
@@ -777,29 +952,41 @@ impl AdaptiveRateLimiter {
 
     /// Try to adjust rate if stats window has elapsed.
     ///
-    /// Uses a read lock for the fast path (window not yet elapsed) and only takes
-    /// a write lock when adjustment is needed.
+    /// Uses an atomic deadline for the fast path (window not yet elapsed) and
+    /// only takes a write lock when adjustment is needed.
     fn maybe_adjust_rate(&self) {
-        // Fast path: read lock to check window
-        let needs_adjust = {
-            let state = self.state.read();
-            state.last_stats_reset.elapsed() >= self.stats_window
-        };
+        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
+        let next_adjust_after_ns = self.next_adjust_after_ns.load(Ordering::Acquire);
+        if elapsed_ns < next_adjust_after_ns {
+            return;
+        }
 
-        if !needs_adjust {
+        if self
+            .next_adjust_after_ns
+            .compare_exchange(
+                next_adjust_after_ns,
+                u64::MAX,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
             return;
         }
 
         // Slow path: write lock for adjustment
         let mut state = self.state.write();
         // Double-check after acquiring write lock (another thread may have adjusted)
-        if state.last_stats_reset.elapsed() < self.stats_window {
-            return;
+        if state.last_stats_reset.elapsed() >= self.stats_window {
+            let success = self.success_count.swap(0, Ordering::Relaxed);
+            let error = self.error_count.swap(0, Ordering::Relaxed);
+            self.do_adjust_rate(&mut state, success, error);
         }
 
-        let success = self.success_count.swap(0, Ordering::Relaxed);
-        let error = self.error_count.swap(0, Ordering::Relaxed);
-        self.do_adjust_rate(&mut state, success, error);
+        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
+        let window_ns = duration_as_nanos_u64(self.stats_window);
+        self.next_adjust_after_ns
+            .store(elapsed_ns.saturating_add(window_ns), Ordering::Release);
         drop(state);
     }
 
@@ -863,9 +1050,7 @@ impl RateLimiter for AdaptiveRateLimiter {
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire()
-            .await
-            .map_err(|_| CallError::rate_limited())?;
+        self.acquire().await.map_err(map_acquire_error)?;
         let result = operation().await;
 
         match &result {
@@ -874,6 +1059,33 @@ impl RateLimiter for AdaptiveRateLimiter {
         }
 
         result.map_err(CallError::Operation)
+    }
+
+    async fn call_with_policy_context<'a, T, E, F, Fut>(
+        &'a self,
+        context: &'a PolicyContext,
+        operation: F,
+    ) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send + 'a,
+        Fut: Future<Output = Result<T, E>> + Send + 'a,
+        T: Send + 'a,
+        E: Send + 'a,
+    {
+        self.acquire_with_policy_context(context)
+            .await
+            .map_err(map_acquire_error)?;
+
+        let result = context
+            .run_result(async { operation().await.map_err(CallError::Operation) })
+            .await;
+
+        match &result {
+            Ok(_) => self.record_success(),
+            Err(_) => self.record_error(),
+        }
+
+        result
     }
 
     async fn current_rate(&self) -> f64 {
@@ -887,6 +1099,10 @@ impl RateLimiter for AdaptiveRateLimiter {
         self.error_count.store(0, Ordering::Relaxed);
         let mut state = self.state.write();
         state.last_stats_reset = Instant::now();
+        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
+        let window_ns = duration_as_nanos_u64(self.stats_window);
+        self.next_adjust_after_ns
+            .store(elapsed_ns.saturating_add(window_ns), Ordering::Release);
         let mut reset_rate = state.initial_rate.clamp(0.001, 10_000.0);
         let reset_capacity = reset_rate.max(1.0) as usize;
 
@@ -1047,13 +1263,167 @@ pub use governor_impl::GovernorRateLimiter;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
+    use crate::PolicyContext;
 
     #[tokio::test]
     async fn token_bucket_respects_capacity() {
         let limiter = TokenBucket::new(1, 0.001).unwrap();
         assert!(limiter.acquire().await.is_ok());
         assert!(limiter.acquire().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn token_bucket_returns_retry_after_hint() {
+        let limiter = TokenBucket::new(1, 10.0).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err = limiter.acquire().await.unwrap_err();
+
+        assert!(
+            matches!(err, CallError::RateLimited { retry_after: Some(delay) } if delay > Duration::ZERO && delay <= Duration::from_millis(100))
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_call_preserves_retry_after_hint() {
+        let limiter = TokenBucket::new(1, 10.0).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err: CallError<()> = limiter
+            .call(|| async { Ok::<(), ()>(()) })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::RateLimited {
+                retry_after: Some(_),
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn policy_context_deadline_bounds_rate_limited_operation() {
+        let limiter = TokenBucket::new(1, 0.001).unwrap();
+        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+
+        let err = limiter
+            .call_with_policy_context(&context, || async {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                Ok::<(), ()>(())
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn erased_rate_limiter_context_acquire_observes_cancellation() {
+        let limiter: Arc<dyn ErasedRateLimiter> = Arc::new(TokenBucket::new(1, 0.001).unwrap());
+        let cancellation = crate::CancellationContext::with_reason("shutdown");
+        let context = PolicyContext::from_cancellation(cancellation.clone());
+        cancellation.cancel();
+
+        let err = limiter
+            .acquire_with_policy_context_boxed(&context)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Cancelled { .. }));
+    }
+
+    #[tokio::test]
+    async fn erased_rate_limiter_forwards_specialized_context_acquire() {
+        struct ContextAwareLimiter {
+            plain_acquires: AtomicUsize,
+            context_acquires: AtomicUsize,
+        }
+
+        impl RateLimiter for ContextAwareLimiter {
+            async fn acquire(&self) -> Result<(), CallError<()>> {
+                self.plain_acquires.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn acquire_with_policy_context<'a>(
+                &'a self,
+                _context: &'a PolicyContext,
+            ) -> Result<(), CallError<()>> {
+                self.context_acquires.fetch_add(1, Ordering::SeqCst);
+                Err(CallError::cancelled_with("specialized path"))
+            }
+
+            async fn current_rate(&self) -> f64 {
+                1.0
+            }
+
+            async fn reset(&self) {}
+        }
+
+        let limiter = Arc::new(ContextAwareLimiter {
+            plain_acquires: AtomicUsize::new(0),
+            context_acquires: AtomicUsize::new(0),
+        });
+        let erased: Arc<dyn ErasedRateLimiter> = limiter.clone();
+
+        let err = erased
+            .acquire_with_policy_context_boxed(&PolicyContext::empty())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Cancelled { .. }));
+        assert_eq!(limiter.plain_acquires.load(Ordering::SeqCst), 0);
+        assert_eq!(limiter.context_acquires.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn adaptive_rate_limiter_context_call_records_operation_outcome() {
+        let limiter = AdaptiveRateLimiter::new(10.0, 1.0, 100.0).unwrap();
+        let context = PolicyContext::empty();
+
+        let ok = limiter
+            .call_with_policy_context(&context, || async { Ok::<_, ()>(()) })
+            .await;
+        assert!(ok.is_ok());
+
+        let err = limiter
+            .call_with_policy_context(&context, || async { Err::<(), _>(()) })
+            .await;
+        assert!(matches!(err, Err(CallError::Operation(()))));
+
+        assert_eq!(limiter.success_count.load(Ordering::Relaxed), 1);
+        assert_eq!(limiter.error_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn token_bucket_update_rate_sanitizes_non_finite_values() {
+        let limiter = TokenBucket::new(1, 10.0).unwrap();
+        limiter.update_rate(f64::NAN);
+
+        let rate = f64::from_bits(limiter.refill_rate.load(Ordering::Acquire));
+        assert!((rate - 0.001).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn erased_rate_limiter_registry_stores_heterogeneous_limiters() {
+        let registry: Vec<Arc<dyn ErasedRateLimiter>> = vec![
+            Arc::new(TokenBucket::new(1, 1.0).unwrap()),
+            Arc::new(SlidingWindow::new(Duration::from_secs(1), 1).unwrap()),
+        ];
+
+        assert!(registry[0].acquire_boxed().await.is_ok());
+        assert!(registry[1].acquire_boxed().await.is_ok());
+        assert!(registry[0].current_rate_boxed().await.is_finite());
+
+        registry[0].reset_boxed().await;
+        assert!(registry[0].acquire_boxed().await.is_ok());
     }
 
     #[test]
@@ -1094,6 +1464,18 @@ mod tests {
         assert!(limiter.acquire().await.is_ok());
     }
 
+    #[tokio::test]
+    async fn leaky_bucket_returns_retry_after_hint() {
+        let limiter = LeakyBucket::new(1, 4.0).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err = limiter.acquire().await.unwrap_err();
+
+        assert!(
+            matches!(err, CallError::RateLimited { retry_after: Some(delay) } if delay > Duration::ZERO && delay <= Duration::from_millis(250))
+        );
+    }
+
     #[test]
     fn leaky_bucket_partial_drain_preserves_fractional_leak_time() {
         let limiter = LeakyBucket::new(4, 4.0).unwrap();
@@ -1127,6 +1509,18 @@ mod tests {
     #[test]
     fn sliding_window_accepts_valid_config() {
         assert!(SlidingWindow::new(Duration::from_secs(1), 10).is_ok());
+    }
+
+    #[tokio::test]
+    async fn sliding_window_returns_retry_after_hint() {
+        let limiter = SlidingWindow::new(Duration::from_millis(100), 1).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err = limiter.acquire().await.unwrap_err();
+
+        assert!(
+            matches!(err, CallError::RateLimited { retry_after: Some(delay) } if delay > Duration::ZERO && delay <= Duration::from_millis(100))
+        );
     }
 
     // ── B2: AdaptiveRateLimiter rejects initial_rate outside bounds ──────

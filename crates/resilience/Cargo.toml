@@ -102,6 +102,10 @@ name = "load_shed"
 harness = false
 
 [[bench]]
+name = "policy_context"
+harness = false
+
+[[bench]]
 name = "hedge"
 harness = false
 
