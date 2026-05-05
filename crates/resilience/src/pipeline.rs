@@ -42,7 +42,7 @@ use crate::{
     cancellation::CancellationContext,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
-    rate_limiter::ErasedRateLimiter,
+    rate_limiter::{ErasedRateLimiter, map_acquire_error},
     retry::{RetryConfig, retry_with},
     sink::{MetricsSink, NoopSink, PipelineOutcome, PolicyScope, ResilienceEvent},
 };
@@ -892,11 +892,11 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
                         .record(ResilienceEvent::FallbackAttempted { primary_error });
                     let result = if let Some(cancellation) = cancellation.clone() {
                         tokio::select! {
-                            result = fallback.fallback(err) => result,
+                            result = fallback.recover(err) => result,
                             () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
                         }
                     } else {
-                        fallback.fallback(err).await
+                        fallback.recover(err).await
                     };
                     let pipeline_outcome = match &result {
                         Ok(_) => {
@@ -905,8 +905,10 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
                             PipelineOutcome::FallbackSucceeded { primary_error }
                         },
                         Err(fallback_error) => {
-                            self.sink
-                                .record(ResilienceEvent::FallbackFailed { primary_error });
+                            self.sink.record(ResilienceEvent::FallbackFailed {
+                                primary_error,
+                                fallback_error: fallback_error.kind(),
+                            });
                             PipelineOutcome::FallbackFailed {
                                 primary_error,
                                 fallback_error: fallback_error.kind(),
@@ -1043,11 +1045,13 @@ where
                 } else {
                     check().await
                 };
-                if let Err(e) = check_result {
-                    ctx.sink.record(ResilienceEvent::RateLimitExceeded);
-                    return Err(CallError::RateLimited {
-                        retry_after: e.retry_after(),
-                    });
+                match check_result {
+                    Ok(()) => {},
+                    Err(CallError::RateLimited { retry_after }) => {
+                        ctx.sink.record(ResilienceEvent::RateLimitExceeded);
+                        return Err(CallError::RateLimited { retry_after });
+                    },
+                    Err(error) => return Err(map_acquire_error(error)),
                 }
                 run_operation_with_shells(ctx, idx + 1, f).await
             },

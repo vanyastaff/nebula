@@ -131,17 +131,19 @@ impl PolicyContext {
             (None, None) => future.await,
             (Some(cancellation), None) => {
                 tokio::select! {
-                    result = future => result,
+                    biased;
                     () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
+                    result = future => result,
                 }
             },
             (None, Some(deadline)) => deadline.timeout(future).await?,
             (Some(cancellation), Some(deadline)) => {
                 let remaining = deadline.remaining_or_timeout()?;
                 tokio::select! {
-                    result = future => result,
+                    biased;
                     () = cancellation.token().cancelled() => Err(cancellation.cancelled_error()),
                     () = tokio::time::sleep(remaining) => Err(CallError::Timeout(deadline.budget())),
+                    result = future => result,
                 }
             },
         }

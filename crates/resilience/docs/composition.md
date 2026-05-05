@@ -19,7 +19,7 @@ into an ordered middleware pipeline. Steps are applied in the order added: first
 
 ## Recommended Step Order
 
-```
+```text
 load_shed → rate_limiter → timeout → retry → circuit_breaker → bulkhead
 ```
 
@@ -207,7 +207,7 @@ circuit are permanent by default. Timeout, rate limiting, and bulkhead rejection
 be retried when a classifier marks them transient; rate-limit and operation
 `retry_hint().after` values are preserved as delay floors.
 
-```
+```text
 retry step receives:
   Ok(v)              → return Ok(v)
   Err(Operation(e))  → classifier/predicate says transient? sleep, try again : return Err(Operation(e))
@@ -240,7 +240,7 @@ let pipeline = ResiliencePipeline::<&str>::builder()
     .build();
 ```
 
-```
+```text
 WARN ResiliencePipeline: timeout is inside retry (each attempt gets its own timeout).
      Move timeout before retry for a single deadline across all attempts.
 ```
@@ -248,7 +248,7 @@ WARN ResiliencePipeline: timeout is inside retry (each attempt gets its own time
 Use `build_recommended_order()` when policy declarations come from configuration and
 you want the crate to sort different step kinds into:
 
-```
+```text
 load_shed -> rate_limiter -> timeout -> retry -> circuit_breaker -> bulkhead
 ```
 

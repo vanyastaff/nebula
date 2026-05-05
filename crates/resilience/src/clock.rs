@@ -78,8 +78,8 @@ pub struct MockClock {
 
 #[derive(Debug)]
 struct MockClockInner {
-    /// Absolute base: the real `Instant` when this clock was created.
-    base: Instant,
+    /// Current representable instant.
+    now: Instant,
     /// Additional virtual time added via `advance()`.
     offset: Duration,
 }
@@ -88,9 +88,10 @@ impl MockClock {
     /// Create a new mock clock anchored at `Instant::now()`.
     #[must_use]
     pub fn new() -> Self {
+        let base = Instant::now();
         Self {
             inner: Arc::new(Mutex::new(MockClockInner {
-                base: Instant::now(),
+                now: base,
                 offset: Duration::ZERO,
             })),
         }
@@ -102,6 +103,7 @@ impl MockClock {
     pub fn advance(&self, duration: Duration) {
         let mut inner = self.inner.lock();
         inner.offset = inner.offset.saturating_add(duration);
+        inner.now = inner.now.checked_add(duration).unwrap_or(inner.now);
     }
 
     /// Returns the total virtual time elapsed since this clock was created.
@@ -119,8 +121,7 @@ impl Default for MockClock {
 
 impl Clock for MockClock {
     fn now(&self) -> Instant {
-        let inner = self.inner.lock();
-        inner.base.checked_add(inner.offset).unwrap_or(inner.base)
+        self.inner.lock().now
     }
 }
 
@@ -177,5 +178,19 @@ mod tests {
         clock.advance(Duration::from_millis(500));
         clock.advance(Duration::from_millis(500));
         assert_eq!(clock.elapsed(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn mock_clock_overflow_does_not_move_backwards() {
+        let clock = MockClock::new();
+
+        let initial = clock.now();
+        clock.advance(Duration::from_secs(1));
+        let before_overflow = clock.now();
+        clock.advance(Duration::MAX);
+        let after_overflow = clock.now();
+
+        assert!(before_overflow > initial);
+        assert!(after_overflow >= before_overflow);
     }
 }

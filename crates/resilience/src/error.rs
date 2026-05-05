@@ -93,8 +93,7 @@ impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
             Self::FallbackFailed { reason: None } => write!(f, "fallback failed"),
             Self::FallbackFailedWithContext { primary, fallback } => write!(
                 f,
-                "fallback failed after primary {:?} failure: {fallback}",
-                primary.kind()
+                "fallback failed after primary failure ({primary}): {fallback}"
             ),
         }
     }
@@ -472,6 +471,14 @@ mod tests {
         Timeout,
     }
 
+    impl std::fmt::Display for MyErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Timeout => write!(f, "timeout"),
+            }
+        }
+    }
+
     #[test]
     fn operation_is_not_retryable() {
         let e: CallError<MyErr> = CallError::Operation(MyErr::Timeout);
@@ -569,6 +576,22 @@ mod tests {
         let (primary, fallback) = err.fallback_context().unwrap();
         assert!(matches!(primary, CallError::Operation(MyErr::Timeout)));
         assert!(matches!(fallback, CallError::FallbackFailed { .. }));
+    }
+
+    #[test]
+    fn fallback_context_display_includes_primary_message() {
+        let err = CallError::fallback_failed_with_context(
+            CallError::RetriesExhausted {
+                attempts: 2,
+                last: MyErr::Timeout,
+            },
+            CallError::fallback_failed_with("cache unavailable"),
+        );
+
+        let display = err.to_string();
+
+        assert!(display.contains("operation failed after 2 attempt(s): timeout"));
+        assert!(display.contains("fallback failed: cache unavailable"));
     }
 
     #[test]

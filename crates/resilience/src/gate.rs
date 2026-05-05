@@ -288,8 +288,14 @@ impl Gate {
     /// Returns [`GateCloseTimeout`] if `timeout` elapses before all active guards
     /// exit.
     pub async fn close_with_timeout(&self, timeout: Duration) -> Result<(), GateCloseTimeout> {
+        self.inner.closing.store(true, Ordering::Release);
+
+        if self.active_count() == 0 {
+            self.inner.sem.close();
+            return Ok(());
+        }
+
         if timeout.is_zero() {
-            self.inner.closing.store(true, Ordering::Release);
             return Err(GateCloseTimeout {
                 timeout,
                 active_guards: self.active_count(),
@@ -427,6 +433,19 @@ mod tests {
         drop(guard);
         gate.close().await;
         assert_eq!(gate.active_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn close_with_zero_timeout_succeeds_when_already_drained() {
+        let gate = Gate::new();
+
+        gate.close_with_timeout(Duration::ZERO)
+            .await
+            .expect("drained gate closes immediately");
+
+        assert_eq!(gate.active_count(), 0);
+        assert!(gate.is_closed());
+        assert!(matches!(gate.enter(), Err(GateClosed)));
     }
 }
 

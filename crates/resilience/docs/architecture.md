@@ -89,7 +89,7 @@ and warns on dangerous order, `build_checked()` rejects order inversions with
 `ConfigError`, and `build_recommended_order()` sorts config-driven policies into the
 safe order. Execution recurses through the step list:
 
-```
+```text
 pipeline.call(f)
   │
   ├── Step::LoadShed → reject before expensive policy work
@@ -106,7 +106,8 @@ would get its own deadline instead of a single budget across all attempts).
 `build_checked()` returns a config error for any deviation from the recommended order.
 
 The recommended order is:
-```
+
+```text
 load_shed → rate_limiter → timeout → retry → circuit_breaker → bulkhead
 ```
 
@@ -154,7 +155,10 @@ pub enum ResilienceEvent {
     LoadShed,
     FallbackAttempted { primary_error: CallErrorKind },
     FallbackSucceeded { primary_error: CallErrorKind },
-    FallbackFailed { primary_error: CallErrorKind },
+    FallbackFailed {
+        primary_error: CallErrorKind,
+        fallback_error: CallErrorKind,
+    },
     PipelineCompleted { scope: PolicyScope, outcome: PipelineOutcome },
 }
 ```
@@ -201,7 +205,7 @@ best-effort active guard count for diagnostics.
 
 ## Module Map
 
-```
+```text
 crates/resilience/src/
 │
 │  ── Core types ────────────────────────────────────────────────────────────
@@ -296,7 +300,7 @@ crates/resilience/src/
 
 ### Pipeline execution path
 
-```
+```text
 Caller
   │  pipeline.call(|| async { ... })
   ▼
@@ -327,7 +331,7 @@ ResiliencePipeline::call
 
 ### Circuit breaker execution path
 
-```
+```text
 Caller
   │  cb.call(|| async { ... })
   ▼
@@ -347,7 +351,7 @@ Result<T, CallError<E>>
 
 ### Retry execution path
 
-```
+```text
 Caller
   │  retry_with(config, || async { ... })
   ▼

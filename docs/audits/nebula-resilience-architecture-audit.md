@@ -1055,54 +1055,54 @@ P2: nice to have
 
 Phase 1: clarify semantics and invariants
 
-- [Done in this branch][Documentation/test only] Write a formal policy contract doc: attempts, idempotency,
+- **Done in this branch** (*Documentation/test only*): Write a formal policy contract doc: attempts, idempotency,
   cancellation, fallback, deadline, circuit breaker recovery, policy scope, and composition order.
-- [Done in this branch][Architecture correction] Default pipeline retry semantics for unknown
+- **Done in this branch** (*Architecture correction*): Default pipeline retry semantics for unknown
   operation errors are permanent unless explicitly classified or hinted retryable.
-- [Partially done][Architecture correction] Pipeline order now has `build_checked()` and
+- **Partially done** (*Architecture correction*): Pipeline order now has `build_checked()` and
   `build_recommended_order()`; permissive `build()` remains for callers that intentionally
   want custom order.
 
 Phase 2: fix critical correctness issues
 
-- [Done in this branch][API correction] Make `RetryConfig` fields private or typed; use `NonZeroU32`.
-- [Done in this branch][Refactor] Add runtime validation before executing retry and pipeline configs.
-- [Partially done][Architecture correction] Introduce `Deadline`/`PolicyContext` and enforce it in retry
+- **Done in this branch** (*API correction*): Make `RetryConfig` fields private or typed; use `NonZeroU32`.
+- **Done in this branch** (*Refactor*): Add runtime validation before executing retry and pipeline configs.
+- **Partially done** (*Architecture correction*): Introduce `Deadline`/`PolicyContext` and enforce it in retry
   attempts, retry sleeps, whole pipeline calls, fallback paths, timeout/load-shed, and key standalone
   policies. Custom integrations still need context-aware contracts.
-- [Done in this branch][Architecture correction] Add explicit half-open thresholds and terminal behavior for
+- **Done in this branch** (*Architecture correction*): Add explicit half-open thresholds and terminal behavior for
   ignored outcomes.
-- [Done in this branch][Architecture correction] Gate hedging behind idempotency/read-only metadata.
+- **Done in this branch** (*Architecture correction*): Gate hedging behind idempotency/read-only metadata.
 
 Phase 3: improve API misuse resistance
 
-- [Remaining][API correction] Add workflow-safe builders: `WorkflowResilienceProfile`, `ExternalApiProfile`,
+- **Remaining** (*API correction*): Add workflow-safe builders: `WorkflowResilienceProfile`, `ExternalApiProfile`,
   `DatabaseProfile`, `PollingProfile`.
-- [Partially done][API correction] Make unsafe composition require an explicit named method.
-- [Partially done][API correction] Add fallback policies by error class, with cancellation/overload
+- **Partially done** (*API correction*): Make unsafe composition require an explicit named method.
+- **Partially done** (*API correction*): Add fallback policies by error class, with cancellation/overload
   excluded by default.
-- [Partially done][Architecture correction] Add scope-aware shared policy registry interfaces for
+- **Partially done** (*Architecture correction*): Add scope-aware shared policy registry interfaces for
   resource/tenant/action policies. `ErasedRateLimiter` covers dynamic limiter registries;
   bulkhead and circuit breaker registries remain.
 
 Phase 4: improve observability and docs
 
-- [Partially done][Architecture correction] Replace or extend `ResilienceEvent` with structured events
+- **Partially done** (*Architecture correction*): Replace or extend `ResilienceEvent` with structured events
   carrying policy id, scope, attempt number, duration, decision reason, retry-after,
   and final outcome.
-- [Done in this branch][API correction] Emit fallback attempted/succeeded/failed events.
-- [Done in this branch][Documentation/test only] Update composition, API reference, and examples to match code.
-- [Partially done][Documentation/test only] Add docs tests for semantic examples.
+- **Done in this branch** (*API correction*): Emit fallback attempted/succeeded/failed events.
+- **Done in this branch** (*Documentation/test only*): Update composition, API reference, and examples to match code.
+- **Partially done** (*Documentation/test only*): Add docs tests for semantic examples.
 
 Phase 5: performance cleanup
 
-- [Refactor] Review hot-path allocation in pipeline boxing and event cloning after
+- **Refactor**: Review hot-path allocation in pipeline boxing and event cloning after
   semantics are stable.
-- [Done in this branch][API correction] Consider object-safe policy adapters for dynamic registries
+- **Done in this branch** (*API correction*): Consider object-safe policy adapters for dynamic registries
   for rate limiters.
-- [Architecture correction] Bound metric/log cardinality by using stable policy IDs and
+- **Architecture correction**: Bound metric/log cardinality by using stable policy IDs and
   low-cardinality labels.
-- [Documentation/test only] Benchmark high-concurrency retry/rate-limit/bulkhead paths
+- **Documentation/test only**: Benchmark high-concurrency retry/rate-limit/bulkhead paths
   with realistic workflow load.
 
 ## GitHub Issues

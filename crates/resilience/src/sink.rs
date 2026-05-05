@@ -240,6 +240,8 @@ pub enum ResilienceEvent {
     FallbackFailed {
         /// Primary failure kind that fallback failed to recover.
         primary_error: CallErrorKind,
+        /// Fallback failure kind.
+        fallback_error: CallErrorKind,
     },
     /// A pipeline invocation completed.
     PipelineCompleted {

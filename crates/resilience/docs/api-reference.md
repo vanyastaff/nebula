@@ -5,6 +5,50 @@ For exhaustive item-level details, prefer the generated rustdoc from `src/lib.rs
 
 ---
 
+## Migration Notes
+
+### Fallback gating
+
+`FallbackStrategy::fallback(error)` is now the safe entry point and checks
+`should_fallback()` before invoking strategy recovery. By default, fallback is
+attempted only for operation failure, retry exhaustion, timeout, and open circuit.
+Cancellation, load shedding, rate limiting, bulkhead rejection, and fallback
+failure are not recovered unless a custom strategy explicitly opts in. This
+affects direct `FallbackStrategy::fallback()` calls, `FallbackOperation`,
+`ChainFallback`, `PriorityFallback`, and pipeline fallback wrappers.
+
+Migration:
+
+- Override `should_fallback()` for strategies that intentionally recover a
+  policy rejection.
+- Call strategy-specific `recover()` only from policy code that has already
+  performed exactly one `should_fallback()` preflight.
+- Track the current limitation: `FunctionFallback` preserves primary and fallback
+  failures with `FallbackFailedWithContext`, but universal primary-error
+  preservation for every custom strategy remains future API work.
+
+### Hedging opt-in
+
+`HedgeConfig::default()` sends no duplicate requests (`max_hedges = 0`). Enabling
+duplicates requires `duplicate_safety = HedgeSafety::Idempotent`, because dropping
+a `HedgeExecutor::call` future aborts owned tasks but cannot undo side effects
+already sent to a remote service.
+
+```rust
+use std::time::Duration;
+
+use nebula_resilience::hedge::{HedgeConfig, HedgeSafety};
+
+let config = HedgeConfig {
+    max_hedges: 2,
+    hedge_delay: Duration::from_millis(50),
+    duplicate_safety: HedgeSafety::Idempotent,
+    ..Default::default()
+};
+```
+
+---
+
 ## Core Types
 
 ### `CallError<E>`
@@ -124,11 +168,9 @@ Notes:
 - `call_with_policy_context()` and `call_with_policy_context_and_fallback()` also apply a context deadline to the whole call and use context scope for `PipelineCompleted` when set.
 - `with_sink()` records pipeline-level `TimeoutElapsed`, `RateLimitExceeded`, `LoadShed`, and fallback lifecycle events.
 - Every pipeline call emits `PipelineCompleted { scope, outcome }`; fallback recovery is represented as `PipelineOutcome::FallbackSucceeded` instead of a plain success.
-- `FallbackStrategy::fallback(error)` is the safe entry point and checks
-  `should_fallback()` before invoking strategy recovery. Built-in `ChainFallback`
-  and `PriorityFallback` use that safe entry point for nested strategies, so
-  cancellation and overload-style policy errors are not recovered by later fallbacks
-  unless a custom strategy explicitly opts in.
+- See [Migration Notes](#migration-notes) for fallback gating behavior that
+  affects `FallbackStrategy::fallback(error)`, `ChainFallback`, `PriorityFallback`,
+  `FallbackOperation`, and pipeline fallback wrappers.
 - `FunctionFallback` preserves the primary failure in `FallbackFailedWithContext`
   when the fallback closure itself fails. Custom strategy recovery still receives
   the primary error by value, so universal primary-error preservation for every
@@ -393,9 +435,8 @@ Notable methods:
 
 Important caveat:
 
-- `HedgeConfig::default()` sends no duplicate requests (`max_hedges = 0`).
-- `max_hedges > 0` requires `duplicate_safety = HedgeSafety::Idempotent`.
-- Dropping a `HedgeExecutor::call` future aborts tasks owned by that call, but side effects already sent to a remote service are not reversible.
+- See [Migration Notes](#migration-notes) for the default-disabled hedging
+  behavior, explicit idempotency requirement, and cancellation caveat.
 
 ---
 
@@ -456,8 +497,27 @@ Root re-exports:
 - `LoadShed`
 - `FallbackAttempted { primary_error }`
 - `FallbackSucceeded { primary_error }`
-- `FallbackFailed { primary_error }`
+- `FallbackFailed { primary_error, fallback_error }`
 - `PipelineCompleted { scope, outcome }`
+
+Scope construction:
+
+```rust
+use nebula_resilience::{PolicyScope, ScopeValue};
+
+let tenant: ScopeValue = "tenant-a".into();
+let scope = PolicyScope::empty()
+    .tenant_id(tenant)
+    .workflow_id("workflow-a")
+    .action_id("gmail.poll")
+    .operation("poll");
+```
+
+`PolicyScope` builders accept plain strings or `ScopeValue`. Use plain strings
+for one-off calls. Use `ScopeValue` when a pipeline or high-cardinality scope is
+cloned many times; it stores text as shared `Arc<str>`, so cloning
+`PolicyScope`, `PipelineOutcome`-carrying events, and `PipelineCompleted` records
+does not deep-copy owned scope strings.
 
 `RecordingSink` helpers:
 

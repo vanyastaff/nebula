@@ -69,7 +69,10 @@ pub enum ResilienceEvent {
     /// Fallback returned a recovered value.
     FallbackSucceeded { primary_error: CallErrorKind },
     /// Fallback was attempted but returned an error.
-    FallbackFailed { primary_error: CallErrorKind },
+    FallbackFailed {
+        primary_error: CallErrorKind,
+        fallback_error: CallErrorKind,
+    },
     /// Pipeline invocation completed.
     PipelineCompleted {
         scope: PolicyScope,

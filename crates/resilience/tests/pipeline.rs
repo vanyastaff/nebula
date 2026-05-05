@@ -9,7 +9,7 @@ use std::{
 };
 
 use nebula_resilience::{
-    CallError, ErasedRateLimiter,
+    CallError, ErasedRateLimiter, RecordingSink, ResilienceEventKind,
     bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     fallback::ValueFallback,
@@ -273,6 +273,30 @@ async fn full_stack_rate_limiter_rejects_before_retry() {
     assert!(matches!(result, Err(CallError::RateLimited { .. })));
     // Operation never called — rate limiter is before retry
     assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn rate_limiter_check_preserves_non_rate_limit_errors() {
+    let sink = RecordingSink::new();
+    let rl: RateLimitCheck =
+        Arc::new(|| Box::pin(async { Err(CallError::cancelled_with("shutdown")) }));
+
+    let pipeline = ResiliencePipeline::<&str>::builder()
+        .with_sink(sink.clone())
+        .rate_limiter(rl)
+        .build();
+
+    let result = pipeline
+        .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(CallError::Cancelled {
+            reason: Some(reason)
+        }) if reason == "shutdown"
+    ));
+    assert_eq!(sink.count(ResilienceEventKind::RateLimitExceeded), 0);
 }
 
 // ── Full-stack: pipeline + fallback recovery ────────────────────────────────

@@ -628,13 +628,16 @@ impl<T, E> FallbackOperation<T, E> {
                 if self.fallback_strategy.should_fallback(&error) {
                     let primary_error = error.kind();
                     self.record(ResilienceEvent::FallbackAttempted { primary_error });
-                    match self.fallback_strategy.fallback(error).await {
+                    match self.fallback_strategy.recover(error).await {
                         Ok(value) => {
                             self.record(ResilienceEvent::FallbackSucceeded { primary_error });
                             Ok(value)
                         },
                         Err(error) => {
-                            self.record(ResilienceEvent::FallbackFailed { primary_error });
+                            self.record(ResilienceEvent::FallbackFailed {
+                                primary_error,
+                                fallback_error: error.kind(),
+                            });
                             Err(error)
                         },
                     }
@@ -672,8 +675,11 @@ impl<T, E> FallbackOperation<T, E> {
         match context.run_result(operation()).await {
             Ok(value) => Ok(value),
             Err(error) => {
-                if matches!(error, CallError::Cancelled { .. }) || context.is_cancelled() {
+                if context.is_cancelled() {
                     return Err(context.cancelled_error());
+                }
+                if matches!(error, CallError::Cancelled { .. }) {
+                    return Err(error);
                 }
                 if matches!(error, CallError::Timeout(_)) && context.is_deadline_expired() {
                     return Err(error);
@@ -682,7 +688,7 @@ impl<T, E> FallbackOperation<T, E> {
                     let primary_error = error.kind();
                     self.record(ResilienceEvent::FallbackAttempted { primary_error });
                     match context
-                        .run_result(self.fallback_strategy.fallback(error))
+                        .run_result(self.fallback_strategy.recover(error))
                         .await
                     {
                         Ok(value) => {
@@ -690,7 +696,10 @@ impl<T, E> FallbackOperation<T, E> {
                             Ok(value)
                         },
                         Err(error) => {
-                            self.record(ResilienceEvent::FallbackFailed { primary_error });
+                            self.record(ResilienceEvent::FallbackFailed {
+                                primary_error,
+                                fallback_error: error.kind(),
+                            });
                             Err(error)
                         },
                     }
@@ -708,7 +717,15 @@ impl<T, E> FallbackOperation<T, E> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use super::*;
     use crate::{
@@ -721,6 +738,25 @@ mod tests {
 
     fn cancelled_error() -> CallError<&'static str> {
         CallError::cancelled()
+    }
+
+    struct CountingFallback {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl FallbackStrategy<u32, &'static str> for CountingFallback {
+        fn recover<'a>(
+            &'a self,
+            _error: CallError<&'static str>,
+        ) -> Pin<Box<dyn Future<Output = Result<u32, CallError<&'static str>>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(7) })
+        }
+
+        fn should_fallback(&self, _error: &CallError<&'static str>) -> bool {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            true
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -940,6 +976,26 @@ mod tests {
         assert_eq!(sink.count(ResilienceEventKind::FallbackAttempted), 1);
         assert_eq!(sink.count(ResilienceEventKind::FallbackSucceeded), 0);
         assert_eq!(sink.count(ResilienceEventKind::FallbackFailed), 1);
+        assert!(sink.events().iter().any(|event| matches!(
+            event,
+            ResilienceEvent::FallbackFailed {
+                primary_error: CallErrorKind::Timeout,
+                fallback_error: CallErrorKind::FallbackFailed,
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn fallback_operation_evaluates_should_fallback_once() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let op = FallbackOperation::new(Arc::new(CountingFallback {
+            calls: Arc::clone(&calls),
+        }));
+
+        let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
+
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -955,6 +1011,26 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(CallError::Cancelled { .. })));
+    }
+
+    #[tokio::test]
+    async fn fallback_operation_preserves_non_context_cancellation_reason() {
+        let op: FallbackOperation<u32, &str> =
+            FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+        let context = PolicyContext::empty();
+
+        let result = op
+            .call_with_policy_context(&context, || async {
+                Err::<u32, _>(CallError::cancelled_with("primary stopped itself"))
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(CallError::Cancelled {
+                reason: Some(reason)
+            }) if reason == "primary stopped itself"
+        ));
     }
 
     #[tokio::test]

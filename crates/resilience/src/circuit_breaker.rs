@@ -965,13 +965,9 @@ impl CircuitBreaker {
             },
             Outcome::Failure | Outcome::Timeout => {
                 if matches!(outcome, Outcome::Timeout) && !self.config.count_timeouts_as_failures {
-                    if inner.state == State::HalfOpen {
-                        transition = Some(self.trip_open_from_half_open(&mut inner));
-                    } else {
-                        // Don't count as failure, but still release the probe slot
-                        // so half-open probes aren't permanently leaked.
-                        inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
-                    }
+                    // Don't count as failure, but still release the probe slot
+                    // so half-open probes aren't permanently leaked.
+                    inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
                 } else {
                     inner.failures = inner.failures.saturating_add(1);
                     inner.total = inner.total.saturating_add(1);
@@ -1328,7 +1324,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignored_timeout_in_half_open_reopens_breaker() {
+    async fn ignored_timeout_in_half_open_releases_probe_without_reopening() {
         let cb = CircuitBreaker::new(CircuitBreakerConfig {
             count_timeouts_as_failures: false,
             ..default_config()
@@ -1346,7 +1342,11 @@ mod tests {
         assert_eq!(cb.circuit_state(), CS::HalfOpen);
 
         cb.record_outcome(Outcome::Timeout);
-        assert_eq!(cb.circuit_state(), CS::Open);
+        assert_eq!(cb.circuit_state(), CS::HalfOpen);
+
+        assert!(cb.try_acquire::<&str>().is_ok());
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
     }
 
     #[tokio::test]

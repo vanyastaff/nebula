@@ -277,14 +277,21 @@ gate.close().await; // drain all in-flight work
 
 ### Timeout-bounded drain
 
-If you need to enforce a maximum drain time, race `close()` against a deadline:
+Prefer `close_with_timeout()` when shutdown has a bounded graceful-drain budget;
+it returns typed diagnostics instead of discarding the active-guard count:
 
 ```rust
+use nebula_resilience::gate::GateCloseTimeout;
 use std::time::Duration;
 
-let drain = tokio::time::timeout(Duration::from_secs(30), gate.close()).await;
-
-if drain.is_err() {
-    tracing::warn!("graceful drain timed out after 30s; forcing shutdown");
+match gate.close_with_timeout(Duration::from_secs(30)).await {
+    Ok(()) => tracing::info!("gate drained"),
+    Err(GateCloseTimeout { timeout, active_guards }) => {
+        tracing::warn!(
+            ?timeout,
+            active_guards,
+            "graceful drain timed out; forcing shutdown"
+        );
+    }
 }
 ```

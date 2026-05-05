@@ -32,7 +32,6 @@ fn bench_timeout_context_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let local_timeout = Duration::from_secs(5);
     let empty_context = PolicyContext::empty();
-    let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
     let mut group = c.benchmark_group("policy_context/timeout");
 
     group.bench_function("plain_success", |b| {
@@ -54,6 +53,7 @@ fn bench_timeout_context_overhead(c: &mut Criterion) {
 
     group.bench_function("deadline_context_success", |b| {
         b.to_async(&rt).iter(|| async {
+            let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
             let result = timeout_with_policy_context(&deadline_context, local_timeout, async {
                 Ok::<u64, &str>(black_box(42))
             })
@@ -68,7 +68,6 @@ fn bench_timeout_context_overhead(c: &mut Criterion) {
 fn bench_load_shed_context_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let empty_context = PolicyContext::empty();
-    let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
     let mut group = c.benchmark_group("policy_context/load_shed");
 
     group.bench_function("plain_pass_through", |b| {
@@ -92,6 +91,7 @@ fn bench_load_shed_context_overhead(c: &mut Criterion) {
 
     group.bench_function("deadline_context_pass_through", |b| {
         b.to_async(&rt).iter(|| async {
+            let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
             let result = load_shed_with_policy_context(
                 &deadline_context,
                 || false,
@@ -109,7 +109,6 @@ fn bench_pipeline_context_overhead(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
     let pipeline = ResiliencePipeline::<&str>::builder().build();
     let empty_context = PolicyContext::empty();
-    let deadline_context = PolicyContext::with_timeout(Duration::from_mins(10));
     let mut group = c.benchmark_group("policy_context/pipeline");
 
     group.bench_function("call", |b| {
@@ -142,10 +141,10 @@ fn bench_pipeline_context_overhead(c: &mut Criterion) {
     group.bench_function("call_with_deadline_context", |b| {
         b.to_async(&rt).iter(|| {
             let pipeline = &pipeline;
-            let context = &deadline_context;
             async move {
+                let context = PolicyContext::with_timeout(Duration::from_mins(10));
                 let result = pipeline
-                    .call_with_policy_context(context, || {
+                    .call_with_policy_context(&context, || {
                         Box::pin(async { Ok::<u64, &str>(black_box(42)) })
                     })
                     .await;

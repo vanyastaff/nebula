@@ -58,6 +58,13 @@ pub trait LoadSignal: Send + Sync {
     /// buggy or fed by external telemetry. Invalid snapshots are rejected
     /// instead of silently creating nonsensical policy decisions.
     ///
+    /// The default implementation calls [`load_factor`](Self::load_factor),
+    /// [`error_rate`](Self::error_rate), and [`p99_latency`](Self::p99_latency)
+    /// independently. Mutable signal implementations may therefore produce a
+    /// mixed-window snapshot. Implementations that require a coherent/atomic
+    /// capture across all fields must override this method and construct a
+    /// [`LoadSnapshot`] from one internally consistent read.
+    ///
     /// # Errors
     ///
     /// Returns `Err(ConfigError)` if `load_factor` or `error_rate` is not a
@@ -289,5 +296,17 @@ mod tests {
         assert!((snapshot.load_factor() - 0.25).abs() < f64::EPSILON);
         assert!((snapshot.error_rate() - 0.5).abs() < f64::EPSILON);
         assert_eq!(snapshot.p99_latency(), Duration::from_millis(9));
+    }
+
+    #[test]
+    fn constant_load_new_exposes_values_via_accessors() {
+        let signal = ConstantLoad::new(0.25, 0.5, Duration::from_millis(9)).unwrap();
+
+        assert!((signal.factor() - 0.25).abs() < f64::EPSILON);
+        assert!((signal.measured_error_rate() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(signal.measured_p99_latency(), Duration::from_millis(9));
+        assert!((signal.load_factor() - 0.25).abs() < f64::EPSILON);
+        assert!((signal.error_rate() - 0.5).abs() < f64::EPSILON);
+        assert_eq!(signal.p99_latency(), Duration::from_millis(9));
     }
 }

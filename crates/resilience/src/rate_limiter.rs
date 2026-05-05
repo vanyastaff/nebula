@@ -114,7 +114,7 @@ fn rate_limited_with_retry_after(retry_after: Option<Duration>) -> CallError<()>
     retry_after.map_or_else(CallError::rate_limited, CallError::rate_limited_after)
 }
 
-fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
+pub(crate) fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
     match err {
         CallError::RateLimited { retry_after } => CallError::RateLimited { retry_after },
         CallError::Timeout(duration) => CallError::Timeout(duration),
@@ -276,6 +276,13 @@ where
 {
     fn acquire_boxed(&self) -> BoxRateLimiterFuture<'_, Result<(), CallError<()>>> {
         Box::pin(self.acquire())
+    }
+
+    fn acquire_with_policy_context_boxed<'a>(
+        &'a self,
+        context: &'a PolicyContext,
+    ) -> BoxRateLimiterFuture<'a, Result<(), CallError<()>>> {
+        Box::pin(self.acquire_with_policy_context(context))
     }
 
     fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64> {
@@ -1054,6 +1061,33 @@ impl RateLimiter for AdaptiveRateLimiter {
         result.map_err(CallError::Operation)
     }
 
+    async fn call_with_policy_context<'a, T, E, F, Fut>(
+        &'a self,
+        context: &'a PolicyContext,
+        operation: F,
+    ) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut + Send + 'a,
+        Fut: Future<Output = Result<T, E>> + Send + 'a,
+        T: Send + 'a,
+        E: Send + 'a,
+    {
+        self.acquire_with_policy_context(context)
+            .await
+            .map_err(map_acquire_error)?;
+
+        let result = context
+            .run_result(async { operation().await.map_err(CallError::Operation) })
+            .await;
+
+        match &result {
+            Ok(_) => self.record_success(),
+            Err(_) => self.record_error(),
+        }
+
+        result
+    }
+
     async fn current_rate(&self) -> f64 {
         f64::from_bits(self.atomic_rate.load(Ordering::Acquire))
     }
@@ -1229,7 +1263,10 @@ pub use governor_impl::GovernorRateLimiter;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::PolicyContext;
@@ -1300,6 +1337,69 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, CallError::Cancelled { .. }));
+    }
+
+    #[tokio::test]
+    async fn erased_rate_limiter_forwards_specialized_context_acquire() {
+        struct ContextAwareLimiter {
+            plain_acquires: AtomicUsize,
+            context_acquires: AtomicUsize,
+        }
+
+        impl RateLimiter for ContextAwareLimiter {
+            async fn acquire(&self) -> Result<(), CallError<()>> {
+                self.plain_acquires.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn acquire_with_policy_context<'a>(
+                &'a self,
+                _context: &'a PolicyContext,
+            ) -> Result<(), CallError<()>> {
+                self.context_acquires.fetch_add(1, Ordering::SeqCst);
+                Err(CallError::cancelled_with("specialized path"))
+            }
+
+            async fn current_rate(&self) -> f64 {
+                1.0
+            }
+
+            async fn reset(&self) {}
+        }
+
+        let limiter = Arc::new(ContextAwareLimiter {
+            plain_acquires: AtomicUsize::new(0),
+            context_acquires: AtomicUsize::new(0),
+        });
+        let erased: Arc<dyn ErasedRateLimiter> = limiter.clone();
+
+        let err = erased
+            .acquire_with_policy_context_boxed(&PolicyContext::empty())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Cancelled { .. }));
+        assert_eq!(limiter.plain_acquires.load(Ordering::SeqCst), 0);
+        assert_eq!(limiter.context_acquires.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn adaptive_rate_limiter_context_call_records_operation_outcome() {
+        let limiter = AdaptiveRateLimiter::new(10.0, 1.0, 100.0).unwrap();
+        let context = PolicyContext::empty();
+
+        let ok = limiter
+            .call_with_policy_context(&context, || async { Ok::<_, ()>(()) })
+            .await;
+        assert!(ok.is_ok());
+
+        let err = limiter
+            .call_with_policy_context(&context, || async { Err::<(), _>(()) })
+            .await;
+        assert!(matches!(err, Err(CallError::Operation(()))));
+
+        assert_eq!(limiter.success_count.load(Ordering::Relaxed), 1);
+        assert_eq!(limiter.error_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]
