@@ -17,7 +17,7 @@ documentation.workspace = true
 # Keep boundary type serialization enabled by default for backwards compatibility.
 default = ["serde"]
 
-# Enables every optional feature owned by this crate.
+# Enables every normal optional runtime feature owned by this crate.
 full = ["serde"]
 
 # Enables serde for config/value boundary types.
