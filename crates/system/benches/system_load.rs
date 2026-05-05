@@ -41,12 +41,6 @@ fn bench_system_load(c: &mut Criterion) {
         b.iter(|| black_box(nebula_system::memory::pressure_report()));
     });
 
-    group.bench_function("cpu::features (cached)", |b| {
-        // First call warms LazyLock
-        let _ = nebula_system::cpu::features();
-        b.iter(|| black_box(nebula_system::cpu::features()));
-    });
-
     group.bench_function("SystemInfo::get (Arc clone)", |b| {
         // First call warms LazyLock
         let _ = nebula_system::info::SystemInfo::get();
