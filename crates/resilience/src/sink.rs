@@ -3,9 +3,114 @@
 //! Replaces the custom `ObservabilityHook` system. The default is [`NoopSink`].
 //! In nebula-engine, `EventBusSink` wraps nebula-eventbus — no direct dep here.
 
-use std::{sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
+
+use crate::CallErrorKind;
+
+/// Workflow/resource scope attached to high-level pipeline events.
+///
+/// Scope values are intentionally optional so callers can choose a low-cardinality
+/// subset that is safe for their telemetry backend. Dynamic values should usually
+/// go to traces/events, not metric labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct PolicyScope {
+    /// Tenant identifier, when safe to expose.
+    pub tenant_id: Option<Cow<'static, str>>,
+    /// Workflow identifier or workflow type.
+    pub workflow_id: Option<Cow<'static, str>>,
+    /// Action identifier or action type.
+    pub action_id: Option<Cow<'static, str>>,
+    /// Resource identifier or resource type.
+    pub resource_id: Option<Cow<'static, str>>,
+    /// Operation name, such as `gmail.poll` or `postgres.query`.
+    pub operation: Option<Cow<'static, str>>,
+}
+
+impl PolicyScope {
+    /// Empty scope.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            tenant_id: None,
+            workflow_id: None,
+            action_id: None,
+            resource_id: None,
+            operation: None,
+        }
+    }
+
+    /// Whether every scope field is unset.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.tenant_id.is_none()
+            && self.workflow_id.is_none()
+            && self.action_id.is_none()
+            && self.resource_id.is_none()
+            && self.operation.is_none()
+    }
+
+    /// Set the tenant id.
+    #[must_use]
+    pub fn tenant_id(mut self, tenant_id: impl Into<Cow<'static, str>>) -> Self {
+        self.tenant_id = Some(tenant_id.into());
+        self
+    }
+
+    /// Set the workflow id.
+    #[must_use]
+    pub fn workflow_id(mut self, workflow_id: impl Into<Cow<'static, str>>) -> Self {
+        self.workflow_id = Some(workflow_id.into());
+        self
+    }
+
+    /// Set the action id.
+    #[must_use]
+    pub fn action_id(mut self, action_id: impl Into<Cow<'static, str>>) -> Self {
+        self.action_id = Some(action_id.into());
+        self
+    }
+
+    /// Set the resource id.
+    #[must_use]
+    pub fn resource_id(mut self, resource_id: impl Into<Cow<'static, str>>) -> Self {
+        self.resource_id = Some(resource_id.into());
+        self
+    }
+
+    /// Set the operation name.
+    #[must_use]
+    pub fn operation(mut self, operation: impl Into<Cow<'static, str>>) -> Self {
+        self.operation = Some(operation.into());
+        self
+    }
+}
+
+/// Final outcome of a pipeline invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PipelineOutcome {
+    /// Pipeline returned the primary operation result.
+    Success,
+    /// Pipeline failed and no fallback recovered it.
+    Failure {
+        /// Final failure kind.
+        error: CallErrorKind,
+    },
+    /// Fallback recovered the primary failure.
+    FallbackSucceeded {
+        /// Primary failure kind that was recovered.
+        primary_error: CallErrorKind,
+    },
+    /// Fallback was attempted but failed.
+    FallbackFailed {
+        /// Primary failure kind that triggered fallback.
+        primary_error: CallErrorKind,
+        /// Fallback failure kind.
+        fallback_error: CallErrorKind,
+    },
+}
 
 /// A state in the circuit breaker state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,6 +158,28 @@ pub enum ResilienceEvent {
     RateLimitExceeded,
     /// Load shed — request rejected due to overload.
     LoadShed,
+    /// Fallback was selected for a failed primary operation.
+    FallbackAttempted {
+        /// Primary failure kind that triggered fallback consideration.
+        primary_error: CallErrorKind,
+    },
+    /// Fallback returned a recovered value.
+    FallbackSucceeded {
+        /// Primary failure kind that was recovered by fallback.
+        primary_error: CallErrorKind,
+    },
+    /// Fallback was attempted but returned an error.
+    FallbackFailed {
+        /// Primary failure kind that fallback failed to recover.
+        primary_error: CallErrorKind,
+    },
+    /// A pipeline invocation completed.
+    PipelineCompleted {
+        /// Caller-provided workflow/resource scope.
+        scope: PolicyScope,
+        /// Final pipeline outcome, including fallback recovery if used.
+        outcome: PipelineOutcome,
+    },
 }
 
 /// Fieldless discriminant of [`ResilienceEvent`] for type-safe event filtering.
@@ -73,6 +200,14 @@ pub enum ResilienceEventKind {
     RateLimitExceeded,
     /// [`ResilienceEvent::LoadShed`]
     LoadShed,
+    /// [`ResilienceEvent::FallbackAttempted`]
+    FallbackAttempted,
+    /// [`ResilienceEvent::FallbackSucceeded`]
+    FallbackSucceeded,
+    /// [`ResilienceEvent::FallbackFailed`]
+    FallbackFailed,
+    /// [`ResilienceEvent::PipelineCompleted`]
+    PipelineCompleted,
 }
 
 /// Receives resilience events for observability (metrics, logging, `EventBus`).
@@ -187,6 +322,10 @@ impl ResilienceEvent {
             Self::HedgeFired { .. } => ResilienceEventKind::HedgeFired,
             Self::RateLimitExceeded => ResilienceEventKind::RateLimitExceeded,
             Self::LoadShed => ResilienceEventKind::LoadShed,
+            Self::FallbackAttempted { .. } => ResilienceEventKind::FallbackAttempted,
+            Self::FallbackSucceeded { .. } => ResilienceEventKind::FallbackSucceeded,
+            Self::FallbackFailed { .. } => ResilienceEventKind::FallbackFailed,
+            Self::PipelineCompleted { .. } => ResilienceEventKind::PipelineCompleted,
         }
     }
 }
@@ -218,5 +357,18 @@ mod tests {
     fn noop_sink_does_not_panic() {
         let sink = NoopSink;
         sink.record(ResilienceEvent::LoadShed); // just must not panic
+    }
+
+    #[test]
+    fn policy_scope_builders_set_fields() {
+        let scope = PolicyScope::empty()
+            .tenant_id("tenant-a")
+            .workflow_id("workflow-a")
+            .action_id("action-a")
+            .resource_id("resource-a")
+            .operation("gmail.poll");
+
+        assert_eq!(scope.tenant_id.as_deref(), Some("tenant-a"));
+        assert_eq!(scope.operation.as_deref(), Some("gmail.poll"));
     }
 }

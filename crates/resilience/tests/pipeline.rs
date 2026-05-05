@@ -9,7 +9,7 @@ use std::{
 };
 
 use nebula_resilience::{
-    CallError,
+    CallError, ErasedRateLimiter,
     bulkhead::{Bulkhead, BulkheadConfig},
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     fallback::ValueFallback,
@@ -30,7 +30,8 @@ async fn pipeline_total_budget_limits_retries() {
             RetryConfig::new(100)
                 .unwrap()
                 .backoff(BackoffConfig::Fixed(Duration::from_millis(30)))
-                .total_budget(Duration::from_millis(100)),
+                .total_budget(Duration::from_millis(100))
+                .retry_if(|_: &&str| true),
         )
         .build();
 
@@ -97,6 +98,67 @@ async fn full_stack_pipeline_happy_path() {
     );
 }
 
+#[tokio::test]
+async fn pipeline_accepts_erased_rate_limiter_from_registry() {
+    let registry: Vec<Arc<dyn ErasedRateLimiter>> =
+        vec![Arc::new(TokenBucket::new(1, 0.001).unwrap())];
+
+    let pipeline = ResiliencePipeline::<&str>::builder()
+        .rate_limiter_erased(Arc::clone(&registry[0]))
+        .build();
+
+    let first = pipeline
+        .call(|| Box::pin(async { Ok::<_, &str>(42u32) }))
+        .await;
+    let second = pipeline
+        .call(|| Box::pin(async { Ok::<_, &str>(99u32) }))
+        .await;
+
+    assert_eq!(first.unwrap(), 42);
+    assert!(matches!(
+        second,
+        Err(CallError::RateLimited {
+            retry_after: Some(_),
+        })
+    ));
+}
+
+#[tokio::test]
+async fn pipeline_circuit_breaker_counts_slow_successes() {
+    let cb = Arc::new(
+        CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 100,
+            min_operations: 2,
+            slow_call_threshold: Some(Duration::from_millis(5)),
+            slow_call_rate_threshold: 0.5,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+
+    let pipeline = ResiliencePipeline::<&str>::builder()
+        .circuit_breaker(cb.clone())
+        .build();
+
+    for _ in 0..2 {
+        let result = pipeline
+            .call(|| {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Ok::<u32, &str>(42)
+                })
+            })
+            .await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    assert_eq!(
+        cb.circuit_state(),
+        nebula_resilience::sink::CircuitState::Open
+    );
+    assert_eq!(cb.stats().slow_calls, 2);
+}
+
 // ── Full-stack: retry exhaustion → CB stays closed ──────────────────────────
 
 #[tokio::test]
@@ -115,7 +177,8 @@ async fn full_stack_retry_exhaustion_does_not_trip_cb() {
         .retry(
             RetryConfig::new(3)
                 .unwrap()
-                .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+                .backoff(BackoffConfig::Fixed(Duration::ZERO))
+                .retry_if(|_: &&str| true),
         )
         .circuit_breaker(cb.clone())
         .build();

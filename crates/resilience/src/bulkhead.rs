@@ -11,7 +11,7 @@ use std::{
 use tokio::sync::Semaphore;
 
 use crate::{
-    CallError, ConfigError,
+    CallError, ConfigError, PolicyContext,
     sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
@@ -176,6 +176,32 @@ impl Bulkhead {
         f().await.map_err(CallError::Operation)
     }
 
+    /// Execute a closure under the bulkhead with a shared policy context.
+    ///
+    /// The context cancellation/deadline bounds both waiting for a permit and
+    /// the operation itself. If the returned future is cancelled or times out,
+    /// the permit/queue slot is released by RAII.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline or bulkhead queue timeout
+    /// expires, `Err(CallError::BulkheadFull)` when capacity/queue is exhausted,
+    /// or `Err(CallError::Operation)` if the operation itself fails.
+    pub async fn call_with_policy_context<T, E, Fut>(
+        &self,
+        context: &PolicyContext,
+        f: impl FnOnce() -> Fut + Send,
+    ) -> Result<T, CallError<E>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send,
+    {
+        let _permit = self.acquire_with_policy_context(context).await?;
+        context
+            .run_result(async { f().await.map_err(CallError::Operation) })
+            .await
+    }
+
     /// Acquire a permit directly. Use [`call`](Bulkhead::call) for the typical execute-and-release
     /// pattern.
     ///
@@ -189,6 +215,20 @@ impl Bulkhead {
     /// distinguish the two by variant alone — check the duration value if needed.
     pub async fn acquire<E>(&self) -> Result<BulkheadPermit, CallError<E>> {
         self.acquire_permit().await
+    }
+
+    /// Acquire a permit with cancellation/deadline from a shared policy context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline or configured queue
+    /// timeout expires, or `Err(CallError::BulkheadFull)` when the queue is full.
+    pub async fn acquire_with_policy_context<E>(
+        &self,
+        context: &PolicyContext,
+    ) -> Result<BulkheadPermit, CallError<E>> {
+        context.run_result(self.acquire_permit()).await
     }
 
     // ── internal ──────────────────────────────────────────────────────────────
@@ -319,7 +359,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::{CallError, RecordingSink, ResilienceEventKind};
+    use crate::{CallError, PolicyContext, RecordingSink, ResilienceEventKind};
 
     fn cfg(max: usize) -> BulkheadConfig {
         BulkheadConfig {
@@ -382,6 +422,86 @@ mod tests {
 
         drop(permit);
         waiter.await.unwrap().unwrap(); // the queued one succeeds
+    }
+
+    #[tokio::test]
+    async fn dropping_queued_acquire_releases_queue_slot() {
+        let bh = Bulkhead::new(BulkheadConfig {
+            max_concurrency: 1,
+            queue_size: 1,
+            timeout: None,
+        })
+        .unwrap();
+
+        let permit = bh.acquire::<&str>().await.unwrap();
+        let mut queued = Box::pin(bh.acquire::<&str>());
+
+        tokio::select! {
+            result = &mut queued => {
+                panic!("queued acquire completed unexpectedly: {result:?}");
+            },
+            () = tokio::time::sleep(Duration::from_millis(10)) => {},
+        }
+        assert_eq!(bh.waiting_count.load(Ordering::Acquire), 1);
+
+        drop(queued);
+        tokio::task::yield_now().await;
+
+        assert_eq!(bh.waiting_count.load(Ordering::Acquire), 0);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn policy_context_cancelled_acquire_releases_queue_slot() {
+        let bh = Bulkhead::new(BulkheadConfig {
+            max_concurrency: 1,
+            queue_size: 1,
+            timeout: None,
+        })
+        .unwrap();
+        let context = PolicyContext::from_cancellation(crate::CancellationContext::new());
+
+        let permit = bh.acquire::<&str>().await.unwrap();
+        let mut queued = Box::pin(bh.acquire_with_policy_context::<&str>(&context));
+
+        tokio::select! {
+            result = &mut queued => {
+                panic!("queued acquire completed unexpectedly: {result:?}");
+            },
+            () = tokio::time::sleep(Duration::from_millis(10)) => {},
+        }
+        assert_eq!(bh.waiting_count.load(Ordering::Acquire), 1);
+
+        context.cancellation().unwrap().cancel();
+        let err = queued.await.unwrap_err();
+
+        assert!(matches!(err, CallError::Cancelled { .. }));
+        assert_eq!(bh.waiting_count.load(Ordering::Acquire), 0);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn policy_context_deadline_releases_operation_permit() {
+        let bh = Bulkhead::new(BulkheadConfig {
+            max_concurrency: 1,
+            queue_size: 0,
+            timeout: None,
+        })
+        .unwrap();
+        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+
+        let err = bh
+            .call_with_policy_context::<(), &str, _>(&context, || {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_mins(1)).await;
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Timeout(_)));
+        assert_eq!(bh.available_permits(), 1);
     }
 
     #[tokio::test]

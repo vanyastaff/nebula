@@ -68,15 +68,9 @@ impl Clock for SystemClock {
 ///
 /// `MockClock` is cheap to clone — all clones share the same underlying state.
 ///
-/// # Real-time leakage
-///
-/// Because `Instant` cannot be constructed from arbitrary values on stable Rust,
-/// `now()` returns `Instant::now() + offset` — meaning real wall-clock time still
-/// passes between calls. Virtual advances via [`advance`](MockClock::advance) are
-/// added on top. This is sufficient for circuit breaker tests (where offsets are
-/// large), but may cause non-deterministic results in latency-sensitive tests
-/// (e.g., hedge percentile calculations). Always use large advances relative to
-/// test duration.
+/// Unlike [`SystemClock`], this clock does not advance unless
+/// [`advance`](MockClock::advance) is called. That keeps state-machine tests
+/// deterministic and avoids hidden real-time sleeps.
 #[derive(Debug, Clone)]
 pub struct MockClock {
     inner: Arc<Mutex<MockClockInner>>,
@@ -106,14 +100,14 @@ impl MockClock {
     ///
     /// All clones of this `MockClock` will observe the new time immediately.
     pub fn advance(&self, duration: Duration) {
-        self.inner.lock().offset += duration;
+        let mut inner = self.inner.lock();
+        inner.offset = inner.offset.saturating_add(duration);
     }
 
     /// Returns the total virtual time elapsed since this clock was created.
     #[must_use]
     pub fn elapsed(&self) -> Duration {
-        let inner = self.inner.lock();
-        inner.base.elapsed() + inner.offset
+        self.inner.lock().offset
     }
 }
 
@@ -126,11 +120,7 @@ impl Default for MockClock {
 impl Clock for MockClock {
     fn now(&self) -> Instant {
         let inner = self.inner.lock();
-        // `Instant` can't be constructed from thin air on stable Rust, so we
-        // express the virtual time as `base + real_elapsed + offset`.
-        // `base.elapsed()` accounts for real time already; `offset` is the
-        // additional virtual advance.
-        inner.base + inner.base.elapsed() + inner.offset
+        inner.base.checked_add(inner.offset).unwrap_or(inner.base)
     }
 }
 
@@ -155,11 +145,9 @@ mod tests {
     fn mock_clock_does_not_advance_without_explicit_call() {
         let clock = MockClock::new();
         let t0 = clock.now();
-        // No sleep, no advance — the *virtual* offset hasn't moved.
+        std::thread::sleep(Duration::from_millis(1));
         let t1 = clock.now();
-        // Real time may have moved slightly; virtual offset is still zero.
-        // t1 >= t0 is guaranteed because real elapsed can only grow.
-        assert!(t1 >= t0);
+        assert_eq!(t1, t0);
     }
 
     #[test]
@@ -188,7 +176,6 @@ mod tests {
         let clock = MockClock::new();
         clock.advance(Duration::from_millis(500));
         clock.advance(Duration::from_millis(500));
-        // Total virtual advance ≥ 1 s (real elapsed adds a tiny epsilon).
-        assert!(clock.elapsed() >= Duration::from_secs(1));
+        assert_eq!(clock.elapsed(), Duration::from_secs(1));
     }
 }

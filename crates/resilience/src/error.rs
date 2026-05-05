@@ -59,6 +59,17 @@ pub enum CallError<E> {
         /// `Cow` avoids heap allocation for static reasons (the common case).
         reason: Option<Cow<'static, str>>,
     },
+    /// Fallback failed while handling a primary failure.
+    ///
+    /// This variant preserves both sides of the failure so callers and telemetry
+    /// can distinguish "what originally failed" from "why graceful degradation
+    /// also failed".
+    FallbackFailedWithContext {
+        /// Original failure that selected fallback.
+        primary: Box<Self>,
+        /// Failure returned by the fallback path.
+        fallback: Box<Self>,
+    },
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
@@ -80,6 +91,11 @@ impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
             Self::RateLimited { retry_after: None } => write!(f, "rate limit exceeded"),
             Self::FallbackFailed { reason: Some(r) } => write!(f, "fallback failed: {r}"),
             Self::FallbackFailed { reason: None } => write!(f, "fallback failed"),
+            Self::FallbackFailedWithContext { primary, fallback } => write!(
+                f,
+                "fallback failed after primary {:?} failure: {fallback}",
+                primary.kind()
+            ),
         }
     }
 }
@@ -89,6 +105,7 @@ impl<E: std::error::Error + 'static> std::error::Error for CallError<E> {
         match self {
             Self::Operation(e) => Some(e),
             Self::RetriesExhausted { last, .. } => Some(last),
+            Self::FallbackFailedWithContext { fallback, .. } => Some(fallback.as_ref()),
             _ => None,
         }
     }
@@ -122,6 +139,18 @@ impl<E> CallError<E> {
     pub const fn fallback_failed_with(reason: &'static str) -> Self {
         Self::FallbackFailed {
             reason: Some(Cow::Borrowed(reason)),
+        }
+    }
+
+    /// Fallback failed while trying to recover `primary`.
+    ///
+    /// Use this when a fallback strategy returns a distinct failure and the
+    /// caller needs to retain the original failure for diagnosis.
+    #[must_use]
+    pub fn fallback_failed_with_context(primary: Self, fallback: Self) -> Self {
+        Self::FallbackFailedWithContext {
+            primary: Box::new(primary),
+            fallback: Box::new(fallback),
         }
     }
 
@@ -182,9 +211,16 @@ impl<E> CallError<E> {
     }
 
     /// Map the inner operation error, leaving pattern errors unchanged.
-    pub fn map_operation<F, E2>(self, f: F) -> CallError<E2>
+    pub fn map_operation<F, E2>(self, mut f: F) -> CallError<E2>
     where
-        F: FnOnce(E) -> E2,
+        F: FnMut(E) -> E2,
+    {
+        self.map_operation_inner(&mut f)
+    }
+
+    fn map_operation_inner<F, E2>(self, f: &mut F) -> CallError<E2>
+    where
+        F: FnMut(E) -> E2,
     {
         match self {
             Self::Operation(e) => CallError::Operation(f(e)),
@@ -199,6 +235,12 @@ impl<E> CallError<E> {
             Self::LoadShed => CallError::LoadShed,
             Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
             Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
+            Self::FallbackFailedWithContext { primary, fallback } => {
+                CallError::FallbackFailedWithContext {
+                    primary: Box::new(primary.map_operation_inner(f)),
+                    fallback: Box::new(fallback.map_operation_inner(f)),
+                }
+            },
         }
     }
 
@@ -210,9 +252,21 @@ impl<E> CallError<E> {
     /// `Operation(())` into `Cancelled`).
     pub fn flat_map_inner<E2>(
         self,
-        on_operation: impl FnOnce(E) -> CallError<E2>,
-        on_retries: impl FnOnce(u32, E) -> CallError<E2>,
+        mut on_operation: impl FnMut(E) -> CallError<E2>,
+        mut on_retries: impl FnMut(u32, E) -> CallError<E2>,
     ) -> CallError<E2> {
+        self.flat_map_inner_impl(&mut on_operation, &mut on_retries)
+    }
+
+    fn flat_map_inner_impl<E2, F, R>(
+        self,
+        on_operation: &mut F,
+        on_retries: &mut R,
+    ) -> CallError<E2>
+    where
+        F: FnMut(E) -> CallError<E2>,
+        R: FnMut(u32, E) -> CallError<E2>,
+    {
         match self {
             Self::Operation(e) => on_operation(e),
             Self::RetriesExhausted { attempts, last } => on_retries(attempts, last),
@@ -223,6 +277,12 @@ impl<E> CallError<E> {
             Self::LoadShed => CallError::LoadShed,
             Self::RateLimited { retry_after } => CallError::RateLimited { retry_after },
             Self::FallbackFailed { reason } => CallError::FallbackFailed { reason },
+            Self::FallbackFailedWithContext { primary, fallback } => {
+                CallError::FallbackFailedWithContext {
+                    primary: Box::new(primary.flat_map_inner_impl(on_operation, on_retries)),
+                    fallback: Box::new(fallback.flat_map_inner_impl(on_operation, on_retries)),
+                }
+            },
         }
     }
 
@@ -232,6 +292,51 @@ impl<E> CallError<E> {
         match self {
             Self::RateLimited { retry_after } => *retry_after,
             _ => None,
+        }
+    }
+
+    /// Returns the primary and fallback failures when both are preserved.
+    #[must_use]
+    pub fn fallback_context(&self) -> Option<(&Self, &Self)> {
+        match self {
+            Self::FallbackFailedWithContext { primary, fallback } => Some((primary, fallback)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn into_erased_for_fallback(self) -> (CallError<()>, Self) {
+        match self {
+            Self::Operation(e) => (CallError::Operation(()), Self::Operation(e)),
+            Self::RetriesExhausted { attempts, last } => (
+                CallError::RetriesExhausted { attempts, last: () },
+                Self::RetriesExhausted { attempts, last },
+            ),
+            Self::CircuitOpen => (CallError::CircuitOpen, Self::CircuitOpen),
+            Self::BulkheadFull => (CallError::BulkheadFull, Self::BulkheadFull),
+            Self::Timeout(duration) => (CallError::Timeout(duration), Self::Timeout(duration)),
+            Self::Cancelled { reason } => (
+                CallError::Cancelled {
+                    reason: reason.clone(),
+                },
+                Self::Cancelled { reason },
+            ),
+            Self::LoadShed => (CallError::LoadShed, Self::LoadShed),
+            Self::RateLimited { retry_after } => (
+                CallError::RateLimited { retry_after },
+                Self::RateLimited { retry_after },
+            ),
+            Self::FallbackFailed { reason } => (
+                CallError::FallbackFailed {
+                    reason: reason.clone(),
+                },
+                Self::FallbackFailed { reason },
+            ),
+            Self::FallbackFailedWithContext { primary, fallback } => (
+                CallError::FallbackFailed {
+                    reason: Some(Cow::Borrowed("fallback context erased")),
+                },
+                Self::FallbackFailedWithContext { primary, fallback },
+            ),
         }
     }
 }
@@ -246,7 +351,9 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::Timeout(_) => nebula_error::ErrorCategory::Timeout,
             Self::Cancelled { .. } => nebula_error::ErrorCategory::Cancelled,
             Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
-            Self::FallbackFailed { .. } => nebula_error::ErrorCategory::Internal,
+            Self::FallbackFailed { .. } | Self::FallbackFailedWithContext { .. } => {
+                nebula_error::ErrorCategory::Internal
+            },
         }
     }
 
@@ -259,7 +366,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::Cancelled { .. } => nebula_error::ErrorCode::new("RESILIENCE:CANCELLED"),
             Self::LoadShed => nebula_error::ErrorCode::new("RESILIENCE:LOAD_SHED"),
             Self::RateLimited { .. } => nebula_error::ErrorCode::new("RESILIENCE:RATE_LIMITED"),
-            Self::FallbackFailed { .. } => {
+            Self::FallbackFailed { .. } | Self::FallbackFailedWithContext { .. } => {
                 nebula_error::ErrorCode::new("RESILIENCE:FALLBACK_FAILED")
             },
         }
@@ -329,7 +436,7 @@ pub enum CallErrorKind {
     LoadShed,
     /// [`CallError::RateLimited`]
     RateLimited,
-    /// [`CallError::FallbackFailed`]
+    /// [`CallError::FallbackFailed`] or [`CallError::FallbackFailedWithContext`]
     FallbackFailed,
 }
 
@@ -346,7 +453,9 @@ impl<E> CallError<E> {
             Self::Cancelled { .. } => CallErrorKind::Cancelled,
             Self::LoadShed => CallErrorKind::LoadShed,
             Self::RateLimited { .. } => CallErrorKind::RateLimited,
-            Self::FallbackFailed { .. } => CallErrorKind::FallbackFailed,
+            Self::FallbackFailed { .. } | Self::FallbackFailedWithContext { .. } => {
+                CallErrorKind::FallbackFailed
+            },
         }
     }
 }
@@ -447,5 +556,35 @@ mod tests {
             CallError::Operation(MyErr::Timeout).kind(),
             CallErrorKind::Operation
         );
+    }
+
+    #[test]
+    fn fallback_context_preserves_primary_and_fallback_errors() {
+        let err = CallError::fallback_failed_with_context(
+            CallError::Operation(MyErr::Timeout),
+            CallError::fallback_failed_with("cache unavailable"),
+        );
+
+        assert_eq!(err.kind(), CallErrorKind::FallbackFailed);
+        let (primary, fallback) = err.fallback_context().unwrap();
+        assert!(matches!(primary, CallError::Operation(MyErr::Timeout)));
+        assert!(matches!(fallback, CallError::FallbackFailed { .. }));
+    }
+
+    #[test]
+    fn map_operation_maps_nested_fallback_context() {
+        let err = CallError::fallback_failed_with_context(
+            CallError::Operation(MyErr::Timeout),
+            CallError::RetriesExhausted {
+                attempts: 2,
+                last: MyErr::Timeout,
+            },
+        );
+
+        let mapped = err.map_operation(|e| format!("{e:?}"));
+        let (primary, fallback) = mapped.fallback_context().unwrap();
+
+        assert!(matches!(primary, CallError::Operation(s) if s == "Timeout"));
+        assert!(matches!(fallback, CallError::RetriesExhausted { last, .. } if last == "Timeout"));
     }
 }

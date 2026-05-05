@@ -1,26 +1,29 @@
 //! Hedge request pattern — fires duplicate requests after a delay, returns the first success.
 //!
 //! Losing tasks are aborted via `JoinSet::abort_all()` when the first success arrives.
+//! Because hedging can execute the operation concurrently, duplicate requests are disabled
+//! by default and must be explicitly marked as safe for idempotent operations.
 //!
 //! # Cancel safety
 //!
-//! `HedgeExecutor::call` is **not cancel-safe**. If the returned future is dropped,
-//! already-spawned `tokio::spawn` tasks continue running in the background until they
-//! complete or are individually aborted. This is intentional: the hedge pattern assumes
-//! speculative work is cheap to abandon at the infrastructure level.
+//! Dropping the `HedgeExecutor::call` future aborts any tasks owned by that call.
+//! This prevents detached background work, but it does not make side effects that
+//! already reached the remote service reversible. Enable duplicate requests only for
+//! operations marked [`HedgeSafety::Idempotent`].
 //!
 //! # Examples
 //!
 //! ```rust
 //! use std::time::Duration;
 //!
-//! use nebula_resilience::hedge::{HedgeConfig, HedgeExecutor};
+//! use nebula_resilience::hedge::{HedgeConfig, HedgeExecutor, HedgeSafety};
 //!
 //! # #[tokio::main]
 //! # async fn main() {
 //! let executor = HedgeExecutor::new(HedgeConfig {
 //!     hedge_delay: Duration::from_millis(50),
 //!     max_hedges: 2,
+//!     duplicate_safety: HedgeSafety::Idempotent,
 //!     ..Default::default()
 //! })
 //! .expect("valid config");
@@ -48,6 +51,17 @@ use crate::{
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+/// Declares whether speculative duplicate execution is safe for the operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum HedgeSafety {
+    /// Duplicate execution has not been proven safe.
+    #[default]
+    Unknown,
+    /// The operation is idempotent or otherwise duplicate-safe.
+    Idempotent,
+}
+
 /// Configuration for the hedge pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HedgeConfig {
@@ -59,15 +73,18 @@ pub struct HedgeConfig {
     pub exponential_backoff: bool,
     /// Multiplier applied when `exponential_backoff` is true.
     pub backoff_multiplier: f64,
+    /// Whether speculative duplicate operations are safe.
+    pub duplicate_safety: HedgeSafety,
 }
 
 impl Default for HedgeConfig {
     fn default() -> Self {
         Self {
             hedge_delay: Duration::from_millis(50),
-            max_hedges: 2,
+            max_hedges: 0,
             exponential_backoff: true,
             backoff_multiplier: 2.0,
+            duplicate_safety: HedgeSafety::Unknown,
         }
     }
 }
@@ -77,16 +94,22 @@ impl HedgeConfig {
     ///
     /// # Errors
     ///
-    /// Returns `Err(ConfigError)` if `hedge_delay` is zero, `max_hedges` is 0,
-    /// or `backoff_multiplier` is not finite or less than 1.0 when exponential backoff is enabled.
+    /// Returns `Err(ConfigError)` if `hedge_delay` is zero, or
+    /// `backoff_multiplier` is not finite or less than 1.0 when exponential backoff is enabled.
+    ///
+    /// `max_hedges = 0` is valid and disables speculative duplicate requests.
     pub fn validate(&self) -> Result<(), crate::ConfigError> {
         if self.hedge_delay.is_zero() {
             return Err(crate::ConfigError::new("hedge_delay", "must be > 0"));
         }
-        if self.max_hedges == 0 {
-            return Err(crate::ConfigError::new("max_hedges", "must be >= 1"));
+        if self.max_hedges > 0 && self.duplicate_safety != HedgeSafety::Idempotent {
+            return Err(crate::ConfigError::new(
+                "duplicate_safety",
+                "max_hedges > 0 requires HedgeSafety::Idempotent",
+            ));
         }
-        if self.exponential_backoff
+        if self.max_hedges > 0
+            && self.exponential_backoff
             && (!self.backoff_multiplier.is_finite() || self.backoff_multiplier < 1.0)
         {
             return Err(crate::ConfigError::new(
@@ -108,13 +131,14 @@ impl HedgeConfig {
 /// ```rust
 /// use std::time::Duration;
 ///
-/// use nebula_resilience::hedge::{HedgeConfig, HedgeExecutor};
+/// use nebula_resilience::hedge::{HedgeConfig, HedgeExecutor, HedgeSafety};
 ///
 /// # #[tokio::main]
 /// # async fn main() {
 /// let executor = HedgeExecutor::new(HedgeConfig {
 ///     hedge_delay: Duration::from_millis(20),
 ///     max_hedges: 1,
+///     duplicate_safety: HedgeSafety::Idempotent,
 ///     ..Default::default()
 /// })
 /// .expect("valid config");
@@ -173,7 +197,8 @@ impl HedgeExecutor {
     ///
     /// # Cancel safety
     ///
-    /// Not cancel-safe — see module-level documentation.
+    /// Dropping the returned future aborts tasks owned by this call. See module-level
+    /// documentation for the side-effect contract.
     pub async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -342,7 +367,8 @@ impl AdaptiveHedgeExecutor {
     ///
     /// # Cancel safety
     ///
-    /// Not cancel-safe — see module-level documentation.
+    /// Dropping the returned future aborts tasks owned by this call. See module-level
+    /// documentation for the side-effect contract.
     pub async fn call<T, E, F, Fut>(&self, operation: F) -> Result<T, CallError<E>>
     where
         T: Send + 'static,
@@ -471,6 +497,26 @@ mod tests {
     use super::*;
     use crate::{RecordingSink, ResilienceEventKind};
 
+    struct DropCounter(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for DropCounter {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn pending_hedge_operation(
+        started: Arc<std::sync::atomic::AtomicUsize>,
+        dropped: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<&'static str, &'static str>> + Send>> {
+        Box::pin(async move {
+            let _drop_counter = DropCounter(dropped);
+            started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            sleep(Duration::from_mins(1)).await;
+            Ok("late")
+        })
+    }
+
     #[tokio::test]
     async fn returns_first_success() {
         let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -479,6 +525,7 @@ mod tests {
         let executor = HedgeExecutor::new(HedgeConfig {
             hedge_delay: Duration::from_millis(50),
             max_hedges: 2,
+            duplicate_safety: HedgeSafety::Idempotent,
             ..Default::default()
         })
         .unwrap();
@@ -502,6 +549,7 @@ mod tests {
         let executor = HedgeExecutor::new(HedgeConfig {
             hedge_delay: Duration::from_millis(10),
             max_hedges: 1,
+            duplicate_safety: HedgeSafety::Idempotent,
             ..Default::default()
         })
         .unwrap()
@@ -519,6 +567,84 @@ mod tests {
         assert!(sink.count(ResilienceEventKind::HedgeFired) > 0);
     }
 
+    #[tokio::test]
+    async fn zero_max_hedges_runs_only_primary() {
+        let sink = RecordingSink::new();
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&counter);
+        let executor = HedgeExecutor::new(HedgeConfig {
+            hedge_delay: Duration::from_millis(1),
+            max_hedges: 0,
+            ..Default::default()
+        })
+        .unwrap()
+        .with_sink(sink.clone());
+
+        let result = executor
+            .call(move || {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    sleep(Duration::from_millis(5)).await;
+                    Ok::<_, &str>(42)
+                })
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(sink.count(ResilienceEventKind::HedgeFired), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_call_aborts_spawned_hedges() {
+        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor = Arc::new(
+            HedgeExecutor::new(HedgeConfig {
+                hedge_delay: Duration::from_millis(1),
+                max_hedges: 1,
+                duplicate_safety: HedgeSafety::Idempotent,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+
+        let executor_for_task = Arc::clone(&executor);
+        let started_for_task = Arc::clone(&started);
+        let dropped_for_task = Arc::clone(&dropped);
+        let handle = tokio::spawn(async move {
+            executor_for_task
+                .call(move || {
+                    pending_hedge_operation(
+                        Arc::clone(&started_for_task),
+                        Arc::clone(&dropped_for_task),
+                    )
+                })
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while started.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        handle.abort();
+        let aborted = handle.await;
+        assert!(aborted.is_err());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while dropped.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     // ── C2: HedgeConfig validation ───────────────────────────────────────
 
     #[test]
@@ -531,22 +657,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_max_hedges() {
+    fn accepts_zero_max_hedges_to_disable_duplicates() {
         let config = HedgeConfig {
             max_hedges: 0,
             ..Default::default()
         };
-        assert_eq!(config.validate().unwrap_err().field, "max_hedges");
+        assert!(config.validate().is_ok());
     }
 
     #[test]
     fn rejects_invalid_backoff_multiplier() {
         let config = HedgeConfig {
+            max_hedges: 1,
             exponential_backoff: true,
             backoff_multiplier: 0.5,
+            duplicate_safety: HedgeSafety::Idempotent,
             ..Default::default()
         };
         assert_eq!(config.validate().unwrap_err().field, "backoff_multiplier");
+    }
+
+    #[test]
+    fn rejects_hedges_without_duplicate_safety() {
+        let config = HedgeConfig {
+            max_hedges: 1,
+            duplicate_safety: HedgeSafety::Unknown,
+            ..Default::default()
+        };
+        assert_eq!(config.validate().unwrap_err().field, "duplicate_safety");
     }
 
     #[test]

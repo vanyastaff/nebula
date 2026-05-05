@@ -16,7 +16,10 @@ use std::{fmt, future::Future, pin::Pin, sync::Arc};
 
 use tokio::sync::RwLock;
 
-use crate::error::{CallError, CallErrorKind};
+use crate::{
+    MetricsSink, NoopSink, PolicyContext, ResilienceEvent,
+    error::{CallError, CallErrorKind},
+};
 
 // =============================================================================
 // FALLBACK STRATEGY TRAIT
@@ -26,17 +29,51 @@ use crate::error::{CallError, CallErrorKind};
 ///
 /// Implement this trait to define custom fallback behavior.
 pub trait FallbackStrategy<T, E>: Send + Sync {
-    /// Execute fallback logic, returning either a recovered value or the error.
-    fn fallback<'a>(
+    /// Execute recovery logic after [`fallback()`](Self::fallback) has accepted the error.
+    ///
+    /// Custom strategies normally implement this method and leave [`fallback()`](Self::fallback)
+    /// alone. Calling `recover` directly intentionally bypasses
+    /// [`should_fallback()`](Self::should_fallback); policy code should call `fallback` so
+    /// cancellation and overload-style errors are not accidentally converted into successful
+    /// graceful degradation.
+    #[doc(hidden)]
+    fn recover<'a>(
         &'a self,
         error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>>;
 
+    /// Execute fallback logic, returning either a recovered value or the original error.
+    ///
+    /// This is the safe entry point: it always checks [`should_fallback()`](Self::should_fallback)
+    /// before invoking strategy-specific recovery.
+    fn fallback<'a>(
+        &'a self,
+        error: CallError<E>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>>
+    where
+        E: Send + 'a,
+    {
+        if self.should_fallback(&error) {
+            self.recover(error)
+        } else {
+            Box::pin(async move { Err(error) })
+        }
+    }
+
     /// Check if fallback should be attempted for this error.
     ///
-    /// Default: attempt fallback for all errors.
-    fn should_fallback(&self, _error: &CallError<E>) -> bool {
-        true
+    /// Default: attempt fallback only for primary operation failures and timeouts.
+    ///
+    /// Cancellation and overload-style policy rejections are not recovered by default,
+    /// because treating them as successful fallback can hide shutdown and backpressure.
+    fn should_fallback(&self, error: &CallError<E>) -> bool {
+        matches!(
+            error,
+            CallError::Operation(_)
+                | CallError::RetriesExhausted { .. }
+                | CallError::Timeout(_)
+                | CallError::CircuitOpen
+        )
     }
 }
 
@@ -85,7 +122,7 @@ impl<T: Clone + Send + Sync> ValueFallback<T> {
 }
 
 impl<T: Clone + Send + Sync, E> FallbackStrategy<T, E> for ValueFallback<T> {
-    fn fallback<'a>(
+    fn recover<'a>(
         &'a self,
         _error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
@@ -155,6 +192,7 @@ where
 impl<T, E, F, Fut> FallbackStrategy<T, E> for FunctionFallback<T, F, Fut>
 where
     T: Send + Sync + 'static,
+    E: Send + 'static,
     F: Fn(CallError<()>) -> Fut + Send + Sync,
     Fut: Future<Output = Result<T, CallError<()>>> + Send,
 {
@@ -162,28 +200,32 @@ where
     ///
     /// The original `Operation(E)` is erased to `Operation(())` before being passed
     /// to the closure — the closure cannot inspect the caller's error type. If the
-    /// closure returns `Err(CallError::Operation(()))`, it is converted to
-    /// `Err(CallError::Cancelled)` since the original `E` cannot be reconstructed.
-    fn fallback<'a>(
+    /// fallback closure fails, the returned error is wrapped with
+    /// [`CallError::FallbackFailedWithContext`] so the primary error is preserved
+    /// for telemetry and workflow decisions.
+    fn recover<'a>(
         &'a self,
         error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
-        let erased = error.map_operation(|_| ());
+        let (erased, primary) = error.into_erased_for_fallback();
         Box::pin(async move {
             match (self.function)(erased).await {
                 Ok(value) => Ok(value),
-                Err(e) => Err(e.flat_map_inner(
-                    |()| {
-                        CallError::fallback_failed_with(
-                            "fallback returned Operation(()) — original error was erased",
-                        )
-                    },
-                    |_, ()| {
-                        CallError::fallback_failed_with(
-                            "fallback returned RetriesExhausted(()) — original error was erased",
-                        )
-                    },
-                )),
+                Err(e) => {
+                    let fallback = e.flat_map_inner(
+                        |()| {
+                            CallError::fallback_failed_with(
+                                "fallback returned Operation(()) — original error was erased",
+                            )
+                        },
+                        |_, ()| {
+                            CallError::fallback_failed_with(
+                                "fallback returned RetriesExhausted(()) — original error was erased",
+                            )
+                        },
+                    );
+                    Err(CallError::fallback_failed_with_context(primary, fallback))
+                },
             }
         })
     }
@@ -284,7 +326,7 @@ impl<T: Clone + Send + Sync> CacheFallback<T> {
 impl<T: Clone + Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
     for CacheFallback<T>
 {
-    fn fallback<'a>(
+    fn recover<'a>(
         &'a self,
         error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
@@ -376,7 +418,7 @@ impl<T, E> ChainFallback<T, E> {
 }
 
 impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E> for ChainFallback<T, E> {
-    fn fallback<'a>(
+    fn recover<'a>(
         &'a self,
         error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
@@ -384,11 +426,9 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E> for Cha
             let mut last_error = error;
 
             for fallback in &self.fallbacks {
-                if fallback.should_fallback(&last_error) {
-                    match fallback.fallback(last_error).await {
-                        Ok(value) => return Ok(value),
-                        Err(e) => last_error = e,
-                    }
+                match fallback.fallback(last_error).await {
+                    Ok(value) => return Ok(value),
+                    Err(e) => last_error = e,
                 }
             }
 
@@ -486,7 +526,7 @@ impl<T, E> PriorityFallback<T, E> {
 impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
     for PriorityFallback<T, E>
 {
-    fn fallback<'a>(
+    fn recover<'a>(
         &'a self,
         error: CallError<E>,
     ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send + 'a>> {
@@ -532,6 +572,7 @@ impl<T: Send + Sync + 'static, E: Send + 'static> FallbackStrategy<T, E>
 /// ```
 pub struct FallbackOperation<T, E> {
     fallback_strategy: Arc<dyn FallbackStrategy<T, E>>,
+    sink: Arc<dyn MetricsSink>,
 }
 
 impl<T, E> fmt::Debug for FallbackOperation<T, E> {
@@ -544,7 +585,28 @@ impl<T, E> FallbackOperation<T, E> {
     /// Create new fallback operation.
     #[must_use]
     pub fn new(fallback_strategy: Arc<dyn FallbackStrategy<T, E>>) -> Self {
-        Self { fallback_strategy }
+        Self {
+            fallback_strategy,
+            sink: Arc::new(NoopSink),
+        }
+    }
+
+    /// Attach a metrics/event sink for standalone fallback lifecycle events.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+        self.sink = Arc::new(sink);
+        self
+    }
+
+    /// Attach a shared metrics/event sink for standalone fallback lifecycle events.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_shared_sink(mut self, sink: Arc<dyn MetricsSink>) -> Self {
+        self.sink = sink;
+        self
+    }
+
+    fn record(&self, event: ResilienceEvent) {
+        self.sink.record(event);
     }
 
     /// Call with fallback.
@@ -558,12 +620,80 @@ impl<T, E> FallbackOperation<T, E> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, CallError<E>>>,
         T: Send + Sync,
+        E: Send,
     {
         match operation().await {
             Ok(value) => Ok(value),
             Err(error) => {
                 if self.fallback_strategy.should_fallback(&error) {
-                    self.fallback_strategy.fallback(error).await
+                    let primary_error = error.kind();
+                    self.record(ResilienceEvent::FallbackAttempted { primary_error });
+                    match self.fallback_strategy.fallback(error).await {
+                        Ok(value) => {
+                            self.record(ResilienceEvent::FallbackSucceeded { primary_error });
+                            Ok(value)
+                        },
+                        Err(error) => {
+                            self.record(ResilienceEvent::FallbackFailed { primary_error });
+                            Err(error)
+                        },
+                    }
+                } else {
+                    Err(error)
+                }
+            },
+        }
+    }
+
+    /// Call with fallback under a shared policy context.
+    ///
+    /// Context cancellation/deadline bounds both the primary operation and the
+    /// fallback future. Context cancellation and context deadline expiry are not
+    /// recovered through fallback, preventing shutdown or action deadlines from
+    /// being reported as successful graceful degradation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
+    /// `Err(CallError::Timeout)` if the context deadline expires, the fallback
+    /// strategy's error if both primary and fallback fail, or the original error
+    /// if fallback declines it.
+    pub async fn call_with_policy_context<F, Fut>(
+        &self,
+        context: &PolicyContext,
+        operation: F,
+    ) -> Result<T, CallError<E>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, CallError<E>>> + Send,
+        T: Send + Sync,
+        E: Send,
+    {
+        match context.run_result(operation()).await {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if matches!(error, CallError::Cancelled { .. }) || context.is_cancelled() {
+                    return Err(context.cancelled_error());
+                }
+                if matches!(error, CallError::Timeout(_)) && context.is_deadline_expired() {
+                    return Err(error);
+                }
+                if self.fallback_strategy.should_fallback(&error) {
+                    let primary_error = error.kind();
+                    self.record(ResilienceEvent::FallbackAttempted { primary_error });
+                    match context
+                        .run_result(self.fallback_strategy.fallback(error))
+                        .await
+                    {
+                        Ok(value) => {
+                            self.record(ResilienceEvent::FallbackSucceeded { primary_error });
+                            Ok(value)
+                        },
+                        Err(error) => {
+                            self.record(ResilienceEvent::FallbackFailed { primary_error });
+                            Err(error)
+                        },
+                    }
                 } else {
                     Err(error)
                 }
@@ -581,7 +711,9 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use super::*;
-    use crate::CallError;
+    use crate::{
+        CallError, CancellationContext, PolicyContext, RecordingSink, ResilienceEventKind,
+    };
 
     fn timeout_error() -> CallError<&'static str> {
         CallError::Timeout(Duration::from_secs(1))
@@ -606,6 +738,26 @@ mod tests {
     fn value_fallback_should_fallback_true_for_timeout() {
         let fb = ValueFallback::<u32>::new(0u32);
         assert!(fb.should_fallback(&timeout_error()));
+    }
+
+    #[test]
+    fn value_fallback_declines_cancellation_and_overload_by_default() {
+        let fb = ValueFallback::<u32>::new(0u32);
+        let load_shed: CallError<&str> = CallError::LoadShed;
+        let rate_limited: CallError<&str> = CallError::rate_limited();
+        let bulkhead: CallError<&str> = CallError::BulkheadFull;
+
+        assert!(!fb.should_fallback(&cancelled_error()));
+        assert!(!fb.should_fallback(&load_shed));
+        assert!(!fb.should_fallback(&rate_limited));
+        assert!(!fb.should_fallback(&bulkhead));
+    }
+
+    #[tokio::test]
+    async fn value_fallback_direct_call_declines_cancellation() {
+        let fb = ValueFallback::<u32>::new(0u32);
+        let result = fb.fallback(cancelled_error()).await;
+        assert!(matches!(result, Err(CallError::Cancelled { .. })));
     }
 
     // -----------------------------------------------------------------------
@@ -655,10 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn chain_fallback_tries_in_order_and_returns_first_success() {
-        let first: Arc<dyn FallbackStrategy<u32, &str>> =
-            Arc::new(FunctionFallback::new(|_err| async {
-                Err(CallError::cancelled())
-            }));
+        let first: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(CacheFallback::new());
         let second: Arc<dyn FallbackStrategy<u32, &str>> = Arc::new(ValueFallback::new(99u32));
 
         let chain = ChainFallback::new().then(first).then(second);
@@ -676,7 +825,26 @@ mod tests {
             .then(Arc::clone(&failing))
             .then(Arc::clone(&failing));
         let result = chain.fallback(timeout_error()).await;
-        assert!(matches!(result, Err(CallError::Cancelled { .. })));
+        assert!(matches!(
+            result,
+            Err(CallError::FallbackFailedWithContext { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn function_fallback_failure_preserves_primary_context() {
+        let fallback = FunctionFallback::new(|_err: CallError<()>| async {
+            Err::<u32, _>(CallError::cancelled_with("fallback unavailable"))
+        });
+
+        let result = fallback
+            .fallback(CallError::Operation("primary failed"))
+            .await;
+        let err = result.unwrap_err();
+        let (primary, fallback) = err.fallback_context().unwrap();
+
+        assert!(matches!(primary, CallError::Operation("primary failed")));
+        assert!(matches!(fallback, CallError::Cancelled { .. }));
     }
 
     // -----------------------------------------------------------------------
@@ -704,8 +872,13 @@ mod tests {
 
         // Timeout → registered handler
         assert_eq!(pf.fallback(timeout_error()).await.unwrap(), 1);
-        // Other error → default
-        assert_eq!(pf.fallback(cancelled_error()).await.unwrap(), 0);
+        // Fallbackable error without a specific handler → default
+        assert_eq!(pf.fallback(CallError::Operation("boom")).await.unwrap(), 0);
+        // Cancellation is not recovered by the default fallback.
+        assert!(matches!(
+            pf.fallback(cancelled_error()).await,
+            Err(CallError::Cancelled { .. })
+        ));
     }
 
     #[tokio::test]
@@ -733,5 +906,70 @@ mod tests {
             FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
         let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
         assert_eq!(result.unwrap(), 99);
+    }
+
+    #[tokio::test]
+    async fn fallback_operation_emits_standalone_lifecycle_events() {
+        let sink = RecordingSink::new();
+        let op: FallbackOperation<u32, &str> =
+            FallbackOperation::new(Arc::new(ValueFallback::new(99u32))).with_sink(sink.clone());
+
+        let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
+
+        assert_eq!(result.unwrap(), 99);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackAttempted), 1);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackSucceeded), 1);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackFailed), 0);
+    }
+
+    #[tokio::test]
+    async fn fallback_operation_emits_failure_event_on_fallback_failure() {
+        let sink = RecordingSink::new();
+        let fallback = FunctionFallback::new(|_err: CallError<()>| async {
+            Err::<u32, _>(CallError::fallback_failed_with("cache unavailable"))
+        });
+        let op: FallbackOperation<u32, &str> =
+            FallbackOperation::new(Arc::new(fallback)).with_sink(sink.clone());
+
+        let result = op.call(|| async { Err::<u32, _>(timeout_error()) }).await;
+
+        assert!(matches!(
+            result,
+            Err(CallError::FallbackFailedWithContext { .. })
+        ));
+        assert_eq!(sink.count(ResilienceEventKind::FallbackAttempted), 1);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackSucceeded), 0);
+        assert_eq!(sink.count(ResilienceEventKind::FallbackFailed), 1);
+    }
+
+    #[tokio::test]
+    async fn fallback_operation_context_cancellation_skips_fallback() {
+        let op: FallbackOperation<u32, &str> =
+            FallbackOperation::new(Arc::new(ValueFallback::new(99u32)));
+        let cancellation = CancellationContext::with_reason("shutdown");
+        let context = PolicyContext::from_cancellation(cancellation.clone());
+        cancellation.cancel();
+
+        let result = op
+            .call_with_policy_context(&context, || async { Ok::<u32, CallError<&str>>(42) })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Cancelled { .. })));
+    }
+
+    #[tokio::test]
+    async fn fallback_operation_context_deadline_bounds_fallback() {
+        let fallback = FunctionFallback::new(|_err: CallError<()>| async {
+            tokio::time::sleep(Duration::from_mins(1)).await;
+            Ok::<u32, CallError<()>>(99)
+        });
+        let op: FallbackOperation<u32, &str> = FallbackOperation::new(Arc::new(fallback));
+        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+
+        let result = op
+            .call_with_policy_context(&context, || async { Err::<u32, _>(timeout_error()) })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Timeout(_))));
     }
 }

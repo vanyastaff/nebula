@@ -23,7 +23,7 @@
 use std::{hint::black_box, sync::Arc, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_resilience::{HedgeConfig, HedgeExecutor, hedge::AdaptiveHedgeExecutor};
+use nebula_resilience::{HedgeConfig, HedgeExecutor, HedgeSafety, hedge::AdaptiveHedgeExecutor};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ fn never_hedge_config() -> HedgeConfig {
         max_hedges: 2,
         exponential_backoff: false,
         backoff_multiplier: 1.0,
+        duplicate_safety: HedgeSafety::Idempotent,
     }
 }
 

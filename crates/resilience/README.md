@@ -29,16 +29,19 @@ failures must compose inside the action.
 
 ## Public API
 
-- `ResiliencePipeline<E>` — composable pipeline: `.classifier()`, `.classify_errors()`, `.with_sink()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limiter()` / `.rate_limiter_from()`, `.load_shed()`, then `.build()`. Hedging stays in the `hedge` module (no `.hedge()` builder step on the pipeline). For graceful degradation after the pipeline returns, use `ResiliencePipeline::call_with_fallback` (separate from the builder).
+- `ResiliencePipeline<E>` — composable pipeline: `.classifier()`, `.classify_errors()`, `.with_sink()`, `.scope()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limiter()` / `.rate_limiter_from()` / `.rate_limiter_erased()`, `.load_shed()`, then `.build_checked()`, `.build()`, or `.build_recommended_order()`. Use `.call_with_policy_context()` / `.call_with_policy_context_and_fallback()` when the workflow engine has one cancellation/deadline/scope contract for the call. `.call_with_context()` remains available for cancellation-only use. Hedging stays in the `hedge` module (no `.hedge()` builder step on the pipeline). For graceful degradation after the pipeline returns without a cancellation context, use `ResiliencePipeline::call_with_fallback` (separate from the builder).
 - `CallError<E>` — wrapper error returned by all pipeline calls; no type erasure, no forced mapping.
 - `retry::RetryConfig`, `retry::BackoffConfig`, `retry::retry_with` — standalone retry with `Classify`-aware error filtering.
 - `circuit_breaker::CircuitBreaker`, `circuit_breaker::CircuitBreakerConfig` — half-open/open/closed state machine.
 - `bulkhead::Bulkhead`, `bulkhead::BulkheadConfig` — concurrency-limiting bulkhead.
-- `rate_limiter::RateLimiter` (+ optional `governor` feature for GCRA algorithm).
-- `timeout::{timeout, TimeoutExecutor}` and `load_shed::{load_shed, load_shed_with_sink}` — standalone timeout / load-shed combinators.
-- `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback, PriorityFallback, FallbackOperation}` — graceful degradation strategies.
-- `hedge::{HedgeConfig, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative execution (hedged requests).
-- `sink::{MetricsSink, ResilienceEvent, ResilienceEventKind, RecordingSink}` — observability hooks for pipeline and pattern events.
+- `rate_limiter::{RateLimiter, ErasedRateLimiter}` (+ optional `governor` feature for GCRA algorithm).
+- `timeout::{timeout, timeout_with_policy_context, TimeoutExecutor}` and `load_shed::{load_shed, load_shed_with_policy_context, load_shed_with_sink}` — standalone timeout / load-shed combinators.
+- `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback, PriorityFallback, FallbackOperation}` — graceful degradation strategies. Standalone `FallbackOperation` can emit fallback lifecycle events with `.with_sink()`.
+- `PolicyContext` — shared cancellation/deadline/scope contract for pipeline and standalone policy calls.
+- `Gate::close_with_timeout()` — bounded cooperative shutdown drain with typed timeout diagnostics.
+- `hedge::{HedgeConfig, HedgeSafety, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative execution for duplicate-safe operations.
+- `Deadline` — shared monotonic budget helper for attempts and sleeps.
+- `sink::{MetricsSink, PolicyScope, PipelineOutcome, ResilienceEvent, ResilienceEventKind, RecordingSink}` — observability hooks for pipeline and pattern events.
 
 ## Contract
 

@@ -2,7 +2,8 @@
 
 `nebula-resilience` provides observability via **`MetricsSink` / `ResilienceEvent`** — a
 structured event sink for pattern events (circuit breaker transitions, retry attempts,
-bulkhead rejections, etc.). This is the integration point for production metrics pipelines.
+bulkhead rejections, final pipeline outcomes, etc.). This is the integration point for
+production metrics pipelines.
 
 ---
 
@@ -63,6 +64,35 @@ pub enum ResilienceEvent {
     RateLimitExceeded,
     /// Load shed — request rejected due to overload.
     LoadShed,
+    /// Fallback was selected for a failed primary operation.
+    FallbackAttempted { primary_error: CallErrorKind },
+    /// Fallback returned a recovered value.
+    FallbackSucceeded { primary_error: CallErrorKind },
+    /// Fallback was attempted but returned an error.
+    FallbackFailed { primary_error: CallErrorKind },
+    /// Pipeline invocation completed.
+    PipelineCompleted {
+        scope: PolicyScope,
+        outcome: PipelineOutcome,
+    },
+}
+
+pub struct PolicyScope {
+    pub tenant_id: Option<Cow<'static, str>>,
+    pub workflow_id: Option<Cow<'static, str>>,
+    pub action_id: Option<Cow<'static, str>>,
+    pub resource_id: Option<Cow<'static, str>>,
+    pub operation: Option<Cow<'static, str>>,
+}
+
+pub enum PipelineOutcome {
+    Success,
+    Failure { error: CallErrorKind },
+    FallbackSucceeded { primary_error: CallErrorKind },
+    FallbackFailed {
+        primary_error: CallErrorKind,
+        fallback_error: CallErrorKind,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,8 +138,22 @@ for event in sink.events() {
 | `ResilienceEventKind::HedgeFired` | `HedgeFired` |
 | `ResilienceEventKind::RateLimitExceeded` | `RateLimitExceeded` |
 | `ResilienceEventKind::LoadShed` | `LoadShed` |
+| `ResilienceEventKind::FallbackAttempted` | `FallbackAttempted` |
+| `ResilienceEventKind::FallbackSucceeded` | `FallbackSucceeded` |
+| `ResilienceEventKind::FallbackFailed` | `FallbackFailed` |
+| `ResilienceEventKind::PipelineCompleted` | `PipelineCompleted` |
 
 Use `event.kind()` to get the `ResilienceEventKind` from a `ResilienceEvent`.
+
+`PipelineCompleted` is the event to use when operators need to distinguish primary
+success, primary failure, fallback success, and fallback failure for a workflow/action
+scope. Treat `PolicyScope` values as event/trace attributes unless your metrics backend
+can safely handle their cardinality.
+
+Standalone `FallbackOperation` also emits `FallbackAttempted`, `FallbackSucceeded`,
+and `FallbackFailed` when built with `with_sink()` or `with_shared_sink()`. Cancellation
+and context-deadline errors that are not recovered do not produce fallback lifecycle
+events.
 
 ---
 
@@ -117,8 +161,9 @@ Use `event.kind()` to get the `ResilienceEventKind` from a `ResilienceEvent`.
 
 Sink injection is available on the pattern types that own their own observability
 (`CircuitBreaker`, `Bulkhead`, `RetryConfig`, `HedgeExecutor`, `AdaptiveHedgeExecutor`,
-`TimeoutExecutor`) and on `ResiliencePipeline::with_sink()` for pipeline-level timeout /
-rate-limit / load-shed events.
+`TimeoutExecutor`, `FallbackOperation`) and on `ResiliencePipeline::with_sink()` for
+pipeline-level timeout, rate-limit, load-shed, fallback lifecycle, and
+`PipelineCompleted` events.
 
 ```rust
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};

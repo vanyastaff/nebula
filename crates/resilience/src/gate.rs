@@ -58,6 +58,18 @@ const MAX_PERMITS: u32 = u32::MAX / 2;
 #[error("gate is closed — new enter() calls are rejected")]
 pub struct GateClosed;
 
+/// Error returned by [`Gate::close_with_timeout`] when active guards do not drain
+/// within the caller's shutdown budget.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+#[error("gate close timed out after {timeout:?}; {active_guards} guard(s) still active")]
+pub struct GateCloseTimeout {
+    /// Shutdown budget that elapsed.
+    pub timeout: Duration,
+    /// Best-effort count of active guards still holding the gate open.
+    pub active_guards: u32,
+}
+
 // ---------------------------------------------------------------------------
 // GateInner — shared heap allocation
 // ---------------------------------------------------------------------------
@@ -263,10 +275,54 @@ impl Gate {
         }
     }
 
+    /// Close the gate but return a typed timeout instead of waiting forever.
+    ///
+    /// This is useful for workflow/runtime shutdown paths that have a bounded
+    /// graceful-drain budget. If the timeout elapses, the gate remains in the
+    /// closing state: new [`enter()`](Gate::enter) calls are still rejected, and
+    /// the caller may retry [`close()`](Gate::close) later after outstanding
+    /// guards have had more time to drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GateCloseTimeout`] if `timeout` elapses before all active guards
+    /// exit.
+    pub async fn close_with_timeout(&self, timeout: Duration) -> Result<(), GateCloseTimeout> {
+        if timeout.is_zero() {
+            self.inner.closing.store(true, Ordering::Release);
+            return Err(GateCloseTimeout {
+                timeout,
+                active_guards: self.active_count(),
+            });
+        }
+
+        tokio::time::timeout(timeout, self.close())
+            .await
+            .map_err(|_elapsed| GateCloseTimeout {
+                timeout,
+                active_guards: self.active_count(),
+            })
+    }
+
     /// Returns `true` if the gate has been closed (or is closing).
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.inner.closing.load(Ordering::Acquire)
+    }
+
+    /// Best-effort count of currently active guards.
+    ///
+    /// This value is intended for diagnostics and timeout errors. It may change
+    /// immediately after being read in concurrent code.
+    #[must_use]
+    pub fn active_count(&self) -> u32 {
+        if self.inner.sem.is_closed() {
+            return 0;
+        }
+
+        let available = self.inner.sem.available_permits().min(MAX_PERMITS as usize);
+        let available = u32::try_from(available).unwrap_or(MAX_PERMITS);
+        MAX_PERMITS.saturating_sub(available)
     }
 }
 
@@ -320,6 +376,7 @@ mod tests {
         let gate = Gate::new();
         gate.close().await;
         gate.close().await; // second call must not panic or hang
+        assert_eq!(gate.active_count(), 0);
     }
 
     #[tokio::test]
@@ -350,6 +407,26 @@ mod tests {
         let gate = Gate::new();
         let dbg = format!("{gate:?}");
         assert!(dbg.contains("closing: false"));
+    }
+
+    #[tokio::test]
+    async fn close_with_timeout_returns_active_guard_count() {
+        let gate = Gate::new();
+        let guard = gate.enter().expect("gate open");
+
+        let err = gate
+            .close_with_timeout(Duration::from_millis(5))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.timeout, Duration::from_millis(5));
+        assert_eq!(err.active_guards, 1);
+        assert!(gate.is_closed());
+        assert!(matches!(gate.enter(), Err(GateClosed)));
+
+        drop(guard);
+        gate.close().await;
+        assert_eq!(gate.active_count(), 0);
     }
 }
 

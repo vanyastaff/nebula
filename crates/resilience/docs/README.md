@@ -25,18 +25,20 @@ forcing conversions into a resilience-specific error enum.
 
 | Concept | Description |
 |---------|-------------|
-| **`CallError<E>`** | Unified error returned by every pattern. `E` is the caller's own error type. Pattern errors (`CircuitOpen`, `BulkheadFull`, `Timeout`, `RetriesExhausted`, `LoadShed`, `RateLimited`, `Cancelled`, `FallbackFailed`) are separate enum variants. Includes `flat_map_inner()` helper. |
-| **`ResiliencePipeline<E>`** | Composed middleware chain built via `PipelineBuilder`. Applies steps in order: first added = outermost. Recommended: `timeout → retry → circuit_breaker → bulkhead`. |
+| **`CallError<E>`** | Unified error returned by every pattern. `E` is the caller's own error type. Pattern errors (`CircuitOpen`, `BulkheadFull`, `Timeout`, `RetriesExhausted`, `LoadShed`, `RateLimited`, `Cancelled`, `FallbackFailed`) are separate enum variants. `FallbackFailedWithContext` preserves both primary and fallback failures where available. Includes `flat_map_inner()` helper. |
+| **`PolicyContext`** | Shared execution context carrying cancellation, deadline, and low-cardinality scope for a protected call. Pipeline, bulkhead, rate limiter, timeout, load-shed, circuit breaker, and fallback-operation entry points can consume it. |
+| **`ResiliencePipeline<E>`** | Composed middleware chain built via `PipelineBuilder`. Applies steps in order: first added = outermost. Recommended: `load_shed → rate_limiter → timeout → retry → circuit_breaker → bulkhead`. `build_checked()` rejects unsafe order. `call_with_policy_context()` and `call_with_policy_context_and_fallback()` propagate cancellation/deadline/scope through the call; cancellation-only helpers remain available. |
 | **`CircuitBreaker`** | Tracks consecutive failures; fails-fast when `failure_threshold` is crossed. Probes recovery via half-open state. Plain-struct config, injectable `Clock` and `MetricsSink`. |
 | **`retry` / `retry_with`** | Bounded retry with `BackoffConfig` enum (`Fixed`, `Linear`, `Exponential`), optional `JitterConfig`, and a predicate `retry_if`. Returns `CallError::RetriesExhausted` on exhaustion. |
 | **`Bulkhead`** | Semaphore-backed concurrency cap. Returns `CallError::BulkheadFull` when at capacity. |
-| **`RateLimiter`** | Trait implemented by `TokenBucket`, `LeakyBucket`, `SlidingWindow`, `AdaptiveRateLimiter`. Returns `CallError::RateLimited`. `call()` has a default impl. |
-| **`timeout`** | Hard async deadline. Returns `CallError::Timeout` if the future exceeds the duration. |
-| **`load_shed`** | Free function. Returns `CallError::LoadShed` immediately when a predicate fires. Integrates with `LoadSignal` for adaptive shedding. |
-| **`FallbackStrategy<T>`** | Alternative result path on failure. Built-in: `ValueFallback`. Custom via trait impl. Returns `CallError::FallbackFailed` if the fallback itself fails. |
-| **`HedgeExecutor`** | Fires speculative parallel requests after `hedge_delay`. Returns first success; reduces tail latency. Constructor returns `Result`. |
-| **`Gate` / `GateGuard`** | Cooperative shutdown barrier. `enter()` acquires an RAII guard; `close()` drains all in-flight guards before returning. |
-| **`MetricsSink`** | Observability extension point — receives `ResilienceEvent` values. Default: `NoopSink`. Test: `RecordingSink`. `ResilienceEvent::kind()` returns a `ResilienceEventKind` enum. |
+| **`RateLimiter` / `ErasedRateLimiter`** | Static-dispatch trait implemented by `TokenBucket`, `LeakyBucket`, `SlidingWindow`, `AdaptiveRateLimiter`, plus an object-safe facade for heterogeneous registries. Returns `CallError::RateLimited`. |
+| **`timeout`** | Hard async deadline. Returns `CallError::Timeout` if the future exceeds the duration. Context-aware helpers compose with workflow cancellation/deadline. |
+| **`load_shed`** | Free function. Returns `CallError::LoadShed` immediately when a predicate fires. Context-aware helpers avoid evaluating predicates after cancellation/deadline expiry. Integrates with `LoadSignal` for adaptive shedding. |
+| **`FallbackStrategy<T>`** | Alternative result path on failure. Built-ins include value, function, cache, chain, and priority strategies. Custom strategies implement recovery while the safe `fallback()` wrapper checks whether the error class is recoverable. By default recovers operation failures, retry exhaustion, timeout, and open circuit, but not cancellation or overload rejections. |
+| **`HedgeExecutor`** | Fires speculative parallel requests after `hedge_delay`. Duplicate requests are disabled by default and require `HedgeSafety::Idempotent`; losing or cancelled call-owned tasks are aborted. |
+| **`Gate` / `GateGuard`** | Cooperative shutdown barrier. `enter()` acquires an RAII guard; `close()` drains all in-flight guards before returning. `close_with_timeout()` returns a typed timeout with active guard count. |
+| **`Deadline`** | Shared monotonic time-budget helper used by policies that need remaining-budget semantics. |
+| **`MetricsSink`** | Observability extension point — receives `ResilienceEvent` values, including scoped `PipelineCompleted` outcomes. Default: `NoopSink`. Test: `RecordingSink`. |
 | **`PolicySource<C>`** | Trait for adaptive config. Blanket impl makes any `Clone + Send + Sync` value a static source. |
 | **`LoadSignal`** | Runtime signal providing `load_factor`, `error_rate`, `p99_latency` for adaptive policies. `ConstantLoad` for testing. |
 
@@ -126,7 +128,7 @@ let _guard = gate.enter().expect("gate is open");
 | Feature | Type | Notes |
 |---------|------|-------|
 | Generic error type preservation | `CallError<E>` | No forced mapping to resilience error |
-| Composed middleware pipeline | `ResiliencePipeline<E>`, `PipelineBuilder<E>` | Ordered steps, order-validation warning |
+| Composed middleware pipeline | `ResiliencePipeline<E>`, `PipelineBuilder<E>` | Ordered steps, `build_checked()` strict validation, order-warning `build()` |
 | Circuit breaking with half-open probes | `CircuitBreaker`, `CircuitBreakerConfig` | Plain struct config, injectable clock/sink |
 | Token-bucket rate limiting | `TokenBucket` | Capacity + refill rate |
 | Leaky-bucket rate limiting | `LeakyBucket` | Constant leak rate |
@@ -136,14 +138,17 @@ let _guard = gate.enter().expect("gate is open");
 | Jitter policy (none / full) | `JitterConfig` | Optional fraction |
 | Predicate-driven retry | `RetryConfig::retry_if` | Per-error-type classification |
 | Cancellation-aware retry | `CancellationContext` | `CancellableFuture` combinator |
+| Shared policy context | `PolicyContext` | Carries cancellation, deadline, and scope across pipeline and standalone policy calls |
 | Semaphore-bounded concurrency | `Bulkhead`, `BulkheadConfig` | Serde support |
-| Hard deadline timeout | `timeout`, `TimeoutExecutor` | |
+| Hard deadline timeout | `timeout`, `TimeoutExecutor` | `try_new()` rejects zero config; context-aware calls compose with `PolicyContext` |
 | Value fallback | `ValueFallback<T>` | Returns cloned constant |
-| Custom fallback | `FallbackStrategy<T>` trait | Implement for custom logic |
-| Speculative parallel hedging | `HedgeExecutor`, `AdaptiveHedgeExecutor`, `HedgeConfig` | Reduces tail latency. Constructor returns `Result`. Serde on `HedgeConfig`. |
-| Load shedding | `load_shed` free function | Predicate-based |
-| Cooperative shutdown barrier | `Gate`, `GateGuard` | |
+| Custom fallback | `FallbackStrategy<T>` trait | Implement recovery for custom logic; keep `fallback()` as the safe entry point |
+| Speculative parallel hedging | `HedgeExecutor`, `AdaptiveHedgeExecutor`, `HedgeConfig`, `HedgeSafety` | Reduces tail latency for idempotent operations. Constructor returns `Result`. Serde on `HedgeConfig`. |
+| Load shedding | `load_shed` free function | Predicate-based, with context-aware variants |
+| Cooperative shutdown barrier | `Gate`, `GateGuard` | Bounded close available via `close_with_timeout()` |
 | Metrics sink | `MetricsSink` trait, `NoopSink`, `RecordingSink` | Receives `ResilienceEvent`. `ResilienceEventKind` enum for counting. |
+| Scoped pipeline outcomes | `PolicyScope`, `PipelineOutcome` | Distinguishes primary success/failure and fallback recovery. |
+| Shared deadline helper | `Deadline` | Bounds attempts and sleeps by remaining budget. |
 | Adaptive config source | `PolicySource<C>` trait | Blanket impl for static configs (in `policy` module) |
 | Runtime load signals | `LoadSignal` trait, `ConstantLoad` | For adaptive policies (in `policy` module) |
 | Injectable clock | `Clock` trait, `SystemClock` | Enables deterministic tests |
@@ -160,13 +165,16 @@ crates/resilience/
 │   │   ── Core types ───────────────────────────────────────────────────
 │   ├── error.rs                 CallError<E>, CallErrorKind, CallResult<T,E>, ConfigError
 │   ├── cancellation.rs          CancellationContext, CancellableFuture
+│   ├── context.rs               PolicyContext
+│   ├── deadline.rs              Deadline
 │   ├── policy.rs                PolicySource<C> trait + blanket impl,
 │   │                            LoadSignal trait, ConstantLoad
 │   ├── clock.rs                 Clock trait, SystemClock
 │   │
 │   │   ── Observability ─────────────────────────────────────────────────
 │   ├── sink.rs                  MetricsSink, NoopSink, RecordingSink, ResilienceEvent,
-│   │                            ResilienceEventKind, CircuitState
+│   │                            ResilienceEventKind, CircuitState, PolicyScope,
+│   │                            PipelineOutcome
 │   │
 │   │   ── Patterns ─────────────────────────────────────────────────────
 │   ├── circuit_breaker.rs       CircuitBreaker, CircuitBreakerConfig, Outcome
@@ -175,14 +183,18 @@ crates/resilience/
 │   ├── bulkhead.rs              Bulkhead, BulkheadConfig
 │   ├── rate_limiter.rs          RateLimiter trait, TokenBucket, LeakyBucket,
 │   │                            SlidingWindow, AdaptiveRateLimiter
-│   ├── timeout.rs               timeout(), TimeoutExecutor
+│   ├── timeout.rs               timeout(), TimeoutExecutor,
+│   │                            context-aware timeout helpers
 │   ├── fallback.rs              FallbackStrategy<T>, ValueFallback
-│   ├── hedge.rs                 HedgeExecutor, AdaptiveHedgeExecutor, HedgeConfig
-│   ├── load_shed.rs             load_shed() free function
+│   ├── hedge.rs                 HedgeExecutor, AdaptiveHedgeExecutor, HedgeConfig,
+│   │                            HedgeSafety
+│   ├── load_shed.rs             load_shed() free function,
+│   │                            context-aware load shedding
 │   │
 │   │   ── Infrastructure ───────────────────────────────────────────────
 │   ├── pipeline.rs              ResiliencePipeline<E>, PipelineBuilder<E>
-│   └── gate.rs                  Gate, GateGuard, GateClosed
+│   └── gate.rs                  Gate, GateGuard, GateClosed,
+│                                GateCloseTimeout
 ├── benches/                     Criterion benchmark suites
 ├── tests/                       integration tests
 └── examples/                    end-to-end usage examples

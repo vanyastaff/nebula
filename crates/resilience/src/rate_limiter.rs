@@ -78,6 +78,7 @@ use std::{
     collections::VecDeque,
     fmt,
     future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -87,7 +88,46 @@ use std::{
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::CallError;
+use crate::{CallError, PolicyContext};
+
+fn retry_after_from_rate(units_needed: f64, units_per_second: f64) -> Option<Duration> {
+    if !units_needed.is_finite() || !units_per_second.is_finite() || units_per_second <= 0.0 {
+        return None;
+    }
+    if units_needed <= 0.0 {
+        return Some(Duration::ZERO);
+    }
+
+    let seconds = units_needed / units_per_second;
+    if !seconds.is_finite() {
+        return None;
+    }
+
+    Some(Duration::from_secs_f64(seconds).max(Duration::from_nanos(1)))
+}
+
+fn rate_limited_with_retry_after(retry_after: Option<Duration>) -> CallError<()> {
+    retry_after.map_or_else(CallError::rate_limited, CallError::rate_limited_after)
+}
+
+fn map_acquire_error<E>(err: CallError<()>) -> CallError<E> {
+    match err {
+        CallError::RateLimited { retry_after } => CallError::RateLimited { retry_after },
+        CallError::Timeout(duration) => CallError::Timeout(duration),
+        CallError::CircuitOpen => CallError::CircuitOpen,
+        CallError::BulkheadFull => CallError::BulkheadFull,
+        CallError::Cancelled { reason } => CallError::Cancelled { reason },
+        CallError::LoadShed => CallError::LoadShed,
+        CallError::FallbackFailed { reason } => CallError::FallbackFailed { reason },
+        CallError::FallbackFailedWithContext { primary, fallback } => {
+            CallError::FallbackFailedWithContext {
+                primary: Box::new(map_acquire_error(*primary)),
+                fallback: Box::new(map_acquire_error(*fallback)),
+            }
+        },
+        CallError::Operation(()) | CallError::RetriesExhausted { .. } => CallError::rate_limited(),
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TRAIT
@@ -122,6 +162,18 @@ pub trait RateLimiter: Send + Sync {
     /// that want to back off before retrying.
     fn acquire(&self) -> impl Future<Output = Result<(), CallError<()>>> + Send;
 
+    /// Attempt to consume one permit with cancellation/deadline from a shared
+    /// policy context.
+    ///
+    /// Implementations do not need to override this unless they can enforce the
+    /// context more efficiently internally.
+    fn acquire_with_policy_context<'a>(
+        &'a self,
+        context: &'a PolicyContext,
+    ) -> impl Future<Output = Result<(), CallError<()>>> + Send + 'a {
+        async move { context.run_result(self.acquire()).await }
+    }
+
     /// Acquire a permit and, if successful, execute `operation`.
     ///
     /// Returns <code>Err([`CallError::RateLimited`])</code> without calling `operation`
@@ -143,10 +195,34 @@ pub trait RateLimiter: Send + Sync {
         T: Send,
     {
         async {
-            self.acquire()
-                .await
-                .map_err(|_| CallError::rate_limited())?;
+            self.acquire().await.map_err(map_acquire_error)?;
             operation().await.map_err(CallError::Operation)
+        }
+    }
+
+    /// Acquire a permit using `context`, then execute `operation` under the
+    /// same cancellation/deadline contract.
+    ///
+    /// The operation is not invoked when the limiter rejects, the context is
+    /// cancelled, or the context deadline expires before a permit is acquired.
+    fn call_with_policy_context<'a, T, E, F, Fut>(
+        &'a self,
+        context: &'a PolicyContext,
+        operation: F,
+    ) -> impl Future<Output = Result<T, CallError<E>>> + Send + 'a
+    where
+        F: FnOnce() -> Fut + Send + 'a,
+        Fut: Future<Output = Result<T, E>> + Send + 'a,
+        T: Send + 'a,
+        E: Send + 'a,
+    {
+        async move {
+            self.acquire_with_policy_context(context)
+                .await
+                .map_err(map_acquire_error)?;
+            context
+                .run_result(async { operation().await.map_err(CallError::Operation) })
+                .await
         }
     }
 
@@ -155,6 +231,56 @@ pub trait RateLimiter: Send + Sync {
 
     /// Clears all state and resets to initial conditions.
     fn reset(&self) -> impl Future<Output = ()> + Send;
+}
+
+type BoxRateLimiterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Object-safe facade for storing heterogeneous rate limiters in registries.
+///
+/// [`RateLimiter`] keeps `impl Future` methods for static dispatch and zero
+/// allocation in direct calls, which makes that trait intentionally not
+/// object-safe. Use `Arc<dyn ErasedRateLimiter>` when a tenant/resource registry
+/// needs to store multiple limiter implementations behind one type.
+///
+/// The facade exposes only non-generic operations. To run an operation through a
+/// limiter, acquire through this trait and then call the operation yourself, or
+/// pass the object to
+/// [`PipelineBuilder::rate_limiter_erased`](crate::PipelineBuilder::rate_limiter_erased).
+pub trait ErasedRateLimiter: Send + Sync {
+    /// Attempt to consume one permit from the rate limiter.
+    fn acquire_boxed(&self) -> BoxRateLimiterFuture<'_, Result<(), CallError<()>>>;
+
+    /// Attempt to consume one permit with cancellation/deadline from a shared
+    /// policy context.
+    fn acquire_with_policy_context_boxed<'a>(
+        &'a self,
+        context: &'a PolicyContext,
+    ) -> BoxRateLimiterFuture<'a, Result<(), CallError<()>>> {
+        Box::pin(context.run_result(self.acquire_boxed()))
+    }
+
+    /// Returns the current rate or available capacity (implementation-dependent).
+    fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64>;
+
+    /// Clears all state and resets to initial conditions.
+    fn reset_boxed(&self) -> BoxRateLimiterFuture<'_, ()>;
+}
+
+impl<T> ErasedRateLimiter for T
+where
+    T: RateLimiter,
+{
+    fn acquire_boxed(&self) -> BoxRateLimiterFuture<'_, Result<(), CallError<()>>> {
+        Box::pin(self.acquire())
+    }
+
+    fn current_rate_boxed(&self) -> BoxRateLimiterFuture<'_, f64> {
+        Box::pin(self.current_rate())
+    }
+
+    fn reset_boxed(&self) -> BoxRateLimiterFuture<'_, ()> {
+        Box::pin(self.reset())
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -263,7 +389,11 @@ impl TokenBucket {
     /// The new rate is applied on the next `acquire()` call.
     /// `new_rate` is clamped to the same range accepted by `new()`.
     pub fn update_rate(&self, new_rate: f64) {
-        let clamped = new_rate.clamp(0.001, 10_000.0);
+        let clamped = if new_rate.is_finite() {
+            new_rate.clamp(0.001, 10_000.0)
+        } else {
+            0.001
+        };
         self.refill_rate.store(clamped.to_bits(), Ordering::Release);
     }
 
@@ -299,8 +429,9 @@ impl RateLimiter for TokenBucket {
             drop(state);
             Ok(())
         } else {
+            let retry_after = retry_after_from_rate(1.0 - state.tokens, refill_rate);
             drop(state);
-            Err(CallError::rate_limited())
+            Err(rate_limited_with_retry_after(retry_after))
         }
     }
 
@@ -453,6 +584,16 @@ impl LeakyBucket {
         let drain_duration = Duration::from_secs_f64(leaked_secs);
         state.last_leak = state.last_leak.checked_add(drain_duration).unwrap_or(now);
     }
+
+    fn retry_after_locked(
+        state: &LeakyBucketState,
+        leak_rate: f64,
+        now: Instant,
+    ) -> Option<Duration> {
+        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
+        let units_until_next_leak = elapsed.mul_add(-leak_rate, 1.0).max(0.0);
+        retry_after_from_rate(units_until_next_leak, leak_rate)
+    }
 }
 
 impl RateLimiter for LeakyBucket {
@@ -469,8 +610,9 @@ impl RateLimiter for LeakyBucket {
             drop(state);
             Ok(())
         } else {
+            let retry_after = Self::retry_after_locked(&state, self.leak_rate, now);
             drop(state);
-            Err(CallError::rate_limited())
+            Err(rate_limited_with_retry_after(retry_after))
         }
     }
 
@@ -578,12 +720,26 @@ impl SlidingWindow {
 
     fn clean_old_requests_locked(requests: &mut VecDeque<Instant>, cutoff: Instant) {
         while let Some(&front) = requests.front() {
-            if front < cutoff {
+            if front <= cutoff {
                 requests.pop_front();
             } else {
                 break;
             }
         }
+    }
+
+    fn retry_after_locked(
+        requests: &VecDeque<Instant>,
+        window_duration: Duration,
+        now: Instant,
+    ) -> Option<Duration> {
+        let oldest = *requests.front()?;
+        let expires_at = oldest.checked_add(window_duration)?;
+        Some(
+            expires_at
+                .checked_duration_since(now)
+                .unwrap_or(Duration::ZERO),
+        )
     }
 }
 
@@ -604,8 +760,9 @@ impl RateLimiter for SlidingWindow {
             drop(requests);
             Ok(())
         } else {
+            let retry_after = Self::retry_after_locked(&requests, self.window_duration, now);
             drop(requests);
-            Err(CallError::rate_limited())
+            Err(rate_limited_with_retry_after(retry_after))
         }
     }
 
@@ -863,9 +1020,7 @@ impl RateLimiter for AdaptiveRateLimiter {
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send,
     {
-        self.acquire()
-            .await
-            .map_err(|_| CallError::rate_limited())?;
+        self.acquire().await.map_err(map_acquire_error)?;
         let result = operation().await;
 
         match &result {
@@ -1047,13 +1202,101 @@ pub use governor_impl::GovernorRateLimiter;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, atomic::Ordering};
+
     use super::*;
+    use crate::PolicyContext;
 
     #[tokio::test]
     async fn token_bucket_respects_capacity() {
         let limiter = TokenBucket::new(1, 0.001).unwrap();
         assert!(limiter.acquire().await.is_ok());
         assert!(limiter.acquire().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn token_bucket_returns_retry_after_hint() {
+        let limiter = TokenBucket::new(1, 10.0).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err = limiter.acquire().await.unwrap_err();
+
+        assert!(
+            matches!(err, CallError::RateLimited { retry_after: Some(delay) } if delay > Duration::ZERO && delay <= Duration::from_millis(100))
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_call_preserves_retry_after_hint() {
+        let limiter = TokenBucket::new(1, 10.0).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err: CallError<()> = limiter
+            .call(|| async { Ok::<(), ()>(()) })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::RateLimited {
+                retry_after: Some(_),
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn policy_context_deadline_bounds_rate_limited_operation() {
+        let limiter = TokenBucket::new(1, 0.001).unwrap();
+        let context = PolicyContext::with_timeout(Duration::from_millis(1));
+
+        let err = limiter
+            .call_with_policy_context(&context, || async {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                Ok::<(), ()>(())
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn erased_rate_limiter_context_acquire_observes_cancellation() {
+        let limiter: Arc<dyn ErasedRateLimiter> = Arc::new(TokenBucket::new(1, 0.001).unwrap());
+        let cancellation = crate::CancellationContext::with_reason("shutdown");
+        let context = PolicyContext::from_cancellation(cancellation.clone());
+        cancellation.cancel();
+
+        let err = limiter
+            .acquire_with_policy_context_boxed(&context)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, CallError::Cancelled { .. }));
+    }
+
+    #[test]
+    fn token_bucket_update_rate_sanitizes_non_finite_values() {
+        let limiter = TokenBucket::new(1, 10.0).unwrap();
+        limiter.update_rate(f64::NAN);
+
+        let rate = f64::from_bits(limiter.refill_rate.load(Ordering::Acquire));
+        assert!((rate - 0.001).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn erased_rate_limiter_registry_stores_heterogeneous_limiters() {
+        let registry: Vec<Arc<dyn ErasedRateLimiter>> = vec![
+            Arc::new(TokenBucket::new(1, 1.0).unwrap()),
+            Arc::new(SlidingWindow::new(Duration::from_secs(1), 1).unwrap()),
+        ];
+
+        assert!(registry[0].acquire_boxed().await.is_ok());
+        assert!(registry[1].acquire_boxed().await.is_ok());
+        assert!(registry[0].current_rate_boxed().await.is_finite());
+
+        registry[0].reset_boxed().await;
+        assert!(registry[0].acquire_boxed().await.is_ok());
     }
 
     #[test]
@@ -1094,6 +1337,18 @@ mod tests {
         assert!(limiter.acquire().await.is_ok());
     }
 
+    #[tokio::test]
+    async fn leaky_bucket_returns_retry_after_hint() {
+        let limiter = LeakyBucket::new(1, 4.0).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err = limiter.acquire().await.unwrap_err();
+
+        assert!(
+            matches!(err, CallError::RateLimited { retry_after: Some(delay) } if delay > Duration::ZERO && delay <= Duration::from_millis(250))
+        );
+    }
+
     #[test]
     fn leaky_bucket_partial_drain_preserves_fractional_leak_time() {
         let limiter = LeakyBucket::new(4, 4.0).unwrap();
@@ -1127,6 +1382,18 @@ mod tests {
     #[test]
     fn sliding_window_accepts_valid_config() {
         assert!(SlidingWindow::new(Duration::from_secs(1), 10).is_ok());
+    }
+
+    #[tokio::test]
+    async fn sliding_window_returns_retry_after_hint() {
+        let limiter = SlidingWindow::new(Duration::from_millis(100), 1).unwrap();
+        limiter.acquire().await.unwrap();
+
+        let err = limiter.acquire().await.unwrap_err();
+
+        assert!(
+            matches!(err, CallError::RateLimited { retry_after: Some(delay) } if delay > Duration::ZERO && delay <= Duration::from_millis(100))
+        );
     }
 
     // ── B2: AdaptiveRateLimiter rejects initial_rate outside bounds ──────

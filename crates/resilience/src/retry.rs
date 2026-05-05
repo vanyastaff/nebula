@@ -41,6 +41,7 @@ use smallvec::SmallVec;
 use crate::{
     CallError,
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
+    deadline::Deadline,
     sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
@@ -137,14 +138,15 @@ impl BackoffConfig {
     pub fn delay_for(&self, attempt: u32) -> Duration {
         match self {
             Self::Fixed(d) => *d,
-            Self::Linear { base, max } => (*base * attempt.max(1)).min(*max),
+            Self::Linear { base, max } => base.saturating_mul(attempt.max(1)).min(*max),
             Self::Exponential {
                 base,
                 multiplier,
                 max,
             } => {
+                let multiplier = normalize_exponential_multiplier(*multiplier);
                 let ms = base.as_millis() as f64 * multiplier.powi(attempt as i32);
-                Duration::from_millis(ms as u64).min(*max)
+                duration_from_millis_capped(ms, *max)
             },
             Self::Fibonacci { base, max } => {
                 let fib_n = Self::fibonacci(attempt);
@@ -157,6 +159,33 @@ impl BackoffConfig {
                 .unwrap_or(Duration::ZERO),
         }
     }
+}
+
+fn normalize_exponential_multiplier(multiplier: f64) -> f64 {
+    if multiplier.is_finite() && multiplier >= 1.0 {
+        multiplier
+    } else {
+        1.0
+    }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "bounded f64 millisecond math is converted back to Duration for retry delays"
+)]
+fn duration_from_millis_capped(ms: f64, max: Duration) -> Duration {
+    if !ms.is_finite() {
+        return max;
+    }
+
+    let max_ms = max.as_millis() as f64;
+    if ms >= max_ms {
+        return max;
+    }
+
+    Duration::from_millis(ms.max(0.0) as u64).min(max)
 }
 
 // ── JitterConfig ─────────────────────────────────────────────────────────────
@@ -211,15 +240,14 @@ type RetryNotify<E> = Arc<dyn Fn(&E, Duration, u32) + Send + Sync>;
 /// ```
 pub struct RetryConfig<E = ()> {
     /// Maximum number of attempts (including the first).
-    pub max_attempts: u32,
+    max_attempts: NonZeroU32,
     /// Backoff strategy between attempts.
-    pub backoff: BackoffConfig,
+    backoff: BackoffConfig,
     /// Optional jitter applied to backoff delays.
-    pub jitter: JitterConfig,
-    /// If set, retries stop when total elapsed wall-clock time plus the next backoff
-    /// delay would exceed this duration. This bounds the total time spent retrying,
-    /// including both operation execution and sleep time.
-    pub total_budget: Option<Duration>,
+    jitter: JitterConfig,
+    /// If set, retries stop when the deadline is reached. This bounds both
+    /// operation execution and sleep time.
+    total_budget: Option<Duration>,
     pub(crate) classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     pub(crate) on_retry: Option<RetryNotify<E>>,
     pub(crate) sink: Arc<dyn MetricsSink>,
@@ -246,9 +274,8 @@ impl<E: 'static> RetryConfig<E> {
     ///
     /// Returns `Err(ConfigError)` if `max_attempts` is 0.
     pub fn new(max_attempts: u32) -> Result<Self, crate::ConfigError> {
-        if max_attempts == 0 {
-            return Err(crate::ConfigError::new("max_attempts", "must be >= 1"));
-        }
+        let max_attempts = NonZeroU32::new(max_attempts)
+            .ok_or_else(|| crate::ConfigError::new("max_attempts", "must be >= 1"))?;
         Ok(Self {
             max_attempts,
             backoff: BackoffConfig::Fixed(Duration::ZERO),
@@ -258,6 +285,30 @@ impl<E: 'static> RetryConfig<E> {
             on_retry: None,
             sink: Arc::new(NoopSink),
         })
+    }
+
+    /// Maximum number of attempts, including the initial attempt.
+    #[must_use]
+    pub const fn max_attempts(&self) -> NonZeroU32 {
+        self.max_attempts
+    }
+
+    /// Backoff strategy between attempts.
+    #[must_use]
+    pub const fn backoff_config(&self) -> &BackoffConfig {
+        &self.backoff
+    }
+
+    /// Optional jitter applied to backoff delays.
+    #[must_use]
+    pub const fn jitter_config(&self) -> &JitterConfig {
+        &self.jitter
+    }
+
+    /// Total retry budget, if configured.
+    #[must_use]
+    pub const fn total_budget_config(&self) -> Option<Duration> {
+        self.total_budget
     }
 
     /// Set the backoff strategy.
@@ -274,8 +325,8 @@ impl<E: 'static> RetryConfig<E> {
         self
     }
 
-    /// Set a total time budget — retries stop if elapsed wall-clock time plus the next
-    /// backoff delay would exceed this duration.
+    /// Set a total time budget. The retry loop bounds each operation attempt
+    /// and retry sleep by the remaining budget.
     #[must_use]
     pub const fn total_budget(mut self, budget: Duration) -> Self {
         self.total_budget = Some(budget);
@@ -333,8 +384,8 @@ impl<E: 'static> RetryConfig<E> {
         self
     }
 
-    /// Internal constructor that skips validation — caller guarantees `max_attempts >= 1`.
-    pub(crate) fn new_unchecked(max_attempts: u32) -> Self {
+    /// Internal constructor that accepts an already validated attempt count.
+    pub(crate) fn from_nonzero_attempts(max_attempts: NonZeroU32) -> Self {
         Self {
             max_attempts,
             backoff: BackoffConfig::Fixed(Duration::ZERO),
@@ -361,10 +412,6 @@ impl<E: 'static> RetryConfig<E> {
 ///
 /// Returns `Err(CallError::RetriesExhausted)` when all attempts are exhausted,
 /// or `Err(CallError::Operation)` if the error is not retryable.
-///
-/// # Panics
-///
-/// Panics if `config.max_attempts` is 0 (this is prevented by [`RetryConfig::new`]).
 ///
 /// # Examples
 ///
@@ -439,21 +486,23 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>> + Send,
 {
-    debug_assert!(
-        config.max_attempts >= 1,
-        "retry_loop called with max_attempts=0; use RetryConfig::new() to prevent this"
-    );
-
     let mut last_err: Option<E> = None;
     let mut attempts_executed: u32 = 0;
-    let start = std::time::Instant::now();
+    let deadline = config.total_budget.map(Deadline::after);
+    let max_attempts = config.max_attempts.get();
 
-    for attempt in 0..config.max_attempts {
+    for attempt in 0..max_attempts {
         attempts_executed = attempt + 1;
-        match f().await {
+        let attempt_result = if let Some(deadline) = deadline {
+            deadline.timeout(f()).await?
+        } else {
+            f().await
+        };
+
+        match attempt_result {
             Ok(value) => return Ok(value),
             Err(e) => {
-                let is_last = attempt + 1 >= config.max_attempts;
+                let is_last = attempt + 1 >= max_attempts;
 
                 let should_retry = config.classifier.as_ref().map_or_else(
                     || default_should_retry(&e),
@@ -485,32 +534,24 @@ where
                 }
                 last_err = Some(e);
 
-                // Budget check: wall-clock time + next delay exceeds budget → stop
-                if config.total_budget.is_some_and(|budget| {
-                    start
-                        .elapsed()
-                        .checked_add(delay)
-                        .is_none_or(|spent| spent > budget)
-                }) {
-                    break;
-                }
-
-                if !delay.is_zero() {
-                    tokio::time::sleep(delay).await;
-                }
+                sleep_with_deadline(delay, deadline).await?;
             },
         }
     }
 
-    // Unreachable None case: debug_assert above guarantees max_attempts >= 1,
-    // so at least one iteration ran and set last_err.
-    Err(last_err.map_or_else(
-        || CallError::cancelled(),
-        |e| CallError::RetriesExhausted {
-            attempts: attempts_executed.max(1),
-            last: e,
+    last_err.map_or_else(
+        || {
+            Err(CallError::Timeout(
+                deadline.map_or(Duration::ZERO, Deadline::budget),
+            ))
         },
-    ))
+        |e| {
+            Err(CallError::RetriesExhausted {
+                attempts: attempts_executed.max(1),
+                last: e,
+            })
+        },
+    )
 }
 
 /// Convenience: retry up to `n` times with no backoff.
@@ -555,8 +596,24 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>> + Send,
 {
-    let config = RetryConfig::<E>::new_unchecked(n.get());
+    let config = RetryConfig::<E>::from_nonzero_attempts(n);
     retry_with(config, f).await
+}
+
+async fn sleep_with_deadline<E>(
+    delay: Duration,
+    deadline: Option<Deadline>,
+) -> Result<(), CallError<E>> {
+    if delay.is_zero() {
+        return Ok(());
+    }
+
+    let Some(deadline) = deadline else {
+        tokio::time::sleep(delay).await;
+        return Ok(());
+    };
+
+    deadline.sleep(delay).await
 }
 
 /// Apply jitter to a base delay.
@@ -773,6 +830,16 @@ mod tests {
         assert_eq!(cfg.delay_for(4), Duration::from_millis(250));
     }
 
+    #[test]
+    fn linear_backoff_saturates_instead_of_panicking() {
+        let cfg = BackoffConfig::Linear {
+            base: Duration::MAX,
+            max: Duration::MAX,
+        };
+
+        assert_eq!(cfg.delay_for(u32::MAX), Duration::MAX);
+    }
+
     #[tokio::test]
     async fn on_retry_callback_receives_error_and_delay() {
         let notifications = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -905,7 +972,7 @@ mod tests {
         let result: Result<(), CallError<TransientErr>> =
             retry_with(config, || Box::pin(async { Err(TransientErr("fail")) })).await;
 
-        assert!(matches!(result, Err(CallError::RetriesExhausted { .. })));
+        assert!(matches!(result, Err(CallError::Timeout(_))));
     }
 
     #[test]
@@ -926,6 +993,32 @@ mod tests {
     fn custom_backoff_empty_returns_zero() {
         let cfg = BackoffConfig::Custom(SmallVec::new());
         assert_eq!(cfg.delay_for(0), Duration::ZERO);
+    }
+
+    #[test]
+    fn exponential_backoff_invalid_multiplier_falls_back_to_base_delay() {
+        let max = Duration::from_secs(10);
+
+        for multiplier in [f64::NAN, f64::INFINITY, 0.0, -2.0, 0.5] {
+            let cfg = BackoffConfig::Exponential {
+                base: Duration::from_millis(25),
+                multiplier,
+                max,
+            };
+
+            assert_eq!(cfg.delay_for(3), Duration::from_millis(25));
+        }
+    }
+
+    #[test]
+    fn exponential_backoff_infinite_result_caps_at_max() {
+        let cfg = BackoffConfig::Exponential {
+            base: Duration::from_secs(1),
+            multiplier: f64::MAX,
+            max: Duration::from_secs(9),
+        };
+
+        assert_eq!(cfg.delay_for(2), Duration::from_secs(9));
     }
 
     // ── Classify integration tests ──────────────────────────────────────────
@@ -1042,6 +1135,32 @@ mod tests {
         assert!(
             attempts < 50,
             "expected budget to stop retries, got {attempts} attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn total_budget_times_out_hung_attempt() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let config = RetryConfig::new(3)
+            .unwrap()
+            .backoff(BackoffConfig::Fixed(Duration::ZERO))
+            .total_budget(Duration::from_millis(20));
+
+        let start = std::time::Instant::now();
+        let result: Result<(), CallError<TransientErr>> = retry_with(config, async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Err(TransientErr("fail"))
+        })
+        .await;
+
+        assert!(matches!(result, Err(CallError::Timeout(d)) if d == Duration::from_millis(20)));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "hung attempt was not bounded by retry budget"
         );
     }
 
