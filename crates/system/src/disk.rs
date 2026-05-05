@@ -372,8 +372,7 @@ pub fn disk_for_path(path: impl AsRef<std::path::Path>) -> Availability<DiskInfo
     // Find the disk containing this path
     let mut best_match = None;
     let mut best_match_len = 0;
-    let path = path.as_ref();
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = canonicalize_nearest_existing(path.as_ref());
 
     for disk in list() {
         let mount = PathBuf::from(&disk.mount_point);
@@ -391,6 +390,19 @@ pub fn disk_for_path(path: impl AsRef<std::path::Path>) -> Availability<DiskInfo
         || Availability::unavailable(format!("no mounted disk matched path {}", path.display())),
         Availability::available,
     )
+}
+
+fn canonicalize_nearest_existing(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    };
+
+    absolute
+        .ancestors()
+        .find_map(|ancestor| std::fs::canonicalize(ancestor).ok())
+        .unwrap_or(absolute)
 }
 
 /// Get disk pressure for the disk containing a path.
@@ -471,7 +483,9 @@ fn detect_fs_type(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_linux_block_device_name;
+    use std::path::PathBuf;
+
+    use super::{canonicalize_nearest_existing, validate_linux_block_device_name};
 
     #[test]
     fn linux_block_device_name_must_be_a_basename() {
@@ -492,5 +506,16 @@ mod tests {
 
         assert_eq!(validate_linux_block_device_name("sda"), Ok("sda"));
         assert_eq!(validate_linux_block_device_name("nvme0n1"), Ok("nvme0n1"));
+    }
+
+    #[test]
+    fn missing_relative_path_resolves_to_nearest_existing_ancestor() {
+        let missing_path = PathBuf::from(format!("nebula-system-missing-{}", std::process::id()))
+            .join("checkpoint.db");
+
+        let resolved = canonicalize_nearest_existing(&missing_path);
+
+        assert_eq!(resolved, std::fs::canonicalize(".").unwrap());
+        assert!(resolved.is_absolute());
     }
 }

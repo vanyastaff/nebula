@@ -108,7 +108,10 @@ pub use availability::{Availability, AvailabilityStatus};
 pub use error::{SystemError, SystemResult};
 pub use info::SystemInfo;
 #[cfg(feature = "sysinfo")]
-pub use memory::{MemoryInfo, MemoryPressure};
+pub use memory::{
+    MemoryInfo, MemoryPressure, MemoryPressureReason, MemoryPressureReport,
+    MemoryPressureThresholdError, MemoryPressureThresholds,
+};
 pub use result::SystemResultExt;
 
 /// Library version

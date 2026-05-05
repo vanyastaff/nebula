@@ -56,11 +56,41 @@ pub enum MemoryPressureReason {
     HostMemory,
     /// Total memory was unavailable or zero.
     MemoryUnavailable,
+    /// Caller-supplied pressure thresholds failed validation.
+    InvalidThresholds,
     /// Swap is disabled on the host or effective runtime.
     SwapDisabled,
     /// Swap is more than 80% used.
     SwapHigh,
 }
+
+/// Validation error for caller-supplied memory pressure thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MemoryPressureThresholdError {
+    /// One or more threshold values was NaN or infinite.
+    NonFinite,
+    /// One or more threshold values was outside 0.0..=100.0.
+    OutOfRange,
+    /// Thresholds were not strictly ordered as medium < high < critical.
+    NotStrictlyIncreasing,
+}
+
+impl std::fmt::Display for MemoryPressureThresholdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite => f.write_str("memory pressure thresholds must be finite"),
+            Self::OutOfRange => {
+                f.write_str("memory pressure thresholds must be within 0.0..=100.0")
+            },
+            Self::NotStrictlyIncreasing => {
+                f.write_str("memory pressure thresholds must satisfy medium < high < critical")
+            },
+        }
+    }
+}
+
+impl std::error::Error for MemoryPressureThresholdError {}
 
 /// Thresholds used by the memory pressure classifier.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,6 +111,34 @@ impl Default for MemoryPressureThresholds {
             high_percent: 70.0,
             critical_percent: 85.0,
         }
+    }
+}
+
+impl MemoryPressureThresholds {
+    /// Validate threshold invariants before classification.
+    ///
+    /// Threshold values are percentages and must be finite, within
+    /// `0.0..=100.0`, and strictly ordered as medium < high < critical.
+    pub fn validate(&self) -> Result<(), MemoryPressureThresholdError> {
+        let values = [
+            self.medium_percent,
+            self.high_percent,
+            self.critical_percent,
+        ];
+
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(MemoryPressureThresholdError::NonFinite);
+        }
+
+        if values.iter().any(|value| !(0.0..=100.0).contains(value)) {
+            return Err(MemoryPressureThresholdError::OutOfRange);
+        }
+
+        if !(self.medium_percent < self.high_percent && self.high_percent < self.critical_percent) {
+            return Err(MemoryPressureThresholdError::NotStrictlyIncreasing);
+        }
+
+        Ok(())
     }
 }
 
@@ -149,6 +207,9 @@ pub fn current() -> MemoryInfo {
 }
 
 /// Get current memory information with caller-supplied pressure thresholds.
+///
+/// Invalid thresholds yield `MemoryPressure::Unavailable` with
+/// `MemoryPressureReason::InvalidThresholds` in the pressure report.
 #[must_use]
 pub fn current_with_thresholds(thresholds: MemoryPressureThresholds) -> MemoryInfo {
     let sys_memory = SystemInfo::current_memory();
@@ -199,6 +260,28 @@ fn classify_memory_with_thresholds(
     }
 
     let usage_percent = calculate_usage_percent(used, total);
+    if thresholds.validate().is_err() {
+        reasons.push(MemoryPressureReason::InvalidThresholds);
+        if !usage_percent.is_available() {
+            reasons.push(MemoryPressureReason::MemoryUnavailable);
+        }
+
+        return MemoryPressureReport {
+            level: MemoryPressure::Unavailable,
+            reasons,
+            effective_total: total,
+            effective_available: available,
+            effective_used: used,
+            usage_percent,
+            host_total: sys_memory.total,
+            host_available: sys_memory.available,
+            swap_total: sys_memory.swap_total,
+            swap_available: sys_memory.swap_available,
+            capacity_source: sys_memory.effective.source,
+            thresholds,
+        };
+    }
+
     let level = match usage_percent.value().copied() {
         _ if total == 0 => {
             reasons.push(MemoryPressureReason::MemoryUnavailable);
@@ -264,6 +347,9 @@ pub fn pressure_report() -> MemoryPressureReport {
 }
 
 /// Get current memory pressure with caller-supplied thresholds.
+///
+/// Invalid thresholds yield `MemoryPressure::Unavailable` with
+/// `MemoryPressureReason::InvalidThresholds` in the report.
 #[must_use]
 pub fn pressure_report_with_thresholds(
     thresholds: MemoryPressureThresholds,
@@ -281,8 +367,8 @@ mod tests {
     use std::time::SystemTime;
 
     use super::{
-        MemoryPressure, MemoryPressureReason, MemoryPressureThresholds, classify_memory,
-        classify_memory_with_thresholds,
+        MemoryPressure, MemoryPressureReason, MemoryPressureThresholdError,
+        MemoryPressureThresholds, classify_memory, classify_memory_with_thresholds,
     };
     use crate::{
         Availability,
@@ -402,6 +488,55 @@ mod tests {
 
         assert_eq!(report.level, MemoryPressure::High);
         assert_eq!(report.thresholds, thresholds);
+    }
+
+    #[test]
+    fn default_thresholds_validate() {
+        assert_eq!(MemoryPressureThresholds::default().validate(), Ok(()));
+    }
+
+    #[test]
+    fn invalid_thresholds_make_pressure_unavailable() {
+        let invalid_thresholds = [
+            (
+                MemoryPressureThresholds {
+                    medium_percent: f64::NAN,
+                    high_percent: 70.0,
+                    critical_percent: 85.0,
+                },
+                MemoryPressureThresholdError::NonFinite,
+            ),
+            (
+                MemoryPressureThresholds {
+                    medium_percent: -1.0,
+                    high_percent: 70.0,
+                    critical_percent: 85.0,
+                },
+                MemoryPressureThresholdError::OutOfRange,
+            ),
+            (
+                MemoryPressureThresholds {
+                    medium_percent: 70.0,
+                    high_percent: 70.0,
+                    critical_percent: 85.0,
+                },
+                MemoryPressureThresholdError::NotStrictlyIncreasing,
+            ),
+        ];
+
+        for (thresholds, expected_error) in invalid_thresholds {
+            assert_eq!(thresholds.validate(), Err(expected_error));
+
+            let report = classify_memory_with_thresholds(&system_memory(1000, 0), thresholds);
+
+            assert_eq!(report.level, MemoryPressure::Unavailable);
+            assert_eq!(report.usage_percent.value().copied(), Some(100.0));
+            assert!(
+                report
+                    .reasons
+                    .contains(&MemoryPressureReason::InvalidThresholds)
+            );
+        }
     }
 
     #[test]

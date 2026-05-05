@@ -28,7 +28,7 @@ pub use crate::load::SystemLoad;
 #[cfg(feature = "sysinfo")]
 pub use crate::memory::{
     MemoryInfo, MemoryPressure, MemoryPressureReason, MemoryPressureReport,
-    MemoryPressureThresholds,
+    MemoryPressureThresholdError, MemoryPressureThresholds,
 };
 // Network types
 #[cfg(feature = "network")]
