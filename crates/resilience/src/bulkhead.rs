@@ -345,11 +345,13 @@ impl Bulkhead {
     /// Returns a snapshot of current bulkhead state.
     #[must_use]
     pub fn stats(&self) -> BulkheadStats {
+        let available_permits = self.semaphore.available_permits();
+
         BulkheadStats {
             max_concurrency: self.config.max_concurrency,
-            active_operations: self.active_operations(),
-            available_permits: self.available_permits(),
-            is_at_capacity: self.is_at_capacity(),
+            active_operations: self.config.max_concurrency - available_permits,
+            available_permits,
+            is_at_capacity: available_permits == 0,
         }
     }
 }

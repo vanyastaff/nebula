@@ -106,6 +106,10 @@ fn retry_after_from_rate(units_needed: f64, units_per_second: f64) -> Option<Dur
     Some(Duration::from_secs_f64(seconds).max(Duration::from_nanos(1)))
 }
 
+fn duration_as_nanos_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
 fn rate_limited_with_retry_after(retry_after: Option<Duration>) -> CallError<()> {
     retry_after.map_or_else(CallError::rate_limited, CallError::rate_limited_after)
 }
@@ -814,8 +818,9 @@ struct AdaptiveState {
 /// | 1 % ≤ error rate ≤ 10 % | No change |
 ///
 /// Adjustments happen at most once per stats window (default: 1 minute).
-/// Lock-free atomics are used for the counters so recording outcomes is
-/// contention-free; the write lock is only taken when the window elapses.
+/// Lock-free atomics are used for the counters and fast-path window check, so
+/// recording outcomes does not take the rate-adjustment lock until the window
+/// elapses.
 ///
 /// The [`call()`](RateLimiter::call) override automatically records success/
 /// error outcomes, so manual calls to `record_*` are only needed when you
@@ -851,6 +856,8 @@ struct AdaptiveState {
 /// ```
 pub struct AdaptiveRateLimiter {
     state: Arc<RwLock<AdaptiveState>>,
+    adjustment_origin: Instant,
+    next_adjust_after_ns: AtomicU64,
     /// Lock-free copy of `current_rate` for cheap reads without taking the lock.
     /// Stored as `f64::to_bits()` / read via `f64::from_bits()`.
     atomic_rate: AtomicU64,
@@ -916,17 +923,21 @@ impl AdaptiveRateLimiter {
                 )
             })?;
 
+        let now = Instant::now();
+        let stats_window = Duration::from_mins(1);
         Ok(Self {
             state: Arc::new(RwLock::new(AdaptiveState {
                 inner: Arc::new(token_bucket),
-                last_stats_reset: Instant::now(),
+                last_stats_reset: now,
                 current_rate: initial_rate,
                 initial_rate,
             })),
+            adjustment_origin: now,
+            next_adjust_after_ns: AtomicU64::new(duration_as_nanos_u64(stats_window)),
             atomic_rate: AtomicU64::new(initial_rate.to_bits()),
             success_count: AtomicU64::new(0),
             error_count: AtomicU64::new(0),
-            stats_window: Duration::from_mins(1),
+            stats_window,
             min_rate,
             max_rate,
         })
@@ -934,29 +945,41 @@ impl AdaptiveRateLimiter {
 
     /// Try to adjust rate if stats window has elapsed.
     ///
-    /// Uses a read lock for the fast path (window not yet elapsed) and only takes
-    /// a write lock when adjustment is needed.
+    /// Uses an atomic deadline for the fast path (window not yet elapsed) and
+    /// only takes a write lock when adjustment is needed.
     fn maybe_adjust_rate(&self) {
-        // Fast path: read lock to check window
-        let needs_adjust = {
-            let state = self.state.read();
-            state.last_stats_reset.elapsed() >= self.stats_window
-        };
+        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
+        let next_adjust_after_ns = self.next_adjust_after_ns.load(Ordering::Acquire);
+        if elapsed_ns < next_adjust_after_ns {
+            return;
+        }
 
-        if !needs_adjust {
+        if self
+            .next_adjust_after_ns
+            .compare_exchange(
+                next_adjust_after_ns,
+                u64::MAX,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
             return;
         }
 
         // Slow path: write lock for adjustment
         let mut state = self.state.write();
         // Double-check after acquiring write lock (another thread may have adjusted)
-        if state.last_stats_reset.elapsed() < self.stats_window {
-            return;
+        if state.last_stats_reset.elapsed() >= self.stats_window {
+            let success = self.success_count.swap(0, Ordering::Relaxed);
+            let error = self.error_count.swap(0, Ordering::Relaxed);
+            self.do_adjust_rate(&mut state, success, error);
         }
 
-        let success = self.success_count.swap(0, Ordering::Relaxed);
-        let error = self.error_count.swap(0, Ordering::Relaxed);
-        self.do_adjust_rate(&mut state, success, error);
+        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
+        let window_ns = duration_as_nanos_u64(self.stats_window);
+        self.next_adjust_after_ns
+            .store(elapsed_ns.saturating_add(window_ns), Ordering::Release);
         drop(state);
     }
 
@@ -1042,6 +1065,10 @@ impl RateLimiter for AdaptiveRateLimiter {
         self.error_count.store(0, Ordering::Relaxed);
         let mut state = self.state.write();
         state.last_stats_reset = Instant::now();
+        let elapsed_ns = duration_as_nanos_u64(self.adjustment_origin.elapsed());
+        let window_ns = duration_as_nanos_u64(self.stats_window);
+        self.next_adjust_after_ns
+            .store(elapsed_ns.saturating_add(window_ns), Ordering::Release);
         let mut reset_rate = state.initial_rate.clamp(0.001, 10_000.0);
         let reset_capacity = reset_rate.max(1.0) as usize;
 

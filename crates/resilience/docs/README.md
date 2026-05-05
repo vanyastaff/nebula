@@ -147,7 +147,7 @@ let _guard = gate.enter().expect("gate is open");
 | Load shedding | `load_shed` free function | Predicate-based, with context-aware variants |
 | Cooperative shutdown barrier | `Gate`, `GateGuard` | Bounded close available via `close_with_timeout()` |
 | Metrics sink | `MetricsSink` trait, `NoopSink`, `RecordingSink` | Receives `ResilienceEvent`. `ResilienceEventKind` enum for counting. |
-| Scoped pipeline outcomes | `PolicyScope`, `PipelineOutcome` | Distinguishes primary success/failure and fallback recovery. |
+| Scoped pipeline outcomes | `PolicyScope`, `ScopeValue`, `PipelineOutcome` | Distinguishes primary success/failure and fallback recovery without deep-copying scope strings on event clones. |
 | Shared deadline helper | `Deadline` | Bounds attempts and sleeps by remaining budget. |
 | Adaptive config source | `PolicySource<C>` trait | Blanket impl for static configs (in `policy` module) |
 | Runtime load signals | `LoadSignal` trait, `ConstantLoad` | For adaptive policies (in `policy` module) |
@@ -174,6 +174,7 @@ crates/resilience/
 │   │   ── Observability ─────────────────────────────────────────────────
 │   ├── sink.rs                  MetricsSink, NoopSink, RecordingSink, ResilienceEvent,
 │   │                            ResilienceEventKind, CircuitState, PolicyScope,
+│   │                            ScopeValue,
 │   │                            PipelineOutcome
 │   │
 │   │   ── Patterns ─────────────────────────────────────────────────────

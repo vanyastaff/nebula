@@ -41,7 +41,7 @@ failures must compose inside the action.
 - `Gate::close_with_timeout()` — bounded cooperative shutdown drain with typed timeout diagnostics.
 - `hedge::{HedgeConfig, HedgeSafety, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative execution for duplicate-safe operations.
 - `Deadline` — shared monotonic budget helper for attempts and sleeps.
-- `sink::{MetricsSink, PolicyScope, PipelineOutcome, ResilienceEvent, ResilienceEventKind, RecordingSink}` — observability hooks for pipeline and pattern events.
+- `sink::{MetricsSink, PolicyScope, ScopeValue, PipelineOutcome, ResilienceEvent, ResilienceEventKind, RecordingSink}` — observability hooks for pipeline and pattern events.
 
 ## Contract
 

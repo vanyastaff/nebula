@@ -78,11 +78,11 @@ pub enum ResilienceEvent {
 }
 
 pub struct PolicyScope {
-    pub tenant_id: Option<Cow<'static, str>>,
-    pub workflow_id: Option<Cow<'static, str>>,
-    pub action_id: Option<Cow<'static, str>>,
-    pub resource_id: Option<Cow<'static, str>>,
-    pub operation: Option<Cow<'static, str>>,
+    pub tenant_id: Option<ScopeValue>,
+    pub workflow_id: Option<ScopeValue>,
+    pub action_id: Option<ScopeValue>,
+    pub resource_id: Option<ScopeValue>,
+    pub operation: Option<ScopeValue>,
 }
 
 pub enum PipelineOutcome {
@@ -102,6 +102,10 @@ pub enum CircuitState {
     HalfOpen,
 }
 ```
+
+`ScopeValue` stores the string as shared `Arc<str>`, so cloning a scope or
+recorded pipeline-completion event does not deep-copy owned tenant/workflow/action
+strings.
 
 ---
 

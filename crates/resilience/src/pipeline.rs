@@ -2075,7 +2075,7 @@ mod tests {
             .call_with_fallback(
                 || {
                     Box::pin(async {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        std::future::pending::<()>().await;
                         Ok::<u32, &str>(42)
                     })
                 },

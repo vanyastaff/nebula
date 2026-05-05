@@ -3,29 +3,97 @@
 //! Replaces the custom `ObservabilityHook` system. The default is [`NoopSink`].
 //! In nebula-engine, `EventBusSink` wraps nebula-eventbus — no direct dep here.
 
-use std::{borrow::Cow, sync::Arc, time::Duration};
+use std::{borrow::Cow, ops::Deref, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 
 use crate::CallErrorKind;
+
+/// Low-cardinality scope string shared by [`PolicyScope`].
+///
+/// Scope values are copied into an `Arc<str>` once at construction time. Cloning
+/// a [`PolicyScope`] or [`ResilienceEvent::PipelineCompleted`] then increments a
+/// refcount instead of allocating and copying tenant/workflow/action strings on
+/// every pipeline completion event.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct ScopeValue(Arc<str>);
+
+impl ScopeValue {
+    /// Borrow the scope value as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for ScopeValue {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for ScopeValue {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for ScopeValue {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<String> for ScopeValue {
+    fn from(value: String) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<Box<str>> for ScopeValue {
+    fn from(value: Box<str>) -> Self {
+        Self(Arc::from(value))
+    }
+}
+
+impl From<Arc<str>> for ScopeValue {
+    fn from(value: Arc<str>) -> Self {
+        Self(value)
+    }
+}
+
+impl<'a> From<Cow<'a, str>> for ScopeValue {
+    fn from(value: Cow<'a, str>) -> Self {
+        match value {
+            Cow::Borrowed(value) => Self::from(value),
+            Cow::Owned(value) => Self::from(value),
+        }
+    }
+}
 
 /// Workflow/resource scope attached to high-level pipeline events.
 ///
 /// Scope values are intentionally optional so callers can choose a low-cardinality
 /// subset that is safe for their telemetry backend. Dynamic values should usually
 /// go to traces/events, not metric labels.
+///
+/// Field values use [`ScopeValue`] so pipeline completion events can carry scope
+/// without deep-copying owned strings on every event clone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct PolicyScope {
     /// Tenant identifier, when safe to expose.
-    pub tenant_id: Option<Cow<'static, str>>,
+    pub tenant_id: Option<ScopeValue>,
     /// Workflow identifier or workflow type.
-    pub workflow_id: Option<Cow<'static, str>>,
+    pub workflow_id: Option<ScopeValue>,
     /// Action identifier or action type.
-    pub action_id: Option<Cow<'static, str>>,
+    pub action_id: Option<ScopeValue>,
     /// Resource identifier or resource type.
-    pub resource_id: Option<Cow<'static, str>>,
+    pub resource_id: Option<ScopeValue>,
     /// Operation name, such as `gmail.poll` or `postgres.query`.
-    pub operation: Option<Cow<'static, str>>,
+    pub operation: Option<ScopeValue>,
 }
 
 impl PolicyScope {
@@ -53,35 +121,35 @@ impl PolicyScope {
 
     /// Set the tenant id.
     #[must_use]
-    pub fn tenant_id(mut self, tenant_id: impl Into<Cow<'static, str>>) -> Self {
+    pub fn tenant_id(mut self, tenant_id: impl Into<ScopeValue>) -> Self {
         self.tenant_id = Some(tenant_id.into());
         self
     }
 
     /// Set the workflow id.
     #[must_use]
-    pub fn workflow_id(mut self, workflow_id: impl Into<Cow<'static, str>>) -> Self {
+    pub fn workflow_id(mut self, workflow_id: impl Into<ScopeValue>) -> Self {
         self.workflow_id = Some(workflow_id.into());
         self
     }
 
     /// Set the action id.
     #[must_use]
-    pub fn action_id(mut self, action_id: impl Into<Cow<'static, str>>) -> Self {
+    pub fn action_id(mut self, action_id: impl Into<ScopeValue>) -> Self {
         self.action_id = Some(action_id.into());
         self
     }
 
     /// Set the resource id.
     #[must_use]
-    pub fn resource_id(mut self, resource_id: impl Into<Cow<'static, str>>) -> Self {
+    pub fn resource_id(mut self, resource_id: impl Into<ScopeValue>) -> Self {
         self.resource_id = Some(resource_id.into());
         self
     }
 
     /// Set the operation name.
     #[must_use]
-    pub fn operation(mut self, operation: impl Into<Cow<'static, str>>) -> Self {
+    pub fn operation(mut self, operation: impl Into<ScopeValue>) -> Self {
         self.operation = Some(operation.into());
         self
     }
@@ -361,14 +429,31 @@ mod tests {
 
     #[test]
     fn policy_scope_builders_set_fields() {
+        let tenant = String::from("tenant-a");
+        let resource = Cow::Borrowed("resource-a");
         let scope = PolicyScope::empty()
-            .tenant_id("tenant-a")
+            .tenant_id(tenant)
             .workflow_id("workflow-a")
             .action_id("action-a")
-            .resource_id("resource-a")
+            .resource_id(resource)
             .operation("gmail.poll");
 
         assert_eq!(scope.tenant_id.as_deref(), Some("tenant-a"));
+        assert_eq!(scope.resource_id.as_deref(), Some("resource-a"));
         assert_eq!(scope.operation.as_deref(), Some("gmail.poll"));
+    }
+
+    #[test]
+    fn policy_scope_clone_shares_owned_values() {
+        let tenant = Arc::<str>::from("tenant-a");
+        let scope = PolicyScope::empty().tenant_id(Arc::clone(&tenant));
+        let cloned = scope.clone();
+
+        let original = scope.tenant_id.as_ref().unwrap();
+        let cloned = cloned.tenant_id.as_ref().unwrap();
+
+        assert_eq!(original.as_str(), "tenant-a");
+        assert!(Arc::ptr_eq(&tenant, &original.0));
+        assert!(Arc::ptr_eq(&original.0, &cloned.0));
     }
 }

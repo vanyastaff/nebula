@@ -145,6 +145,12 @@ impl BackoffConfig {
                 max,
             } => {
                 let multiplier = normalize_exponential_multiplier(*multiplier);
+                if multiplier.to_bits() == 1.0f64.to_bits() {
+                    return duration_from_millis_capped_u128(base.as_millis(), *max);
+                }
+                if multiplier.to_bits() == 2.0f64.to_bits() {
+                    return exponential_delay_by_doubling(*base, attempt, *max);
+                }
                 let ms = base.as_millis() as f64 * multiplier.powi(attempt as i32);
                 duration_from_millis_capped(ms, *max)
             },
@@ -159,6 +165,21 @@ impl BackoffConfig {
                 .unwrap_or(Duration::ZERO),
         }
     }
+}
+
+fn exponential_delay_by_doubling(base: Duration, attempt: u32, max: Duration) -> Duration {
+    let base_ms = base.as_millis();
+    let delay_ms = base_ms.checked_shl(attempt).unwrap_or(u128::MAX);
+    duration_from_millis_capped_u128(delay_ms, max)
+}
+
+fn duration_from_millis_capped_u128(ms: u128, max: Duration) -> Duration {
+    if ms >= max.as_millis() {
+        return max;
+    }
+
+    let millis = u64::try_from(ms).unwrap_or(u64::MAX);
+    Duration::from_millis(millis).min(max)
 }
 
 fn normalize_exponential_multiplier(multiplier: f64) -> f64 {

@@ -234,7 +234,7 @@ crates/resilience/src/
 │                      ResilienceEvent — typed events emitted by patterns.
 │                      ResilienceEventKind — discriminant enum for counting/filtering.
 │                      CircuitState — Closed | Open | HalfOpen.
-│                      PolicyScope, PipelineOutcome.
+│                      PolicyScope, ScopeValue, PipelineOutcome.
 │
 │  ── Patterns ────────────────────────────────────────────────────────────────
 │

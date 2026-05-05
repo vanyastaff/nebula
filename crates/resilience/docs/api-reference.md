@@ -436,6 +436,7 @@ Root re-exports:
 - `NoopSink`
 - `RecordingSink`
 - `PolicyScope`
+- `ScopeValue`
 - `PipelineOutcome`
 - `ResilienceEvent`
 - `ResilienceEventKind`

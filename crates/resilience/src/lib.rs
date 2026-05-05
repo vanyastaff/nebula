@@ -192,7 +192,7 @@ pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
 // Observability
 pub use sink::{
     CircuitState, MetricsSink, NoopSink, PipelineOutcome, PolicyScope, RecordingSink,
-    ResilienceEvent, ResilienceEventKind,
+    ResilienceEvent, ResilienceEventKind, ScopeValue,
 };
 pub use timeout::{
     TimeoutExecutor, timeout, timeout_with_policy_context, timeout_with_policy_context_and_sink,
