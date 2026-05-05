@@ -5,14 +5,11 @@
 //! - LeakyBucket throughput
 //! - SlidingWindow throughput
 //! - AdaptiveRateLimiter throughput
-//! - GovernorRateLimiter throughput (GCRA, requires `governor` feature)
 //! - Comparison between different algorithms
 
 use std::{hint::black_box, sync::Arc};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-#[cfg(feature = "governor")]
-use nebula_resilience::rate_limiter::GovernorRateLimiter;
 use nebula_resilience::{
     AdaptiveRateLimiter, CallError, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
 };
@@ -64,20 +61,6 @@ fn rate_limiter_acquire(c: &mut Criterion) {
         );
     }
 
-    // GovernorRateLimiter (requires `governor` feature)
-    #[cfg(feature = "governor")]
-    for &rate in &[100, 1000, 10000] {
-        group.bench_with_input(BenchmarkId::new("governor", rate), &rate, |b, &rate| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let limiter = Arc::new(GovernorRateLimiter::new(rate as f64, rate));
-
-            b.to_async(&rt).iter(|| {
-                let limiter = Arc::clone(&limiter);
-                async move { black_box(limiter.acquire().await) }
-            });
-        });
-    }
-
     group.finish();
 }
 
@@ -111,23 +94,6 @@ fn rate_limiter_call(c: &mut Criterion) {
             )
             .unwrap(),
         );
-
-        b.to_async(&rt).iter(|| {
-            let limiter = Arc::clone(&limiter);
-            async move {
-                let result = limiter
-                    .call(|| async { Ok::<_, CallError<()>>(black_box(42)) })
-                    .await;
-                black_box(result)
-            }
-        });
-    });
-
-    // GovernorRateLimiter execute (requires `governor` feature)
-    #[cfg(feature = "governor")]
-    group.bench_function("governor_1000rps", |b| {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let limiter = Arc::new(GovernorRateLimiter::new(1000.0, 1000));
 
         b.to_async(&rt).iter(|| {
             let limiter = Arc::clone(&limiter);
@@ -194,33 +160,6 @@ fn rate_limiter_contention(c: &mut Criterion) {
             |b, &num_tasks| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let limiter = Arc::new(TokenBucket::new(10000, 10000.0).unwrap());
-
-                b.to_async(&rt).iter(|| {
-                    let limiter = Arc::clone(&limiter);
-                    async move {
-                        let mut handles = vec![];
-                        for _ in 0..num_tasks {
-                            let limiter = Arc::clone(&limiter);
-                            let handle = tokio::spawn(async move { limiter.acquire().await });
-                            handles.push(handle);
-                        }
-
-                        for handle in handles {
-                            let _ = handle.await;
-                        }
-                    }
-                });
-            },
-        );
-
-        // GovernorRateLimiter concurrent (requires `governor` feature)
-        #[cfg(feature = "governor")]
-        group.bench_with_input(
-            BenchmarkId::new("governor_concurrent_acquire", num_tasks),
-            &num_tasks,
-            |b, &num_tasks| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                let limiter = Arc::new(GovernorRateLimiter::new(10000.0, 10000));
 
                 b.to_async(&rt).iter(|| {
                     let limiter = Arc::clone(&limiter);

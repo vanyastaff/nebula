@@ -454,7 +454,7 @@ mod tests {
 // invariants in `enter()` / `close()`.
 //
 // Run with:
-//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --test gate_loom
+//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
 //
 // Note: loom replaces `AtomicBool` via the conditional import above.
 // Tokio's `Semaphore` is **not** loom-instrumented; the loom tests here focus

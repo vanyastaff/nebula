@@ -52,7 +52,8 @@ use crate::{
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Declares whether speculative duplicate execution is safe for the operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum HedgeSafety {
     /// Duplicate execution has not been proven safe.
@@ -63,7 +64,8 @@ pub enum HedgeSafety {
 }
 
 /// Configuration for the hedge pattern.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
 pub struct HedgeConfig {
     /// Delay before sending each hedge request.
     pub hedge_delay: Duration,

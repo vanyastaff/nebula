@@ -92,7 +92,9 @@ async fn test_concurrent_rate_limiting() {
         }));
     }
 
-    futures::future::join_all(handles).await;
+    for handle in handles {
+        handle.await.unwrap();
+    }
 
     let successes = success_count.load(Ordering::Relaxed);
     let rejects = reject_count.load(Ordering::Relaxed);

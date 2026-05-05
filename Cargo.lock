@@ -2320,13 +2320,10 @@ dependencies = [
  "futures-sink",
  "futures-timer",
  "futures-util",
- "getrandom 0.3.4",
  "hashbrown 0.16.1",
  "nonzero_ext",
  "parking_lot",
  "portable-atomic",
- "quanta",
- "rand 0.9.4",
  "smallvec",
  "spinning_top",
  "web-time",
@@ -3100,7 +3097,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
 dependencies = [
  "scopeguard",
- "serde",
 ]
 
 [[package]]
@@ -3720,17 +3716,12 @@ version = "0.1.0"
 dependencies = [
  "codspeed-criterion-compat",
  "fastrand",
- "futures",
- "governor",
- "humantime-serde",
- "insta",
  "loom",
  "nebula-error",
  "parking_lot",
- "pretty_assertions",
  "proptest",
- "rstest",
  "serde",
+ "serde_json",
  "smallvec",
  "thiserror",
  "tokio",
@@ -4844,21 +4835,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quanta"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3ab5a9d756f0d97bdc89019bd2e4ea098cf9cde50ee7564dde6b81ccc8f06c7"
-dependencies = [
- "crossbeam-utils",
- "libc",
- "once_cell",
- "raw-cpuid",
- "wasi",
- "web-sys",
- "winapi",
-]
-
-[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5024,15 +5000,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
-]
-
-[[package]]
-name = "raw-cpuid"
-version = "11.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
-dependencies = [
- "bitflags",
 ]
 
 [[package]]

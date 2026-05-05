@@ -15,6 +15,8 @@ use crate::CallErrorKind;
 /// a [`PolicyScope`] or [`ResilienceEvent::PipelineCompleted`] then increments a
 /// refcount instead of allocating and copying tenant/workflow/action strings on
 /// every pipeline completion event.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct ScopeValue(Arc<str>);
@@ -82,6 +84,7 @@ impl<'a> From<Cow<'a, str>> for ScopeValue {
 ///
 /// Field values use [`ScopeValue`] so pipeline completion events can carry scope
 /// without deep-copying owned strings on every event clone.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct PolicyScope {
     /// Tenant identifier, when safe to expose.
@@ -156,6 +159,7 @@ impl PolicyScope {
 }
 
 /// Final outcome of a pipeline invocation.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PipelineOutcome {
@@ -181,6 +185,7 @@ pub enum PipelineOutcome {
 }
 
 /// A state in the circuit breaker state machine.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CircuitState {
@@ -193,6 +198,7 @@ pub enum CircuitState {
 }
 
 /// Events emitted by resilience patterns to the [`MetricsSink`].
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResilienceEvent {
@@ -253,6 +259,7 @@ pub enum ResilienceEvent {
 }
 
 /// Fieldless discriminant of [`ResilienceEvent`] for type-safe event filtering.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ResilienceEventKind {
@@ -457,5 +464,23 @@ mod tests {
         assert_eq!(original.as_str(), "tenant-a");
         assert!(Arc::ptr_eq(&tenant, &original.0));
         assert!(Arc::ptr_eq(&original.0, &cloned.0));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn scoped_pipeline_event_serde_round_trips() {
+        let event = ResilienceEvent::PipelineCompleted {
+            scope: PolicyScope::empty()
+                .tenant_id("tenant-a")
+                .workflow_id("workflow-a")
+                .operation("gmail.poll"),
+            outcome: PipelineOutcome::FallbackSucceeded {
+                primary_error: CallErrorKind::Timeout,
+            },
+        };
+
+        let encoded = serde_json::to_string(&event).unwrap();
+        let decoded: ResilienceEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, event);
     }
 }

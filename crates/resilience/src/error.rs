@@ -416,6 +416,7 @@ impl ConfigError {
 }
 
 /// Fieldless discriminant of [`CallError`] for dispatch without matching on data.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CallErrorKind {

@@ -2,6 +2,9 @@
 
 Fault-tolerance patterns for Nebula services.
 
+Internal Nebula workspace crate. It is documented here for engine/action authors and is not
+published as a standalone public crate.
+
 `nebula-resilience` gives workflow actions and service calls bounded failure handling —
 circuit breaking, bounded retry, concurrency isolation, rate limiting, timeouts, load
 shedding, graceful degradation, and cooperative shutdown.
@@ -15,6 +18,7 @@ forcing conversions into a resilience-specific error enum.
 
 - [Core Concepts](#core-concepts)
 - [Quick Start](#quick-start)
+- [Cargo Features](#cargo-features)
 - [Feature Matrix](#feature-matrix)
 - [Crate Layout](#crate-layout)
 - [Documentation](#documentation)
@@ -123,6 +127,23 @@ let _guard = gate.enter().expect("gate is open");
 
 ---
 
+## Cargo Features
+
+| Feature | Default | Notes |
+|---------|---------|-------|
+| `serde` | yes | Enables serde for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, and stats/load snapshots. Disable with `--no-default-features` for a smaller runtime-only build. |
+| `full` | no | Alias for all normal optional features owned by this crate; currently equivalent to `serde`. |
+| `loom` | no | Model-checking support for selected atomic invariants. Use with `RUSTFLAGS="--cfg loom"`. |
+
+Third-party rate-limiter wrappers are intentionally not exposed by this crate. Keep specialized
+adapters at integration boundaries unless the Nebula runtime itself depends on them.
+
+Runtime executors, guards, sinks, callbacks, and generic caller errors intentionally stay outside
+serde because they carry live process state or user-owned types, not stable Nebula config/event
+data.
+
+---
+
 ## Feature Matrix
 
 | Feature | Type | Notes |
@@ -133,21 +154,21 @@ let _guard = gate.enter().expect("gate is open");
 | Token-bucket rate limiting | `TokenBucket` | Capacity + refill rate |
 | Leaky-bucket rate limiting | `LeakyBucket` | Constant leak rate |
 | Sliding-window rate limiting | `SlidingWindow` | Time-window counter |
-| Adaptive rate limiting | `AdaptiveRateLimiter` | Adjusts based on error rates |
-| Exponential / fixed / linear backoff | `BackoffConfig` enum | Serde support |
+| Adaptive rate limiting | `AdaptiveRateLimiter` | Adjusts based on error rates; `LoadSnapshot` / `ConstantLoad` serde deserialization preserves interval validation |
+| Exponential / fixed / linear backoff | `BackoffConfig` enum | Serde support behind the `serde` feature (default) |
 | Jitter policy (none / full) | `JitterConfig` | Optional fraction |
 | Predicate-driven retry | `RetryConfig::retry_if` | Per-error-type classification |
 | Cancellation-aware retry | `CancellationContext` | `CancellableFuture` combinator |
 | Shared policy context | `PolicyContext` | Carries cancellation, deadline, and scope across pipeline and standalone policy calls |
-| Semaphore-bounded concurrency | `Bulkhead`, `BulkheadConfig` | Serde support |
+| Semaphore-bounded concurrency | `Bulkhead`, `BulkheadConfig` | Serde support behind the `serde` feature (default) |
 | Hard deadline timeout | `timeout`, `TimeoutExecutor` | `try_new()` rejects zero config; context-aware calls compose with `PolicyContext` |
 | Value fallback | `ValueFallback<T>` | Returns cloned constant |
 | Custom fallback | `FallbackStrategy<T>` trait | Implement recovery for custom logic; keep `fallback()` as the safe entry point |
-| Speculative parallel hedging | `HedgeExecutor`, `AdaptiveHedgeExecutor`, `HedgeConfig`, `HedgeSafety` | Reduces tail latency for idempotent operations. Constructor returns `Result`. Serde on `HedgeConfig`. |
+| Speculative parallel hedging | `HedgeExecutor`, `AdaptiveHedgeExecutor`, `HedgeConfig`, `HedgeSafety` | Reduces tail latency for idempotent operations. Constructor returns `Result`. Serde on `HedgeConfig` is behind the `serde` feature (default). |
 | Load shedding | `load_shed` free function | Predicate-based, with context-aware variants |
 | Cooperative shutdown barrier | `Gate`, `GateGuard` | Bounded close available via `close_with_timeout()` |
-| Metrics sink | `MetricsSink` trait, `NoopSink`, `RecordingSink` | Receives `ResilienceEvent`. `ResilienceEventKind` enum for counting. |
-| Scoped pipeline outcomes | `PolicyScope`, `ScopeValue`, `PipelineOutcome` | Distinguishes primary success/failure and fallback recovery without deep-copying scope strings on event clones. |
+| Metrics sink | `MetricsSink` trait, `NoopSink`, `RecordingSink` | Receives `ResilienceEvent`. `ResilienceEvent` and `ResilienceEventKind` serde support is behind the `serde` feature (default). |
+| Scoped pipeline outcomes | `PolicyScope`, `ScopeValue`, `PipelineOutcome` | Distinguishes primary success/failure and fallback recovery without deep-copying scope strings on event clones. Serde support is behind the `serde` feature (default). |
 | Shared deadline helper | `Deadline` | Bounds attempts and sleeps by remaining budget. |
 | Adaptive config source | `PolicySource<C>` trait | Blanket impl for static configs (in `policy` module) |
 | Runtime load signals | `LoadSignal` trait, `ConstantLoad` | For adaptive policies (in `policy` module) |

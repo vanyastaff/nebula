@@ -1,58 +1,60 @@
 [package]
 name = "nebula-resilience"
+description = "Internal Nebula resilience layer for outbound calls: retry, timeout, circuit breaker, bulkhead, rate limiting, fallback, and hedging"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-keywords.workspace = true
+publish = false
+readme = "README.md"
+keywords = ["nebula", "resilience", "retry", "workflow", "reliability"]
 authors.workspace = true
-description.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 
 [features]
-## Enables the `GovernorRateLimiter` (GCRA algorithm) and the
-## `AnyRateLimiter::Governor` variant.  Pulls in the `governor` crate.
-governor = ["dep:governor"]
+# Keep boundary type serialization enabled by default for backwards compatibility.
+default = ["serde"]
 
-## Enables `serde`-based human-readable Duration serialization via
-## `humantime-serde` (e.g. "30s", "1m 30s").  Affects `CommonConfig`.
-humantime = ["dep:humantime-serde"]
+# Enables every normal optional runtime feature owned by this crate.
+full = ["serde"]
 
-## Convenience bundle: enables all optional features.
-full = ["governor", "humantime"]
+# Enables serde for config/value boundary types.
+serde = ["dep:serde", "smallvec/serde"]
+
+# Enables loom-backed atomics for model-checking tests when paired with
+# `RUSTFLAGS="--cfg loom"`.
+loom = ["dep:loom"]
 
 [dependencies]
-# Async and concurrency
-tokio = { workspace = true, features = ["sync", "time"] }
-
-# Errors and serialization
+# Nebula integration
 nebula-error = { workspace = true }
-serde = { workspace = true }
-thiserror = { workspace = true }
 
-# Utilities
-parking_lot = { workspace = true, features = ["arc_lock", "serde"] }
-humantime-serde = { version = "1.1.1", optional = true }
-governor = { version = "0.10", optional = true }
+# Async runtime
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
-fastrand = "2.4"
-loom = { version = "0.7", optional = true }
-smallvec = { version = "1.15", features = ["union", "serde"] }
+
+# Error derivation and observability
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# Only nebula-error — no other internal deps
+# Synchronization and compact storage
+parking_lot = { workspace = true }
+smallvec = { version = "1.15", features = ["union"] }
+
+# Retry jitter
+fastrand = "2.4"
+
+# Optional feature dependencies
+serde = { workspace = true, optional = true }
+loom = { version = "0.7", optional = true }
 
 [dev-dependencies]
-criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
-futures = { workspace = true }
-thiserror = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio"] }
+proptest = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-insta = { workspace = true }
-pretty_assertions = { workspace = true }
-proptest = "1"
-rstest = { workspace = true }
 
 [lints]
 workspace = true
@@ -108,9 +110,3 @@ harness = false
 [[bench]]
 name = "hedge"
 harness = false
-
-[package.metadata.cargo-shear]
-# humantime-serde is behind the `humantime` feature and is consumed via
-# `#[serde(with = "humantime_serde")]` in config types that the feature
-# toggles on; cargo-shear does not trace the serde attribute path.
-ignored = ["humantime-serde"]
