@@ -61,7 +61,8 @@ use std::{fmt, marker::PhantomData, sync::Arc};
 ///
 /// *Timeout behavior in CB is controlled by
 /// [`count_timeouts_as_failures`](crate::circuit_breaker::CircuitBreakerConfig::count_timeouts_as_failures).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorClass {
     /// Temporary issue — retry, counts as CB failure.

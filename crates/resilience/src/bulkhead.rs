@@ -35,7 +35,8 @@ use crate::{
 ///
 /// let _bulkhead = Bulkhead::new(cfg).expect("config is valid");
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations. Min: 1.
     pub max_concurrency: usize,
@@ -45,6 +46,7 @@ pub struct BulkheadConfig {
     /// [`CallError::BulkheadFull`] immediately (fail-fast) instead of waiting in line.
     pub queue_size: usize,
     /// Optional timeout while waiting for a permit.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub timeout: Option<std::time::Duration>,
 }
 
@@ -329,6 +331,7 @@ pub struct BulkheadPermit {
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
 /// Snapshot of bulkhead state.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BulkheadStats {
     /// Maximum concurrency limit.

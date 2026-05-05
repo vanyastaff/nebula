@@ -43,7 +43,8 @@ use crate::{
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Configuration for the circuit breaker pattern.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
     /// Number of failures before opening the circuit. Min: 1.
     pub failure_threshold: u32,
@@ -68,6 +69,7 @@ pub struct CircuitBreakerConfig {
     /// Maximum reset timeout cap when using dynamic break duration. Default: 5 minutes.
     pub max_break_duration: Duration,
     /// Duration threshold above which a successful call is considered "slow". `None` = disabled.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub slow_call_threshold: Option<Duration>,
     /// Slow call rate threshold (0.0--1.0). If slow calls / total >= this, CB trips. Default: 1.0.
     pub slow_call_rate_threshold: f64,
@@ -151,6 +153,7 @@ impl CircuitBreakerConfig {
 // ── Outcome (internal) ────────────────────────────────────────────────────────
 
 /// The outcome of an operation, used to update circuit breaker state.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Outcome {
@@ -200,6 +203,7 @@ const STATE_HALF_OPEN: u32 = 2;
 // ── CircuitBreaker ────────────────────────────────────────────────────────────
 
 /// Snapshot of circuit breaker state for health reporting.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitBreakerStats {
     /// Current circuit state.
@@ -1697,7 +1701,7 @@ mod tests {
 // Loom checks that no invalid interleaving produces an undefined state value.
 //
 // Run with:
-//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience -- loom
+//   RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
 //
 // Note: parking_lot::Mutex is NOT loom-instrumented. These tests focus exclusively
 // on the AtomicU32 mirror — the mutex correctness is guaranteed by parking_lot.

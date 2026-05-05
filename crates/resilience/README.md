@@ -2,12 +2,15 @@
 name: nebula-resilience
 role: Stability Patterns Pipeline (Circuit Breaker + Timeout + Retry-with-Backoff composition)
 status: stable
-last-reviewed: 2026-04-17
+last-reviewed: 2026-05-05
 canon-invariants: [L2-11.2]
 related: [nebula-error, nebula-action]
 ---
 
 # nebula-resilience
+
+Internal Nebula workspace crate. It is not published as a standalone public crate; its
+versioning, documentation, and compatibility expectations follow the Nebula repository.
 
 ## Purpose
 
@@ -27,14 +30,30 @@ inside actions. Pattern: *Circuit Breaker + Timeout + Retry-with-Backoff* compos
 in the workflow stack: the engine does not re-execute nodes, so retry semantics for transient
 failures must compose inside the action.
 
-## Public API
+## Cargo Features
+
+| Feature | Default | Purpose |
+|---------|---------|---------|
+| `serde` | yes | Enables serde support for config/value boundary types: configs, error/event discriminants, policy scopes, pipeline outcomes, and stats/load snapshots. |
+| `full` | no | Convenience alias for every normal optional feature owned by this crate; currently equivalent to `serde`. |
+| `loom` | no | Enables loom-backed atomics for model-checking tests when paired with `RUSTFLAGS="--cfg loom"`. |
+
+The crate intentionally does not expose optional third-party limiter wrappers. Built-in rate
+limiters live in `rate_limiter.rs`; specialized external adapters should stay at integration
+boundaries unless the engine itself depends on them.
+
+Runtime executors, guards, sinks, callbacks, and generic caller errors intentionally stay outside
+serde because they carry live process state or user-owned types, not stable Nebula config/event
+data.
+
+## Workspace API
 
 - `ResiliencePipeline<E>` — composable pipeline: `.classifier()`, `.classify_errors()`, `.with_sink()`, `.scope()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limiter()` / `.rate_limiter_from()` / `.rate_limiter_erased()`, `.load_shed()`, then `.build_checked()`, `.build()`, or `.build_recommended_order()`. Use `.call_with_policy_context()` / `.call_with_policy_context_and_fallback()` when the workflow engine has one cancellation/deadline/scope contract for the call. `.call_with_context()` remains available for cancellation-only use. Hedging stays in the `hedge` module (no `.hedge()` builder step on the pipeline). For graceful degradation after the pipeline returns without a cancellation context, use `ResiliencePipeline::call_with_fallback` (separate from the builder).
 - `CallError<E>` — wrapper error returned by all pipeline calls; no type erasure, no forced mapping.
 - `retry::RetryConfig`, `retry::BackoffConfig`, `retry::retry_with` — standalone retry with `Classify`-aware error filtering.
 - `circuit_breaker::CircuitBreaker`, `circuit_breaker::CircuitBreakerConfig` — half-open/open/closed state machine.
 - `bulkhead::Bulkhead`, `bulkhead::BulkheadConfig` — concurrency-limiting bulkhead.
-- `rate_limiter::{RateLimiter, ErasedRateLimiter}` (+ optional `governor` feature for GCRA algorithm).
+- `rate_limiter::{RateLimiter, ErasedRateLimiter}`.
 - `timeout::{timeout, timeout_with_policy_context, TimeoutExecutor}` and `load_shed::{load_shed, load_shed_with_policy_context, load_shed_with_sink}` — standalone timeout / load-shed combinators.
 - `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback, PriorityFallback, FallbackOperation}` — graceful degradation strategies. Standalone `FallbackOperation` can emit fallback lifecycle events with `.with_sink()`.
 - `PolicyContext` — shared cancellation/deadline/scope contract for pipeline and standalone policy calls.
@@ -84,6 +103,8 @@ Extended documentation lives in `crates/resilience/docs/`:
 ```bash
 # Verify locally
 cargo check -p nebula-resilience --all-features
+cargo check -p nebula-resilience --all-targets --no-default-features
 cargo test -p nebula-resilience
+RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom
 cargo bench -p nebula-resilience
 ```

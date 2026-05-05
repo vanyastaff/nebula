@@ -303,17 +303,12 @@ Root re-exports:
 - `SlidingWindow`
 - `AdaptiveRateLimiter`
 
-Feature-gated module export:
-
-- `rate_limiter::GovernorRateLimiter` with feature `governor`
-
 Constructors:
 
 - `TokenBucket::new(capacity, refill_rate)`
 - `LeakyBucket::new(capacity, leak_rate)`
 - `SlidingWindow::new(window_duration, max_requests)`
 - `AdaptiveRateLimiter::new(initial_rate, min_rate, max_rate)`
-- `GovernorRateLimiter::new(rate_per_second, burst_capacity)` when enabled
 
 Notable extras:
 

@@ -75,6 +75,7 @@ pub trait LoadSignal: Send + Sync {
 }
 
 /// Validated load signal snapshot.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoadSnapshot {
     load_factor: f64,
@@ -122,6 +123,25 @@ impl LoadSnapshot {
     }
 }
 
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for LoadSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct RawLoadSnapshot {
+            load_factor: f64,
+            error_rate: f64,
+            p99_latency: Duration,
+        }
+
+        let raw = <RawLoadSnapshot as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(raw.load_factor, raw.error_rate, raw.p99_latency)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// A constant load signal for testing adaptive policies.
 ///
 /// # Examples
@@ -135,6 +155,7 @@ impl LoadSnapshot {
 /// let saturated = ConstantLoad::saturated();
 /// assert!((saturated.load_factor() - 1.0).abs() < f64::EPSILON);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstantLoad {
     /// Load factor: 0.0 = idle, 1.0 = saturated.
@@ -197,6 +218,24 @@ impl ConstantLoad {
     #[must_use]
     pub const fn measured_p99_latency(self) -> Duration {
         self.p99_latency
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ConstantLoad {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct RawConstantLoad {
+            factor: f64,
+            error_rate: f64,
+            p99_latency: Duration,
+        }
+
+        let raw = <RawConstantLoad as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(raw.factor, raw.error_rate, raw.p99_latency).map_err(serde::de::Error::custom)
     }
 }
 
@@ -308,5 +347,33 @@ mod tests {
         assert!((signal.load_factor() - 0.25).abs() < f64::EPSILON);
         assert!((signal.error_rate() - 0.5).abs() < f64::EPSILON);
         assert_eq!(signal.p99_latency(), Duration::from_millis(9));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn load_snapshot_serde_round_trips_and_validates() {
+        let snapshot = LoadSnapshot::new(0.25, 0.5, Duration::from_millis(9)).unwrap();
+
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: LoadSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, snapshot);
+
+        let invalid = r#"{"load_factor":1.2,"error_rate":0.0,"p99_latency":{"secs":0,"nanos":0}}"#;
+        let error = serde_json::from_str::<LoadSnapshot>(invalid).unwrap_err();
+        assert!(error.to_string().contains("finite and in 0.0..=1.0"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn constant_load_serde_round_trips_and_validates() {
+        let signal = ConstantLoad::new(0.25, 0.5, Duration::from_millis(9)).unwrap();
+
+        let encoded = serde_json::to_string(&signal).unwrap();
+        let decoded: ConstantLoad = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, signal);
+
+        let invalid = r#"{"factor":0.5,"error_rate":-0.1,"p99_latency":{"secs":0,"nanos":0}}"#;
+        let error = serde_json::from_str::<ConstantLoad>(invalid).unwrap_err();
+        assert!(error.to_string().contains("finite and in 0.0..=1.0"));
     }
 }

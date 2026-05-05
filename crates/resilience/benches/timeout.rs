@@ -5,6 +5,7 @@
 //! - Runtime timer latency and overshoot when timeout expires before a pending future
 
 use std::{
+    future::pending,
     hint::black_box,
     time::{Duration, Instant},
 };
@@ -52,11 +53,7 @@ fn timeout_firing_latency(c: &mut Criterion) {
 
         b.to_async(&rt).iter(|| async {
             let start = Instant::now();
-            let result = timeout(
-                timeout_duration,
-                futures::future::pending::<Result<(), &str>>(),
-            )
-            .await;
+            let result = timeout(timeout_duration, pending::<Result<(), &str>>()).await;
             let elapsed = start.elapsed();
             let overshoot = elapsed.saturating_sub(timeout_duration);
             black_box((result.is_err(), elapsed, overshoot))
@@ -69,11 +66,7 @@ fn timeout_firing_latency(c: &mut Criterion) {
 
         b.to_async(&rt).iter(|| async {
             let start = Instant::now();
-            let result = timeout(
-                timeout_duration,
-                futures::future::pending::<Result<(), &str>>(),
-            )
-            .await;
+            let result = timeout(timeout_duration, pending::<Result<(), &str>>()).await;
             let elapsed = start.elapsed();
             let overshoot = elapsed.saturating_sub(timeout_duration);
             black_box((result.is_err(), elapsed, overshoot))

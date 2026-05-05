@@ -65,7 +65,8 @@ use crate::{
 /// let fixed = BackoffConfig::Fixed(Duration::from_millis(50));
 /// assert_eq!(fixed.delay_for(5), Duration::from_millis(50));
 /// ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum BackoffConfig {
     /// Same delay between every attempt.
@@ -212,7 +213,8 @@ fn duration_from_millis_capped(ms: f64, max: Duration) -> Duration {
 // ── JitterConfig ─────────────────────────────────────────────────────────────
 
 /// Optional jitter to add to backoff delays.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Default)]
 pub enum JitterConfig {
     /// No jitter.
     #[default]
