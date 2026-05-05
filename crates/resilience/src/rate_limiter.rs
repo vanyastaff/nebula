@@ -1095,6 +1095,26 @@ mod tests {
     }
 
     #[test]
+    fn leaky_bucket_partial_drain_preserves_fractional_leak_time() {
+        let limiter = LeakyBucket::new(4, 4.0).unwrap();
+        let start = Instant::now();
+        let now = start + Duration::from_millis(600);
+
+        let (level, leaked_duration) = {
+            let mut state = limiter.state.lock();
+            state.level = 3;
+            state.last_leak = start;
+
+            LeakyBucket::leak_locked(&mut state, limiter.leak_rate, now);
+
+            (state.level, state.last_leak.duration_since(start))
+        };
+
+        assert_eq!(level, 1);
+        assert_eq!(leaked_duration, Duration::from_millis(500));
+    }
+
+    #[test]
     fn sliding_window_rejects_zero_requests() {
         assert!(SlidingWindow::new(Duration::from_secs(1), 0).is_err());
     }

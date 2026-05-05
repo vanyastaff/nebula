@@ -309,7 +309,9 @@ impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
     #[must_use]
     pub fn classify_errors(mut self) -> Self {
         self.classifier = Some(Arc::new(crate::classifier::NebulaClassifier));
-        self.retry_hint = Some(Arc::new(|e: &E| e.retry_hint().and_then(|h| h.after)));
+        if self.retry_hint.is_none() {
+            self.retry_hint = Some(Arc::new(|e: &E| e.retry_hint().and_then(|h| h.after)));
+        }
         self
     }
 }
@@ -1058,6 +1060,20 @@ mod tests {
             start.elapsed() >= Duration::from_millis(20),
             "Classify retry_hint should act as a retry delay floor"
         );
+    }
+
+    #[test]
+    fn classify_errors_preserves_user_retry_hint() {
+        let builder = ResiliencePipeline::<RetryAfterErr>::builder()
+            .retry_hint(|_: &RetryAfterErr| Some(Duration::from_millis(5)))
+            .classify_errors();
+
+        let hint = builder
+            .retry_hint
+            .as_ref()
+            .and_then(|hint| hint(&RetryAfterErr));
+
+        assert_eq!(hint, Some(Duration::from_millis(5)));
     }
 
     #[tokio::test]
