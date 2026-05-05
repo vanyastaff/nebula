@@ -15,11 +15,13 @@ fn main() -> nebula_system::SystemResult<()> {
         }
         for iface in &ifaces {
             println!(
-                "{} up={} loopback={} mac={:?} rx={} tx={}",
+                "{} up={:?} loopback={} mac={:?} ips={:?} mtu={:?} rx={} tx={}",
                 iface.name,
                 iface.is_up,
                 iface.is_loopback,
                 iface.mac_address,
+                iface.ip_addresses,
+                iface.mtu,
                 iface.stats.rx_bytes,
                 iface.stats.tx_bytes
             );
@@ -30,7 +32,7 @@ fn main() -> nebula_system::SystemResult<()> {
             let usage = sys::network::usage();
             for u in &usage {
                 println!(
-                    "{}: rx_rate={:.0} B/s, tx_rate={:.0} B/s",
+                    "{}: rx_rate={:?} B/s, tx_rate={:?} B/s",
                     u.interface, u.rx_rate, u.tx_rate
                 );
             }
@@ -38,7 +40,9 @@ fn main() -> nebula_system::SystemResult<()> {
         }
 
         let total = sys::network::total_stats();
-        println!("\nTotal rx={} tx={}", total.rx_bytes, total.tx_bytes);
+        let rx = total.rx_bytes;
+        let tx = total.tx_bytes;
+        println!("\nTotal rx={rx} tx={tx}");
     }
 
     #[cfg(not(feature = "network"))]

@@ -9,6 +9,10 @@ fn main() -> nebula_system::SystemResult<()> {
 
     println!("=== Nebula System: Basic Info ===");
     println!("Summary:\n{}", sys::summary());
+    println!(
+        "Snapshot: source={} freshness={:?} observed_at={:?}",
+        info.metadata.source, info.metadata.freshness, info.metadata.observed_at
+    );
 
     println!(
         "\nOS: {} {} (kernel {})",
@@ -22,10 +26,11 @@ fn main() -> nebula_system::SystemResult<()> {
     );
 
     println!(
-        "Memory: total={:.2} GB, available={:.2} GB, page_size={} B",
-        info.memory.total as f64 / (1024.0 * 1024.0 * 1024.0),
-        info.memory.available as f64 / (1024.0 * 1024.0 * 1024.0),
-        info.memory.page_size
+        "Memory: effective_total={:.2} GB, effective_available={:.2} GB, source={:?}, page_size={} B",
+        info.memory.effective.total as f64 / (1024.0 * 1024.0 * 1024.0),
+        info.memory.effective.available as f64 / (1024.0 * 1024.0 * 1024.0),
+        info.memory.effective.source,
+        info.memory.page_size,
     );
 
     Ok(())

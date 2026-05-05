@@ -3907,14 +3907,10 @@ name = "nebula-system"
 version = "0.1.0"
 dependencies = [
  "codspeed-criterion-compat",
- "insta",
  "libc",
  "nebula-error",
  "parking_lot",
- "pretty_assertions",
- "rstest",
  "serde",
- "serde_json",
  "sysinfo",
  "thiserror",
 ]

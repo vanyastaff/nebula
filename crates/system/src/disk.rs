@@ -2,10 +2,11 @@
 //!
 //! # Known Limitations
 //!
-//! - **`DiskStats` I/O counters** (`read_bytes`, `write_bytes`, `read_count`, `write_count`, etc.)
-//!   are always `Default::default()` (all zeros) when obtained via the `list()` path because
-//!   `sysinfo` does not expose I/O counters. Use `io_stats(device)` on Linux, which reads directly
-//!   from `/sys/block/<device>/stat`. On macOS and Windows, `io_stats()` returns `None`.
+//! - **`DiskStats` I/O counters** are not part of `DiskInfo` because sysinfo does not expose
+//!   portable disk I/O counters. Use `io_stats(device)` when callers explicitly need them.
+//! - **`io_stats(device)`** currently reads `/sys/block/<device>/stat` on Linux and returns
+//!   `Availability<DiskStats>`. Unsupported platforms, unreadable devices, and parse failures are
+//!   explicit availability states, not zero counters.
 //! - **`detect_disk_type`** maps only `HDD` and `SSD`; `Network`, `Removable`, and `RamDisk`
 //!   variants of `sysinfo::DiskKind` all map to `DiskType::Unknown`.
 //! - **Workaround for I/O counters on Linux**: Read `/sys/block/*/stat` directly or use
@@ -13,6 +14,8 @@
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::availability::Availability;
 
 /// Disk information
 #[derive(Debug, Clone)]
@@ -121,7 +124,7 @@ pub fn list() -> Vec<DiskInfo> {
                 DiskInfo {
                     mount_point: disk.mount_point().to_string_lossy().to_string(),
                     device: disk.name().to_string_lossy().to_string(),
-                    filesystem: format!("{:?}", disk.file_system()).replace("\"", ""),
+                    filesystem: disk.file_system().to_string_lossy().into_owned(),
                     total_space: total,
                     available_space: available,
                     used_space: used,
@@ -209,7 +212,7 @@ pub fn is_ssd(mount_point: Option<&str>) -> bool {
 
 /// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`)
 #[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(target_os = "linux")]; #[expect] would be unfulfilled on Linux
-pub fn io_stats(device: &str) -> Option<DiskStats> {
+pub fn io_stats(device: &str) -> Availability<DiskStats> {
     #[cfg(target_os = "linux")]
     {
         use std::fs;
@@ -222,20 +225,34 @@ pub fn io_stats(device: &str) -> Option<DiskStats> {
             let parts: Vec<&str> = content.split_whitespace().collect();
 
             if parts.len() >= 11 {
-                return Some(DiskStats {
-                    read_count: parts[0].parse().unwrap_or(0),
-                    write_count: parts[4].parse().unwrap_or(0),
-                    read_bytes: parts[2].parse::<u64>().unwrap_or(0) * 512, // sectors to bytes
-                    write_bytes: parts[6].parse::<u64>().unwrap_or(0) * 512,
-                    read_time: parts[3].parse().unwrap_or(0),
-                    write_time: parts[7].parse().unwrap_or(0),
-                    io_in_progress: parts[8].parse().unwrap_or(0),
-                });
+                let parse = || -> Option<DiskStats> {
+                    Some(DiskStats {
+                        read_count: parts[0].parse().ok()?,
+                        write_count: parts[4].parse().ok()?,
+                        read_bytes: parts[2].parse::<u64>().ok()?.saturating_mul(512),
+                        write_bytes: parts[6].parse::<u64>().ok()?.saturating_mul(512),
+                        read_time: parts[3].parse().ok()?,
+                        write_time: parts[7].parse().ok()?,
+                        io_in_progress: parts[8].parse().ok()?,
+                    })
+                };
+                return parse().map_or_else(
+                    || Availability::unavailable(format!("failed to parse {stat_path}")),
+                    Availability::available,
+                );
             }
+            return Availability::unavailable(format!(
+                "disk stats file {stat_path} had too few fields"
+            ));
         }
+
+        return Availability::unavailable(format!("failed to read {stat_path}"));
     }
 
-    None
+    #[cfg(not(target_os = "linux"))]
+    {
+        Availability::unsupported("disk I/O stats are currently implemented only on Linux")
+    }
 }
 
 /// Monitor disk pressure
@@ -273,14 +290,20 @@ impl DiskPressure {
 }
 
 /// Get disk pressure for a specific mount point
-pub fn pressure(mount_point: Option<&str>) -> DiskPressure {
+pub fn pressure(mount_point: Option<&str>) -> Availability<DiskPressure> {
     if let Some(mp) = mount_point {
-        get_disk(mp)
-            .map(|d| DiskPressure::from_usage(d.usage_percent))
-            .unwrap_or(DiskPressure::Low)
+        get_disk(mp).map_or_else(
+            || Availability::unavailable(format!("mount point {mp} was not found")),
+            |d| Availability::available(DiskPressure::from_usage(d.usage_percent)),
+        )
     } else {
         // Check overall disk usage
-        DiskPressure::from_usage(total_usage().usage_percent)
+        let usage = total_usage();
+        if usage.total_space == 0 {
+            Availability::unavailable("no disks were available for aggregate pressure")
+        } else {
+            Availability::available(DiskPressure::from_usage(usage.usage_percent))
+        }
     }
 }
 
@@ -312,13 +335,26 @@ pub use crate::utils::format_bytes;
 
 /// Check if a path has enough free space
 pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
+    disk_for_path(path)
+        .value()
+        .is_some_and(|disk| disk.available_space >= required_bytes)
+}
+
+/// Find the disk containing a path.
+pub fn disk_for_path(path: impl AsRef<std::path::Path>) -> Availability<DiskInfo> {
+    use std::path::PathBuf;
+
     // Find the disk containing this path
     let mut best_match = None;
     let mut best_match_len = 0;
+    let path = path.as_ref();
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     for disk in list() {
-        if path.starts_with(&disk.mount_point) {
-            let mount_len = disk.mount_point.len();
+        let mount = PathBuf::from(&disk.mount_point);
+        let mount = std::fs::canonicalize(&mount).unwrap_or(mount);
+        if path.starts_with(&mount) {
+            let mount_len = mount.components().count();
             if mount_len > best_match_len {
                 best_match = Some(disk);
                 best_match_len = mount_len;
@@ -326,31 +362,44 @@ pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
         }
     }
 
-    best_match
-        .map(|disk| disk.available_space >= required_bytes)
-        .unwrap_or(false)
+    best_match.map_or_else(
+        || Availability::unavailable(format!("no mounted disk matched path {}", path.display())),
+        Availability::available,
+    )
+}
+
+/// Get disk pressure for the disk containing a path.
+pub fn pressure_for_path(path: impl AsRef<std::path::Path>) -> Availability<DiskPressure> {
+    disk_for_path(path).map(|disk| DiskPressure::from_usage(disk.usage_percent))
 }
 
 /// Get filesystem information for a path (Unix only — uses `statvfs`)
 #[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(unix)]; #[expect] would be unfulfilled on Unix
-pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
+pub fn filesystem_info(path: &str) -> Availability<FileSystemInfo> {
     #[cfg(unix)]
     {
         use std::ffi::CString;
 
         use libc::statvfs;
 
-        let c_path = CString::new(path).ok()?;
+        let c_path = match CString::new(path) {
+            Ok(path) => path,
+            Err(_) => {
+                return Availability::unavailable(
+                    "path contained an interior NUL byte and cannot be passed to statvfs",
+                );
+            },
+        };
         // SAFETY: `statvfs` is a C struct with no Drop implementation or pointers.
         // Zeroing it creates a valid (though uninitialized) instance that statvfs() will fill.
-        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        let mut stat: statvfs = unsafe { std::mem::zeroed() };
 
         // SAFETY: `c_path.as_ptr()` is a valid null-terminated C string from CString.
         // `stat` is a valid mutable reference to an allocated statvfs struct.
         // The statvfs() syscall will either fill it (return 0) or fail (return -1).
         unsafe {
             if statvfs(c_path.as_ptr(), &mut stat) == 0 {
-                return Some(FileSystemInfo {
+                return Availability::available(FileSystemInfo {
                     fs_type: detect_fs_type(path),
                     is_readonly: stat.f_flag & libc::ST_RDONLY != 0,
                     supports_compression: false, // Would need filesystem-specific checks
@@ -360,9 +409,17 @@ pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
                 });
             }
         }
+
+        return Availability::unavailable(format!(
+            "statvfs failed for {path}: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
-    None
+    #[cfg(not(unix))]
+    {
+        Availability::unsupported("filesystem_info is currently implemented only with Unix statvfs")
+    }
 }
 
 #[cfg(unix)]

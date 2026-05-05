@@ -113,6 +113,8 @@ jobs:
       - name: Check no-default-features
         run: |
           cargo check -p nebula-resilience --no-default-features
+          cargo check -p nebula-system --no-default-features
+          cargo check -p nebula-system --no-default-features --features "full serde"
           cargo check -p nebula-log --no-default-features
           cargo check -p nebula-expression --no-default-features
           cargo check -p nebula-api --no-default-features

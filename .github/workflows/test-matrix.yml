@@ -186,6 +186,8 @@ jobs:
             cargo nextest run -p nebula-engine --features rotation --profile ci --no-tests=pass
           elif [[ "${{ matrix.package }}" == "nebula-storage" ]]; then
             cargo nextest run -p nebula-storage --features "test-util,credential-in-memory" --profile ci --no-tests=pass
+          elif [[ "${{ matrix.package }}" == "nebula-system" ]]; then
+            cargo nextest run -p nebula-system --all-features --profile ci --no-tests=pass
           else
             cargo nextest run -p "${{ matrix.package }}" --profile ci --no-tests=pass
           fi
@@ -237,4 +239,3 @@ jobs:
             exit 1
           fi
           echo "All upstream jobs passed."
-

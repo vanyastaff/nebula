@@ -15,7 +15,9 @@
 // Core types
 // CPU types
 #[cfg(feature = "sysinfo")]
-pub use crate::cpu::{CacheInfo, CpuFeatures, CpuPressure, CpuTopology, CpuUsage};
+pub use crate::cpu::{
+    CacheInfo, CpuFeatures, CpuPressure, CpuPressureReport, CpuTopology, CpuUsage,
+};
 // Disk types
 #[cfg(feature = "disk")]
 pub use crate::disk::{DiskInfo, DiskUsage};
@@ -24,7 +26,10 @@ pub use crate::disk::{DiskInfo, DiskUsage};
 pub use crate::load::SystemLoad;
 // Memory types
 #[cfg(feature = "sysinfo")]
-pub use crate::memory::{MemoryInfo, MemoryPressure};
+pub use crate::memory::{
+    MemoryInfo, MemoryPressure, MemoryPressureReason, MemoryPressureReport,
+    MemoryPressureThresholds,
+};
 // Network types
 #[cfg(feature = "network")]
 pub use crate::network::{NetworkInterface, NetworkUsage};
@@ -39,8 +44,13 @@ pub use crate::utils::{
     format_percentage, format_rate, is_power_of_two,
 };
 pub use crate::{
-    core::{SystemError, SystemResult, SystemResultExt},
-    info::{CpuInfo, HardwareInfo, OsInfo, SystemInfo},
+    availability::{Availability, AvailabilityStatus},
+    error::{SystemError, SystemResult},
+    info::{
+        CgroupMemoryInfo, CpuInfo, EffectiveMemoryInfo, HardwareInfo, MemoryCapacitySource, OsInfo,
+        SnapshotFreshness, SnapshotMetadata, SystemInfo,
+    },
+    result::SystemResultExt,
 };
 // Top-level functions
 pub use crate::{init, summary};

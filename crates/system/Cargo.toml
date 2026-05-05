@@ -1,69 +1,76 @@
 [package]
 name = "nebula-system"
+description = "Internal Nebula host-probing layer for CPU, memory, disk, network, process, and pressure signals"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+publish = false
+readme = "README.md"
+keywords = ["nebula", "system", "host", "monitoring", "workflow"]
+categories = ["os", "api-bindings", "hardware-support"]
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
-description = "Cross-platform system information and utilities for Nebula ecosystem"
-readme = "README.md"
-categories = ["os", "api-bindings", "hardware-support"]
-keywords = ["system", "cpu", "memory", "hardware", "cross-platform"]
 
 [features]
+# Host identity, memory, CPU, and aggregate load probes are available by default.
 default = ["sysinfo"]
 
-# Core features
+# Enables every normal probe surface owned by this crate. Serde is intentionally
+# separate so data-model serialization remains opt-in.
+full = ["sysinfo", "process", "network", "disk"]
+
+# Enables the shared sysinfo backend used by CPU, memory, OS, hardware, and load probes.
 sysinfo = ["dep:sysinfo"]
 
-# Sysinfo sub-features
+# Optional probe modules. These enable the matching sysinfo backend feature as needed.
 process = ["sysinfo/system"]
 network = ["sysinfo/network"]
 disk = ["sysinfo/disk"]
 
-# Optional features
-serde = ["dep:serde", "serde_json"]
-
-# Preset combinations
-full = ["sysinfo", "process", "network", "disk", "serde"]
+# Enables serde derives for public probe data models.
+serde = ["dep:serde"]
 
 [dependencies]
-# Internal dependencies
+# Nebula integration
 nebula-error = { workspace = true, features = ["derive"] }
+
+# Error derivation
 thiserror = { workspace = true }
+
+# Synchronization
 parking_lot = { workspace = true }
 
-# Optional dependencies
+# Optional serialization
 serde = { workspace = true, optional = true, features = ["derive"] }
-serde_json = { workspace = true, optional = true }
 
-# System info
+# System backend
 sysinfo = { version = "0.38.4", optional = true, default-features = false, features = [
   "system",
   "multithread",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
+# Unix filesystem/stat helpers and Linux CPU affinity.
 libc = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-insta = { workspace = true }
-pretty_assertions = { workspace = true }
-rstest = { workspace = true }
 
-[[bench]]
-name = "system_load"
-harness = false
-required-features = ["sysinfo"]
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]
+
+[[bench]]
+name = "system_load"
+harness = false
+required-features = ["sysinfo"]
 
 [[example]]
 name = "system_basic"
@@ -88,12 +95,3 @@ required-features = ["process"]
 [[example]]
 name = "disk"
 required-features = ["disk"]
-
-[package.metadata.cargo-shear]
-# serde_json is pulled in by the `serde` feature (`serde = ["dep:serde",
-# "serde_json"]`) for JSON output of system snapshots; cargo-shear does
-# not always trace feature-composed optional deps.
-ignored = ["serde_json"]
-
-[lints]
-workspace = true

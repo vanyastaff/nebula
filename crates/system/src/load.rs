@@ -11,17 +11,24 @@
 //!
 //! let load = system_load();
 //! if load.can_accept_work() {
-//!     println!("headroom: {:.0}%", load.headroom() * 100.0);
+//!     if let Some(headroom) = load.headroom().value() {
+//!         println!("headroom: {:.0}%", headroom * 100.0);
+//!     }
 //!     // spawn another worker
 //! } else {
-//!     println!("system under pressure — shedding load");
+//!     println!("system under pressure - shedding load");
 //! }
 //! ```
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{cpu::CpuPressure, info::SYSINFO_SYSTEM, memory::MemoryPressure};
+use crate::{
+    availability::{Availability, AvailabilityStatus},
+    cpu::{self, CpuPressure},
+    info::MemoryCapacitySource,
+    memory::{self, MemoryPressure},
+};
 
 /// Aggregated system load snapshot.
 ///
@@ -36,9 +43,13 @@ pub struct SystemLoad {
     /// Memory pressure level
     pub memory: MemoryPressure,
     /// CPU usage percentage (0–100)
-    pub cpu_usage_percent: f32,
+    pub cpu_usage_percent: Availability<f32>,
     /// Memory usage percentage (0–100)
-    pub memory_usage_percent: f64,
+    pub memory_usage_percent: Availability<f64>,
+    /// CPU sampling status backing `cpu_usage_percent`.
+    pub cpu_sample_status: AvailabilityStatus,
+    /// Effective memory capacity source backing `memory_usage_percent`.
+    pub memory_capacity_source: MemoryCapacitySource,
 }
 
 impl SystemLoad {
@@ -47,7 +58,10 @@ impl SystemLoad {
     /// Returns `false` when CPU **or** memory pressure is High or Critical.
     #[must_use]
     pub fn can_accept_work(&self) -> bool {
-        !self.cpu.is_concerning() && !self.memory.is_concerning()
+        self.cpu_usage_percent.is_available()
+            && self.memory_usage_percent.is_available()
+            && !self.cpu.is_concerning()
+            && !self.memory.is_concerning()
     }
 
     /// How much headroom is available, as a fraction in `[0.0, 1.0]`.
@@ -56,65 +70,62 @@ impl SystemLoad {
     /// CPU and memory headroom so a bottleneck in either dimension
     /// is reflected.
     #[must_use]
-    pub fn headroom(&self) -> f64 {
-        let cpu_headroom = (100.0 - self.cpu_usage_percent as f64) / 100.0;
-        let mem_headroom = (100.0 - self.memory_usage_percent) / 100.0;
-        cpu_headroom.min(mem_headroom).clamp(0.0, 1.0)
+    pub fn headroom(&self) -> Availability<f64> {
+        match (
+            self.cpu_usage_percent.value().copied(),
+            self.memory_usage_percent.value().copied(),
+        ) {
+            (Some(cpu_usage), Some(memory_usage)) => {
+                let cpu_headroom = (100.0 - cpu_usage as f64) / 100.0;
+                let mem_headroom = (100.0 - memory_usage) / 100.0;
+                Availability::available(cpu_headroom.min(mem_headroom).clamp(0.0, 1.0))
+            },
+            _ => Availability::unavailable(
+                "headroom requires available CPU and memory usage samples",
+            ),
+        }
     }
 }
 
 /// Get current system load (CPU + memory combined).
 ///
-/// Acquires the sysinfo write lock once and refreshes both CPU and memory
-/// in a single critical section. Avoid calling more often than every 100ms
-/// in production.
+/// CPU usage is sampler-backed and memory usage is based on the effective
+/// memory capacity reported by `memory::pressure_report()`. Avoid calling this
+/// directly in tight scheduling loops; prefer a caller-owned refresh policy.
 #[must_use]
 pub fn system_load() -> SystemLoad {
-    let mut sys = SYSINFO_SYSTEM.write();
-    sys.refresh_cpu_usage();
-    sys.refresh_memory();
+    let cpu_usage = cpu::usage();
+    let memory_report = memory::pressure_report();
 
-    // CPU average — single pass over cpus slice
-    let cpus = sys.cpus();
-    let cpu_avg = if cpus.is_empty() {
-        0.0f32
-    } else {
-        cpus.iter().map(sysinfo::Cpu::cpu_usage).sum::<f32>() / cpus.len() as f32
+    let cpu_usage_percent = match cpu_usage.sample_status {
+        AvailabilityStatus::Available => Availability::available(cpu_usage.average),
+        AvailabilityStatus::NotSampled => {
+            Availability::not_sampled("first CPU sample has no previous backend refresh")
+        },
+        AvailabilityStatus::Stale => Availability::stale(
+            Some(cpu_usage.average),
+            "CPU sample refreshed before backend minimum interval",
+        ),
+        AvailabilityStatus::Unsupported => {
+            Availability::unsupported("CPU usage sampling is unsupported")
+        },
+        AvailabilityStatus::Unavailable => Availability::unavailable("CPU usage is unavailable"),
+        AvailabilityStatus::PermissionDenied => {
+            Availability::permission_denied("CPU usage probe was denied")
+        },
+        AvailabilityStatus::NotImplemented => {
+            Availability::not_implemented("CPU usage sampling is not implemented")
+        },
     };
 
-    // Memory stats
-    let total = sys.total_memory() as usize;
-    let available = sys.available_memory() as usize;
-    let used = total.saturating_sub(available);
-
-    // Drop the lock before computing derived values
-    drop(sys);
-
-    let memory_usage_percent = if total > 0 {
-        used.checked_mul(10000)
-            .and_then(|v| v.checked_div(total))
-            .map_or_else(
-                || (used as f64 / total as f64) * 100.0,
-                |v| v as f64 / 100.0,
-            )
-    } else {
-        0.0
-    };
-
-    let memory_pressure = if memory_usage_percent > 85.0 {
-        MemoryPressure::Critical
-    } else if memory_usage_percent > 70.0 {
-        MemoryPressure::High
-    } else if memory_usage_percent > 50.0 {
-        MemoryPressure::Medium
-    } else {
-        MemoryPressure::Low
-    };
+    let cpu_sample_status = cpu_usage.sample_status;
 
     SystemLoad {
-        cpu: CpuPressure::from_usage(cpu_avg),
-        memory: memory_pressure,
-        cpu_usage_percent: cpu_avg,
-        memory_usage_percent,
+        cpu: CpuPressure::from_usage(cpu_usage.average),
+        memory: memory_report.level,
+        cpu_usage_percent,
+        memory_usage_percent: memory_report.usage_percent,
+        cpu_sample_status,
+        memory_capacity_source: memory_report.capacity_source,
     }
 }
