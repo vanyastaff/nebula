@@ -36,14 +36,12 @@
 
 use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
-use parking_lot::Mutex;
-
 use crate::{
     CallError,
     bulkhead::Bulkhead,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
     classifier::{ErrorClass, ErrorClassifier, FnClassifier},
-    retry::{RetryConfig, retry_with_inner},
+    retry::{RetryConfig, retry_with},
     sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
@@ -60,7 +58,7 @@ use crate::{
 // `run_operation_with_shells` wraps every recursive call in `Box::pin`
 // (required because the async fn is recursive). Timeout and Retry add
 // additional overhead: Timeout for `tokio::time::timeout` wrapping,
-// Retry for the back-off loop with `retry_with_inner`.
+// Retry for the back-off loop with `retry_with`.
 
 /// Async predicate for rate limiting — returns `Ok(())` or `Err(CallError::RateLimited)`.
 pub type RateLimitCheck =
@@ -68,6 +66,8 @@ pub type RateLimitCheck =
 
 /// Predicate for load shedding — returns `true` to shed the request.
 pub type LoadShedPredicate = Arc<dyn Fn() -> bool + Send + Sync>;
+
+type RetryHintFn<E> = Arc<dyn Fn(&E) -> Option<Duration> + Send + Sync>;
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
@@ -108,6 +108,7 @@ pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     sink: Option<Arc<dyn MetricsSink>>,
+    retry_hint: Option<RetryHintFn<E>>,
 }
 
 impl<E: 'static> fmt::Debug for PipelineBuilder<E> {
@@ -132,6 +133,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
             steps: Vec::new(),
             classifier: None,
             sink: None,
+            retry_hint: None,
         }
     }
 
@@ -148,7 +150,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// retry step, when neither a pipeline nor a per-retry classifier is set, treats every
     /// operation error as retryable (the historical pipeline default). For
     /// [`Classify`](nebula_error::Classify) semantics like standalone
-    /// [`retry_with`](crate::retry::retry_with), set [`classify_errors()`](Self::classify_errors)
+    /// [`retry_with`], set [`classify_errors()`](Self::classify_errors)
     /// and/or per-retry [`retry_if`](crate::retry::RetryConfig::retry_if) /
     /// [`with_classifier`](crate::retry::RetryConfig::with_classifier).
     #[must_use]
@@ -157,10 +159,29 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self
     }
 
-    /// Inject a metrics sink for pipeline-level timeout / rate-limit / load-shed events.
+    /// Inject a pipeline-wide metrics sink.
+    ///
+    /// The sink receives events emitted by pipeline-managed wrappers and is used
+    /// for retry attempts configured through this builder. Circuit breakers and
+    /// bulkheads passed in as pre-built `Arc`s keep their own sinks.
     #[must_use]
     pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
         self.sink = Some(Arc::new(sink));
+        self
+    }
+
+    /// Set a retry-delay hint extractor for operation errors.
+    ///
+    /// The returned duration is used as a minimum retry delay, merged with the
+    /// configured [`BackoffConfig`](crate::retry::BackoffConfig). This is useful
+    /// when a custom classifier is used and operation errors carry retry-after
+    /// metadata outside [`Classify`](nebula_error::Classify).
+    #[must_use]
+    pub fn retry_hint<F>(mut self, hint: F) -> Self
+    where
+        F: Fn(&E) -> Option<Duration> + Send + Sync + 'static,
+    {
+        self.retry_hint = Some(Arc::new(hint));
         self
     }
 
@@ -173,10 +194,10 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 
     /// Add a retry step.
     ///
-    /// **Note:** Pipeline retry uses `BackoffConfig` for delay timing.
-    /// [`retry_hint().after`](nebula_error::Classify::retry_hint) from individual errors
-    /// is **not** applied in the pipeline path — use [`retry_with`](crate::retry::retry_with)
-    /// directly if retry-after hints are needed.
+    /// Pipeline retry uses the configured [`BackoffConfig`](crate::retry::BackoffConfig)
+    /// and merges in retry-delay floors from [`retry_hint`](Self::retry_hint).
+    /// When [`classify_errors`](Self::classify_errors) is used, `E: Classify`
+    /// retry-after hints are wired automatically.
     #[must_use]
     pub fn retry(mut self, config: RetryConfig<E>) -> Self {
         self.steps.push(Step::Retry(Box::new(config)));
@@ -251,10 +272,28 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     #[must_use]
     pub fn build(self) -> ResiliencePipeline<E> {
         validate_order(&self.steps);
+        self.build_inner()
+    }
+
+    /// Build the pipeline after sorting layers into the recommended order.
+    ///
+    /// This preserves insertion order among steps of the same kind and orders
+    /// different kinds as: `load_shed -> rate_limiter -> timeout -> retry ->
+    /// circuit_breaker -> bulkhead`.
+    #[must_use]
+    pub fn build_recommended_order(mut self) -> ResiliencePipeline<E> {
+        self.steps.sort_by_key(step_rank);
+        self.build_inner()
+    }
+
+    fn build_inner(self) -> ResiliencePipeline<E> {
+        let sink_overrides_steps = self.sink.is_some();
         ResiliencePipeline {
             steps: Arc::new(self.steps),
             classifier: self.classifier,
             sink: self.sink.unwrap_or_else(|| Arc::new(NoopSink)),
+            sink_overrides_steps,
+            retry_hint: self.retry_hint,
         }
     }
 }
@@ -268,8 +307,23 @@ impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
     ///
     /// This is the recommended default for pipelines where `E: Classify`.
     #[must_use]
-    pub fn classify_errors(self) -> Self {
-        self.classifier(Arc::new(crate::classifier::NebulaClassifier))
+    pub fn classify_errors(mut self) -> Self {
+        self.classifier = Some(Arc::new(crate::classifier::NebulaClassifier));
+        if self.retry_hint.is_none() {
+            self.retry_hint = Some(Arc::new(|e: &E| e.retry_hint().and_then(|h| h.after)));
+        }
+        self
+    }
+}
+
+const fn step_rank<E>(step: &Step<E>) -> u8 {
+    match step {
+        Step::LoadShed(_) => 0,
+        Step::RateLimiter(_) => 1,
+        Step::Timeout(_) => 2,
+        Step::Retry(_) => 3,
+        Step::CircuitBreaker(_) => 4,
+        Step::Bulkhead(_) => 5,
     }
 }
 
@@ -303,8 +357,8 @@ fn validate_order<E>(steps: &[Step<E>]) {
         && rl > r
     {
         tracing::warn!(
-            "ResiliencePipeline: rate_limiter is inside retry (rate-limited rejections trigger retries). \
-             Move rate_limiter before retry to reject before entering the retry loop."
+            "ResiliencePipeline: rate_limiter is inside retry (rate-limited rejections may be retried per attempt). \
+             Move rate_limiter before retry to reject once before entering the retry loop."
         );
     }
 }
@@ -339,6 +393,28 @@ pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     sink: Arc<dyn MetricsSink>,
+    sink_overrides_steps: bool,
+    retry_hint: Option<RetryHintFn<E>>,
+}
+
+struct PipelineRunContext<E: 'static> {
+    steps: Arc<Vec<Step<E>>>,
+    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    sink: Arc<dyn MetricsSink>,
+    sink_overrides_steps: bool,
+    retry_hint: Option<RetryHintFn<E>>,
+}
+
+impl<E: 'static> Clone for PipelineRunContext<E> {
+    fn clone(&self) -> Self {
+        Self {
+            steps: Arc::clone(&self.steps),
+            classifier: self.classifier.clone(),
+            sink: Arc::clone(&self.sink),
+            sink_overrides_steps: self.sink_overrides_steps,
+            retry_hint: self.retry_hint.clone(),
+        }
+    }
 }
 
 impl<E: 'static> fmt::Debug for ResiliencePipeline<E> {
@@ -404,6 +480,8 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
             Arc::clone(&self.steps),
             self.classifier.clone(),
             Arc::clone(&self.sink),
+            self.sink_overrides_steps,
+            self.retry_hint.clone(),
             Arc::new(boxed),
         )
         .await
@@ -476,6 +554,8 @@ async fn execute_pipeline<T, E, F>(
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
     sink: Arc<dyn MetricsSink>,
+    sink_overrides_steps: bool,
+    retry_hint: Option<RetryHintFn<E>>,
     f: Arc<F>,
 ) -> Result<T, CallError<E>>
 where
@@ -483,15 +563,20 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    run_operation_with_shells(&steps, classifier, sink, 0, f).await
+    let ctx = PipelineRunContext {
+        steps,
+        classifier,
+        sink,
+        sink_overrides_steps,
+        retry_hint,
+    };
+    run_operation_with_shells(ctx, 0, f).await
 }
 
 /// Recursively apply pipeline steps (one `Box::pin` per Timeout/Retry shell),
 /// then call the user function.
 fn run_operation_with_shells<T, E, F>(
-    steps: &Arc<Vec<Step<E>>>,
-    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    sink: Arc<dyn MetricsSink>,
+    ctx: PipelineRunContext<E>,
     idx: usize,
     f: Arc<F>,
 ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send>>
@@ -500,7 +585,7 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    let steps = Arc::clone(steps);
+    let steps = Arc::clone(&ctx.steps);
     Box::pin(async move {
         if idx >= steps.len() {
             return f().await.map_err(CallError::Operation);
@@ -509,69 +594,48 @@ where
         match &steps[idx] {
             Step::Timeout(d) => {
                 let d = *d;
-                tokio::time::timeout(
-                    d,
-                    run_operation_with_shells(
-                        &steps,
-                        classifier.clone(),
-                        Arc::clone(&sink),
-                        idx + 1,
-                        f,
-                    ),
-                )
-                .await
-                .unwrap_or_else(|_| {
-                    sink.record(ResilienceEvent::TimeoutElapsed { duration: d });
-                    Err(CallError::Timeout(d))
-                })
+                tokio::time::timeout(d, run_operation_with_shells(ctx.clone(), idx + 1, f))
+                    .await
+                    .unwrap_or_else(|_| {
+                        ctx.sink
+                            .record(ResilienceEvent::TimeoutElapsed { duration: d });
+                        Err(CallError::Timeout(d))
+                    })
             },
-            Step::Retry(config) => {
-                run_retry_step(
-                    config,
-                    Arc::clone(&steps),
-                    classifier,
-                    Arc::clone(&sink),
-                    idx,
-                    f,
-                )
-                .await
-            },
+            Step::Retry(config) => run_retry_step(config, ctx, idx, f).await,
             Step::CircuitBreaker(cb) => {
                 cb.try_acquire()?;
+
                 let mut guard = ProbeGuard::new(cb);
-                let result = run_operation_with_shells(
-                    &steps,
-                    classifier.clone(),
-                    Arc::clone(&sink),
-                    idx + 1,
-                    Arc::clone(&f),
-                )
-                .await;
+                let result = run_operation_with_shells(ctx.clone(), idx + 1, Arc::clone(&f)).await;
                 guard.defuse();
 
-                let outcome = classify_cb_outcome(&result, classifier.as_ref());
+                let outcome = classify_cb_outcome(&result, ctx.classifier.as_ref());
                 cb.record_outcome(outcome);
                 result
             },
             Step::Bulkhead(bh) => {
-                let _permit = bh.acquire().await?;
-                run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await
+                let _permit = match bh.acquire().await {
+                    Ok(permit) => permit,
+                    Err(err) => return Err(err),
+                };
+                run_operation_with_shells(ctx, idx + 1, f).await
             },
             Step::RateLimiter(check) => {
                 if let Err(e) = check().await {
-                    sink.record(ResilienceEvent::RateLimitExceeded);
+                    ctx.sink.record(ResilienceEvent::RateLimitExceeded);
                     return Err(CallError::RateLimited {
                         retry_after: e.retry_after(),
                     });
                 }
-                run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await
+                run_operation_with_shells(ctx, idx + 1, f).await
             },
             Step::LoadShed(predicate) => {
                 if predicate() {
-                    sink.record(ResilienceEvent::LoadShed);
+                    ctx.sink.record(ResilienceEvent::LoadShed);
                     Err(CallError::LoadShed)
                 } else {
-                    run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await
+                    run_operation_with_shells(ctx, idx + 1, f).await
                 }
             },
         }
@@ -604,9 +668,7 @@ fn classify_cb_outcome<T, E>(
 #[allow(clippy::excessive_nesting)]
 async fn run_retry_step<T, E, F>(
     config: &RetryConfig<E>,
-    steps: Arc<Vec<Step<E>>>,
-    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    sink: Arc<dyn MetricsSink>,
+    ctx: PipelineRunContext<E>,
     idx: usize,
     f: Arc<F>,
 ) -> Result<T, CallError<E>>
@@ -615,103 +677,172 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    // `bail` captures the first non-operation error from the inner pipeline.
-    // Once set, the retry predicate returns `false` (via `bail_check.is_none()`),
-    // stopping retries immediately. It is never cleared because non-operation
-    // errors (CircuitOpen, BulkheadFull, etc.) indicate the inner pipeline is
-    // unreachable — retrying would hit the same structural error.
-    let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
     let config_classifier = config.classifier.clone();
-    let pipeline_classifier = classifier.clone();
-    let mut inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
+    let has_explicit_retry_classifier = config_classifier.is_some();
+    let pipeline_classifier = ctx.classifier.clone();
+    let mut inner_config = RetryConfig::<RetryStepError<E>>::new_unchecked(config.max_attempts)
         .backoff(config.backoff.clone())
         .jitter(config.jitter.clone());
     inner_config.total_budget = config.total_budget;
-    inner_config.sink = Arc::clone(&config.sink);
-    inner_config.classifier = Some(Arc::new(FnClassifier::new(move |e: &Option<E>| {
-        let Some(inner) = e else {
-            return ErrorClass::Permanent;
-        };
-        config_classifier.as_ref().map_or_else(
-            || {
-                pipeline_classifier
-                    .as_ref()
-                    .map_or(ErrorClass::Transient, |classifier| {
-                        classifier.classify(inner)
-                    })
+    inner_config.sink = if ctx.sink_overrides_steps {
+        Arc::clone(&ctx.sink)
+    } else {
+        Arc::clone(&config.sink)
+    };
+    inner_config.classifier = Some(Arc::new(FnClassifier::new(
+        move |e: &RetryStepError<E>| match e {
+            RetryStepError::Operation { error, .. } => config_classifier.as_ref().map_or_else(
+                || {
+                    pipeline_classifier
+                        .as_ref()
+                        .map_or(ErrorClass::Transient, |classifier| {
+                            classifier.classify(error)
+                        })
+                },
+                |classifier| classifier.classify(error),
+            ),
+            RetryStepError::RetryablePattern(_) if has_explicit_retry_classifier => {
+                ErrorClass::Permanent
             },
-            |classifier| classifier.classify(inner),
-        )
-    })));
+            RetryStepError::RetryablePattern(_) => ErrorClass::Transient,
+            RetryStepError::FatalPattern(_) => ErrorClass::Permanent,
+        },
+    )));
     inner_config.on_retry = config.on_retry.as_ref().map(|notify| {
         let notify = Arc::clone(notify);
-        Arc::new(move |e: &Option<E>, delay: Duration, attempt: u32| {
-            if let Some(inner) = e {
-                notify(inner, delay, attempt);
-            }
-        }) as Arc<dyn Fn(&Option<E>, Duration, u32) + Send + Sync>
+        Arc::new(
+            move |e: &RetryStepError<E>, delay: Duration, attempt: u32| {
+                if let RetryStepError::Operation { error, .. } = e {
+                    notify(error, delay, attempt);
+                }
+            },
+        ) as Arc<dyn Fn(&RetryStepError<E>, Duration, u32) + Send + Sync>
     });
 
-    let result = retry_with_inner(inner_config, {
-        let steps = Arc::clone(&steps);
+    let result = retry_with(inner_config, {
+        let ctx = ctx.clone();
         let f = Arc::clone(&f);
-        let bail = Arc::clone(&bail);
-        let classifier = classifier.clone();
-        let sink = Arc::clone(&sink);
         move || {
-            let steps = Arc::clone(&steps);
+            let ctx = ctx.clone();
             let f = Arc::clone(&f);
-            let bail = Arc::clone(&bail);
-            let classifier = classifier.clone();
-            let sink = Arc::clone(&sink);
             Box::pin(async move {
+                let retry_hint = ctx.retry_hint.clone();
                 classify_inner(
-                    run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await,
-                    &bail,
+                    run_operation_with_shells(ctx, idx + 1, f).await,
+                    retry_hint.as_ref(),
                 )
             })
         }
     })
     .await;
 
-    map_retry_result(result, &bail)
+    map_retry_result(result)
+}
+
+enum RetryStepError<E> {
+    Operation {
+        error: E,
+        retry_after: Option<Duration>,
+    },
+    RetryablePattern(CallError<E>),
+    FatalPattern(CallError<E>),
+}
+
+impl<E> RetryStepError<E> {
+    fn into_call_error(self, exhausted_attempts: Option<u32>) -> CallError<E> {
+        match self {
+            Self::Operation { error, .. } => match exhausted_attempts {
+                Some(attempts) => CallError::RetriesExhausted {
+                    attempts,
+                    last: error,
+                },
+                None => CallError::Operation(error),
+            },
+            Self::RetryablePattern(err) | Self::FatalPattern(err) => err,
+        }
+    }
+}
+
+impl<E> nebula_error::Classify for RetryStepError<E> {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Operation { .. } => nebula_error::ErrorCategory::External,
+            Self::RetryablePattern(CallError::Timeout(_)) => nebula_error::ErrorCategory::Timeout,
+            Self::RetryablePattern(CallError::RateLimited { .. }) => {
+                nebula_error::ErrorCategory::RateLimit
+            },
+            Self::RetryablePattern(CallError::BulkheadFull) => {
+                nebula_error::ErrorCategory::Exhausted
+            },
+            Self::RetryablePattern(_) | Self::FatalPattern(_) => {
+                nebula_error::ErrorCategory::Internal
+            },
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        match self {
+            Self::Operation { .. } => {
+                nebula_error::ErrorCode::new("RESILIENCE:PIPELINE_RETRY_OPERATION")
+            },
+            Self::RetryablePattern(CallError::Timeout(_)) => {
+                nebula_error::ErrorCode::new("RESILIENCE:TIMEOUT")
+            },
+            Self::RetryablePattern(CallError::RateLimited { .. }) => {
+                nebula_error::ErrorCode::new("RESILIENCE:RATE_LIMITED")
+            },
+            Self::RetryablePattern(CallError::BulkheadFull) => {
+                nebula_error::ErrorCode::new("RESILIENCE:BULKHEAD_FULL")
+            },
+            Self::RetryablePattern(_) | Self::FatalPattern(_) => {
+                nebula_error::ErrorCode::new("RESILIENCE:PIPELINE_RETRY_PATTERN")
+            },
+        }
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        match self {
+            Self::Operation {
+                retry_after: Some(after),
+                ..
+            }
+            | Self::RetryablePattern(CallError::RateLimited {
+                retry_after: Some(after),
+            }) => Some(nebula_error::RetryHint::after(*after)),
+            _ => None,
+        }
+    }
 }
 
 /// Classify an inner pipeline result for the retry layer.
 ///
-/// `Ok` and `Operation` errors pass through; non-operation errors are
-/// stashed in `bail` and signalled as `Err(None)` to stop retrying.
+/// `Operation` errors use the retry classifier for `E`; retryable pattern errors
+/// (`Timeout`, `RateLimited`, `BulkheadFull`) can be retried by layer order; all
+/// other pattern errors stop the retry loop immediately.
 fn classify_inner<T, E>(
     result: Result<T, CallError<E>>,
-    bail: &Arc<Mutex<Option<CallError<E>>>>,
-) -> Result<T, Option<E>> {
+    retry_hint: Option<&RetryHintFn<E>>,
+) -> Result<T, RetryStepError<E>> {
     match result {
         Ok(v) => Ok(v),
-        Err(CallError::Operation(e)) => Err(Some(e)),
-        Err(other) => {
-            *bail.lock() = Some(other);
-            Err(None)
+        Err(CallError::Operation(error)) => {
+            let retry_after = retry_hint.and_then(|hint| hint(&error));
+            Err(RetryStepError::Operation { error, retry_after })
         },
+        Err(other) if other.is_retryable() => Err(RetryStepError::RetryablePattern(other)),
+        Err(other) => Err(RetryStepError::FatalPattern(other)),
     }
 }
 
-/// Map `CallError<Option<E>>` back to `CallError<E>` after retry.
-fn map_retry_result<T, E: Send>(
-    result: Result<T, CallError<Option<E>>>,
-    bail: &Arc<Mutex<Option<CallError<E>>>>,
+/// Map retry-step errors back to the public `CallError<E>` shape after retry.
+fn map_retry_result<T, E>(
+    result: Result<T, CallError<RetryStepError<E>>>,
 ) -> Result<T, CallError<E>> {
-    let take_bail = || bail.lock().take().unwrap_or(CallError::cancelled());
-
     match result {
         Ok(v) => Ok(v),
         Err(e) => Err(e.flat_map_inner(
-            |opt| opt.map_or_else(take_bail, CallError::Operation),
-            |attempts, opt| {
-                opt.map_or_else(take_bail, |e| CallError::RetriesExhausted {
-                    attempts,
-                    last: e,
-                })
-            },
+            |inner| inner.into_call_error(None),
+            |attempts, inner| inner.into_call_error(Some(attempts)),
         )),
     }
 }
@@ -719,6 +850,7 @@ fn map_retry_result<T, E: Send>(
 #[cfg(test)]
 mod tests {
     use std::{
+        fmt,
         sync::{
             Mutex as StdMutex,
             atomic::{AtomicU32, Ordering},
@@ -726,10 +858,64 @@ mod tests {
         time::Duration,
     };
 
+    use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
+
     use super::*;
     use crate::{
         CallError, CircuitBreaker, RecordingSink, ResilienceEventKind, retry::BackoffConfig,
     };
+
+    #[derive(Debug, Clone, Copy)]
+    struct RetryAfterErr;
+
+    impl fmt::Display for RetryAfterErr {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("retry after")
+        }
+    }
+
+    impl Classify for RetryAfterErr {
+        fn category(&self) -> ErrorCategory {
+            ErrorCategory::RateLimit
+        }
+
+        fn code(&self) -> ErrorCode {
+            codes::INTERNAL
+        }
+
+        fn retry_hint(&self) -> Option<RetryHint> {
+            Some(RetryHint::after(Duration::from_millis(25)))
+        }
+    }
+
+    async fn delay_first_two_attempts(attempt: u32) {
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    fn reject_first_rate_limit_check(
+        checks: &AtomicU32,
+        retry_after: Duration,
+    ) -> Result<(), CallError<()>> {
+        if checks.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(CallError::rate_limited_after(retry_after))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn always_reject_rate_limit_check(checks: &AtomicU32) -> Result<(), CallError<()>> {
+        checks.fetch_add(1, Ordering::SeqCst);
+        Err(CallError::rate_limited())
+    }
+
+    fn fail_once_with_retry_hint(attempts: &AtomicU32) -> Result<u32, RetryAfterErr> {
+        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(RetryAfterErr);
+        }
+        Ok(42)
+    }
 
     #[tokio::test]
     async fn pipeline_timeout_wraps_retry() {
@@ -776,6 +962,211 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pipeline_retry_retries_inner_timeout() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&attempts);
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .timeout(Duration::from_millis(10))
+            .build();
+
+        let result = pipeline
+            .call(move || {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    let attempt = seen.fetch_add(1, Ordering::SeqCst);
+                    delay_first_two_attempts(attempt).await;
+                    Ok::<u32, &str>(42)
+                })
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn pipeline_retry_retries_inner_rate_limit_and_respects_retry_after() {
+        let checks = Arc::new(AtomicU32::new(0));
+        let seen_checks = Arc::clone(&checks);
+        let operations = Arc::new(AtomicU32::new(0));
+        let seen_operations = Arc::clone(&operations);
+        let retry_after = Duration::from_millis(25);
+
+        let rate_limiter: RateLimitCheck = Arc::new(move || {
+            let seen_checks = Arc::clone(&seen_checks);
+            Box::pin(async move { reject_first_rate_limit_check(&seen_checks, retry_after) })
+        });
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(2)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .rate_limiter(rate_limiter)
+            .build();
+
+        let start = std::time::Instant::now();
+        let result = pipeline
+            .call(move || {
+                let seen_operations = Arc::clone(&seen_operations);
+                Box::pin(async move {
+                    seen_operations.fetch_add(1, Ordering::SeqCst);
+                    Ok::<u32, &str>(42)
+                })
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(checks.load(Ordering::SeqCst), 2);
+        assert_eq!(operations.load(Ordering::SeqCst), 1);
+        assert!(
+            start.elapsed() >= Duration::from_millis(20),
+            "retry_after should act as a retry delay floor"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_retry_respects_operation_retry_hint_from_classify_errors() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&attempts);
+
+        let pipeline = ResiliencePipeline::<RetryAfterErr>::builder()
+            .classify_errors()
+            .retry(
+                RetryConfig::new(2)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .build();
+
+        let start = std::time::Instant::now();
+        let result = pipeline
+            .call(move || {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move { fail_once_with_retry_hint(&seen) })
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            start.elapsed() >= Duration::from_millis(20),
+            "Classify retry_hint should act as a retry delay floor"
+        );
+    }
+
+    #[test]
+    fn classify_errors_preserves_user_retry_hint() {
+        let builder = ResiliencePipeline::<RetryAfterErr>::builder()
+            .retry_hint(|_: &RetryAfterErr| Some(Duration::from_millis(5)))
+            .classify_errors();
+
+        let hint = builder
+            .retry_hint
+            .as_ref()
+            .and_then(|hint| hint(&RetryAfterErr));
+
+        assert_eq!(hint, Some(Duration::from_millis(5)));
+    }
+
+    #[tokio::test]
+    async fn pipeline_retry_does_not_retry_inner_circuit_open() {
+        let cb = Arc::new(CircuitBreaker::new(crate::CircuitBreakerConfig::default()).unwrap());
+        cb.force_open();
+        let operations = Arc::new(AtomicU32::new(0));
+        let seen_operations = Arc::clone(&operations);
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .circuit_breaker(cb)
+            .build();
+
+        let result = pipeline
+            .call(move || {
+                let seen_operations = Arc::clone(&seen_operations);
+                Box::pin(async move {
+                    seen_operations.fetch_add(1, Ordering::SeqCst);
+                    Ok::<u32, &str>(42)
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::CircuitOpen)));
+        assert_eq!(operations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn build_recommended_order_rejects_before_retry() {
+        let checks = Arc::new(AtomicU32::new(0));
+        let seen_checks = Arc::clone(&checks);
+        let operations = Arc::new(AtomicU32::new(0));
+        let seen_operations = Arc::clone(&operations);
+
+        let rate_limiter: RateLimitCheck = Arc::new(move || {
+            let seen_checks = Arc::clone(&seen_checks);
+            Box::pin(async move { always_reject_rate_limit_check(&seen_checks) })
+        });
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .rate_limiter(rate_limiter)
+            .build_recommended_order();
+
+        let result = pipeline
+            .call(move || {
+                let seen_operations = Arc::clone(&seen_operations);
+                Box::pin(async move {
+                    seen_operations.fetch_add(1, Ordering::SeqCst);
+                    Ok::<u32, &str>(42)
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::RateLimited { .. })));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert_eq!(operations.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_sink_overrides_retry_config_sink() {
+        let sink = RecordingSink::new();
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .retry(
+                RetryConfig::new(2)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::ZERO)),
+            )
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Err::<u32, &str>("fail") }))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(CallError::RetriesExhausted { attempts: 2, .. })
+        ));
+        assert_eq!(sink.count(ResilienceEventKind::RetryAttempt), 2);
+    }
+
+    #[tokio::test]
     async fn pipeline_returns_ok_on_success() {
         let pipeline = ResiliencePipeline::<&str>::builder()
             .retry(
@@ -812,6 +1203,30 @@ mod tests {
 
         assert!(matches!(result, Err(CallError::Operation("permanent"))));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_retry_classifier_blocks_inner_pattern_retries() {
+        let checks = Arc::new(AtomicU32::new(0));
+        let seen_checks = Arc::clone(&checks);
+        let rate_limiter: RateLimitCheck = Arc::new(move || {
+            let seen_checks = Arc::clone(&seen_checks);
+            Box::pin(async move {
+                reject_first_rate_limit_check(&seen_checks, Duration::from_millis(50))
+            })
+        });
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(RetryConfig::new(3).unwrap().retry_if(|_: &&str| false))
+            .rate_limiter(rate_limiter)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert!(matches!(result, Err(CallError::RateLimited { .. })));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -956,6 +1371,62 @@ mod tests {
 
         assert!(matches!(result, Err(CallError::LoadShed)));
         assert_eq!(sink.count(ResilienceEventKind::LoadShed), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_sink_does_not_double_count_prebuilt_bulkhead_rejection() {
+        let sink = RecordingSink::new();
+        let bh = Arc::new(
+            Bulkhead::new(crate::BulkheadConfig {
+                max_concurrency: 1,
+                queue_size: 0,
+                timeout: None,
+            })
+            .unwrap()
+            .with_sink(sink.clone()),
+        );
+        let _permit = bh.acquire::<&str>().await.unwrap();
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .bulkhead(bh)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert!(matches!(result, Err(CallError::BulkheadFull)));
+        assert_eq!(sink.count(ResilienceEventKind::BulkheadRejected), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_sink_does_not_double_count_prebuilt_circuit_state_change() {
+        use crate::sink::CircuitState;
+
+        let sink = RecordingSink::new();
+        let cb = Arc::new(
+            CircuitBreaker::new(crate::CircuitBreakerConfig {
+                failure_threshold: 1,
+                min_operations: 1,
+                ..Default::default()
+            })
+            .unwrap()
+            .with_sink(sink.clone()),
+        );
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .circuit_breaker(cb)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Err::<u32, &str>("fail") }))
+            .await;
+
+        assert!(matches!(result, Err(CallError::Operation("fail"))));
+        assert!(sink.has_state_change(CircuitState::Open));
+        assert_eq!(sink.count(ResilienceEventKind::CircuitStateChanged), 1);
     }
 
     #[tokio::test]

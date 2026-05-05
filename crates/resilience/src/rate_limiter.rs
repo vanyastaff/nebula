@@ -422,21 +422,49 @@ impl LeakyBucket {
             leak_rate,
         })
     }
+
+    // Reason: f64/usize conversions are acceptable for approximate leak accounting.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
+    fn leak_locked(state: &mut LeakyBucketState, leak_rate: f64, now: Instant) {
+        if state.level == 0 {
+            state.last_leak = now;
+            return;
+        }
+
+        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
+        let leaked = (elapsed * leak_rate) as usize;
+
+        if leaked == 0 {
+            return;
+        }
+
+        if leaked >= state.level {
+            state.level = 0;
+            state.last_leak = now;
+            return;
+        }
+
+        state.level -= leaked;
+        let leaked_secs = leaked as f64 / leak_rate;
+        let drain_duration = Duration::from_secs_f64(leaked_secs);
+        state.last_leak = state.last_leak.checked_add(drain_duration).unwrap_or(now);
+    }
 }
 
 impl RateLimiter for LeakyBucket {
-    // Reason: f64 leak amount cast to usize — acceptable for bucket level calculation.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     async fn acquire(&self) -> Result<(), CallError<()>> {
         let mut state = self.state.lock();
-
         let now = Instant::now();
-        let elapsed = now.duration_since(state.last_leak).as_secs_f64();
-        let leaked = (elapsed * self.leak_rate) as usize;
-        state.level = state.level.saturating_sub(leaked);
-        state.last_leak = now;
+        Self::leak_locked(&mut state, self.leak_rate, now);
 
         if state.level < self.capacity {
+            if state.level == 0 {
+                state.last_leak = now;
+            }
             state.level += 1;
             drop(state);
             Ok(())
@@ -1042,6 +1070,48 @@ mod tests {
     #[test]
     fn leaky_bucket_accepts_valid_config() {
         assert!(LeakyBucket::new(10, 1.0).is_ok());
+    }
+
+    #[tokio::test]
+    async fn leaky_bucket_preserves_fractional_leak_time_between_rejections() {
+        let limiter = LeakyBucket::new(1, 4.0).unwrap();
+
+        limiter.acquire().await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        assert!(matches!(
+            limiter.acquire().await,
+            Err(CallError::RateLimited { .. })
+        ));
+
+        tokio::time::sleep(Duration::from_millis(75)).await;
+        assert!(matches!(
+            limiter.acquire().await,
+            Err(CallError::RateLimited { .. })
+        ));
+
+        tokio::time::sleep(Duration::from_millis(140)).await;
+        assert!(limiter.acquire().await.is_ok());
+    }
+
+    #[test]
+    fn leaky_bucket_partial_drain_preserves_fractional_leak_time() {
+        let limiter = LeakyBucket::new(4, 4.0).unwrap();
+        let start = Instant::now();
+        let now = start + Duration::from_millis(600);
+
+        let (level, leaked_duration) = {
+            let mut state = limiter.state.lock();
+            state.level = 3;
+            state.last_leak = start;
+
+            LeakyBucket::leak_locked(&mut state, limiter.leak_rate, now);
+
+            (state.level, state.last_leak.duration_since(start))
+        };
+
+        assert_eq!(level, 1);
+        assert_eq!(leaked_duration, Duration::from_millis(500));
     }
 
     #[test]

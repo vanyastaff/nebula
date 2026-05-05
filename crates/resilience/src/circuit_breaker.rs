@@ -771,6 +771,7 @@ impl CircuitBreaker {
         inner.state = State::Open {
             opened_at: self.clock.now(),
         };
+        inner.half_open_probes = 0;
         inner.consecutive_opens += 1;
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         (prev, CircuitState::Open)
@@ -804,6 +805,15 @@ impl CircuitBreaker {
         (prev, CircuitState::Closed)
     }
 
+    /// Record a successful half-open probe.
+    ///
+    /// `max_half_open_operations` is only an admission limit; the first successful probe closes
+    /// the circuit, preserving the historical config meaning.
+    fn record_half_open_success(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
+        inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
+        self.close_from_half_open(inner)
+    }
+
     /// Record an operation outcome directly (useful when driving the CB from external code).
     ///
     /// In the Closed state, each success decrements the failure counter by one ("leaky bucket"
@@ -820,7 +830,7 @@ impl CircuitBreaker {
             },
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.close_from_half_open(&mut inner));
+                    transition = Some(self.record_half_open_success(&mut inner));
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
@@ -855,7 +865,7 @@ impl CircuitBreaker {
                     window.record(false, true);
                 }
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.close_from_half_open(&mut inner));
+                    transition = Some(self.record_half_open_success(&mut inner));
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     if self.slow_rate_trips(&inner) {
@@ -1081,6 +1091,32 @@ mod tests {
         cb.record_outcome(Outcome::Success);
         assert_eq!(cb.circuit_state(), CS::Closed);
         assert!(cb.try_acquire::<&str>().is_ok());
+    }
+
+    #[tokio::test]
+    async fn half_open_max_operations_is_concurrency_limit_only() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            max_half_open_operations: 2,
+            ..default_config()
+        })
+        .unwrap();
+
+        for _ in 0..3 {
+            cb.record_outcome(Outcome::Failure);
+        }
+        assert_eq!(cb.circuit_state(), CS::Open);
+
+        tokio::time::sleep(Duration::from_millis(110)).await;
+
+        assert!(cb.try_acquire::<&str>().is_ok());
+        assert!(cb.try_acquire::<&str>().is_ok());
+        assert!(matches!(
+            cb.try_acquire::<&str>(),
+            Err(CallError::CircuitOpen)
+        ));
+
+        cb.record_outcome(Outcome::Success);
+        assert_eq!(cb.circuit_state(), CS::Closed);
     }
 
     #[tokio::test]
