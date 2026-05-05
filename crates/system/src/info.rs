@@ -220,7 +220,7 @@ pub(crate) static SYSINFO_SYSTEM: std::sync::LazyLock<RwLock<sysinfo::System>> =
         RwLock::new(sys)
     });
 
-#[cfg(all(feature = "sysinfo", target_os = "linux"))]
+#[cfg(feature = "sysinfo")]
 fn to_usize_saturating(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
 }
@@ -251,20 +251,47 @@ fn cgroup_memory_info(sys: &sysinfo::System) -> Availability<CgroupMemoryInfo> {
 
 #[cfg(feature = "sysinfo")]
 fn effective_memory_info(sys: &sysinfo::System) -> EffectiveMemoryInfo {
+    let host_total = sys.total_memory();
+    let host_available = sys.available_memory();
+
     #[cfg(target_os = "linux")]
     {
-        if let Some(limits) = sys.cgroup_limits() {
+        return effective_memory_from_values(
+            host_total,
+            host_available,
+            sys.cgroup_limits()
+                .map(|limits| (limits.total_memory, limits.free_memory)),
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        effective_memory_from_values(host_total, host_available, None)
+    }
+}
+
+#[cfg(feature = "sysinfo")]
+fn effective_memory_from_values(
+    host_total: u64,
+    host_available: u64,
+    cgroup: Option<(u64, u64)>,
+) -> EffectiveMemoryInfo {
+    if let Some((cgroup_total, cgroup_available)) = cgroup {
+        // sysinfo reports unbounded cgroups as very large pseudo-limits.
+        // Treat values larger than physical host memory as unlimited and
+        // fall back to the host capacity rather than exposing usize::MAX.
+        if cgroup_total > 0 && cgroup_total <= host_total {
             return EffectiveMemoryInfo {
-                total: to_usize_saturating(limits.total_memory),
-                available: to_usize_saturating(limits.free_memory),
+                total: to_usize_saturating(cgroup_total),
+                available: to_usize_saturating(cgroup_available),
                 source: MemoryCapacitySource::Cgroup,
             };
         }
     }
 
     EffectiveMemoryInfo {
-        total: sys.total_memory() as usize,
-        available: sys.available_memory() as usize,
+        total: to_usize_saturating(host_total),
+        available: to_usize_saturating(host_available),
         source: MemoryCapacitySource::Host,
     }
 }
@@ -489,4 +516,27 @@ pub fn summary() -> String {
         info.os.arch,
         info.memory.page_size
     )
+}
+
+#[cfg(all(test, feature = "sysinfo"))]
+mod tests {
+    use super::{MemoryCapacitySource, effective_memory_from_values};
+
+    #[test]
+    fn unbounded_cgroup_limit_falls_back_to_host_memory() {
+        let info = effective_memory_from_values(64 * 1024, 32 * 1024, Some((u64::MAX, u64::MAX)));
+
+        assert_eq!(info.source, MemoryCapacitySource::Host);
+        assert_eq!(info.total, 64 * 1024);
+        assert_eq!(info.available, 32 * 1024);
+    }
+
+    #[test]
+    fn bounded_cgroup_limit_is_effective_memory() {
+        let info = effective_memory_from_values(64 * 1024, 32 * 1024, Some((2048, 1024)));
+
+        assert_eq!(info.source, MemoryCapacitySource::Cgroup);
+        assert_eq!(info.total, 2048);
+        assert_eq!(info.available, 1024);
+    }
 }

@@ -10,13 +10,18 @@
 //! use nebula_system::load::system_load;
 //!
 //! let load = system_load();
-//! if load.can_accept_work() {
-//!     if let Some(headroom) = load.headroom().value() {
-//!         println!("headroom: {:.0}%", headroom * 100.0);
-//!     }
-//!     // spawn another worker
-//! } else {
-//!     println!("system under pressure - shedding load");
+//! match load.can_accept_work().value().copied() {
+//!     Some(true) => {
+//!         if let Some(headroom) = load.headroom().value() {
+//!             println!("headroom: {:.0}%", headroom * 100.0);
+//!         }
+//!         // spawn another worker
+//!     },
+//!     Some(false) => println!("system under pressure - shedding load"),
+//!     None => println!(
+//!         "load signal unavailable: {:?}",
+//!         load.can_accept_work().status
+//!     ),
 //! }
 //! ```
 
@@ -55,13 +60,66 @@ pub struct SystemLoad {
 impl SystemLoad {
     /// Quick check: is the system healthy enough to accept more work?
     ///
-    /// Returns `false` when CPU **or** memory pressure is High or Critical.
+    /// Returns `Availability::available(false)` when CPU **or** memory pressure
+    /// is High or Critical. Returns `NotSampled`, `Stale`, `Unsupported`, or
+    /// `Unavailable` instead of collapsing missing probe evidence into `false`.
     #[must_use]
-    pub fn can_accept_work(&self) -> bool {
-        self.cpu_usage_percent.is_available()
-            && self.memory_usage_percent.is_available()
-            && !self.cpu.is_concerning()
-            && !self.memory.is_concerning()
+    pub fn can_accept_work(&self) -> Availability<bool> {
+        let decision = !self.cpu.is_concerning() && !self.memory.is_concerning();
+
+        if !decision {
+            return Availability::available(false);
+        }
+
+        let cpu_status = self.cpu_usage_percent.status;
+        let memory_status = self.memory_usage_percent.status;
+
+        if cpu_status == AvailabilityStatus::Available
+            && memory_status == AvailabilityStatus::Available
+        {
+            return Availability::available(true);
+        }
+
+        if cpu_status == AvailabilityStatus::Stale || memory_status == AvailabilityStatus::Stale {
+            return Availability::stale(
+                Some(true),
+                "work admission decision is based on stale CPU or memory usage",
+            );
+        }
+
+        if cpu_status == AvailabilityStatus::NotSampled
+            || memory_status == AvailabilityStatus::NotSampled
+        {
+            return Availability::not_sampled(
+                "work admission requires CPU and memory samples to warm up",
+            );
+        }
+
+        if cpu_status == AvailabilityStatus::PermissionDenied
+            || memory_status == AvailabilityStatus::PermissionDenied
+        {
+            return Availability::permission_denied(
+                "work admission requires CPU and memory probes",
+            );
+        }
+
+        if cpu_status == AvailabilityStatus::Unsupported
+            || memory_status == AvailabilityStatus::Unsupported
+        {
+            return Availability::unsupported(
+                "work admission requires supported CPU and memory probes",
+            );
+        }
+
+        if cpu_status == AvailabilityStatus::NotImplemented
+            || memory_status == AvailabilityStatus::NotImplemented
+        {
+            return Availability::not_implemented(
+                "work admission requires implemented CPU and memory probes",
+            );
+        }
+
+        Availability::unavailable("work admission requires available CPU and memory probes")
     }
 
     /// How much headroom is available, as a fraction in `[0.0, 1.0]`.

@@ -304,7 +304,10 @@ mod tests {
             // Zero bytes required should always succeed on any existing mount point
             let disks = disk::list();
             if let Some(d) = disks.first() {
-                assert!(disk::has_enough_space(&d.mount_point, 0));
+                assert_eq!(
+                    disk::has_enough_space(&d.mount_point, 0).value().copied(),
+                    Some(true)
+                );
             }
         }
 
@@ -313,7 +316,12 @@ mod tests {
             // u64::MAX bytes should never be available
             let disks = disk::list();
             if let Some(d) = disks.first() {
-                assert!(!disk::has_enough_space(&d.mount_point, u64::MAX));
+                assert_eq!(
+                    disk::has_enough_space(&d.mount_point, u64::MAX)
+                        .value()
+                        .copied(),
+                    Some(false)
+                );
             }
         }
     }
@@ -623,14 +631,14 @@ mod tests {
                 );
             } else {
                 assert!(
-                    !load.can_accept_work(),
-                    "unavailable headroom should prevent accepting more work"
+                    !load.can_accept_work().is_available(),
+                    "unavailable headroom should make work admission unavailable"
                 );
             }
         }
 
         #[test]
-        fn can_accept_work_returns_bool() {
+        fn can_accept_work_returns_availability() {
             let _ = load::system_load().can_accept_work();
         }
 
@@ -645,7 +653,10 @@ mod tests {
                 memory_capacity_source: MemoryCapacitySource::Host,
             };
 
-            assert!(!load.can_accept_work());
+            assert_eq!(
+                load.can_accept_work().status,
+                AvailabilityStatus::NotSampled
+            );
             assert!(!load.headroom().is_available());
         }
 
@@ -659,7 +670,11 @@ mod tests {
                 cpu_sample_status: AvailabilityStatus::Available,
                 memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(!load.can_accept_work(), "Critical CPU must reject work");
+            assert_eq!(
+                load.can_accept_work().value().copied(),
+                Some(false),
+                "Critical CPU must reject work"
+            );
 
             let load = SystemLoad {
                 cpu: CpuPressure::Low,
@@ -669,7 +684,11 @@ mod tests {
                 cpu_sample_status: AvailabilityStatus::Available,
                 memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(!load.can_accept_work(), "Critical memory must reject work");
+            assert_eq!(
+                load.can_accept_work().value().copied(),
+                Some(false),
+                "Critical memory must reject work"
+            );
         }
 
         #[test]
@@ -682,7 +701,7 @@ mod tests {
                 cpu_sample_status: AvailabilityStatus::Available,
                 memory_capacity_source: MemoryCapacitySource::Host,
             };
-            assert!(load.can_accept_work());
+            assert_eq!(load.can_accept_work().value().copied(), Some(true));
         }
 
         #[test]

@@ -357,11 +357,12 @@ pub fn optimal_block_size(mount_point: Option<&str>) -> usize {
 /// Re-exported from utils for convenience.
 pub use crate::utils::format_bytes;
 
-/// Check if a path has enough free space
-pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
-    disk_for_path(path)
-        .value()
-        .is_some_and(|disk| disk.available_space >= required_bytes)
+/// Check if a path has enough free space.
+///
+/// Returns unavailable when the containing disk cannot be resolved, rather
+/// than collapsing probe failure into `false`.
+pub fn has_enough_space(path: &str, required_bytes: u64) -> Availability<bool> {
+    disk_for_path(path).map(|disk| disk.available_space >= required_bytes)
 }
 
 /// Find the disk containing a path.

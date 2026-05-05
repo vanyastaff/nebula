@@ -159,7 +159,7 @@ fn gid_availability(gid: Option<sysinfo::Gid>) -> Availability<u32> {
 #[cfg(feature = "process")]
 fn thread_count_availability(process: &sysinfo::Process) -> Availability<usize> {
     match process.tasks() {
-        Some(tasks) => Availability::available(tasks.len().max(1)),
+        Some(tasks) => Availability::available(tasks.len()),
         None => Availability::unsupported(
             "process thread/task count is exposed only on platforms where sysinfo reports tasks",
         ),

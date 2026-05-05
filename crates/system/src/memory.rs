@@ -63,7 +63,7 @@ pub enum MemoryPressureReason {
 }
 
 /// Thresholds used by the memory pressure classifier.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MemoryPressureThresholds {
     /// Medium threshold in percent.
@@ -145,8 +145,14 @@ pub struct MemoryInfo {
 /// Get current memory information
 #[must_use]
 pub fn current() -> MemoryInfo {
+    current_with_thresholds(MemoryPressureThresholds::default())
+}
+
+/// Get current memory information with caller-supplied pressure thresholds.
+#[must_use]
+pub fn current_with_thresholds(thresholds: MemoryPressureThresholds) -> MemoryInfo {
     let sys_memory = SystemInfo::current_memory();
-    let report = classify_memory(&sys_memory);
+    let report = classify_memory_with_thresholds(&sys_memory, thresholds);
 
     MemoryInfo {
         total: report.effective_total,
@@ -164,7 +170,13 @@ pub fn current() -> MemoryInfo {
 }
 
 fn classify_memory(sys_memory: &crate::info::MemoryInfo) -> MemoryPressureReport {
-    let thresholds = MemoryPressureThresholds::default();
+    classify_memory_with_thresholds(sys_memory, MemoryPressureThresholds::default())
+}
+
+fn classify_memory_with_thresholds(
+    sys_memory: &crate::info::MemoryInfo,
+    thresholds: MemoryPressureThresholds,
+) -> MemoryPressureReport {
     let total = sys_memory.effective.total;
     let available = sys_memory.effective.available;
     let used = total.saturating_sub(available);
@@ -249,6 +261,14 @@ pub fn pressure_report() -> MemoryPressureReport {
     classify_memory(&SystemInfo::current_memory())
 }
 
+/// Get current memory pressure with caller-supplied thresholds.
+#[must_use]
+pub fn pressure_report_with_thresholds(
+    thresholds: MemoryPressureThresholds,
+) -> MemoryPressureReport {
+    classify_memory_with_thresholds(&SystemInfo::current_memory(), thresholds)
+}
+
 /// Format bytes for human-readable display
 ///
 /// Re-exported from utils for convenience.
@@ -256,7 +276,10 @@ pub use crate::utils::format_bytes_usize as format_bytes;
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryPressure, MemoryPressureReason, classify_memory};
+    use super::{
+        MemoryPressure, MemoryPressureReason, MemoryPressureThresholds, classify_memory,
+        classify_memory_with_thresholds,
+    };
     use crate::{
         Availability,
         info::{
@@ -351,6 +374,20 @@ mod tests {
         assert_eq!(report.effective_total, 2048);
         assert_eq!(report.effective_available, 512);
         assert!(report.reasons.contains(&MemoryPressureReason::CgroupLimit));
+    }
+
+    #[test]
+    fn caller_supplied_thresholds_change_pressure_classification() {
+        let thresholds = MemoryPressureThresholds {
+            medium_percent: 20.0,
+            high_percent: 40.0,
+            critical_percent: 60.0,
+        };
+
+        let report = classify_memory_with_thresholds(&system_memory(1000, 500), thresholds);
+
+        assert_eq!(report.level, MemoryPressure::High);
+        assert_eq!(report.thresholds, thresholds);
     }
 
     #[test]

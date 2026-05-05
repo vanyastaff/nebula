@@ -56,7 +56,8 @@ processes, or act as a security boundary. Metrics recording belongs in callers s
 - `cpu::usage() -> CpuUsage` and `cpu::pressure_report()` - CPU usage with explicit sample
   freshness, observation time, and backend minimum sample interval.
 - `load::system_load() -> SystemLoad` - aggregate CPU/memory signal with availability-aware
-  usage percentages and headroom. Treat it as probe evidence, not the engine's scheduling policy.
+  usage percentages, headroom, and work-admission hints. Treat it as probe evidence, not the
+  engine's scheduling policy.
 - `disk::disk_for_path(path)` and `disk::pressure_for_path(path)` - path-specific disk lookup and
   pressure for persistence directories, checkpoint storage, and database volumes.
 - `disk::io_stats(device)` and `disk::filesystem_info(path)` - platform-specific details exposed
