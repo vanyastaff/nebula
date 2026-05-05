@@ -243,7 +243,7 @@ pub fn io_stats(device: &str) -> Availability<DiskStats> {
                 ));
             },
         };
-        let stat_path = format!("/sys/block/{}/stat", device_name);
+        let stat_path = format!("/sys/block/{device_name}/stat");
 
         if let Ok(content) = fs::read_to_string(&stat_path) {
             let parts: Vec<&str> = content.split_whitespace().collect();
@@ -270,7 +270,7 @@ pub fn io_stats(device: &str) -> Availability<DiskStats> {
             ));
         }
 
-        return Availability::unavailable(format!("failed to read {stat_path}"));
+        Availability::unavailable(format!("failed to read {stat_path}"))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -423,7 +423,7 @@ pub fn filesystem_info(path: &str) -> Availability<FileSystemInfo> {
         // `stat` is a valid mutable reference to an allocated statvfs struct.
         // The statvfs() syscall will either fill it (return 0) or fail (return -1).
         unsafe {
-            if statvfs(c_path.as_ptr(), &mut stat) == 0 {
+            if statvfs(c_path.as_ptr(), std::ptr::addr_of_mut!(stat)) == 0 {
                 return Availability::available(FileSystemInfo {
                     fs_type: detect_fs_type(path),
                     is_readonly: stat.f_flag & libc::ST_RDONLY != 0,
@@ -435,10 +435,10 @@ pub fn filesystem_info(path: &str) -> Availability<FileSystemInfo> {
             }
         }
 
-        return Availability::unavailable(format!(
+        Availability::unavailable(format!(
             "statvfs failed for {path}: {}",
             std::io::Error::last_os_error()
-        ));
+        ))
     }
 
     #[cfg(not(unix))]

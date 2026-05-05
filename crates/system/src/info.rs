@@ -256,12 +256,12 @@ fn effective_memory_info(sys: &sysinfo::System) -> EffectiveMemoryInfo {
 
     #[cfg(target_os = "linux")]
     {
-        return effective_memory_from_values(
+        effective_memory_from_values(
             host_total,
             host_available,
             sys.cgroup_limits()
                 .map(|limits| (limits.total_memory, limits.free_memory)),
-        );
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
