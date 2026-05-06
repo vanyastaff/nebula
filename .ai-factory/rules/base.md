@@ -7,10 +7,10 @@
 
 ## Toolchain
 
-- Rust **1.95** stable for build / clippy / test (pinned via `rust-toolchain.toml`
-  and `workspace.package.rust-version`).
-- **Nightly rustfmt** required for formatting (`cargo +nightly fmt --all`) — see
-  `rustfmt.toml`.
+- Rust **1.95** stable for build / clippy / test / fmt (pinned via
+  `rust-toolchain.toml` and `workspace.package.rust-version`).
+- Formatting via `cargo fmt --all` on the pinned toolchain. `rustfmt.toml`
+  is stable-only — no nightly required.
 - Workspace edition: **2024**, resolver: **3**.
 - Test runner: **`cargo nextest run`** for unit/integration tests; doctests run
   via `cargo test --workspace --doc`.

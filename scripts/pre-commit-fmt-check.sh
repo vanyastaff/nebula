@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Pre-commit fmt-check: format only the crates owning the staged files.
 #
-# Why: `cargo +nightly fmt --all -- --check` builds a long internal command
-# line iterating every workspace member. On Windows with deep working-tree
-# paths (e.g. `C:\Users\<user>\...\.worktrees\nebula\<branch>\`), that line
-# exceeds the ~32k cmdline limit and cargo fails with `OS error 206`.
+# Why: `cargo fmt --all -- --check` builds a long internal command line
+# iterating every workspace member. On Windows with deep working-tree paths
+# (e.g. `C:\Users\<user>\...\.worktrees\nebula\<branch>\`), that line exceeds
+# the ~32k cmdline limit and cargo fails with `OS error 206`.
 #
 # This script mirrors the per-crate strategy used by
 # `pre-push-crate-diff.sh`: walk each staged file up to its owning crate's
@@ -12,7 +12,7 @@
 # `-p` flags. Workspace `rustfmt.toml` is honored because cargo-fmt picks
 # it up from the workspace root regardless of which packages are selected.
 #
-# CI fmt-check on Linux (`cargo +nightly fmt --all -- --check`) remains the
+# CI fmt-check on Linux (`cargo fmt --all -- --check`) remains the
 # authoritative gate; this script is fast-feedback only.
 set -euo pipefail
 
@@ -68,12 +68,12 @@ fi
 # only the failure path surfaces this).
 if [[ ${#pkg_args[@]} -gt 0 ]]; then
   echo "fmt-check (per-crate):" "${pkg_args[@]}"
-  cargo +nightly fmt "${pkg_args[@]}" -- --check
+  cargo fmt "${pkg_args[@]}" -- --check
 fi
 
 # Run each standalone manifest in its own invocation — `--manifest-path`
 # accepts only one value, so we loop instead of batching.
 for manifest in "${standalone_manifests[@]}"; do
   echo "fmt-check (standalone): $manifest"
-  cargo +nightly fmt --manifest-path "$manifest" -- --check
+  cargo fmt --manifest-path "$manifest" -- --check
 done
