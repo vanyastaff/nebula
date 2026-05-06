@@ -192,7 +192,8 @@ rules:
 
   # Area-specific rules files
   # These are created by /aif-rules when you add area-specific conventions
-  # Uncomment and add paths as needed:
+  # Scope = crate name without the `nebula-` prefix.
+  resilience: .ai-factory/rules/resilience.md
   # api: .ai-factory/rules/api.md
   # frontend: .ai-factory/rules/frontend.md
   # backend: .ai-factory/rules/backend.md
