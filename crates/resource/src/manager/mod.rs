@@ -122,10 +122,17 @@ impl Manager {
         let cancel = CancellationToken::new();
         let (release_queue, release_queue_handle) =
             ReleaseQueue::with_cancel(config.release_queue_workers, cancel.clone());
-        let metrics = config
-            .metrics_registry
-            .as_ref()
-            .map(|reg| ResourceOpsMetrics::new(reg));
+        let metrics =
+            config
+                .metrics_registry
+                .as_ref()
+                .and_then(|reg| match ResourceOpsMetrics::new(reg) {
+                    Ok(m) => Some(m),
+                    Err(err) => {
+                        tracing::warn!(?err, "failed to initialize resource operation metrics");
+                        None
+                    },
+                });
         Self {
             registry: Registry::new(),
             recovery_groups: RecoveryGroupRegistry::new(),

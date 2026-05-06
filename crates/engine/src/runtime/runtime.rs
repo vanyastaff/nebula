@@ -19,7 +19,10 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
 };
 use nebula_sandbox::{SandboxRunner, SandboxedContext};
-use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
+use nebula_telemetry::{
+    TelemetryError,
+    metrics::{Counter, Histogram, MetricsRegistry},
+};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -121,6 +124,10 @@ pub struct ActionRuntime {
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
+    /// Pre-bound at construction so hot paths never propagate registry errors.
+    action_failures_total: Counter,
+    action_duration_seconds: Histogram,
+    action_executions_total: Counter,
     blob_storage: Option<Arc<dyn BlobStorage>>,
     /// Sum of estimated output bytes per execution for
     /// [`DataPassingPolicy::max_total_execution_bytes`].
@@ -129,20 +136,32 @@ pub struct ActionRuntime {
 
 impl ActionRuntime {
     /// Create a new runtime with the given components.
-    pub fn new(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TelemetryError`] if the shared registry rejects registration
+    /// for the canonical action metric identities (e.g. name reused as another
+    /// primitive kind).
+    pub fn try_new(
         registry: Arc<ActionRegistry>,
         sandbox: Arc<dyn SandboxRunner>,
         data_policy: DataPassingPolicy,
         metrics: MetricsRegistry,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, TelemetryError> {
+        let action_failures_total = metrics.counter(NEBULA_ACTION_FAILURES_TOTAL)?;
+        let action_duration_seconds = metrics.histogram(NEBULA_ACTION_DURATION_SECONDS)?;
+        let action_executions_total = metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL)?;
+        Ok(Self {
             registry,
             sandbox,
             data_policy,
             metrics,
+            action_failures_total,
+            action_duration_seconds,
+            action_executions_total,
             blob_storage: None,
             execution_output_totals: Arc::new(DashMap::new()),
-        }
+        })
     }
 
     /// Clears accumulated output-byte totals for an execution.
@@ -401,7 +420,7 @@ impl ActionRuntime {
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
+        let error_counter = &self.action_failures_total;
         // `ExecutionId::new()` generates a fresh ULID; we deliberately do
         // *not* fall through to `ExecutionId::default()` (which returns nil)
         // when the scope omits the field — missing execution IDs are synthetic
@@ -462,7 +481,7 @@ impl ActionRuntime {
                     action_key,
                     execution_id,
                     &mut action_result,
-                    &error_counter,
+                    error_counter,
                 )
                 .await?;
                 Ok(action_result)
@@ -500,7 +519,7 @@ impl ActionRuntime {
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
+        let error_counter = &self.action_failures_total;
         #[allow(
             clippy::unwrap_or_default,
             reason = "ExecutionId::new() != Default::default()"
@@ -575,7 +594,7 @@ impl ActionRuntime {
                     action_key,
                     execution_id,
                     &mut action_result,
-                    &error_counter,
+                    error_counter,
                 )
                 .await?;
                 Ok(action_result)
@@ -772,10 +791,10 @@ impl ActionRuntime {
         result: &Result<ActionResult<serde_json::Value>, RuntimeError>,
     ) {
         let elapsed = started.elapsed();
-        self.duration_histogram().observe(elapsed.as_secs_f64());
-        self.executions_counter().inc();
+        self.action_duration_seconds.observe(elapsed.as_secs_f64());
+        self.action_executions_total.inc();
         if result.is_err() {
-            self.failures_counter().inc();
+            self.action_failures_total.inc();
         }
     }
 
@@ -787,21 +806,17 @@ impl ActionRuntime {
     /// skew downstream dashboards (#305).
     fn observe_rejected(&self, reason: &'static str) {
         let labels = self.metrics.interner().label_set(&[("reason", reason)]);
-        self.metrics
+        match self
+            .metrics
             .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
-            .inc();
-    }
-
-    fn duration_histogram(&self) -> Histogram {
-        self.metrics.histogram(NEBULA_ACTION_DURATION_SECONDS)
-    }
-
-    fn executions_counter(&self) -> Counter {
-        self.metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
-    }
-
-    fn failures_counter(&self) -> Counter {
-        self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL)
+        {
+            Ok(c) => c.inc(),
+            Err(err) => tracing::warn!(
+                ?err,
+                reason,
+                "failed to record action dispatch rejected metric"
+            ),
+        }
     }
 
     /// Execute a stateless handler.
@@ -1459,7 +1474,7 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
 
-        ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics)
+        ActionRuntime::try_new(registry, sandbox, DataPassingPolicy::default(), metrics).unwrap()
     }
 
     /// Build a runtime with a metrics registry we hand back to the caller,
@@ -1473,12 +1488,13 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy::default(),
             metrics.clone(),
-        );
+        )
+        .unwrap();
         (rt, metrics)
     }
 
@@ -1495,7 +1511,7 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -1504,7 +1520,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let eid = ExecutionId::new();
         let ctx = ActionRuntimeContext::new(
@@ -1599,7 +1616,7 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
 
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -1607,7 +1624,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let input = serde_json::json!({"big_payload": "this is way too large for 5 bytes"});
         let result = rt.execute_action("test.big", input, &test_context()).await;
@@ -1631,20 +1649,30 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
 
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy::default(),
             metrics.clone(),
-        );
+        )
+        .unwrap();
 
         rt.execute_action("test.tele", serde_json::json!("ok"), &test_context())
             .await
             .unwrap();
 
         // Metrics should be recorded.
-        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 1);
-        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+        assert_eq!(
+            metrics
+                .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+                .unwrap()
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -1685,7 +1713,8 @@ mod tests {
         );
 
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics);
+        let rt = ActionRuntime::try_new(registry, sandbox, DataPassingPolicy::default(), metrics)
+            .unwrap();
 
         let result = rt
             .execute_action(
@@ -1715,7 +1744,7 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
 
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -1724,7 +1753,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         // No blob storage configured -- should reject.
         let input = serde_json::json!({"big": "this exceeds 5 bytes easily"});
@@ -1777,7 +1807,7 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
 
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -1787,6 +1817,7 @@ mod tests {
             },
             metrics,
         )
+        .unwrap()
         .with_blob_storage(Arc::new(FakeBlobStorage));
 
         let input = serde_json::json!({"big": "this exceeds 5 bytes easily"});
@@ -1887,7 +1918,7 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -1896,7 +1927,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let result = rt
             .execute_action("test.multi_out", serde_json::json!(null), &test_context())
@@ -1973,7 +2005,7 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -1982,7 +2014,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let result = rt
             .execute_action("test.branch", serde_json::json!(null), &test_context())
@@ -2052,7 +2085,7 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -2061,7 +2094,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let result = rt
             .execute_action("test.collection", serde_json::json!(null), &test_context())
@@ -2130,7 +2164,7 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -2139,7 +2173,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let result = rt
             .execute_action("test.binary", serde_json::json!(null), &test_context())
@@ -2205,7 +2240,7 @@ mod tests {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let rt = ActionRuntime::new(
+        let rt = ActionRuntime::try_new(
             registry,
             sandbox,
             DataPassingPolicy {
@@ -2214,7 +2249,8 @@ mod tests {
                 ..Default::default()
             },
             metrics,
-        );
+        )
+        .unwrap();
 
         let result = rt
             .execute_action("test.ref", serde_json::json!(null), &test_context())
@@ -2283,17 +2319,23 @@ mod tests {
 
         // Histogram and execution/failure counters must NOT observe this path.
         assert_eq!(
-            metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(),
+            metrics
+                .histogram(NEBULA_ACTION_DURATION_SECONDS)
+                .unwrap()
+                .count(),
             0,
             "duration histogram must not sample rejection paths"
         );
         assert_eq!(
-            metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(),
+            metrics
+                .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+                .unwrap()
+                .get(),
             0,
             "executions counter must not bump on rejection"
         );
         assert_eq!(
-            metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(),
+            metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
             0,
             "failures counter must not bump on rejection"
         );
@@ -2305,6 +2347,7 @@ mod tests {
         assert_eq!(
             metrics
                 .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .unwrap()
                 .get(),
             1,
             "dispatch-rejected counter should be bumped once with reason=trigger_not_executable"
@@ -2362,9 +2405,24 @@ mod tests {
             "expected ResourceNotExecutable, got {result:?}"
         );
 
-        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 0);
-        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 0);
-        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+        assert_eq!(
+            metrics
+                .histogram(NEBULA_ACTION_DURATION_SECONDS)
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(
+            metrics
+                .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+                .unwrap()
+                .get(),
+            0
+        );
+        assert_eq!(
+            metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
+            0
+        );
 
         let labels = metrics
             .interner()
@@ -2372,6 +2430,7 @@ mod tests {
         assert_eq!(
             metrics
                 .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .unwrap()
                 .get(),
             1
         );
@@ -2392,9 +2451,24 @@ mod tests {
         rt.execute_action("test.dispatched", serde_json::json!("ok"), &test_context())
             .await
             .expect("dispatched execution must succeed");
-        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 1);
-        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 1);
-        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+        assert_eq!(
+            metrics
+                .histogram(NEBULA_ACTION_DURATION_SECONDS)
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+                .unwrap()
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
+            0
+        );
 
         let labels = metrics
             .interner()
@@ -2402,6 +2476,7 @@ mod tests {
         assert_eq!(
             metrics
                 .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .unwrap()
                 .get(),
             0,
             "dispatch-rejected counter must stay at zero for successful dispatch"

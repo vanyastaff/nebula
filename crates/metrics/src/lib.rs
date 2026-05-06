@@ -73,4 +73,7 @@ pub use naming::{
     webhook_signature_failure_reason,
 };
 // Re-export for convenience so callers can use nebula_metrics::Counter etc.
-pub use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+pub use nebula_telemetry::metrics::{
+    Counter, Gauge, Histogram, HistogramSnapshot, MetricsRegistry,
+};
+pub use nebula_telemetry::{MetricKind, TelemetryError, TelemetryResult};

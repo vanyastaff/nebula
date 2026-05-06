@@ -116,6 +116,10 @@ pub enum ConfigError {
         /// The pre-overflow operand; useful in operator messages.
         value: Duration,
     },
+
+    /// Metric primitive registration failed for the coordinator's §6 series.
+    #[error("telemetry metrics error: {0}")]
+    Telemetry(#[from] nebula_telemetry::TelemetryError),
 }
 
 impl RefreshCoordConfig {
@@ -308,7 +312,7 @@ impl RefreshCoordinator {
     /// # Errors
     ///
     /// Returns the corresponding [`ConfigError`] if `config.validate()`
-    /// fails (see §3.5 invariants).
+    /// fails (see §3.5 invariants) or metric handles cannot be bound.
     pub fn new_with(
         repo: Arc<dyn RefreshClaimRepo>,
         replica_id: ReplicaId,
@@ -319,12 +323,13 @@ impl RefreshCoordinator {
         // functional without composition. Production callers MUST follow
         // up with `with_metrics(engine_registry)` so a scraper actually
         // observes the §6 series — see `with_metrics` rustdoc.
+        let metrics = RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new())?;
         Ok(Self {
             l1: L1RefreshCoalescer::new(),
             repo,
             replica_id,
             config,
-            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new()),
+            metrics,
             audit_sink: None,
         })
     }
@@ -360,7 +365,8 @@ impl RefreshCoordinator {
             repo,
             replica_id: ReplicaId::new(default_replica_id_string()),
             config,
-            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new()),
+            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new())
+                .expect("refresh coordinator bootstrap metric wiring"),
             audit_sink: None,
         }
     }
@@ -386,7 +392,8 @@ impl RefreshCoordinator {
             repo,
             replica_id: ReplicaId::new(default_replica_id_string()),
             config,
-            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new()),
+            metrics: RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new())
+                .expect("refresh coordinator bootstrap metric wiring"),
             audit_sink: None,
         })
     }
@@ -1342,7 +1349,7 @@ mod tests {
         use nebula_metrics::MetricsRegistry;
 
         let registry = MetricsRegistry::new();
-        let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+        let metrics_handle = RefreshCoordMetrics::with_registry(&registry).unwrap();
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
         let coord = RefreshCoordinator::new_with(
             repo,
@@ -1382,7 +1389,7 @@ mod tests {
         use nebula_metrics::MetricsRegistry;
 
         let registry = MetricsRegistry::new();
-        let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+        let metrics_handle = RefreshCoordMetrics::with_registry(&registry).unwrap();
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
 
         // Park a contender claim so try_claim returns Contended for the
@@ -1510,7 +1517,7 @@ mod tests {
         use nebula_metrics::MetricsRegistry;
 
         let registry = MetricsRegistry::new();
-        let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+        let metrics_handle = RefreshCoordMetrics::with_registry(&registry).unwrap();
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(AlwaysContendedRepo);
 
         let coord = RefreshCoordinator::new_with(

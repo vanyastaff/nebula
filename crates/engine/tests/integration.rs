@@ -238,14 +238,17 @@ fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, MetricsRegistr
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
 
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
 
-    let engine = WorkflowEngine::new(runtime, metrics.clone());
+    let engine = WorkflowEngine::new(runtime, metrics.clone()).unwrap();
     (engine, metrics)
 }
 
@@ -261,13 +264,16 @@ async fn engine_and_runtime_share_metrics_registry() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
 
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
-    let engine = WorkflowEngine::new(runtime, metrics.clone());
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+    let engine = WorkflowEngine::new(runtime, metrics.clone()).unwrap();
 
     let n = node_key!("n");
     let wf = make_workflow(
@@ -280,7 +286,13 @@ async fn engine_and_runtime_share_metrics_registry() {
         .await
         .unwrap();
 
-    assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 1);
+    assert!(
+        metrics
+            .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+            .unwrap()
+            .get()
+            >= 1
+    );
 }
 
 fn meta(key: ActionKey) -> ActionMetadata {
@@ -533,16 +545,24 @@ async fn metrics_cover_full_lifecycle() {
     assert!(
         metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .unwrap()
             .get()
             > 0
     );
     assert!(
         metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+            .unwrap()
             .get()
             > 0
     );
-    assert!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get() >= 2);
+    assert!(
+        metrics
+            .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+            .unwrap()
+            .get()
+            >= 2
+    );
 }
 
 /// Verify that execution with many parallel nodes works with concurrency control.
@@ -676,18 +696,21 @@ async fn metrics_accurate_on_failure() {
     assert_eq!(
         metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+            .unwrap()
             .get(),
         1
     );
     assert_eq!(
         metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+            .unwrap()
             .get(),
         1
     );
     assert_eq!(
         metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+            .unwrap()
             .get(),
         0
     );

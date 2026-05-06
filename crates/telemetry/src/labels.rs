@@ -103,6 +103,12 @@ impl LabelSet {
 /// All interning operations are lock-free for reads; first-time registrations
 /// acquire an internal write lock.
 ///
+/// # Cardinality
+///
+/// Interning deduplicates repeated strings; it does **not** bound series
+/// cardinality. Unique label values still allocate and remain resident until
+/// compaction. Policy belongs in higher layers such as `nebula-metrics`.
+///
 /// # Memory semantics
 ///
 /// The underlying `ThreadedRodeo` is **append-only**: once a string has been
@@ -249,9 +255,19 @@ impl LabelInterner {
     pub fn filter_label_set(&self, labels: &LabelSet, allowed_keys: &[&str]) -> LabelSet {
         // Intern the allowed keys so that we compare Spur ↔ Spur (integers).
         let allowed: Vec<Spur> = allowed_keys.iter().map(|k| self.intern(k)).collect();
-        let pairs: Vec<(LabelKey, LabelValue)> =
-            labels.iter().filter(|(k, _)| allowed.contains(k)).collect();
-        // Already sorted because the source LabelSet is sorted.
+        self.filter_label_set_by_spur(labels, &allowed)
+    }
+
+    /// Same as [`Self::filter_label_set`], but callers pre-intern allowed keys once.
+    ///
+    /// Every [`Spur`] must have been produced by **this** interner; otherwise
+    /// comparisons are meaningless.
+    #[must_use]
+    pub fn filter_label_set_by_spur(&self, labels: &LabelSet, allowed_keys: &[Spur]) -> LabelSet {
+        let pairs: Vec<(LabelKey, LabelValue)> = labels
+            .iter()
+            .filter(|(k, _)| allowed_keys.contains(k))
+            .collect();
         LabelSet { pairs }
     }
 }

@@ -14,7 +14,7 @@ fn telemetry_adapter_resource_metrics_round_trip_via_generic_accessors() {
         "incrementing {} via generic adapter",
         NEBULA_RESOURCE_CREATE_TOTAL
     );
-    adapter.counter(NEBULA_RESOURCE_CREATE_TOTAL).inc();
+    adapter.counter(NEBULA_RESOURCE_CREATE_TOTAL).unwrap().inc();
 
     tracing::debug!(
         "observing {} via generic adapter with sample=0.5",
@@ -22,10 +22,16 @@ fn telemetry_adapter_resource_metrics_round_trip_via_generic_accessors() {
     );
     adapter
         .histogram(NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS)
+        .unwrap()
         .observe(0.5);
 
-    let create_total = registry.counter(NEBULA_RESOURCE_CREATE_TOTAL).get();
-    let acquire_wait = registry.histogram(NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS);
+    let create_total = registry
+        .counter(NEBULA_RESOURCE_CREATE_TOTAL)
+        .unwrap()
+        .get();
+    let acquire_wait = registry
+        .histogram(NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS)
+        .unwrap();
 
     assert_eq!(create_total, 1);
     assert_eq!(acquire_wait.count(), 1);

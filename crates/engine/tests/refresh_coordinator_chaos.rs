@@ -172,7 +172,7 @@ async fn three_replicas_zero_double_idp_calls() {
     // same series — at the end we read the aggregated counters straight
     // from the registry rather than poking pub(crate) handle fields.
     let registry = MetricsRegistry::new();
-    let metrics_handle = RefreshCoordMetrics::with_registry(&registry);
+    let metrics_handle = RefreshCoordMetrics::with_registry(&registry).unwrap();
 
     // Build N credentials; each gets a tracker the fake IdP closure
     // bumps. Use the in-memory repo (cross-replica visibility) so the
@@ -438,5 +438,5 @@ fn chaos_config() -> RefreshCoordConfig {
 /// access while still observing aggregate counts.
 fn read_counter(registry: &MetricsRegistry, name: &str, label_key: &str, label_val: &str) -> u64 {
     let labels = registry.interner().single(label_key, label_val);
-    registry.counter_labeled(name, &labels).get()
+    registry.counter_labeled(name, &labels).unwrap().get()
 }

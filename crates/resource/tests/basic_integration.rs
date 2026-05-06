@@ -2316,7 +2316,9 @@ async fn registry_backed_metrics_record_operations() {
     );
 
     // Same counters visible via registry directly.
-    let create_counter = registry.counter(nebula_metrics::naming::NEBULA_RESOURCE_CREATE_TOTAL);
+    let create_counter = registry
+        .counter(nebula_metrics::naming::NEBULA_RESOURCE_CREATE_TOTAL)
+        .unwrap();
     assert_eq!(create_counter.get(), 2);
 
     manager

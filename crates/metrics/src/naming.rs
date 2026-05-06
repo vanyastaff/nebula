@@ -505,15 +505,15 @@ mod tests {
             assert!(unique.insert(metric_name));
 
             if RESOURCE_GAUGE_NAMES.contains(&metric_name) {
-                let gauge = registry.gauge(metric_name);
+                let gauge = registry.gauge(metric_name).unwrap();
                 gauge.set(1);
                 assert_eq!(gauge.get(), 1);
             } else if RESOURCE_HISTOGRAM_NAMES.contains(&metric_name) {
-                let histogram = registry.histogram(metric_name);
+                let histogram = registry.histogram(metric_name).unwrap();
                 histogram.observe(1.0);
                 assert_eq!(histogram.count(), 1);
             } else {
-                let counter = registry.counter(metric_name);
+                let counter = registry.counter(metric_name).unwrap();
                 counter.inc();
                 assert_eq!(counter.get(), 1);
             }
@@ -583,15 +583,15 @@ mod tests {
             assert!(unique.insert(metric_name));
 
             if metric_name == NEBULA_CREDENTIAL_ACTIVE_TOTAL {
-                let gauge = registry.gauge(metric_name);
+                let gauge = registry.gauge(metric_name).unwrap();
                 gauge.set(1);
                 assert_eq!(gauge.get(), 1);
             } else if metric_name == NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS {
-                let histogram = registry.histogram(metric_name);
+                let histogram = registry.histogram(metric_name).unwrap();
                 histogram.observe(1.0);
                 assert_eq!(histogram.count(), 1);
             } else {
-                let counter = registry.counter(metric_name);
+                let counter = registry.counter(metric_name).unwrap();
                 counter.inc();
                 assert_eq!(counter.get(), 1);
             }
@@ -653,7 +653,7 @@ mod tests {
             assert!(unique.insert(metric_name));
 
             if metric_name == NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS {
-                let histogram = registry.histogram(metric_name);
+                let histogram = registry.histogram(metric_name).unwrap();
                 histogram.observe(0.5);
                 assert_eq!(histogram.count(), 1);
             } else {
@@ -664,7 +664,7 @@ mod tests {
                     .find(|(name, ..)| *name == metric_name)
                     .expect("every refresh-coord counter must appear in counter_label_map");
                 let labels = registry.interner().single(label_key, label_value);
-                let counter = registry.counter_labeled(metric_name, &labels);
+                let counter = registry.counter_labeled(metric_name, &labels).unwrap();
                 counter.inc();
                 assert_eq!(counter.get(), 1);
             }
@@ -728,7 +728,7 @@ mod tests {
 
         // All cache metrics are gauges (point-in-time snapshots)
         for metric_name in CACHE_METRIC_NAMES {
-            let gauge = registry.gauge(metric_name);
+            let gauge = registry.gauge(metric_name).unwrap();
             gauge.set(1);
             assert_eq!(gauge.get(), 1);
         }

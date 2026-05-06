@@ -28,8 +28,9 @@ use nebula_metrics::{
     NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
-    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL, refresh_coord_claim_outcome,
-    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL, TelemetryResult,
+    refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
+    refresh_coord_sentinel_action,
 };
 
 /// Pre-bound handles for the five refresh-coordinator metrics declared
@@ -56,7 +57,7 @@ pub struct RefreshCoordMetrics {
 
 impl RefreshCoordMetrics {
     /// Build pre-bound handles against the given registry.
-    pub fn with_registry(registry: &MetricsRegistry) -> Self {
+    pub fn with_registry(registry: &MetricsRegistry) -> TelemetryResult<Self> {
         let interner = registry.interner();
 
         let claim_label = |val: &str| interner.single("outcome", val);
@@ -64,46 +65,46 @@ impl RefreshCoordMetrics {
         let sentinel_label = |val: &str| interner.single("action", val);
         let reclaim_label = |val: &str| interner.single("outcome", val);
 
-        Self {
+        Ok(Self {
             claims_acquired: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
                 &claim_label(refresh_coord_claim_outcome::ACQUIRED),
-            ),
+            )?,
             claims_contended: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
                 &claim_label(refresh_coord_claim_outcome::CONTENDED),
-            ),
+            )?,
             claims_exhausted: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
                 &claim_label(refresh_coord_claim_outcome::EXHAUSTED),
-            ),
+            )?,
             coalesced_l1: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
                 &coalesced_label(refresh_coord_coalesced_tier::L1),
-            ),
+            )?,
             coalesced_l2: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
                 &coalesced_label(refresh_coord_coalesced_tier::L2),
-            ),
+            )?,
             sentinel_recorded: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
                 &sentinel_label(refresh_coord_sentinel_action::RECORDED),
-            ),
+            )?,
             sentinel_reauth_triggered: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
                 &sentinel_label(refresh_coord_sentinel_action::REAUTH_TRIGGERED),
-            ),
+            )?,
             reclaim_reclaimed: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
                 &reclaim_label(refresh_coord_reclaim_outcome::RECLAIMED),
-            ),
+            )?,
             reclaim_no_work: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
                 &reclaim_label(refresh_coord_reclaim_outcome::NO_WORK),
-            ),
+            )?,
             hold_duration: registry
-                .histogram(NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS),
-        }
+                .histogram(NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS)?,
+        })
     }
 
     /// Construct handles backed by a fresh private registry — tests and
@@ -117,7 +118,7 @@ impl RefreshCoordMetrics {
     #[cfg(any(test, feature = "test-util"))]
     #[must_use]
     pub fn for_tests() -> Self {
-        Self::with_registry(&MetricsRegistry::new())
+        Self::with_registry(&MetricsRegistry::new()).unwrap()
     }
 }
 
@@ -142,8 +143,8 @@ mod tests {
     #[test]
     fn handles_share_state_with_registry() {
         let registry = MetricsRegistry::new();
-        let m1 = RefreshCoordMetrics::with_registry(&registry);
-        let m2 = RefreshCoordMetrics::with_registry(&registry);
+        let m1 = RefreshCoordMetrics::with_registry(&registry).unwrap();
+        let m2 = RefreshCoordMetrics::with_registry(&registry).unwrap();
         // Same registry → same underlying counter.
         m1.claims_acquired.inc();
         assert_eq!(m2.claims_acquired.get(), 1);

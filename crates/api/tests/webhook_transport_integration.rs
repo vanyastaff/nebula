@@ -884,9 +884,11 @@ async fn signature_failures_total_metric_increments_per_reason() {
         .single("reason", webhook_signature_failure_reason::INVALID);
     let missing_count = registry
         .counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &missing_labels)
+        .unwrap()
         .get();
     let invalid_count = registry
         .counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &invalid_labels)
+        .unwrap()
         .get();
     assert_eq!(missing_count, 1, "reason=missing must increment once");
     assert_eq!(invalid_count, 1, "reason=invalid must increment once");
@@ -933,6 +935,7 @@ async fn signature_failures_total_metric_increments_missing_secret() {
         .single("reason", webhook_signature_failure_reason::MISSING_SECRET);
     let count = registry
         .counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &labels)
+        .unwrap()
         .get();
     assert_eq!(count, 1, "reason=missing_secret must increment once");
 }

@@ -71,6 +71,11 @@ pub enum EngineError {
     #[error("runtime error: {0}")]
     Runtime(#[from] crate::runtime::RuntimeError),
 
+    /// In-process metric registry rejected a primitive registration (name
+    /// collision across kinds, histogram bucket mismatch, etc.).
+    #[error("telemetry metrics error: {0}")]
+    Telemetry(#[from] nebula_telemetry::TelemetryError),
+
     /// Error from the execution state layer.
     #[error("execution error: {0}")]
     Execution(#[from] nebula_execution::ExecutionError),
@@ -196,6 +201,7 @@ impl nebula_error::Classify for EngineError {
             // runner saw the execution already in flight. Conflict
             // matches HTTP 409 at the API edge.
             Self::Leased { .. } => nebula_error::ErrorCategory::Conflict,
+            Self::Telemetry(_) => nebula_error::ErrorCategory::Internal,
             Self::Runtime(e) => nebula_error::Classify::category(e),
             Self::Execution(e) => nebula_error::Classify::category(e),
             Self::Action(e) => nebula_error::Classify::category(e),
@@ -220,11 +226,13 @@ impl nebula_error::Classify for EngineError {
             Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
             Self::CasConflict { .. } => "ENGINE:CAS_CONFLICT",
             Self::Leased { .. } => "ENGINE:LEASED",
+            Self::Telemetry(_) => "ENGINE:TELEMETRY",
         })
     }
 
     fn is_retryable(&self) -> bool {
         match self {
+            Self::Telemetry(_) => false,
             Self::Runtime(e) => nebula_error::Classify::is_retryable(e),
             Self::Execution(e) => nebula_error::Classify::is_retryable(e),
             Self::Action(e) => nebula_error::Classify::is_retryable(e),

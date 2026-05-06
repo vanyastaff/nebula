@@ -23,7 +23,8 @@
 //! ## Public API
 //!
 //! - [`MetricsRegistry`] — concurrent registry for counters, gauges, and histograms
-//! - [`Counter`], [`Gauge`], [`Histogram`] — lock-free metric types backed by atomics
+//! - [`Counter`], [`Gauge`], [`Histogram`], [`HistogramSnapshot`] — lock-free metric types backed
+//!   by atomics; snapshots freeze histogram scrape views
 //! - [`LabelInterner`] / [`LabelSet`] — `lasso`-backed string interning for label keys and values,
 //!   enabling zero-copy metric dimensions
 //! - [`MetricKey`] — typed metric identity (name + label set)
@@ -33,6 +34,6 @@ pub mod error;
 pub mod labels;
 pub mod metrics;
 
-pub use error::{TelemetryError, TelemetryResult};
+pub use error::{MetricKind, TelemetryError, TelemetryResult};
 pub use labels::{LabelInterner, LabelSet, MetricKey};
-pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+pub use metrics::{Counter, Gauge, Histogram, HistogramSnapshot, MetricsRegistry};

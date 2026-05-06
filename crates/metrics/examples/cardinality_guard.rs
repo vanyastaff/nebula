@@ -52,10 +52,16 @@ fn main() {
     }
 
     // Record with the safe set — no cardinality explosion.
-    adapter.action_executions_labeled(&safe_labels).inc_by(42);
+    adapter
+        .action_executions_labeled(&safe_labels)
+        .unwrap()
+        .inc_by(42);
     println!(
         "\naction_executions with safe labels = {}",
-        adapter.action_executions_labeled(&safe_labels).get()
+        adapter
+            .action_executions_labeled(&safe_labels)
+            .unwrap()
+            .get()
     );
 
     println!("\n=== retain_recent demo ===\n");
@@ -72,6 +78,7 @@ fn main() {
     for i in 0..1_000usize {
         let labels = interner2.label_set(&[("plugin_instance", i.to_string().as_str())]);
         reg2.counter_labeled("nebula_plugin_executions_total", &labels)
+            .unwrap()
             .inc();
     }
     println!("Series after bulk recording : {}", reg2.metric_count());
@@ -88,8 +95,12 @@ fn main() {
     let interner3 = reg3.interner();
 
     let labels = interner3.label_set(&[("action_type", "http.request")]);
-    reg3.counter_labeled("nebula_actions_total", &labels).inc();
-    reg3.counter_labeled("nebula_actions_total", &labels).inc(); // keep-alive touch
+    reg3.counter_labeled("nebula_actions_total", &labels)
+        .unwrap()
+        .inc();
+    reg3.counter_labeled("nebula_actions_total", &labels)
+        .unwrap()
+        .inc(); // keep-alive touch
 
     // With a generous window (5 min) fresh series survive.
     reg3.retain_recent(Duration::from_mins(5));

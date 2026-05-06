@@ -384,18 +384,24 @@ impl ControlConsumer {
                         .metrics
                         .interner()
                         .single("outcome", control_reclaim_outcome::RECLAIMED);
-                    self.metrics
+                    if let Ok(c) = self
+                        .metrics
                         .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &labels)
-                        .inc_by(outcome.reclaimed);
+                    {
+                        c.inc_by(outcome.reclaimed);
+                    }
                 }
                 if outcome.exhausted > 0 {
                     let labels = self
                         .metrics
                         .interner()
                         .single("outcome", control_reclaim_outcome::EXHAUSTED);
-                    self.metrics
+                    if let Ok(c) = self
+                        .metrics
                         .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &labels)
-                        .inc_by(outcome.exhausted);
+                    {
+                        c.inc_by(outcome.exhausted);
+                    }
                 }
 
                 if outcome.reclaimed > 0 || outcome.exhausted > 0 {

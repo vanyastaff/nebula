@@ -120,6 +120,23 @@ fn histogram_help(name: &str) -> &'static str {
     }
 }
 
+/// Format a floating-point sample for Prometheus text exposition (0.0.4).
+///
+/// Rust's default `f64` display uses `inf` / `-inf`; Prometheus expects `+Inf`,
+/// `-Inf`, and `NaN` tokens.
+fn format_prometheus_float(v: f64) -> String {
+    if v.is_nan() {
+        return "NaN".to_owned();
+    }
+    if v == f64::INFINITY {
+        return "+Inf".to_owned();
+    }
+    if v == f64::NEG_INFINITY {
+        return "-Inf".to_owned();
+    }
+    v.to_string()
+}
+
 // ── Label rendering ───────────────────────────────────────────────────────────
 
 /// Render a Prometheus label selector string: `{k1="v1",k2="v2"}`.
@@ -312,9 +329,10 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
         let _ = writeln!(out, "# HELP {name} {}", histogram_help(name));
         let _ = writeln!(out, "# TYPE {name} histogram");
         for (labels, hist) in entries {
-            let count = hist.count();
-            let sum = hist.sum();
-            let buckets = hist.buckets();
+            let snap = hist.snapshot();
+            let count = snap.observation_count() as usize;
+            let sum = snap.sum();
+            let buckets = snap.cumulative_buckets();
             let label_str = render_labels(labels, interner);
             // Emit finite buckets using this histogram's configured boundaries.
             for (upper_bound, cumulative) in buckets.iter().filter(|(upper, _)| upper.is_finite()) {
@@ -330,13 +348,17 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
             // +Inf bucket
             if label_str.is_empty() {
                 let _ = writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {count}");
-                let _ = writeln!(out, "{name}_sum {sum}");
+                let _ = writeln!(out, "{name}_sum {}", format_prometheus_float(sum));
                 let _ = writeln!(out, "{name}_count {count}");
             } else {
                 let inf_labels = format!("{},le=\"+Inf\"}}", &label_str[..label_str.len() - 1]);
                 let _ = writeln!(out, "{name}_bucket{inf_labels} {count}");
                 let sum_labels = label_str.clone();
-                let _ = writeln!(out, "{name}_sum{sum_labels} {sum}");
+                let _ = writeln!(
+                    out,
+                    "{name}_sum{sum_labels} {}",
+                    format_prometheus_float(sum)
+                );
                 let _ = writeln!(out, "{name}_count{sum_labels} {count}");
             }
         }
@@ -392,12 +414,15 @@ mod tests {
         let registry = Arc::new(MetricsRegistry::new());
         registry
             .counter("nebula_workflow_executions_started_total")
+            .unwrap()
             .inc();
         registry
             .counter("nebula_workflow_executions_started_total")
+            .unwrap()
             .inc();
         registry
             .histogram("nebula_action_duration_seconds")
+            .unwrap()
             .observe(0.5);
 
         let out = snapshot(&registry);
@@ -412,7 +437,9 @@ mod tests {
     #[test]
     fn histogram_renders_per_bucket_counts() {
         let registry = Arc::new(MetricsRegistry::new());
-        let hist = registry.histogram("nebula_action_duration_seconds");
+        let hist = registry
+            .histogram("nebula_action_duration_seconds")
+            .unwrap();
         hist.observe(0.003); // <= 0.005
         hist.observe(0.02); // <= 0.025
         hist.observe(0.5); // <= 0.5
@@ -445,6 +472,7 @@ mod tests {
         // Recording one observation triggers rendering.
         registry
             .histogram("nebula_action_duration_seconds")
+            .unwrap()
             .observe(0.0);
         let out2 = snapshot(&registry);
         assert!(out2.contains("nebula_action_duration_seconds_bucket{le=\"+Inf\"} 1\n"));
@@ -455,8 +483,14 @@ mod tests {
     #[test]
     fn snapshot_includes_resource_metrics() {
         let registry = Arc::new(MetricsRegistry::new());
-        registry.counter("nebula_resource_create_total").inc_by(5);
-        registry.counter("nebula_resource_error_total").inc();
+        registry
+            .counter("nebula_resource_create_total")
+            .unwrap()
+            .inc_by(5);
+        registry
+            .counter("nebula_resource_error_total")
+            .unwrap()
+            .inc();
 
         let out = snapshot(&registry);
         assert!(out.contains("# TYPE nebula_resource_create_total counter"));
@@ -467,9 +501,12 @@ mod tests {
     #[test]
     fn snapshot_includes_eventbus_metrics() {
         let registry = Arc::new(MetricsRegistry::new());
-        registry.gauge("nebula_eventbus_sent").set(100);
-        registry.gauge("nebula_eventbus_dropped").set(5);
-        registry.gauge("nebula_eventbus_subscribers").set(3);
+        registry.gauge("nebula_eventbus_sent").unwrap().set(100);
+        registry.gauge("nebula_eventbus_dropped").unwrap().set(5);
+        registry
+            .gauge("nebula_eventbus_subscribers")
+            .unwrap()
+            .set(3);
 
         let out = snapshot(&registry);
         assert!(out.contains("# TYPE nebula_eventbus_sent gauge"));
@@ -487,9 +524,11 @@ mod tests {
 
         registry
             .counter_labeled("nebula_action_executions_total", &http_labels)
+            .unwrap()
             .inc_by(10);
         registry
             .counter_labeled("nebula_action_executions_total", &math_labels)
+            .unwrap()
             .inc_by(3);
 
         let out = snapshot(&registry);
@@ -513,10 +552,15 @@ mod tests {
         // Trigger creation of known metrics.
         registry
             .counter("nebula_workflow_executions_started_total")
+            .unwrap()
             .inc();
-        registry.gauge("nebula_resource_health_state").set(1);
+        registry
+            .gauge("nebula_resource_health_state")
+            .unwrap()
+            .set(1);
         registry
             .histogram("nebula_workflow_execution_duration_seconds")
+            .unwrap()
             .observe(1.0);
 
         let out = snapshot(&registry);
@@ -529,7 +573,10 @@ mod tests {
     #[test]
     fn exporter_wraps_registry() {
         let registry = Arc::new(MetricsRegistry::new());
-        registry.counter("nebula_action_failures_total").inc_by(3);
+        registry
+            .counter("nebula_action_failures_total")
+            .unwrap()
+            .inc_by(3);
         let exporter = PrometheusExporter::new(registry);
         let out = exporter.snapshot();
         assert!(out.contains("nebula_action_failures_total 3\n"));
@@ -539,11 +586,13 @@ mod tests {
     fn snapshot_uses_histogram_specific_bucket_boundaries() {
         let registry = Arc::new(MetricsRegistry::new());
         let labels = registry.interner().label_set(&[("kind", "custom")]);
-        let histogram = registry.histogram_with_buckets_labeled(
-            "nebula_custom_duration_seconds",
-            &labels,
-            vec![0.1, 0.5],
-        );
+        let histogram = registry
+            .histogram_with_buckets_labeled(
+                "nebula_custom_duration_seconds",
+                &labels,
+                vec![0.1, 0.5],
+            )
+            .unwrap();
         histogram.observe(0.03);
         histogram.observe(0.3);
         histogram.observe(1.2);
@@ -575,6 +624,7 @@ mod tests {
             .label_set(&[("bad key\nx", "a\"b\\c"), ("ok_key", "ok")]);
         registry
             .counter_labeled("bad metric\nname", &labels)
+            .unwrap()
             .inc_by(2);
 
         let out = snapshot(&registry);
@@ -596,6 +646,7 @@ mod tests {
             .label_set(&[("a-b", "dash"), ("a b", "space")]);
         registry
             .counter_labeled("nebula_collision_label_keys", &labels)
+            .unwrap()
             .inc();
 
         let out = snapshot(&registry);
@@ -616,8 +667,8 @@ mod tests {
     #[test]
     fn snapshot_disambiguates_sanitized_metric_name_collisions() {
         let registry = Arc::new(MetricsRegistry::new());
-        registry.counter("dup x").inc();
-        registry.counter("dup-x").inc_by(2);
+        registry.counter("dup x").unwrap().inc();
+        registry.counter("dup-x").unwrap().inc_by(2);
 
         let out = snapshot(&registry);
         let type_lines = out.lines().filter(|l| l.starts_with("# TYPE ")).count();

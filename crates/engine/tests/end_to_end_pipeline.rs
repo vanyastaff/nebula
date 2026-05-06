@@ -259,13 +259,16 @@ async fn pipeline_resolves_expressions_before_handler_runs() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
-    let engine = WorkflowEngine::new(runtime, metrics);
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+    let engine = WorkflowEngine::new(runtime, metrics).unwrap();
 
     // Build a node with three parameters:
     //   - `name`     : literal string
@@ -379,13 +382,18 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
-    let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager.clone());
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+    let engine = WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_resource_manager(manager.clone());
 
     let node = node_key!("e2e_node_with_manager");
     let mut node_def = NodeDefinition::new(node.clone(), "Witness", "phase9.witness").unwrap();
@@ -441,13 +449,16 @@ async fn pipeline_unresolvable_expression_fails_node_before_handler() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
-    let engine = WorkflowEngine::new(runtime, metrics);
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+    let engine = WorkflowEngine::new(runtime, metrics).unwrap();
 
     let node = node_key!("bad_node");
     let mut node_def = NodeDefinition::new(node.clone(), "Witness", "phase9.witness").unwrap();
