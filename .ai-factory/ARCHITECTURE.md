@@ -25,7 +25,7 @@ typed events for cross-crate seams**.
   credentials, plugins, sandbox, HTTP/webhook surface).
 - **Tech stack:** Rust 1.95+ (edition 2024, resolver 3), Tokio,
   `thiserror` + `tracing`.
-- **Workspace size:** 35+ crates under `crates/` (see `Cargo.toml` `[workspace]`).
+- **Workspace size:** 33 crates under `crates/` (see `Cargo.toml` `[workspace]`).
 - **Team / scaling profile:** small core team, embeddable by external teams →
   modular discipline matters more than independent deploy.
 - **Key factor:** modularity is a hard product constraint (see README "Why
@@ -47,7 +47,7 @@ typed events for cross-crate seams**.
 │ Core                core · validator · expression · workflow ·           │
 │                     execution · schema · metadata                        │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ Cross-cutting       log · system · eventbus · telemetry · metrics ·      │
+│ Cross-cutting       log · system · eventbus · metrics ·      │
 │                     resilience · error                                   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -116,7 +116,7 @@ build cost out of the runtime crate.
 ### Allowed
 
 - ✅ Any crate may depend on **Cross-cutting** crates (`error`, `log`, `system`,
-  `eventbus`, `telemetry`, `metrics`, `resilience`).
+  `eventbus`, `metrics`, `resilience`).
 - ✅ **Core** depends on Cross-cutting only.
 - ✅ **Business** depends on Core + Cross-cutting.
 - ✅ **Exec** depends on Business + Core + Cross-cutting.

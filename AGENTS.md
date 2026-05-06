@@ -77,7 +77,7 @@ nebula/
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.95)
-├── crates/             # 34 workspace members (incl. 8 derive companions)
+├── crates/             # 33 workspace members (incl. 8 derive companions)
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
 ├── .claude/            # Claude Code skills + subagents
@@ -100,7 +100,7 @@ any level.
 | Exec         | `engine`, `storage`, `storage-loom-probe`, `sandbox`, `plugin-sdk` |
 | Business     | `credential`, `credential-builtin`, `resource`, `action`, `plugin` |
 | Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata` |
-| Cross-cutting| `log`, `system`, `eventbus`, `telemetry`, `metrics`, `resilience`, `error` |
+| Cross-cutting| `log`, `system`, `eventbus`, `metrics`, `resilience`, `error` |
 
 Each `+macros` companion (`action/macros`, `credential/macros`, `error/macros`,
 `plugin/macros`, `resource/macros`, `schema/macros`, `validator/macros`,
