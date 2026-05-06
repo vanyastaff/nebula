@@ -15,8 +15,8 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nebula_metrics::{adapter::TelemetryAdapter, filter::LabelAllowlist};
-use nebula_telemetry::metrics::MetricsRegistry;
+use nebula_metrics::MetricsRegistry;
+use nebula_metrics::{adapter::MetricsAdapter, filter::LabelAllowlist};
 
 fn main() {
     let registry = Arc::new(MetricsRegistry::new());
@@ -25,7 +25,7 @@ fn main() {
     //
     // Only "safe" low-cardinality keys are allowed in Prometheus series.
     // Keys like `execution_id` or `workflow_id` are stripped automatically.
-    let adapter = TelemetryAdapter::new(Arc::clone(&registry))
+    let adapter = MetricsAdapter::new(Arc::clone(&registry))
         .with_allowlist(LabelAllowlist::only(["action_type", "status"]));
 
     println!("=== LabelAllowlist demo ===\n");

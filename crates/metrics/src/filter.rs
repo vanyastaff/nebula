@@ -14,11 +14,11 @@
 //! ```rust
 //! use std::sync::Arc;
 //!
-//! use nebula_metrics::{adapter::TelemetryAdapter, filter::LabelAllowlist};
-//! use nebula_telemetry::metrics::MetricsRegistry;
+//! use nebula_metrics::{adapter::MetricsAdapter, filter::LabelAllowlist};
+//! use nebula_metrics::MetricsRegistry;
 //!
 //! let reg = Arc::new(MetricsRegistry::new());
-//! let adapter = TelemetryAdapter::new(Arc::clone(&reg));
+//! let adapter = MetricsAdapter::new(Arc::clone(&reg));
 //!
 //! let allowlist = LabelAllowlist::only(["action_type", "status"]);
 //!
@@ -33,7 +33,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use nebula_telemetry::labels::{LabelInterner, LabelKey, LabelSet};
+use crate::labels::{LabelInterner, LabelKey, LabelSet};
 
 /// A set of approved label-key names for metric observations.
 ///
@@ -147,7 +147,7 @@ impl Default for LabelAllowlist {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_telemetry::metrics::MetricsRegistry;
+    use crate::registry::MetricsRegistry;
 
     use super::*;
 

@@ -1,17 +1,17 @@
-//! Adapter over `nebula-telemetry::MetricsRegistry` with standard `nebula_*` names.
+//! Adapter over `MetricsRegistry` that records using standard `nebula_*` names.
 //!
 //! Use this when you want to record metrics with the unified naming convention
 //! without changing the underlying telemetry registry.
 
 use std::sync::Arc;
 
-use nebula_eventbus::EventBusStats;
-use nebula_telemetry::{
+use crate::{
     labels::LabelSet,
-    metrics::{Counter, Gauge, Histogram, MetricsRegistry},
+    registry::{Counter, Gauge, Histogram, MetricsRegistry},
 };
+use nebula_eventbus::EventBusStats;
 
-use crate::{TelemetryResult, filter::LabelAllowlist, naming::*};
+use crate::{MetricsResult, filter::LabelAllowlist, naming::*};
 
 /// Adapter that exposes telemetry metrics under standard `nebula_*` names.
 ///
@@ -20,19 +20,19 @@ use crate::{TelemetryResult, filter::LabelAllowlist, naming::*};
 /// can use this to record metrics that are ready for Prometheus/OTLP export.
 ///
 /// An optional [`LabelAllowlist`] can be configured via
-/// [`TelemetryAdapter::with_allowlist`] to strip high-cardinality label keys
+/// [`MetricsAdapter::with_allowlist`] to strip high-cardinality label keys
 /// before they reach the registry.
 #[derive(Clone, Debug)]
-pub struct TelemetryAdapter {
+pub struct MetricsAdapter {
     registry: Arc<MetricsRegistry>,
     allowlist: LabelAllowlist,
 }
 
-impl TelemetryAdapter {
+impl MetricsAdapter {
     /// Create an adapter over the given telemetry registry.
     ///
     /// By default all labels are passed through. Use
-    /// [`TelemetryAdapter::with_allowlist`] to restrict which keys are stored.
+    /// [`MetricsAdapter::with_allowlist`] to restrict which keys are stored.
     #[must_use]
     pub fn new(registry: Arc<MetricsRegistry>) -> Self {
         Self {
@@ -49,11 +49,11 @@ impl TelemetryAdapter {
     /// ```rust
     /// use std::sync::Arc;
     ///
-    /// use nebula_metrics::{LabelAllowlist, TelemetryAdapter};
-    /// use nebula_telemetry::metrics::MetricsRegistry;
+    /// use nebula_metrics::{LabelAllowlist, MetricsAdapter};
+    /// use nebula_metrics::MetricsRegistry;
     ///
     /// let reg = Arc::new(MetricsRegistry::new());
-    /// let adapter = TelemetryAdapter::new(Arc::clone(&reg)).with_allowlist(LabelAllowlist::only([
+    /// let adapter = MetricsAdapter::new(Arc::clone(&reg)).with_allowlist(LabelAllowlist::only([
     ///     "action_type",
     ///     "status",
     ///     "trigger_type",
@@ -83,25 +83,25 @@ impl TelemetryAdapter {
     // ---------- Workflow (engine) ----------
 
     /// Counter: workflow executions started.
-    pub fn workflow_executions_started_total(&self) -> TelemetryResult<Counter> {
+    pub fn workflow_executions_started_total(&self) -> MetricsResult<Counter> {
         self.registry
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
     }
 
     /// Counter: workflow executions completed successfully.
-    pub fn workflow_executions_completed_total(&self) -> TelemetryResult<Counter> {
+    pub fn workflow_executions_completed_total(&self) -> MetricsResult<Counter> {
         self.registry
             .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
     }
 
     /// Counter: workflow executions failed.
-    pub fn workflow_executions_failed_total(&self) -> TelemetryResult<Counter> {
+    pub fn workflow_executions_failed_total(&self) -> MetricsResult<Counter> {
         self.registry
             .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
     }
 
     /// Histogram: workflow execution duration in seconds.
-    pub fn workflow_execution_duration_seconds(&self) -> TelemetryResult<Histogram> {
+    pub fn workflow_execution_duration_seconds(&self) -> MetricsResult<Histogram> {
         self.registry
             .histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
     }
@@ -109,34 +109,34 @@ impl TelemetryAdapter {
     // ---------- Action (runtime) ----------
 
     /// Counter: action executions (success + failure).
-    pub fn action_executions_total(&self) -> TelemetryResult<Counter> {
+    pub fn action_executions_total(&self) -> MetricsResult<Counter> {
         self.registry.counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
     }
 
     /// Counter: action failures.
-    pub fn action_failures_total(&self) -> TelemetryResult<Counter> {
+    pub fn action_failures_total(&self) -> MetricsResult<Counter> {
         self.registry.counter(NEBULA_ACTION_FAILURES_TOTAL)
     }
 
     /// Histogram: action execution duration in seconds.
-    pub fn action_duration_seconds(&self) -> TelemetryResult<Histogram> {
+    pub fn action_duration_seconds(&self) -> MetricsResult<Histogram> {
         self.registry.histogram(NEBULA_ACTION_DURATION_SECONDS)
     }
 
     // ---------- Generic access (for domain-specific names) ----------
 
     /// Get or create a counter by name. Prefer the typed accessors above when available.
-    pub fn counter(&self, name: &str) -> TelemetryResult<Counter> {
+    pub fn counter(&self, name: &str) -> MetricsResult<Counter> {
         self.registry.counter(name)
     }
 
     /// Get or create a gauge by name.
-    pub fn gauge(&self, name: &str) -> TelemetryResult<Gauge> {
+    pub fn gauge(&self, name: &str) -> MetricsResult<Gauge> {
         self.registry.gauge(name)
     }
 
     /// Get or create a histogram by name.
-    pub fn histogram(&self, name: &str) -> TelemetryResult<Histogram> {
+    pub fn histogram(&self, name: &str) -> MetricsResult<Histogram> {
         self.registry.histogram(name)
     }
 
@@ -149,39 +149,36 @@ impl TelemetryAdapter {
     /// ```
     /// use std::sync::Arc;
     ///
-    /// use nebula_metrics::adapter::TelemetryAdapter;
-    /// use nebula_telemetry::metrics::MetricsRegistry;
+    /// use nebula_metrics::adapter::MetricsAdapter;
+    /// use nebula_metrics::MetricsRegistry;
     ///
     /// let reg = Arc::new(MetricsRegistry::new());
-    /// let adapter = TelemetryAdapter::new(Arc::clone(&reg));
+    /// let adapter = MetricsAdapter::new(Arc::clone(&reg));
     /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
     /// adapter.action_executions_labeled(&labels).unwrap().inc();
     /// ```
-    pub fn action_executions_labeled(&self, labels: &LabelSet) -> TelemetryResult<Counter> {
+    pub fn action_executions_labeled(&self, labels: &LabelSet) -> MetricsResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &labels)
     }
 
     /// Counter: action failures with label dimensions.
-    pub fn action_failures_labeled(&self, labels: &LabelSet) -> TelemetryResult<Counter> {
+    pub fn action_failures_labeled(&self, labels: &LabelSet) -> MetricsResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_ACTION_FAILURES_TOTAL, &labels)
     }
 
     /// Histogram: action execution duration with label dimensions.
-    pub fn action_duration_labeled(&self, labels: &LabelSet) -> TelemetryResult<Histogram> {
+    pub fn action_duration_labeled(&self, labels: &LabelSet) -> MetricsResult<Histogram> {
         let labels = self.filter_labels(labels);
         self.registry
             .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, &labels)
     }
 
     /// Counter: workflow executions started with label dimensions.
-    pub fn workflow_executions_started_labeled(
-        &self,
-        labels: &LabelSet,
-    ) -> TelemetryResult<Counter> {
+    pub fn workflow_executions_started_labeled(&self, labels: &LabelSet) -> MetricsResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, &labels)
@@ -191,17 +188,14 @@ impl TelemetryAdapter {
     pub fn workflow_executions_completed_labeled(
         &self,
         labels: &LabelSet,
-    ) -> TelemetryResult<Counter> {
+    ) -> MetricsResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, &labels)
     }
 
     /// Counter: workflow executions failed with label dimensions.
-    pub fn workflow_executions_failed_labeled(
-        &self,
-        labels: &LabelSet,
-    ) -> TelemetryResult<Counter> {
+    pub fn workflow_executions_failed_labeled(&self, labels: &LabelSet) -> MetricsResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, &labels)
@@ -209,34 +203,34 @@ impl TelemetryAdapter {
 
     /// Access the underlying label interner to build [`LabelSet`]s.
     #[must_use]
-    pub fn interner(&self) -> &nebula_telemetry::labels::LabelInterner {
+    pub fn interner(&self) -> &crate::labels::LabelInterner {
         self.registry.interner()
     }
 
     // ---------- EventBus snapshots ----------
 
     /// Gauge: eventbus sent events snapshot.
-    pub fn eventbus_sent(&self) -> TelemetryResult<Gauge> {
+    pub fn eventbus_sent(&self) -> MetricsResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_SENT)
     }
 
     /// Gauge: eventbus dropped events snapshot.
-    pub fn eventbus_dropped(&self) -> TelemetryResult<Gauge> {
+    pub fn eventbus_dropped(&self) -> MetricsResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_DROPPED)
     }
 
     /// Gauge: eventbus active subscriber snapshot.
-    pub fn eventbus_subscribers(&self) -> TelemetryResult<Gauge> {
+    pub fn eventbus_subscribers(&self) -> MetricsResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_SUBSCRIBERS)
     }
 
     /// Gauge: eventbus drop ratio snapshot in parts-per-million (`0..=1_000_000`).
-    pub fn eventbus_drop_ratio_ppm(&self) -> TelemetryResult<Gauge> {
+    pub fn eventbus_drop_ratio_ppm(&self) -> MetricsResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_DROP_RATIO_PPM)
     }
 
     /// Records an [`EventBusStats`] snapshot under standard `nebula_eventbus_*` gauges.
-    pub fn record_eventbus_stats(&self, stats: &EventBusStats) -> TelemetryResult<()> {
+    pub fn record_eventbus_stats(&self, stats: &EventBusStats) -> MetricsResult<()> {
         self.eventbus_sent()?
             .set(clamp_u64_to_i64(stats.sent_count));
         self.eventbus_dropped()?
@@ -267,16 +261,16 @@ fn clamp_usize_to_i64(value: usize) -> i64 {
 mod tests {
     use std::sync::Arc;
 
+    use crate::registry::MetricsRegistry;
     use nebula_eventbus::EventBusStats;
-    use nebula_telemetry::metrics::MetricsRegistry;
 
-    use super::TelemetryAdapter;
+    use super::MetricsAdapter;
     use crate::LabelAllowlist;
 
     #[test]
     fn adapter_records_under_standard_names() {
         let registry = Arc::new(MetricsRegistry::new());
-        let adapter = TelemetryAdapter::new(Arc::clone(&registry));
+        let adapter = MetricsAdapter::new(Arc::clone(&registry));
 
         adapter.workflow_executions_started_total().unwrap().inc();
         adapter.workflow_executions_started_total().unwrap().inc();
@@ -294,7 +288,7 @@ mod tests {
     #[test]
     fn adapter_records_eventbus_snapshot_metrics() {
         let registry = Arc::new(MetricsRegistry::new());
-        let adapter = TelemetryAdapter::new(Arc::clone(&registry));
+        let adapter = MetricsAdapter::new(Arc::clone(&registry));
 
         let stats = EventBusStats {
             sent_count: 75,
@@ -312,7 +306,7 @@ mod tests {
 
     #[test]
     fn record_eventbus_stats_handles_zero_totals_and_default_values() {
-        let adapter = TelemetryAdapter::new(Arc::new(MetricsRegistry::new()));
+        let adapter = MetricsAdapter::new(Arc::new(MetricsRegistry::new()));
 
         let stats = EventBusStats {
             sent_count: 0,
@@ -347,7 +341,7 @@ mod tests {
 
     #[test]
     fn record_eventbus_stats_handles_full_drop_ratio_and_rounding() {
-        let adapter = TelemetryAdapter::new(Arc::new(MetricsRegistry::new()));
+        let adapter = MetricsAdapter::new(Arc::new(MetricsRegistry::new()));
 
         let full_drop = EventBusStats {
             sent_count: 1_000_000,
@@ -380,7 +374,7 @@ mod tests {
 
     #[test]
     fn record_eventbus_stats_clamps_large_values_to_i64_max() {
-        let adapter = TelemetryAdapter::new(Arc::new(MetricsRegistry::new()));
+        let adapter = MetricsAdapter::new(Arc::new(MetricsRegistry::new()));
 
         let stats = EventBusStats {
             sent_count: u64::MAX,
@@ -403,7 +397,7 @@ mod tests {
     #[test]
     fn labeled_accessors_apply_allowlist_before_recording() {
         let registry = Arc::new(MetricsRegistry::new());
-        let adapter = TelemetryAdapter::new(Arc::clone(&registry))
+        let adapter = MetricsAdapter::new(Arc::clone(&registry))
             .with_allowlist(LabelAllowlist::only(["action_type"]));
         let labels = registry.interner().label_set(&[
             ("action_type", "http.request"),

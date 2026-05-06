@@ -428,7 +428,7 @@ pub const NEBULA_CACHE_SIZE: &str = "nebula_cache_size";
 mod tests {
     use std::collections::HashSet;
 
-    use nebula_telemetry::metrics::MetricsRegistry;
+    use crate::registry::MetricsRegistry;
 
     use super::{
         NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE,
