@@ -1,0 +1,26 @@
+---
+alwaysApply: true
+---
+
+# Nebula Agent Workflow
+
+Use `AGENTS.md` as the source of truth for project layout, architecture, Git
+workflow, and coding rules.
+
+For persistent task branches, create worktrees through the repository wrapper:
+
+```sh
+bash scripts/worktree.sh new <slug> <type> <scope>
+```
+
+This creates `.worktrees/<slug>` from `origin/main` and branch
+`<type>/<scope>-<slug>`.
+
+Commit staged changes through:
+
+```sh
+bash scripts/worktree.sh commit <type> <scope> <summary>
+```
+
+Do not create alternate persistent worktree directories for Cursor. Follow the
+same branch and commit rules as Claude, Codex, and Copilot.

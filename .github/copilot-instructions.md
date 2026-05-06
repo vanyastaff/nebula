@@ -6,6 +6,25 @@ Architecture: Core → Business → Exec → API (one-way deps, no upward).
 Universal data type: serde_json::Value.
 Error handling: thiserror in libs, anyhow in binaries.
 
+## Agent Git Workflow
+
+Use `AGENTS.md` as the source of truth for repository rules. For local
+persistent task branches, create worktrees with:
+
+```sh
+bash scripts/worktree.sh new <slug> <type> <scope>
+```
+
+This creates `.worktrees/<slug>` from `origin/main` and branch
+`<type>/<scope>-<slug>`. Commit staged changes with:
+
+```sh
+bash scripts/worktree.sh commit <type> <scope> <summary>
+```
+
+Copilot cloud coding environments that cannot use `.worktrees/` must still use
+the same branch naming and Conventional Commit rules.
+
 ## What to Flag in Reviews
 
 ### Critical (always comment)

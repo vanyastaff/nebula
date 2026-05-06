@@ -172,7 +172,10 @@ lefthook-local.yml
 
 .agent/
 .agents/
-.cursor/
+.cursor/*
+!.cursor/
+!.cursor/rules/
+!.cursor/rules/*.mdc
 .codex/
 .junie/
 .qoder/

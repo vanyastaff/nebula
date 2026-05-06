@@ -27,6 +27,7 @@ agent-facing summary.
 nebula/
 ├── Cargo.toml                  # workspace root, pinned deps
 ├── README.md                   # product overview, architecture, principles
+├── CLAUDE.md                   # Claude Code entry point; imports AGENTS.md
 ├── CONTRIBUTING.md             # branch / commit / PR rules
 ├── AGENTS.md                   # this file
 ├── CODE_OF_CONDUCT.md
@@ -50,6 +51,8 @@ nebula/
 ├── .claude/                    # Claude Code skills + agents
 │   ├── skills/                 # /aif-* skills
 │   └── agents/                 # subagents (sidecars, workers, loop roles)
+├── .cursor/                    # Cursor project rules
+│   └── rules/                  # tracked shared rules for Cursor agents
 ├── .github/
 │   ├── CODEOWNERS              # auto-reviewer mapping
 │   ├── PULL_REQUEST_TEMPLATE.md
@@ -60,6 +63,10 @@ nebula/
 │   ├── ISSUE_TEMPLATE/
 │   ├── labeler.yml
 │   └── dependabot.yml
+├── scripts/                    # shared developer / hook helper scripts
+│   ├── worktree.sh             # canonical worktree + commit wrapper
+│   ├── pre-commit-fmt-check.sh
+│   └── pre-push-crate-diff.sh
 └── crates/                     # 35+ workspace members
     ├── core/                   # Core    — primitives, IDs, traits
     ├── error/  +/macros/       # Cross   — error taxonomy
@@ -117,6 +124,7 @@ between siblings at the same layer.
 | `rust-toolchain.toml`         | Pinned toolchain |
 | `lefthook.yml`                | Local pre-commit / pre-push (mirrors CI) |
 | `Taskfile.yml`                | `task dev:check` = full pre-PR gate; `task --list` for catalog |
+| `scripts/worktree.sh`         | Canonical helper behind `task wt:*` and `task git:commit` |
 | `.github/workflows/ci.yml`    | CI required jobs: fmt, clippy, nextest, doctests, MSRV, deny |
 | `.github/CODEOWNERS`          | Auto-reviewer + security-sensitive path gates |
 | `crates/<crate>/README.md`    | Per-crate human entry point |
@@ -140,14 +148,38 @@ between siblings at the same layer.
 | File                          | Purpose |
 |-------------------------------|---------|
 | `AGENTS.md`                   | This file — project map for any AI agent |
+| `CLAUDE.md`                   | Claude Code shim that imports `AGENTS.md` |
 | `.ai-factory/config.yaml`     | AI Factory settings (language, paths, git, rules) |
 | `.ai-factory/DESCRIPTION.md`  | Agent-facing project summary |
 | `.ai-factory/ARCHITECTURE.md` | Agent-actionable architecture subset |
 | `.ai-factory/rules/base.md`   | Distilled coding rules for agents |
 | `.ai-factory.json`            | AI Factory install manifest (managed by tooling) |
 | `.github/copilot-instructions.md` | GitHub Copilot guidance |
+| `.cursor/rules/*.mdc`         | Cursor project rules that point back to `AGENTS.md` |
 | `.claude/skills/`             | Claude Code `/aif-*` skill definitions |
 | `.claude/agents/`             | Subagent definitions (sidecars, workers, loop roles) |
+
+## Agent Git Workflow
+
+Use the repository wrapper for all persistent task branches:
+
+- Create worktrees with `bash scripts/worktree.sh new <slug> <type> <scope>`
+  or the `task wt:new` wrapper using `WT_NAME`, `WT_TYPE`, and `WT_SCOPE`.
+  This creates `.worktrees/<slug>` from `origin/main` and a branch named
+  `<type>/<scope>-<slug>`.
+- Use `task wt:list` to inspect worktrees. Remove clean worktrees with
+  `bash scripts/worktree.sh remove <slug>` or `task wt:remove` with `WT_NAME`.
+  Do not hand-roll alternate persistent worktree locations for Claude, Codex,
+  Cursor, or Copilot.
+- Commit staged changes with
+  `bash scripts/worktree.sh commit <type> <scope> <summary>`. This produces
+  `<type>(<scope>): <summary>` and validates it with `convco`.
+- Allowed commit / branch types are `build`, `chore`, `ci`, `docs`, `feat`,
+  `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
+- Scope is the crate name without `nebula-` (`resilience`, `engine`, `api`) or
+  a top-level area (`docs`, `ci`, `scripts`, `github`).
+- Managed cloud/IDE worktrees that cannot be configured to `.worktrees/` must
+  still follow the same branch and commit rules, with CI/lefthook as the gate.
 
 ## Agent Rules
 
