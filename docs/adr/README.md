@@ -12,12 +12,14 @@ The repository's full ADR archive lives at the parent project's `docs/adr/` (e.g
 | [0043](./0043-dependency-declaration-dx.md) | Dependency declaration DX (slot binding + Variant A trait + FromWorkflowNode) | accepted (2026-04-29) | action, resource, credential, schema, macro, slot, m11 |
 | [0044](./0044-supersede-0036-resource-credential-singular.md) | Supersede ADR-0036 — Resource::Credential singular → slot fields | accepted (2026-04-29) | resource, credential, slot-binding, m11, supersession |
 | [0045](./0045-eventtrigger-scope-deferral.md) | EventTrigger DX-wrapper deferral (candidate ROADMAP §M6.4) | accepted (2026-04-29) | trigger, dx, deferral, m6, m11, roadmap |
+| [0046](./0046-metrics-telemetry-boundary.md) | Merge `nebula-telemetry` into `nebula-metrics` — single observability crate | accepted (2026-05-06) | metrics, telemetry, observability, boundary, m9 |
 
 ## Supersession
 
 | Superseded ADR | Supersedes | Note |
 |---|---|---|
 | 0036 (`resource-credential-adoption-auth-retirement`, external `C:/Users/vanya/RustroverProjects/docs/adr/0036-*.md`) | [0044](./0044-supersede-0036-resource-credential-singular.md) | Singular `Resource::Credential` associated type → typed credential slot fields via `#[credential(key = …)]`. Per-slot rotation hook replaces the singular `on_credential_refresh` signature. |
+| Canon `[L1-§3.10]` (in `crates/telemetry/README.md`) | [0046](./0046-metrics-telemetry-boundary.md) | The "primitives below, naming/policy/export above" cross-crate invariant is replaced by intra-crate module discipline (`mod` boundaries + `pub`/`pub(crate)`) in the merged `nebula-metrics`. Implementation deferred to follow-up `/aif-plan` iteration. |
 
 ## Related plan
 
