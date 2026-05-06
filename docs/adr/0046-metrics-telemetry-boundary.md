@@ -47,7 +47,7 @@ The merger question therefore reduces to: *does the split protect a property tha
 
 ### Flat module layout
 
-```
+```text
 crates/metrics/src/
 ├── lib.rs              # crate root: `mod` declarations + re-exports + crate docs
 ├── counter.rs          # Counter
