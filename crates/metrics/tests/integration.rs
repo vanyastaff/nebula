@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use nebula_metrics::{
-    MetricsRegistry, TelemetryAdapter,
+    MetricsAdapter, MetricsRegistry,
     naming::{NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CREATE_TOTAL},
 };
 
 #[test]
 fn telemetry_adapter_resource_metrics_round_trip_via_generic_accessors() {
     let registry = Arc::new(MetricsRegistry::new());
-    let adapter = TelemetryAdapter::new(Arc::clone(&registry));
+    let adapter = MetricsAdapter::new(Arc::clone(&registry));
 
     tracing::debug!(
         "incrementing {} via generic adapter",

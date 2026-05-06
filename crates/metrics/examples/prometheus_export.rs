@@ -1,6 +1,6 @@
 //! # Prometheus Export Example
 //!
-//! Shows how to use `TelemetryAdapter` with canonical `nebula_*` metric names
+//! Shows how to use `MetricsAdapter` with canonical `nebula_*` metric names
 //! and render the registry to Prometheus text format.
 //!
 //! Run with:
@@ -10,12 +10,12 @@
 
 use std::sync::Arc;
 
-use nebula_metrics::{adapter::TelemetryAdapter, export::prometheus};
-use nebula_telemetry::metrics::MetricsRegistry;
+use nebula_metrics::MetricsRegistry;
+use nebula_metrics::{adapter::MetricsAdapter, prometheus};
 
 fn main() {
     let registry = Arc::new(MetricsRegistry::new());
-    let adapter = TelemetryAdapter::new(Arc::clone(&registry));
+    let adapter = MetricsAdapter::new(Arc::clone(&registry));
 
     // ── Simulate workflow executions ──────────────────────────────────────────
 

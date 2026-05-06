@@ -27,18 +27,32 @@ if [[ -z "$changed_crates" ]]; then
 fi
 
 pkg_args=()
+existing_crates=()
 while IFS= read -r crate; do
   [[ -z "$crate" ]] && continue
+  # Skip deleted crates: if Cargo.toml no longer exists in the working tree,
+  # the package was removed (e.g. crate consolidation per ADR) and there is
+  # nothing to test for it.
+  if [[ ! -f "crates/$crate/Cargo.toml" ]]; then
+    echo "lefthook: skipping deleted crate nebula-$crate"
+    continue
+  fi
   pkg_args+=("-p" "nebula-$crate")
+  existing_crates+=("$crate")
 done <<<"$changed_crates"
 
-echo "lefthook: checking changed crates: $changed_crates"
+if [[ ${#pkg_args[@]} -eq 0 ]]; then
+  echo "lefthook: all changed crates were deletions; nothing to test"
+  exit 0
+fi
+
+echo "lefthook: checking changed crates: ${existing_crates[*]}"
 cargo nextest run "${pkg_args[@]}" --profile agent
 cargo check "${pkg_args[@]}" --all-features --all-targets --quiet
 
 # Keep no-default-features checks for crates that support this gate.
 for crate in resilience log expression; do
-  if printf '%s\n' "$changed_crates" | rg -x "$crate" >/dev/null; then
+  if printf '%s\n' "${existing_crates[@]}" | rg -x "$crate" >/dev/null; then
     cargo check -p "nebula-$crate" --no-default-features --quiet
   fi
 done

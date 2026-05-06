@@ -2,7 +2,7 @@
 //!
 //! This example shows the integration pattern you would use to connect
 //! `nebula-log`'s observability hook system to any telemetry backend (e.g.
-//! `nebula-telemetry`, Prometheus, a custom metrics sink).
+//! `nebula-metrics`, Prometheus, a custom metrics sink).
 //!
 //! The `RecordingHook` below acts as a stand-in for a real telemetry backend —
 //! it records events in memory so the example can assert they were delivered
@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Notes on extending this pattern:
     //
     //   • Replace `RecordingHook` with a real telemetry backend hook from
-    //     `nebula-telemetry` once it stabilises (Phase 3+).
+    //     `nebula-metrics` once it stabilises (Phase 3+).
     //   • For OTLP traces, enable `features = ["telemetry"]` and set
     //     `OTEL_EXPORTER_OTLP_ENDPOINT`. See `examples/otlp_setup.rs`.
     //   • For Sentry error tracking, enable `features = ["sentry"]` and set

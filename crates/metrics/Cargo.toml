@@ -5,18 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "Unified metric naming and export adapters for the Nebula workflow engine"
+description = "In-memory metrics primitives, naming policy, label safety, and Prometheus export for the Nebula workflow engine"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-error = { workspace = true, features = ["derive"] }
 nebula-eventbus = { path = "../eventbus" }
-nebula-telemetry = { path = "../telemetry" }
+
+dashmap = { workspace = true }
+lasso = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tracing = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }

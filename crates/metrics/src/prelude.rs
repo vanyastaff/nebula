@@ -5,11 +5,11 @@
 //! ```
 
 // ── Adapter ─────────────────────────────────────────────────────────────────
-// ── Metric Types (from nebula-telemetry) ────────────────────────────────────
-pub use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+// ── Metric Types ──────────────────────────────────────────────────────────
+pub use crate::registry::{Counter, Gauge, Histogram, MetricsRegistry};
 
-pub use crate::adapter::TelemetryAdapter;
+pub use crate::adapter::MetricsAdapter;
 // ── Export ───────────────────────────────────────────────────────────────────
-pub use crate::export::prometheus::{PrometheusExporter, content_type, snapshot};
+pub use crate::prometheus::{PrometheusExporter, content_type, snapshot};
 // ── Filter ───────────────────────────────────────────────────────────────────
 pub use crate::filter::LabelAllowlist;

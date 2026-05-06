@@ -119,7 +119,7 @@ pub enum ConfigError {
 
     /// Metric primitive registration failed for the coordinator's §6 series.
     #[error("telemetry metrics error: {0}")]
-    Telemetry(#[from] nebula_telemetry::TelemetryError),
+    Telemetry(#[from] nebula_metrics::MetricsError),
 }
 
 impl RefreshCoordConfig {

@@ -24,7 +24,7 @@ API layer are in active development. Not production-ready yet.
 - **Async runtime:** Tokio (multi-thread).
 - **Serialization:** `serde` / `serde_json`.
 - **Errors:** `thiserror` in libraries, `anyhow` in binaries.
-- **Observability:** `tracing` + crate-local `nebula-log`, `nebula-telemetry`,
+- **Observability:** `tracing` + crate-local `nebula-log` and
   `nebula-metrics`.
 - **Concurrency primitives:** `dashmap`, `parking_lot`, `arc-swap`, `moka`,
   custom resilience patterns in `nebula-resilience`.
@@ -42,7 +42,7 @@ API / Public    api · sdk
 Exec            engine · storage · sandbox · plugin-sdk
 Business        credential · resource · action · plugin
 Core            core · validator · expression · workflow · execution · schema · metadata
-Cross-cutting   log · system · eventbus · telemetry · metrics · resilience · error
+Cross-cutting   log · system · eventbus · metrics · resilience · error
 ```
 
 Each layer depends only on layers below; cross-cutting crates are importable

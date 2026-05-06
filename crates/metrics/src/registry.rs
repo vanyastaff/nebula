@@ -19,7 +19,7 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use lasso::Spur;
 
 use crate::{
-    error::{MetricKind, TelemetryError, TelemetryResult},
+    error::{MetricKind, MetricsError, MetricsResult},
     labels::{LabelInterner, LabelSet, MetricKey},
 };
 
@@ -65,7 +65,7 @@ impl Counter {
     /// Increment by a given amount.
     ///
     /// `inc_by(0)` does not change the stored value or
-    /// [`Self::last_updated_ms`] (see [`crate::metrics::MetricsRegistry::retain_recent`]).
+    /// [`Self::last_updated_ms`] (see [`MetricsRegistry::retain_recent`]).
     pub fn inc_by(&self, n: u64) {
         if n == 0 {
             return;
@@ -262,19 +262,19 @@ impl Clone for Histogram {
 
 impl Histogram {
     /// Validate histogram bucket boundaries for [`Self::try_with_buckets`].
-    pub fn validate_bucket_boundaries(boundaries: &[f64]) -> TelemetryResult<()> {
+    pub fn validate_bucket_boundaries(boundaries: &[f64]) -> MetricsResult<()> {
         if boundaries.is_empty() {
-            return Err(TelemetryError::InvalidHistogramBuckets {
+            return Err(MetricsError::InvalidHistogramBuckets {
                 reason: "boundaries must not be empty".into(),
             });
         }
         if !boundaries.iter().all(|&b| b > 0.0 && b.is_finite()) {
-            return Err(TelemetryError::InvalidHistogramBuckets {
+            return Err(MetricsError::InvalidHistogramBuckets {
                 reason: "each boundary must be positive and finite".into(),
             });
         }
         if !boundaries.windows(2).all(|w| w[0] < w[1]) {
-            return Err(TelemetryError::InvalidHistogramBuckets {
+            return Err(MetricsError::InvalidHistogramBuckets {
                 reason: "boundaries must be strictly increasing with no duplicates".into(),
             });
         }
@@ -308,7 +308,7 @@ impl Histogram {
     }
 
     /// Create a histogram with custom bucket boundaries.
-    pub fn try_with_buckets(boundaries: Vec<f64>) -> TelemetryResult<Self> {
+    pub fn try_with_buckets(boundaries: Vec<f64>) -> MetricsResult<Self> {
         Self::validate_bucket_boundaries(&boundaries)?;
         Ok(Self::from_validated_boundaries(boundaries))
     }
@@ -575,7 +575,7 @@ impl MetricSeries {
 /// # Examples
 ///
 /// ```
-/// use nebula_telemetry::metrics::MetricsRegistry;
+/// use nebula_metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
 /// let counter = registry.counter("request_total").unwrap();
@@ -606,13 +606,8 @@ impl MetricsRegistry {
         self.interner.resolve(name).to_owned()
     }
 
-    fn kind_conflict(
-        &self,
-        name: Spur,
-        expected: MetricKind,
-        actual: MetricKind,
-    ) -> TelemetryError {
-        TelemetryError::MetricKindConflict {
+    fn kind_conflict(&self, name: Spur, expected: MetricKind, actual: MetricKind) -> MetricsError {
+        MetricsError::MetricKindConflict {
             metric_name: self.resolve_metric_name(name),
             expected_kind: expected,
             actual_kind: actual,
@@ -631,21 +626,21 @@ impl MetricsRegistry {
     // ── Unlabeled accessors ─────────────────────────────────────────────────
 
     /// Get or create an unlabeled counter by name.
-    pub fn counter(&self, name: &str) -> TelemetryResult<Counter> {
+    pub fn counter(&self, name: &str) -> MetricsResult<Counter> {
         let name_spur = self.interner.intern(name);
         let key = MetricKey::unlabeled(name_spur);
         self.insert_counter(key, name_spur)
     }
 
     /// Get or create an unlabeled gauge by name.
-    pub fn gauge(&self, name: &str) -> TelemetryResult<Gauge> {
+    pub fn gauge(&self, name: &str) -> MetricsResult<Gauge> {
         let name_spur = self.interner.intern(name);
         let key = MetricKey::unlabeled(name_spur);
         self.insert_gauge(key, name_spur)
     }
 
     /// Get or create an unlabeled histogram using the built-in default bucket layout.
-    pub fn histogram(&self, name: &str) -> TelemetryResult<Histogram> {
+    pub fn histogram(&self, name: &str) -> MetricsResult<Histogram> {
         self.histogram_with_buckets_unlabeled(name, DEFAULT_BUCKETS)
     }
 
@@ -653,7 +648,7 @@ impl MetricsRegistry {
         &self,
         name: &str,
         boundaries: &[f64],
-    ) -> TelemetryResult<Histogram> {
+    ) -> MetricsResult<Histogram> {
         Histogram::validate_bucket_boundaries(boundaries)?;
         let name_spur = self.interner.intern(name);
         let key = MetricKey::unlabeled(name_spur);
@@ -667,7 +662,7 @@ impl MetricsRegistry {
     /// # Examples
     ///
     /// ```
-    /// use nebula_telemetry::metrics::MetricsRegistry;
+    /// use nebula_metrics::MetricsRegistry;
     ///
     /// let reg = MetricsRegistry::new();
     /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
@@ -677,14 +672,14 @@ impl MetricsRegistry {
     /// counter.inc();
     /// assert_eq!(counter.get(), 1);
     /// ```
-    pub fn counter_labeled(&self, name: &str, labels: &LabelSet) -> TelemetryResult<Counter> {
+    pub fn counter_labeled(&self, name: &str, labels: &LabelSet) -> MetricsResult<Counter> {
         let name_spur = self.interner.intern(name);
         let key = MetricKey::labeled(name_spur, labels.clone());
         self.insert_counter(key, name_spur)
     }
 
     /// Get or create a gauge for the given metric name and label set.
-    pub fn gauge_labeled(&self, name: &str, labels: &LabelSet) -> TelemetryResult<Gauge> {
+    pub fn gauge_labeled(&self, name: &str, labels: &LabelSet) -> MetricsResult<Gauge> {
         let name_spur = self.interner.intern(name);
         let key = MetricKey::labeled(name_spur, labels.clone());
         self.insert_gauge(key, name_spur)
@@ -692,7 +687,7 @@ impl MetricsRegistry {
 
     /// Get or create a histogram for the given metric name and label set using
     /// the built-in default bucket layout.
-    pub fn histogram_labeled(&self, name: &str, labels: &LabelSet) -> TelemetryResult<Histogram> {
+    pub fn histogram_labeled(&self, name: &str, labels: &LabelSet) -> MetricsResult<Histogram> {
         self.histogram_with_buckets_labeled(name, labels, DEFAULT_BUCKETS.to_vec())
     }
 
@@ -700,20 +695,20 @@ impl MetricsRegistry {
     ///
     /// Bucket boundaries are pinned at **first registration**. A later call
     /// with the same `(name, labels)` but different `boundaries` returns
-    /// [`TelemetryError::HistogramLayoutConflict`].
+    /// [`MetricsError::HistogramLayoutConflict`].
     pub fn histogram_with_buckets_labeled(
         &self,
         name: &str,
         labels: &LabelSet,
         boundaries: Vec<f64>,
-    ) -> TelemetryResult<Histogram> {
+    ) -> MetricsResult<Histogram> {
         Histogram::validate_bucket_boundaries(&boundaries)?;
         let name_spur = self.interner.intern(name);
         let key = MetricKey::labeled(name_spur, labels.clone());
         self.insert_histogram(key, name_spur, &boundaries)
     }
 
-    fn insert_counter(&self, key: MetricKey, name_spur: Spur) -> TelemetryResult<Counter> {
+    fn insert_counter(&self, key: MetricKey, name_spur: Spur) -> MetricsResult<Counter> {
         match self.series.entry(key) {
             Entry::Occupied(o) => match o.get() {
                 MetricSeries::Counter(c) => Ok(c.clone()),
@@ -727,7 +722,7 @@ impl MetricsRegistry {
         }
     }
 
-    fn insert_gauge(&self, key: MetricKey, name_spur: Spur) -> TelemetryResult<Gauge> {
+    fn insert_gauge(&self, key: MetricKey, name_spur: Spur) -> MetricsResult<Gauge> {
         match self.series.entry(key) {
             Entry::Occupied(o) => match o.get() {
                 MetricSeries::Gauge(g) => Ok(g.clone()),
@@ -746,12 +741,12 @@ impl MetricsRegistry {
         key: MetricKey,
         name_spur: Spur,
         boundaries: &[f64],
-    ) -> TelemetryResult<Histogram> {
+    ) -> MetricsResult<Histogram> {
         match self.series.entry(key) {
             Entry::Occupied(o) => match o.get() {
                 MetricSeries::Histogram(h) => {
                     if h.boundaries() != boundaries {
-                        return Err(TelemetryError::HistogramLayoutConflict {
+                        return Err(MetricsError::HistogramLayoutConflict {
                             metric_name: self.resolve_metric_name(name_spur),
                         });
                     }
@@ -821,7 +816,7 @@ impl MetricsRegistry {
     /// ```
     /// use std::time::Duration;
     ///
-    /// use nebula_telemetry::metrics::MetricsRegistry;
+    /// use nebula_metrics::MetricsRegistry;
     ///
     /// let mut reg = MetricsRegistry::new();
     /// let c = reg.counter("actions_total").unwrap();
@@ -897,7 +892,7 @@ impl Default for MetricsRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MetricKind, TelemetryError};
+    use crate::{MetricKind, MetricsError};
 
     #[test]
     fn default_bucket_table_is_valid() {
@@ -1125,7 +1120,7 @@ mod tests {
     fn histogram_empty_buckets_rejected() {
         assert!(matches!(
             Histogram::try_with_buckets(vec![]),
-            Err(TelemetryError::InvalidHistogramBuckets { .. })
+            Err(MetricsError::InvalidHistogramBuckets { .. })
         ));
     }
 
@@ -1133,7 +1128,7 @@ mod tests {
     fn histogram_unsorted_buckets_rejected() {
         assert!(matches!(
             Histogram::try_with_buckets(vec![5.0, 1.0, 10.0]),
-            Err(TelemetryError::InvalidHistogramBuckets { .. })
+            Err(MetricsError::InvalidHistogramBuckets { .. })
         ));
     }
 
@@ -1153,7 +1148,7 @@ mod tests {
         let err = reg.gauge("dup").unwrap_err();
         assert!(matches!(
             err,
-            TelemetryError::MetricKindConflict {
+            MetricsError::MetricKindConflict {
                 expected_kind: MetricKind::Gauge,
                 actual_kind: MetricKind::Counter,
                 ..
@@ -1260,10 +1255,7 @@ mod tests {
         let err = reg
             .histogram_with_buckets_labeled("req_latency", &labels, vec![2.0, 4.0, 8.0])
             .unwrap_err();
-        assert!(matches!(
-            err,
-            TelemetryError::HistogramLayoutConflict { .. }
-        ));
+        assert!(matches!(err, MetricsError::HistogramLayoutConflict { .. }));
 
         first.observe(0.3);
         let second = reg

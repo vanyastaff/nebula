@@ -97,7 +97,7 @@ pub struct ManagerConfig {
     /// When `Some`, the manager records resource operation counters
     /// (`acquire_total`, `release_total`, etc.) into the registry.
     /// When `None`, metrics are silently skipped (zero overhead).
-    pub metrics_registry: Option<Arc<nebula_telemetry::metrics::MetricsRegistry>>,
+    pub metrics_registry: Option<Arc<nebula_metrics::MetricsRegistry>>,
 }
 
 impl Default for ManagerConfig {

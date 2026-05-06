@@ -3328,7 +3328,6 @@ dependencies = [
  "nebula-resilience",
  "nebula-schema",
  "nebula-storage",
- "nebula-telemetry",
  "nebula-validator",
  "nebula-workflow",
  "parking_lot",
@@ -3469,7 +3468,6 @@ dependencies = [
  "nebula-sandbox",
  "nebula-schema",
  "nebula-storage",
- "nebula-telemetry",
  "nebula-workflow",
  "parking_lot",
  "pretty_assertions",
@@ -3652,11 +3650,14 @@ dependencies = [
 name = "nebula-metrics"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "insta",
+ "lasso",
+ "nebula-error",
  "nebula-eventbus",
- "nebula-telemetry",
  "pretty_assertions",
  "rstest",
+ "thiserror",
  "tracing",
 ]
 
@@ -3746,7 +3747,6 @@ dependencies = [
  "nebula-resilience",
  "nebula-resource-macros",
  "nebula-schema",
- "nebula-telemetry",
  "pretty_assertions",
  "rstest",
  "semver",
@@ -3913,20 +3913,6 @@ dependencies = [
  "serde",
  "sysinfo",
  "thiserror",
-]
-
-[[package]]
-name = "nebula-telemetry"
-version = "0.1.0"
-dependencies = [
- "dashmap",
- "insta",
- "lasso",
- "nebula-error",
- "pretty_assertions",
- "rstest",
- "thiserror",
- "tracing",
 ]
 
 [[package]]

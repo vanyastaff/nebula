@@ -19,7 +19,7 @@ members = [
   "crates/resilience",
   "crates/resource",
   "crates/system",
-  "crates/telemetry",
+
   "crates/validator",
   "crates/api",
   "crates/workflow",

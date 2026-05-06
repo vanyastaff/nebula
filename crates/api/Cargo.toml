@@ -30,7 +30,6 @@ nebula-core = { path = "../core" }
 nebula-execution = { path = "../execution" }
 nebula-validator = { path = "../validator" }
 nebula-metrics = { path = "../metrics" }
-nebula-telemetry = { path = "../telemetry" }
 nebula-workflow = { path = "../workflow" }
 nebula-action = { path = "../action" }
 nebula-engine = { path = "../engine" }

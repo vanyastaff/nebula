@@ -38,7 +38,6 @@ nebula-sandbox = { path = "../sandbox" }
 nebula-resilience = { path = "../resilience" }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
-nebula-telemetry = { path = "../telemetry" }
 
 async-channel = { workspace = true }
 async-trait = { workspace = true }
@@ -69,7 +68,6 @@ futures = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]
-nebula-metrics = { path = "../metrics" }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -3,45 +3,50 @@
 
 //! # nebula-metrics
 //!
-//! Metric export and label-safety layer for the Nebula workflow engine.
+//! In-memory metric primitives, naming policy, label safety, and Prometheus
+//! text-format export for the Nebula workflow engine.
 //!
 //! ## Purpose
 //!
-//! Sits on top of `nebula-telemetry` primitives and adds what operators need:
-//! consistent `nebula_*` naming, a cardinality guard that strips high-cardinality
-//! label keys before they reach the registry, and Prometheus text-format export.
-//! Consumers import this crate — it re-exports `Counter`, `Gauge`, `Histogram`, and
-//! `MetricsRegistry` from `nebula-telemetry` so only one import is needed.
-//! See `crates/metrics/README.md` for the full role description.
-//!
-//! ## Role
-//!
-//! **Metric Export and Label-Safety** — sits on top of `nebula-telemetry`; the
-//! `/metrics` HTTP scrape endpoint lives in `nebula-api`.
+//! Single observability crate covering primitive metric types, label interning,
+//! standard `nebula_*` metric names, cardinality safety, and Prometheus export.
+//! Per ADR-0046 the formerly separate `nebula-telemetry` primitives layer was
+//! absorbed into this crate; the cross-crate boundary was structurally
+//! unenforced and caused daily friction. Intra-crate module discipline
+//! (`mod` boundaries + `pub`/`pub(crate)`) replaces canon `[L1-§3.10]`.
 //!
 //! ## Public API
 //!
 //! - [`naming`] — standard `nebula_*` metric name constants
-//! - [`TelemetryAdapter`] — adapter over `nebula-telemetry::MetricsRegistry` using `nebula_*` names
-//! - [`snapshot`] — Prometheus text-format export with `# HELP`, `# TYPE` metadata and per-bucket
-//!   histogram output
-//! - [`filter::LabelAllowlist`] — strips high-cardinality label keys (prevents cardinality
-//!   explosion)
-//! - [`prelude`] — convenience re-exports for common types
-//!
-//! In-memory primitives (`Counter`, `Gauge`, `Histogram`) remain in `nebula-telemetry`;
-//! this crate adds naming convention, a thin adapter, Prometheus text export, and label safety.
+//! - [`MetricsRegistry`] — concurrent registry for counters, gauges, histograms
+//! - [`Counter`], [`Gauge`], [`Histogram`], [`HistogramSnapshot`] — lock-free
+//!   metric types backed by atomics
+//! - [`LabelInterner`], [`LabelSet`], [`MetricKey`] — interning + composite keys
+//! - [`MetricsAdapter`] — adapter using `nebula_*` name constants
+//! - [`snapshot`] — Prometheus text-format export
+//! - [`filter::LabelAllowlist`] — strips high-cardinality label keys
+//! - [`MetricsError`], [`MetricsResult`] — typed error and result alias
+//! - [`prelude`] — convenience re-exports
 
+// primitives
+pub mod labels;
+pub mod registry;
+// policy
 pub mod adapter;
-pub mod export;
 pub mod filter;
 pub mod naming;
+// export
+pub mod prometheus;
+// error
+pub mod error;
+// prelude
 /// Convenience re-exports.
 pub mod prelude;
 
-pub use adapter::TelemetryAdapter;
-pub use export::prometheus::{PrometheusExporter, content_type, snapshot};
+pub use adapter::MetricsAdapter;
+pub use error::{MetricKind, MetricsError, MetricsResult};
 pub use filter::LabelAllowlist;
+pub use labels::{LabelInterner, LabelKey, LabelSet, LabelValue, MetricKey};
 pub use naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, NEBULA_CACHE_EVICTIONS,
@@ -72,8 +77,5 @@ pub use naming::{
     refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, rotation_outcome,
     webhook_signature_failure_reason,
 };
-// Re-export for convenience so callers can use nebula_metrics::Counter etc.
-pub use nebula_telemetry::metrics::{
-    Counter, Gauge, Histogram, HistogramSnapshot, MetricsRegistry,
-};
-pub use nebula_telemetry::{MetricKind, TelemetryError, TelemetryResult};
+pub use prometheus::{PrometheusExporter, content_type, snapshot};
+pub use registry::{Counter, Gauge, Histogram, HistogramSnapshot, MetricsRegistry};

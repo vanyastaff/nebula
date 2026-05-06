@@ -1,7 +1,7 @@
-//! Error types for the telemetry subsystem.
+//! Error types for the metrics subsystem.
 
 /// Primitive metric kind stored in a
-/// [`crate::metrics::MetricsRegistry`].
+/// [`crate::registry::MetricsRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
     /// Monotonic counter.
@@ -12,19 +12,19 @@ pub enum MetricKind {
     Histogram,
 }
 
-/// Errors that can occur in the telemetry subsystem.
+/// Errors that can occur in the metrics subsystem.
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
 #[non_exhaustive]
-pub enum TelemetryError {
+pub enum MetricsError {
     /// An I/O error occurred in a sink.
-    #[classify(category = "internal", code = "TELEMETRY:IO")]
+    #[classify(category = "internal", code = "METRICS:IO")]
     #[error("sink I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     /// The same `(name, labels)` identity is already registered with a different primitive kind.
     #[classify(
         category = "validation",
-        code = "TELEMETRY:METRIC_KIND_CONFLICT",
+        code = "METRICS:METRIC_KIND_CONFLICT",
         retryable = false
     )]
     #[error(
@@ -42,7 +42,7 @@ pub enum TelemetryError {
     /// A histogram series already exists with different finite bucket boundaries.
     #[classify(
         category = "validation",
-        code = "TELEMETRY:HISTOGRAM_LAYOUT_CONFLICT",
+        code = "METRICS:HISTOGRAM_LAYOUT_CONFLICT",
         retryable = false
     )]
     #[error(
@@ -56,7 +56,7 @@ pub enum TelemetryError {
     /// Histogram bucket configuration is invalid for a primitive histogram.
     #[classify(
         category = "validation",
-        code = "TELEMETRY:INVALID_HISTOGRAM_BUCKETS",
+        code = "METRICS:INVALID_HISTOGRAM_BUCKETS",
         retryable = false
     )]
     #[error("invalid histogram bucket boundaries: {reason}")]
@@ -66,5 +66,5 @@ pub enum TelemetryError {
     },
 }
 
-/// Type alias for results in the telemetry subsystem.
-pub type TelemetryResult<T> = Result<T, TelemetryError>;
+/// Type alias for results in the metrics subsystem.
+pub type MetricsResult<T> = Result<T, MetricsError>;

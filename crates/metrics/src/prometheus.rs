@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-use nebula_telemetry::{labels::LabelInterner, metrics::MetricsRegistry};
+use crate::{labels::LabelInterner, registry::MetricsRegistry};
 
 use crate::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
@@ -142,7 +142,7 @@ fn format_prometheus_float(v: f64) -> String {
 /// Render a Prometheus label selector string: `{k1="v1",k2="v2"}`.
 ///
 /// Returns an empty string if the label set is empty (unlabeled metric).
-fn render_labels(labels: &nebula_telemetry::labels::LabelSet, interner: &LabelInterner) -> String {
+fn render_labels(labels: &crate::labels::LabelSet, interner: &LabelInterner) -> String {
     if labels.is_empty() {
         return String::new();
     }
@@ -405,7 +405,7 @@ impl PrometheusExporter {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_telemetry::metrics::MetricsRegistry;
+    use crate::registry::MetricsRegistry;
 
     use super::{PrometheusExporter, snapshot};
 

@@ -15,7 +15,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use nebula_telemetry::labels::{LabelInterner, LabelSet};
+//! use nebula_metrics::{LabelInterner, LabelSet};
 //!
 //! let interner = LabelInterner::new();
 //! let labels = interner.label_set(&[("action_type", "http.request"), ("status", "success")]);
@@ -48,7 +48,7 @@ pub type LabelValue = Spur;
 /// # Examples
 ///
 /// ```rust
-/// use nebula_telemetry::labels::{LabelInterner, LabelSet};
+/// use nebula_metrics::{LabelInterner, LabelSet};
 ///
 /// let interner = LabelInterner::new();
 /// let a = interner.label_set(&[("status", "ok"), ("action", "http.request")]);
@@ -115,7 +115,7 @@ impl LabelSet {
 /// interned it remains resident for the lifetime of the `LabelInterner`
 /// (and all its `Arc` clones), even if every `LabelSet` referencing it has
 /// been dropped. This means that metric eviction via
-/// [`crate::metrics::MetricsRegistry::retain_recent`] may rebuild the registry
+/// [`crate::registry::MetricsRegistry::retain_recent`] may rebuild the registry
 /// interner from active series, which drops unreachable historical strings at
 /// the registry level.
 ///
@@ -124,7 +124,7 @@ impl LabelSet {
 /// # Examples
 ///
 /// ```rust
-/// use nebula_telemetry::labels::LabelInterner;
+/// use nebula_metrics::LabelInterner;
 ///
 /// let interner = LabelInterner::new();
 /// let spur = interner.intern("http.request");
@@ -241,7 +241,7 @@ impl LabelInterner {
     /// # Examples
     ///
     /// ```rust
-    /// use nebula_telemetry::labels::LabelInterner;
+    /// use nebula_metrics::LabelInterner;
     ///
     /// let interner = LabelInterner::new();
     /// let labels = interner.label_set(&[

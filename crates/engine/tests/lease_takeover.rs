@@ -26,12 +26,12 @@ use nebula_engine::{
     DataPassingPolicy, EngineControlDispatch, ExecutionEvent, InProcessSandbox, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
+use nebula_metrics::MetricsRegistry;
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
     ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo,
     repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo},
 };
-use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 use tokio_util::sync::CancellationToken;
 

@@ -74,7 +74,7 @@ pub enum EngineError {
     /// In-process metric registry rejected a primitive registration (name
     /// collision across kinds, histogram bucket mismatch, etc.).
     #[error("telemetry metrics error: {0}")]
-    Telemetry(#[from] nebula_telemetry::TelemetryError),
+    Telemetry(#[from] nebula_metrics::MetricsError),
 
     /// Error from the execution state layer.
     #[error("execution error: {0}")]

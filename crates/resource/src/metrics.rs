@@ -11,14 +11,14 @@
 //! `on_credential_refresh(&mut self, slot_name)` fan-out is implemented
 //! (see `.ai-factory/PHASE4_BLOCKED.md`).
 
+use nebula_metrics::{Counter, MetricsRegistry};
 use nebula_metrics::{
-    TelemetryResult,
+    MetricsResult,
     naming::{
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
     },
 };
-use nebula_telemetry::metrics::{Counter, MetricsRegistry};
 
 /// Registry-backed counters for resource operations.
 ///
@@ -30,7 +30,7 @@ use nebula_telemetry::metrics::{Counter, MetricsRegistry};
 ///
 /// ```
 /// use nebula_resource::metrics::ResourceOpsMetrics;
-/// use nebula_telemetry::metrics::MetricsRegistry;
+/// use nebula_metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
 /// let metrics = ResourceOpsMetrics::new(&registry).unwrap();
@@ -56,7 +56,7 @@ impl ResourceOpsMetrics {
     ///
     /// Counters are registered (or retrieved if already present) using the
     /// standard naming constants from `nebula-metrics`.
-    pub fn new(registry: &MetricsRegistry) -> TelemetryResult<Self> {
+    pub fn new(registry: &MetricsRegistry) -> MetricsResult<Self> {
         Ok(Self {
             acquire_total: registry.counter(NEBULA_RESOURCE_ACQUIRE_TOTAL)?,
             acquire_errors: registry.counter(NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL)?,

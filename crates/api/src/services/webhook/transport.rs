@@ -35,8 +35,8 @@ use nebula_action::{
     TriggerRuntimeContext, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse,
     WebhookRequest, verify_hmac_sha256, verify_hmac_sha256_base64,
 };
+use nebula_metrics::MetricsRegistry;
 use nebula_metrics::{NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason};
-use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use url::Url;
