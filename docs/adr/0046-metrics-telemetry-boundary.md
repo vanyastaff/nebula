@@ -5,7 +5,7 @@
 **Supersedes:** L1 canon invariant `[L1-§3.10]` (in `crates/telemetry/README.md`) — see "Supersession" below.
 **Superseded by:** —
 **ROADMAP:** §M9 — Observability + DoD audit pass
-**Issues:** #595 (metrics OTLP label allocation), #591 (related cardinality work), #598 (telemetry: verify OpenTelemetry setup against bridge-pattern guide). Referenced for context — this ADR does **not** claim to close them.
+**Issues:** #595 (metrics OTLP label allocation), #598 (telemetry: verify OpenTelemetry setup against bridge-pattern guide). Referenced for context — this ADR does **not** claim to close them. (#591, listed alongside #595 in ROADMAP §M9.3, is the unrelated `nebula-system` `NETWORK_STATS` mutex concern; intentionally excluded from this boundary decision.)
 
 > **Note on prior audits.** Prior audits in `docs/audits/` (May 2026) covering `nebula-metrics`, `nebula-telemetry`, and the joint stack are superseded for the boundary-decision question by this ADR. A comprehensive observability re-audit (covering implementation invariants, cardinality safety, exporter correctness) is deferred to a follow-up `/aif-plan` iteration after the merge implementation lands. Findings from those prior audits are not referenced here; ADR-0046 engages with the boundary question on first principles.
 

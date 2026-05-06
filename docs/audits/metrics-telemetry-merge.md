@@ -26,7 +26,7 @@
 | **Eventbus coupling** | **Zero references** (`grep -rn nebula_eventbus crates/telemetry/src/` returns empty) | Active: imports `EventBusStats` (`adapter.rs:8`), defines 4 `NEBULA_EVENTBUS_*` constants, `record_eventbus_stats(EventBusStats)` method, integration test |
 | **Public types/traits/fns** | `MetricsRegistry`, `Counter`, `Gauge`, `Histogram`, `HistogramSnapshot`, `LabelInterner`, `LabelSet`, `MetricKey`, `MetricKind`, `TelemetryError`, `TelemetryResult` | `TelemetryAdapter`, `PrometheusExporter`, `snapshot()`, `content_type()`, `LabelAllowlist`, ~47 `NEBULA_*` constants, ~7 label helper fns (`control_reclaim_outcome`, `rotation_outcome`, etc.); + 8 re-exports from `nebula-telemetry` (`Counter`, `Gauge`, `Histogram`, `HistogramSnapshot`, `MetricsRegistry`, `MetricKind`, `TelemetryError`, `TelemetryResult`) |
 | **Doc-comment density** (`/// + //!` lines) | ~146 | ~280 |
-| **Runnable doctest fences** (`grep -c '```' src/`) | 14 fence lines (~7 blocks) | 10 fence lines (~5 blocks) |
+| **Runnable doctest fences** (count of triple-backtick lines via grep on `src/`) | 14 fence lines (~7 blocks) | 10 fence lines (~5 blocks) |
 | **Workspace lints** | `[lints] workspace = true` | `[lints] workspace = true` |
 
 **Combined:** 4034 LOC src, 10 modules across 2 crates, ~12 runnable doctests, ~426 doc-comment lines.
@@ -67,13 +67,13 @@ pub fn record_eventbus_stats(&self, stats: &EventBusStats) { ... }
 
 #### 1.3 Doc-comment / doctest count
 
-| Crate | `///` + `//!` lines | `````` fence lines | Approx. runnable doctest blocks |
+| Crate | `///` + `//!` lines | Triple-backtick fence lines | Approx. runnable doctest blocks |
 |---|---|---|---|
 | `nebula-telemetry` | 146 | 14 | ~7 |
 | `nebula-metrics` | 280 | 10 | ~5 |
 | **Combined** | **426** | **24** | **~12** |
 
-The 426 doc-comment lines include both `//!` crate/module-level docs and `///` item docs. The runnable-block count is approximate (each `````` rust` block has an opening and closing fence).
+The 426 doc-comment lines include both `//!` crate/module-level docs and `///` item docs. The runnable-block count is approximate (each triple-backtick `rust` block has an opening and closing fence).
 
 **Implication for migration cost (input to §6 Option 2).** A merge involves rewriting any doctest example that imports `nebula_telemetry::*` to use `nebula_metrics::*`. With ~12 runnable blocks, the rewrite surface is **small and mechanical** — sed/regex-grade work, not semantic redesign.
 
