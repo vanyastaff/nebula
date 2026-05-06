@@ -7,8 +7,10 @@
 //! # Examples
 //!
 //! ```ignore
-//! use nebula_credential::StaticProtocol;
+//! use nebula_credential::{CredentialError, SecretString, StaticProtocol};
 //! use nebula_credential::scheme::ConnectionUri;
+//! use nebula_schema::{field_key, Field, FieldValues, ValidSchema};
+//! use serde_json::json;
 //!
 //! struct PostgresProtocol;
 //!
@@ -16,7 +18,7 @@
 //!     type Scheme = ConnectionUri;
 //!
 //!     fn parameters() -> ValidSchema {
-//!         Schema::builder()
+//!         nebula_schema::Schema::builder()
 //!             .add(Field::string(field_key!("host")).required())
 //!             .add(Field::integer(field_key!("port")).default(json!(5432)))
 //!             .build()

@@ -1826,6 +1826,17 @@ mod tests {
             .find_by_path(&FieldPath::parse("items.name").unwrap())
             .expect("list item child should be indexed");
         assert_eq!(field.key().as_str(), "name");
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("items[0].name").unwrap())
+                .is_none(),
+            "schema paths use the canonical anonymous list-item path"
+        );
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("items.missing").unwrap())
+                .is_none()
+        );
     }
 
     #[test]

@@ -24,11 +24,11 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 ## Public API
 
 - `Field` — unified enum over all field kinds (string, number, bool, enum, nested, …).
-- `Schema` — value type for a field list; use `Schema::builder()` for construction.
+- `Schema` — draft/unvalidated field-list representation; use `Schema::builder()` for construction.
 - `Schema::builder() -> SchemaBuilder` — primary entry point.
 - `SchemaBuilder::add` accumulates fields and lets lint catch duplicates during `build()`.
-- `Schema::lint() -> ValidationReport` — structural diagnostics (errors block `build`; warnings are advisory).
-- `SchemaBuilder::build() -> Result<ValidSchema, ValidationReport>` — runs lint passes and returns the `ValidSchema` proof-token.
+- `Schema::lint() -> ValidationReport` — structural diagnostics for a draft schema (errors block `build`; warnings are advisory).
+- `SchemaBuilder::build() -> Result<ValidSchema, ValidationReport>` — runs lint passes and returns the `ValidSchema` proof-token to hold after successful validation.
 - `ValidSchema::validate(&FieldValues) -> Result<ValidValues, ValidationReport>` — schema-time validation; returns the first proof-token.
 - `ValidValues::resolve(self, ctx: &dyn ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — async runtime resolution; consumes the first proof-token and returns the second (use `.await`).
 - `FieldValues`, `ResolvedValues` — value containers.

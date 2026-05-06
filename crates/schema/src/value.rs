@@ -242,7 +242,7 @@ impl Serialize for FieldValue {
 
 impl<'de> Deserialize<'de> for FieldValue {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(Self::from_json(Value::deserialize(d)?))
+        Self::try_from_json(Value::deserialize(d)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -562,14 +562,14 @@ fn validate_json_keys(
                         .build()
                 })?;
                 let child_path = path.clone().join(key);
-                validate_json_keys(child, &child_path, depth + 1)?;
+                validate_json_keys(child, &child_path, depth.saturating_add(1))?;
             }
             Ok(())
         },
         Value::Array(items) => {
             for (idx, item) in items.iter().enumerate() {
                 let item_path = path.clone().join(idx);
-                validate_json_keys(item, &item_path, depth + 1)?;
+                validate_json_keys(item, &item_path, depth.saturating_add(1))?;
             }
             Ok(())
         },
@@ -816,6 +816,12 @@ mod tests {
         let deep = nested_object(usize::from(MAX_VALUE_DEPTH) + 5, "n");
         let err = FieldValue::try_from_json(deep).expect_err("must reject");
         assert_eq!(err.code, "recursion_limit");
+    }
+
+    #[test]
+    fn field_value_deserialize_rejects_deeply_nested_input() {
+        let deep = nested_object(usize::from(MAX_VALUE_DEPTH) + 5, "n");
+        assert!(serde_json::from_value::<FieldValue>(deep).is_err());
     }
 
     #[test]

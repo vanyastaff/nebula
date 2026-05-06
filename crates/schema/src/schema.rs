@@ -499,6 +499,8 @@ impl SchemaBuilder {
         let mut report = ValidationReport::new();
 
         crate::lint::lint_tree(&fields, &FieldPath::root(), &mut report);
+        // Root-rule diagnostics are best-effort while structural lint errors
+        // are present; build still stops before indexing when any error exists.
         crate::lint::lint_root_rules(&self.root_rules, &fields, &mut report);
         validate_index_limits(&fields, &FieldPath::root(), 0, &mut report);
 
@@ -616,6 +618,9 @@ fn build_index(
 ) {
     use crate::mode::ExpressionMode;
 
+    // PRECONDITION: validate_index_limits must have succeeded before
+    // build_index calls walk_schema_fields, otherwise invalid oversize sibling
+    // groups can be skipped by the walker before insertion.
     walk_schema_fields(fields, |node| {
         flags.max_depth = flags.max_depth.max(node.depth);
 
@@ -745,8 +750,9 @@ fn validate_mode_variant_index_limits(
     };
 
     for variant in &mode.variants {
-        let variant_path =
-            mode_variant_path(path, variant.key.as_str()).unwrap_or_else(|| path.clone());
+        let Some(variant_path) = mode_variant_path(path, variant.key.as_str()) else {
+            continue;
+        };
         validate_indexable_field_children(
             variant.field.as_ref(),
             &variant_path,

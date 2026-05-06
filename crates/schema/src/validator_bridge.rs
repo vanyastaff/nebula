@@ -11,6 +11,9 @@ use crate::{FieldPath, key::FieldKey, path::PathSegment};
 /// - `/foo/bar` JSON Pointer refs emitted by current predicates
 pub(crate) fn resolve_rule_dependency(field_ref: &str) -> Option<FieldPath> {
     if let Some(rest) = field_ref.strip_prefix("$root.") {
+        if rest.split('.').any(str::is_empty) {
+            return None;
+        }
         let vp = ValidatorFieldPath::parse(rest)?;
         return validator_path_to_schema_path(&vp);
     }
@@ -51,10 +54,18 @@ pub(crate) fn schema_path_from_validator_error(
     fallback: &FieldPath,
     err: &nebula_validator::foundation::ValidationError,
 ) -> FieldPath {
-    err.field_pointer()
-        .as_deref()
-        .and_then(field_path_from_json_pointer)
-        .unwrap_or_else(|| fallback.clone())
+    if let Some(pointer) = err.field_pointer().as_deref() {
+        if let Some(path) = field_path_from_json_pointer(pointer) {
+            return path;
+        }
+        tracing::warn!(
+            target: "nebula_schema::validator_bridge",
+            pointer,
+            fallback = %fallback,
+            "validator error carried unparsable field pointer; falling back"
+        );
+    }
+    fallback.clone()
 }
 
 fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
@@ -63,7 +74,7 @@ fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
     for seg in vp.segments() {
         let s = seg.as_ref();
         if s.is_empty() {
-            continue;
+            return None;
         }
         any = true;
         let segment = if s.chars().all(|c| c.is_ascii_digit()) {
@@ -150,5 +161,28 @@ mod tests {
             normalize_rule_target_path(&leading_index).to_string(),
             "[0].items"
         );
+    }
+
+    #[test]
+    fn rule_dependency_rejects_empty_path_segments() {
+        assert!(resolve_rule_dependency("/items//name").is_none());
+        assert!(resolve_rule_dependency("/items/").is_none());
+        assert!(resolve_rule_dependency("$root.items..name").is_none());
+    }
+
+    #[test]
+    fn json_pointer_parser_decodes_segments_and_rejects_empty_segments() {
+        let path = field_path_from_json_pointer("/items/0/name").unwrap();
+        assert_eq!(path.to_string(), "items[0].name");
+
+        assert_eq!(decode_json_pointer_segment("field~0name"), "field~name");
+        assert_eq!(decode_json_pointer_segment("field~1name"), "field/name");
+        assert_eq!(decode_json_pointer_segment("field~Xname"), "field~Xname");
+        assert_eq!(decode_json_pointer_segment("field~"), "field~");
+
+        assert!(field_path_from_json_pointer("/items//name").is_none());
+        assert!(field_path_from_json_pointer("/items/").is_none());
+        assert!(field_path_from_json_pointer("/field~0name").is_none());
+        assert!(field_path_from_json_pointer("/foo~1bar").is_none());
     }
 }

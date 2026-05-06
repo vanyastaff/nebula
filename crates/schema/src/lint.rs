@@ -65,7 +65,7 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
                         .at(FieldPath::root())
                         .param("reference", serde_json::Value::String(field_ref.to_owned()))
                         .message(format!(
-                            "root rule reference `{field_ref}` must be a JSON Pointer path"
+                            "root rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
                         ))
                         .build(),
                 );
@@ -613,15 +613,15 @@ fn lint_rule_refs_new(
     let mut refs = Vec::new();
     rule.field_references(&mut refs);
     for field_ref in refs {
-        // Predicates now emit JSON-Pointer-shaped references ("/foo/bar").
-        // Strip the leading `/` and resolve the first segment as the key to
-        // check. Legacy `$root.` prefix is preserved for back-compat.
+        // Field-level refs intentionally validate only referenced_root_key
+        // against root_keys; lint_root_rules uses defined_field_paths for full
+        // paths because root-level rules have global schema semantics.
         let Some(root_key) = referenced_root_key(field_ref) else {
             report.push(
                 ValidationError::builder("dangling_reference")
                     .at(path.clone())
                     .message(format!(
-                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
+                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`) or legacy `$root.foo` path"
                     ))
                     .build(),
             );
@@ -1129,6 +1129,23 @@ mod tests {
             )
             .root_rule(Rule::predicate(
                 Predicate::eq("/config/tier", json!("pro")).unwrap(),
+            ))
+            .build();
+
+        assert!(result.is_ok(), "expected valid root rule, got: {result:?}");
+    }
+
+    #[test]
+    fn root_rule_accepts_list_object_child_reference() {
+        let result = crate::Schema::builder()
+            .add(
+                Field::list(FieldKey::new("items").unwrap()).item(
+                    Field::object(FieldKey::new("row").unwrap())
+                        .add(Field::string(FieldKey::new("name").unwrap())),
+                ),
+            )
+            .root_rule(Rule::predicate(
+                Predicate::eq("/items/name", json!("x")).unwrap(),
             ))
             .build();
 

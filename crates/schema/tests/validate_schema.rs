@@ -607,13 +607,22 @@ fn multi_select_with_array_of_valid_options_ok() {
 fn root_rule_error_path_snapshot() {
     let schema = Schema::builder()
         .add(Field::object(fk("config")).add(Field::string(fk("tier"))))
+        .add(Field::list(fk("items")).item(Field::object(fk("row")).add(Field::string(fk("name")))))
         .root_rule(Rule::predicate(
             Predicate::eq("/config/tier", json!("pro")).unwrap(),
+        ))
+        .root_rule(Rule::predicate(
+            Predicate::eq("/items/0/name", json!("first")).unwrap(),
+        ))
+        .root_rule(Rule::predicate(
+            Predicate::eq("/items/0/name", json!("second")).unwrap(),
         ))
         .build()
         .unwrap();
 
-    let values = FieldValues::from_json(json!({"config": {"tier": "free"}})).unwrap();
+    let values =
+        FieldValues::from_json(json!({"config": {"tier": "free"}, "items": [{"name": "wrong"}]}))
+            .unwrap();
     let report = schema.validate(&values).unwrap_err();
     let issues: Vec<_> = report
         .errors()
@@ -632,6 +641,16 @@ fn root_rule_error_path_snapshot() {
         "code": "eq_failed",
         "message": "predicate failed",
         "path": "config.tier"
+      },
+      {
+        "code": "eq_failed",
+        "message": "predicate failed",
+        "path": "items[0].name"
+      },
+      {
+        "code": "eq_failed",
+        "message": "predicate failed",
+        "path": "items[0].name"
       }
     ]
     "###);

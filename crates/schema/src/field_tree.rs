@@ -22,6 +22,10 @@ pub(crate) struct SchemaNode<'a> {
 /// List items are anonymous, so list-object children are yielded under the
 /// list field path (`items.name`), not under an indexed instance path.
 /// Mode variants are yielded as synthetic nodes under `mode.variant`.
+///
+/// Invalid schemas with more than `u16::MAX + 1` siblings are truncated here.
+/// Callers that require complete indexing must first run the schema
+/// `validate_index_limits` pass and stop on errors.
 pub(crate) fn walk_schema_fields<'a>(fields: &'a [Field], mut visit: impl FnMut(SchemaNode<'a>)) {
     walk_field_scope(
         fields,
