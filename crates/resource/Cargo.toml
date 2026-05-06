@@ -24,7 +24,6 @@ nebula-resilience = { path = "../resilience" }
 nebula-metadata = { path = "../metadata" }
 nebula-resource-macros = { path = "macros" }
 nebula-schema = { path = "../schema" }
-nebula-telemetry = { path = "../telemetry" }
 serde_json = { workspace = true }
 
 # Async runtime

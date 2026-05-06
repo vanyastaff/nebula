@@ -9,13 +9,13 @@ use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, scope::Principal};
 use nebula_credential::PendingToken;
 use nebula_engine::ActionRegistry;
+use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
 use nebula_storage::{
     ExecutionRepo, WorkflowRepo,
     credential::{InMemoryPendingStore, InMemoryStore},
     repos::ControlQueueRepo,
 };
-use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
 
 use crate::{

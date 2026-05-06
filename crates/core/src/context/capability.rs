@@ -23,7 +23,7 @@ pub trait HasLogger: crate::context::Context {
 /// Capability: metrics emission.
 ///
 /// Returns `&dyn MetricsEmitter` -- the core abstraction for metrics.
-/// `nebula_telemetry::metrics::MetricsRegistry` is the concrete implementation
+/// `nebula_metrics::MetricsRegistry` is the concrete implementation
 /// used at runtime; this trait intentionally depends only on the core abstraction
 /// so that library crates stay decoupled from the telemetry backend.
 pub trait HasMetrics: crate::context::Context {

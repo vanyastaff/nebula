@@ -27,9 +27,9 @@ use nebula_engine::{
     DataPassingPolicy, EngineControlDispatch, InProcessSandbox, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
+use nebula_metrics::MetricsRegistry;
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo};
-use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 use tokio::sync::Notify;
 

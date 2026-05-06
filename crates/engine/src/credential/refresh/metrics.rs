@@ -24,13 +24,12 @@
 //! `Default` impl has been intentionally removed.
 
 use nebula_metrics::{
-    Counter, Histogram, MetricsRegistry, NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
-    NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+    Counter, Histogram, MetricsRegistry, MetricsResult,
+    NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
-    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL, TelemetryResult,
-    refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
-    refresh_coord_sentinel_action,
+    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL, refresh_coord_claim_outcome,
+    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
 };
 
 /// Pre-bound handles for the five refresh-coordinator metrics declared
@@ -57,7 +56,7 @@ pub struct RefreshCoordMetrics {
 
 impl RefreshCoordMetrics {
     /// Build pre-bound handles against the given registry.
-    pub fn with_registry(registry: &MetricsRegistry) -> TelemetryResult<Self> {
+    pub fn with_registry(registry: &MetricsRegistry) -> MetricsResult<Self> {
         let interner = registry.interner();
 
         let claim_label = |val: &str| interner.single("outcome", val);

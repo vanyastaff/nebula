@@ -44,6 +44,7 @@ use nebula_engine::{
     WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
+use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
     error::Error as ResourceError,
@@ -52,7 +53,6 @@ use nebula_resource::{
     topology::resident::Resident,
 };
 use nebula_schema::{HasSchema, ValidSchema};
-use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition};
 
 // ── Action handler ─────────────────────────────────────────────────────────

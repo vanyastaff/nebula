@@ -22,9 +22,9 @@ use nebula_engine::{
     WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
+use nebula_metrics::MetricsRegistry;
 use nebula_resource::Manager;
 use nebula_schema::{HasSchema, ValidSchema};
-use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------

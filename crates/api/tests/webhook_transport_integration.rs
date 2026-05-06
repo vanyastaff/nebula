@@ -834,10 +834,10 @@ async fn default_config_with_empty_secret_returns_500() {
 
 #[tokio::test]
 async fn signature_failures_total_metric_increments_per_reason() {
+    use nebula_metrics::MetricsRegistry;
     use nebula_metrics::{
         NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason,
     };
-    use nebula_telemetry::metrics::MetricsRegistry;
 
     let registry = Arc::new(MetricsRegistry::new());
     let transport = WebhookTransport::with_metrics(
@@ -896,10 +896,10 @@ async fn signature_failures_total_metric_increments_per_reason() {
 
 #[tokio::test]
 async fn signature_failures_total_metric_increments_missing_secret() {
+    use nebula_metrics::MetricsRegistry;
     use nebula_metrics::{
         NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason,
     };
-    use nebula_telemetry::metrics::MetricsRegistry;
 
     let registry = Arc::new(MetricsRegistry::new());
     let transport = WebhookTransport::with_metrics(

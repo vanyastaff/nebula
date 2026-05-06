@@ -18,11 +18,8 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
 };
+use nebula_metrics::{Counter, Histogram, MetricsError, MetricsRegistry};
 use nebula_sandbox::{SandboxRunner, SandboxedContext};
-use nebula_telemetry::{
-    TelemetryError,
-    metrics::{Counter, Histogram, MetricsRegistry},
-};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -139,7 +136,7 @@ impl ActionRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`TelemetryError`] if the shared registry rejects registration
+    /// Returns [`MetricsError`] if the shared registry rejects registration
     /// for the canonical action metric identities (e.g. name reused as another
     /// primitive kind).
     pub fn try_new(
@@ -147,7 +144,7 @@ impl ActionRuntime {
         sandbox: Arc<dyn SandboxRunner>,
         data_policy: DataPassingPolicy,
         metrics: MetricsRegistry,
-    ) -> Result<Self, TelemetryError> {
+    ) -> Result<Self, MetricsError> {
         let action_failures_total = metrics.counter(NEBULA_ACTION_FAILURES_TOTAL)?;
         let action_duration_seconds = metrics.histogram(NEBULA_ACTION_DURATION_SECONDS)?;
         let action_executions_total = metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL)?;

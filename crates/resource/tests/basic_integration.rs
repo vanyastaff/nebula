@@ -1225,7 +1225,7 @@ async fn manager_scope_mismatch_not_found() {
 
 #[tokio::test]
 async fn metrics_track_acquire_release_create_destroy() {
-    let registry = Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
+    let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 2,
         metrics_registry: Some(registry.clone()),
@@ -2255,7 +2255,7 @@ async fn pool_permit_not_leaked_after_release() {
 
 #[tokio::test]
 async fn registry_backed_metrics_record_operations() {
-    let registry = Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
+    let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 1,
         metrics_registry: Some(registry.clone()),

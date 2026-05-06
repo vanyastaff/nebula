@@ -27,9 +27,9 @@ use nebula_engine::{
     InProcessSandbox, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
+use nebula_metrics::MetricsRegistry;
 use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::ExecutionRepo;
-use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, RetryConfig, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------

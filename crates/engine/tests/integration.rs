@@ -21,12 +21,12 @@ use nebula_engine::{
     WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
+use nebula_metrics::MetricsRegistry;
 use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
 use nebula_schema::{HasSchema, ValidSchema};
-use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------

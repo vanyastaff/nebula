@@ -807,7 +807,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
     });
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let metrics = nebula_telemetry::metrics::MetricsRegistry::new();
+    let metrics = nebula_metrics::MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
@@ -1052,7 +1052,7 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
         Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
     });
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let metrics = nebula_telemetry::metrics::MetricsRegistry::new();
+    let metrics = nebula_metrics::MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,

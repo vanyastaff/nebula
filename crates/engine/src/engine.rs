@@ -43,8 +43,8 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, engine_lease_contention_reason,
 };
+use nebula_metrics::{Counter, Histogram, MetricsRegistry};
 use nebula_plugin::PluginRegistry;
-use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
 use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_util::sync::CancellationToken;

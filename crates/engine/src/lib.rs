@@ -48,7 +48,7 @@
 //! `MetricsRegistry` rejects registration for a canonical metric identity (same name bound to
 //! incompatible primitive kinds, histogram bucket-layout conflict, etc.). Composition roots
 //! should treat that like any other startup failure: log and abort or surface
-//! [`error::EngineError::Telemetry`] / `nebula_telemetry::TelemetryError` to the caller.
+//! [`error::EngineError::Telemetry`] / `nebula_metrics::MetricsError` to the caller.
 //!
 //! ## Canon
 //!
