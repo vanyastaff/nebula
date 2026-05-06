@@ -11,7 +11,7 @@ use nebula_telemetry::{
     metrics::{Counter, Gauge, Histogram, MetricsRegistry},
 };
 
-use crate::{filter::LabelAllowlist, naming::*};
+use crate::{TelemetryResult, filter::LabelAllowlist, naming::*};
 
 /// Adapter that exposes telemetry metrics under standard `nebula_*` names.
 ///
@@ -83,29 +83,25 @@ impl TelemetryAdapter {
     // ---------- Workflow (engine) ----------
 
     /// Counter: workflow executions started.
-    #[must_use]
-    pub fn workflow_executions_started_total(&self) -> Counter {
+    pub fn workflow_executions_started_total(&self) -> TelemetryResult<Counter> {
         self.registry
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
     }
 
     /// Counter: workflow executions completed successfully.
-    #[must_use]
-    pub fn workflow_executions_completed_total(&self) -> Counter {
+    pub fn workflow_executions_completed_total(&self) -> TelemetryResult<Counter> {
         self.registry
             .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
     }
 
     /// Counter: workflow executions failed.
-    #[must_use]
-    pub fn workflow_executions_failed_total(&self) -> Counter {
+    pub fn workflow_executions_failed_total(&self) -> TelemetryResult<Counter> {
         self.registry
             .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
     }
 
     /// Histogram: workflow execution duration in seconds.
-    #[must_use]
-    pub fn workflow_execution_duration_seconds(&self) -> Histogram {
+    pub fn workflow_execution_duration_seconds(&self) -> TelemetryResult<Histogram> {
         self.registry
             .histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
     }
@@ -113,40 +109,34 @@ impl TelemetryAdapter {
     // ---------- Action (runtime) ----------
 
     /// Counter: action executions (success + failure).
-    #[must_use]
-    pub fn action_executions_total(&self) -> Counter {
+    pub fn action_executions_total(&self) -> TelemetryResult<Counter> {
         self.registry.counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
     }
 
     /// Counter: action failures.
-    #[must_use]
-    pub fn action_failures_total(&self) -> Counter {
+    pub fn action_failures_total(&self) -> TelemetryResult<Counter> {
         self.registry.counter(NEBULA_ACTION_FAILURES_TOTAL)
     }
 
     /// Histogram: action execution duration in seconds.
-    #[must_use]
-    pub fn action_duration_seconds(&self) -> Histogram {
+    pub fn action_duration_seconds(&self) -> TelemetryResult<Histogram> {
         self.registry.histogram(NEBULA_ACTION_DURATION_SECONDS)
     }
 
     // ---------- Generic access (for domain-specific names) ----------
 
     /// Get or create a counter by name. Prefer the typed accessors above when available.
-    #[must_use]
-    pub fn counter(&self, name: &str) -> Counter {
+    pub fn counter(&self, name: &str) -> TelemetryResult<Counter> {
         self.registry.counter(name)
     }
 
     /// Get or create a gauge by name.
-    #[must_use]
-    pub fn gauge(&self, name: &str) -> Gauge {
+    pub fn gauge(&self, name: &str) -> TelemetryResult<Gauge> {
         self.registry.gauge(name)
     }
 
     /// Get or create a histogram by name.
-    #[must_use]
-    pub fn histogram(&self, name: &str) -> Histogram {
+    pub fn histogram(&self, name: &str) -> TelemetryResult<Histogram> {
         self.registry.histogram(name)
     }
 
@@ -165,50 +155,53 @@ impl TelemetryAdapter {
     /// let reg = Arc::new(MetricsRegistry::new());
     /// let adapter = TelemetryAdapter::new(Arc::clone(&reg));
     /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
-    /// adapter.action_executions_labeled(&labels).inc();
+    /// adapter.action_executions_labeled(&labels).unwrap().inc();
     /// ```
-    #[must_use]
-    pub fn action_executions_labeled(&self, labels: &LabelSet) -> Counter {
+    pub fn action_executions_labeled(&self, labels: &LabelSet) -> TelemetryResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &labels)
     }
 
     /// Counter: action failures with label dimensions.
-    #[must_use]
-    pub fn action_failures_labeled(&self, labels: &LabelSet) -> Counter {
+    pub fn action_failures_labeled(&self, labels: &LabelSet) -> TelemetryResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_ACTION_FAILURES_TOTAL, &labels)
     }
 
     /// Histogram: action execution duration with label dimensions.
-    #[must_use]
-    pub fn action_duration_labeled(&self, labels: &LabelSet) -> Histogram {
+    pub fn action_duration_labeled(&self, labels: &LabelSet) -> TelemetryResult<Histogram> {
         let labels = self.filter_labels(labels);
         self.registry
             .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, &labels)
     }
 
     /// Counter: workflow executions started with label dimensions.
-    #[must_use]
-    pub fn workflow_executions_started_labeled(&self, labels: &LabelSet) -> Counter {
+    pub fn workflow_executions_started_labeled(
+        &self,
+        labels: &LabelSet,
+    ) -> TelemetryResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, &labels)
     }
 
     /// Counter: workflow executions completed with label dimensions.
-    #[must_use]
-    pub fn workflow_executions_completed_labeled(&self, labels: &LabelSet) -> Counter {
+    pub fn workflow_executions_completed_labeled(
+        &self,
+        labels: &LabelSet,
+    ) -> TelemetryResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, &labels)
     }
 
     /// Counter: workflow executions failed with label dimensions.
-    #[must_use]
-    pub fn workflow_executions_failed_labeled(&self, labels: &LabelSet) -> Counter {
+    pub fn workflow_executions_failed_labeled(
+        &self,
+        labels: &LabelSet,
+    ) -> TelemetryResult<Counter> {
         let labels = self.filter_labels(labels);
         self.registry
             .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, &labels)
@@ -223,35 +216,32 @@ impl TelemetryAdapter {
     // ---------- EventBus snapshots ----------
 
     /// Gauge: eventbus sent events snapshot.
-    #[must_use]
-    pub fn eventbus_sent(&self) -> Gauge {
+    pub fn eventbus_sent(&self) -> TelemetryResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_SENT)
     }
 
     /// Gauge: eventbus dropped events snapshot.
-    #[must_use]
-    pub fn eventbus_dropped(&self) -> Gauge {
+    pub fn eventbus_dropped(&self) -> TelemetryResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_DROPPED)
     }
 
     /// Gauge: eventbus active subscriber snapshot.
-    #[must_use]
-    pub fn eventbus_subscribers(&self) -> Gauge {
+    pub fn eventbus_subscribers(&self) -> TelemetryResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_SUBSCRIBERS)
     }
 
     /// Gauge: eventbus drop ratio snapshot in parts-per-million (`0..=1_000_000`).
-    #[must_use]
-    pub fn eventbus_drop_ratio_ppm(&self) -> Gauge {
+    pub fn eventbus_drop_ratio_ppm(&self) -> TelemetryResult<Gauge> {
         self.registry.gauge(NEBULA_EVENTBUS_DROP_RATIO_PPM)
     }
 
     /// Records an [`EventBusStats`] snapshot under standard `nebula_eventbus_*` gauges.
-    pub fn record_eventbus_stats(&self, stats: &EventBusStats) {
-        self.eventbus_sent().set(clamp_u64_to_i64(stats.sent_count));
-        self.eventbus_dropped()
+    pub fn record_eventbus_stats(&self, stats: &EventBusStats) -> TelemetryResult<()> {
+        self.eventbus_sent()?
+            .set(clamp_u64_to_i64(stats.sent_count));
+        self.eventbus_dropped()?
             .set(clamp_u64_to_i64(stats.dropped_count));
-        self.eventbus_subscribers()
+        self.eventbus_subscribers()?
             .set(clamp_usize_to_i64(stats.subscriber_count));
 
         let ppm = (stats.drop_ratio() * 1_000_000.0).round();
@@ -260,7 +250,8 @@ impl TelemetryAdapter {
         } else {
             0
         };
-        self.eventbus_drop_ratio_ppm().set(ppm);
+        self.eventbus_drop_ratio_ppm()?.set(ppm);
+        Ok(())
     }
 }
 
@@ -287,14 +278,17 @@ mod tests {
         let registry = Arc::new(MetricsRegistry::new());
         let adapter = TelemetryAdapter::new(Arc::clone(&registry));
 
-        adapter.workflow_executions_started_total().inc();
-        adapter.workflow_executions_started_total().inc();
-        adapter.action_executions_total().inc();
-        adapter.action_failures_total().inc();
+        adapter.workflow_executions_started_total().unwrap().inc();
+        adapter.workflow_executions_started_total().unwrap().inc();
+        adapter.action_executions_total().unwrap().inc();
+        adapter.action_failures_total().unwrap().inc();
 
-        assert_eq!(adapter.workflow_executions_started_total().get(), 2);
-        assert_eq!(adapter.action_executions_total().get(), 1);
-        assert_eq!(adapter.action_failures_total().get(), 1);
+        assert_eq!(
+            adapter.workflow_executions_started_total().unwrap().get(),
+            2
+        );
+        assert_eq!(adapter.action_executions_total().unwrap().get(), 1);
+        assert_eq!(adapter.action_failures_total().unwrap().get(), 1);
     }
 
     #[test]
@@ -308,12 +302,12 @@ mod tests {
             subscriber_count: 3,
         };
 
-        adapter.record_eventbus_stats(&stats);
+        adapter.record_eventbus_stats(&stats).unwrap();
 
-        assert_eq!(adapter.eventbus_sent().get(), 75);
-        assert_eq!(adapter.eventbus_dropped().get(), 25);
-        assert_eq!(adapter.eventbus_subscribers().get(), 3);
-        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 250_000);
+        assert_eq!(adapter.eventbus_sent().unwrap().get(), 75);
+        assert_eq!(adapter.eventbus_dropped().unwrap().get(), 25);
+        assert_eq!(adapter.eventbus_subscribers().unwrap().get(), 3);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().unwrap().get(), 250_000);
     }
 
     #[test]
@@ -331,11 +325,11 @@ mod tests {
             stats.dropped_count,
             0
         );
-        adapter.record_eventbus_stats(&stats);
-        assert_eq!(adapter.eventbus_sent().get(), 0);
-        assert_eq!(adapter.eventbus_dropped().get(), 0);
-        assert_eq!(adapter.eventbus_subscribers().get(), 0);
-        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
+        adapter.record_eventbus_stats(&stats).unwrap();
+        assert_eq!(adapter.eventbus_sent().unwrap().get(), 0);
+        assert_eq!(adapter.eventbus_dropped().unwrap().get(), 0);
+        assert_eq!(adapter.eventbus_subscribers().unwrap().get(), 0);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().unwrap().get(), 0);
 
         let default_stats = EventBusStats::default();
         tracing::debug!(
@@ -344,11 +338,11 @@ mod tests {
             default_stats.dropped_count,
             0
         );
-        adapter.record_eventbus_stats(&default_stats);
-        assert_eq!(adapter.eventbus_sent().get(), 0);
-        assert_eq!(adapter.eventbus_dropped().get(), 0);
-        assert_eq!(adapter.eventbus_subscribers().get(), 0);
-        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
+        adapter.record_eventbus_stats(&default_stats).unwrap();
+        assert_eq!(adapter.eventbus_sent().unwrap().get(), 0);
+        assert_eq!(adapter.eventbus_dropped().unwrap().get(), 0);
+        assert_eq!(adapter.eventbus_subscribers().unwrap().get(), 0);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().unwrap().get(), 0);
     }
 
     #[test]
@@ -366,8 +360,8 @@ mod tests {
             full_drop.dropped_count,
             1_000_000
         );
-        adapter.record_eventbus_stats(&full_drop);
-        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 500_000);
+        adapter.record_eventbus_stats(&full_drop).unwrap();
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().unwrap().get(), 500_000);
 
         let fractional = EventBusStats {
             sent_count: 3,
@@ -380,8 +374,8 @@ mod tests {
             fractional.dropped_count,
             250_000
         );
-        adapter.record_eventbus_stats(&fractional);
-        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 250_000);
+        adapter.record_eventbus_stats(&fractional).unwrap();
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().unwrap().get(), 250_000);
     }
 
     #[test]
@@ -399,11 +393,11 @@ mod tests {
             stats.dropped_count,
             0
         );
-        adapter.record_eventbus_stats(&stats);
+        adapter.record_eventbus_stats(&stats).unwrap();
 
-        assert_eq!(adapter.eventbus_sent().get(), i64::MAX);
-        assert_eq!(adapter.eventbus_subscribers().get(), i64::MAX);
-        assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
+        assert_eq!(adapter.eventbus_sent().unwrap().get(), i64::MAX);
+        assert_eq!(adapter.eventbus_subscribers().unwrap().get(), i64::MAX);
+        assert_eq!(adapter.eventbus_drop_ratio_ppm().unwrap().get(), 0);
     }
 
     #[test]
@@ -416,7 +410,7 @@ mod tests {
             ("execution_id", "exec-123"),
         ]);
 
-        adapter.action_executions_labeled(&labels).inc();
+        adapter.action_executions_labeled(&labels).unwrap().inc();
 
         let snapshots = registry.snapshot_counters();
         let (key, counter) = snapshots

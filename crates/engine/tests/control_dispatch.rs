@@ -172,12 +172,15 @@ impl Harness {
         });
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
-        let runtime = Arc::new(ActionRuntime::new(
-            registry,
-            sandbox,
-            DataPassingPolicy::default(),
-            metrics.clone(),
-        ));
+        let runtime = Arc::new(
+            ActionRuntime::try_new(
+                registry,
+                sandbox,
+                DataPassingPolicy::default(),
+                metrics.clone(),
+            )
+            .unwrap(),
+        );
 
         let execution_repo = Arc::new(InMemoryExecutionRepo::new());
         let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
@@ -186,6 +189,7 @@ impl Harness {
         let workflow_repo_dyn: Arc<dyn WorkflowRepo> = Arc::clone(&workflow_repo) as _;
 
         let engine = WorkflowEngine::new(runtime, metrics)
+            .unwrap()
             .with_execution_repo(Arc::clone(&execution_repo_dyn))
             .with_workflow_repo(workflow_repo_dyn);
         let engine = Arc::new(engine);

@@ -11,9 +11,12 @@
 //! `on_credential_refresh(&mut self, slot_name)` fan-out is implemented
 //! (see `.ai-factory/PHASE4_BLOCKED.md`).
 
-use nebula_metrics::naming::{
-    NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
-    NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+use nebula_metrics::{
+    TelemetryResult,
+    naming::{
+        NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
+        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+    },
 };
 use nebula_telemetry::metrics::{Counter, MetricsRegistry};
 
@@ -30,7 +33,7 @@ use nebula_telemetry::metrics::{Counter, MetricsRegistry};
 /// use nebula_telemetry::metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
-/// let metrics = ResourceOpsMetrics::new(&registry);
+/// let metrics = ResourceOpsMetrics::new(&registry).unwrap();
 /// metrics.record_acquire();
 /// metrics.record_acquire();
 /// metrics.record_acquire_error();
@@ -53,15 +56,14 @@ impl ResourceOpsMetrics {
     ///
     /// Counters are registered (or retrieved if already present) using the
     /// standard naming constants from `nebula-metrics`.
-    #[must_use]
-    pub fn new(registry: &MetricsRegistry) -> Self {
-        Self {
-            acquire_total: registry.counter(NEBULA_RESOURCE_ACQUIRE_TOTAL),
-            acquire_errors: registry.counter(NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL),
-            release_total: registry.counter(NEBULA_RESOURCE_RELEASE_TOTAL),
-            create_total: registry.counter(NEBULA_RESOURCE_CREATE_TOTAL),
-            destroy_total: registry.counter(NEBULA_RESOURCE_DESTROY_TOTAL),
-        }
+    pub fn new(registry: &MetricsRegistry) -> TelemetryResult<Self> {
+        Ok(Self {
+            acquire_total: registry.counter(NEBULA_RESOURCE_ACQUIRE_TOTAL)?,
+            acquire_errors: registry.counter(NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL)?,
+            release_total: registry.counter(NEBULA_RESOURCE_RELEASE_TOTAL)?,
+            create_total: registry.counter(NEBULA_RESOURCE_CREATE_TOTAL)?,
+            destroy_total: registry.counter(NEBULA_RESOURCE_DESTROY_TOTAL)?,
+        })
     }
 
     /// Records a successful acquire.
@@ -145,7 +147,7 @@ mod tests {
     #[test]
     fn counters_start_at_zero() {
         let registry = MetricsRegistry::new();
-        let metrics = ResourceOpsMetrics::new(&registry);
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
         let snap = metrics.snapshot();
         assert_eq!(snap.acquire_total, 0);
         assert_eq!(snap.acquire_errors, 0);
@@ -157,7 +159,7 @@ mod tests {
     #[test]
     fn record_and_snapshot() {
         let registry = MetricsRegistry::new();
-        let metrics = ResourceOpsMetrics::new(&registry);
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
         metrics.record_acquire();
         metrics.record_acquire();
         metrics.record_acquire_error();
@@ -178,7 +180,7 @@ mod tests {
     #[test]
     fn clones_share_counters() {
         let registry = MetricsRegistry::new();
-        let m1 = ResourceOpsMetrics::new(&registry);
+        let m1 = ResourceOpsMetrics::new(&registry).unwrap();
         let m2 = m1.clone();
 
         m1.record_acquire();
@@ -191,12 +193,12 @@ mod tests {
     #[test]
     fn backed_by_registry() {
         let registry = MetricsRegistry::new();
-        let metrics = ResourceOpsMetrics::new(&registry);
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
         metrics.record_create();
         metrics.record_create();
 
         // Read directly from registry to verify shared backing.
-        let counter = registry.counter(NEBULA_RESOURCE_CREATE_TOTAL);
+        let counter = registry.counter(NEBULA_RESOURCE_CREATE_TOTAL).unwrap();
         assert_eq!(counter.get(), 2);
     }
 }

@@ -527,8 +527,9 @@ fn outcome_to_verdict(outcome: SignatureOutcome) -> SignatureVerdict {
 fn record_signature_failure(transport: &WebhookTransport, reason: &'static str) {
     if let Some(reg) = &transport.inner.metrics {
         let labels = reg.interner().single("reason", reason);
-        reg.counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &labels)
-            .inc();
+        if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &labels) {
+            c.inc();
+        }
     }
 }
 

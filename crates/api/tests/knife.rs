@@ -808,15 +808,19 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     });
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = nebula_telemetry::metrics::MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
 
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)
+            .unwrap()
             .with_execution_repo(Arc::clone(&state.execution_repo))
             .with_workflow_repo(Arc::clone(&state.workflow_repo)),
     );
@@ -1049,15 +1053,19 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     });
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = nebula_telemetry::metrics::MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
 
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)
+            .unwrap()
             .with_execution_repo(Arc::clone(&state.execution_repo))
             .with_workflow_repo(Arc::clone(&state.workflow_repo)),
     );

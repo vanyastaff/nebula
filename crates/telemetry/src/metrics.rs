@@ -7,6 +7,7 @@
 //! hot recording path.
 
 use std::{
+    hint::spin_loop,
     sync::{
         Arc,
         atomic::{AtomicI64, AtomicU64, Ordering},
@@ -14,17 +15,28 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
+use lasso::Spur;
 
-use crate::labels::{LabelInterner, LabelSet, MetricKey};
+use crate::{
+    error::{MetricKind, TelemetryError, TelemetryResult},
+    labels::{LabelInterner, LabelSet, MetricKey},
+};
 
 /// Returns the current time as milliseconds since the Unix epoch.
+///
+/// Wall-clock steps backward ([`SystemTime::duration_since`] failure) map
+/// to zero duration, so timestamps can move backward and interact poorly with
+/// [`MetricsRegistry::retain_recent`]. Callers should not rely on strict
+/// monotonicity of this clock.
 #[inline]
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// An incrementing counter.
@@ -51,7 +63,13 @@ impl Counter {
     }
 
     /// Increment by a given amount.
+    ///
+    /// `inc_by(0)` does not change the stored value or
+    /// [`Self::last_updated_ms`] (see [`crate::metrics::MetricsRegistry::retain_recent`]).
     pub fn inc_by(&self, n: u64) {
+        if n == 0 {
+            return;
+        }
         self.value.fetch_add(n, Ordering::Relaxed);
         self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
@@ -105,9 +123,15 @@ impl Gauge {
     }
 
     /// Set to a specific value.
+    ///
+    /// If `v` equals the value already stored, [`Self::last_updated_ms`] is
+    /// left unchanged so idle gauges are not kept artificially "fresh" for
+    /// retention heuristics.
     pub fn set(&self, v: i64) {
-        self.value.store(v, Ordering::Relaxed);
-        self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
+        let previous = self.value.swap(v, Ordering::Relaxed);
+        if previous != v {
+            self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
+        }
     }
 
     /// Current value.
@@ -129,24 +153,88 @@ impl Default for Gauge {
     }
 }
 
-/// Default Prometheus histogram bucket boundaries.
+/// Default finite upper bounds for the built-in histogram layout (sub-second
+/// through 10 seconds, suited to latency-style measurements in seconds).
 const DEFAULT_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
 
+/// Frozen, point-in-time view of histogram bucket counts, total count, and sum.
+///
+/// Produced by [`Histogram::snapshot`] using an internal seqlock around writers
+/// so count, sum, and per-bucket tallies correspond to **one** logical state
+/// (no torn reads across independent atomics during export).
+///
+/// This type does **not** pin future observations; only the numeric fields
+/// inside this value are immutable.
+#[derive(Debug, Clone)]
+pub struct HistogramSnapshot {
+    boundaries: Arc<Vec<f64>>,
+    per_bucket: Box<[u64]>,
+    observation_count: u64,
+    sum_value: f64,
+}
+
+impl HistogramSnapshot {
+    /// Total number of observations reflected in this snapshot.
+    #[must_use]
+    pub fn observation_count(&self) -> u64 {
+        self.observation_count
+    }
+
+    /// Sum of observations reflected in this snapshot.
+    #[must_use]
+    pub fn sum(&self) -> f64 {
+        self.sum_value
+    }
+
+    /// Upper bounds for finite buckets (excludes the implicit `+Inf` bucket).
+    #[must_use]
+    pub fn boundaries(&self) -> &[f64] {
+        self.boundaries.as_slice()
+    }
+
+    /// Non-cumulative observation count per histogram bucket (`+Inf` is the final slot).
+    #[must_use]
+    pub fn per_bucket_counts(&self) -> &[u64] {
+        &self.per_bucket
+    }
+
+    /// Cumulative `(upper_bound, cumulative_count)` pairs, including `+Inf` as the final upper
+    /// bound.
+    #[must_use]
+    pub fn cumulative_buckets(&self) -> Vec<(f64, u64)> {
+        let mut cumulative = 0u64;
+        let mut result = Vec::with_capacity(self.per_bucket.len());
+        for (i, count) in self.per_bucket.iter().enumerate() {
+            cumulative += *count;
+            let upper = if i < self.boundaries.len() {
+                self.boundaries[i]
+            } else {
+                f64::INFINITY
+            };
+            result.push((upper, cumulative));
+        }
+        result
+    }
+}
+
 /// A histogram that records observations into fixed buckets.
 ///
-/// Uses Prometheus-style bucket boundaries with constant memory usage
-/// regardless of the number of observations. Each observation increments
-/// the appropriate bucket counter atomically (lock-free).
+/// Uses a fixed set of finite upper bounds plus an implicit `+Inf` overflow
+/// bucket. Each observation increments the appropriate bucket counter
+/// atomically. Bucket and count updates are wait-free; the running sum uses
+/// an atomic compare-exchange loop (lock-free, not wait-free) under contention.
 ///
-/// The default buckets are suited for measuring request durations in seconds.
-/// Use [`Histogram::with_buckets`] for custom boundaries.
+/// Prefer [`Histogram::try_with_buckets`] for caller-supplied boundaries; the
+/// default layout from [`Histogram::new`] matches [`DEFAULT_BUCKETS`].
 #[derive(Debug)]
 pub struct Histogram {
+    /// Seqlock phase: odd while an [`Self::observe`] is in flight, even between updates.
+    seq: Arc<AtomicU64>,
     /// Upper-bound for each bucket (sorted, does not include +Inf).
     boundaries: Arc<Vec<f64>>,
-    /// Cumulative count per bucket (len = boundaries.len() + 1 for +Inf).
+    /// Non-cumulative count per bucket (`len == boundaries.len() + 1` for `+Inf`).
     counts: Arc<Vec<AtomicU64>>,
     /// Total number of observations.
     total_count: Arc<AtomicU64>,
@@ -159,6 +247,7 @@ pub struct Histogram {
 impl Clone for Histogram {
     fn clone(&self) -> Self {
         Self {
+            seq: Arc::clone(&self.seq),
             boundaries: Arc::clone(&self.boundaries),
             counts: Arc::clone(&self.counts),
             total_count: Arc::clone(&self.total_count),
@@ -169,47 +258,56 @@ impl Clone for Histogram {
 }
 
 impl Histogram {
-    /// Create a histogram with default Prometheus bucket boundaries.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_buckets(DEFAULT_BUCKETS.to_vec())
+    /// Validate histogram bucket boundaries for [`Self::try_with_buckets`].
+    pub fn validate_bucket_boundaries(boundaries: &[f64]) -> TelemetryResult<()> {
+        if boundaries.is_empty() {
+            return Err(TelemetryError::InvalidHistogramBuckets {
+                reason: "boundaries must not be empty".into(),
+            });
+        }
+        if !boundaries.iter().all(|&b| b > 0.0 && b.is_finite()) {
+            return Err(TelemetryError::InvalidHistogramBuckets {
+                reason: "each boundary must be positive and finite".into(),
+            });
+        }
+        if !boundaries.windows(2).all(|w| w[0] < w[1]) {
+            return Err(TelemetryError::InvalidHistogramBuckets {
+                reason: "boundaries must be strictly increasing with no duplicates".into(),
+            });
+        }
+        Ok(())
     }
 
-    /// Create a histogram with custom bucket boundaries.
-    ///
-    /// Boundaries must be non-empty, all positive, and sorted ascending.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `boundaries` is empty, contains non-positive values,
-    /// or is not sorted in ascending order.
-    #[must_use]
-    pub fn with_buckets(boundaries: Vec<f64>) -> Self {
-        assert!(
-            !boundaries.is_empty(),
-            "histogram boundaries must not be empty"
-        );
-        assert!(
-            boundaries.iter().all(|&b| b > 0.0 && b.is_finite()),
-            "histogram boundaries must be positive and finite",
-        );
-        assert!(
-            boundaries.windows(2).all(|w| w[0] < w[1]),
-            "histogram boundaries must be sorted in ascending order with no duplicates",
-        );
-
+    fn from_validated_boundaries(boundaries: Vec<f64>) -> Self {
         let bucket_count = boundaries.len() + 1; // +1 for +Inf
         let counts: Vec<AtomicU64> = (0..bucket_count).map(|_| AtomicU64::new(0)).collect();
 
         tracing::debug!(buckets = boundaries.len(), "histogram created");
 
         Self {
+            seq: Arc::new(AtomicU64::new(0)),
             boundaries: Arc::new(boundaries),
             counts: Arc::new(counts),
             total_count: Arc::new(AtomicU64::new(0)),
             sum_bits: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
             last_updated_ms: Arc::new(AtomicU64::new(now_ms())),
         }
+    }
+
+    /// Create a histogram with the built-in default bucket layout.
+    ///
+    /// The default boundary table is fixed at compile time; if it were ever
+    /// invalid, this would construct an inconsistent histogram — covered by
+    /// `default_bucket_table_is_valid`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::from_validated_boundaries(DEFAULT_BUCKETS.to_vec())
+    }
+
+    /// Create a histogram with custom bucket boundaries.
+    pub fn try_with_buckets(boundaries: Vec<f64>) -> TelemetryResult<Self> {
+        Self::validate_bucket_boundaries(&boundaries)?;
+        Ok(Self::from_validated_boundaries(boundaries))
     }
 
     /// Record an observation.
@@ -221,6 +319,10 @@ impl Histogram {
         if !value.is_finite() {
             return;
         }
+
+        // Seqlock writer side: observers bracket mutation so [`Self::snapshot`]
+        // can read counts + total_count + sum coherently.
+        self.seq.fetch_add(1, Ordering::Release);
 
         // Find the first bucket whose upper bound is >= value.
         let idx = self
@@ -243,6 +345,43 @@ impl Histogram {
                 (f64::from_bits(old_bits) + value).to_bits()
             });
         self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
+
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    /// Capture counts, observation total, and sum at one logical instant.
+    ///
+    /// Intended for exposition (Prometheus, OTLP): prefer this over chaining
+    /// [`Self::count`], [`Self::sum`], and [`Self::buckets`], which are
+    /// independent relaxed loads and may not match one another under concurrent
+    /// [`Self::observe`] calls.
+    #[must_use]
+    pub fn snapshot(&self) -> HistogramSnapshot {
+        loop {
+            let phase = self.seq.load(Ordering::Acquire);
+            if !phase.is_multiple_of(2) {
+                spin_loop();
+                continue;
+            }
+
+            let per_bucket: Vec<u64> = self
+                .counts
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .collect();
+            let observation_count = self.total_count.load(Ordering::Relaxed);
+            let sum_value = f64::from_bits(self.sum_bits.load(Ordering::Relaxed));
+
+            let phase_after = self.seq.load(Ordering::Acquire);
+            if phase == phase_after && phase.is_multiple_of(2) {
+                return HistogramSnapshot {
+                    boundaries: Arc::clone(&self.boundaries),
+                    per_bucket: per_bucket.into_boxed_slice(),
+                    observation_count,
+                    sum_value,
+                };
+            }
+        }
     }
 
     /// Number of observations recorded.
@@ -260,6 +399,10 @@ impl Histogram {
     /// Returns cumulative bucket counts as `(upper_bound, cumulative_count)` pairs.
     ///
     /// The final entry has `upper_bound = f64::INFINITY`.
+    ///
+    /// Under concurrent [`Self::observe`] calls, each counter is read with relaxed
+    /// ordering; the vector may not agree with [`Self::count`] or [`Self::sum`]
+    /// for the same invocation. Use [`Self::snapshot`] for a consistent export view.
     #[must_use]
     pub fn buckets(&self) -> Vec<(f64, u64)> {
         let mut cumulative = 0u64;
@@ -301,15 +444,20 @@ impl Histogram {
             .collect()
     }
 
-    /// Estimate the value at the given percentile (0.0–1.0) using linear
-    /// interpolation within buckets (same approach as Prometheus).
+    /// Estimate the value at the given percentile using linear interpolation
+    /// within buckets (Prometheus-compatible bucketing).
     ///
-    /// Returns `0.0` if no observations have been recorded.
+    /// Returns [`None`] when there are no observations, when `p` is outside
+    /// `0.0..=1.0`, or when `p` is not finite.
     #[must_use]
-    pub fn percentile(&self, p: f64) -> f64 {
+    pub fn percentile(&self, p: f64) -> Option<f64> {
+        if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+            return None;
+        }
+
         let total = self.total_count.load(Ordering::Relaxed);
         if total == 0 {
-            return 0.0;
+            return None;
         }
 
         let target = p * total as f64;
@@ -329,13 +477,13 @@ impl Histogram {
                 };
 
                 if bucket_count == 0 {
-                    return upper;
+                    return Some(upper);
                 }
 
                 // Linear interpolation within the bucket.
                 let prev_cumulative = cumulative - bucket_count;
                 let fraction = (target - prev_cumulative as f64) / bucket_count as f64;
-                return (upper - prev_bound).mul_add(fraction, prev_bound);
+                return Some((upper - prev_bound).mul_add(fraction, prev_bound));
             }
 
             if i < self.boundaries.len() {
@@ -344,7 +492,7 @@ impl Histogram {
         }
 
         // Fallback: return last boundary.
-        self.boundaries.last().copied().unwrap_or(0.0)
+        Some(self.boundaries.last().copied().unwrap_or(0.0))
     }
 
     /// Milliseconds since Unix epoch of the last observation recorded.
@@ -369,17 +517,53 @@ impl Default for Histogram {
     }
 }
 
+/// Stored series for one `(metric name, label set)` identity.
+#[derive(Debug, Clone)]
+enum MetricSeries {
+    Counter(Counter),
+    Gauge(Gauge),
+    Histogram(Histogram),
+}
+
+impl MetricSeries {
+    fn kind(&self) -> MetricKind {
+        match self {
+            Self::Counter(_) => MetricKind::Counter,
+            Self::Gauge(_) => MetricKind::Gauge,
+            Self::Histogram(_) => MetricKind::Histogram,
+        }
+    }
+
+    fn last_updated_ms(&self) -> u64 {
+        match self {
+            Self::Counter(c) => c.last_updated_ms(),
+            Self::Gauge(g) => g.last_updated_ms(),
+            Self::Histogram(h) => h.last_updated_ms(),
+        }
+    }
+}
+
 /// Registry for creating and retrieving named metrics.
 ///
-/// Prefer names with the `nebula_` prefix (e.g. `nebula_executions_total`)
-/// for consistency and future Prometheus/OTLP export.
-///
 /// Metric names are interned via [`LabelInterner`] (backed by
-/// [`lasso::ThreadedRodeo`]) so repeated `counter("same_name")` calls pay
-/// only an integer comparison after the first call, not a string allocation.
+/// [`lasso::ThreadedRodeo`]) so repeated lookups for the same name pay only
+/// an integer comparison after the first call, not a string allocation.
+///
+/// Naming conventions and export formats live in `nebula-metrics`, not here.
 ///
 /// Concurrent access uses [`DashMap`] — a sharded lock-free map — so
 /// recording metrics on hot paths does not block other threads.
+///
+/// # Snapshots
+///
+/// [`Self::snapshot_counters`] and [`Self::snapshot_gauges`] return **live handles**
+/// and enumerate registry membership approximately; values may change after the
+/// call returns (weak / best-effort view).
+///
+/// For histograms exposed from [`Self::snapshot_histograms`], use
+/// [`Histogram::snapshot`] before export so count, sum, and bucket totals reflect
+/// one logical scrape instant (seqlock-backed); the returned [`Histogram`] handle
+/// remains live afterward.
 ///
 /// # Examples
 ///
@@ -387,21 +571,18 @@ impl Default for Histogram {
 /// use nebula_telemetry::metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
-/// let counter = registry.counter("nebula_executions_total");
+/// let counter = registry.counter("request_total").unwrap();
 /// counter.inc();
 /// assert_eq!(counter.get(), 1);
 ///
-/// // Retrieving the same name returns the same metric.
-/// let same = registry.counter("nebula_executions_total");
+/// let same = registry.counter("request_total").unwrap();
 /// assert_eq!(same.get(), 1);
 /// ```
 #[derive(Debug, Clone)]
 pub struct MetricsRegistry {
     /// Shared string interner — both metric names and label keys/values.
     pub(crate) interner: LabelInterner,
-    counters: Arc<DashMap<MetricKey, Counter>>,
-    gauges: Arc<DashMap<MetricKey, Gauge>>,
-    histograms: Arc<DashMap<MetricKey, Histogram>>,
+    series: Arc<DashMap<MetricKey, MetricSeries>>,
 }
 
 impl MetricsRegistry {
@@ -410,9 +591,24 @@ impl MetricsRegistry {
     pub fn new() -> Self {
         Self {
             interner: LabelInterner::new(),
-            counters: Arc::new(DashMap::new()),
-            gauges: Arc::new(DashMap::new()),
-            histograms: Arc::new(DashMap::new()),
+            series: Arc::new(DashMap::new()),
+        }
+    }
+
+    fn resolve_metric_name(&self, name: Spur) -> String {
+        self.interner.resolve(name).to_owned()
+    }
+
+    fn kind_conflict(
+        &self,
+        name: Spur,
+        expected: MetricKind,
+        actual: MetricKind,
+    ) -> TelemetryError {
+        TelemetryError::MetricKindConflict {
+            metric_name: self.resolve_metric_name(name),
+            expected_kind: expected,
+            actual_kind: actual,
         }
     }
 
@@ -428,21 +624,33 @@ impl MetricsRegistry {
     // ── Unlabeled accessors ─────────────────────────────────────────────────
 
     /// Get or create an unlabeled counter by name.
-    pub fn counter(&self, name: &str) -> Counter {
-        let key = MetricKey::unlabeled(self.interner.intern(name));
-        self.counters.entry(key).or_default().value().clone()
+    pub fn counter(&self, name: &str) -> TelemetryResult<Counter> {
+        let name_spur = self.interner.intern(name);
+        let key = MetricKey::unlabeled(name_spur);
+        self.insert_counter(key, name_spur)
     }
 
     /// Get or create an unlabeled gauge by name.
-    pub fn gauge(&self, name: &str) -> Gauge {
-        let key = MetricKey::unlabeled(self.interner.intern(name));
-        self.gauges.entry(key).or_default().value().clone()
+    pub fn gauge(&self, name: &str) -> TelemetryResult<Gauge> {
+        let name_spur = self.interner.intern(name);
+        let key = MetricKey::unlabeled(name_spur);
+        self.insert_gauge(key, name_spur)
     }
 
-    /// Get or create an unlabeled histogram by name.
-    pub fn histogram(&self, name: &str) -> Histogram {
-        let key = MetricKey::unlabeled(self.interner.intern(name));
-        self.histograms.entry(key).or_default().value().clone()
+    /// Get or create an unlabeled histogram using the built-in default bucket layout.
+    pub fn histogram(&self, name: &str) -> TelemetryResult<Histogram> {
+        self.histogram_with_buckets_unlabeled(name, DEFAULT_BUCKETS)
+    }
+
+    fn histogram_with_buckets_unlabeled(
+        &self,
+        name: &str,
+        boundaries: &[f64],
+    ) -> TelemetryResult<Histogram> {
+        Histogram::validate_bucket_boundaries(boundaries)?;
+        let name_spur = self.interner.intern(name);
+        let key = MetricKey::unlabeled(name_spur);
+        self.insert_histogram(key, name_spur, boundaries)
     }
 
     // ── Labeled accessors ───────────────────────────────────────────────────
@@ -454,60 +662,102 @@ impl MetricsRegistry {
     /// ```
     /// use nebula_telemetry::metrics::MetricsRegistry;
     ///
-    /// let mut reg = MetricsRegistry::new();
+    /// let reg = MetricsRegistry::new();
     /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
-    /// let counter = reg.counter_labeled("nebula_action_executions_total", &labels);
+    /// let counter = reg
+    ///     .counter_labeled("action_executions_total", &labels)
+    ///     .unwrap();
     /// counter.inc();
     /// assert_eq!(counter.get(), 1);
     /// ```
-    pub fn counter_labeled(&self, name: &str, labels: &LabelSet) -> Counter {
-        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
-        self.counters.entry(key).or_default().value().clone()
+    pub fn counter_labeled(&self, name: &str, labels: &LabelSet) -> TelemetryResult<Counter> {
+        let name_spur = self.interner.intern(name);
+        let key = MetricKey::labeled(name_spur, labels.clone());
+        self.insert_counter(key, name_spur)
     }
 
     /// Get or create a gauge for the given metric name and label set.
-    pub fn gauge_labeled(&self, name: &str, labels: &LabelSet) -> Gauge {
-        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
-        self.gauges.entry(key).or_default().value().clone()
+    pub fn gauge_labeled(&self, name: &str, labels: &LabelSet) -> TelemetryResult<Gauge> {
+        let name_spur = self.interner.intern(name);
+        let key = MetricKey::labeled(name_spur, labels.clone());
+        self.insert_gauge(key, name_spur)
     }
 
-    /// Get or create a histogram for the given metric name and label set.
-    pub fn histogram_labeled(&self, name: &str, labels: &LabelSet) -> Histogram {
-        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
-        self.histograms.entry(key).or_default().value().clone()
+    /// Get or create a histogram for the given metric name and label set using
+    /// the built-in default bucket layout.
+    pub fn histogram_labeled(&self, name: &str, labels: &LabelSet) -> TelemetryResult<Histogram> {
+        self.histogram_with_buckets_labeled(name, labels, DEFAULT_BUCKETS.to_vec())
     }
 
     /// Get or create a histogram with custom bucket boundaries and a label set.
     ///
-    /// Bucket boundaries are bound to the series at **first registration**.
-    /// If a subsequent call targets an already-registered `(name, labels)`
-    /// series with *different* `boundaries`, the existing histogram is
-    /// returned unchanged and a `tracing::warn!` is emitted — the later
-    /// layout is silently ignored, which can cause split-brain behaviour
-    /// between crates that disagree on bucket schemas. Callers that need
-    /// multiple layouts for the same metric name must vary the label set.
+    /// Bucket boundaries are pinned at **first registration**. A later call
+    /// with the same `(name, labels)` but different `boundaries` returns
+    /// [`TelemetryError::HistogramLayoutConflict`].
     pub fn histogram_with_buckets_labeled(
         &self,
         name: &str,
         labels: &LabelSet,
         boundaries: Vec<f64>,
-    ) -> Histogram {
-        let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
-        let existing = self
-            .histograms
-            .entry(key)
-            .or_insert_with(|| Histogram::with_buckets(boundaries.clone()))
-            .value()
-            .clone();
-        if existing.boundaries() != boundaries.as_slice() {
-            tracing::warn!(
-                metric = name,
-                requested = ?boundaries,
-                existing = ?existing.boundaries(),
-                "histogram_with_buckets_labeled: ignoring new boundaries for already-registered series"
-            );
+    ) -> TelemetryResult<Histogram> {
+        Histogram::validate_bucket_boundaries(&boundaries)?;
+        let name_spur = self.interner.intern(name);
+        let key = MetricKey::labeled(name_spur, labels.clone());
+        self.insert_histogram(key, name_spur, &boundaries)
+    }
+
+    fn insert_counter(&self, key: MetricKey, name_spur: Spur) -> TelemetryResult<Counter> {
+        match self.series.entry(key) {
+            Entry::Occupied(o) => match o.get() {
+                MetricSeries::Counter(c) => Ok(c.clone()),
+                other => Err(self.kind_conflict(name_spur, MetricKind::Counter, other.kind())),
+            },
+            Entry::Vacant(v) => {
+                let c = Counter::new();
+                v.insert(MetricSeries::Counter(c.clone()));
+                Ok(c)
+            },
         }
-        existing
+    }
+
+    fn insert_gauge(&self, key: MetricKey, name_spur: Spur) -> TelemetryResult<Gauge> {
+        match self.series.entry(key) {
+            Entry::Occupied(o) => match o.get() {
+                MetricSeries::Gauge(g) => Ok(g.clone()),
+                other => Err(self.kind_conflict(name_spur, MetricKind::Gauge, other.kind())),
+            },
+            Entry::Vacant(v) => {
+                let g = Gauge::new();
+                v.insert(MetricSeries::Gauge(g.clone()));
+                Ok(g)
+            },
+        }
+    }
+
+    fn insert_histogram(
+        &self,
+        key: MetricKey,
+        name_spur: Spur,
+        boundaries: &[f64],
+    ) -> TelemetryResult<Histogram> {
+        match self.series.entry(key) {
+            Entry::Occupied(o) => match o.get() {
+                MetricSeries::Histogram(h) => {
+                    if h.boundaries() != boundaries {
+                        return Err(TelemetryError::HistogramLayoutConflict {
+                            metric_name: self.resolve_metric_name(name_spur),
+                        });
+                    }
+                    Ok(h.clone())
+                },
+                other => Err(self.kind_conflict(name_spur, MetricKind::Histogram, other.kind())),
+            },
+            Entry::Vacant(v) => {
+                let h = Histogram::from_validated_boundaries(boundaries.to_vec());
+                v.insert(MetricSeries::Histogram(h.clone()));
+                Ok(h)
+            },
+        }
     }
 
     // ── Snapshot / export ───────────────────────────────────────────────────
@@ -516,25 +766,34 @@ impl MetricsRegistry {
     ///
     /// Used by exporters (Prometheus, OTLP) to serialize the current state.
     pub fn snapshot_counters(&self) -> Vec<(MetricKey, Counter)> {
-        self.counters
+        self.series
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .filter_map(|entry| match entry.value() {
+                MetricSeries::Counter(c) => Some((entry.key().clone(), c.clone())),
+                _ => None,
+            })
             .collect()
     }
 
     /// Iterate all gauge entries as `(MetricKey, Gauge)` pairs.
     pub fn snapshot_gauges(&self) -> Vec<(MetricKey, Gauge)> {
-        self.gauges
+        self.series
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .filter_map(|entry| match entry.value() {
+                MetricSeries::Gauge(g) => Some((entry.key().clone(), g.clone())),
+                _ => None,
+            })
             .collect()
     }
 
     /// Iterate all histogram entries as `(MetricKey, Histogram)` pairs.
     pub fn snapshot_histograms(&self) -> Vec<(MetricKey, Histogram)> {
-        self.histograms
+        self.series
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .filter_map(|entry| match entry.value() {
+                MetricSeries::Histogram(h) => Some((entry.key().clone(), h.clone())),
+                _ => None,
+            })
             .collect()
     }
 
@@ -542,20 +801,13 @@ impl MetricsRegistry {
 
     /// Remove all metric series that have not been updated within `max_age`.
     ///
-    /// Reclaims the counter / gauge / histogram entries for stale series so
-    /// that dynamic labels (e.g. `action_type`, `workflow_id`) do not grow
-    /// the series maps without bound. Stable global metrics (unlabeled or
-    /// with a fixed label set) are naturally retained because they are
-    /// written to continuously.
+    /// Reclaims stale series so dynamic labels do not grow the registry without
+    /// bound. Stable metrics are naturally retained because they are written
+    /// continuously.
     ///
     /// # Memory behavior
     ///
-    /// After pruning stale series, this method compacts the label interner by
-    /// rebuilding it from the still-live metric keys. That keeps interner
-    /// cardinality bounded by active series rather than by historical churn.
-    ///
-    /// Call this periodically from a background task or at the end of a
-    /// logical time window (e.g. after completing a batch of executions).
+    /// After pruning, this compacts the label interner from still-live keys.
     ///
     /// # Examples
     ///
@@ -565,36 +817,27 @@ impl MetricsRegistry {
     /// use nebula_telemetry::metrics::MetricsRegistry;
     ///
     /// let mut reg = MetricsRegistry::new();
-    /// let c = reg.counter("nebula_actions_total");
+    /// let c = reg.counter("actions_total").unwrap();
     /// c.inc();
     ///
-    /// // Retain everything written in the last 5 minutes.
     /// reg.retain_recent(Duration::from_secs(300));
-    /// assert_eq!(reg.metric_count(), 1); // still present — just updated
+    /// assert_eq!(reg.metric_count(), 1);
     /// ```
     pub fn retain_recent(&mut self, max_age: Duration) {
-        let cutoff_ms = now_ms().saturating_sub(max_age.as_millis() as u64);
-        self.counters
-            .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
-        self.gauges.retain(|_, v| v.last_updated_ms() >= cutoff_ms);
-        self.histograms
-            .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
+        let age_ms: u64 = max_age.as_millis().try_into().unwrap_or(u64::MAX);
+        let cutoff_ms = now_ms().saturating_sub(age_ms);
+        self.series
+            .retain(|_, series| series.last_updated_ms() >= cutoff_ms);
         self.compact_interner();
     }
 
-    /// Total number of tracked metric series (counters + gauges + histograms).
-    ///
-    /// Useful for cardinality monitoring.
+    /// Total number of tracked metric series.
     #[must_use]
     pub fn metric_count(&self) -> usize {
-        self.counters.len() + self.gauges.len() + self.histograms.len()
+        self.series.len()
     }
 
     /// Number of distinct strings held by the label interner.
-    ///
-    /// This reflects the current interner cardinality and can decrease after
-    /// [`Self::retain_recent`] triggers compaction via `compact_interner`.
-    /// Use it to monitor label-cardinality pressure over time.
     #[must_use]
     pub fn interner_len(&self) -> usize {
         self.interner.len()
@@ -622,23 +865,19 @@ impl MetricsRegistry {
             )
         };
 
-        let new_counters: DashMap<MetricKey, Counter> = DashMap::new();
-        for entry in &*self.counters {
-            new_counters.insert(remap_key(entry.key()), entry.value().clone());
-        }
-        let new_gauges: DashMap<MetricKey, Gauge> = DashMap::new();
-        for entry in &*self.gauges {
-            new_gauges.insert(remap_key(entry.key()), entry.value().clone());
-        }
-        let new_histograms: DashMap<MetricKey, Histogram> = DashMap::new();
-        for entry in &*self.histograms {
-            new_histograms.insert(remap_key(entry.key()), entry.value().clone());
+        let new_series: DashMap<MetricKey, MetricSeries> = DashMap::new();
+        for entry in &*self.series {
+            let new_key = remap_key(entry.key());
+            let cloned = match entry.value() {
+                MetricSeries::Counter(c) => MetricSeries::Counter(c.clone()),
+                MetricSeries::Gauge(g) => MetricSeries::Gauge(g.clone()),
+                MetricSeries::Histogram(h) => MetricSeries::Histogram(h.clone()),
+            };
+            new_series.insert(new_key, cloned);
         }
 
         self.interner = new_interner;
-        self.counters = Arc::new(new_counters);
-        self.gauges = Arc::new(new_gauges);
-        self.histograms = Arc::new(new_histograms);
+        self.series = Arc::new(new_series);
     }
 }
 
@@ -651,6 +890,12 @@ impl Default for MetricsRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MetricKind, TelemetryError};
+
+    #[test]
+    fn default_bucket_table_is_valid() {
+        assert!(Histogram::validate_bucket_boundaries(DEFAULT_BUCKETS).is_ok());
+    }
 
     #[test]
     fn counter_starts_at_zero() {
@@ -698,7 +943,7 @@ mod tests {
 
     #[test]
     fn histogram_custom_buckets() {
-        let h = Histogram::with_buckets(vec![1.0, 5.0, 10.0]);
+        let h = Histogram::try_with_buckets(vec![1.0, 5.0, 10.0]).unwrap();
         let buckets = h.buckets();
         assert_eq!(buckets.len(), 4); // 3 boundaries + +Inf
         assert_eq!(buckets[0].0, 1.0);
@@ -709,7 +954,7 @@ mod tests {
 
     #[test]
     fn histogram_observe_updates_correct_bucket() {
-        let h = Histogram::with_buckets(vec![1.0, 5.0, 10.0]);
+        let h = Histogram::try_with_buckets(vec![1.0, 5.0, 10.0]).unwrap();
         h.observe(0.5); // bucket 0 (le=1.0)
         h.observe(3.0); // bucket 1 (le=5.0)
         h.observe(7.0); // bucket 2 (le=10.0)
@@ -735,7 +980,7 @@ mod tests {
 
     #[test]
     fn histogram_percentile_basic() {
-        let h = Histogram::with_buckets(vec![1.0, 5.0, 10.0]);
+        let h = Histogram::try_with_buckets(vec![1.0, 5.0, 10.0]).unwrap();
         for _ in 0..50 {
             h.observe(0.5); // bucket [0, 1.0]
         }
@@ -746,24 +991,24 @@ mod tests {
             h.observe(7.0); // bucket (5.0, 10.0]
         }
 
-        let p50 = h.percentile(0.5);
+        let p50 = h.percentile(0.5).expect("p50");
         assert!(p50 <= 1.0, "p50 should be in first bucket, got {p50}");
 
-        let p95 = h.percentile(0.95);
+        let p95 = h.percentile(0.95).expect("p95");
         assert!(p95 > 5.0, "p95 should be in third bucket, got {p95}");
     }
 
     #[test]
     fn histogram_percentile_empty() {
         let h = Histogram::new();
-        assert!((h.percentile(0.5) - 0.0).abs() < f64::EPSILON);
+        assert!(h.percentile(0.5).is_none());
     }
 
     #[test]
     fn histogram_percentile_single_observation() {
-        let h = Histogram::with_buckets(vec![1.0, 5.0, 10.0]);
+        let h = Histogram::try_with_buckets(vec![1.0, 5.0, 10.0]).unwrap();
         h.observe(3.0);
-        let p = h.percentile(1.0);
+        let p = h.percentile(1.0).expect("p100");
         // Single observation in (1.0, 5.0] bucket.
         assert!(p > 0.0, "percentile of single observation should be > 0");
     }
@@ -777,6 +1022,72 @@ mod tests {
         }
         assert_eq!(h.count(), 1_000_000);
         // If this were Vec<f64>, it would use ~8MB. Buckets use < 200 bytes.
+    }
+
+    #[test]
+    fn histogram_snapshot_sum_of_buckets_equals_total_count() {
+        let h = Histogram::try_with_buckets(vec![1.0, 5.0, 10.0]).unwrap();
+        for _ in 0..7 {
+            h.observe(0.5);
+        }
+        for _ in 0..11 {
+            h.observe(3.0);
+        }
+        h.observe(100.0);
+        let snap = h.snapshot();
+        let bucket_sum: u64 = snap.per_bucket_counts().iter().sum();
+        assert_eq!(bucket_sum, snap.observation_count());
+        assert_eq!(snap.observation_count(), h.count() as u64);
+    }
+
+    #[test]
+    fn histogram_snapshot_consistent_under_concurrent_observe() {
+        use std::sync::{
+            Arc as StdArc,
+            atomic::{AtomicBool, Ordering as AtomicOrdering},
+        };
+
+        let reg = MetricsRegistry::new();
+        let h = StdArc::new(reg.histogram("lat").unwrap());
+        let stop = StdArc::new(AtomicBool::new(false));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let h = StdArc::clone(&h);
+                let stop = StdArc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(AtomicOrdering::Relaxed) {
+                        for v in &[0.01_f64, 0.05, 0.2, 2.5, 9.9] {
+                            h.observe(*v);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for _ in 0..2000 {
+            let snap = h.snapshot();
+            let bucket_sum: u64 = snap.per_bucket_counts().iter().sum();
+            assert_eq!(
+                bucket_sum,
+                snap.observation_count(),
+                "per-bucket tally must equal total observations in a snapshot"
+            );
+            let last_cumulative = snap
+                .cumulative_buckets()
+                .last()
+                .map(|(_, c)| *c)
+                .unwrap_or(0);
+            assert_eq!(
+                last_cumulative,
+                snap.observation_count(),
+                "+Inf cumulative must equal total count"
+            );
+        }
+
+        stop.store(true, AtomicOrdering::Relaxed);
+        for t in threads {
+            let _ = t.join();
+        }
     }
 
     #[test]
@@ -803,31 +1114,50 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "histogram boundaries must not be empty")]
-    fn histogram_empty_buckets_panics() {
-        let _ = Histogram::with_buckets(vec![]);
+    fn histogram_empty_buckets_rejected() {
+        assert!(matches!(
+            Histogram::try_with_buckets(vec![]),
+            Err(TelemetryError::InvalidHistogramBuckets { .. })
+        ));
     }
 
     #[test]
-    #[should_panic(expected = "histogram boundaries must be sorted")]
-    fn histogram_unsorted_buckets_panics() {
-        let _ = Histogram::with_buckets(vec![5.0, 1.0, 10.0]);
+    fn histogram_unsorted_buckets_rejected() {
+        assert!(matches!(
+            Histogram::try_with_buckets(vec![5.0, 1.0, 10.0]),
+            Err(TelemetryError::InvalidHistogramBuckets { .. })
+        ));
     }
 
     #[test]
     fn registry_returns_same_metric_for_same_name() {
         let reg = MetricsRegistry::new();
-        let c1 = reg.counter("requests");
+        let c1 = reg.counter("requests").unwrap();
         c1.inc();
-        let c2 = reg.counter("requests");
+        let c2 = reg.counter("requests").unwrap();
         assert_eq!(c2.get(), 1);
+    }
+
+    #[test]
+    fn registry_rejects_metric_kind_conflict() {
+        let reg = MetricsRegistry::new();
+        reg.counter("dup").unwrap().inc();
+        let err = reg.gauge("dup").unwrap_err();
+        assert!(matches!(
+            err,
+            TelemetryError::MetricKindConflict {
+                expected_kind: MetricKind::Gauge,
+                actual_kind: MetricKind::Counter,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn registry_different_names_are_independent() {
         let reg = MetricsRegistry::new();
-        let c1 = reg.counter("a");
-        let c2 = reg.counter("b");
+        let c1 = reg.counter("a").unwrap();
+        let c2 = reg.counter("b").unwrap();
         c1.inc();
         assert_eq!(c1.get(), 1);
         assert_eq!(c2.get(), 0);
@@ -837,8 +1167,8 @@ mod tests {
     fn registry_labeled_counter_independent_from_unlabeled() {
         let reg = MetricsRegistry::new();
         let labels = reg.interner().label_set(&[("env", "prod")]);
-        let labeled = reg.counter_labeled("nebula_requests_total", &labels);
-        let unlabeled = reg.counter("nebula_requests_total");
+        let labeled = reg.counter_labeled("requests_total", &labels).unwrap();
+        let unlabeled = reg.counter("requests_total").unwrap();
 
         labeled.inc_by(10);
         unlabeled.inc_by(3);
@@ -853,8 +1183,8 @@ mod tests {
         let prod = reg.interner().label_set(&[("env", "prod")]);
         let staging = reg.interner().label_set(&[("env", "staging")]);
 
-        let c_prod = reg.counter_labeled("nebula_executions_total", &prod);
-        let c_staging = reg.counter_labeled("nebula_executions_total", &staging);
+        let c_prod = reg.counter_labeled("executions_total", &prod).unwrap();
+        let c_staging = reg.counter_labeled("executions_total", &staging).unwrap();
         c_prod.inc_by(5);
         c_staging.inc_by(2);
 
@@ -872,9 +1202,13 @@ mod tests {
             .interner()
             .label_set(&[("action", "http.request"), ("status", "ok")]);
 
-        let c1 = reg.counter_labeled("nebula_action_executions_total", &ls1);
+        let c1 = reg
+            .counter_labeled("action_executions_total", &ls1)
+            .unwrap();
         c1.inc_by(7);
-        let c2 = reg.counter_labeled("nebula_action_executions_total", &ls2);
+        let c2 = reg
+            .counter_labeled("action_executions_total", &ls2)
+            .unwrap();
 
         assert_eq!(
             c2.get(),
@@ -886,10 +1220,10 @@ mod tests {
     #[test]
     fn snapshot_returns_all_registered_metrics() {
         let reg = MetricsRegistry::new();
-        reg.counter("c1").inc();
-        reg.counter("c2").inc_by(3);
-        reg.gauge("g1").set(99);
-        reg.histogram("h1").observe(1.0);
+        reg.counter("c1").unwrap().inc();
+        reg.counter("c2").unwrap().inc_by(3);
+        reg.gauge("g1").unwrap().set(99);
+        reg.histogram("h1").unwrap().observe(1.0);
 
         assert_eq!(reg.snapshot_counters().len(), 2);
         assert_eq!(reg.snapshot_gauges().len(), 1);
@@ -899,34 +1233,40 @@ mod tests {
     #[test]
     fn metric_count_sums_all_types() {
         let reg = MetricsRegistry::new();
-        reg.counter("c1").inc();
-        reg.gauge("g1").set(1);
-        reg.histogram("h1").observe(1.0);
+        reg.counter("c1").unwrap().inc();
+        reg.gauge("g1").unwrap().set(1);
+        reg.histogram("h1").unwrap().observe(1.0);
         assert_eq!(reg.metric_count(), 3);
     }
 
     #[test]
-    fn histogram_with_buckets_labeled_returns_first_layout_on_conflict() {
+    fn histogram_with_buckets_labeled_errors_on_layout_conflict() {
         let reg = MetricsRegistry::new();
         let labels = reg.interner().label_set(&[("route", "/health")]);
 
-        let first = reg.histogram_with_buckets_labeled("nebula_req", &labels, vec![0.1, 0.5, 1.0]);
+        let first = reg
+            .histogram_with_buckets_labeled("req_latency", &labels, vec![0.1, 0.5, 1.0])
+            .unwrap();
         assert_eq!(first.boundaries(), &[0.1, 0.5, 1.0]);
 
-        // Re-registering the same series with different boundaries must
-        // return the original histogram (bucket identity is pinned at
-        // first registration).
-        let second = reg.histogram_with_buckets_labeled("nebula_req", &labels, vec![2.0, 4.0, 8.0]);
-        assert_eq!(second.boundaries(), &[0.1, 0.5, 1.0]);
+        let err = reg
+            .histogram_with_buckets_labeled("req_latency", &labels, vec![2.0, 4.0, 8.0])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TelemetryError::HistogramLayoutConflict { .. }
+        ));
 
-        // And they must be the same underlying histogram.
         first.observe(0.3);
+        let second = reg
+            .histogram_with_buckets_labeled("req_latency", &labels, vec![0.1, 0.5, 1.0])
+            .unwrap();
         assert_eq!(second.count(), 1);
     }
 
     #[test]
     fn histogram_boundaries_accessor_excludes_inf() {
-        let h = Histogram::with_buckets(vec![1.0, 2.0, 3.0]);
+        let h = Histogram::try_with_buckets(vec![1.0, 2.0, 3.0]).unwrap();
         assert_eq!(h.boundaries(), &[1.0, 2.0, 3.0]);
     }
 
@@ -934,7 +1274,7 @@ mod tests {
     fn interner_len_compacts_after_retain_recent() {
         let mut reg = MetricsRegistry::new();
         let labels = reg.interner().label_set(&[("k", "v1")]);
-        reg.counter_labeled("m", &labels).inc();
+        reg.counter_labeled("m", &labels).unwrap().inc();
         let before = reg.interner_len();
         assert!(before >= 3); // at least "m", "k", "v1"
 
@@ -948,8 +1288,8 @@ mod tests {
     #[test]
     fn retain_recent_keeps_recently_updated_metrics() {
         let mut reg = MetricsRegistry::new();
-        reg.counter("fresh").inc();
-        reg.gauge("also_fresh").set(1);
+        reg.counter("fresh").unwrap().inc();
+        reg.gauge("also_fresh").unwrap().set(1);
 
         // Everything was just written — a 1-hour window should keep all.
         reg.retain_recent(Duration::from_hours(1));
@@ -965,9 +1305,9 @@ mod tests {
         // is strictly less than the cutoff will be removed.  Since we just
         // created the metrics they will have timestamps >= cutoff, so this
         // verifies the boundary condition: nothing is removed at max_age = 0.
-        reg.counter("a").inc();
-        reg.gauge("b").set(1);
-        reg.histogram("c").observe(0.5);
+        reg.counter("a").unwrap().inc();
+        reg.gauge("b").unwrap().set(1);
+        reg.histogram("c").unwrap().observe(0.5);
         reg.retain_recent(Duration::from_hours(1));
         assert_eq!(
             reg.metric_count(),

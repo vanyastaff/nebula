@@ -152,13 +152,16 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
-    WorkflowEngine::new(runtime, metrics)
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+    WorkflowEngine::new(runtime, metrics).unwrap()
 }
 
 fn make_workflow(

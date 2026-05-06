@@ -534,9 +534,11 @@ async fn reclaim_sweep_emits_counter_metric_per_outcome() {
         loop {
             let r = registry
                 .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &reclaimed_labels)
+                .unwrap()
                 .get();
             let e = registry
                 .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &exhausted_labels)
+                .unwrap()
                 .get();
             if r >= 2 && e >= 1 {
                 break;
@@ -555,9 +557,11 @@ async fn reclaim_sweep_emits_counter_metric_per_outcome() {
     // sweep finds work — counters stay at 2 and 1 (per-row, not per-sweep).
     let reclaimed = registry
         .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &reclaimed_labels)
+        .unwrap()
         .get();
     let exhausted = registry
         .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &exhausted_labels)
+        .unwrap()
         .get();
     assert_eq!(reclaimed, 2, "reclaimed counter bumps by row count");
     assert_eq!(exhausted, 1, "exhausted counter bumps by row count");

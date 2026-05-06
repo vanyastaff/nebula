@@ -513,7 +513,7 @@ mod tests {
         use nebula_metrics::MetricsRegistry;
 
         let registry = MetricsRegistry::new();
-        let metrics = RefreshCoordMetrics::with_registry(&registry);
+        let metrics = RefreshCoordMetrics::with_registry(&registry).unwrap();
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
         let sentinel = Arc::new(SentinelTrigger::new(
             Arc::clone(&repo),
@@ -572,7 +572,7 @@ mod tests {
         use nebula_metrics::MetricsRegistry;
 
         let registry = MetricsRegistry::new();
-        let metrics = RefreshCoordMetrics::with_registry(&registry);
+        let metrics = RefreshCoordMetrics::with_registry(&registry).unwrap();
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
         let sentinel = Arc::new(SentinelTrigger::new(
             Arc::clone(&repo),

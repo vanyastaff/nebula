@@ -31,7 +31,9 @@
 //! assert_eq!(safe.len(), 1);
 //! ```
 
-use nebula_telemetry::labels::{LabelInterner, LabelSet};
+use std::sync::{Arc, Mutex};
+
+use nebula_telemetry::labels::{LabelInterner, LabelKey, LabelSet};
 
 /// A set of approved label-key names for metric observations.
 ///
@@ -50,7 +52,11 @@ enum AllowlistInner {
     /// Pass every label through unchanged.
     All,
     /// Only allow keys whose names are in this list.
-    Keys(Vec<String>),
+    Keys {
+        key_strings: Arc<Vec<String>>,
+        /// Lazily interned allow-list keys for the first registry interner seen.
+        cached_spurs: Arc<Mutex<Option<Vec<LabelKey>>>>,
+    },
 }
 
 impl LabelAllowlist {
@@ -80,7 +86,10 @@ impl LabelAllowlist {
         S: Into<String>,
     {
         Self {
-            inner: AllowlistInner::Keys(keys.into_iter().map(Into::into).collect()),
+            inner: AllowlistInner::Keys {
+                key_strings: Arc::new(keys.into_iter().map(Into::into).collect()),
+                cached_spurs: Arc::new(Mutex::new(None)),
+            },
         }
     }
 
@@ -91,13 +100,31 @@ impl LabelAllowlist {
     ///
     /// Otherwise keys not present in the allowlist are stripped. Keys that
     /// are listed but not found in `labels` are silently ignored.
+    ///
+    /// For [`LabelAllowlist::only`], allowed key names are interned once on the
+    /// first call with a given `interner` and reused on subsequent `apply`
+    /// calls to avoid re-hashing the allow-list on every observation.
     #[must_use]
     pub fn apply(&self, labels: &LabelSet, interner: &LabelInterner) -> LabelSet {
         match &self.inner {
             AllowlistInner::All => labels.clone(),
-            AllowlistInner::Keys(keys) => {
-                let allowed: Vec<&str> = keys.iter().map(String::as_str).collect();
-                interner.filter_label_set(labels, &allowed)
+            AllowlistInner::Keys {
+                key_strings,
+                cached_spurs,
+            } => {
+                let mut guard = cached_spurs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if guard.is_none() {
+                    *guard = Some(
+                        key_strings
+                            .iter()
+                            .map(|k| interner.intern(k.as_str()))
+                            .collect(),
+                    );
+                }
+                let allowed = guard.as_ref().expect("cached allow-list spurs");
+                interner.filter_label_set_by_spur(labels, allowed)
             },
         }
     }

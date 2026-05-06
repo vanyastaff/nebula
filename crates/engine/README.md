@@ -52,7 +52,8 @@ bounded concurrency.
 - `ControlDispatchError` — typed error returned from `ControlDispatch` methods; recorded on
   the control-queue row via `mark_failed` (no auto-retry — ADR-0008 §5).
 - `ExecutionResult` — post-run summary returned to the API layer.
-- `EngineError` — typed engine-layer error.
+- `EngineError` — typed engine-layer error (includes `Telemetry` when metric registration fails at
+  `WorkflowEngine::new` time).
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `credential` module — engine-owned credential runtime surface:

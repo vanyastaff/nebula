@@ -44,7 +44,7 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, engine_lease_contention_reason,
 };
 use nebula_plugin::PluginRegistry;
-use nebula_telemetry::metrics::MetricsRegistry;
+use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
 use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -124,6 +124,10 @@ type CredentialResolveFn = Arc<
 pub struct WorkflowEngine {
     runtime: Arc<ActionRuntime>,
     metrics: MetricsRegistry,
+    workflow_executions_started: Counter,
+    workflow_executions_completed: Counter,
+    workflow_executions_failed: Counter,
+    workflow_execution_duration_seconds: Histogram,
     /// Node registry for node-level metadata and versioning.
     plugin_registry: PluginRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
@@ -154,7 +158,7 @@ pub struct WorkflowEngine {
     event_bus: Option<EventBus>,
     /// Stable per-instance identifier used as the execution-lease holder.
     ///
-    /// Generated once at [`WorkflowEngine::new`] via [`InstanceId::new`]
+    /// Generated once when constructing [`WorkflowEngine`] via [`InstanceId::new`]
     /// (monotonic ULID). A single process runs exactly one instance id
     /// for its lifetime; restarts rotate it so a post-restart runner
     /// cannot inadvertently inherit a lease from its previous
@@ -254,16 +258,34 @@ impl Drop for RunningRegistration {
 
 impl WorkflowEngine {
     /// Create a new engine with the given components.
-    pub fn new(runtime: Arc<ActionRuntime>, metrics: MetricsRegistry) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::Telemetry`] if the shared registry rejects
+    /// registration for the canonical workflow metric identities.
+    pub fn new(runtime: Arc<ActionRuntime>, metrics: MetricsRegistry) -> Result<Self, EngineError> {
+        let workflow_executions_started =
+            metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)?;
+        let workflow_executions_completed =
+            metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)?;
+        let workflow_executions_failed =
+            metrics.counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)?;
+        let workflow_execution_duration_seconds =
+            metrics.histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)?;
+
         let expression_engine = Arc::new(ExpressionEngine::with_cache_size(1024));
         let instance_id = InstanceId::new();
         tracing::info!(
             instance_id = %instance_id,
             "workflow engine starting; lease holder string bound for this process's lifetime"
         );
-        Self {
+        Ok(Self {
             runtime,
             metrics,
+            workflow_executions_started,
+            workflow_executions_completed,
+            workflow_executions_failed,
+            workflow_execution_duration_seconds,
             plugin_registry: PluginRegistry::new(),
             resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
@@ -278,7 +300,7 @@ impl WorkflowEngine {
             lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
             running: Arc::new(DashMap::new()),
             credential_reclaim_sweep: None,
-        }
+        })
     }
 
     /// Signal a cooperative cancel to an in-flight execution this runner owns.
@@ -379,7 +401,7 @@ impl WorkflowEngine {
     /// let store = Arc::new(InMemoryStore::new());
     /// let resolver = Arc::new(CredentialResolver::new(store));
     ///
-    /// let engine = WorkflowEngine::new(runtime, metrics)
+    /// let engine = WorkflowEngine::new(runtime, metrics)?
     ///     .with_credential_resolver(move |id: &str| {
     ///         let resolver = Arc::clone(&resolver);
     ///         let id = id.to_owned();
@@ -430,7 +452,7 @@ impl WorkflowEngine {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let engine = WorkflowEngine::new(runtime, metrics)
+    /// let engine = WorkflowEngine::new(runtime, metrics)?
     ///     .with_credential_resolver(/* ... */)
     ///     .with_credential_refresh(move |id: &str| {
     ///         let id = id.to_owned();
@@ -490,7 +512,7 @@ impl WorkflowEngine {
     /// use nebula_core::action_key;
     /// use nebula_engine::WorkflowEngine;
     ///
-    /// let engine = WorkflowEngine::new(runtime, metrics)
+    /// let engine = WorkflowEngine::new(runtime, metrics)?
     ///     .with_credential_resolver(/* ... */)
     ///     .with_action_credentials(action_key!("http.request"), ["github_token"]);
     /// ```
@@ -856,7 +878,7 @@ impl WorkflowEngine {
                 .interner()
                 .single("reason", engine_lease_contention_reason::ALREADY_HELD);
             self.metrics
-                .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)
+                .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)?
                 .inc();
             tracing::warn!(
                 %execution_id,
@@ -920,12 +942,12 @@ impl WorkflowEngine {
                                         "reason",
                                         engine_lease_contention_reason::HEARTBEAT_LOST,
                                     );
-                                metrics
-                                    .counter_labeled(
-                                        NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
-                                        &labels,
-                                    )
-                                    .inc();
+                                if let Ok(c) = metrics.counter_labeled(
+                                    NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
+                                    &labels,
+                                ) {
+                                    c.inc();
+                                }
                                 tracing::error!(
                                     %execution_id,
                                     holder = %heartbeat_holder,
@@ -949,12 +971,12 @@ impl WorkflowEngine {
                                         "reason",
                                         engine_lease_contention_reason::HEARTBEAT_LOST,
                                     );
-                                metrics
-                                    .counter_labeled(
-                                        NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
-                                        &labels,
-                                    )
-                                    .inc();
+                                if let Ok(c) = metrics.counter_labeled(
+                                    NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
+                                    &labels,
+                                ) {
+                                    c.inc();
+                                }
                                 tracing::error!(
                                     %execution_id,
                                     holder = %heartbeat_holder,
@@ -1081,9 +1103,7 @@ impl WorkflowEngine {
         };
 
         // 6. Record start metric
-        self.metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
-            .inc();
+        self.workflow_executions_started.inc();
 
         // 7. Build node lookup map
         let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
@@ -1530,9 +1550,7 @@ impl WorkflowEngine {
             registration_id,
         };
 
-        self.metrics
-            .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
-            .inc();
+        self.workflow_executions_started.inc();
 
         let error_strategy = workflow.config.error_strategy;
         let workflow_retry_policy = workflow.config.retry_policy.clone();
@@ -3389,20 +3407,15 @@ impl WorkflowEngine {
     ) {
         match status {
             ExecutionStatus::Completed => {
-                self.metrics
-                    .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
-                    .inc();
+                self.workflow_executions_completed.inc();
             },
             ExecutionStatus::Failed => {
-                self.metrics
-                    .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
-                    .inc();
+                self.workflow_executions_failed.inc();
             },
             _ => {},
         }
 
-        self.metrics
-            .histogram(NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS)
+        self.workflow_execution_duration_seconds
             .observe(elapsed.as_secs_f64());
     }
 }
@@ -4754,14 +4767,17 @@ mod tests {
         let sandbox = Arc::new(InProcessSandbox::new(executor));
         let metrics = MetricsRegistry::new();
 
-        let runtime = Arc::new(ActionRuntime::new(
-            registry,
-            sandbox,
-            DataPassingPolicy::default(),
-            metrics.clone(),
-        ));
+        let runtime = Arc::new(
+            ActionRuntime::try_new(
+                registry,
+                sandbox,
+                DataPassingPolicy::default(),
+                metrics.clone(),
+            )
+            .unwrap(),
+        );
 
-        let engine = WorkflowEngine::new(runtime, metrics.clone());
+        let engine = WorkflowEngine::new(runtime, metrics.clone()).unwrap();
         (engine, metrics)
     }
 
@@ -4964,12 +4980,14 @@ mod tests {
         assert!(
             metrics
                 .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+                .unwrap()
                 .get()
                 > 0
         );
         assert!(
             metrics
                 .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
+                .unwrap()
                 .get()
                 > 0
         );
@@ -5000,12 +5018,14 @@ mod tests {
         assert!(
             metrics
                 .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
+                .unwrap()
                 .get()
                 > 0
         );
         assert!(
             metrics
                 .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
+                .unwrap()
                 .get()
                 > 0
         );

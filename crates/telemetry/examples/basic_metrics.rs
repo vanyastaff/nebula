@@ -20,26 +20,32 @@ fn main() {
 
     // Each call to .counter() / .gauge() / .histogram() is idempotent:
     // the same underlying atomic is returned on repeat calls.
-    let total_executions = registry.counter("nebula_executions_total");
+    let total_executions = registry
+        .counter("executions_total")
+        .expect("counter registration");
     total_executions.inc();
     total_executions.inc();
     total_executions.inc_by(10);
     println!("executions_total = {}", total_executions.get()); // 12
 
-    let active_workers = registry.gauge("nebula_active_workers");
+    let active_workers = registry
+        .gauge("active_workers")
+        .expect("gauge registration");
     active_workers.set(4);
     active_workers.inc();
     active_workers.dec();
     println!("active_workers   = {}", active_workers.get()); // 4
 
-    let duration = registry.histogram("nebula_action_duration_seconds");
+    let duration = registry
+        .histogram("action_duration_seconds")
+        .expect("histogram registration");
     for ms in [5, 12, 25, 100, 250, 1000] {
         duration.observe(ms as f64 / 1000.0);
     }
     println!(
         "duration p50={:.3}s  p99={:.3}s  sum={:.3}s  count={}",
-        duration.percentile(0.50),
-        duration.percentile(0.99),
+        duration.percentile(0.50).unwrap_or(0.0),
+        duration.percentile(0.99).unwrap_or(0.0),
         duration.sum(),
         duration.count(),
     );
@@ -55,19 +61,23 @@ fn main() {
     let math_ok = interner.label_set(&[("action_type", "math.add"), ("status", "ok")]);
 
     registry
-        .counter_labeled("nebula_action_executions_total", &http_ok)
+        .counter_labeled("action_executions_total", &http_ok)
+        .expect("counter")
         .inc_by(42);
     registry
-        .counter_labeled("nebula_action_executions_total", &http_err)
+        .counter_labeled("action_executions_total", &http_err)
+        .expect("counter")
         .inc_by(3);
     registry
-        .counter_labeled("nebula_action_executions_total", &math_ok)
+        .counter_labeled("action_executions_total", &math_ok)
+        .expect("counter")
         .inc_by(17);
 
     // Active concurrent actions per type (gauge).
     let http_active = interner.single("action_type", "http.request");
     registry
-        .gauge_labeled("nebula_active_actions", &http_active)
+        .gauge_labeled("active_actions", &http_active)
+        .expect("gauge")
         .set(5);
 
     // ── Snapshot / export ─────────────────────────────────────────────────────
@@ -90,7 +100,9 @@ fn main() {
 
     // ── last_updated_ms ───────────────────────────────────────────────────────
     println!("\n── Last updated timestamps ─────────────────────────");
-    let c = registry.counter("nebula_executions_total");
+    let c = registry
+        .counter("executions_total")
+        .expect("counter registration");
     println!(
         "  executions_total last_updated_ms = {}",
         c.last_updated_ms()

@@ -195,14 +195,19 @@ async fn action_acquires_resource_through_engine() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
 
-    let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager);
+    let engine = WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_resource_manager(manager);
 
     // 4. Build and execute a single-node workflow
     let node = node_key!("test");
@@ -243,14 +248,19 @@ async fn full_resource_lifecycle_with_shutdown() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
 
-    let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager.clone());
+    let engine = WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_resource_manager(manager.clone());
 
     // 4. Execute a single-node workflow
     let node = node_key!("test");
@@ -295,14 +305,17 @@ async fn action_resource_fails_without_manager() {
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let metrics = MetricsRegistry::new();
-    let runtime = Arc::new(ActionRuntime::new(
-        registry,
-        sandbox,
-        DataPassingPolicy::default(),
-        metrics.clone(),
-    ));
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
 
-    let engine = WorkflowEngine::new(runtime, metrics);
+    let engine = WorkflowEngine::new(runtime, metrics).unwrap();
     // No .with_resource_manager() — intentionally omitted so the engine
     // falls back to the no-op accessor and the probe handler fails.
 

@@ -42,6 +42,14 @@
 //!   resource. Engine wiring of `ResourceAction::configure`/`cleanup` per branch is deferred (see
 //!   `.ai-factory/PHASE7_BLOCKED.md`); the API surface is in place.
 //!
+//! ## Metrics registry wiring
+//!
+//! [`WorkflowEngine::new`] and [`runtime::ActionRuntime::try_new`] return [`Result`] if the shared
+//! `MetricsRegistry` rejects registration for a canonical metric identity (same name bound to
+//! incompatible primitive kinds, histogram bucket-layout conflict, etc.). Composition roots
+//! should treat that like any other startup failure: log and abort or surface
+//! [`error::EngineError::Telemetry`] / `nebula_telemetry::TelemetryError` to the caller.
+//!
 //! ## Canon
 //!
 //! - §10 golden path (orchestrator schedules activated workflows).
