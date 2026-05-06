@@ -685,50 +685,74 @@ fn validate_index_limits(
             continue;
         };
 
-        match field {
-            Field::Object(object) => {
-                validate_index_limits(&object.fields, &child_path, next_depth, report);
-            },
-            Field::List(list) => {
-                if let Some(Field::Object(object)) = list.item.as_deref() {
-                    validate_index_limits(&object.fields, &child_path, next_depth, report);
-                }
-            },
-            Field::Mode(mode) => {
-                if mode.variants.len() > max_indexable_siblings {
-                    report.push(
-                        ValidationError::builder("schema.index_overflow")
-                            .at(child_path.clone())
-                            .param("limit", Value::from(max_indexable_siblings))
-                            .param("actual", Value::from(mode.variants.len()))
-                            .message(format!(
-                                "too many mode variants at `{child_path}`: {} > {}",
-                                mode.variants.len(),
-                                max_indexable_siblings
-                            ))
-                            .build(),
-                    );
-                }
-                let Some(variant_depth) = depth.checked_add(2) else {
-                    report.push(
-                        ValidationError::builder("schema.depth_limit")
-                            .at(child_path)
-                            .param("limit", Value::from(u8::MAX))
-                            .message("schema mode variant depth exceeds supported index range")
-                            .build(),
-                    );
-                    continue;
-                };
-                for variant in &mode.variants {
-                    let variant_path = mode_variant_path(&child_path, variant.key.as_str())
-                        .unwrap_or_else(|| child_path.clone());
-                    if let Field::Object(object) = variant.field.as_ref() {
-                        validate_index_limits(&object.fields, &variant_path, variant_depth, report);
-                    }
-                }
-            },
-            _ => {},
-        }
+        validate_indexable_field_children(field, &child_path, next_depth, report);
+    }
+}
+
+fn validate_indexable_field_children(
+    field: &Field,
+    path: &FieldPath,
+    depth: u8,
+    report: &mut ValidationReport,
+) {
+    match field {
+        Field::Object(object) => {
+            validate_index_limits(&object.fields, path, depth, report);
+        },
+        Field::List(list) => {
+            if let Some(Field::Object(object)) = list.item.as_deref() {
+                validate_index_limits(&object.fields, path, depth, report);
+            }
+        },
+        Field::Mode(mode) => {
+            validate_mode_variant_index_limits(mode, path, depth, report);
+        },
+        _ => {},
+    }
+}
+
+fn validate_mode_variant_index_limits(
+    mode: &crate::field::ModeField,
+    path: &FieldPath,
+    depth: u8,
+    report: &mut ValidationReport,
+) {
+    let max_indexable_siblings = usize::from(u16::MAX) + 1;
+    if mode.variants.len() > max_indexable_siblings {
+        report.push(
+            ValidationError::builder("schema.index_overflow")
+                .at(path.clone())
+                .param("limit", Value::from(max_indexable_siblings))
+                .param("actual", Value::from(mode.variants.len()))
+                .message(format!(
+                    "too many mode variants at `{path}`: {} > {}",
+                    mode.variants.len(),
+                    max_indexable_siblings
+                ))
+                .build(),
+        );
+    }
+
+    let Some(variant_depth) = depth.checked_add(1) else {
+        report.push(
+            ValidationError::builder("schema.depth_limit")
+                .at(path.clone())
+                .param("limit", Value::from(u8::MAX))
+                .message("schema mode variant depth exceeds supported index range")
+                .build(),
+        );
+        return;
+    };
+
+    for variant in &mode.variants {
+        let variant_path =
+            mode_variant_path(path, variant.key.as_str()).unwrap_or_else(|| path.clone());
+        validate_indexable_field_children(
+            variant.field.as_ref(),
+            &variant_path,
+            variant_depth,
+            report,
+        );
     }
 }
 
@@ -813,6 +837,27 @@ mod tests {
         let result = Schema::builder().add(nested_object(260)).build();
         let report = result.expect_err("deep schema should be rejected");
         assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+    }
+
+    #[test]
+    fn build_rejects_mode_variant_list_item_index_overflow() {
+        let too_many_fields = (0..(usize::from(u16::MAX) + 2))
+            .map(|i| Field::string(fk(&format!("f{i}"))))
+            .collect::<Vec<_>>();
+
+        let result = Schema::builder()
+            .add(Field::mode(fk("payload")).variant(
+                "bulk",
+                "Bulk",
+                Field::list(fk("items")).item(Field::object(fk("item")).add_many(too_many_fields)),
+            ))
+            .build();
+
+        let report = result.expect_err("mode variant list item overflow should be rejected");
+        assert!(
+            report.errors().any(|e| e.code == "schema.index_overflow"),
+            "expected schema.index_overflow, got: {report:?}"
+        );
     }
 
     #[test]
