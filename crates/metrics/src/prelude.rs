@@ -4,12 +4,11 @@
 //! use nebula_metrics::prelude::*;
 //! ```
 
-// ── Adapter ─────────────────────────────────────────────────────────────────
-// ── Metric Types ──────────────────────────────────────────────────────────
-pub use crate::registry::{Counter, Gauge, Histogram, MetricsRegistry};
-
-pub use crate::adapter::MetricsAdapter;
-// ── Export ───────────────────────────────────────────────────────────────────
-pub use crate::prometheus::{PrometheusExporter, content_type, snapshot};
-// ── Filter ───────────────────────────────────────────────────────────────────
+pub use crate::counter::Counter;
+pub use crate::eventbus::record_eventbus_stats;
 pub use crate::filter::LabelAllowlist;
+pub use crate::gauge::Gauge;
+pub use crate::histogram::{Histogram, HistogramSnapshot};
+pub use crate::labels::{LabelInterner, LabelKey, LabelSet, MetricKey};
+pub use crate::prometheus::{PrometheusExporter, content_type, snapshot};
+pub use crate::registry::MetricsRegistry;

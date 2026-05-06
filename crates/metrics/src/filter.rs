@@ -12,17 +12,12 @@
 //! ## Example
 //!
 //! ```rust
-//! use std::sync::Arc;
+//! use nebula_metrics::{LabelAllowlist, MetricsRegistry};
 //!
-//! use nebula_metrics::{adapter::MetricsAdapter, filter::LabelAllowlist};
-//! use nebula_metrics::MetricsRegistry;
-//!
-//! let reg = Arc::new(MetricsRegistry::new());
-//! let adapter = MetricsAdapter::new(Arc::clone(&reg));
-//!
+//! let reg = MetricsRegistry::new();
 //! let allowlist = LabelAllowlist::only(["action_type", "status"]);
 //!
-//! // Safe: only low-cardinality keys pass.
+//! // Only low-cardinality keys pass.
 //! let raw = reg.interner().label_set(&[
 //!     ("action_type", "http.request"),
 //!     ("execution_id", "550e8400-e29b-41d4-a716-446655440000"), // filtered out
@@ -75,7 +70,7 @@ impl LabelAllowlist {
     /// # Examples
     ///
     /// ```rust
-    /// use nebula_metrics::filter::LabelAllowlist;
+    /// use nebula_metrics::LabelAllowlist;
     ///
     /// let allow = LabelAllowlist::only(["action_type", "status", "trigger_type"]);
     /// ```

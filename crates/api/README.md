@@ -5,7 +5,7 @@ role: API Gateway
 status: frontier
 last-reviewed: 2026-04-23
 canon-invariants: [L2-§4.5, L2-§12.3, L2-§12.4, L2-§13]
-related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-telemetry, nebula-credential, nebula-core]
+related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-metrics, nebula-credential, nebula-core]
 
 # nebula-api
 
@@ -160,7 +160,8 @@ steps 1–3 and 5).
 - Satellite docs: `docs/INTEGRATION_MODEL.md`, `docs/OBSERVABILITY.md`.
 - Siblings: `nebula-storage` (port impls), `nebula-engine` (execution logic),
 `nebula-runtime` (action registry), `nebula-plugin` (plugin registry),
-`nebula-credential` (secret store), `nebula-telemetry` (metrics export).
+`nebula-credential` (secret store), `nebula-metrics` (metric primitives,
+naming policy, and Prometheus export).
 
 ## Appendix
 

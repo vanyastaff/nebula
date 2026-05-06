@@ -13,25 +13,23 @@
 //! cargo run -p nebula-metrics --example cardinality_guard
 //! ```
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
-use nebula_metrics::MetricsRegistry;
-use nebula_metrics::{adapter::MetricsAdapter, filter::LabelAllowlist};
+use nebula_metrics::{LabelAllowlist, MetricsRegistry, naming::NEBULA_ACTION_EXECUTIONS_TOTAL};
 
 fn main() {
-    let registry = Arc::new(MetricsRegistry::new());
+    let registry = MetricsRegistry::new();
 
     // ── Step 1 — configure an allowlist ──────────────────────────────────────
     //
     // Only "safe" low-cardinality keys are allowed in Prometheus series.
     // Keys like `execution_id` or `workflow_id` are stripped automatically.
-    let adapter = MetricsAdapter::new(Arc::clone(&registry))
-        .with_allowlist(LabelAllowlist::only(["action_type", "status"]));
+    let allowlist = LabelAllowlist::only(["action_type", "status"]);
 
     println!("=== LabelAllowlist demo ===\n");
 
     // Simulate an action executor that receives a full context label set.
-    let interner = adapter.interner();
+    let interner = registry.interner();
     let raw_labels = interner.label_set(&[
         ("action_type", "http.request"),
         ("status", "success"),
@@ -45,21 +43,21 @@ fn main() {
     }
 
     // Apply the allowlist — only "action_type" and "status" survive.
-    let safe_labels = adapter.filter_labels(&raw_labels);
+    let safe_labels = allowlist.apply(&raw_labels, interner);
     println!("\nFiltered labels ({} keys):", safe_labels.len());
     for (k, v) in safe_labels.resolve(interner) {
         println!("  {k} = {v}");
     }
 
     // Record with the safe set — no cardinality explosion.
-    adapter
-        .action_executions_labeled(&safe_labels)
+    registry
+        .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &safe_labels)
         .unwrap()
         .inc_by(42);
     println!(
         "\naction_executions with safe labels = {}",
-        adapter
-            .action_executions_labeled(&safe_labels)
+        registry
+            .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &safe_labels)
             .unwrap()
             .get()
     );
