@@ -16,10 +16,12 @@ Usage:
   bash scripts/worktree.sh new <name> <type> <scope> [base]
   bash scripts/worktree.sh list
   bash scripts/worktree.sh remove <name>
+  bash scripts/worktree.sh finish <name> [branch] [main-branch]
   bash scripts/worktree.sh commit <type> <scope> <message...>
 
 Examples:
   bash scripts/worktree.sh new retry-pipeline fix resilience
+  bash scripts/worktree.sh finish retry-pipeline
   bash scripts/worktree.sh commit fix resilience "harden retry semantics"
 USAGE
 }
@@ -114,6 +116,24 @@ list_worktrees() {
   git worktree list
 }
 
+primary_worktree_root() {
+  git worktree list --porcelain \
+    | sed -n '1s/^worktree //p' \
+    | sed 's#\\#/#g'
+}
+
+ensure_clean_checkout() {
+  local path="$1"
+  local label="$2"
+
+  if ! git -C "$path" diff --quiet --exit-code; then
+    die "$label has unstaged changes: $path"
+  fi
+  if ! git -C "$path" diff --cached --quiet --exit-code; then
+    die "$label has staged changes: $path"
+  fi
+}
+
 validate_commit_message() {
   local message="$1"
 
@@ -144,6 +164,56 @@ remove_worktree() {
 
   git worktree remove "$path"
   git worktree prune
+}
+
+finish_worktree() {
+  local name_raw="${1:-}"
+  local branch="${2:-}"
+  local main_branch="${3:-main}"
+
+  [[ -n "$name_raw" ]] || {
+    usage
+    exit 2
+  }
+
+  local name primary path current_branch
+  name="$(slugify "$name_raw")"
+  ensure_clean_name "name" "$name"
+
+  primary="$(primary_worktree_root)"
+  [[ -n "$primary" ]] || die "could not determine primary worktree"
+
+  path="${primary}/${WORKTREE_DIR}/${name}"
+  [[ -d "$path" ]] || die "worktree path does not exist: $path"
+
+  ensure_clean_checkout "$primary" "primary worktree"
+  ensure_clean_checkout "$path" "target worktree"
+
+  if [[ -z "$branch" ]]; then
+    branch="$(git -C "$path" branch --show-current)"
+  fi
+  [[ -n "$branch" ]] || die "could not determine target branch for $path"
+
+  cd "$primary"
+
+  current_branch="$(git -C "$primary" branch --show-current)"
+  if [[ "$current_branch" != "$main_branch" ]]; then
+    git -C "$primary" switch "$main_branch"
+  fi
+
+  git -C "$primary" fetch origin "$main_branch"
+  git -C "$primary" pull --ff-only origin "$main_branch"
+  git -C "$primary" worktree remove "$path"
+  git -C "$primary" worktree prune
+
+  if git -C "$primary" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$primary" branch -d "$branch"
+  fi
+
+  echo "Finished worktree:"
+  echo "  removed: $path"
+  echo "  branch:  $branch"
+  echo "  main:    $main_branch"
 }
 
 commit_staged() {
@@ -190,6 +260,9 @@ main() {
       ;;
     remove)
       remove_worktree "$@"
+      ;;
+    finish)
+      finish_worktree "$@"
       ;;
     commit)
       commit_staged "$@"

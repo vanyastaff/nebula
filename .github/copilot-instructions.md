@@ -22,6 +22,12 @@ This creates `.worktrees/<slug>` from `origin/main` and branch
 bash scripts/worktree.sh commit <type> <scope> <summary>
 ```
 
+After the task PR is merged, clean up with:
+
+```sh
+bash scripts/worktree.sh finish <slug>
+```
+
 Copilot cloud coding environments that cannot use `.worktrees/` must still use
 the same branch naming and Conventional Commit rules.
 
