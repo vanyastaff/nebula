@@ -58,7 +58,38 @@ impl FieldValue {
     ///
     /// This function preserves object literals when keys are not valid
     /// [`FieldKey`] identifiers.
+    ///
+    /// If the value exceeds [`MAX_VALUE_DEPTH`], conversion stops at the
+    /// offending subtree and preserves it as a literal JSON value. Use
+    /// [`Self::try_from_json`] when runtime input must reject over-deep
+    /// values instead of preserving them.
     pub fn from_json(value: Value) -> Self {
+        Self::from_json_limited(value, 0)
+    }
+
+    /// Parse a raw JSON value into a typed tree, rejecting values that exceed
+    /// [`MAX_VALUE_DEPTH`].
+    ///
+    /// This is the fallible variant for runtime input. Invalid object keys are
+    /// still preserved as literal objects; [`FieldValues::from_json`] performs
+    /// strict key validation before calling this helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns `recursion_limit` when conversion would descend beyond
+    /// [`MAX_VALUE_DEPTH`].
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn try_from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
+        Self::try_from_json_at(value, &FieldPath::root(), 0)
+    }
+
+    fn from_json_limited(value: Value, depth: u8) -> Self {
+        if depth > MAX_VALUE_DEPTH {
+            return Self::Literal(value);
+        }
         match value {
             Value::Object(map) => {
                 if map.len() == 1
@@ -78,15 +109,76 @@ impl FieldValue {
 
                 let mut out: IndexMap<FieldKey, Self> = IndexMap::with_capacity(map.len());
                 for ((_, v), key) in map.into_iter().zip(parsed_keys) {
-                    out.insert(key, Self::from_json(v));
+                    out.insert(key, Self::from_json_limited(v, depth.saturating_add(1)));
                 }
                 Self::Object(out)
             },
-            Value::Array(arr) => Self::List(arr.into_iter().map(Self::from_json).collect()),
+            Value::Array(arr) => Self::List(
+                arr.into_iter()
+                    .map(|item| Self::from_json_limited(item, depth.saturating_add(1)))
+                    .collect(),
+            ),
             Value::String(text) if contains_expression_marker(&text) => {
                 Self::Expression(Expression::new(text))
             },
             _ => Self::Literal(value),
+        }
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    fn try_from_json_at(
+        value: Value,
+        path: &FieldPath,
+        depth: u8,
+    ) -> Result<Self, crate::error::ValidationError> {
+        if depth > MAX_VALUE_DEPTH {
+            return Err(recursion_limit_error(path));
+        }
+        match value {
+            Value::Object(map) => {
+                if map.len() == 1
+                    && let Some(expr) = map.get(EXPRESSION_KEY).and_then(Value::as_str)
+                {
+                    return Ok(Self::Expression(Expression::new(expr)));
+                }
+
+                let Some(parsed_keys): Option<Vec<FieldKey>> = map
+                    .keys()
+                    .map(|key| FieldKey::new(key.as_str()).ok())
+                    .collect()
+                else {
+                    validate_json_object_depth(&map, path, depth)?;
+                    return Ok(Self::Literal(Value::Object(map)));
+                };
+
+                let mut out: IndexMap<FieldKey, Self> = IndexMap::with_capacity(map.len());
+                for ((_, child), key) in map.into_iter().zip(parsed_keys) {
+                    let child_path = path.clone().join(key.clone());
+                    let child =
+                        Self::try_from_json_at(child, &child_path, depth.saturating_add(1))?;
+                    out.insert(key, child);
+                }
+                Ok(Self::Object(out))
+            },
+            Value::Array(arr) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for (index, child) in arr.into_iter().enumerate() {
+                    let child_path = path.clone().join(index);
+                    out.push(Self::try_from_json_at(
+                        child,
+                        &child_path,
+                        depth.saturating_add(1),
+                    )?);
+                }
+                Ok(Self::List(out))
+            },
+            Value::String(text) if contains_expression_marker(&text) => {
+                Ok(Self::Expression(Expression::new(text)))
+            },
+            _ => Ok(Self::Literal(value)),
         }
     }
 
@@ -232,7 +324,7 @@ impl FieldValues {
     )]
     pub fn from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
         validate_json_keys(&value, &FieldPath::root(), 0)?;
-        match FieldValue::from_json(value) {
+        match FieldValue::try_from_json(value)? {
             FieldValue::Object(map) => Ok(Self(map)),
             _ => Err(crate::error::ValidationError::builder("type_mismatch")
                 .message("top-level values must be a JSON object")
@@ -275,7 +367,7 @@ impl FieldValues {
         })?;
         let field_path = FieldPath::root().join(fk.clone());
         validate_json_keys(&value, &field_path, 0)?;
-        self.0.insert(fk, FieldValue::from_json(value));
+        self.0.insert(fk, FieldValue::try_from_json(value)?);
         Ok(())
     }
 
@@ -453,13 +545,7 @@ fn validate_json_keys(
             path = %path,
             "value depth limit hit during validate_json_keys"
         );
-        return Err(crate::error::ValidationError::builder("recursion_limit")
-            .at(path.clone())
-            .param("limit", serde_json::json!(MAX_VALUE_DEPTH))
-            .message(format!(
-                "value tree depth exceeds the {MAX_VALUE_DEPTH}-level limit at `{path}`"
-            ))
-            .build());
+        return Err(recursion_limit_error(path));
     }
     match value {
         Value::Object(map) => {
@@ -489,6 +575,56 @@ fn validate_json_keys(
         },
         _ => Ok(()),
     }
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn validate_json_object_depth(
+    map: &Map<String, Value>,
+    path: &FieldPath,
+    depth: u8,
+) -> Result<(), crate::error::ValidationError> {
+    for child in map.values() {
+        validate_json_depth(child, path, depth.saturating_add(1))?;
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn validate_json_depth(
+    value: &Value,
+    path: &FieldPath,
+    depth: u8,
+) -> Result<(), crate::error::ValidationError> {
+    if depth > MAX_VALUE_DEPTH {
+        return Err(recursion_limit_error(path));
+    }
+    match value {
+        Value::Object(map) => validate_json_object_depth(map, path, depth),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                let item_path = path.clone().join(index);
+                validate_json_depth(item, &item_path, depth.saturating_add(1))?;
+            }
+            Ok(())
+        },
+        _ => Ok(()),
+    }
+}
+
+fn recursion_limit_error(path: &FieldPath) -> crate::error::ValidationError {
+    crate::error::ValidationError::builder("recursion_limit")
+        .at(path.clone())
+        .param("limit", serde_json::json!(MAX_VALUE_DEPTH))
+        .message(format!(
+            "value tree depth exceeds the {MAX_VALUE_DEPTH}-level limit at `{path}`"
+        ))
+        .build()
 }
 
 #[cfg(test)]
@@ -673,6 +809,39 @@ mod tests {
         let payload = json!({ "top": deep });
         let err = FieldValues::from_json(payload).expect_err("must reject");
         assert_eq!(err.code, "recursion_limit", "got: {}", err.message);
+    }
+
+    #[test]
+    fn field_value_try_from_json_rejects_deeply_nested_input() {
+        let deep = nested_object(usize::from(MAX_VALUE_DEPTH) + 5, "n");
+        let err = FieldValue::try_from_json(deep).expect_err("must reject");
+        assert_eq!(err.code, "recursion_limit");
+    }
+
+    #[test]
+    fn field_value_try_from_json_checks_depth_inside_invalid_key_literals() {
+        let deep = nested_object(usize::from(MAX_VALUE_DEPTH) + 5, "n");
+        let err = FieldValue::try_from_json(json!({"bad-key": deep})).expect_err("must reject");
+        assert_eq!(err.code, "recursion_limit");
+    }
+
+    #[test]
+    fn field_value_from_json_preserves_over_deep_subtree_as_literal() {
+        let deep = nested_object(usize::from(MAX_VALUE_DEPTH) + 5, "n");
+        let parsed = FieldValue::from_json(deep);
+
+        let key = FieldKey::new("n").unwrap();
+        let mut current = &parsed;
+        for _ in 0..=usize::from(MAX_VALUE_DEPTH) {
+            let FieldValue::Object(map) = current else {
+                panic!("expected object before the depth limit, got: {current:?}");
+            };
+            current = map.get(&key).expect("nested object should contain n");
+        }
+        assert!(
+            matches!(current, FieldValue::Literal(Value::Object(_))),
+            "expected over-depth subtree to be preserved as literal, got: {current:?}"
+        );
     }
 
     #[test]

@@ -353,13 +353,12 @@ pub trait Resource: Send + Sync + 'static {
 mod tests {
     use nebula_core::resource_key;
     use nebula_metadata::BaseCompatError;
-    use nebula_schema::Schema;
     use semver::Version;
 
     use super::{MetadataCompatibilityError, ResourceMetadata};
 
     fn empty_schema() -> nebula_schema::ValidSchema {
-        Schema::builder().build().unwrap()
+        nebula_schema::ValidSchema::empty()
     }
 
     fn md(major: u64, minor: u64) -> ResourceMetadata {

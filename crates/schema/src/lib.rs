@@ -131,6 +131,8 @@ pub mod error;
 pub mod expression;
 /// Typed field definitions and wrappers.
 pub mod field;
+/// Internal schema tree traversal helpers.
+pub(crate) mod field_tree;
 /// Traits linking Rust types to schema definitions.
 pub mod has_schema;
 /// UI hints for string input rendering.
@@ -160,6 +162,8 @@ pub mod secret;
 pub mod transformer;
 /// Validated schema proof-tokens.
 pub mod validated;
+/// Internal adapters for validator path and error types.
+pub(crate) mod validator_bridge;
 /// Runtime value wrappers and wire-format helpers.
 pub mod value;
 /// Typed widget hints by field family.

@@ -246,14 +246,13 @@ impl CredentialMetadata {
 mod tests {
     use nebula_core::credential_key;
     use nebula_metadata::BaseCompatError;
-    use nebula_schema::Schema;
     use semver::Version;
 
     use super::{CredentialMetadata, MetadataCompatibilityError};
     use crate::AuthPattern;
 
     fn empty_schema() -> nebula_schema::ValidSchema {
-        Schema::builder().build().unwrap()
+        nebula_schema::ValidSchema::empty()
     }
 
     fn cred(pattern: AuthPattern, major: u64, minor: u64) -> CredentialMetadata {

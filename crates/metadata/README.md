@@ -54,7 +54,7 @@ struct.
 
 ```rust
 use nebula_metadata::{BaseMetadata, Metadata};
-use nebula_schema::{Schema, ValidSchema};
+use nebula_schema::ValidSchema;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MyKey(&'static str);
@@ -72,7 +72,7 @@ impl Metadata for MyEntityMetadata {
 }
 
 fn empty_schema() -> ValidSchema {
-    Schema::builder().build().unwrap()
+    ValidSchema::empty()
 }
 
 let md = MyEntityMetadata {

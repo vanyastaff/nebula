@@ -513,13 +513,13 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
             Value::Bool(f.allow_custom),
         );
     }
-    if let Field::Mode(f) = field {
-        if let Some(default_variant) = &f.default_variant {
-            schema.insert(
-                "x-nebula-mode-default-variant".to_owned(),
-                Value::String(default_variant.clone()),
-            );
-        }
+    if let Field::Mode(f) = field
+        && let Some(default_variant) = &f.default_variant
+    {
+        schema.insert(
+            "x-nebula-mode-default-variant".to_owned(),
+            Value::String(default_variant.clone()),
+        );
     }
 }
 

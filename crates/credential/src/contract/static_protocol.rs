@@ -61,7 +61,7 @@ use crate::{AuthScheme, error::CredentialError};
 /// use nebula_credential::scheme::SecretToken;
 /// use nebula_credential::SecretString;
 /// use nebula_credential::CredentialError;
-/// use nebula_schema::{FieldValues, Schema, ValidSchema};
+/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct ApiKeyProtocol;
 ///
@@ -69,7 +69,7 @@ use crate::{AuthScheme, error::CredentialError};
 ///     type Scheme = SecretToken;
 ///
 ///     fn parameters() -> ValidSchema {
-///         Schema::builder().build().expect("empty schema is valid")
+///         ValidSchema::empty()
 ///     }
 ///
 ///     fn build(values: &FieldValues) -> Result<SecretToken, CredentialError> {

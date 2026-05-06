@@ -21,7 +21,7 @@ use nebula_metadata::PluginManifest;
 use nebula_plugin_sdk::{
     PluginCtx, PluginError, PluginHandler, protocol::ActionDescriptor, run_duplex,
 };
-use nebula_schema::Schema;
+use nebula_schema::ValidSchema;
 use semver::Version;
 use serde_json::{Value, json};
 
@@ -38,7 +38,7 @@ impl CounterPlugin {
             .description("Fixture plugin — returns an incrementing counter.")
             .build()
             .unwrap();
-        let empty_schema = || Schema::builder().build().unwrap();
+        let empty_schema = ValidSchema::empty;
         let actions = vec![
             ActionDescriptor {
                 key: "increment".into(),

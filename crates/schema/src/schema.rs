@@ -8,11 +8,11 @@ use std::collections::HashSet;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use smallvec::SmallVec;
 
 use crate::{
     Field, LoaderContext, LoaderRegistry, LoaderResult, SelectOption,
     error::{ValidationError, ValidationReport},
+    field_tree::{mode_variant_path, walk_schema_fields},
     path::{FieldPath, PathSegment},
     validated::{FieldHandle, SchemaFlags, ValidSchema, ValidSchemaInner},
 };
@@ -499,6 +499,7 @@ impl SchemaBuilder {
         let mut report = ValidationReport::new();
 
         crate::lint::lint_tree(&fields, &FieldPath::root(), &mut report);
+        crate::lint::lint_root_rules(&self.root_rules, &fields, &mut report);
         validate_index_limits(&fields, &FieldPath::root(), 0, &mut report);
 
         if report.has_errors() {
@@ -510,14 +511,7 @@ impl SchemaBuilder {
         // Build the flat path index for O(1) path lookup.
         let mut index: IndexMap<FieldPath, FieldHandle> = IndexMap::new();
         let mut flags = SchemaFlags::default();
-        build_index(
-            &fields,
-            &FieldPath::root(),
-            &SmallVec::new(),
-            0,
-            &mut index,
-            &mut flags,
-        );
+        build_index(&fields, &mut index, &mut flags);
 
         Ok(ValidSchema::from_inner(ValidSchemaInner {
             fields,
@@ -617,33 +611,21 @@ fn dedupe_stable_eq<T: PartialEq>(items: &mut Vec<T>) {
 
 fn build_index(
     fields: &[Field],
-    prefix: &FieldPath,
-    parent_cursor: &SmallVec<[u16; 4]>,
-    depth: u8,
     index: &mut IndexMap<FieldPath, FieldHandle>,
     flags: &mut SchemaFlags,
 ) {
     use crate::mode::ExpressionMode;
 
-    for (i, f) in fields.iter().enumerate() {
-        let mut cursor = parent_cursor.clone();
-        let Ok(step) = u16::try_from(i) else {
-            continue;
-        };
-        cursor.push(step);
-        let path = prefix.clone().join(f.key().clone());
-        let Some(level) = depth.checked_add(1) else {
-            continue;
-        };
-        flags.max_depth = flags.max_depth.max(level);
+    walk_schema_fields(fields, |node| {
+        flags.max_depth = flags.max_depth.max(node.depth);
 
         // Track expression usage.
-        if !matches!(f.expression(), ExpressionMode::Forbidden) {
+        if !matches!(node.field.expression(), ExpressionMode::Forbidden) {
             flags.uses_expressions = true;
         }
 
         // Track async loader usage.
-        let has_loader = match f {
+        let has_loader = match node.field {
             Field::Select(s) => s
                 .loader
                 .as_ref()
@@ -659,74 +641,13 @@ fn build_index(
         }
 
         index.insert(
-            path.clone(),
+            node.path,
             FieldHandle {
-                cursor: cursor.clone(),
-                depth: level,
+                cursor: node.cursor,
+                depth: node.depth,
             },
         );
-
-        // Recurse for container types.
-        match f {
-            Field::Object(obj) => {
-                build_index(&obj.fields, &path, &cursor, level, index, flags);
-            },
-            Field::List(list) => {
-                if let Some(Field::Object(o)) = list.item.as_deref() {
-                    // List items are anonymous (indexed at runtime), so we do
-                    // not create a dedicated `FieldPath` entry for the item
-                    // itself. We only recurse when the item is an object to
-                    // index its named children under the list field path.
-                    build_index(&o.fields, &path, &cursor, level, index, flags);
-                }
-            },
-            Field::Mode(mode) => {
-                index_mode_variants(mode, &path, &cursor, depth, index, flags);
-            },
-            _ => {},
-        }
-    }
-}
-
-fn index_mode_variants(
-    mode: &crate::field::ModeField,
-    path: &FieldPath,
-    parent_cursor: &SmallVec<[u16; 4]>,
-    depth: u8,
-    index: &mut IndexMap<FieldPath, FieldHandle>,
-    flags: &mut SchemaFlags,
-) {
-    for (vi, variant) in mode.variants.iter().enumerate() {
-        let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) else {
-            continue;
-        };
-        let mut v_cursor = parent_cursor.clone();
-        let Ok(step) = u16::try_from(vi) else {
-            continue;
-        };
-        v_cursor.push(step);
-        let variant_path = path.clone().join(vk);
-        let Some(variant_depth) = depth.checked_add(2) else {
-            continue;
-        };
-        index.insert(
-            variant_path.clone(),
-            FieldHandle {
-                cursor: v_cursor.clone(),
-                depth: variant_depth,
-            },
-        );
-        if let Field::Object(o) = variant.field.as_ref() {
-            build_index(
-                &o.fields,
-                &variant_path,
-                &v_cursor,
-                variant_depth,
-                index,
-                flags,
-            );
-        }
-    }
+    });
 }
 
 fn validate_index_limits(
@@ -799,10 +720,8 @@ fn validate_index_limits(
                     continue;
                 };
                 for variant in &mode.variants {
-                    let variant_path = crate::key::FieldKey::new(variant.key.as_str()).map_or_else(
-                        |_| child_path.clone(),
-                        |variant_key| child_path.clone().join(variant_key),
-                    );
+                    let variant_path = mode_variant_path(&child_path, variant.key.as_str())
+                        .unwrap_or_else(|| child_path.clone());
                     if let Field::Object(object) = variant.field.as_ref() {
                         validate_index_limits(&object.fields, &variant_path, variant_depth, report);
                     }

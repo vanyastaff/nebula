@@ -242,7 +242,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let schema = nebula_schema::Schema::builder().build().unwrap();
+        let schema = nebula_schema::ValidSchema::empty();
 
         let resp = PluginToHost::MetadataResponse {
             id: 1,

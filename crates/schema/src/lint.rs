@@ -2,14 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_validator::{
-    DeferredRule, Logic, Predicate, Rule, ValueRule, foundation::FieldPath as ValidatorFieldPath,
-};
+use nebula_validator::{DeferredRule, Logic, Predicate, Rule, ValueRule};
 
 use crate::{
     Field, FieldPath, ListField, ModeField, RequiredMode, VisibilityMode,
     error::{ValidationError, ValidationReport},
+    field_tree::{defined_field_paths, walk_schema_fields},
     path::PathSegment,
+    validator_bridge::{normalize_rule_target_path, referenced_root_key, resolve_rule_dependency},
 };
 
 fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
@@ -40,6 +40,49 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
             warning_count = report.warnings().count(),
             "lint completed with issues"
         );
+    }
+}
+
+/// Lint schema-level rules against the complete field tree.
+///
+/// Field-level rule linting has local-scope semantics. Root rules operate on
+/// the submitted value object as a whole, so their field references must be
+/// checked against the global schema path set.
+pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut ValidationReport) {
+    if rules.is_empty() {
+        return;
+    }
+
+    let defined = defined_field_paths(fields);
+
+    for rule in rules {
+        let mut refs = Vec::new();
+        rule.field_references(&mut refs);
+        for field_ref in refs {
+            let Some(target) = resolve_rule_dependency(field_ref) else {
+                report.push(
+                    ValidationError::builder("dangling_reference")
+                        .at(FieldPath::root())
+                        .param("reference", serde_json::Value::String(field_ref.to_owned()))
+                        .message(format!(
+                            "root rule reference `{field_ref}` must be a JSON Pointer path"
+                        ))
+                        .build(),
+                );
+                continue;
+            };
+
+            let normalized = normalize_rule_target_path(&target);
+            if !defined.contains(&normalized) {
+                report.push(
+                    ValidationError::builder("dangling_reference")
+                        .at(FieldPath::root())
+                        .param("reference", serde_json::Value::String(field_ref.to_owned()))
+                        .message(format!("root rule references unknown field `{normalized}`"))
+                        .build(),
+                );
+            }
+        }
     }
 }
 
@@ -573,39 +616,28 @@ fn lint_rule_refs_new(
         // Predicates now emit JSON-Pointer-shaped references ("/foo/bar").
         // Strip the leading `/` and resolve the first segment as the key to
         // check. Legacy `$root.` prefix is preserved for back-compat.
-        if let Some(rp) = field_ref.strip_prefix("$root.") {
-            let rk = rp.split('.').next().unwrap_or_default();
-            if !root_keys.contains(rk) {
-                report.push(
-                    ValidationError::builder("dangling_reference")
-                        .at(path.clone())
-                        .message(format!("rule references unknown root key `{rk}`"))
-                        .build(),
-                );
-            }
+        let Some(root_key) = referenced_root_key(field_ref) else {
+            report.push(
+                ValidationError::builder("dangling_reference")
+                    .at(path.clone())
+                    .message(format!(
+                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
+                    ))
+                    .build(),
+            );
             continue;
+        };
+        if !root_keys.contains(root_key.as_str()) {
+            report.push(
+                ValidationError::builder("dangling_reference")
+                    .at(path.clone())
+                    .message(format!(
+                        "rule references unknown root key `{}`",
+                        root_key.as_str()
+                    ))
+                    .build(),
+            );
         }
-        if let Some(rest) = field_ref.strip_prefix('/') {
-            let rk = rest.split('/').next().unwrap_or_default();
-            if !root_keys.contains(rk) {
-                report.push(
-                    ValidationError::builder("dangling_reference")
-                        .at(path.clone())
-                        .message(format!("rule references unknown root key `{rk}`"))
-                        .build(),
-                );
-            }
-            continue;
-        }
-        // Breaking cleanup: only JSON Pointer references are supported.
-        report.push(
-            ValidationError::builder("dangling_reference")
-                .at(path.clone())
-                .message(format!(
-                    "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
-                ))
-                .build(),
-        );
     }
 }
 
@@ -870,67 +902,6 @@ fn emit_required_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut Va
     );
 }
 
-/// Convert a validator JSON-pointer field path into a schema [`FieldPath`]
-/// (dot/bracket wire form used throughout this crate).
-fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
-    let mut out = FieldPath::root();
-    let mut any = false;
-    for seg in vp.segments() {
-        let s = seg.as_ref();
-        if s.is_empty() {
-            continue;
-        }
-        any = true;
-        let segment = if s.chars().all(|c| c.is_ascii_digit()) {
-            let idx: usize = s.parse().ok()?;
-            PathSegment::Index(idx)
-        } else {
-            PathSegment::Key(crate::key::FieldKey::new(s).ok()?)
-        };
-        out = out.join(segment);
-    }
-    if any { Some(out) } else { None }
-}
-
-/// Normalize dependency paths to the same shape as `collect_defined_field_paths`.
-///
-/// `collect_defined_field_paths` tracks list-item object descendants under the list
-/// key (`items.name`), not indexed instances (`items[0].name`). To make
-/// JSON-pointer refs such as `/items/0/name` comparable against that set, we
-/// drop index segments here.
-fn normalize_rule_target_path(path: &FieldPath) -> FieldPath {
-    let mut normalized = FieldPath::root();
-    for segment in path.segments() {
-        if matches!(segment, PathSegment::Index(_)) {
-            continue;
-        }
-        normalized = normalized.join(segment.clone());
-    }
-    normalized
-}
-
-/// Resolve a [`Rule::field_references`] string to an absolute schema [`FieldPath`].
-///
-/// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
-/// - Leading `/` — JSON Pointer from schema root (validator [`ValidatorFieldPath`]).
-/// - Any other form is ignored (schema lint accepts JSON-pointer forms only).
-fn resolve_rule_dependency(field_ref: &str) -> Option<FieldPath> {
-    if let Some(rest) = field_ref.strip_prefix("$root.") {
-        let vp = ValidatorFieldPath::parse(rest)?;
-        return validator_path_to_schema_path(&vp);
-    }
-    if field_ref.starts_with('/') {
-        let vp = ValidatorFieldPath::parse(field_ref)?;
-        return validator_path_to_schema_path(&vp);
-    }
-    None
-}
-
-fn mode_variant_path(field_path: &FieldPath, variant_key: &str) -> Option<FieldPath> {
-    let key = crate::key::FieldKey::new(variant_key).ok()?;
-    Some(field_path.clone().join(key))
-}
-
 fn push_rule_edges_for_rule(
     source: &FieldPath,
     rule: &Rule,
@@ -950,79 +921,17 @@ fn push_rule_edges_for_rule(
     }
 }
 
-fn collect_defined_field_paths(
-    fields: &[Field],
-    prefix: &FieldPath,
-    defined: &mut HashSet<FieldPath>,
-) {
-    for field in fields {
-        let path = prefix.clone().join(field.key().clone());
-        defined.insert(path.clone());
-
-        match field {
-            Field::List(list) => {
-                if let Some(Field::Object(obj)) = list.item.as_deref() {
-                    collect_defined_field_paths(&obj.fields, &path, defined);
-                }
-            },
-            Field::Object(obj) => {
-                collect_defined_field_paths(&obj.fields, &path, defined);
-            },
-            Field::Mode(mode) => {
-                for variant in &mode.variants {
-                    let Some(vpath) = mode_variant_path(&path, variant.key.as_str()) else {
-                        continue;
-                    };
-                    defined.insert(vpath.clone());
-                    if let Field::Object(obj) = variant.field.as_ref() {
-                        collect_defined_field_paths(&obj.fields, &vpath, defined);
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
-}
-
 fn append_rule_edges(
     fields: &[Field],
-    prefix: &FieldPath,
     defined: &HashSet<FieldPath>,
     edges: &mut Vec<(FieldPath, FieldPath)>,
     rule_for: fn(&Field) -> Option<&Rule>,
 ) {
-    for field in fields {
-        let path = prefix.clone().join(field.key().clone());
-
-        if let Some(rule) = rule_for(field) {
-            push_rule_edges_for_rule(&path, rule, defined, edges);
+    walk_schema_fields(fields, |node| {
+        if let Some(rule) = rule_for(node.field) {
+            push_rule_edges_for_rule(&node.path, rule, defined, edges);
         }
-
-        match field {
-            Field::List(list) => {
-                if let Some(Field::Object(obj)) = list.item.as_deref() {
-                    append_rule_edges(&obj.fields, &path, defined, edges, rule_for);
-                }
-            },
-            Field::Object(obj) => {
-                append_rule_edges(&obj.fields, &path, defined, edges, rule_for);
-            },
-            Field::Mode(mode) => {
-                for variant in &mode.variants {
-                    let Some(vpath) = mode_variant_path(&path, variant.key.as_str()) else {
-                        continue;
-                    };
-                    if let Some(rule) = rule_for(variant.field.as_ref()) {
-                        push_rule_edges_for_rule(&vpath, rule, defined, edges);
-                    }
-                    if let Field::Object(obj) = variant.field.as_ref() {
-                        append_rule_edges(&obj.fields, &vpath, defined, edges, rule_for);
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
+    });
 }
 
 fn rule_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, Vec<FieldPath>> {
@@ -1073,17 +982,10 @@ fn lint_visibility_cycles_new(
     _prefix: &FieldPath,
     report: &mut ValidationReport,
 ) {
-    let mut defined: HashSet<FieldPath> = HashSet::new();
-    collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
+    let defined = defined_field_paths(fields);
 
     let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
-    append_rule_edges(
-        fields,
-        &FieldPath::root(),
-        &defined,
-        &mut edges,
-        field_visible_rule,
-    );
+    append_rule_edges(fields, &defined, &mut edges, field_visible_rule);
 
     let adj = rule_adjacency(&edges);
     if let Some((from, to)) = find_cycle_edge(&adj) {
@@ -1092,17 +994,10 @@ fn lint_visibility_cycles_new(
 }
 
 fn lint_required_cycles_new(fields: &[Field], _prefix: &FieldPath, report: &mut ValidationReport) {
-    let mut defined: HashSet<FieldPath> = HashSet::new();
-    collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
+    let defined = defined_field_paths(fields);
 
     let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
-    append_rule_edges(
-        fields,
-        &FieldPath::root(),
-        &defined,
-        &mut edges,
-        field_required_rule,
-    );
+    append_rule_edges(fields, &defined, &mut edges, field_required_rule);
 
     let adj = rule_adjacency(&edges);
     if let Some((from, to)) = find_cycle_edge(&adj) {
@@ -1129,15 +1024,9 @@ fn emit_loader_dependency_cycle_on_edge(
 /// per dependency: `field_path -> dependency_path`.
 /// This models "this field's loader depends on the value of that field".
 /// A cycle in this graph means two (or more) loaders mutually depend on each other.
-fn collect_loader_dependency_edges(
-    fields: &[Field],
-    prefix: &FieldPath,
-    edges: &mut Vec<(FieldPath, FieldPath)>,
-) {
-    for field in fields {
-        let path = prefix.clone().join(field.key().clone());
-
-        let depends_on: Option<&[FieldPath]> = match field {
+fn collect_loader_dependency_edges(fields: &[Field], edges: &mut Vec<(FieldPath, FieldPath)>) {
+    walk_schema_fields(fields, |node| {
+        let depends_on: Option<&[FieldPath]> = match node.field {
             Field::Select(select) if !select.depends_on.is_empty() => Some(&select.depends_on),
             Field::Dynamic(dynamic) if !dynamic.depends_on.is_empty() => Some(&dynamic.depends_on),
             _ => None,
@@ -1145,43 +1034,13 @@ fn collect_loader_dependency_edges(
 
         if let Some(deps) = depends_on {
             for dep in deps {
-                // Normalise: drop index segments so "items[0].name" -> "items.name"
-                let mut norm = FieldPath::root();
-                for seg in dep.segments() {
-                    if matches!(seg, PathSegment::Index(_)) {
-                        continue;
-                    }
-                    norm = norm.join(seg.clone());
-                }
+                let norm = normalize_rule_target_path(dep);
                 if !norm.is_root() {
-                    edges.push((path.clone(), norm));
+                    edges.push((node.path.clone(), norm));
                 }
             }
         }
-
-        // Recurse into nested containers.
-        match field {
-            Field::Object(obj) => {
-                collect_loader_dependency_edges(&obj.fields, &path, edges);
-            },
-            Field::List(list) => {
-                if let Some(Field::Object(obj)) = list.item.as_deref() {
-                    collect_loader_dependency_edges(&obj.fields, &path, edges);
-                }
-            },
-            Field::Mode(mode) => {
-                for variant in &mode.variants {
-                    let Some(vpath) = mode_variant_path(&path, variant.key.as_str()) else {
-                        continue;
-                    };
-                    if let Field::Object(obj) = variant.field.as_ref() {
-                        collect_loader_dependency_edges(&obj.fields, &vpath, edges);
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
+    });
 }
 
 fn lint_loader_dependency_cycles(
@@ -1189,11 +1048,10 @@ fn lint_loader_dependency_cycles(
     _prefix: &FieldPath,
     report: &mut ValidationReport,
 ) {
-    let mut defined: HashSet<FieldPath> = HashSet::new();
-    collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
+    let defined = defined_field_paths(fields);
 
     let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
-    collect_loader_dependency_edges(fields, &FieldPath::root(), &mut edges);
+    collect_loader_dependency_edges(fields, &mut edges);
 
     // Filter out edges whose target does not correspond to a defined field.
     // A dependency on a nonexistent path is already reported as a
@@ -1244,6 +1102,37 @@ mod tests {
         ];
         let report = run(&fields);
         assert!(!report.has_errors());
+    }
+
+    #[test]
+    fn root_rule_rejects_unknown_field_reference() {
+        let result = crate::Schema::builder()
+            .add(Field::string(FieldKey::new("tier").unwrap()))
+            .root_rule(Rule::predicate(
+                Predicate::eq("/missing", json!("pro")).unwrap(),
+            ))
+            .build();
+
+        let report = result.expect_err("root rule should fail lint");
+        assert!(
+            report.errors().any(|e| e.code == "dangling_reference"),
+            "expected dangling_reference, got: {report:?}"
+        );
+    }
+
+    #[test]
+    fn root_rule_accepts_nested_field_reference() {
+        let result = crate::Schema::builder()
+            .add(
+                Field::object(FieldKey::new("config").unwrap())
+                    .add(Field::string(FieldKey::new("tier").unwrap())),
+            )
+            .root_rule(Rule::predicate(
+                Predicate::eq("/config/tier", json!("pro")).unwrap(),
+            ))
+            .build();
+
+        assert!(result.is_ok(), "expected valid root rule, got: {result:?}");
     }
 
     #[test]

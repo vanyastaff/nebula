@@ -619,7 +619,6 @@ mod tests {
 
     use nebula_metadata::PluginManifest;
     use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION};
-    use nebula_schema::Schema;
     use semver::Version;
     use serde_json::json;
 
@@ -665,7 +664,7 @@ mod tests {
         // Sanity: a well-formed v3 envelope still deserializes cleanly
         // through the two-phase path.
         let manifest = PluginManifest::builder("x", "X").build().unwrap();
-        let schema = Schema::builder().build().unwrap();
+        let schema = nebula_schema::ValidSchema::empty();
         let envelope = nebula_plugin_sdk::protocol::PluginToHost::MetadataResponse {
             id: 1,
             protocol_version: DUPLEX_PROTOCOL_VERSION,
@@ -757,7 +756,7 @@ mod tests {
             .version(Version::new(2, 7, 3))
             .build()
             .unwrap();
-        let schema = Schema::builder().build().unwrap();
+        let schema = nebula_schema::ValidSchema::empty();
         let wire = WireMetadata {
             manifest,
             actions: vec![ActionDescriptor {
