@@ -1,7 +1,7 @@
 //! Error types for the telemetry subsystem.
 
 /// Primitive metric kind stored in a
-/// [`crate::metrics::MetricsRegistry`](crate::metrics::MetricsRegistry).
+/// [`crate::metrics::MetricsRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
     /// Monotonic counter.

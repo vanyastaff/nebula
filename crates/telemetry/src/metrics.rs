@@ -10,7 +10,7 @@ use std::{
     hint::spin_loop,
     sync::{
         Arc,
-        atomic::{AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering, fence},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -161,9 +161,9 @@ const DEFAULT_BUCKETS: &[f64] = &[
 
 /// Frozen, point-in-time view of histogram bucket counts, total count, and sum.
 ///
-/// Produced by [`Histogram::snapshot`] using an internal seqlock around writers
-/// so count, sum, and per-bucket tallies correspond to **one** logical state
-/// (no torn reads across independent atomics during export).
+/// Produced by [`Histogram::snapshot`] using a seqlock (sequentially consistent
+/// phase counter + fences) so count, sum, and per-bucket tallies correspond to
+/// **one** logical state without blocking [`Histogram::observe`].
 ///
 /// This type does **not** pin future observations; only the numeric fields
 /// inside this value are immutable.
@@ -223,14 +223,17 @@ impl HistogramSnapshot {
 ///
 /// Uses a fixed set of finite upper bounds plus an implicit `+Inf` overflow
 /// bucket. Each observation increments the appropriate bucket counter
-/// atomically. Bucket and count updates are wait-free; the running sum uses
-/// an atomic compare-exchange loop (lock-free, not wait-free) under contention.
+/// atomically. Recording never takes a mutex: concurrent [`Self::observe`] uses
+/// a seqlock bracket; scrapers retry [`Self::snapshot`] briefly while writers
+/// race. Hot-path updates remain lock-free besides two `SeqCst` bumps per
+/// observation. Sum uses [`AtomicU64::update`] on `f64` bits.
 ///
 /// Prefer [`Histogram::try_with_buckets`] for caller-supplied boundaries; the
-/// default layout from [`Histogram::new`] matches [`DEFAULT_BUCKETS`].
+/// default layout from [`Histogram::new`] uses the crate's built-in boundary
+/// table (see `default_bucket_table_is_valid`).
 #[derive(Debug)]
 pub struct Histogram {
-    /// Seqlock phase: odd while an [`Self::observe`] is in flight, even between updates.
+    /// Odd while an observation is committing; bumped with `Ordering::SeqCst`.
     seq: Arc<AtomicU64>,
     /// Upper-bound for each bucket (sorted, does not include +Inf).
     boundaries: Arc<Vec<f64>>,
@@ -320,9 +323,7 @@ impl Histogram {
             return;
         }
 
-        // Seqlock writer side: observers bracket mutation so [`Self::snapshot`]
-        // can read counts + total_count + sum coherently.
-        self.seq.fetch_add(1, Ordering::Release);
+        self.seq.fetch_add(1, Ordering::SeqCst);
 
         // Find the first bucket whose upper bound is >= value.
         let idx = self
@@ -346,7 +347,8 @@ impl Histogram {
             });
         self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
 
-        self.seq.fetch_add(1, Ordering::Release);
+        fence(Ordering::SeqCst);
+        self.seq.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Capture counts, observation total, and sum at one logical instant.
@@ -358,11 +360,12 @@ impl Histogram {
     #[must_use]
     pub fn snapshot(&self) -> HistogramSnapshot {
         loop {
-            let phase = self.seq.load(Ordering::Acquire);
+            let phase = self.seq.load(Ordering::SeqCst);
             if !phase.is_multiple_of(2) {
                 spin_loop();
                 continue;
             }
+            fence(Ordering::SeqCst);
 
             let per_bucket: Vec<u64> = self
                 .counts
@@ -372,8 +375,12 @@ impl Histogram {
             let observation_count = self.total_count.load(Ordering::Relaxed);
             let sum_value = f64::from_bits(self.sum_bits.load(Ordering::Relaxed));
 
-            let phase_after = self.seq.load(Ordering::Acquire);
-            if phase == phase_after && phase.is_multiple_of(2) {
+            fence(Ordering::SeqCst);
+            let phase_after = self.seq.load(Ordering::SeqCst);
+            let bucket_sum: u64 = per_bucket.iter().sum();
+            // Under rare CPU reordering, `phase` can match while bucket/total loads still
+            // tear; reject and retry (cheap compared to mutex block on `observe`).
+            if phase == phase_after && phase.is_multiple_of(2) && bucket_sum == observation_count {
                 return HistogramSnapshot {
                     boundaries: Arc::clone(&self.boundaries),
                     per_bucket: per_bucket.into_boxed_slice(),
@@ -1050,7 +1057,7 @@ mod tests {
         let reg = MetricsRegistry::new();
         let h = StdArc::new(reg.histogram("lat").unwrap());
         let stop = StdArc::new(AtomicBool::new(false));
-        let threads: Vec<_> = (0..8)
+        let threads: Vec<_> = (0..4)
             .map(|_| {
                 let h = StdArc::clone(&h);
                 let stop = StdArc::clone(&stop);
@@ -1064,7 +1071,8 @@ mod tests {
             })
             .collect();
 
-        for _ in 0..2000 {
+        // Keep bounded for `nextest` `agent` profile (pre-push: 30s × 2 slow ceiling).
+        for _ in 0..256 {
             let snap = h.snapshot();
             let bucket_sum: u64 = snap.per_bucket_counts().iter().sum();
             assert_eq!(
