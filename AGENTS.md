@@ -21,80 +21,71 @@ agent-facing summary.
 - **Build orchestration:** `Taskfile.yml` (`task --list`)
 - **Local hooks:** `lefthook.yml` (mirrors CI required jobs)
 
+## Common Commands
+
+Run via `task <name>`. See `task --list` for the full catalog.
+
+**Workspace-wide:**
+
+| Command                  | Purpose |
+|--------------------------|---------|
+| `task dev:check`         | Pre-PR gate: fmt + clippy + nextest + doctests + deny |
+| `task check`             | Type-check all crates and targets (no codegen) |
+| `task build`             | Debug build (`task build:release` for release) |
+| `task fmt`               | Format (uses **nightly** rustfmt — required) |
+| `task clippy`            | Workspace clippy with `-D warnings` |
+| `task quality`           | Quick mechanical gate (fmt:check + clippy) |
+| `task deny`              | `cargo-deny`: layer wrappers + advisories + licenses |
+| `task test`              | All workspace tests (cargo test) |
+| `task doc` / `doc:open`  | Build (and open) workspace docs |
+| `task ci`                | Full CI pipeline locally |
+
+**Single crate:**
+
+| Command                                | Purpose |
+|----------------------------------------|---------|
+| `cargo check -p <crate>`               | Fastest feedback for one crate |
+| `cargo build -p <crate>`               | Build one crate |
+| `task test:crate CRATE=<name>`         | Tests for one crate (e.g. `CRATE=nebula-action`) |
+| `task test:crate:features CRATE=<n>`   | Same, with `--all-features` |
+| `cargo nextest run -p <crate> <test>`  | Single test by name |
+| `cargo test -p <crate> --doc`          | Doctests for one crate |
+| `cargo doc -p <crate> --open`          | Build/open one crate's rustdoc |
+| `cargo tree -p <crate>`                | Inspect that crate's dep tree |
+| `task bench:crate CRATE=<name>`        | Benchmarks for one crate |
+
+**Infra:**
+
+| Command                         | Purpose |
+|---------------------------------|---------|
+| `task db:up && task db:migrate` | Local Postgres + sqlx migrations |
+| `task db:reset`                 | Drop + recreate DB (prompts) |
+| `task obs:up` / `obs:down`      | Jaeger + OTEL collector |
+| `task infra:up` / `infra:down`  | Self-hosted stack (Postgres + Redis + API) |
+
 ## Workspace Layout
+
+Top-level structure (run `ls` for the full listing; crate inventory is in
+the Layered Dependency Map below):
 
 ```
 nebula/
-├── Cargo.toml                  # workspace root, pinned deps
-├── README.md                   # product overview, architecture, principles
-├── CLAUDE.md                   # Claude Code entry point; imports AGENTS.md
-├── CONTRIBUTING.md             # branch / commit / PR rules
-├── AGENTS.md                   # this file
-├── CODE_OF_CONDUCT.md
-├── LICENSE                     # MIT OR Apache-2.0
-├── clippy.toml                 # lint config (msrv 1.95)
-├── rustfmt.toml                # nightly rustfmt config
-├── rust-toolchain.toml         # pinned toolchain
-├── deny.toml                   # cargo-deny: layer wrappers + advisories
-├── lefthook.yml                # pre-commit / pre-push hooks
-├── Taskfile.yml                # task runner (developer commands)
-├── typos.toml, _typos.toml     # typo-checker config
-├── .taplo.toml                 # TOML formatter
-├── .coderabbit.yaml            # CodeRabbit review config
-├── .editorconfig
-├── .ai-factory/                # AI Factory artifacts (config, rules, plans)
-│   ├── config.yaml             # AI Factory configuration
-│   ├── DESCRIPTION.md          # agent-facing project summary
-│   ├── ARCHITECTURE.md         # agent-actionable architecture subset
-│   └── rules/base.md           # distilled coding rules for agents
-├── .ai-factory.json            # AI Factory install manifest (skills/agents)
-├── .claude/                    # Claude Code skills + agents
-│   ├── skills/                 # /aif-* skills
-│   └── agents/                 # subagents (sidecars, workers, loop roles)
-├── .cursor/                    # Cursor project rules
-│   └── rules/                  # tracked shared rules for Cursor agents
-├── .github/
-│   ├── CODEOWNERS              # auto-reviewer mapping
-│   ├── PULL_REQUEST_TEMPLATE.md
-│   ├── SECURITY.md
-│   ├── PROJECT_SETUP.md
-│   ├── copilot-instructions.md
-│   ├── workflows/              # CI pipelines
-│   ├── ISSUE_TEMPLATE/
-│   ├── labeler.yml
-│   └── dependabot.yml
-├── scripts/                    # shared developer / hook helper scripts
-│   ├── worktree.sh             # canonical worktree + commit wrapper
-│   ├── pre-commit-fmt-check.sh
-│   └── pre-push-crate-diff.sh
-└── crates/                     # 35+ workspace members
-    ├── core/                   # Core    — primitives, IDs, traits
-    ├── error/  +/macros/       # Cross   — error taxonomy
-    ├── log/                    # Cross   — tracing sinks / formatters
-    ├── system/                 # Cross   — process / runtime utilities
-    ├── eventbus/               # Cross   — typed cross-crate event bus
-    ├── telemetry/              # Cross   — OTLP / OpenTelemetry
-    ├── metrics/                # Cross   — counters / gauges / histograms
-    ├── resilience/             # Cross   — retry, circuit breaker, hedged, …
-    ├── validator/  +/macros/   # Core    — value validation
-    ├── expression/             # Core    — expression language
-    ├── workflow/               # Core    — DAG workflow definition
-    ├── execution/              # Core    — execution model
-    ├── schema/  +/macros/      # Core    — typed schemas
-    ├── metadata/               # Core    — workflow metadata
-    ├── credential/ +/macros/   # Business — secrets, AES-256-GCM + AAD
-    ├── credential-builtin/     # Business — built-in credential types
-    ├── resource/  +/macros/    # Business — resource pools / lifecycle
-    ├── action/    +/macros/    # Business — action contract + builtins
-    ├── plugin/    +/macros/    # Business — plugin contract
-    ├── plugin-sdk/             # Exec    — third-party plugin SDK surface
-    ├── engine/                 # Exec    — orchestration / execution engine
-    ├── storage/                # Exec    — storage abstraction (PG / SQLite)
-    ├── storage-loom-probe/     # Exec    — loom-checked concurrency probe
-    ├── sandbox/                # Exec    — isolation for untrusted actions
-    ├── api/                    # API     — HTTP + webhook layer
-    └── sdk/       +/macros-support/  # API — integration-author façade
+├── Cargo.toml          # workspace members + pinned deps + [workspace.lints]
+├── Taskfile.yml        # task runner — see Common Commands above
+├── deny.toml           # cargo-deny: layer wrappers (CI gate)
+├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
+├── rustfmt.toml        # nightly rustfmt config
+├── clippy.toml         # lint thresholds (msrv 1.95)
+├── crates/             # 35+ workspace members
+├── scripts/            # worktree.sh + lefthook helpers
+├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
+├── .claude/            # Claude Code skills + subagents
+├── .cursor/rules/      # Cursor rules (point back to AGENTS.md)
+└── .github/            # CI workflows, CODEOWNERS, PR/issue templates
 ```
+
+Per-crate layout: each `crates/<name>/` has `Cargo.toml` and `README.md`;
+some carry a sibling derive crate (`<name>/macros`) and/or a `docs/` folder.
 
 ## Layered Dependency Map
 
@@ -132,16 +123,14 @@ between siblings at the same layer.
 
 ## Documentation Index
 
-| Document                       | Path                          | Description |
-|--------------------------------|-------------------------------|-------------|
-| Product overview               | `README.md`                   | What Nebula is, design principles, architecture |
-| Contribution guide             | `CONTRIBUTING.md`             | Quick start, workflow, branch / commit / PR rules |
-| Code of conduct                | `CODE_OF_CONDUCT.md`          | Community standards |
-| Security policy                | `.github/SECURITY.md`         | Reporting vulnerabilities |
-| Per-crate READMEs              | `crates/<crate>/README.md`    | Crate-level usage and design notes |
-| Per-crate design docs          | `crates/<crate>/docs/`        | Where present (e.g. `log`, `resilience`, `validator`, `resource`, `api`, `action`, `workflow`, `execution`) |
-| Resource topology plans        | `crates/resource/plans/`      | Resource subsystem design plans |
-| GitHub project setup           | `.github/PROJECT_SETUP.md`    | Repo / project board configuration |
+| Document               | Path                          | Description |
+|------------------------|-------------------------------|-------------|
+| Product overview       | `README.md`                   | What Nebula is, design principles, architecture |
+| Contribution guide     | `CONTRIBUTING.md`             | Quick start, workflow, branch / commit / PR rules |
+| Security policy        | `.github/SECURITY.md`         | Reporting vulnerabilities |
+| Per-crate READMEs      | `crates/<crate>/README.md`    | Crate-level usage and design notes |
+| Per-crate design docs  | `crates/<crate>/docs/`        | Where present |
+| GitHub project setup   | `.github/PROJECT_SETUP.md`    | Repo / project board configuration |
 
 ## AI Context Files
 
@@ -161,29 +150,26 @@ between siblings at the same layer.
 
 ## Agent Git Workflow
 
-Use the repository wrapper for all persistent task branches:
+All persistent task branches go through `scripts/worktree.sh` (or the
+`task wt:*` wrappers — set `WT_NAME` / `WT_TYPE` / `WT_SCOPE`). Branch from
+`origin/main`; squash-merge back; never force-push shared history.
 
-- Create worktrees with `bash scripts/worktree.sh new <slug> <type> <scope>`
-  or the `task wt:new` wrapper using `WT_NAME`, `WT_TYPE`, and `WT_SCOPE`.
-  This creates `.worktrees/<slug>` from `origin/main` and a branch named
-  `<type>/<scope>-<slug>`.
-- Use `task wt:list` to inspect worktrees. Remove clean worktrees with
-  `bash scripts/worktree.sh remove <slug>` or `task wt:remove` with `WT_NAME`.
-  Do not hand-roll alternate persistent worktree locations for Claude, Codex,
-  Cursor, or Copilot.
-- After a PR is merged, run `bash scripts/worktree.sh finish <slug>` or
-  `task wt:finish` with `WT_NAME`. This fast-forwards local `main`, removes
-  `.worktrees/<slug>`, prunes stale worktree metadata, and deletes the merged
-  local branch with `git branch -d`.
-- Commit staged changes with
-  `bash scripts/worktree.sh commit <type> <scope> <summary>`. This produces
-  `<type>(<scope>): <summary>` and validates it with `convco`.
-- Allowed commit / branch types are `build`, `chore`, `ci`, `docs`, `feat`,
-  `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
-- Scope is the crate name without `nebula-` (`resilience`, `engine`, `api`) or
-  a top-level area (`docs`, `ci`, `scripts`, `github`).
-- Managed cloud/IDE worktrees that cannot be configured to `.worktrees/` must
-  still follow the same branch and commit rules, with CI/lefthook as the gate.
+| Step       | Command |
+|------------|---------|
+| New branch | `bash scripts/worktree.sh new <slug> <type> <scope>` — creates `.worktrees/<slug>` and branch `<type>/<scope>-<slug>` |
+| List       | `bash scripts/worktree.sh list` |
+| Commit     | `bash scripts/worktree.sh commit <type> <scope> <summary>` — emits `<type>(<scope>): <summary>`, validated by `convco` |
+| Remove     | `bash scripts/worktree.sh remove <slug>` |
+| Finish     | `bash scripts/worktree.sh finish <slug>` — sync `main`, drop worktree, delete merged branch |
+
+**Allowed types:** `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`,
+`refactor`, `revert`, `style`, `test`.
+
+**Scope:** crate name without `nebula-` prefix (`resilience`, `engine`, `api`)
+or top-level area (`docs`, `ci`, `scripts`, `github`).
+
+Managed cloud/IDE worktrees that can't live under `.worktrees/` must still
+follow these branch/commit rules — CI and lefthook are the gate.
 
 ## Agent Rules
 
