@@ -22,5 +22,11 @@ Commit staged changes through:
 bash scripts/worktree.sh commit <type> <scope> <summary>
 ```
 
+After the task PR is merged, clean up through:
+
+```sh
+bash scripts/worktree.sh finish <slug>
+```
+
 Do not create alternate persistent worktree directories for Cursor. Follow the
 same branch and commit rules as Claude, Codex, and Copilot.

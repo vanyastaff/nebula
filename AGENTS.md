@@ -171,6 +171,10 @@ Use the repository wrapper for all persistent task branches:
   `bash scripts/worktree.sh remove <slug>` or `task wt:remove` with `WT_NAME`.
   Do not hand-roll alternate persistent worktree locations for Claude, Codex,
   Cursor, or Copilot.
+- After a PR is merged, run `bash scripts/worktree.sh finish <slug>` or
+  `task wt:finish` with `WT_NAME`. This fast-forwards local `main`, removes
+  `.worktrees/<slug>`, prunes stale worktree metadata, and deletes the merged
+  local branch with `git branch -d`.
 - Commit staged changes with
   `bash scripts/worktree.sh commit <type> <scope> <summary>`. This produces
   `<type>(<scope>): <summary>` and validates it with `convco`.

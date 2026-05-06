@@ -48,6 +48,13 @@ tasks:
     cmds:
       - bash scripts/worktree.sh remove "{{.WT_NAME}}"
 
+  wt:finish:
+    desc: "After merge: sync main, remove .worktrees/<name>, and delete the merged local branch (env: WT_NAME)"
+    requires:
+      vars: [WT_NAME]
+    cmds:
+      - bash scripts/worktree.sh finish "{{.WT_NAME}}" "{{if .WT_BRANCH}}{{.WT_BRANCH}}{{end}}" "{{if .WT_MAIN}}{{.WT_MAIN}}{{else}}main{{end}}"
+
   git:commit:
     desc: "Commit staged changes with Conventional Commits (env: WT_TYPE, WT_SCOPE, WT_MSG)"
     requires:
