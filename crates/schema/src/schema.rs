@@ -8,11 +8,11 @@ use std::collections::HashSet;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use smallvec::SmallVec;
 
 use crate::{
     Field, LoaderContext, LoaderRegistry, LoaderResult, SelectOption,
     error::{ValidationError, ValidationReport},
+    field_tree::{mode_variant_path, walk_schema_fields},
     path::{FieldPath, PathSegment},
     validated::{FieldHandle, SchemaFlags, ValidSchema, ValidSchemaInner},
 };
@@ -499,6 +499,9 @@ impl SchemaBuilder {
         let mut report = ValidationReport::new();
 
         crate::lint::lint_tree(&fields, &FieldPath::root(), &mut report);
+        // Root-rule diagnostics are best-effort while structural lint errors
+        // are present; build still stops before indexing when any error exists.
+        crate::lint::lint_root_rules(&self.root_rules, &fields, &mut report);
         validate_index_limits(&fields, &FieldPath::root(), 0, &mut report);
 
         if report.has_errors() {
@@ -510,14 +513,7 @@ impl SchemaBuilder {
         // Build the flat path index for O(1) path lookup.
         let mut index: IndexMap<FieldPath, FieldHandle> = IndexMap::new();
         let mut flags = SchemaFlags::default();
-        build_index(
-            &fields,
-            &FieldPath::root(),
-            &SmallVec::new(),
-            0,
-            &mut index,
-            &mut flags,
-        );
+        build_index(&fields, &mut index, &mut flags);
 
         Ok(ValidSchema::from_inner(ValidSchemaInner {
             fields,
@@ -617,33 +613,24 @@ fn dedupe_stable_eq<T: PartialEq>(items: &mut Vec<T>) {
 
 fn build_index(
     fields: &[Field],
-    prefix: &FieldPath,
-    parent_cursor: &SmallVec<[u16; 4]>,
-    depth: u8,
     index: &mut IndexMap<FieldPath, FieldHandle>,
     flags: &mut SchemaFlags,
 ) {
     use crate::mode::ExpressionMode;
 
-    for (i, f) in fields.iter().enumerate() {
-        let mut cursor = parent_cursor.clone();
-        let Ok(step) = u16::try_from(i) else {
-            continue;
-        };
-        cursor.push(step);
-        let path = prefix.clone().join(f.key().clone());
-        let Some(level) = depth.checked_add(1) else {
-            continue;
-        };
-        flags.max_depth = flags.max_depth.max(level);
+    // PRECONDITION: validate_index_limits must have succeeded before
+    // build_index calls walk_schema_fields, otherwise invalid oversize sibling
+    // groups can be skipped by the walker before insertion.
+    walk_schema_fields(fields, |node| {
+        flags.max_depth = flags.max_depth.max(node.depth);
 
         // Track expression usage.
-        if !matches!(f.expression(), ExpressionMode::Forbidden) {
+        if !matches!(node.field.expression(), ExpressionMode::Forbidden) {
             flags.uses_expressions = true;
         }
 
         // Track async loader usage.
-        let has_loader = match f {
+        let has_loader = match node.field {
             Field::Select(s) => s
                 .loader
                 .as_ref()
@@ -659,74 +646,13 @@ fn build_index(
         }
 
         index.insert(
-            path.clone(),
+            node.path,
             FieldHandle {
-                cursor: cursor.clone(),
-                depth: level,
+                cursor: node.cursor,
+                depth: node.depth,
             },
         );
-
-        // Recurse for container types.
-        match f {
-            Field::Object(obj) => {
-                build_index(&obj.fields, &path, &cursor, level, index, flags);
-            },
-            Field::List(list) => {
-                if let Some(Field::Object(o)) = list.item.as_deref() {
-                    // List items are anonymous (indexed at runtime), so we do
-                    // not create a dedicated `FieldPath` entry for the item
-                    // itself. We only recurse when the item is an object to
-                    // index its named children under the list field path.
-                    build_index(&o.fields, &path, &cursor, level, index, flags);
-                }
-            },
-            Field::Mode(mode) => {
-                index_mode_variants(mode, &path, &cursor, depth, index, flags);
-            },
-            _ => {},
-        }
-    }
-}
-
-fn index_mode_variants(
-    mode: &crate::field::ModeField,
-    path: &FieldPath,
-    parent_cursor: &SmallVec<[u16; 4]>,
-    depth: u8,
-    index: &mut IndexMap<FieldPath, FieldHandle>,
-    flags: &mut SchemaFlags,
-) {
-    for (vi, variant) in mode.variants.iter().enumerate() {
-        let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) else {
-            continue;
-        };
-        let mut v_cursor = parent_cursor.clone();
-        let Ok(step) = u16::try_from(vi) else {
-            continue;
-        };
-        v_cursor.push(step);
-        let variant_path = path.clone().join(vk);
-        let Some(variant_depth) = depth.checked_add(2) else {
-            continue;
-        };
-        index.insert(
-            variant_path.clone(),
-            FieldHandle {
-                cursor: v_cursor.clone(),
-                depth: variant_depth,
-            },
-        );
-        if let Field::Object(o) = variant.field.as_ref() {
-            build_index(
-                &o.fields,
-                &variant_path,
-                &v_cursor,
-                variant_depth,
-                index,
-                flags,
-            );
-        }
-    }
+    });
 }
 
 fn validate_index_limits(
@@ -764,52 +690,75 @@ fn validate_index_limits(
             continue;
         };
 
-        match field {
-            Field::Object(object) => {
-                validate_index_limits(&object.fields, &child_path, next_depth, report);
-            },
-            Field::List(list) => {
-                if let Some(Field::Object(object)) = list.item.as_deref() {
-                    validate_index_limits(&object.fields, &child_path, next_depth, report);
-                }
-            },
-            Field::Mode(mode) => {
-                if mode.variants.len() > max_indexable_siblings {
-                    report.push(
-                        ValidationError::builder("schema.index_overflow")
-                            .at(child_path.clone())
-                            .param("limit", Value::from(max_indexable_siblings))
-                            .param("actual", Value::from(mode.variants.len()))
-                            .message(format!(
-                                "too many mode variants at `{child_path}`: {} > {}",
-                                mode.variants.len(),
-                                max_indexable_siblings
-                            ))
-                            .build(),
-                    );
-                }
-                let Some(variant_depth) = depth.checked_add(2) else {
-                    report.push(
-                        ValidationError::builder("schema.depth_limit")
-                            .at(child_path)
-                            .param("limit", Value::from(u8::MAX))
-                            .message("schema mode variant depth exceeds supported index range")
-                            .build(),
-                    );
-                    continue;
-                };
-                for variant in &mode.variants {
-                    let variant_path = crate::key::FieldKey::new(variant.key.as_str()).map_or_else(
-                        |_| child_path.clone(),
-                        |variant_key| child_path.clone().join(variant_key),
-                    );
-                    if let Field::Object(object) = variant.field.as_ref() {
-                        validate_index_limits(&object.fields, &variant_path, variant_depth, report);
-                    }
-                }
-            },
-            _ => {},
-        }
+        validate_indexable_field_children(field, &child_path, next_depth, report);
+    }
+}
+
+fn validate_indexable_field_children(
+    field: &Field,
+    path: &FieldPath,
+    depth: u8,
+    report: &mut ValidationReport,
+) {
+    match field {
+        Field::Object(object) => {
+            validate_index_limits(&object.fields, path, depth, report);
+        },
+        Field::List(list) => {
+            if let Some(Field::Object(object)) = list.item.as_deref() {
+                validate_index_limits(&object.fields, path, depth, report);
+            }
+        },
+        Field::Mode(mode) => {
+            validate_mode_variant_index_limits(mode, path, depth, report);
+        },
+        _ => {},
+    }
+}
+
+fn validate_mode_variant_index_limits(
+    mode: &crate::field::ModeField,
+    path: &FieldPath,
+    depth: u8,
+    report: &mut ValidationReport,
+) {
+    let max_indexable_siblings = usize::from(u16::MAX) + 1;
+    if mode.variants.len() > max_indexable_siblings {
+        report.push(
+            ValidationError::builder("schema.index_overflow")
+                .at(path.clone())
+                .param("limit", Value::from(max_indexable_siblings))
+                .param("actual", Value::from(mode.variants.len()))
+                .message(format!(
+                    "too many mode variants at `{path}`: {} > {}",
+                    mode.variants.len(),
+                    max_indexable_siblings
+                ))
+                .build(),
+        );
+    }
+
+    let Some(variant_depth) = depth.checked_add(1) else {
+        report.push(
+            ValidationError::builder("schema.depth_limit")
+                .at(path.clone())
+                .param("limit", Value::from(u8::MAX))
+                .message("schema mode variant depth exceeds supported index range")
+                .build(),
+        );
+        return;
+    };
+
+    for variant in &mode.variants {
+        let Some(variant_path) = mode_variant_path(path, variant.key.as_str()) else {
+            continue;
+        };
+        validate_indexable_field_children(
+            variant.field.as_ref(),
+            &variant_path,
+            variant_depth,
+            report,
+        );
     }
 }
 
@@ -894,6 +843,27 @@ mod tests {
         let result = Schema::builder().add(nested_object(260)).build();
         let report = result.expect_err("deep schema should be rejected");
         assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+    }
+
+    #[test]
+    fn build_rejects_mode_variant_list_item_index_overflow() {
+        let too_many_fields = (0..(usize::from(u16::MAX) + 2))
+            .map(|i| Field::string(fk(&format!("f{i}"))))
+            .collect::<Vec<_>>();
+
+        let result = Schema::builder()
+            .add(Field::mode(fk("payload")).variant(
+                "bulk",
+                "Bulk",
+                Field::list(fk("items")).item(Field::object(fk("item")).add_many(too_many_fields)),
+            ))
+            .build();
+
+        let report = result.expect_err("mode variant list item overflow should be rejected");
+        assert!(
+            report.errors().any(|e| e.code == "schema.index_overflow"),
+            "expected schema.index_overflow, got: {report:?}"
+        );
     }
 
     #[test]

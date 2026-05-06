@@ -26,6 +26,7 @@ use crate::{
         resolve_select_loader_path,
     },
     secret::SecretValue,
+    validator_bridge::schema_path_from_validator_error,
     value::{FieldValue, FieldValues},
 };
 
@@ -1740,9 +1741,10 @@ fn push_validator_rule_errors(
         let raw_code: &str = e.code.as_ref();
         let msg: String = e.message.as_ref().to_owned();
         let code = translate_validator_code(raw_code, e.params());
+        let issue_path = schema_path_from_validator_error(path, e);
         report.push(
             ValidationError::builder(code)
-                .at(path.clone())
+                .at(issue_path)
                 .message(msg)
                 .build(),
         );
@@ -1809,6 +1811,35 @@ mod tests {
     }
 
     #[test]
+    fn find_by_path_handles_list_object_children() {
+        let schema = Schema::builder()
+            .add(
+                Field::list(FieldKey::new("items").unwrap()).item(
+                    Field::object(FieldKey::new("item").unwrap())
+                        .add(Field::string(field_key!("name"))),
+                ),
+            )
+            .build()
+            .unwrap();
+
+        let field = schema
+            .find_by_path(&FieldPath::parse("items.name").unwrap())
+            .expect("list item child should be indexed");
+        assert_eq!(field.key().as_str(), "name");
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("items[0].name").unwrap())
+                .is_none(),
+            "schema paths use the canonical anonymous list-item path"
+        );
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("items.missing").unwrap())
+                .is_none()
+        );
+    }
+
+    #[test]
     fn root_rule_runs_after_fields() {
         use nebula_validator::{Predicate, Rule};
         use serde_json::json;
@@ -1826,6 +1857,30 @@ mod tests {
 
         let ok = FieldValues::from_json(json!({"tier": "pro"})).unwrap();
         assert!(schema.validate(&ok).is_ok());
+    }
+
+    #[test]
+    fn root_rule_error_preserves_validator_field_path() {
+        use nebula_validator::{Predicate, Rule};
+        use serde_json::json;
+
+        let schema = Schema::builder()
+            .add(
+                Field::object(FieldKey::new("config").unwrap())
+                    .add(Field::string(FieldKey::new("tier").unwrap())),
+            )
+            .root_rule(Rule::predicate(
+                Predicate::eq("/config/tier", json!("pro")).unwrap(),
+            ))
+            .build()
+            .unwrap();
+
+        let bad = FieldValues::from_json(json!({"config": {"tier": "free"}})).unwrap();
+        let report = schema.validate(&bad).unwrap_err();
+        assert!(
+            report.errors().any(|e| e.path.to_string() == "config.tier"),
+            "expected root-rule error at config.tier, got: {report:?}"
+        );
     }
 
     #[test]

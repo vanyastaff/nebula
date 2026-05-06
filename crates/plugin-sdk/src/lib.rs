@@ -19,7 +19,7 @@
 //! use nebula_plugin_sdk::{
 //!     PluginCtx, PluginError, PluginHandler, protocol::ActionDescriptor, run_duplex,
 //! };
-//! use nebula_schema::Schema;
+//! use nebula_schema::ValidSchema;
 //! use semver::Version;
 //! use serde_json::Value;
 //!
@@ -58,7 +58,7 @@
 //!         key: "echo".into(),
 //!         name: "Echo".into(),
 //!         description: "Echoes the input".into(),
-//!         schema: Schema::builder().build().unwrap(),
+//!         schema: ValidSchema::empty(),
 //!     }];
 //!     run_duplex(Echo { manifest, actions }).await.unwrap();
 //! }
@@ -411,7 +411,7 @@ mod tests {
                 key: "echo".into(),
                 name: "Echo".into(),
                 description: "Returns input unchanged".into(),
-                schema: nebula_schema::Schema::builder().build().unwrap(),
+                schema: nebula_schema::ValidSchema::empty(),
             }];
             Self { manifest, actions }
         }

@@ -242,18 +242,32 @@ mod tests {
             .build()
             .unwrap();
 
-        let schema = nebula_schema::Schema::builder().build().unwrap();
+        let empty_schema = nebula_schema::ValidSchema::empty();
+        let populated_schema = nebula_schema::Schema::builder()
+            .add(nebula_schema::Field::string(
+                nebula_schema::FieldKey::new("message").unwrap(),
+            ))
+            .build()
+            .unwrap();
 
         let resp = PluginToHost::MetadataResponse {
             id: 1,
             protocol_version: DUPLEX_PROTOCOL_VERSION,
             manifest,
-            actions: vec![ActionDescriptor {
-                key: "echo".into(),
-                name: "Echo".into(),
-                description: "Echoes input".into(),
-                schema,
-            }],
+            actions: vec![
+                ActionDescriptor {
+                    key: "echo_empty".into(),
+                    name: "Echo Empty".into(),
+                    description: "Echoes input".into(),
+                    schema: empty_schema,
+                },
+                ActionDescriptor {
+                    key: "echo".into(),
+                    name: "Echo".into(),
+                    description: "Echoes input".into(),
+                    schema: populated_schema,
+                },
+            ],
         };
         let line = serde_json::to_string(&resp).unwrap();
         let parsed: PluginToHost = serde_json::from_str(&line).unwrap();

@@ -14,7 +14,7 @@ use nebula_metadata::PluginManifest;
 use nebula_plugin_sdk::{
     PluginCtx, PluginError, PluginHandler, protocol::ActionDescriptor, run_duplex,
 };
-use nebula_schema::Schema;
+use nebula_schema::ValidSchema;
 use semver::Version;
 use serde_json::Value;
 
@@ -34,7 +34,7 @@ impl EchoPlugin {
             key: "echo".into(),
             name: "Echo".into(),
             description: "Returns the input as the output".into(),
-            schema: Schema::builder().build().unwrap(),
+            schema: ValidSchema::empty(),
         }];
         Self { manifest, actions }
     }
