@@ -27,6 +27,34 @@ tasks:
     cmds:
       - task --list
 
+  # ── Git / Worktrees ───────────────────────────────────────────────────────
+
+  wt:new:
+    desc: "Create a worktree under .worktrees/ from origin/main (env: WT_NAME, WT_TYPE, WT_SCOPE)"
+    requires:
+      vars: [WT_NAME, WT_TYPE, WT_SCOPE]
+    cmds:
+      - bash scripts/worktree.sh new "{{.WT_NAME}}" "{{.WT_TYPE}}" "{{.WT_SCOPE}}" "{{if .WT_BASE}}{{.WT_BASE}}{{else}}origin/main{{end}}"
+
+  wt:list:
+    desc: List Git worktrees
+    cmds:
+      - bash scripts/worktree.sh list
+
+  wt:remove:
+    desc: "Remove a worktree under .worktrees/ (env: WT_NAME)"
+    requires:
+      vars: [WT_NAME]
+    cmds:
+      - bash scripts/worktree.sh remove "{{.WT_NAME}}"
+
+  git:commit:
+    desc: "Commit staged changes with Conventional Commits (env: WT_TYPE, WT_SCOPE, WT_MSG)"
+    requires:
+      vars: [WT_TYPE, WT_SCOPE, WT_MSG]
+    cmds:
+      - bash scripts/worktree.sh commit "{{.WT_TYPE}}" "{{.WT_SCOPE}}" "{{.WT_MSG}}"
+
   # ── Build ──────────────────────────────────────────────────────────────────
 
   build:
