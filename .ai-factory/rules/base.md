@@ -30,8 +30,8 @@
 ## Module / Crate Structure
 
 - Layered workspace enforced by `cargo deny` (`deny.toml` `[wrappers]`):
-  - **Cross-cutting**: `log`, `system`, `eventbus`, `telemetry`, `metrics`,
-    `resilience`, `error`.
+  - **Cross-cutting**: `log`, `system`, `eventbus`, `metrics`, `resilience`,
+    `error`.
   - **Core**: `core`, `validator`, `expression`, `workflow`, `execution`,
     `schema`, `metadata`.
   - **Business**: `credential`, `resource`, `action`, `plugin`.
@@ -57,7 +57,7 @@
 ## Logging / Tracing / Telemetry
 
 - `tracing` is the only logging API in libraries. Crates expose typed events;
-  formatting/sinks live in `nebula-log` / `nebula-telemetry`.
+  formatting/sinks live in `nebula-log`.
 - Every new state, error, or hot path must ship with a typed error variant **and**
   a tracing span / event **and** an invariant check. Observability is part of
   Definition of Done, not a follow-up.

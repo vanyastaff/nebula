@@ -20,10 +20,10 @@ by the `/metrics` HTTP endpoint.
 Per ADR-0046 the formerly separate `nebula-telemetry` primitives layer was
 absorbed into this crate. The cross-crate boundary that lived under canon
 `[L1-§3.10]` was structurally unenforced (no `cargo deny` rule) and caused
-daily friction (~500 LOC of bridge code, dual-import call-sites, the
-`TelemetryAdapter` mediation type). Intra-crate module discipline (`mod`
-boundaries + `pub`/`pub(crate)`) preserves the same separation of concerns
-without the Cargo-level overhead.
+daily friction (~500 LOC of bridge code, dual-import call-sites, the bridge
+adapter type). Intra-crate module discipline (`mod` boundaries +
+`pub`/`pub(crate)`) preserves the same separation of concerns without the
+Cargo-level overhead.
 
 ## Role
 
@@ -39,7 +39,8 @@ exposed flat (`nebula_metrics::Counter`, not `nebula_metrics::primitives::Counte
   backed by atomics.
 - `LabelInterner`, `LabelSet`, `MetricKey` — `lasso`-backed string interning for
   label keys and values; enables zero-copy metric dimensions.
-- `MetricsAdapter` — adapter that records using standard `nebula_*` name constants.
+- `record_eventbus_stats(&MetricsRegistry, &EventBusStats)` — free function that
+  records the four `NEBULA_EVENTBUS_*` gauges from a single bus snapshot.
 - `PrometheusExporter`, `snapshot() -> String` — Prometheus text-format export
   with `# HELP`, `# TYPE` metadata and per-bucket histogram output.
 - `content_type() -> &'static str` — standard Prometheus `Content-Type` for HTTP
@@ -55,14 +56,17 @@ exposed flat (`nebula_metrics::Counter`, not `nebula_metrics::primitives::Counte
 
 The crate's `lib.rs` groups `mod` declarations by concern:
 
-- **primitives** — `labels.rs`, `registry.rs` (counter/gauge/histogram + registry).
-- **policy** — `naming.rs`, `filter.rs`, `adapter.rs`.
+- **primitives** — `counter.rs`, `gauge.rs`, `histogram.rs`, `registry.rs`,
+  `labels.rs`.
+- **policy** — `naming.rs`, `filter.rs`.
 - **export** — `prometheus.rs`.
+- **instrumentation** — `eventbus.rs` (free `record_eventbus_stats` over a
+  `&MetricsRegistry`).
 - **error** — `error.rs`.
 
 A new `NEBULA_*` constant or a new label policy belongs in the policy section,
-not in primitives. Adding `pub const NEBULA_FOO: &str = "..."` to `registry.rs`
-is the moral equivalent of the canon `[L1-§3.10]` violation that the prior
+not in primitives. Adding `pub const NEBULA_FOO: &str = "..."` to a primitive
+file is the moral equivalent of the canon `[L1-§3.10]` violation that the prior
 cross-crate split tried to prevent — the constraint now lives at the file/`mod`
 level inside one crate.
 
@@ -76,9 +80,9 @@ level inside one crate.
 
 ## Maturity
 
-- API stability: `stable` — `MetricsRegistry`, primitives, `MetricsAdapter`,
-  `PrometheusExporter`, `snapshot()`, `LabelAllowlist`, and `naming` constants
-  are in active use.
+- API stability: `stable` — `MetricsRegistry`, primitives,
+  `record_eventbus_stats`, `PrometheusExporter`, `snapshot()`, `LabelAllowlist`,
+  and `naming` constants are in active use.
 - OTLP export is `planned`; Prometheus text is the implemented export format.
 - Naming enforcement is currently manual (no lint). Drift between call sites and
   constants is possible.

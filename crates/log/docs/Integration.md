@@ -42,14 +42,14 @@ fn run() {
 
 ---
 
-## nebula-log + nebula-telemetry
+## nebula-log + metrics / observability backends
 
 `nebula-log`'s observability hook system is the integration point for
-`nebula-telemetry` and other telemetry backends.
+`nebula-metrics` and other observability backends (OTLP, Prometheus, Sentry).
 
 ### Wiring steps
 
-1. Implement `ObservabilityHook` in your telemetry adapter.
+1. Implement `ObservabilityHook` in your observability adapter.
 2. Register it once at startup with `register_hook(Arc::new(my_hook))`.
 3. Every `emit_event` call dispatches to all registered hooks.
 
@@ -57,16 +57,16 @@ fn run() {
 use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, register_hook};
 use std::sync::Arc;
 
-struct TelemetryAdapter; // forwards to nebula-telemetry or Prometheus
+struct MetricsHook; // forwards to nebula-metrics, Prometheus, or your backend
 
-impl ObservabilityHook for TelemetryAdapter {
+impl ObservabilityHook for MetricsHook {
     fn on_event(&self, event: &dyn ObservabilityEvent) {
         // forward to your backend here
     }
 }
 
 // In your bootstrap code:
-register_hook(Arc::new(TelemetryAdapter));
+register_hook(Arc::new(MetricsHook));
 ```
 
 ### Event bus subscription pattern

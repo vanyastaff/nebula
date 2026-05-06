@@ -4,7 +4,7 @@ role: Structured Tracing Initialization (single logging pipeline, multi-format, 
 status: stable
 last-reviewed: 2026-04-17
 canon-invariants: [L2-12.5]
-related: [nebula-telemetry, nebula-metrics]
+related: [nebula-metrics]
 ---
 
 # nebula-log
@@ -47,7 +47,7 @@ boundary: no secrets in log output, structured events with typed event kinds.
 
 ## Non-goals
 
-- Not a metrics system — metric counters, gauges, and histograms live in `nebula-telemetry` / `nebula-metrics`.
+- Not a metrics system — metric counters, gauges, and histograms live in `nebula-metrics`.
 - Not an event bus — domain event distribution lives in `nebula-eventbus`.
 - Not responsible for secret redaction itself — callers must use redacted wrappers before passing values to `tracing` macros.
 
@@ -61,7 +61,7 @@ See `docs/MATURITY.md` row for `nebula-log`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §4.6 (Observability pillar), §12.5 (secrets and auth), `docs/OBSERVABILITY.md`.
-- Siblings: `nebula-telemetry` (metric primitives), `nebula-metrics` (metric export).
+- Siblings: `nebula-metrics` (metric primitives, naming policy, and Prometheus export).
 
 ## Appendix: Feature flags
 
