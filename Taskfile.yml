@@ -99,12 +99,12 @@ tasks:
   fmt:
     desc: Format all code in place
     cmds:
-      - cargo +nightly fmt --all
+      - cargo fmt --all
 
   fmt:check:
     desc: Check formatting without modifying files (CI)
     cmds:
-      - cargo +nightly fmt --all -- --check
+      - cargo fmt --all -- --check
 
   clippy:
     desc: Run Clippy linter (warnings treated as errors)
@@ -119,7 +119,7 @@ tasks:
   quality:
     desc: Full mechanical gate (fmt check + clippy) — see docs/QUALITY_GATES.md
     cmds:
-      - cargo +nightly fmt --all -- --check
+      - cargo fmt --all -- --check
       - cargo clippy {{.CARGO_FLAGS}} -- -D warnings
 
   deny:

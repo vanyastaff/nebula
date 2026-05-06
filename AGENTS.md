@@ -32,7 +32,7 @@ Run via `task <name>`. See `task --list` for the full catalog.
 | `task dev:check`         | Pre-PR gate: fmt + clippy + nextest + doctests + deny |
 | `task check`             | Type-check all crates and targets (no codegen) |
 | `task build`             | Debug build (`task build:release` for release) |
-| `task fmt`               | Format (uses **nightly** rustfmt — required) |
+| `task fmt`               | Format (`cargo fmt --all` on the pinned stable toolchain) |
 | `task clippy`            | Workspace clippy with `-D warnings` |
 | `task quality`           | Quick mechanical gate (fmt:check + clippy) |
 | `task deny`              | `cargo-deny`: layer wrappers + advisories + licenses |
@@ -75,7 +75,7 @@ nebula/
 ├── Taskfile.yml        # task runner — see Common Commands above
 ├── deny.toml           # cargo-deny: layer wrappers (CI gate)
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
-├── rustfmt.toml        # nightly rustfmt config
+├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.95)
 ├── crates/             # 34 workspace members (incl. 8 derive companions)
 ├── scripts/            # worktree.sh + lefthook helpers
@@ -117,7 +117,7 @@ between siblings at the same layer.
 | `Cargo.toml`                  | Workspace members, pinned deps, `[workspace.lints]` |
 | `deny.toml`                   | Layer wrappers, licenses, advisories — CI gate |
 | `clippy.toml`                 | Lint thresholds (msrv 1.95) |
-| `rustfmt.toml`                | Nightly rustfmt config |
+| `rustfmt.toml`                | rustfmt config (stable-only, runs on pinned toolchain) |
 | `rust-toolchain.toml`         | Pinned toolchain |
 | `lefthook.yml`                | Local pre-commit / pre-push (mirrors CI) |
 | `Taskfile.yml`                | `task dev:check` = full pre-PR gate; `task --list` for catalog |

@@ -55,7 +55,7 @@ the same branch naming and Conventional Commit rules.
 
 DO NOT comment on:
 
-- **Style / formatting** — rustfmt + nightly handles this. Never suggest reformatting.
+- **Style / formatting** — rustfmt handles this. Never suggest reformatting.
 - **Naming preferences** — no "consider renaming X to Y" unless name is actively misleading.
 - **Generic suggestions** — no "consider adding logging", "consider error handling", "consider tests" without naming a specific case.
 - **Missing comments on private code** — internal fns don't need doc comments.

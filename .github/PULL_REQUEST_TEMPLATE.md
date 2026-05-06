@@ -51,7 +51,7 @@ PR title must follow Conventional Commits (enforced by .github/workflows/pr-vali
 
 ### Local verification
 
-- [ ] `cargo +nightly fmt --all` — formatted
+- [ ] `cargo fmt --all` — formatted
 - [ ] `cargo clippy --workspace -- -D warnings` — clean
 - [ ] `cargo nextest run --workspace` — passes
 - [ ] `cargo test --workspace --doc` — doctests pass (if public docs touched)

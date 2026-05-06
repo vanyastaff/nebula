@@ -4,9 +4,9 @@
 # without an explicit override to the workspace's declared `rust-version`.
 #
 # Notes:
-# - `cargo +nightly fmt --all` still works: rustup installs nightly on demand
-#   when the `+toolchain` override is used. Nightly rustfmt is required by
-#   `rustfmt.toml` (`unstable_features = true`).
+# - `rustfmt.toml` is stable-only, so `cargo fmt` runs on the pinned toolchain
+#   without warnings. Nightly is still used ad-hoc for tools that require it
+#   (cargo-udeps, loom chaos jobs) via `cargo +nightly <cmd>`.
 # - `rust-src` and `rust-analyzer` are included so IDE / std-expansion features
 #   work out of the box after `rustup show active-toolchain` in a fresh clone.
 # - Legacy `rust-toolchain` (without the `.toml` extension) is still accepted
