@@ -21,22 +21,30 @@ use crate::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, NEBULA_CACHE_EVICTIONS,
     NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL,
-    NEBULA_CREDENTIAL_EXPIRED_TOTAL, NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS,
-    NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL, NEBULA_CREDENTIAL_ROTATIONS_TOTAL,
-    NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
-    NEBULA_EVENTBUS_DROP_RATIO_PPM, NEBULA_EVENTBUS_DROPPED, NEBULA_EVENTBUS_SENT,
-    NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
+    NEBULA_CREDENTIAL_EXPIRED_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
+    NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+    NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
+    NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
+    NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL,
+    NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, NEBULA_EVENTBUS_DROP_RATIO_PPM, NEBULA_EVENTBUS_DROPPED,
+    NEBULA_EVENTBUS_SENT, NEBULA_EVENTBUS_SUBSCRIBERS, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
+    NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL, NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL,
     NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
     NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
-    NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS, NEBULA_RESOURCE_DESTROY_TOTAL,
+    NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
+    NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
     NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
     NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
-    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
+    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
 
 /// Prometheus exposition format version (text-based).
@@ -74,12 +82,41 @@ fn counter_help(name: &str) -> &'static str {
         },
         NEBULA_RESOURCE_DESTROY_TOTAL => "Total resource instances destroyed.",
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL => "Total resource acquire errors.",
+        NEBULA_RESOURCE_CIRCUIT_BREAKER_OPENED_TOTAL => {
+            "Total circuit-breaker open transitions per resource pool."
+        },
+        NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL => {
+            "Total circuit-breaker close (recovery) transitions per resource pool."
+        },
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL => {
+            "Total per-resource credential rotation dispatches skipped \
+             (resource not yet bound)."
+        },
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL => "Total credential rotation attempts.",
         NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL => "Total credential rotation failures.",
         NEBULA_CREDENTIAL_EXPIRED_TOTAL => "Total credentials expired.",
+        NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL => {
+            "Total refresh-coordinator claim attempts (labeled by outcome)."
+        },
+        NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL => {
+            "Total refresh-coordinator callers coalesced onto an in-flight refresh \
+             (labeled by tier)."
+        },
+        NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL => {
+            "Total refresh-coordinator sentinel sweep events (labeled by action)."
+        },
+        NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL => {
+            "Total refresh-coordinator reclaim sweeps (labeled by outcome)."
+        },
+        NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL => {
+            "Total resolver reauth-required persist attempts that exhausted CAS retries."
+        },
         NEBULA_ENGINE_LEASE_CONTENTION_TOTAL => "Total engine execution-lease contention events.",
         NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL => {
             "Total control-queue reclaim sweep outcomes (ADR-0017)."
+        },
+        NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL => {
+            "Total webhook HMAC signature failures (labeled by reason)."
         },
         _ => "Custom counter.",
     }
@@ -116,6 +153,9 @@ fn histogram_help(name: &str) -> &'static str {
             "Per-resource credential rotation dispatch latency in seconds (labeled by outcome)."
         },
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS => "Credential rotation duration in seconds.",
+        NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS => {
+            "Refresh-coordinator hold duration in seconds (heartbeats + user closure)."
+        },
         _ => "Custom histogram.",
     }
 }
@@ -146,21 +186,34 @@ fn render_labels(labels: &crate::labels::LabelSet, interner: &LabelInterner) -> 
     if labels.is_empty() {
         return String::new();
     }
+    // Resolve and sort by sanitized key for deterministic, cross-scrape-stable
+    // output. Spur insertion order varies between processes / restarts, so
+    // iterating `labels.iter()` directly would yield different orderings for
+    // the same logical label set on different process generations and break
+    // golden tests / older parsers that expect alphabetical key order.
+    let mut resolved: Vec<(String, String, String)> = labels
+        .iter()
+        .map(|(k, v)| {
+            let raw_k = interner.resolve(k).to_owned();
+            let sanitized_k = sanitize_label_key(&raw_k);
+            let v_str = interner.resolve(v).to_owned();
+            (sanitized_k, raw_k, v_str)
+        })
+        .collect();
+    resolved.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
     let mut used_keys = HashSet::<String>::new();
     let mut out = String::from("{");
-    for (i, (k, v)) in labels.iter().enumerate() {
+    for (i, (sanitized_k, raw_k, v_str)) in resolved.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        let raw_k = interner.resolve(k);
-        let v_str = interner.resolve(v);
-        // Sanitize then ensure uniqueness: distinct raw keys can map to the same
-        // identifier (e.g. "a-b" and "a b" → "a_b"), which would break Prometheus text format.
-        let base = sanitize_label_key(raw_k);
-        let mut key_out = base.clone();
+        // Ensure uniqueness: distinct raw keys can map to the same identifier
+        // (e.g. "a-b" and "a b" → "a_b"), which would break Prometheus text format.
+        let mut key_out = sanitized_k.clone();
         if !used_keys.insert(key_out.clone()) {
             let h = hash_raw(raw_k);
-            key_out = format!("{base}__{h:016x}");
+            key_out = format!("{sanitized_k}__{h:016x}");
             while !used_keys.insert(key_out.clone()) {
                 key_out.push('_');
             }
@@ -650,17 +703,26 @@ mod tests {
             .inc();
 
         let out = snapshot(&registry);
+        // Both raw keys ("a-b", "a b") sanitize to "a_b". One renders bare,
+        // the other gets a stable hash suffix `a_b__<hash>`. Output ordering is
+        // sorted by sanitized key, with raw-key tiebreak, so the assignment of
+        // bare vs suffixed is deterministic-but-implementation-dependent —
+        // assert the semantic property: distinct keys, both values present.
         assert!(
-            out.contains(r#"a_b="dash""#),
-            "first label key should use the sanitized base name:\n{out}"
+            out.contains(r#""dash""#) && out.contains(r#""space""#),
+            "both values must be present:\n{out}"
         );
         assert!(
-            out.contains("__") && out.contains(r"a_b__"),
-            "second colliding key should be suffixed with a stable hash:\n{out}"
+            out.contains("a_b__"),
+            "one of the colliding keys must carry a stable hash suffix:\n{out}"
         );
-        assert!(
-            out.contains(r"a_b__") && out.contains(r#"="space""#),
-            "both values should be present with distinct keys:\n{out}"
+        // Exactly one bare `a_b="…"` (without `__`) and exactly one `a_b__<hash>="…"`.
+        let bare_count = out.matches(r#"a_b=""#).count();
+        let suffixed_count = out.matches("a_b__").count();
+        assert_eq!(bare_count, 1, "expected exactly one bare a_b=\":\n{out}");
+        assert_eq!(
+            suffixed_count, 1,
+            "expected exactly one a_b__ suffixed key:\n{out}"
         );
     }
 

@@ -185,6 +185,11 @@ impl Histogram {
     /// Non-finite values (`NaN`, `±∞`) are silently dropped. NaN would
     /// otherwise permanently poison `sum_bits` via the atomic update
     /// (`x + NaN = NaN`), breaking every subsequent `sum()` / percentile.
+    ///
+    /// Note: a non-finite early-return does **not** bump `last_updated_ms`
+    /// (no value was recorded). A histogram fed only non-finite samples
+    /// therefore looks idle to
+    /// [`crate::registry::MetricsRegistry::retain_recent`] and may be evicted.
     pub fn observe(&self, value: f64) {
         if !value.is_finite() {
             return;
