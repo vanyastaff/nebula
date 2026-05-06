@@ -36,7 +36,7 @@ Run via `task <name>`. See `task --list` for the full catalog.
 | `task clippy`            | Workspace clippy with `-D warnings` |
 | `task quality`           | Quick mechanical gate (fmt:check + clippy) |
 | `task deny`              | `cargo-deny`: layer wrappers + advisories + licenses |
-| `task test`              | All workspace tests (cargo test) |
+| `task test`              | All workspace tests (`cargo test`; nextest is in `dev:check`) |
 | `task doc` / `doc:open`  | Build (and open) workspace docs |
 | `task ci`                | Full CI pipeline locally |
 
@@ -46,8 +46,9 @@ Run via `task <name>`. See `task --list` for the full catalog.
 |----------------------------------------|---------|
 | `cargo check -p <crate>`               | Fastest feedback for one crate |
 | `cargo build -p <crate>`               | Build one crate |
-| `task test:crate CRATE=<name>`         | Tests for one crate (e.g. `CRATE=nebula-action`) |
+| `task test:crate CRATE=<name>`         | Tests for one crate via `cargo test -p` (e.g. `CRATE=nebula-action`) |
 | `task test:crate:features CRATE=<n>`   | Same, with `--all-features` |
+| `cargo nextest run -p <crate>`         | Per-crate run with the workspace's nextest config |
 | `cargo nextest run -p <crate> <test>`  | Single test by name |
 | `cargo test -p <crate> --doc`          | Doctests for one crate |
 | `cargo doc -p <crate> --open`          | Build/open one crate's rustdoc |
@@ -76,7 +77,7 @@ nebula/
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # nightly rustfmt config
 ├── clippy.toml         # lint thresholds (msrv 1.95)
-├── crates/             # 35+ workspace members
+├── crates/             # 34 workspace members (incl. 8 derive companions)
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
 ├── .claude/            # Claude Code skills + subagents
@@ -100,6 +101,11 @@ any level.
 | Business     | `credential`, `credential-builtin`, `resource`, `action`, `plugin` |
 | Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata` |
 | Cross-cutting| `log`, `system`, `eventbus`, `telemetry`, `metrics`, `resilience`, `error` |
+
+Each `+macros` companion (`action/macros`, `credential/macros`, `error/macros`,
+`plugin/macros`, `resource/macros`, `schema/macros`, `validator/macros`,
+`sdk/macros-support`) lives at the same layer as its parent and ships derives
+only — omitted from the table for brevity.
 
 Cross-crate communication goes through `nebula-eventbus`, **not** direct imports
 between siblings at the same layer.
