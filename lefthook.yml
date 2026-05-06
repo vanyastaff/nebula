@@ -46,7 +46,6 @@ pre-push:
     crate-diff-gate:
       run: bash scripts/pre-push-crate-diff.sh
 
-    # Doctests/docs/MSRV remain CI-owned checks.
-# Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
-
-# Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
+# Doctests / docs / MSRV remain CI-owned checks.
+# `cargo udeps` is NOT in pre-push — requires nightly and is slow; kept in
+# the weekly CI workflow instead.
