@@ -176,7 +176,7 @@ Future Execution View features can build on these types to support:
 2. Step-level input/output inspection
 3. Search and filtering over journal/event data
 4. Replay with same trigger/input
-5. OpenTelemetry span integration (via `nebula-telemetry`)
+5. OpenTelemetry span integration (via `nebula-log`'s `telemetry` feature)
 
 ---
 
