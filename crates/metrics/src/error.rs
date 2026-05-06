@@ -1,7 +1,7 @@
 //! Error types for the metrics subsystem.
 
 /// Primitive metric kind stored in a
-/// [`nebula_metrics::MetricsRegistry`].
+/// [`crate::registry::MetricsRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
     /// Monotonic counter.

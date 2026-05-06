@@ -115,7 +115,7 @@ impl LabelSet {
 /// interned it remains resident for the lifetime of the `LabelInterner`
 /// (and all its `Arc` clones), even if every `LabelSet` referencing it has
 /// been dropped. This means that metric eviction via
-/// [`crate::metrics::MetricsRegistry::retain_recent`] may rebuild the registry
+/// [`crate::registry::MetricsRegistry::retain_recent`] may rebuild the registry
 /// interner from active series, which drops unreachable historical strings at
 /// the registry level.
 ///

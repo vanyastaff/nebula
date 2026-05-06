@@ -65,7 +65,7 @@ impl Counter {
     /// Increment by a given amount.
     ///
     /// `inc_by(0)` does not change the stored value or
-    /// [`Self::last_updated_ms`] (see [`nebula_metrics::MetricsRegistry::retain_recent`]).
+    /// [`Self::last_updated_ms`] (see [`MetricsRegistry::retain_recent`]).
     pub fn inc_by(&self, n: u64) {
         if n == 0 {
             return;
