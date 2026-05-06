@@ -102,7 +102,7 @@ new_worktree() {
   git rev-parse --verify --quiet "${base}^{commit}" >/dev/null \
     || die "base ref not found: $base"
 
-  git worktree add "$path" -b "$branch" "$base"
+  git worktree add -b "$branch" "$path" "$base"
 
   echo "Created worktree:"
   echo "  path:   $path"
