@@ -122,15 +122,36 @@ primary_worktree_root() {
     | sed 's#\\#/#g'
 }
 
+find_worktree_path() {
+  local suffix="$1"
+
+  git worktree list --porcelain \
+    | sed -n 's/^worktree //p' \
+    | sed 's#\\#/#g' \
+    | awk -v suffix="/$suffix" 'substr($0, length($0) - length(suffix) + 1) == suffix { print; exit }'
+}
+
 ensure_clean_checkout() {
   local path="$1"
   local label="$2"
+  local status
 
-  if ! git -C "$path" diff --quiet --exit-code; then
-    die "$label has unstaged changes: $path"
+  status="$(git -C "$path" status --porcelain --untracked-files=all)"
+  if [[ -n "$status" ]]; then
+    echo "$status" >&2
+    die "$label has uncommitted or untracked files: $path"
   fi
-  if ! git -C "$path" diff --cached --quiet --exit-code; then
-    die "$label has staged changes: $path"
+}
+
+main_remote() {
+  local main_branch="$1"
+  local remote
+
+  remote="$(git config --get "branch.${main_branch}.remote" || true)"
+  if [[ -n "$remote" ]]; then
+    printf '%s\n' "$remote"
+  elif git remote get-url origin >/dev/null 2>&1; then
+    printf '%s\n' origin
   fi
 }
 
@@ -176,17 +197,16 @@ finish_worktree() {
     exit 2
   }
 
-  local name primary path current_branch
+  local name primary path current_branch remote
   name="$(slugify "$name_raw")"
   ensure_clean_name "name" "$name"
 
   primary="$(primary_worktree_root)"
   [[ -n "$primary" ]] || die "could not determine primary worktree"
 
-  path="${primary}/${WORKTREE_DIR}/${name}"
+  path="$(find_worktree_path "${WORKTREE_DIR}/${name}")"
   [[ -d "$path" ]] || die "worktree path does not exist: $path"
 
-  ensure_clean_checkout "$primary" "primary worktree"
   ensure_clean_checkout "$path" "target worktree"
 
   if [[ -z "$branch" ]]; then
@@ -196,13 +216,21 @@ finish_worktree() {
 
   cd "$primary"
 
+  ensure_clean_checkout "$primary" "primary worktree"
+
   current_branch="$(git -C "$primary" branch --show-current)"
   if [[ "$current_branch" != "$main_branch" ]]; then
     git -C "$primary" switch "$main_branch"
   fi
 
-  git -C "$primary" fetch origin "$main_branch"
-  git -C "$primary" pull --ff-only origin "$main_branch"
+  remote="$(main_remote "$main_branch")"
+  if [[ -n "$remote" ]]; then
+    git -C "$primary" fetch "$remote" "$main_branch"
+    git -C "$primary" pull --ff-only "$remote" "$main_branch"
+  else
+    echo "nebula-worktree: no remote configured for $main_branch; skipping fetch/pull" >&2
+  fi
+
   git -C "$primary" worktree remove "$path"
   git -C "$primary" worktree prune
 
@@ -214,6 +242,7 @@ finish_worktree() {
   echo "  removed: $path"
   echo "  branch:  $branch"
   echo "  main:    $main_branch"
+  [[ -z "$remote" ]] || echo "  remote:  $remote"
 }
 
 commit_staged() {
