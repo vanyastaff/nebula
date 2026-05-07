@@ -28,6 +28,9 @@ use nebula_action::{
     webhook::factory::WebhookActivationSpec as ActionWebhookActivationSpec,
 };
 use nebula_engine::ActionRegistry;
+use nebula_metrics::{
+    MetricsRegistry, NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL, webhook_bootstrap_failure_reason,
+};
 use nebula_storage::{
     StorageError,
     repos::WebhookActivationRepo,
@@ -156,6 +159,10 @@ pub enum BootstrapError {
 /// failures (factory rejection, secret resolution miss, duplicate)
 /// are logged and counted in `report.skipped`.
 ///
+/// `metrics` (when `Some`) bumps
+/// [`nebula_metrics::NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL`] per
+/// skipped row, labeled by reason.
+///
 /// # Errors
 ///
 /// Returns [`BootstrapError::Storage`] only when the underlying
@@ -166,10 +173,13 @@ pub async fn bootstrap_webhook_activations(
     transport: &WebhookTransport,
     secrets: &dyn WebhookSecretResolver,
     ctx_factory: &dyn WebhookContextFactory,
+    metrics: Option<&MetricsRegistry>,
 ) -> Result<BootstrapReport, BootstrapError> {
     tracing::debug!(target: "nebula::api::webhook::bootstrap", "loading active webhook activations");
 
-    let records = repo.list_active().await?;
+    let records = repo.list_active().await.inspect_err(|_| {
+        record_bootstrap_failure(metrics, webhook_bootstrap_failure_reason::STORAGE);
+    })?;
     let total = records.len();
     let mut report = BootstrapReport::default();
 
@@ -178,6 +188,7 @@ pub async fn bootstrap_webhook_activations(
             Ok(()) => report.loaded += 1,
             Err(err) => {
                 report.skipped += 1;
+                record_bootstrap_failure(metrics, bootstrap_failure_reason(&err));
                 tracing::warn!(
                     target: "nebula::api::webhook::bootstrap",
                     error = %err,
@@ -386,6 +397,25 @@ const fn inferred_timestamp_header(
     None
 }
 
+fn bootstrap_failure_reason(err: &BootstrapError) -> &'static str {
+    match err {
+        BootstrapError::Storage(_) => webhook_bootstrap_failure_reason::STORAGE,
+        BootstrapError::SecretResolution { .. } => webhook_bootstrap_failure_reason::FACTORY,
+        BootstrapError::UnknownProvider(_) | BootstrapError::Factory { .. } => {
+            webhook_bootstrap_failure_reason::FACTORY
+        },
+        BootstrapError::DuplicateRegistration { .. } => webhook_bootstrap_failure_reason::FACTORY,
+    }
+}
+
+fn record_bootstrap_failure(metrics: Option<&MetricsRegistry>, reason: &'static str) {
+    let Some(reg) = metrics else { return };
+    let labels = reg.interner().single("reason", reason);
+    if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL, &labels) {
+        c.inc();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +505,7 @@ mod tests {
             &transport(),
             &secrets(&[]),
             &StubCtxFactory,
+            None,
         )
         .await
         .unwrap();
@@ -496,6 +527,7 @@ mod tests {
             &transport(),
             &secrets(&[("cred_x", b"super-secret-key")]),
             &StubCtxFactory,
+            None,
         )
         .await
         .unwrap();
@@ -517,6 +549,7 @@ mod tests {
             &transport(),
             &secrets(&[("cred_x", b"k")]),
             &StubCtxFactory,
+            None,
         )
         .await
         .unwrap();
@@ -538,6 +571,7 @@ mod tests {
             &transport(),
             &secrets(&[]),
             &StubCtxFactory,
+            None,
         )
         .await
         .unwrap();
@@ -569,6 +603,7 @@ mod tests {
             &transport(),
             &secrets(&[]),
             &StubCtxFactory,
+            None,
         )
         .await
         .expect_err("must surface storage error");

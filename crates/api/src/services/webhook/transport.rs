@@ -36,7 +36,11 @@ use nebula_action::{
     WebhookHttpResponse, WebhookRequest,
 };
 use nebula_metrics::MetricsRegistry;
-use nebula_metrics::{NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason};
+use nebula_metrics::{
+    NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL,
+    NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_key_kind, webhook_replay_rejection_reason,
+    webhook_signature_failure_reason,
+};
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use url::Url;
@@ -476,6 +480,7 @@ async fn dispatch_inner(
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
             debug!(path = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
+            record_rate_limit_rejection(&transport, &key);
             let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
             if let Ok(v) = e.retry_after_secs.to_string().parse() {
                 resp.headers_mut().insert("retry-after", v);
@@ -667,6 +672,42 @@ fn record_signature_failure(transport: &WebhookTransport, reason: &'static str) 
         if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &labels) {
             c.inc();
         }
+        // Replay-window failures double-bump the dedicated replay
+        // counter so dashboards can isolate them from generic
+        // signature mismatches without scraping the `reason` label.
+        if reason == webhook_signature_failure_reason::TIMESTAMP_OUT_OF_WINDOW {
+            let labels = reg.interner().single(
+                "reason",
+                webhook_replay_rejection_reason::TIMESTAMP_OUT_OF_WINDOW,
+            );
+            if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL, &labels) {
+                c.inc();
+            }
+        }
+    }
+}
+
+/// Record a per-key rate-limit rejection. Labelset:
+/// `(tenant_id, webhook_key_kind)`.
+fn record_rate_limit_rejection(transport: &WebhookTransport, key: &WebhookKey) {
+    let Some(reg) = &transport.inner.metrics else {
+        return;
+    };
+    let interner = reg.interner();
+    let kind = match key {
+        WebhookKey::Programmatic { .. } => webhook_key_kind::PROGRAMMATIC,
+        WebhookKey::Slug(_) => webhook_key_kind::SLUG,
+    };
+    let tenant_id = match key {
+        WebhookKey::Programmatic { .. } => "programmatic".to_owned(),
+        WebhookKey::Slug(coords) => format!("{}/{}", coords.org, coords.workspace),
+    };
+    let labels = interner.label_set(&[
+        ("webhook_key_kind", kind),
+        ("tenant_id", tenant_id.as_str()),
+    ]);
+    if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL, &labels) {
+        c.inc();
     }
 }
 
