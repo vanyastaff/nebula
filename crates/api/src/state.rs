@@ -3,10 +3,7 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, scope::Principal};
@@ -20,7 +17,6 @@ use nebula_storage::{
     repos::ControlQueueRepo,
 };
 use tokio::sync::RwLock;
-use utoipa::openapi::OpenApi;
 
 use crate::{
     auth::AuthBackend, config::JwtSecret, errors::ApiError, services::webhook::WebhookTransport,
@@ -135,15 +131,6 @@ pub struct AppState {
 
     /// Optional membership store for RBAC role lookups.
     pub membership_store: Option<Arc<dyn MembershipStore>>,
-
-    /// Materialized OpenAPI 3.1 specification for `GET /api/v1/openapi.json`.
-    ///
-    /// Populated once by [`crate::build_app`] after `OpenApiRouter::split_for_parts()`
-    /// returns the merged document. Reader code (`handlers::openapi::openapi_spec`,
-    /// `crate::routes::openapi`'s Swagger UI mount) extracts the value via
-    /// [`OnceLock::get`]. Wrapped in `Arc<OnceLock>` so every cloned `AppState`
-    /// observes the same write without forcing a second `OpenApiRouter` build.
-    pub openapi_doc: Arc<OnceLock<OpenApi>>,
 }
 
 impl AppState {
@@ -175,7 +162,6 @@ impl AppState {
             workspace_resolver: None,
             auth_backend: None,
             membership_store: None,
-            openapi_doc: Arc::new(OnceLock::new()),
         }
     }
 
@@ -248,15 +234,5 @@ impl AppState {
     pub fn with_membership_store(mut self, store: Arc<dyn MembershipStore>) -> Self {
         self.membership_store = Some(store);
         self
-    }
-
-    /// Install the materialized OpenAPI 3.1 document.
-    ///
-    /// Called once from [`crate::build_app`] after the OpenApi router has
-    /// been split into the served `axum::Router` plus the merged document.
-    /// Subsequent calls are silent no-ops (`OnceLock::set` returns the
-    /// rejected value, which is dropped).
-    pub fn install_openapi_doc(&self, spec: OpenApi) {
-        let _ = self.openapi_doc.set(spec);
     }
 }

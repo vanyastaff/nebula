@@ -165,8 +165,14 @@ async fn security_schemes_match_adr_0047() {
 }
 
 /// Smoke check that key public paths are present in the spec — drift
-/// detection for the 11 most load-bearing endpoints. If a handler is
+/// detection for the most load-bearing endpoints. If a handler is
 /// removed/renamed without updating the route module, this fails fast.
+///
+/// `/api/v1/openapi.json` and `/api/v1/docs/` are intentionally **not**
+/// in the list: they are served by `utoipa_swagger_ui::SwaggerUi` as a
+/// Tower service (no `#[utoipa::path]` annotation), so they will not
+/// appear in `paths`. Their reachability is exercised by
+/// [`swagger_ui_endpoints_are_reachable`] below.
 #[tokio::test]
 async fn drift_smoke_known_paths_are_present() {
     let spec = fetch_spec_json().await;
@@ -180,8 +186,6 @@ async fn drift_smoke_known_paths_are_present() {
         "/health",
         "/ready",
         "/version",
-        "/api/v1/openapi.json",
-        "/api/v1/docs",
         // Auth
         "/api/v1/auth/signup",
         "/api/v1/auth/login",
@@ -205,6 +209,56 @@ async fn drift_smoke_known_paths_are_present() {
              registration changed without updating this list."
         );
     }
+}
+
+/// Probe the two SwaggerUi-served endpoints — `/api/v1/openapi.json`
+/// (spec JSON) and `/api/v1/docs/` (Swagger UI HTML) — for HTTP
+/// reachability. Spec-self-doesn't-document-itself is acceptable per
+/// [`drift_smoke_known_paths_are_present`]; this test prevents the
+/// SwaggerUi mount from silently regressing.
+#[tokio::test]
+async fn swagger_ui_endpoints_are_reachable() {
+    let (state, _queue) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let app = build_app(state, &config);
+
+    // 1. Spec JSON
+    let spec_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("openapi.json must respond");
+    assert_eq!(
+        spec_response.status(),
+        200,
+        "/api/v1/openapi.json must return 200 from the SwaggerUi tower service"
+    );
+
+    // 2. Swagger UI HTML page (with trailing slash — SwaggerUi serves
+    //    the index there; the bare `/api/v1/docs` may issue a 301/308
+    //    redirect to the trailing-slash form).
+    let docs_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/docs/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("docs page must respond");
+    assert!(
+        docs_response.status().is_success(),
+        "/api/v1/docs/ must return a 2xx status from the SwaggerUi tower service; got {}",
+        docs_response.status()
+    );
 }
 
 #[tokio::test]

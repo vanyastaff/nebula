@@ -231,29 +231,6 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:STORAGE_FULL")]
     #[error("Storage full")]
     StorageFull,
-
-    /// Cached OpenAPI document was requested before
-    /// [`crate::AppState::install_openapi_doc`] populated it.
-    ///
-    /// Should never reach production — `build_app` installs the spec
-    /// synchronously before serving traffic. Surfaced as a 503 so the
-    /// caller can retry rather than treating it as a permanent failure.
-    #[classify(category = "internal", code = "API:OPENAPI_SPEC_UNAVAILABLE")]
-    #[error("OpenAPI specification not yet materialized")]
-    OpenApiSpecUnavailable,
-
-    /// Serializing the cached `utoipa::openapi::OpenApi` to JSON failed.
-    ///
-    /// The materialized spec round-trips through `serde_json` for clients;
-    /// a failure here is internal — the spec must be representable in JSON
-    /// for OpenAPI 3.1 compliance.
-    #[classify(category = "internal", code = "API:OPENAPI_SERIALIZE")]
-    #[error("Failed to serialize OpenAPI specification: {source}")]
-    OpenApiSerialize {
-        /// Underlying serde_json error.
-        #[source]
-        source: serde_json::Error,
-    },
 }
 
 /// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
@@ -627,26 +604,6 @@ impl ApiError {
                     StatusCode::INSUFFICIENT_STORAGE,
                 ),
             ),
-            ApiError::OpenApiSpecUnavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/openapi-spec-unavailable",
-                    "OpenAPI Specification Unavailable",
-                    StatusCode::SERVICE_UNAVAILABLE,
-                )
-                .with_detail("OpenAPI specification has not been materialized yet"),
-            ),
-            ApiError::OpenApiSerialize { source } => {
-                tracing::error!(error = %source, "openapi: spec serialization failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "about:blank",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
-            },
         }
     }
 }

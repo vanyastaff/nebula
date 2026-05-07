@@ -21,7 +21,6 @@ pub mod catalog;
 pub mod health;
 pub mod me;
 pub mod metrics;
-pub mod openapi;
 pub mod org;
 pub mod webhook;
 pub mod workspace;
@@ -46,8 +45,9 @@ use crate::{
 ///
 /// The returned `Router` is bound to `AppState` and ready to compose with
 /// the rest of the middleware stack in [`crate::build_app`]. The returned
-/// `OpenApi` is the merged spec for `GET /api/v1/openapi.json` (cached on
-/// `AppState` via [`AppState::install_openapi_doc`]).
+/// `OpenApi` is handed to `utoipa_swagger_ui::SwaggerUi` in `build_app`,
+/// which serves both `/api/v1/openapi.json` (spec JSON) and
+/// `/api/v1/docs/` (self-hosted Swagger UI HTML) as a Tower service.
 pub fn create_routes(state: AppState, _config: &ApiConfig) -> (Router, OpenApi) {
     let api_router = build_openapi_router(&state);
     let (router, openapi) = api_router.split_for_parts();
@@ -60,9 +60,6 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
 
     // Auth routes — no auth middleware, no tenant scope.
     let auth_routes = auth::router();
-
-    // OpenAPI docs — no auth.
-    let docs_routes = openapi::router();
 
     // Webhook routes — special: no standard auth, separate per-trigger
     // authentication enforced inside the dispatcher.
@@ -106,10 +103,14 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
         auth_middleware,
     ));
 
-    // Compose `/api/v1` group.
+    // Compose `/api/v1` group. The OpenAPI spec endpoint
+    // (`/api/v1/openapi.json`) and the Swagger UI (`/api/v1/docs/`) are
+    // mounted by `utoipa_swagger_ui::SwaggerUi` in `app::build_app`
+    // *after* `split_for_parts()` materialises the merged spec — those
+    // routes therefore do not appear in `paths` (they serve the spec
+    // itself, not application content).
     let api_v1 = OpenApiRouter::new()
         .merge(auth_routes)
-        .merge(docs_routes)
         .merge(webhook_routes)
         .merge(me_routes)
         .merge(catalog_routes)

@@ -139,10 +139,10 @@ specification (ADR-0047). The document is regenerated on every startup
 from the same source as the served `axum::Router`, so the published
 contract and the runtime cannot drift apart.
 
-| Endpoint                | Purpose |
-|-------------------------|---------|
+| Endpoint                  | Purpose |
+|---------------------------|---------|
 | `GET /api/v1/openapi.json` | OpenAPI 3.1 specification document — fetched by client generators (openapi-generator-cli, oapi-codegen, …). Unauthenticated. |
-| `GET /api/v1/docs`         | Swagger UI rendering of the served spec; static UI assets are loaded from `swagger-ui-dist@5` via unpkg. Unauthenticated. |
+| `GET /api/v1/docs/`        | Swagger UI rendering of the served spec. Unauthenticated. **Self-hosted** via `utoipa_swagger_ui::SwaggerUi` — every static asset (HTML, CSS, JS) ships embedded in the server binary; no third-party CDN is reached at request time. |
 
 ### Drift-detection guarantee
 
@@ -181,12 +181,14 @@ silently-shipped endpoint cannot pass review.
 ### Regeneration
 
 The spec is materialised inside `build_app` via
-`OpenApiRouter::split_for_parts()` and cached on `AppState::openapi_doc`
-(`Arc<OnceLock<OpenApi>>`). To regenerate locally, run any test that
-calls `nebula_api::build_app` — for example
-`cargo nextest run -p nebula-api --test openapi_spec`. The served JSON
-also writes a stable `tracing::info!(spec.version=%, paths=N, "openapi:
-spec compiled")` line at startup; pin against this in production logs.
+`OpenApiRouter::split_for_parts()` and handed straight to
+`utoipa_swagger_ui::SwaggerUi`, which serves both `/api/v1/openapi.json`
+and `/api/v1/docs/` as a Tower service merged into the application
+router. `build_app` writes a stable
+`tracing::info!(spec.version=%, paths=N, "openapi: spec compiled")`
+line at startup so production logs can pin against it. To regenerate
+locally, run any test that calls `nebula_api::build_app` — for example
+`cargo nextest run -p nebula-api --test openapi_spec`.
 
 ### Cross-layer schema strategy
 

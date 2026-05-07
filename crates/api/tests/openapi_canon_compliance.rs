@@ -14,7 +14,10 @@
 
 mod common;
 
-use axum::{body::Body, http::Request};
+use axum::{
+    body::Body,
+    http::{Request, header::CONTENT_TYPE},
+};
 use nebula_api::{ApiConfig, build_app};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -143,6 +146,28 @@ async fn stub_endpoints_return_500_or_501_at_runtime() {
              or 501 (post-conversion target); got {status}. Either the stub got accidentally \
              implemented (drop the #[deprecated] + 501 response declaration) or auth/tenancy \
              middleware rejected the request — verify the test harness wires both."
+        );
+
+        // Defense-in-depth: an `ApiError::Internal`/`NotImplemented`
+        // response goes through `IntoResponse for ApiError` which sets
+        // `Content-Type: application/problem+json` per RFC 9457. Any
+        // 500/501 emitted by middleware (auth/tenancy) instead of the
+        // stub handler would carry a different content-type — this
+        // assertion confirms the request actually reached the handler
+        // and the canon §4.5 honesty contract was exercised end-to-end.
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("application/problem+json"),
+            "Stub endpoint {method} {path} returned status {status} but \
+             Content-Type was `{content_type}` — expected \
+             `application/problem+json` (RFC 9457). A non-problem+json \
+             response means the request was short-circuited by middleware \
+             (auth/tenancy), so this test is not actually probing the \
+             handler. Verify the test harness reaches the stub body."
         );
     }
 }

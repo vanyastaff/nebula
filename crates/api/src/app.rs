@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::{Router, extract::DefaultBodyLimit, middleware, response::Response};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     config::ApiConfig,
@@ -25,12 +26,6 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // time — drift detection is structural rather than review-time.
     let (api_routes, openapi_spec) = routes::create_routes(state.clone(), config);
 
-    // Cache the spec on the shared `AppState` so the
-    // `GET /api/v1/openapi.json` handler (T6) can serve it without
-    // re-deriving on every request. `Arc<OnceLock>` semantics mean every
-    // cloned state already in flight observes this write.
-    state.install_openapi_doc(openapi_spec.clone());
-
     let path_count = openapi_spec.paths.paths.len();
     // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
     // round-trips it to the canonical version string. ADR-0047 pins the
@@ -44,6 +39,15 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         paths = path_count,
         "openapi: spec compiled"
     );
+
+    // Self-hosted Swagger UI — `utoipa_swagger_ui` ships every static
+    // asset (HTML, CSS, JS) embedded in the binary, so `/api/v1/docs/`
+    // never reaches a third-party CDN. Spec is served back to the UI
+    // from `/api/v1/openapi.json`. The `Router::from(SwaggerUi)` impl
+    // is provided by the `axum` feature on `utoipa-swagger-ui`.
+    let api_routes = api_routes.merge(Router::<()>::from(
+        SwaggerUi::new("/api/v1/docs").url("/api/v1/openapi.json", openapi_spec),
+    ));
 
     // Apply the REST body-limit layer BEFORE merging the webhook
     // router. The webhook transport already attaches its own
