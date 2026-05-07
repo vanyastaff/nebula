@@ -110,6 +110,72 @@ pub mod dispatch_reject_reason {
 }
 
 // ---------------------------------------------------------------------------
+// API: idempotency middleware (M3.4 — ADR-0048)
+// ---------------------------------------------------------------------------
+
+/// Counter: idempotent-replay cache hits.
+///
+/// Incremented when the middleware finds a cached `CachedResponse` for the
+/// scoped cache key and serves it without invoking the inner handler. A hit
+/// always implies the body fingerprint matched (body-mismatch goes to
+/// [`NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL`] under
+/// `reason="body_mismatch"`). Unlabeled to keep cardinality low — per-route
+/// dimensions live on the existing `tracing::Span` fields.
+pub const NEBULA_API_IDEMPOTENCY_HITS_TOTAL: &str = "nebula_api_idempotency_hits_total";
+
+/// Counter: idempotency cache misses.
+///
+/// Incremented on the first POST with a given key — the inner handler runs
+/// and the response is stored. A miss is the steady-state path; a sustained
+/// `hits / (hits + misses)` ratio < 1 % means clients are not actually
+/// retrying so the layer is doing no work for them. Unlabeled.
+pub const NEBULA_API_IDEMPOTENCY_MISSES_TOTAL: &str = "nebula_api_idempotency_misses_total";
+
+/// Counter: requests rejected before reaching the inner handler.
+///
+/// Labeled by `reason` (see [`idempotency_reject_reason`]). Closed label set
+/// — adding a value permanently inflates the cardinality floor. Aggregated
+/// counter, no per-route dimension.
+pub const NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL: &str = "nebula_api_idempotency_rejects_total";
+
+/// Reject-reason labels for [`NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL`].
+///
+/// Static strings — call sites and tests compare without stringifying twice.
+/// Adding a label permanently inflates the cardinality floor and requires
+/// an ADR amendment (ADR-0048).
+pub mod idempotency_reject_reason {
+    /// Header validation failed — empty / too long / non-printable ASCII.
+    pub const INVALID_KEY: &str = "invalid_key";
+    /// Same key with a different body fingerprint (draft §2.5 → 422).
+    pub const BODY_MISMATCH: &str = "body_mismatch";
+    /// Request body exceeded `max_request_body_bytes` so the layer cannot
+    /// commit to caching the response — passes through but counts here.
+    pub const BODY_TOO_LARGE: &str = "body_too_large";
+    /// `Idempotency-Key` header bytes were not valid ASCII.
+    pub const NON_ASCII_HEADER: &str = "non_ascii_header";
+}
+
+/// Gauge: idempotency store saturation as `entries / max_capacity`,
+/// scaled by 1_000_000 (parts per million).
+///
+/// Mirrors the `_PPM` pattern used by `NEBULA_EVENTBUS_DROP_RATIO_PPM`
+/// so the i64-backed `Gauge` can carry a `0.0..=1.0` ratio without
+/// losing precision. In-memory backend reads the live
+/// `moka::Cache::entry_count()` against the configured `max_entries`;
+/// PG backend can publish `0` (the table grows with `expires_at`-bounded
+/// eviction; no fixed capacity). Unlabeled.
+pub const NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM: &str =
+    "nebula_api_idempotency_store_saturation_ppm";
+
+/// Histogram: full middleware path latency in milliseconds.
+///
+/// Covers cache lookup, body buffering, the inner handler call (on a
+/// miss), and response buffering. Provides the closed-loop latency
+/// budget operators need to dashboard the dedup overhead, distinct
+/// from the inner handler's own duration histograms.
+pub const NEBULA_API_IDEMPOTENCY_LATENCY_MS: &str = "nebula_api_idempotency_latency_ms";
+
+// ---------------------------------------------------------------------------
 // Webhook (api crate — transport-layer signature enforcement)
 // ---------------------------------------------------------------------------
 
@@ -431,9 +497,11 @@ mod tests {
     use crate::registry::MetricsRegistry;
 
     use super::{
-        NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE,
-        NEBULA_CREDENTIAL_ACTIVE_TOTAL, NEBULA_CREDENTIAL_EXPIRED_TOTAL,
-        NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+        NEBULA_API_IDEMPOTENCY_HITS_TOTAL, NEBULA_API_IDEMPOTENCY_LATENCY_MS,
+        NEBULA_API_IDEMPOTENCY_MISSES_TOTAL, NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL,
+        NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM, NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS,
+        NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL,
+        NEBULA_CREDENTIAL_EXPIRED_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
         NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
         NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
         NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
@@ -452,8 +520,8 @@ mod tests {
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
         NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
-        refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
-        refresh_coord_sentinel_action, rotation_outcome,
+        idempotency_reject_reason, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
+        refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, rotation_outcome,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 20] = [
@@ -709,6 +777,79 @@ mod tests {
             2,
             "reclaim outcome labels must be unique"
         );
+    }
+
+    /// API idempotency metrics (M3.4 — ADR-0048).
+    ///
+    /// 3 counters + 1 gauge + 1 histogram = 5 series. Mirrors the
+    /// per-counter `(name, label_key, sample_value)` pattern used for
+    /// the refresh-coord constants so a label-key drift between this
+    /// catalog and the middleware wiring fails CI rather than landing
+    /// silently.
+    const API_IDEMPOTENCY_METRIC_NAMES: [&str; 5] = [
+        NEBULA_API_IDEMPOTENCY_HITS_TOTAL,
+        NEBULA_API_IDEMPOTENCY_MISSES_TOTAL,
+        NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL,
+        NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM,
+        NEBULA_API_IDEMPOTENCY_LATENCY_MS,
+    ];
+
+    #[test]
+    fn api_idempotency_constants_are_accessible_unique_and_registry_safe() {
+        let registry = MetricsRegistry::new();
+        let mut unique = HashSet::new();
+        for metric_name in API_IDEMPOTENCY_METRIC_NAMES {
+            assert!(!metric_name.is_empty());
+            assert!(metric_name.starts_with("nebula_api_idempotency_"));
+            assert!(
+                metric_name
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            );
+            assert!(unique.insert(metric_name));
+
+            if metric_name == NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM {
+                let gauge = registry.gauge(metric_name).unwrap();
+                gauge.set(420_000);
+                assert_eq!(gauge.get(), 420_000);
+            } else if metric_name == NEBULA_API_IDEMPOTENCY_LATENCY_MS {
+                let histogram = registry.histogram(metric_name).unwrap();
+                histogram.observe(1.0);
+                assert_eq!(histogram.count(), 1);
+            } else if metric_name == NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL {
+                // Labeled by `reason` — exercise the closed label set.
+                let labels = registry
+                    .interner()
+                    .single("reason", idempotency_reject_reason::INVALID_KEY);
+                let counter = registry.counter_labeled(metric_name, &labels).unwrap();
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+            } else {
+                let counter = registry.counter(metric_name).unwrap();
+                counter.inc();
+                assert_eq!(counter.get(), 1);
+            }
+        }
+        assert_eq!(unique.len(), 5);
+    }
+
+    #[test]
+    fn idempotency_reject_reason_labels_are_closed_set() {
+        let labels = [
+            idempotency_reject_reason::INVALID_KEY,
+            idempotency_reject_reason::BODY_MISMATCH,
+            idempotency_reject_reason::BODY_TOO_LARGE,
+            idempotency_reject_reason::NON_ASCII_HEADER,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            4,
+            "idempotency reject-reason labels must be unique"
+        );
+        for label in labels {
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+        }
     }
 
     #[test]
