@@ -99,10 +99,9 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // provider traffic that never carries `Idempotency-Key` and conflate
     // two distinct dedup surfaces. See ADR-0048.
     let api_routes = if let Some(store) = state.idempotency_store.as_ref() {
-        debug_assert!(
-            config.idempotency.ttl_secs > 0,
-            "idempotency TTL must be positive — startup misconfiguration"
-        );
+        // `ttl_secs > 0` is structurally enforced at config load time
+        // by `parse_positive_u64_env` (`ApiConfigError::ZeroValue`) so
+        // a release build cannot reach here with a zero-TTL cache.
         tracing::info!(
             layer = "idempotency",
             store_kind = store.store_kind(),

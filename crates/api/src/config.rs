@@ -186,6 +186,20 @@ pub enum ApiConfigError {
         /// The raw value the operator supplied (already-failed parse).
         raw: String,
     },
+
+    /// An `API_*` numeric env var must be strictly positive but the
+    /// operator supplied `0`.
+    ///
+    /// Used for knobs whose zero value would silently disable a hard
+    /// invariant — for example `API_IDEMPOTENCY_TTL_SECS=0` would build
+    /// a cache where every entry expires immediately, silently turning
+    /// off replay protection. Surface the misconfiguration at startup
+    /// instead of letting the runtime degrade.
+    #[error("API_{var} must be > 0")]
+    ZeroValue {
+        /// Name of the env var suffix after `API_`.
+        var: &'static str,
+    },
 }
 
 // ── Config sub-structs ─────────────────────────────────────────────────────
@@ -649,14 +663,16 @@ impl ApiConfig {
             Err(_) => IdempotencyBackend::Memory,
         };
 
-        let ttl_secs = parse_u64_env("IDEMPOTENCY_TTL_SECS", DEFAULT_TTL_SECS)?;
-        let max_entries = parse_u64_env("IDEMPOTENCY_MAX_ENTRIES", DEFAULT_MAX_ENTRIES)?;
+        let ttl_secs = parse_positive_u64_env("IDEMPOTENCY_TTL_SECS", DEFAULT_TTL_SECS)?;
+        let max_entries = parse_positive_u64_env("IDEMPOTENCY_MAX_ENTRIES", DEFAULT_MAX_ENTRIES)?;
         let max_request_body_bytes =
             parse_usize_env("IDEMPOTENCY_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?;
         let max_response_body_bytes = parse_usize_env(
             "IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
             DEFAULT_MAX_BODY_BYTES,
         )?;
+        // sweep_interval_secs uses the non-positive variant — `0`
+        // disables the sweep (dev / single-process runs).
         let sweep_interval_secs = parse_u64_env(
             "IDEMPOTENCY_SWEEP_INTERVAL_SECS",
             IdempotencyApiConfig::DEFAULT_SWEEP_INTERVAL_SECS,
@@ -714,6 +730,17 @@ fn parse_u64_env(suffix: &'static str, default: u64) -> Result<u64, ApiConfigErr
         }),
         Err(_) => Ok(default),
     }
+}
+
+/// Parse a strictly-positive `u64` from `API_<suffix>`. Rejects `0`
+/// with [`ApiConfigError::ZeroValue`] — caller specifies a knob whose
+/// zero value would silently disable a hard invariant.
+fn parse_positive_u64_env(suffix: &'static str, default: u64) -> Result<u64, ApiConfigError> {
+    let value = parse_u64_env(suffix, default)?;
+    if value == 0 {
+        return Err(ApiConfigError::ZeroValue { var: suffix });
+    }
+    Ok(value)
 }
 
 fn parse_usize_env(suffix: &'static str, default: usize) -> Result<usize, ApiConfigError> {
@@ -999,5 +1026,45 @@ mod tests {
         let cfg = ApiConfig::for_test();
         assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Memory);
         assert!(cfg.idempotency.ttl_secs > 0);
+    }
+
+    #[test]
+    fn from_env_idempotency_rejects_zero_ttl_secs() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_IDEMPOTENCY_TTL_SECS", "0");
+        }
+
+        let err = ApiConfig::from_env().expect_err("ttl_secs=0 must error");
+        match err {
+            ApiConfigError::ZeroValue { var } => assert_eq!(var, "IDEMPOTENCY_TTL_SECS"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_idempotency_rejects_zero_max_entries() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_IDEMPOTENCY_MAX_ENTRIES", "0");
+        }
+
+        let err = ApiConfig::from_env().expect_err("max_entries=0 must error");
+        match err {
+            ApiConfigError::ZeroValue { var } => assert_eq!(var, "IDEMPOTENCY_MAX_ENTRIES"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        clear_env();
     }
 }
