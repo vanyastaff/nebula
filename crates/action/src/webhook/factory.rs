@@ -6,7 +6,8 @@
 //! [`WebhookActionFactory`] for that kind and calls
 //! [`WebhookActionFactory::build`] to produce the dyn-erased
 //! [`TriggerHandler`] the transport ultimately registers under a
-//! [`crate::WebhookKeySlug`]-equivalent key.
+//! `WebhookKey::Slug`-equivalent key (the API-side enum lives in
+//! `nebula-api` and is intentionally not imported here).
 //!
 //! This trait lives in `nebula-action` (not in the engine) so each
 //! provider in [`crate::webhook::providers`] can implement it

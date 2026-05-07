@@ -229,7 +229,7 @@ impl WebhookActivationSpec {
     }
 }
 
-/// Wire encoding of [`nebula_action::webhook::TimestampFormat`] for
+/// Wire encoding of `nebula_action::webhook::TimestampFormat` for
 /// the storage layer.
 ///
 /// Storage cannot depend on `nebula-action` (sibling layer); the

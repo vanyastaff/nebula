@@ -1288,8 +1288,9 @@ pub enum SignatureError {
 ///
 /// Pure: takes the raw [`HeaderMap`], the configured header name, the
 /// expected encoding, the replay window, and a [`Clock`]. Never
-/// touches the wall clock directly. Future timestamps beyond
-/// [`FUTURE_SKEW_SECS`] are rejected even if the configured window
+/// touches the wall clock directly. Future timestamps beyond a
+/// hard-coded 60-second forward-skew cap (private constant
+/// `FUTURE_SKEW_SECS`) are rejected even if the configured window
 /// would technically admit them — a replay window that accepts
 /// arbitrary future timestamps is no replay window at all.
 pub fn validate_timestamp(
