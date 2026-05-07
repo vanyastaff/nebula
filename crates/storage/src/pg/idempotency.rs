@@ -93,7 +93,11 @@ impl IdempotencyStoreRepo for PgIdempotencyStore {
         record: CachedRecord,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        let headers_blob = encode_headers(&record.headers);
+        let headers_blob = encode_headers(&record.headers).map_err(|err| {
+            StorageError::Serialization(format!(
+                "api_idempotency_dedup.headers encode failed (cache_key={cache_key}): {err}"
+            ))
+        })?;
         let expires_at = chrono::Utc::now()
             + chrono::Duration::from_std(ttl).map_err(|err| {
                 StorageError::Configuration(format!("ttl out of chrono::Duration range: {err}"))
@@ -143,8 +147,15 @@ impl IdempotencyStoreRepo for PgIdempotencyStore {
 /// Encode a header list as
 /// `<u16 count> [<u16 name_len><name_bytes><u32 value_len><value_bytes>]*`
 /// (big-endian length prefixes).
-fn encode_headers(headers: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let count = u16::try_from(headers.len()).unwrap_or(u16::MAX);
+///
+/// Returns an error string when any size cannot fit in the codec — the
+/// caller wraps it in [`StorageError::Serialization`]. Silent
+/// truncation is rejected: dropping headers or splicing names would
+/// let `decode_headers` return a corrupted record on read, which the
+/// middleware would replay verbatim — breaking the dedup contract.
+fn encode_headers(headers: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    let count = u16::try_from(headers.len())
+        .map_err(|_| format!("header list length {} exceeds u16::MAX", headers.len()))?;
     let mut out = Vec::with_capacity(
         2 + headers
             .iter()
@@ -152,17 +163,25 @@ fn encode_headers(headers: &[(String, Vec<u8>)]) -> Vec<u8> {
             .sum::<usize>(),
     );
     out.extend_from_slice(&count.to_be_bytes());
-    for (name, value) in headers.iter().take(count as usize) {
-        let name_len = u16::try_from(name.len()).unwrap_or(u16::MAX);
+    for (name, value) in headers {
+        let name_len = u16::try_from(name.len()).map_err(|_| {
+            format!(
+                "header name {name:?} length {} exceeds u16::MAX",
+                name.len()
+            )
+        })?;
         out.extend_from_slice(&name_len.to_be_bytes());
-        let name_truncated = &name.as_bytes()[..name_len as usize];
-        out.extend_from_slice(name_truncated);
-        let value_len = u32::try_from(value.len()).unwrap_or(u32::MAX);
+        out.extend_from_slice(name.as_bytes());
+        let value_len = u32::try_from(value.len()).map_err(|_| {
+            format!(
+                "header value for {name:?} length {} exceeds u32::MAX",
+                value.len()
+            )
+        })?;
         out.extend_from_slice(&value_len.to_be_bytes());
-        let value_truncated = &value[..value_len as usize];
-        out.extend_from_slice(value_truncated);
+        out.extend_from_slice(value);
     }
-    out
+    Ok(out)
 }
 
 /// Decode the header blob written by [`encode_headers`].
@@ -226,7 +245,7 @@ mod tests {
             ("x-request-id".to_string(), b"req-abc-123".to_vec()),
             ("x-binary".to_string(), vec![0u8, 1, 2, 0xff]),
         ];
-        let blob = encode_headers(&headers);
+        let blob = encode_headers(&headers).expect("encode");
         let decoded = decode_headers(&blob).expect("must decode");
         assert_eq!(decoded, headers);
     }
@@ -234,7 +253,7 @@ mod tests {
     #[test]
     fn header_codec_roundtrips_empty() {
         let headers: Vec<(String, Vec<u8>)> = Vec::new();
-        let blob = encode_headers(&headers);
+        let blob = encode_headers(&headers).expect("encode");
         let decoded = decode_headers(&blob).expect("must decode empty");
         assert!(decoded.is_empty());
     }
@@ -244,5 +263,24 @@ mod tests {
         // Claim count=1 but no payload
         let bad = vec![0u8, 1];
         assert!(decode_headers(&bad).is_err());
+    }
+
+    #[test]
+    fn encode_rejects_oversized_name() {
+        // Name longer than u16::MAX (65_535) must error, not truncate.
+        let big_name = "a".repeat(u32::from(u16::MAX) as usize + 1);
+        let headers = vec![(big_name, b"v".to_vec())];
+        let err = encode_headers(&headers).expect_err("must error on oversized name");
+        assert!(err.contains("exceeds u16::MAX"), "got: {err}");
+    }
+
+    #[test]
+    fn encode_rejects_oversized_count() {
+        // Header list with > u16::MAX entries must error.
+        let headers: Vec<(String, Vec<u8>)> = (0..=u32::from(u16::MAX))
+            .map(|i| (format!("h{i}"), Vec::new()))
+            .collect();
+        let err = encode_headers(&headers).expect_err("must error on count overflow");
+        assert!(err.contains("exceeds u16::MAX"), "got: {err}");
     }
 }

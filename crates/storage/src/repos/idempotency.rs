@@ -45,11 +45,23 @@ pub struct CachedRecord {
 
 /// Storage backend for cached idempotent responses.
 ///
-/// Implementations MUST honour the `ttl` argument on `put` (the
-/// middleware does not enforce expiry). Concurrent first-writer-wins
-/// is the semantics — `put` for a key that already exists is a no-op
-/// (the existing record stays). Caller-side body-mismatch handling
-/// happens in the middleware against the stored `fingerprint`.
+/// Concurrent first-writer-wins is the semantics — `put` for a key
+/// that already exists is a no-op (the existing record stays).
+/// Caller-side body-mismatch handling happens in the middleware
+/// against the stored `fingerprint`.
+///
+/// ## TTL semantics
+///
+/// The `ttl` argument on `put` is the **caller's intent**: how long
+/// the record should remain queryable. PG-backed implementations
+/// honour it per-row via the `expires_at` column. The in-memory
+/// implementation uses a single cache-wide TTL configured at
+/// construction (`moka::future::Cache::time_to_live`) and **ignores
+/// the per-call `ttl`** — `moka` does not expose per-key TTL on a
+/// shared cache. Callers that mix lifetimes on the same in-memory
+/// repo will see all entries respect the constructor TTL. Document
+/// the divergence explicitly so dev/test behaviour does not silently
+/// diverge from production.
 #[async_trait]
 pub trait IdempotencyStoreRepo: Send + Sync + std::fmt::Debug {
     /// Look up a cached record by its scoped cache key.
@@ -63,9 +75,10 @@ pub trait IdempotencyStoreRepo: Send + Sync + std::fmt::Debug {
 
     /// Persist a cached record under `cache_key` with `ttl`.
     ///
-    /// First-writer-wins: a `put` for an existing key is a no-op —
-    /// the in-memory backend uses moka's `entry().or_insert_with`
-    /// semantics and the PG backend uses
+    /// See trait-level docs on TTL: PG honours `ttl` per-row;
+    /// in-memory uses a constructor-fixed cache-wide TTL.
+    /// First-writer-wins — the in-memory backend uses moka's
+    /// `entry().or_insert_with` semantics and the PG backend uses
     /// `INSERT ... ON CONFLICT (cache_key) DO NOTHING`.
     async fn put(
         &self,
@@ -84,9 +97,9 @@ pub trait IdempotencyStoreRepo: Send + Sync + std::fmt::Debug {
 /// Process-local idempotency-dedup repository (in-memory).
 ///
 /// Backed by `moka::future::Cache<String, CachedRecord>`. Entries
-/// expire on the per-entry `time_to_live` set when `put` is called;
-/// the cache is bounded by `max_capacity` to provide a hard memory
-/// ceiling.
+/// expire on a single cache-wide TTL configured at construction (see
+/// the trait-level docs on TTL semantics); the cache is bounded by
+/// `max_capacity` to provide a hard memory ceiling.
 pub struct InMemoryIdempotencyStoreRepo {
     cache: Cache<String, Arc<CachedRecord>>,
     max_capacity: u64,
@@ -101,19 +114,37 @@ impl InMemoryIdempotencyStoreRepo {
     /// Create a store with default TTL (24h) and capacity (10_000).
     #[must_use]
     pub fn new() -> Self {
-        Self::with_capacity(Self::DEFAULT_MAX_ENTRIES)
+        Self::with_ttl_and_capacity(
+            Duration::from_secs(Self::DEFAULT_TTL_SECS),
+            Self::DEFAULT_MAX_ENTRIES,
+        )
     }
 
-    /// Create a store with a custom max-entry capacity. Per-entry TTL
-    /// is supplied at `put` time so the same store can serve multiple
-    /// distinct lifetimes if a future caller needs it.
+    /// Create a store with a custom TTL and capacity.
+    ///
+    /// The `ttl` becomes the cache-wide `moka::Cache::time_to_live`;
+    /// every entry expires `ttl` after its insertion regardless of the
+    /// per-call argument passed to [`IdempotencyStoreRepo::put`].
     #[must_use]
-    pub fn with_capacity(max_capacity: u64) -> Self {
-        let cache = Cache::builder().max_capacity(max_capacity).build();
+    pub fn with_ttl_and_capacity(ttl: Duration, max_capacity: u64) -> Self {
+        let cache = Cache::builder()
+            .time_to_live(ttl)
+            .max_capacity(max_capacity)
+            .build();
         Self {
             cache,
             max_capacity,
         }
+    }
+
+    /// Create a store with a custom max-entry capacity and default
+    /// TTL (24h).
+    ///
+    /// Equivalent to
+    /// `with_ttl_and_capacity(Duration::from_secs(DEFAULT_TTL_SECS), capacity)`.
+    #[must_use]
+    pub fn with_capacity(max_capacity: u64) -> Self {
+        Self::with_ttl_and_capacity(Duration::from_secs(Self::DEFAULT_TTL_SECS), max_capacity)
     }
 
     /// Live entry count (best-effort; `moka::Cache::entry_count`).
@@ -156,13 +187,10 @@ impl IdempotencyStoreRepo for InMemoryIdempotencyStoreRepo {
         record: CachedRecord,
         _ttl: Duration,
     ) -> Result<(), StorageError> {
-        // moka does not expose per-key TTL on a single shared `Cache`
-        // — the TTL is configured per cache instance. The in-memory
-        // backend therefore relies on the cache's global eviction
-        // policy (configured at construction). Per-key TTL is
-        // honoured by the PG backend; this in-memory impl is
-        // good enough for dev/tests where a single shared lifetime
-        // is fine.
+        // The per-call `ttl` is intentionally ignored — `moka` does
+        // not expose per-key TTL on a shared cache. The cache-wide
+        // TTL configured at construction is the authoritative
+        // expiry. See the trait-level "TTL semantics" docs.
         self.cache.insert(cache_key, Arc::new(record)).await;
         Ok(())
     }
@@ -211,5 +239,34 @@ mod tests {
         let repo = InMemoryIdempotencyStoreRepo::new();
         let n = repo.evict_expired().await.unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// Pin the in-memory TTL contract: the constructor-fixed
+    /// cache-wide TTL is honoured on `put`, regardless of the
+    /// per-call `ttl` argument. Without a configured `time_to_live`
+    /// (the previous bug) every entry would be retained until
+    /// capacity pressure, hiding TTL regressions.
+    #[tokio::test]
+    async fn in_memory_honours_cache_wide_ttl() {
+        let repo =
+            InMemoryIdempotencyStoreRepo::with_ttl_and_capacity(Duration::from_millis(50), 16);
+        // Per-call TTL is ignored — pass a long duration to verify
+        // the cache-wide 50ms wins.
+        repo.put("k".into(), record(b"x"), Duration::from_hours(1))
+            .await
+            .unwrap();
+        assert!(
+            repo.get("k").await.unwrap().is_some(),
+            "entry must be present immediately after put"
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // moka may need a tick to evict; force a sync via direct cache
+        // access (test-only).
+        repo.cache.run_pending_tasks().await;
+        assert!(
+            repo.get("k").await.unwrap().is_none(),
+            "entry must be evicted after the cache-wide TTL elapses, \
+             ignoring the per-call ttl argument"
+        );
     }
 }
