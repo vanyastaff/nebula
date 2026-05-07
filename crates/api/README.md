@@ -15,7 +15,7 @@ Provides the HTTP entry point for the Nebula workflow engine. Translates REST
 requests into calls against typed port traits (`WorkflowRepo`, `ExecutionRepo`,
 `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
 `MembershipStore`), then delegates all business logic to the crates below it.
-The crate also hosts the `webhook` submodule, which handles inbound trigger
+The crate also hosts the `services::webhook` subsystem, which handles inbound trigger
 delivery and per-endpoint lifecycle management.
 
 All routes are tenant-scoped under `/api/v1/orgs/{org}/workspaces/{ws}/…`
@@ -56,13 +56,14 @@ infrastructure (opaque base64-encoded cursors).
 - Port traits: `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
 `MembershipStore` — tenant resolution and session management ports.
 - `AuthContext` — authenticated request context extracted by `middleware::auth`.
-- `webhook::WebhookTransport` — activate/deactivate/router for inbound webhook
-triggers; mounted on `/webhooks/*` when the transport is attached to
+- `services::webhook::WebhookTransport` — activate/activate_slug/deactivate/router
+for inbound webhook triggers; mounted on `/webhooks/*` (programmatic) and
+`/api/v1/hooks/*` (slug-routed) when the transport is attached to
 `AppState`.
-- `webhook::EndpointProviderImpl` — implements `nebula_action::WebhookEndpointProvider`
+- `services::webhook::EndpointProviderImpl` — implements `nebula_action::WebhookEndpointProvider`
 so action code can read `ctx.webhook.endpoint_url()` without knowing the HTTP
 layer.
-- `webhook::WebhookRateLimiter` / `RateLimitExceeded` — per-endpoint rate
+- `services::webhook::WebhookRateLimiter` / `RateLimitExceeded` — per-key rate
 limiting for inbound webhook requests.
 
 ## Contract
@@ -95,24 +96,51 @@ until the engine side is wired.
 A second in-memory control channel is forbidden (see §12.2 prohibition on
 unreconciled second channels).
 
-## Webhook submodule
+## Webhook subsystem
 
-`crates/api/src/webhook/` is the HTTP transport for inbound webhook triggers.
-It is **not** a separate crate. Responsibility split:
+`crates/api/src/services/webhook/` is the **single converged** HTTP transport
+for inbound webhook triggers (M3.3 / ADR-0049). Both URL shapes funnel through
+one `dispatch_inner` pipeline:
 
-- `transport` — `WebhookTransport`: activate / deactivate / axum router for
-`POST /webhooks/:trigger_uuid/:nonce`. Mounts only when attached to
-`AppState::with_webhook_transport`. `activate()` takes a
-`nebula_action::WebhookConfig` alongside the handler so the transport
-can enforce signature policy before dispatch — the config is read from
-the typed `WebhookAction` at activation time and is *not* routed through
-the dyn `TriggerHandler` contract.
-- `provider` — `EndpointProviderImpl`: implements
+- **Programmatic** — `POST /webhooks/{trigger_uuid}/{nonce}`, minted by
+`WebhookTransport::activate(...)` from the typed `nebula_action::WebhookAction`
+runtime path.
+- **Slug-routed** — `POST|GET /api/v1/hooks/{org}/{ws}/{trigger_slug}`,
+loaded from storage at startup via `bootstrap_webhook_activations` and
+mutated by `TriggerLifecycleEvent` consumers / the admin reload endpoint.
+
+Responsibility split:
+
+- `transport::WebhookTransport` — activate / deactivate / activate_slug /
+replace_slug_map / axum router. Owns the routing map, rate limiter, signature
+enforcement, replay-window check, and `pre_handle` short-circuit.
+- `bootstrap` — `bootstrap_webhook_activations` / `collect_webhook_activations`,
+`WebhookSecretResolver`, `WebhookContextFactory`. The composition root
+invokes the bootstrap before `build_app`; admin reload uses `collect_*` and
+`replace_slug_map` for atomic swaps.
+- `events` — `TriggerLifecycleEvent` { Created / Updated / Deleted } +
+`TriggerLifecycleSubscriber`. M3.3 ships the consumer; producer-side
+wiring is deferred (ADR-0049 § "Out of scope").
+- `provider::EndpointProviderImpl` — implements
 `nebula_action::WebhookEndpointProvider` so plugins read the public URL
 without knowing the HTTP layer.
-- `routing` — private `RoutingMap` (DashMap) keyed by `(trigger_uuid, nonce)`.
-- `ratelimit` — `WebhookRateLimiter`: per-endpoint token-bucket guard;
-returns `RateLimitExceeded` on breach.
+- `key::WebhookKey` — `Programmatic { uuid, nonce }` | `Slug(TriggerCoordinates)`.
+- `routing` — private `RoutingMap` (DashMap) keyed by `WebhookKey`.
+- `ratelimit::WebhookRateLimiter` — per-key sliding-window guard with LRU-capped
+path table (#271 mitigation).
+
+Provider catalog (Slack `url_verification`, Stripe `pending_webhook` ping,
+Generic `?challenge=…`) lives in `crates/action/src/webhook/providers/`;
+each implements `WebhookAction::pre_handle`.
+
+Operator-configured webhook URLs are documented here (and ADR-0049),
+not in the OpenAPI spec — promoting the slug surface back into
+`/api/v1/openapi.json` is a 1.0 follow-up that requires typed schemas
+for every provider's request envelope.
+
+Internal admin reload: `POST /internal/v1/webhooks/reload` (gated by
+`X-Internal-Token`) atomically swaps the slug map after consulting
+`WebhookActivationRepo::list_active`.
 
 Delivery semantics: at-least-once (§11.3 / §13.4). Duplicate delivery is the
 caller's responsibility via stable event identity + idempotency keys.

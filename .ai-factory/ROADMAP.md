@@ -309,32 +309,48 @@ The largest 1.0 area. Six blocks; can be parallelized once unblocked.
       + canon §4.5 stub-honesty gate
       (`tests/openapi_canon_compliance.rs`).
 
-#### M3.3 Webhook handler dispatch
+#### M3.3 Webhook handler dispatch ✅ closed 2026-05-07 (ADR-0049)
 
-- [x] `handle_webhook_post` + `handle_webhook_get` ship in
-      `crates/api/src/handlers/webhook.rs` (PR #638).
-- [x] `WebhookDispatcher` orchestration with auth (signature/token →
-      401, missing secret → 500) and enqueue (sink unavailable → 500,
-      backpressure → 503); 202 on success; RFC 9457 problem+json
-      mapping.
-- [x] Routes mounted in `routes/webhook.rs:40` with
-      `Extension<Arc<WebhookDispatcher>>` plumbing.
-- [ ] **Trigger registration through storage layer.** Today
-      `routes/webhook.rs:25-28` mounts an empty in-memory dispatcher
-      → every request 404s in production. Wire `WebhookDispatcher`
-      load-from-storage at startup (workflow → trigger → slug →
-      auth-config index).
-- [ ] **Replay window enforcement.** Webhook signatures need a
-      timestamp tolerance (default 5 min) to defeat replay attacks
-      that re-use a captured `X-*-Signature` header.
-- [ ] **Per-trigger rate-limit / abuse protection** to keep one noisy
-      caller from saturating the engine sink.
-- [ ] **Provider-specific URL-verification challenges** (e.g. Slack
-      `url_verification`, Stripe `pending_webhook` checks). Today
-      `handle_webhook_get` just 405s.
-- [ ] **Observability:** `nebula_api_webhook_*` metrics
-      (per-trigger 2xx/4xx/5xx counts, sink saturation events) +
-      structured `tracing` span fields already present.
+ADR-0049 records the convergence: the legacy slug pipeline
+(`WebhookDispatcher` + `NoopSink`) is **deleted**; both URL shapes —
+programmatic `(uuid, nonce)` and operator-configured
+`(org, ws, slug)` — funnel through `WebhookTransport::dispatch_inner`.
+
+- [x] **Single dispatch pipe.** `crates/api/src/webhook/*`,
+      `routes/webhook.rs`, `handlers/webhook.rs`, and
+      `middleware/webhook_ratelimit.rs` removed. Both URL shapes go
+      through `WebhookTransport`'s `dispatch_inner`.
+- [x] **Storage bootstrap.** `bootstrap_webhook_activations` walks
+      `WebhookActivationRepo::list_active()` at startup and registers
+      each as `transport.activate_slug(...)`. PG impl uses the
+      `webhook_path` indexed column (migration 0018) for O(1)
+      reverse lookup; migration 0025 documents the kind-namespaced
+      `triggers.config` JSONB contract.
+- [x] **Replay window enforcement.** `RequiredPolicy.replay_window`
+      (default 5 min) consumed by `RequiredPolicy::verify_with` —
+      shared between the programmatic and slug paths.
+      `MockClock` drives deterministic tests.
+- [x] **Per-key rate-limit / abuse protection.** Transport's
+      sliding-window limiter buckets by `WebhookKey`. Flooding one
+      slug does not affect another; LRU-capped path table
+      (#271 mitigation).
+- [x] **Provider-specific URL-verification challenges.** Slack
+      `url_verification`, Stripe `pending_webhook` ping, Generic
+      `?challenge=…` GET — all handled in `WebhookAction::pre_handle`
+      hooks (`crates/action/src/webhook/providers/`).
+- [x] **Observability.** `NEBULA_WEBHOOK_*` namespace extended
+      (G1 + G2): replay-rejection / rate-limit-rejection / bootstrap
+      counters + label vocabulary + Prometheus HELP. Cardinality
+      budget documented; `tenant_id` and `webhook_key_kind` are the
+      bounded label keys. Per-outcome `REQUESTS_TOTAL` +
+      `LATENCY_SECONDS` histogram and the cardinality regression
+      test land as a 1.0 follow-up (ADR-0049 § "Out of scope").
+- [x] **Lifecycle subscriber.** `TriggerLifecycleEvent` consumer
+      ships; producer-side wiring deferred (ADR-0049 § "Out of
+      scope").
+- [x] **Admin reload.** `POST /internal/v1/webhooks/reload` swaps the
+      slug map atomically via `transport.replace_slug_map`. Internal
+      auth via `X-Internal-Token`.
 
 #### M3.4 Idempotency-Key dedup
 
