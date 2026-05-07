@@ -363,6 +363,15 @@ fn register_with_transport(
     transport.activate_slug(coords, handler, config, ctx)
 }
 
+/// `pub(super)` re-export for the lifecycle subscriber so storage →
+/// action spec mapping has a single seam.
+pub(super) fn storage_spec_into_action_spec(
+    storage: &StorageWebhookActivationSpec,
+    secret: Vec<u8>,
+) -> ActionWebhookActivationSpec {
+    into_action_spec(storage, secret)
+}
+
 fn into_action_spec(
     storage: &StorageWebhookActivationSpec,
     secret: Vec<u8>,
@@ -371,12 +380,11 @@ fn into_action_spec(
     if let Some(secs) = storage.replay_window_secs {
         spec = spec.with_replay_window_secs(secs);
     }
-    if let Some(header) = storage
-        .timestamp_header
-        .as_ref()
-        .or_else(|| inferred_timestamp_header(storage.timestamp_format))
-    {
+    if let Some(header) = storage.timestamp_header.as_ref() {
         spec = spec.with_timestamp_header(header.clone());
+    }
+    if let Some(format) = storage.timestamp_format {
+        spec = spec.with_timestamp_format(map_timestamp_format(format));
     }
     if let Some(config) = storage.provider_config.clone() {
         spec = spec.with_provider_config(config);
@@ -387,14 +395,19 @@ fn into_action_spec(
     spec
 }
 
-/// Storage's `WebhookTimestampFormat` does not flow to the action
-/// layer (sibling crates with no direct dep). The factory infers the
-/// format from the header name; when the storage row pins a format
-/// without a header, we leave the action's default in place.
-const fn inferred_timestamp_header(
-    _format: Option<WebhookTimestampFormat>,
-) -> Option<&'static String> {
-    None
+/// Translate the storage-layer timestamp encoding enum to the
+/// action-layer one. Both crates ship `#[non_exhaustive]` enums; this
+/// helper is the single conversion seam between them.
+fn map_timestamp_format(format: WebhookTimestampFormat) -> nebula_action::webhook::TimestampFormat {
+    match format {
+        WebhookTimestampFormat::UnixSeconds => nebula_action::webhook::TimestampFormat::UnixSeconds,
+        WebhookTimestampFormat::UnixMillis => nebula_action::webhook::TimestampFormat::UnixMillis,
+        WebhookTimestampFormat::Rfc3339 => nebula_action::webhook::TimestampFormat::Rfc3339,
+        // Both enums are #[non_exhaustive] — fall back to the default
+        // (Unix seconds) if storage adds a variant the action layer
+        // does not yet know about.
+        _ => nebula_action::webhook::TimestampFormat::UnixSeconds,
+    }
 }
 
 fn bootstrap_failure_reason(err: &BootstrapError) -> &'static str {

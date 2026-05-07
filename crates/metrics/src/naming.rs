@@ -196,15 +196,19 @@ pub const NEBULA_API_IDEMPOTENCY_LATENCY_MS: &str = "nebula_api_idempotency_late
 // ---------------------------------------------------------------------------
 
 /// Counter: webhook requests rejected by the transport-layer signature
-/// check (ADR-0022).
+/// check (ADR-0022 + M3.3 / ADR-0049).
 ///
 /// Labeled by `reason` (see [`webhook_signature_failure_reason`]). Low
-/// cardinality by design — the label set is exactly three static
-/// strings, no per-trigger dimension. Any non-zero value is an
-/// operational signal worth dashboarding: a `missing_secret` crossing
-/// means an action shipped with a `SignaturePolicy::Required` it did
-/// not populate; a `missing` / `invalid` crossing means either a
-/// provider is mis-signing or a caller is probing the endpoint.
+/// cardinality by design — the label set is a small closed set of
+/// static strings (currently six: `missing`, `invalid`,
+/// `missing_secret`, `timestamp_missing`, `timestamp_malformed`,
+/// `timestamp_out_of_window`), no per-trigger dimension. Any non-zero
+/// value is an operational signal worth dashboarding: a
+/// `missing_secret` crossing means an action shipped with a
+/// `SignaturePolicy::Required` it did not populate; `missing` /
+/// `invalid` means a provider is mis-signing or a caller is probing
+/// the endpoint; `timestamp_*` indicates clock skew, replay attacks,
+/// or a misconfigured `timestamp_format`.
 pub const NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL: &str = "nebula_webhook_signature_failures_total";
 
 /// Reason labels for [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`].
@@ -318,6 +322,12 @@ pub mod webhook_replay_rejection_reason {
     /// Timestamp parsed but fell outside the configured window
     /// (replay attack or significant clock skew).
     pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
+    /// Timestamp header configured by the policy but absent on the
+    /// request — caller can't prove freshness, fail-closed.
+    pub const TIMESTAMP_MISSING: &str = "timestamp_missing";
+    /// Timestamp header present but unparsable (non-numeric Unix,
+    /// malformed RFC 3339, etc).
+    pub const TIMESTAMP_MALFORMED: &str = "timestamp_malformed";
     /// Future-replay-cache hit — same `(provider, signature)` tuple
     /// observed inside the dedup window. Reserved for the
     /// distributed replay-cache rollout (1.1).

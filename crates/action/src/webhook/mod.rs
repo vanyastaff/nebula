@@ -1230,7 +1230,8 @@ impl fmt::Debug for RequiredPolicy {
 ///
 /// `RequiredPolicy::timestamp_format` selects which decoder
 /// `validate_timestamp` runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum TimestampFormat {
     /// Stripe's `t=…`, Slack's `X-Slack-Request-Timestamp`. The

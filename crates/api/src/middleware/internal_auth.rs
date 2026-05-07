@@ -13,7 +13,7 @@
 //!
 //! The middleware constant-time-compares the inbound
 //! `X-Internal-Token` header against
-//! [`crate::config::InternalConfig::shared_token`]. Empty / missing
+//! `AppState::internal_shared_token`. Empty / missing
 //! token in config closes the route entirely (every request is 503).
 
 use axum::{
@@ -46,16 +46,24 @@ pub async fn internal_auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let Some(expected) = state.internal_shared_token.as_ref() else {
-        tracing::warn!(
-            target: "nebula::api::internal",
-            "internal route hit but server has no shared token configured; refusing"
-        );
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "internal auth not configured",
-        )
-            .into_response();
+    // Fail-closed on both `None` and `Some("")`: a configured-but-empty
+    // token is the canonical secret-injection misconfiguration
+    // (`API_INTERNAL_SHARED_TOKEN=` in env, helm chart with empty
+    // value, etc.) and would otherwise let an empty `X-Internal-Token`
+    // header bypass auth.
+    let expected = match state.internal_shared_token.as_ref() {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            tracing::warn!(
+                target: "nebula::api::internal",
+                "internal route hit but server has no usable shared token configured; refusing"
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "internal auth not configured",
+            )
+                .into_response();
+        },
     };
 
     let presented = req
@@ -78,17 +86,22 @@ pub async fn internal_auth_middleware(
     next.run(req).await
 }
 
-/// Constant-time comparison of two byte slices. Length mismatch is
-/// surfaced as `false` without short-circuiting on length alone —
-/// the equal-length path runs the same number of operations
-/// regardless of where the first mismatch occurs.
+/// Constant-time comparison of two byte slices.
+///
+/// The equal-length path runs in time independent of where the first
+/// byte mismatch occurs — every byte is XOR'd into the accumulator.
+/// Length mismatch is folded into the same accumulator (via the
+/// length difference), so the function does **not** early-return on
+/// `a.len() != b.len()` and an attacker cannot use response timing
+/// to distinguish "right length, wrong bytes" from "wrong length".
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+    // Fold the length difference into the accumulator so we never
+    // early-return on length mismatch alone.
+    let len_diff = (a.len() ^ b.len()) as u64;
+    let mut diff: u32 = u32::from((len_diff | (len_diff >> 32)) != 0);
+    let len = a.len().min(b.len());
+    for i in 0..len {
+        diff |= u32::from(a[i] ^ b[i]);
     }
     diff == 0
 }
@@ -102,6 +115,8 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abz"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(!constant_time_eq(b"abcd", b"abc"));
+        assert!(!constant_time_eq(b"", b"x"));
         assert!(constant_time_eq(b"", b""));
     }
 }

@@ -85,10 +85,23 @@ impl RoutingMap {
         self.entries.remove(key).is_some()
     }
 
-    /// Atomic swap of all slug entries. Used by the admin-reload
-    /// endpoint (E3) so external observers do not see a half-loaded
-    /// routing table during reload.
-    #[allow(dead_code)] // wired up by C2 / E3 in subsequent commits
+    /// Replace all slug entries with a new set. Used by the admin
+    /// reload endpoint (E3); programmatic activations are preserved.
+    ///
+    /// **Atomicity note (M3.3 / ADR-0049 § "Out of scope"):**
+    /// The swap is performed by removing every slug entry and then
+    /// inserting the new set into the shared `DashMap`. Concurrent
+    /// readers between the two phases can observe a transient empty
+    /// slug map and receive `404 Not Found`. The window is bounded
+    /// by the size of the activation list (typically O(ms) for
+    /// thousands of rows) and is acceptable for the M3.3 scope —
+    /// admin reload is a low-frequency operator action, not a hot
+    /// path.
+    ///
+    /// True atomic swap (no transient 404s under concurrent readers)
+    /// requires moving slug entries behind an `ArcSwap<HashMap<...>>`
+    /// or an `RwLock`-guarded map; it is tracked as a 1.0 follow-up
+    /// alongside the broader concurrency hardening pass.
     pub(crate) fn replace_slug_entries(&self, new: Vec<(WebhookKey, ActivationEntry)>) {
         // Drop existing slug entries (programmatic activations stay
         // in place — they are owned by the typed runtime).

@@ -187,31 +187,45 @@ impl TriggerLifecycleSubscriber {
                 }
             },
             TriggerLifecycleEvent::Updated(record) => {
-                let coords = TriggerCoordinates::new(
-                    &record.coords.org_slug,
-                    &record.coords.workspace_slug,
-                    &record.coords.trigger_slug,
-                );
-                self.transport.unregister_slug(&coords);
-                if let Err(err) = self.apply_register(record).await {
-                    tracing::warn!(
+                // Build-first, swap-second: keep the existing slug
+                // registration live until the new handler is fully
+                // resolved. A transient secret-resolution failure or
+                // factory rejection must not strand operators behind
+                // a 404 until the next reload event.
+                match self.resolve_built(record).await {
+                    Ok(resolved) => {
+                        let coords = resolved.coords.clone();
+                        self.transport.unregister_slug(&coords);
+                        match register(&self.transport, resolved) {
+                            Ok(()) => tracing::info!(
+                                target: "nebula::api::webhook::lifecycle",
+                                event_kind = "updated",
+                                org = %record.coords.org_slug,
+                                workspace = %record.coords.workspace_slug,
+                                trigger_slug = %record.coords.trigger_slug,
+                                "applied trigger lifecycle event"
+                            ),
+                            Err(err) => tracing::warn!(
+                                target: "nebula::api::webhook::lifecycle",
+                                error = %err,
+                                org = %record.coords.org_slug,
+                                workspace = %record.coords.workspace_slug,
+                                trigger_slug = %record.coords.trigger_slug,
+                                event_kind = "updated",
+                                "failed to register replacement handler after unregister; \
+                                 slug map is now empty for this trigger until next reload"
+                            ),
+                        }
+                    },
+                    Err(err) => tracing::warn!(
                         target: "nebula::api::webhook::lifecycle",
                         error = %err,
                         org = %record.coords.org_slug,
                         workspace = %record.coords.workspace_slug,
                         trigger_slug = %record.coords.trigger_slug,
                         event_kind = "updated",
-                        "failed to apply trigger lifecycle event"
-                    );
-                } else {
-                    tracing::info!(
-                        target: "nebula::api::webhook::lifecycle",
-                        event_kind = "updated",
-                        org = %record.coords.org_slug,
-                        workspace = %record.coords.workspace_slug,
-                        trigger_slug = %record.coords.trigger_slug,
-                        "applied trigger lifecycle event"
-                    );
+                        "failed to build replacement handler; existing registration kept intact"
+                    ),
                 }
             },
             TriggerLifecycleEvent::Deleted(coords) => {
@@ -238,6 +252,19 @@ impl TriggerLifecycleSubscriber {
         &self,
         record: &WebhookActivationRecord,
     ) -> Result<(), LifecycleApplyError> {
+        let resolved = self.resolve_built(record).await?;
+        register(&self.transport, resolved)
+    }
+
+    /// Build everything that the transport needs to register the
+    /// activation **without** touching the transport. Used by the
+    /// `Updated` path so the existing registration stays live until
+    /// the replacement handler is fully resolved — a transient secret
+    /// or factory error never strands an operator behind a 404.
+    async fn resolve_built(
+        &self,
+        record: &WebhookActivationRecord,
+    ) -> Result<ResolvedRegistration, LifecycleApplyError> {
         let factory = self
             .registry
             .lookup_webhook_factory(&record.spec.action_kind)
@@ -268,17 +295,32 @@ impl TriggerLifecycleSubscriber {
         );
         let ctx = self.ctx_factory.build(record);
 
-        register(&self.transport, coords, handler, config, ctx)
+        Ok(ResolvedRegistration {
+            coords,
+            handler,
+            config,
+            ctx,
+        })
     }
 }
 
-fn register(
-    transport: &WebhookTransport,
+struct ResolvedRegistration {
     coords: TriggerCoordinates,
     handler: Arc<dyn TriggerHandler>,
     config: nebula_action::WebhookConfig,
     ctx: TriggerRuntimeContext,
+}
+
+fn register(
+    transport: &WebhookTransport,
+    resolved: ResolvedRegistration,
 ) -> Result<(), LifecycleApplyError> {
+    let ResolvedRegistration {
+        coords,
+        handler,
+        config,
+        ctx,
+    } = resolved;
     transport
         .activate_slug(coords.clone(), handler, config, ctx)
         .map_err(|err| match err {
@@ -299,20 +341,9 @@ fn into_action_spec(
     storage: &StorageWebhookActivationSpec,
     secret: Vec<u8>,
 ) -> ActionWebhookActivationSpec {
-    let mut spec = ActionWebhookActivationSpec::new(storage.action_kind.clone(), secret);
-    if let Some(secs) = storage.replay_window_secs {
-        spec = spec.with_replay_window_secs(secs);
-    }
-    if let Some(header) = storage.timestamp_header.as_ref() {
-        spec = spec.with_timestamp_header(header.clone());
-    }
-    if let Some(config) = storage.provider_config.clone() {
-        spec = spec.with_provider_config(config);
-    }
-    if let Some(rpm) = storage.rate_limit_per_minute {
-        spec = spec.with_rate_limit_per_minute(rpm);
-    }
-    spec
+    // Reuse the bootstrap-side converter so storage→action mapping
+    // stays in one place.
+    super::bootstrap::storage_spec_into_action_spec(storage, secret)
 }
 
 /// `Send + Sync + 'static` mirror of the bus, intended to live on

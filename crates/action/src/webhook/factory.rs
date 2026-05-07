@@ -48,6 +48,10 @@ pub struct WebhookActivationSpec {
     /// `X-Nebula-Timestamp` by convention; Slack and Stripe ignore
     /// this field — their headers are fixed).
     pub timestamp_header: Option<String>,
+    /// Override for the timestamp encoding. Slack and Stripe ignore
+    /// this field (they hardcode Unix seconds); Generic respects it
+    /// when its `RequiredPolicy` carries a timestamp header.
+    pub timestamp_format: Option<crate::webhook::TimestampFormat>,
     /// Provider-specific JSON blob. Generic looks for
     /// `{"challenge_token": "..."}`; other providers ignore.
     pub provider_config: Option<serde_json::Value>,
@@ -65,9 +69,18 @@ impl WebhookActivationSpec {
             secret: secret.into(),
             replay_window_secs: None,
             timestamp_header: None,
+            timestamp_format: None,
             provider_config: None,
             rate_limit_per_minute: None,
         }
+    }
+
+    /// Override the timestamp encoding (Unix seconds / Unix
+    /// milliseconds / RFC 3339).
+    #[must_use]
+    pub fn with_timestamp_format(mut self, format: crate::webhook::TimestampFormat) -> Self {
+        self.timestamp_format = Some(format);
+        self
     }
 
     /// Override the replay window (seconds).

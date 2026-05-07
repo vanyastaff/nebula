@@ -344,7 +344,7 @@ impl WebhookTransport {
     ///   challenge handshakes via `pre_handle`) — registered by
     ///   [`Self::activate_slug`].
     ///
-    /// Both routes funnel into [`dispatch_inner`] for a single
+    /// Both routes funnel into `dispatch_inner` for a single
     /// source of truth on signature, replay, rate-limit, and
     /// pre-handle pipelines.
     pub fn router(&self) -> Router {
@@ -427,7 +427,7 @@ async fn webhook_handler(
 }
 
 /// Axum handler for `POST /api/v1/hooks/{org}/{ws}/{slug}`. Builds a
-/// [`WebhookKey::Slug`] and delegates to [`dispatch_inner`] — same
+/// [`WebhookKey::Slug`] and delegates to `dispatch_inner` — same
 /// signature/replay/rate-limit/pre-handle/handle pipeline as the
 /// programmatic surface.
 async fn slug_webhook_handler(
@@ -475,7 +475,19 @@ async fn dispatch_inner(
         return (StatusCode::PAYLOAD_TOO_LARGE, "").into_response();
     }
 
-    // Rate limit (if configured).
+    // 3. Route lookup BEFORE rate-limit so attacker churn through
+    // unregistered keys cannot evict legitimate buckets from the
+    // LRU-bounded path table (#271 follow-up). Unregistered keys
+    // never touch the limiter.
+    let entry = if let Some(e) = transport.inner.routing.lookup(&key) {
+        e
+    } else {
+        debug!(key = ?key, "no webhook registered for path");
+        return (StatusCode::NOT_FOUND, "").into_response();
+    };
+
+    // 4. Rate limit (if configured) — only for keys that resolve to a
+    // registered handler.
     if let Some(limiter) = &transport.inner.rate_limiter {
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
@@ -488,14 +500,6 @@ async fn dispatch_inner(
             return resp;
         }
     }
-
-    // 4. Route lookup.
-    let entry = if let Some(e) = transport.inner.routing.lookup(&key) {
-        e
-    } else {
-        debug!(key = ?key, "no webhook registered for path");
-        return (StatusCode::NOT_FOUND, "").into_response();
-    };
 
     // 5. Construct WebhookRequest. Limits are already enforced by
     // `try_new` — the only failures here are body-size exceed
@@ -675,15 +679,33 @@ fn record_signature_failure(transport: &WebhookTransport, reason: &'static str) 
         // Replay-window failures double-bump the dedicated replay
         // counter so dashboards can isolate them from generic
         // signature mismatches without scraping the `reason` label.
-        if reason == webhook_signature_failure_reason::TIMESTAMP_OUT_OF_WINDOW {
-            let labels = reg.interner().single(
-                "reason",
-                webhook_replay_rejection_reason::TIMESTAMP_OUT_OF_WINDOW,
-            );
+        // All three timestamp-related signature failure modes count
+        // as replay-window enforcement.
+        if let Some(replay_reason) = replay_reason_for(reason) {
+            let labels = reg.interner().single("reason", replay_reason);
             if let Ok(c) = reg.counter_labeled(NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL, &labels) {
                 c.inc();
             }
         }
+    }
+}
+
+/// Map a signature-failure reason to a replay-window rejection
+/// reason when the failure is timestamp-related. Returns `None` for
+/// failure modes unrelated to replay enforcement (missing signature,
+/// signature invalid, missing secret).
+fn replay_reason_for(reason: &str) -> Option<&'static str> {
+    match reason {
+        r if r == webhook_signature_failure_reason::TIMESTAMP_OUT_OF_WINDOW => {
+            Some(webhook_replay_rejection_reason::TIMESTAMP_OUT_OF_WINDOW)
+        },
+        r if r == webhook_signature_failure_reason::TIMESTAMP_MISSING => {
+            Some(webhook_replay_rejection_reason::TIMESTAMP_MISSING)
+        },
+        r if r == webhook_signature_failure_reason::TIMESTAMP_MALFORMED => {
+            Some(webhook_replay_rejection_reason::TIMESTAMP_MALFORMED)
+        },
+        _ => None,
     }
 }
 

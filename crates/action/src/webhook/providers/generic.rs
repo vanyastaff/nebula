@@ -39,6 +39,7 @@ pub struct GenericWebhookAction {
     secret: Arc<[u8]>,
     signature_header: HeaderName,
     timestamp_header: Option<HeaderName>,
+    timestamp_format: super::super::TimestampFormat,
     replay_window: std::time::Duration,
     challenge_token: Option<String>,
 }
@@ -54,9 +55,18 @@ impl GenericWebhookAction {
             secret: secret.into(),
             signature_header: HeaderName::from_static("x-nebula-signature"),
             timestamp_header: None,
+            timestamp_format: super::super::TimestampFormat::default(),
             replay_window: std::time::Duration::from_mins(5),
             challenge_token: None,
         }
+    }
+
+    /// Override the timestamp encoding consumed by the replay-window
+    /// check. Defaults to Unix seconds.
+    #[must_use]
+    pub fn with_timestamp_format(mut self, format: super::super::TimestampFormat) -> Self {
+        self.timestamp_format = format;
+        self
     }
 
     /// Replace the signature header. Some providers ship custom
@@ -199,7 +209,8 @@ impl WebhookAction for GenericWebhookAction {
         let mut policy = RequiredPolicy::new()
             .with_secret(Arc::clone(&self.secret))
             .with_header(self.signature_header.clone())
-            .with_replay_window(self.replay_window);
+            .with_replay_window(self.replay_window)
+            .with_timestamp_format(self.timestamp_format);
         if let Some(ts) = self.timestamp_header.clone() {
             policy = policy.with_timestamp_header(ts);
         }
@@ -294,6 +305,9 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
                 }
             })?;
             action = action.with_timestamp_header(parsed);
+        }
+        if let Some(format) = spec.timestamp_format {
+            action = action.with_timestamp_format(format);
         }
         if let Some(serde_json::Value::Object(map)) = spec.provider_config.as_ref()
             && let Some(serde_json::Value::String(token)) = map.get("challenge_token")
