@@ -271,10 +271,12 @@ Phase C1):
 - `nebula_api_idempotency_misses_total` (counter)
 - `nebula_api_idempotency_rejects_total` (counter, label
   `reason ∈ {invalid_key, body_mismatch, body_too_large, non_ascii_header}`)
-- `nebula_api_idempotency_store_saturation` (gauge,
-  `entries / max_capacity`)
+- `nebula_api_idempotency_store_saturation_ppm` (gauge,
+  `entries / max_capacity` scaled by 1_000_000 to fit the i64-backed
+  `Gauge` primitive without precision loss; mirrors
+  `nebula_eventbus_drop_ratio_ppm`)
 - `nebula_api_idempotency_latency_ms` (histogram, full middleware
-  path)
+  path latency in milliseconds)
 
 ## Open Questions / Follow-ups
 

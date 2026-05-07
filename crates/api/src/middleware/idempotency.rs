@@ -4,8 +4,21 @@
 //! [draft-ietf-httpapi-idempotency-key]. A client supplies an `Idempotency-Key`
 //! header with any state-changing request; the middleware caches the first
 //! response and replays it byte-for-byte for subsequent requests carrying the
-//! same key (within the configured TTL) — the inner handler runs **at most
-//! once** per (method, path, key, identity, body) tuple.
+//! same key (within the configured TTL).
+//!
+//! ## At-most-once semantics
+//!
+//! After the first response is cached, subsequent requests with the same
+//! `(method, path, key, identity, body)` tuple replay the cached
+//! response without invoking the handler. **Concurrent in-flight
+//! requests are not deduplicated**: two requests that race past the
+//! `get` lookup before the first `put` lands both run the handler;
+//! `put` is first-writer-wins, so the second request's response is
+//! discarded but the side effects of its handler invocation are not
+//! rolled back. True at-most-once under contention requires a "pending
+//! claim" record (followers wait or replay instead of running the
+//! handler again) — tracked as a follow-up under ADR-0048
+//! "Open Questions / Follow-ups".
 //!
 //! [draft-ietf-httpapi-idempotency-key]: https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key/
 //!

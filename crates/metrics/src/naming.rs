@@ -131,11 +131,23 @@ pub const NEBULA_API_IDEMPOTENCY_HITS_TOTAL: &str = "nebula_api_idempotency_hits
 /// retrying so the layer is doing no work for them. Unlabeled.
 pub const NEBULA_API_IDEMPOTENCY_MISSES_TOTAL: &str = "nebula_api_idempotency_misses_total";
 
-/// Counter: requests rejected before reaching the inner handler.
+/// Counter: requests the idempotency layer did not cache.
 ///
-/// Labeled by `reason` (see [`idempotency_reject_reason`]). Closed label set
-/// — adding a value permanently inflates the cardinality floor. Aggregated
-/// counter, no per-route dimension.
+/// Labeled by `reason` (see [`idempotency_reject_reason`]). Closed label
+/// set — adding a value permanently inflates the cardinality floor.
+/// Aggregated counter, no per-route dimension.
+///
+/// Two distinct outcome classes share this counter:
+///
+/// - **Hard rejects** (`invalid_key`, `body_mismatch`, `non_ascii_header`)
+///   — request short-circuited with a 4xx response by the middleware
+///   itself; the inner handler did not run.
+/// - **Pass-through skips** (`body_too_large`) — request reached the
+///   inner handler unchanged but the layer could not commit the
+///   buffered body to the cache; subsequent replays will run the
+///   handler again. Lumped here because the operator dashboard cares
+///   about "requests not protected" as a single signal; the `reason`
+///   label disambiguates.
 pub const NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL: &str = "nebula_api_idempotency_rejects_total";
 
 /// Reject-reason labels for [`NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL`].
@@ -145,13 +157,17 @@ pub const NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL: &str = "nebula_api_idempotency_r
 /// an ADR amendment (ADR-0048).
 pub mod idempotency_reject_reason {
     /// Header validation failed — empty / too long / non-printable ASCII.
+    /// Hard reject: 400 returned without running the handler.
     pub const INVALID_KEY: &str = "invalid_key";
     /// Same key with a different body fingerprint (draft §2.5 → 422).
+    /// Hard reject: 422 returned without running the handler.
     pub const BODY_MISMATCH: &str = "body_mismatch";
-    /// Request body exceeded `max_request_body_bytes` so the layer cannot
-    /// commit to caching the response — passes through but counts here.
+    /// Request body exceeded `max_request_body_bytes`. The layer cannot
+    /// fingerprint the request, so the handler runs but the response
+    /// is **not cached** — pass-through skip, not a hard reject.
     pub const BODY_TOO_LARGE: &str = "body_too_large";
     /// `Idempotency-Key` header bytes were not valid ASCII.
+    /// Hard reject: 400 returned without running the handler.
     pub const NON_ASCII_HEADER: &str = "non_ascii_header";
 }
 

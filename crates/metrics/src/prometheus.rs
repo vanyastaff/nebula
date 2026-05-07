@@ -130,8 +130,8 @@ fn counter_help(name: &str) -> &'static str {
              the inner handler ran and the response was stored."
         },
         NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL => {
-            "Total requests rejected by the API idempotency middleware \
-             before reaching the inner handler (labeled by reason)."
+            "Total requests the API idempotency layer did not cache \
+             (hard rejects + pass-through skips, labeled by reason)."
         },
         _ => "Custom counter.",
     }
