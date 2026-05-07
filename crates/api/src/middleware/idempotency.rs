@@ -41,13 +41,29 @@
 //!
 //! ## Position in the middleware stack
 //!
-//! When mounted on the production router, place this layer **inside**
-//! `request_id` and `security_headers` so cached replays still acquire fresh
-//! `X-Request-ID` and security headers when they leave the server.
+//! [`crate::app::build_app`] mounts this layer on the API router **before**
+//! merging the webhook transport — webhook ingress has its own dedup
+//! contract (provider signature + replay-window timestamp) and never
+//! carries `Idempotency-Key`. The mount sits **inside** `request_id` and
+//! `security_headers` so cached replays still acquire fresh
+//! `X-Request-ID` and security headers when they leave the server:
 //!
-//! **Note:** the layer is not yet merged into `crate::app::build_app` /
-//! `crate::routes::create_routes` — integration tests mount `IdempotencyLayer` directly on
-//! minimal routers until the composition root wires a shared store.
+//! ```text
+//! outermost                                                            innermost
+//!  rate_limit -> request_id -> security_headers -> middleware_stack -> idempotency -> routes
+//!                                                                       (api only)
+//! ```
+//!
+//! ## Backend selection
+//!
+//! [`InMemoryIdempotencyStore`] is the dev / single-process default;
+//! [`StorageBackedIdempotencyStore`] adapts a layer-1
+//! `nebula_storage::repos::IdempotencyStoreRepo` (PG-backed in
+//! production deployments) onto this trait. Selection is driven by
+//! `ApiConfig.idempotency.backend` per **ADR-0048**: the in-memory
+//! backend loses dedup state across restart and across runners, so
+//! production deployments running more than one API replica must select
+//! `Postgres` to satisfy the §M3 1.0 closure criterion.
 
 use std::{
     fmt,
@@ -65,6 +81,15 @@ use axum::{
 };
 use futures::future::BoxFuture;
 use moka::future::Cache;
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{
+        NEBULA_API_IDEMPOTENCY_HITS_TOTAL, NEBULA_API_IDEMPOTENCY_LATENCY_MS,
+        NEBULA_API_IDEMPOTENCY_MISSES_TOTAL, NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL,
+        NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM, idempotency_reject_reason,
+    },
+};
+use nebula_storage::repos::{CachedRecord, IdempotencyStoreRepo};
 use sha2::{Digest, Sha256};
 use tower::{Layer, Service, ServiceExt};
 
@@ -87,6 +112,27 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_KEY_LEN: usize = 255;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
+
+/// Errors returned by [`IdempotencyStore`] operations.
+///
+/// Storage backends bubble these through the middleware. The handler
+/// translates them to a 500 response — silently treating a `Decode`
+/// error as a cache miss would drop replay protection on data
+/// corruption (rejected by ADR-0048).
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum IdempotencyStoreError {
+    /// The underlying repository returned an error (PG connection,
+    /// constraint violation, etc.).
+    #[error("idempotency-store backend failed: {0}")]
+    Backend(String),
+
+    /// The persisted record could not be decoded back into a typed
+    /// `CachedResponse` (malformed status code, header bytes, etc.).
+    /// Bubbles up as 500.
+    #[error("idempotency-store decode failed: {0}")]
+    Decode(String),
+}
 
 /// Errors returned when parsing/validating an `Idempotency-Key` header.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -206,11 +252,49 @@ pub const IDEMPOTENT_REPLAY_HEADER: HeaderName = HeaderName::from_static("idempo
 #[async_trait]
 pub trait IdempotencyStore: Send + Sync + fmt::Debug {
     /// Look up a cached response by its scoped cache key.
-    async fn get(&self, key: &str) -> Option<Arc<CachedResponse>>;
+    ///
+    /// Returns `Ok(None)` for a cache miss, `Ok(Some(_))` for a hit, or
+    /// [`IdempotencyStoreError`] when the read itself failed (backend
+    /// connection error or decode failure). The middleware translates
+    /// errors to 500 — see ADR-0048: silent cache-miss fallback would
+    /// drop replay protection on data corruption.
+    async fn get(&self, key: &str) -> Result<Option<Arc<CachedResponse>>, IdempotencyStoreError>;
 
     /// Persist a cached response under `key`. Implementations MUST honour the
     /// store's configured TTL; the middleware does not enforce expiry.
-    async fn put(&self, key: String, response: Arc<CachedResponse>);
+    ///
+    /// `put` errors do not surface to the caller — the response has
+    /// already been computed by the inner handler and is returned
+    /// unchanged; the middleware logs a warning and skips caching for
+    /// this key.
+    async fn put(
+        &self,
+        key: String,
+        response: Arc<CachedResponse>,
+    ) -> Result<(), IdempotencyStoreError>;
+
+    /// Stable, log-safe identifier for the concrete impl backing this store.
+    ///
+    /// Used by `build_app` to log which backend was wired at startup
+    /// (`"in-memory"`, `"postgres"`) without leaking implementation types
+    /// like `std::any::type_name_of_val(...)` would. Keep the value short
+    /// and ASCII so it composes cleanly into `tracing::info!` events and
+    /// metric labels (low-cardinality).
+    fn store_kind(&self) -> &'static str;
+
+    /// Live store saturation as `entries / max_capacity`, scaled by
+    /// 1_000_000 (parts per million).
+    ///
+    /// Returns `None` for backends without a fixed capacity (PG-backed
+    /// store keyed by `expires_at` rather than a row cap). The middleware
+    /// publishes the value into the
+    /// [`NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM`] gauge after every
+    /// successful `put`, so dashboards see a steady proxy for
+    /// "how full is the dedup store right now". Default impl returns
+    /// `None` so unbounded backends opt out without ceremony.
+    fn saturation_ppm(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Process-local idempotency store backed by [`moka::future::Cache`].
@@ -219,6 +303,7 @@ pub trait IdempotencyStore: Send + Sync + fmt::Debug {
 /// maximum entry count to provide a hard memory ceiling.
 pub struct InMemoryIdempotencyStore {
     cache: Cache<String, Arc<CachedResponse>>,
+    max_entries: u64,
 }
 
 impl InMemoryIdempotencyStore {
@@ -236,7 +321,7 @@ impl InMemoryIdempotencyStore {
             .time_to_live(ttl)
             .max_capacity(max_entries)
             .build();
-        Self { cache }
+        Self { cache, max_entries }
     }
 }
 
@@ -256,12 +341,144 @@ impl fmt::Debug for InMemoryIdempotencyStore {
 
 #[async_trait]
 impl IdempotencyStore for InMemoryIdempotencyStore {
-    async fn get(&self, key: &str) -> Option<Arc<CachedResponse>> {
-        self.cache.get(key).await
+    async fn get(&self, key: &str) -> Result<Option<Arc<CachedResponse>>, IdempotencyStoreError> {
+        Ok(self.cache.get(key).await)
     }
 
-    async fn put(&self, key: String, response: Arc<CachedResponse>) {
+    async fn put(
+        &self,
+        key: String,
+        response: Arc<CachedResponse>,
+    ) -> Result<(), IdempotencyStoreError> {
         self.cache.insert(key, response).await;
+        Ok(())
+    }
+
+    fn store_kind(&self) -> &'static str {
+        "in-memory"
+    }
+
+    fn saturation_ppm(&self) -> Option<u64> {
+        if self.max_entries == 0 {
+            return None;
+        }
+        // `entry_count` is `u64`; multiply first, then divide, capping at
+        // 1_000_000 to keep the gauge inside the `0..=1_000_000` ppm range
+        // even if `moka` over-counts under contention (it is documented as
+        // a best-effort approximation).
+        let ppm = self
+            .cache
+            .entry_count()
+            .saturating_mul(1_000_000)
+            .saturating_div(self.max_entries);
+        Some(ppm.min(1_000_000))
+    }
+}
+
+// ── Storage-backed bridge (Layer-1 repo → IdempotencyStore) ──────────────────
+
+/// Bridge that adapts a layer-1 [`IdempotencyStoreRepo`] (in
+/// `nebula-storage`) onto the API-side [`IdempotencyStore`] contract.
+///
+/// The repo speaks `CachedRecord` (status `u16`, headers as
+/// `Vec<(String, Vec<u8>)>`) so the storage layer stays free of `http`
+/// types. This bridge does the bidirectional translation:
+/// `CachedRecord ↔ CachedResponse` (`StatusCode` / `HeaderMap`). Decode
+/// failures map to [`IdempotencyStoreError::Decode`] and bubble up to
+/// the middleware as 500 — silently treating them as cache misses
+/// would drop replay protection on data corruption (ADR-0048).
+pub struct StorageBackedIdempotencyStore<R: IdempotencyStoreRepo> {
+    repo: Arc<R>,
+    ttl: Duration,
+}
+
+impl<R: IdempotencyStoreRepo> StorageBackedIdempotencyStore<R> {
+    /// Construct a bridge with the given TTL applied to every `put`.
+    pub fn new(repo: Arc<R>, ttl: Duration) -> Self {
+        Self { repo, ttl }
+    }
+
+    /// Borrow the underlying repo for sweep / introspection.
+    pub fn repo(&self) -> &Arc<R> {
+        &self.repo
+    }
+}
+
+impl<R: IdempotencyStoreRepo> fmt::Debug for StorageBackedIdempotencyStore<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StorageBackedIdempotencyStore")
+            .field("ttl_secs", &self.ttl.as_secs())
+            .finish()
+    }
+}
+
+fn record_to_response(record: CachedRecord) -> Result<CachedResponse, IdempotencyStoreError> {
+    let status = StatusCode::from_u16(record.status).map_err(|err| {
+        IdempotencyStoreError::Decode(format!("status code {}: {err}", record.status))
+    })?;
+    let mut headers = HeaderMap::with_capacity(record.headers.len());
+    for (name, value) in record.headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|err| IdempotencyStoreError::Decode(format!("header name {name:?}: {err}")))?;
+        let header_value = HeaderValue::from_bytes(&value).map_err(|err| {
+            IdempotencyStoreError::Decode(format!("header value for {name:?}: {err}"))
+        })?;
+        headers.append(header_name, header_value);
+    }
+    Ok(CachedResponse {
+        status,
+        headers,
+        body: record.body,
+        request_fingerprint: record.fingerprint,
+    })
+}
+
+fn response_to_record(response: &CachedResponse) -> CachedRecord {
+    let mut headers: Vec<(String, Vec<u8>)> = Vec::with_capacity(response.headers.len());
+    for (name, value) in &response.headers {
+        headers.push((name.as_str().to_owned(), value.as_bytes().to_vec()));
+    }
+    CachedRecord {
+        status: response.status.as_u16(),
+        headers,
+        body: response.body.clone(),
+        fingerprint: response.request_fingerprint,
+    }
+}
+
+#[async_trait]
+impl<R: IdempotencyStoreRepo + 'static> IdempotencyStore for StorageBackedIdempotencyStore<R> {
+    async fn get(&self, key: &str) -> Result<Option<Arc<CachedResponse>>, IdempotencyStoreError> {
+        let record = self
+            .repo
+            .get(key)
+            .await
+            .map_err(|err| IdempotencyStoreError::Backend(err.to_string()))?;
+        match record {
+            None => Ok(None),
+            Some(record) => Ok(Some(Arc::new(record_to_response(record)?))),
+        }
+    }
+
+    async fn put(
+        &self,
+        key: String,
+        response: Arc<CachedResponse>,
+    ) -> Result<(), IdempotencyStoreError> {
+        let record = response_to_record(&response);
+        self.repo
+            .put(key, record, self.ttl)
+            .await
+            .map_err(|err| IdempotencyStoreError::Backend(err.to_string()))
+    }
+
+    fn store_kind(&self) -> &'static str {
+        // The concrete kind depends on R; static dispatch through
+        // `R::store_kind` would require adding a method to the repo
+        // trait. Operators read backend selection from
+        // `API_IDEMPOTENCY_BACKEND` instead. Returning a generic label
+        // here keeps the cardinality low without leaking R's typename.
+        "storage-backed"
     }
 }
 
@@ -296,6 +513,7 @@ impl Default for IdempotencyConfig {
 pub struct IdempotencyLayer {
     store: Arc<dyn IdempotencyStore>,
     config: IdempotencyConfig,
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl IdempotencyLayer {
@@ -305,6 +523,7 @@ impl IdempotencyLayer {
         Self {
             store,
             config: IdempotencyConfig::default(),
+            metrics: None,
         }
     }
 
@@ -312,6 +531,21 @@ impl IdempotencyLayer {
     #[must_use]
     pub fn with_config(mut self, config: IdempotencyConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Attach a [`MetricsRegistry`] so the layer records
+    /// `nebula_api_idempotency_*` counters / gauge / histogram on every
+    /// outcome branch. When `None`, the layer skips metric recording but
+    /// still emits the existing `tracing` span fields.
+    ///
+    /// Constructor injection is intentional — the layer runs before
+    /// `axum::extract::State`, so it cannot pull the registry from
+    /// `AppState` at request time. `build_app` reads
+    /// `state.metrics_registry` and threads it in here.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Option<Arc<MetricsRegistry>>) -> Self {
+        self.metrics = metrics;
         self
     }
 }
@@ -324,6 +558,7 @@ impl<S> Layer<S> for IdempotencyLayer {
             inner,
             store: Arc::clone(&self.store),
             config: self.config.clone(),
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -334,6 +569,7 @@ pub struct IdempotencyService<S> {
     inner: S,
     store: Arc<dyn IdempotencyStore>,
     config: IdempotencyConfig,
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl<S> Service<Request> for IdempotencyService<S>
@@ -354,55 +590,160 @@ where
         let inner = self.inner.clone();
         let store = Arc::clone(&self.store);
         let config = self.config.clone();
-        Box::pin(async move { handle(inner, store, config, request).await })
+        let metrics = self.metrics.clone();
+        Box::pin(async move { handle(inner, store, config, metrics, request).await })
     }
 }
 
 // ── Core handling ────────────────────────────────────────────────────────────
 
+/// Metric counter family the request hits at this branch.
+///
+/// The string outcome on the tracing span is left as the operator-facing
+/// label; this enum is the structured shape used to drive
+/// `nebula_api_idempotency_*` counters. Decoupling them lets us extend
+/// span outcomes (`miss:resp_too_large`, `miss:passthrough`) without
+/// re-shuffling counter cardinality and vice-versa.
+#[derive(Debug, Clone, Copy)]
+enum MetricOutcome {
+    /// Pass-through (non-POST or no header) — no counter.
+    None,
+    /// Cache hit — bumps `nebula_api_idempotency_hits_total`.
+    Hit,
+    /// Cache miss — bumps `nebula_api_idempotency_misses_total`. Covers
+    /// `miss:cached` (response stored), `miss:passthrough` (5xx not
+    /// cached), and `miss:resp_too_large` (handler ran but response
+    /// wasn't cacheable).
+    Miss,
+    /// Reject path with reason label (closed set per
+    /// [`idempotency_reject_reason`]).
+    Reject(&'static str),
+}
+
+fn record_outcome(
+    metrics: &Option<Arc<MetricsRegistry>>,
+    span_outcome: &'static str,
+    metric: MetricOutcome,
+) {
+    tracing::Span::current().record("outcome", span_outcome);
+    let Some(registry) = metrics.as_ref() else {
+        return;
+    };
+    match metric {
+        MetricOutcome::None => {},
+        MetricOutcome::Hit => {
+            if let Ok(c) = registry.counter(NEBULA_API_IDEMPOTENCY_HITS_TOTAL) {
+                c.inc();
+            }
+        },
+        MetricOutcome::Miss => {
+            if let Ok(c) = registry.counter(NEBULA_API_IDEMPOTENCY_MISSES_TOTAL) {
+                c.inc();
+            }
+        },
+        MetricOutcome::Reject(reason) => {
+            let labels = registry.interner().single("reason", reason);
+            if let Ok(c) = registry.counter_labeled(NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL, &labels) {
+                c.inc();
+            }
+        },
+    }
+    tracing::debug!(label = span_outcome, "idempotency metric recorded");
+}
+
+fn update_saturation(metrics: &Option<Arc<MetricsRegistry>>, store: &Arc<dyn IdempotencyStore>) {
+    let Some(registry) = metrics.as_ref() else {
+        return;
+    };
+    let Some(ppm) = store.saturation_ppm() else {
+        return;
+    };
+    if let Ok(g) = registry.gauge(NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM) {
+        g.set(i64::try_from(ppm).unwrap_or(i64::MAX));
+    }
+}
+
+/// Drop guard observing the middleware-path latency histogram regardless
+/// of which branch returned. Construction starts the timer; `Drop` reads
+/// the elapsed time and records it. Putting it on the stack at the top of
+/// `handle` avoids inserting a record call at every return statement.
+struct LatencyGuard {
+    metrics: Option<Arc<MetricsRegistry>>,
+    start: std::time::Instant,
+}
+
+impl Drop for LatencyGuard {
+    fn drop(&mut self) {
+        let Some(registry) = self.metrics.as_ref() else {
+            return;
+        };
+        let Ok(h) = registry.histogram(NEBULA_API_IDEMPOTENCY_LATENCY_MS) else {
+            return;
+        };
+        let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        h.observe(elapsed_ms);
+    }
+}
+
 #[tracing::instrument(
     name = "idempotency",
-    skip(inner, store, config, request),
+    skip(inner, store, config, metrics, request),
     fields(
         method = %request.method(),
         path = %request.uri().path(),
         idempotency_key = tracing::field::Empty,
         outcome = tracing::field::Empty,
+        cache_key_prefix = tracing::field::Empty,
+        identity_prefix = tracing::field::Empty,
+        body_size_bytes = tracing::field::Empty,
     )
 )]
 async fn handle<S>(
     inner: S,
     store: Arc<dyn IdempotencyStore>,
     config: IdempotencyConfig,
+    metrics: Option<Arc<MetricsRegistry>>,
     request: Request,
 ) -> Result<Response, S::Error>
 where
     S: Service<Request, Response = Response> + Clone + Send + 'static,
     S::Future: Send + 'static,
 {
+    let _latency_guard = LatencyGuard {
+        metrics: metrics.clone(),
+        start: std::time::Instant::now(),
+    };
     // Only POST is in scope for the M3.4 acceptance criteria. Other methods
     // pass through transparently — clients that send the header on a GET get
     // their request handled normally.
     if request.method() != Method::POST {
-        tracing::Span::current().record("outcome", "skip:non_post");
+        record_outcome(&metrics, "skip:non_post", MetricOutcome::None);
         return inner.oneshot(request).await;
     }
 
     // Header missing → opt-out. No allocation, no body buffering.
     let Some(raw_key) = request.headers().get(IDEMPOTENCY_KEY_HEADER) else {
-        tracing::Span::current().record("outcome", "skip:no_header");
+        record_outcome(&metrics, "skip:no_header", MetricOutcome::None);
         return inner.oneshot(request).await;
     };
 
     let Ok(key_str) = raw_key.to_str() else {
-        tracing::Span::current().record("outcome", "reject:non_ascii_header");
+        record_outcome(
+            &metrics,
+            "reject:non_ascii_header",
+            MetricOutcome::Reject(idempotency_reject_reason::NON_ASCII_HEADER),
+        );
         return Ok(bad_request("Idempotency-Key must be valid ASCII"));
     };
 
     let key = match IdempotencyKey::parse(key_str) {
         Ok(k) => k,
         Err(err) => {
-            tracing::Span::current().record("outcome", "reject:invalid_key");
+            record_outcome(
+                &metrics,
+                "reject:invalid_key",
+                MetricOutcome::Reject(idempotency_reject_reason::INVALID_KEY),
+            );
             return Ok(bad_request(&err.to_string()));
         },
     };
@@ -415,7 +756,11 @@ where
     let (parts, body) = request.into_parts();
     let body_result = axum::body::to_bytes(body, config.max_request_body_bytes).await;
     let Ok(body_bytes) = body_result else {
-        tracing::Span::current().record("outcome", "skip:body_too_large");
+        record_outcome(
+            &metrics,
+            "skip:body_too_large",
+            MetricOutcome::Reject(idempotency_reject_reason::BODY_TOO_LARGE),
+        );
         tracing::warn!(
             "request body exceeds idempotency max_request_body_bytes — \
                  forwarding without caching"
@@ -424,20 +769,51 @@ where
         return inner.oneshot(request).await;
     };
     let body_vec: Vec<u8> = body_bytes.into();
+    tracing::Span::current().record("body_size_bytes", body_vec.len());
 
     let request_fingerprint = fingerprint_request_body(&body_vec);
     let identity = identity_fingerprint(&parts.headers);
     let cache_key = build_cache_key(&parts.method, parts.uri.path(), &key, &identity);
+    // Privacy: never record the full cache key or identity fingerprint —
+    // the key embeds the client-supplied `Idempotency-Key` and identity
+    // material derived from auth headers. An 8-byte prefix (cache key)
+    // and 16 hex chars (identity, 8 leading bytes) are enough to
+    // disambiguate spans in a trace without leaking client identity into
+    // log sinks.
+    let cache_key_prefix: String = cache_key.chars().take(8).collect();
+    let mut identity_prefix = String::with_capacity(16);
+    for byte in &identity[..8] {
+        identity_prefix.push_str(&format!("{byte:02x}"));
+    }
+    tracing::Span::current().record("cache_key_prefix", cache_key_prefix.as_str());
+    tracing::Span::current().record("identity_prefix", identity_prefix.as_str());
 
-    if let Some(cached) = store.get(&cache_key).await {
+    let lookup = match store.get(&cache_key).await {
+        Ok(opt) => opt,
+        Err(err) => {
+            record_outcome(&metrics, "error:get", MetricOutcome::None);
+            tracing::error!(
+                error = %err,
+                "idempotency-store get failed — failing the request closed (ADR-0048)"
+            );
+            return Ok(internal_error(
+                "idempotency store unavailable; request rejected to preserve replay protection",
+            ));
+        },
+    };
+    if let Some(cached) = lookup {
         if cached.request_fingerprint != request_fingerprint {
-            tracing::Span::current().record("outcome", "reject:body_mismatch");
+            record_outcome(
+                &metrics,
+                "reject:body_mismatch",
+                MetricOutcome::Reject(idempotency_reject_reason::BODY_MISMATCH),
+            );
             tracing::warn!("Idempotency-Key reused with different request body — rejecting");
             return Ok(unprocessable(
                 "Idempotency-Key reused with a different request payload",
             ));
         }
-        tracing::Span::current().record("outcome", "hit");
+        record_outcome(&metrics, "hit", MetricOutcome::Hit);
         tracing::debug!(status = cached.status.as_u16(), "idempotency cache hit");
         return Ok(Arc::unwrap_or_clone(cached).into_response());
     }
@@ -450,7 +826,7 @@ where
     let (resp_parts, resp_body) = response.into_parts();
     let resp_result = axum::body::to_bytes(resp_body, config.max_response_body_bytes).await;
     let Ok(resp_bytes) = resp_result else {
-        tracing::Span::current().record("outcome", "miss:resp_too_large");
+        record_outcome(&metrics, "miss:resp_too_large", MetricOutcome::Miss);
         tracing::warn!(
             "response body exceeds idempotency max_response_body_bytes — \
                  returning to caller without caching"
@@ -466,15 +842,30 @@ where
             body: resp_vec.clone(),
             request_fingerprint,
         });
-        store.put(cache_key, cached).await;
-        tracing::Span::current().record("outcome", "miss:cached");
-        tracing::debug!(
-            status = resp_parts.status.as_u16(),
-            bytes = resp_vec.len(),
-            "idempotency cache miss — response cached"
-        );
+        match store.put(cache_key, cached).await {
+            Ok(()) => {
+                update_saturation(&metrics, &store);
+                record_outcome(&metrics, "miss:cached", MetricOutcome::Miss);
+                tracing::debug!(
+                    status = resp_parts.status.as_u16(),
+                    bytes = resp_vec.len(),
+                    "idempotency cache miss — response cached"
+                );
+            },
+            Err(err) => {
+                // `put` failure does not surface to the caller — the
+                // response is valid, only the dedup record was lost.
+                // The next replay of this key will run the inner
+                // handler again. Operators see the warn-level log.
+                record_outcome(&metrics, "miss:put_failed", MetricOutcome::Miss);
+                tracing::warn!(
+                    error = %err,
+                    "idempotency cache put failed — response returned without caching"
+                );
+            },
+        }
     } else {
-        tracing::Span::current().record("outcome", "miss:passthrough");
+        record_outcome(&metrics, "miss:passthrough", MetricOutcome::Miss);
         tracing::debug!(
             status = resp_parts.status.as_u16(),
             "idempotency cache miss — response not cached (5xx)"
@@ -573,6 +964,14 @@ fn filter_response_headers(headers: &HeaderMap) -> HeaderMap {
         out.append(name.clone(), value.clone());
     }
     out
+}
+
+fn internal_error(detail: &str) -> Response {
+    problem_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal Server Error",
+        detail,
+    )
 }
 
 fn bad_request(detail: &str) -> Response {
@@ -722,10 +1121,23 @@ mod tests {
             body: b"hello".to_vec(),
             request_fingerprint: [0u8; 32],
         });
-        store.put("k1".to_owned(), Arc::clone(&resp)).await;
-        let fetched = store.get("k1").await.expect("entry must be present");
+        store
+            .put("k1".to_owned(), Arc::clone(&resp))
+            .await
+            .expect("in-memory put never errors");
+        let fetched = store
+            .get("k1")
+            .await
+            .expect("get must not error")
+            .expect("entry must be present");
         assert_eq!(fetched.body, b"hello");
-        assert!(store.get("missing").await.is_none());
+        assert!(
+            store
+                .get("missing")
+                .await
+                .expect("get must not error")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -737,11 +1149,11 @@ mod tests {
             body: Vec::new(),
             request_fingerprint: [0u8; 32],
         });
-        store.put("expiring".to_owned(), resp).await;
-        assert!(store.get("expiring").await.is_some());
+        store.put("expiring".to_owned(), resp).await.expect("put");
+        assert!(store.get("expiring").await.expect("get").is_some());
         tokio::time::sleep(Duration::from_millis(120)).await;
         // moka may need a tick to evict; force a sync.
         store.cache.run_pending_tasks().await;
-        assert!(store.get("expiring").await.is_none());
+        assert!(store.get("expiring").await.expect("get").is_none());
     }
 }

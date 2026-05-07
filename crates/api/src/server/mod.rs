@@ -4,12 +4,16 @@
 //! logic in one place while allowing different ingress transports (REST API,
 //! webhook-only, realtime placeholder) to boot as separate binaries.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{Router, http::StatusCode};
 use thiserror::Error;
 
-use crate::{ApiConfig, ApiConfigError, AppState, app};
+use crate::{
+    ApiConfig, ApiConfigError, AppState, app,
+    config::IdempotencyBackend,
+    middleware::{IdempotencyStore, InMemoryIdempotencyStore},
+};
 
 mod api;
 mod webhook;
@@ -58,6 +62,22 @@ pub enum TransportInitError {
     /// Failed to construct a transport app context.
     #[error("{0}")]
     ContextFactory(String),
+    /// `API_IDEMPOTENCY_BACKEND` selects a backend that the current build
+    /// cannot satisfy.
+    ///
+    /// Today this fires when an operator sets
+    /// `API_IDEMPOTENCY_BACKEND=postgres` while Phase E (PG-backed store) is
+    /// not yet shipped. Per ADR-0048 fail-closed contract, the binary
+    /// refuses to boot rather than silently fall back to in-memory dedup.
+    #[error(
+        "API_IDEMPOTENCY_BACKEND={requested} requires {requirement}; set API_IDEMPOTENCY_BACKEND=memory or land the missing wiring"
+    )]
+    IdempotencyBackendUnavailable {
+        /// Backend the operator requested.
+        requested: &'static str,
+        /// What is missing for that backend to work.
+        requirement: &'static str,
+    },
 }
 
 /// Shared application context passed through transport bootstrapping.
@@ -82,7 +102,7 @@ pub struct DefaultAppContextFactory;
 impl AppContextFactory for DefaultAppContextFactory {
     fn build_context(&self, api_config: ApiConfig) -> Result<AppContext, TransportInitError> {
         Ok(AppContext {
-            state: default_state(&api_config),
+            state: default_state(&api_config)?,
             api_config,
         })
     }
@@ -161,18 +181,69 @@ impl<F: AppContextFactory> ServerRuntime<F> {
 }
 
 /// Build default local-first state used by transport binaries.
-pub fn default_state(api_config: &ApiConfig) -> AppState {
+///
+/// Returns an error when `api_config.idempotency.backend` requests a
+/// backend that this build cannot satisfy (today: `Postgres` before
+/// Phase E lands). The fail-closed contract is documented in ADR-0048.
+pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitError> {
     let workflow_repo = Arc::new(nebula_storage::InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
 
-    AppState::new(
+    let idempotency_store = build_idempotency_store(api_config)?;
+
+    Ok(AppState::new(
         workflow_repo,
         execution_repo,
         control_queue_repo,
         api_config.jwt_secret.clone(),
     )
     .with_api_keys(api_config.api_keys.clone())
+    .with_idempotency_store(idempotency_store))
+}
+
+/// Construct the idempotency store from `api_config.idempotency`.
+///
+/// `Memory` outside dev mode emits a startup `tracing::warn!` so the
+/// "dedup state is lost on restart and across runners" failure mode is
+/// visible in operational logs (per ADR-0048).
+///
+/// `Postgres` returns [`TransportInitError::IdempotencyBackendUnavailable`]
+/// until Phase E ships the PG-backed impl — silent fallback to memory is
+/// rejected per `feedback_no_shims.md`.
+pub fn build_idempotency_store(
+    api_config: &ApiConfig,
+) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
+    match api_config.idempotency.backend {
+        IdempotencyBackend::Memory => {
+            let env_mode = std::env::var("NEBULA_ENV").unwrap_or_default();
+            let is_dev = matches!(env_mode.as_str(), "development" | "dev" | "local");
+            if !is_dev {
+                tracing::warn!(
+                    backend = "memory",
+                    nebula_env = %env_mode,
+                    "idempotency: in-memory store selected — dedup state is lost on restart and across runners"
+                );
+            }
+            if api_config.idempotency.sweep_interval_secs > 0
+                && api_config.idempotency.sweep_interval_secs < 60
+            {
+                tracing::warn!(
+                    sweep_interval_secs = api_config.idempotency.sweep_interval_secs,
+                    "idempotency: sweep interval < 60s; consider raising it to avoid hot-loop sweeps"
+                );
+            }
+            let store = InMemoryIdempotencyStore::with_ttl_and_capacity(
+                Duration::from_secs(api_config.idempotency.ttl_secs),
+                api_config.idempotency.max_entries,
+            );
+            Ok(Arc::new(store))
+        },
+        IdempotencyBackend::Postgres => Err(TransportInitError::IdempotencyBackendUnavailable {
+            requested: "postgres",
+            requirement: "Phase E (PgIdempotencyStore + migration 0024)",
+        }),
+    }
 }
 
 fn resolve_bind_address(

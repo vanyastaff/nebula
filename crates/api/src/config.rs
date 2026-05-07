@@ -25,6 +25,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::middleware::idempotency::{
+    DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECS,
+};
+
 /// Validated HS256 signing key.
 ///
 /// Construction via [`JwtSecret::new`] is the ONLY place length and
@@ -168,6 +172,20 @@ pub enum ApiConfigError {
         /// Underlying parse error.
         source: std::str::ParseBoolError,
     },
+
+    /// An `API_*` enum-typed env var failed to match a known variant.
+    ///
+    /// Used by [`ApiConfig::from_env`] for `API_IDEMPOTENCY_BACKEND` and
+    /// other enum-shaped knobs added in future revisions. Carries the raw
+    /// value so operator-facing logs can show the typo without re-reading
+    /// the env.
+    #[error("API_{var} invalid: {raw:?}")]
+    ParseEnum {
+        /// Name of the env var suffix after `API_`.
+        var: &'static str,
+        /// The raw value the operator supplied (already-failed parse).
+        raw: String,
+    },
 }
 
 // ── Config sub-structs ─────────────────────────────────────────────────────
@@ -248,6 +266,83 @@ impl Default for VersioningConfig {
         Self {
             supported_versions: vec!["v1".to_string()],
             deprecated_versions: Vec::new(),
+        }
+    }
+}
+
+/// Idempotency-Key middleware configuration.
+///
+/// See ADR-0048 for the backend selection contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdempotencyApiConfig {
+    /// Storage backend for cached idempotent responses.
+    ///
+    /// `Memory` is correct for dev / single-process tests but loses dedup
+    /// state across restart and across runners — operators must select
+    /// `Postgres` for any deployment that runs more than one API replica
+    /// or expects stable behaviour across restarts.
+    pub backend: IdempotencyBackend,
+
+    /// Cached-entry lifetime in seconds. Defaults to
+    /// [`DEFAULT_TTL_SECS`] (24 h, the IETF draft recommendation).
+    pub ttl_secs: u64,
+
+    /// Maximum number of cached entries (in-memory backend only —
+    /// `moka::Cache` honours this as a hard cap; the PG backend treats
+    /// `expires_at` as the eviction signal).
+    pub max_entries: u64,
+
+    /// Maximum buffered request body size (bytes) eligible for caching.
+    /// Requests larger than this pass through without idempotency tracking.
+    pub max_request_body_bytes: usize,
+
+    /// Maximum buffered response body size (bytes) eligible for caching.
+    /// Larger responses are returned to the caller but never cached.
+    pub max_response_body_bytes: usize,
+
+    /// PG-only: cadence for the background expired-row sweep.
+    ///
+    /// `0` disables the sweep (dev / single-process runs); the memory
+    /// backend ignores this field because `moka` evicts on TTL. A value
+    /// `< 60` triggers a startup `tracing::warn!` (see ADR-0048
+    /// "sweep cadence sanity floor") but is not rejected.
+    pub sweep_interval_secs: u64,
+}
+
+/// Backend selection for the idempotency store.
+///
+/// See ADR-0048 for the decision rationale and the fail-closed contract
+/// in the composition root (selecting `Postgres` without a configured
+/// `DATABASE_URL` is a hard startup error).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdempotencyBackend {
+    /// Process-local cache (`moka::future::Cache`). Correct for dev and
+    /// for single-process tests; loses state on restart and cannot be
+    /// shared across runners.
+    Memory,
+    /// PostgreSQL-backed durable store (see ADR-0048). Survives restart
+    /// and is shared across runners that point at the same database.
+    Postgres,
+}
+
+impl IdempotencyApiConfig {
+    /// Default TTL applied when [`from_env`](ApiConfig::from_env) does not
+    /// see `API_IDEMPOTENCY_TTL_SECS`. Defined here (rather than reusing
+    /// the middleware constant directly) so future tuning can diverge
+    /// without churning every test.
+    pub const DEFAULT_SWEEP_INTERVAL_SECS: u64 = 300;
+}
+
+impl Default for IdempotencyApiConfig {
+    fn default() -> Self {
+        Self {
+            backend: IdempotencyBackend::Memory,
+            ttl_secs: DEFAULT_TTL_SECS,
+            max_entries: DEFAULT_MAX_ENTRIES,
+            max_request_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_response_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            sweep_interval_secs: Self::DEFAULT_SWEEP_INTERVAL_SECS,
         }
     }
 }
@@ -358,6 +453,10 @@ pub struct ApiConfig {
 
     /// Pagination defaults and caps.
     pub pagination: PaginationConfig,
+
+    /// Idempotency-Key middleware configuration (see ADR-0048).
+    #[serde(default)]
+    pub idempotency: IdempotencyApiConfig,
 }
 
 impl std::fmt::Debug for ApiConfig {
@@ -380,6 +479,7 @@ impl std::fmt::Debug for ApiConfig {
             .field("cors_config", &self.cors_config)
             .field("versioning", &self.versioning)
             .field("pagination", &self.pagination)
+            .field("idempotency", &self.idempotency)
             .finish()
     }
 }
@@ -500,6 +600,15 @@ impl ApiConfig {
         let request_id_header =
             std::env::var("API_REQUEST_ID_HEADER").unwrap_or_else(|_| "x-request-id".to_string());
 
+        let idempotency = Self::idempotency_from_env()?;
+        tracing::info!(
+            backend = ?idempotency.backend,
+            ttl_secs = idempotency.ttl_secs,
+            max_entries = idempotency.max_entries,
+            sweep_interval_secs = idempotency.sweep_interval_secs,
+            "idempotency: config loaded"
+        );
+
         Ok(Self {
             bind_address,
             request_timeout,
@@ -521,6 +630,45 @@ impl ApiConfig {
             },
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
+            idempotency,
+        })
+    }
+
+    fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {
+        let backend = match std::env::var("API_IDEMPOTENCY_BACKEND") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "memory" => IdempotencyBackend::Memory,
+                "postgres" => IdempotencyBackend::Postgres,
+                _ => {
+                    return Err(ApiConfigError::ParseEnum {
+                        var: "IDEMPOTENCY_BACKEND",
+                        raw,
+                    });
+                },
+            },
+            Err(_) => IdempotencyBackend::Memory,
+        };
+
+        let ttl_secs = parse_u64_env("IDEMPOTENCY_TTL_SECS", DEFAULT_TTL_SECS)?;
+        let max_entries = parse_u64_env("IDEMPOTENCY_MAX_ENTRIES", DEFAULT_MAX_ENTRIES)?;
+        let max_request_body_bytes =
+            parse_usize_env("IDEMPOTENCY_MAX_REQUEST_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?;
+        let max_response_body_bytes = parse_usize_env(
+            "IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
+            DEFAULT_MAX_BODY_BYTES,
+        )?;
+        let sweep_interval_secs = parse_u64_env(
+            "IDEMPOTENCY_SWEEP_INTERVAL_SECS",
+            IdempotencyApiConfig::DEFAULT_SWEEP_INTERVAL_SECS,
+        )?;
+
+        Ok(IdempotencyApiConfig {
+            backend,
+            ttl_secs,
+            max_entries,
+            max_request_body_bytes,
+            max_response_body_bytes,
+            sweep_interval_secs,
         })
     }
 
@@ -553,7 +701,28 @@ impl ApiConfig {
             cors_config: CorsConfig::default(),
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
+            idempotency: IdempotencyApiConfig::default(),
         }
+    }
+}
+
+fn parse_u64_env(suffix: &'static str, default: u64) -> Result<u64, ApiConfigError> {
+    match std::env::var(format!("API_{suffix}")) {
+        Ok(raw) => raw.parse().map_err(|source| ApiConfigError::ParseInt {
+            var: suffix,
+            source,
+        }),
+        Err(_) => Ok(default),
+    }
+}
+
+fn parse_usize_env(suffix: &'static str, default: usize) -> Result<usize, ApiConfigError> {
+    match std::env::var(format!("API_{suffix}")) {
+        Ok(raw) => raw.parse().map_err(|source| ApiConfigError::ParseInt {
+            var: suffix,
+            source,
+        }),
+        Err(_) => Ok(default),
     }
 }
 
@@ -592,6 +761,12 @@ mod tests {
                 "API_ENABLE_TRACING",
                 "API_RATE_LIMIT",
                 "API_KEYS",
+                "API_IDEMPOTENCY_BACKEND",
+                "API_IDEMPOTENCY_TTL_SECS",
+                "API_IDEMPOTENCY_MAX_ENTRIES",
+                "API_IDEMPOTENCY_MAX_REQUEST_BODY_BYTES",
+                "API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
+                "API_IDEMPOTENCY_SWEEP_INTERVAL_SECS",
             ] {
                 std::env::remove_var(key);
             }
@@ -712,5 +887,117 @@ mod tests {
         let err = JwtSecret::new(JwtSecret::DEV_PLACEHOLDER.to_string())
             .expect_err("placeholder must be rejected");
         assert!(matches!(err, ApiConfigError::JwtSecretIsDevPlaceholder));
+    }
+
+    #[test]
+    fn from_env_idempotency_defaults_to_memory() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        }
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Memory);
+        assert_eq!(cfg.idempotency.ttl_secs, DEFAULT_TTL_SECS);
+        assert_eq!(cfg.idempotency.max_entries, DEFAULT_MAX_ENTRIES);
+        assert_eq!(
+            cfg.idempotency.sweep_interval_secs,
+            IdempotencyApiConfig::DEFAULT_SWEEP_INTERVAL_SECS
+        );
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_idempotency_accepts_postgres_backend() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_IDEMPOTENCY_BACKEND", "postgres");
+            std::env::set_var("API_IDEMPOTENCY_TTL_SECS", "3600");
+            std::env::set_var("API_IDEMPOTENCY_SWEEP_INTERVAL_SECS", "120");
+        }
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Postgres);
+        assert_eq!(cfg.idempotency.ttl_secs, 3600);
+        assert_eq!(cfg.idempotency.sweep_interval_secs, 120);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_idempotency_backend_is_case_insensitive() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_IDEMPOTENCY_BACKEND", "POSTGRES");
+        }
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Postgres);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_idempotency_rejects_unknown_backend() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_IDEMPOTENCY_BACKEND", "redis");
+        }
+
+        let err = ApiConfig::from_env().expect_err("unknown backend must error");
+        match err {
+            ApiConfigError::ParseEnum { var, raw } => {
+                assert_eq!(var, "IDEMPOTENCY_BACKEND");
+                assert_eq!(raw, "redis");
+            },
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_idempotency_rejects_invalid_ttl() {
+        let _g = env_lock();
+        clear_env();
+        // SAFETY: protected by env_lock.
+        unsafe {
+            std::env::set_var("NEBULA_ENV", "production");
+            std::env::set_var("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            std::env::set_var("API_IDEMPOTENCY_TTL_SECS", "not-a-number");
+        }
+
+        let err = ApiConfig::from_env().expect_err("non-numeric TTL must error");
+        match err {
+            ApiConfigError::ParseInt { var, .. } => {
+                assert_eq!(var, "IDEMPOTENCY_TTL_SECS");
+            },
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        clear_env();
+    }
+
+    #[test]
+    fn for_test_idempotency_defaults_to_memory() {
+        let cfg = ApiConfig::for_test();
+        assert_eq!(cfg.idempotency.backend, IdempotencyBackend::Memory);
+        assert!(cfg.idempotency.ttl_secs > 0);
     }
 }

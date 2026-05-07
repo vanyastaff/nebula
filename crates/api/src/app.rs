@@ -2,16 +2,22 @@
 //!
 //! Сборка Router с middleware (Production-Grade).
 
-use std::time::Duration;
+use std::{future::Future, sync::Arc, time::Duration};
 
 use axum::{Router, extract::DefaultBodyLimit, middleware, response::Response};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 use utoipa_swagger_ui::SwaggerUi;
 
+#[cfg(any(test, feature = "test-util"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::{
-    config::ApiConfig,
-    middleware::{rate_limit::RateLimitState, security_headers::security_headers_middleware},
+    config::{ApiConfig, IdempotencyApiConfig},
+    middleware::{
+        IdempotencyLayer, idempotency::IdempotencyConfig, rate_limit::RateLimitState,
+        security_headers::security_headers_middleware,
+    },
     routes,
     state::AppState,
 };
@@ -75,7 +81,44 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // REST default is not the right default for every webhook
     // provider. Operators tune the REST cap via `API_MAX_BODY_SIZE`
     // (defaulting to `config::REST_BODY_LIMIT_BYTES`).
-    let routes = api_routes.layer(DefaultBodyLimit::max(config.max_body_size));
+    let api_routes = api_routes.layer(DefaultBodyLimit::max(config.max_body_size));
+
+    // Test-only echo / fail routes (used by `tests/idempotency_e2e.rs`).
+    // Merged BEFORE the idempotency layer so the dedup contract covers
+    // them; gated behind `test-util` so production builds never include
+    // these endpoints. Per ADR-0047 they go through `axum::Router::merge`
+    // (not `OpenApiRouter`) so the spec stays clean — no `_test/*` paths
+    // in `/api/v1/openapi.json`.
+    #[cfg(any(test, feature = "test-util"))]
+    let api_routes = api_routes.merge(test_echo_router::<()>());
+
+    // Mount idempotency on API routes ONLY — webhook ingress has its own
+    // dedup contract (ROADMAP §M3.3 — provider signature + replay-window
+    // timestamp). Routing webhook traffic through the API idempotency
+    // cache would inflate `nebula_api_idempotency_misses_total` with
+    // provider traffic that never carries `Idempotency-Key` and conflate
+    // two distinct dedup surfaces. See ADR-0048.
+    let api_routes = if let Some(store) = state.idempotency_store.as_ref() {
+        debug_assert!(
+            config.idempotency.ttl_secs > 0,
+            "idempotency TTL must be positive — startup misconfiguration"
+        );
+        tracing::info!(
+            layer = "idempotency",
+            store_kind = store.store_kind(),
+            "build_app: mounting idempotency layer"
+        );
+        api_routes.layer(
+            IdempotencyLayer::new(Arc::clone(store))
+                .with_config(layer_config_from(&config.idempotency))
+                .with_metrics(state.metrics_registry.clone()),
+        )
+    } else {
+        tracing::warn!(
+            "build_app: idempotency_store not configured — POST endpoints lack replay protection"
+        );
+        api_routes
+    };
 
     // Merge the webhook transport router (if attached). Webhook
     // routes live alongside REST API routes on the same axum app,
@@ -83,8 +126,8 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // works because the webhook router carries its own state type
     // (`WebhookTransport`) that does not collide with `AppState`.
     let routes = match state.webhook_transport {
-        Some(transport) => routes.merge(transport.router()),
-        None => routes,
+        Some(transport) => api_routes.merge(transport.router()),
+        None => api_routes,
     };
 
     // Build per-IP rate limiter from config.
@@ -146,11 +189,72 @@ async fn request_id_middleware(
     response
 }
 
+/// Test-only echo / fail router used by `tests/idempotency_e2e.rs`.
+///
+/// Two routes:
+/// - `POST /api/v1/_test/echo` — returns `200 OK` with body
+///   `echo:<call_count>:<request_payload>`. The counter is per
+///   `build_app` invocation (process-local, fresh per test) and lets
+///   tests prove a hit bypassed the inner handler.
+/// - `POST /api/v1/_test/fail` — returns `500 Internal Server Error`
+///   with body `boom:<call_count>`. Used to assert that 5xx responses
+///   are not cached and the inner handler runs every call.
+///
+/// Mounted via plain `axum::Router::merge` (NOT `OpenApiRouter`) so the
+/// fixture stays out of the served OpenAPI spec — production builds
+/// don't include this module at all (gated by `feature = "test-util"`),
+/// and tests get predictable handlers without the auth/RBAC stack.
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) fn test_echo_router<S: Clone + Send + Sync + 'static>() -> Router<S> {
+    use axum::{Extension, body::Bytes, http::StatusCode, response::IntoResponse, routing::post};
+
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    Router::new()
+        .route(
+            "/api/v1/_test/echo",
+            post(
+                |Extension(c): Extension<Arc<AtomicUsize>>, body: Bytes| async move {
+                    let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+                    let payload = String::from_utf8_lossy(&body);
+                    (StatusCode::OK, format!("echo:{n}:{payload}")).into_response()
+                },
+            ),
+        )
+        .route(
+            "/api/v1/_test/fail",
+            post(|Extension(c): Extension<Arc<AtomicUsize>>| async move {
+                let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("boom:{n}")).into_response()
+            }),
+        )
+        .layer(Extension(counter))
+}
+
+/// Map `ApiConfig.idempotency` body-byte caps onto the middleware's
+/// internal [`IdempotencyConfig`].
+///
+/// The middleware ignores the TTL / max-entries / sweep-cadence fields
+/// from [`IdempotencyApiConfig`] — those are properties of the
+/// **store**, set at composition-root time when the operator builds
+/// `InMemoryIdempotencyStore::with_ttl_and_capacity` /
+/// `PgIdempotencyStore::new`. Only the body-size guards live on the
+/// per-request layer config.
+fn layer_config_from(cfg: &IdempotencyApiConfig) -> IdempotencyConfig {
+    IdempotencyConfig {
+        max_request_body_bytes: cfg.max_request_body_bytes,
+        max_response_body_bytes: cfg.max_response_body_bytes,
+    }
+}
+
 /// Build CORS layer from config
 fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     use axum::http::{HeaderValue, Method, header};
 
-    use crate::middleware::request_id::X_REQUEST_ID;
+    use crate::middleware::{
+        idempotency::{IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER},
+        request_id::X_REQUEST_ID,
+    };
 
     let mut cors = CorsLayer::new();
 
@@ -184,14 +288,26 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     // OPTIONS probe. The policy must match the *protocol surface*,
     // not the *current tenant config*: enabling API keys later
     // should not need a restart for preflight to work.
+    //
+    // `Idempotency-Key` is here so cross-origin POSTs that opt into
+    // replay protection clear the preflight; without it browsers
+    // strip the header before the server sees it (M3.4 / ADR-0048).
     .allow_headers([
         header::CONTENT_TYPE,
         header::AUTHORIZATION,
         header::ACCEPT,
         header::HeaderName::from_static(X_REQUEST_ID),
         crate::middleware::auth::X_API_KEY.clone(),
+        header::HeaderName::from_static(IDEMPOTENCY_KEY_HEADER),
     ])
-    .expose_headers([header::HeaderName::from_static(X_REQUEST_ID)])
+    // `Idempotent-Replay` is exposed so JS clients can read it on the
+    // response and tell a cache-hit replay apart from a fresh handler
+    // run; non-exposed headers are stripped by the browser before
+    // `fetch().headers` sees them.
+    .expose_headers([
+        header::HeaderName::from_static(X_REQUEST_ID),
+        IDEMPOTENT_REPLAY_HEADER,
+    ])
     .max_age(Duration::from_secs(cors_cfg.max_age_secs))
 }
 
@@ -207,6 +323,46 @@ pub async fn serve(app: Router, addr: std::net::SocketAddr) -> Result<(), std::i
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
+    .await?;
+
+    Ok(())
+}
+
+/// Run the server with a caller-supplied graceful-shutdown future.
+///
+/// Used by composition roots that must coordinate axum's shutdown with
+/// background tasks (e.g. the M3.4 idempotency sweep task). The `shutdown`
+/// future fires on either OS signals or when the caller's
+/// `CancellationToken` is flipped — the example pattern is:
+///
+/// ```ignore
+/// let token = tokio_util::sync::CancellationToken::new();
+/// let token_for_signal = token.clone();
+/// tokio::spawn(async move {
+///     // wait for OS signal, flip token
+///     wait_for_os_signal().await;
+///     token_for_signal.cancel();
+/// });
+/// // sweep task observes `token.cancelled()`
+/// // tokio::spawn(...);
+/// app::serve_with_shutdown(app, addr, async move { token.cancelled().await }).await
+/// ```
+pub async fn serve_with_shutdown<F>(
+    app: Router,
+    addr: std::net::SocketAddr,
+    shutdown: F,
+) -> Result<(), std::io::Error>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("Server listening on {}", addr);
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
     .await?;
 
     Ok(())

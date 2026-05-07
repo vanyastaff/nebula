@@ -19,7 +19,8 @@ use nebula_storage::{
 use tokio::sync::RwLock;
 
 use crate::{
-    auth::AuthBackend, config::JwtSecret, errors::ApiError, services::webhook::WebhookTransport,
+    auth::AuthBackend, config::JwtSecret, errors::ApiError, middleware::IdempotencyStore,
+    services::webhook::WebhookTransport,
 };
 
 // ── Port traits ──────────────────────────────────────────────────────────────
@@ -131,6 +132,20 @@ pub struct AppState {
 
     /// Optional membership store for RBAC role lookups.
     pub membership_store: Option<Arc<dyn MembershipStore>>,
+
+    /// Optional idempotency store backing [`crate::middleware::IdempotencyLayer`].
+    ///
+    /// When `Some`, `build_app` mounts the layer on `api_routes` (NOT on the
+    /// merged webhook transport) so every state-changing API endpoint is
+    /// replay-protected. When `None`, the layer is not mounted and POST
+    /// endpoints have no replay protection — acceptable for tests that build
+    /// minimal routers but a misconfiguration in production.
+    ///
+    /// See ADR-0048 for the backend selection contract; the composition root
+    /// chooses between [`crate::middleware::InMemoryIdempotencyStore`] and a
+    /// PG-backed bridge (`StorageBackedIdempotencyStore<PgIdempotencyStore>`)
+    /// based on `ApiConfig.idempotency.backend`.
+    pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 }
 
 impl AppState {
@@ -162,6 +177,7 @@ impl AppState {
             workspace_resolver: None,
             auth_backend: None,
             membership_store: None,
+            idempotency_store: None,
         }
     }
 
@@ -233,6 +249,17 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_membership_store(mut self, store: Arc<dyn MembershipStore>) -> Self {
         self.membership_store = Some(store);
+        self
+    }
+
+    /// Attach an idempotency store; `build_app` mounts
+    /// [`crate::middleware::IdempotencyLayer`] on the API router when this is
+    /// `Some`.
+    ///
+    /// See ADR-0048 for the backend selection contract.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_idempotency_store(mut self, store: Arc<dyn IdempotencyStore>) -> Self {
+        self.idempotency_store = Some(store);
         self
     }
 }
