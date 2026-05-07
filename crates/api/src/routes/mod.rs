@@ -19,6 +19,7 @@
 pub mod auth;
 pub mod catalog;
 pub mod health;
+pub mod internal;
 pub mod me;
 pub mod metrics;
 pub mod org;

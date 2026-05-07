@@ -54,6 +54,50 @@ pub struct WebhookActivationSpec {
     pub rate_limit_per_minute: Option<u64>,
 }
 
+impl WebhookActivationSpec {
+    /// Construct a spec with the required fields populated. Optional
+    /// knobs default to `None`; chain `with_*` to set them.
+    #[must_use]
+    pub fn new(action_kind: impl Into<String>, secret: impl Into<Vec<u8>>) -> Self {
+        Self {
+            action_kind: action_kind.into(),
+            secret: secret.into(),
+            replay_window_secs: None,
+            timestamp_header: None,
+            provider_config: None,
+            rate_limit_per_minute: None,
+        }
+    }
+
+    /// Override the replay window (seconds).
+    #[must_use]
+    pub fn with_replay_window_secs(mut self, secs: u64) -> Self {
+        self.replay_window_secs = Some(secs);
+        self
+    }
+
+    /// Override the timestamp header name.
+    #[must_use]
+    pub fn with_timestamp_header(mut self, header: impl Into<String>) -> Self {
+        self.timestamp_header = Some(header.into());
+        self
+    }
+
+    /// Attach a provider-specific JSON config blob.
+    #[must_use]
+    pub fn with_provider_config(mut self, config: serde_json::Value) -> Self {
+        self.provider_config = Some(config);
+        self
+    }
+
+    /// Override the per-key rate-limit budget (requests per minute).
+    #[must_use]
+    pub fn with_rate_limit_per_minute(mut self, rpm: u64) -> Self {
+        self.rate_limit_per_minute = Some(rpm);
+        self
+    }
+}
+
 /// Failures from [`WebhookActionFactory::build`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

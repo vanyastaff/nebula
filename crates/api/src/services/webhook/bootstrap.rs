@@ -1,0 +1,588 @@
+//! Storage-driven webhook bootstrap (M3.3 / ADR-0049).
+//!
+//! Walks every active operator-configured webhook activation in
+//! storage, instantiates the matching `WebhookActionFactory`, and
+//! registers the resulting handler in the [`WebhookTransport`] under
+//! its slug coordinates.
+//!
+//! # Failure isolation
+//!
+//! [`bootstrap_webhook_activations`] is **best-effort**: a single
+//! row that fails to resolve its secret, fails its factory build, or
+//! collides with an existing registration is logged at `warn` level
+//! and counted in the returned [`BootstrapReport`]. The function only
+//! returns `Err` for storage-layer failures (connection errors), so
+//! the composition root can choose its own degraded-mode policy
+//! (typically: log, leave the slug map empty, surface `/healthz`
+//! degraded). See ADR-0049 for the rationale.
+//!
+//! The composition root invokes this function before handing
+//! [`crate::AppState`] into [`crate::app::build_app`] — the `Router`
+//! builder itself stays synchronous.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use nebula_action::{
+    BuiltWebhookHandler, FactoryError, TriggerHandler, TriggerRuntimeContext,
+    webhook::factory::WebhookActivationSpec as ActionWebhookActivationSpec,
+};
+use nebula_engine::ActionRegistry;
+use nebula_storage::{
+    StorageError,
+    repos::WebhookActivationRepo,
+    rows::{
+        WebhookActivationRecord, WebhookActivationSpec as StorageWebhookActivationSpec,
+        WebhookTimestampFormat,
+    },
+};
+use thiserror::Error;
+
+use super::{
+    key::TriggerCoordinates,
+    transport::{ActivationError, WebhookTransport},
+};
+
+/// Boxed error type returned by [`WebhookSecretResolver::resolve`].
+/// The bootstrap wraps it in [`BootstrapError::SecretResolution`]
+/// alongside the failing `secret_id`.
+pub type SecretResolutionError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Resolves a credential identifier (storage-layer string) to the
+/// raw HMAC secret bytes consumed by the factory.
+///
+/// Production deployments wire this through `nebula-credential`'s
+/// snapshot path; tests wire an in-memory map. Returning an empty
+/// `Vec` is **not** allowed — the factory would then build a
+/// fail-closed handler. Surface the misconfiguration as a typed
+/// error inside the boxed return.
+#[async_trait]
+pub trait WebhookSecretResolver: Send + Sync {
+    /// Resolve `secret_id` to raw secret bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a boxed error on lookup failure. The bootstrap wraps
+    /// it in [`BootstrapError::SecretResolution`].
+    async fn resolve(&self, secret_id: &str) -> Result<Vec<u8>, SecretResolutionError>;
+}
+
+/// Constructs a per-activation [`TriggerRuntimeContext`] template.
+///
+/// Storage rows do not carry the `BaseContext`/`WorkflowId`/node-key
+/// triple needed to build a [`TriggerRuntimeContext`]; the
+/// composition root supplies that mapping by implementing this
+/// trait. The transport clones the returned ctx on every dispatch.
+pub trait WebhookContextFactory: Send + Sync {
+    /// Build a fresh ctx template for the activation.
+    fn build(&self, record: &WebhookActivationRecord) -> TriggerRuntimeContext;
+}
+
+/// Result of [`bootstrap_webhook_activations`].
+///
+/// `loaded` is the count of slug activations that successfully made
+/// it into the transport. `skipped` is the count of rows that
+/// surfaced a non-storage error (decode mismatch, factory rejection,
+/// secret resolution failure, duplicate registration).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BootstrapReport {
+    /// Slug activations registered in the transport.
+    pub loaded: usize,
+    /// Rows that returned a non-storage failure and were skipped.
+    pub skipped: usize,
+}
+
+/// Materialised activation ready for `WebhookTransport::replace_slug_map`.
+///
+/// Used by the admin reload endpoint (E3) so the slug map swap is
+/// atomic — caller collects the full set, then hands it back to the
+/// transport in one call.
+pub type ResolvedActivation = (
+    TriggerCoordinates,
+    Arc<dyn TriggerHandler>,
+    nebula_action::WebhookConfig,
+    TriggerRuntimeContext,
+);
+
+/// Failure modes for the bootstrap pathway.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum BootstrapError {
+    /// `WebhookActivationRepo::list_active` returned a transport-level
+    /// error (DB connection, query failure). The transport is left
+    /// untouched; admin reload (E3) can retry.
+    #[error("storage list_active failed: {0}")]
+    Storage(#[from] StorageError),
+    /// Could not resolve the credential reference to raw secret
+    /// bytes. The activation row is skipped.
+    #[error("failed to resolve secret '{secret_id}': {source}")]
+    SecretResolution {
+        /// Storage-layer credential identifier that failed to resolve.
+        secret_id: String,
+        /// Underlying cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// No factory registered for the spec's `action_kind`. The
+    /// activation row is skipped.
+    #[error("no factory registered for kind '{0}'")]
+    UnknownProvider(String),
+    /// Factory rejected the spec — provider-specific fields missing
+    /// or malformed.
+    #[error("factory build failed for kind '{kind}': {source}")]
+    Factory {
+        /// Provider kind reported by the factory.
+        kind: String,
+        /// Underlying [`FactoryError`].
+        #[source]
+        source: FactoryError,
+    },
+    /// Two storage rows resolved to the same slug coordinates. The
+    /// second row is skipped — DB-level uniqueness on `webhook_path`
+    /// prevents this in production but the bootstrap defends in
+    /// depth.
+    #[error("duplicate slug registration for {coords:?}")]
+    DuplicateRegistration {
+        /// Slug coordinates that were already registered.
+        coords: TriggerCoordinates,
+    },
+}
+
+/// Walk the storage layer's active webhook activations and register
+/// each in the transport.
+///
+/// Returns a [`BootstrapReport`] with per-row outcomes. Storage
+/// failures bubble out as [`BootstrapError::Storage`]; per-row
+/// failures (factory rejection, secret resolution miss, duplicate)
+/// are logged and counted in `report.skipped`.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Storage`] only when the underlying
+/// storage call fails. Per-row failures are absorbed.
+pub async fn bootstrap_webhook_activations(
+    repo: &dyn WebhookActivationRepo,
+    registry: &ActionRegistry,
+    transport: &WebhookTransport,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookContextFactory,
+) -> Result<BootstrapReport, BootstrapError> {
+    tracing::debug!(target: "nebula::api::webhook::bootstrap", "loading active webhook activations");
+
+    let records = repo.list_active().await?;
+    let total = records.len();
+    let mut report = BootstrapReport::default();
+
+    for record in records {
+        match register_one(record, registry, transport, secrets, ctx_factory).await {
+            Ok(()) => report.loaded += 1,
+            Err(err) => {
+                report.skipped += 1;
+                tracing::warn!(
+                    target: "nebula::api::webhook::bootstrap",
+                    error = %err,
+                    "skipping webhook activation"
+                );
+            },
+        }
+    }
+
+    debug_assert!(
+        report.loaded + report.skipped == total,
+        "bootstrap accounting must equal storage list_active count"
+    );
+
+    tracing::info!(
+        target: "nebula::api::webhook::bootstrap",
+        loaded = report.loaded,
+        skipped = report.skipped,
+        total,
+        source = "storage",
+        "webhook bootstrap complete"
+    );
+    Ok(report)
+}
+
+/// Build the full set of resolved activations from storage without
+/// touching the transport. The admin reload endpoint (E3) uses this
+/// to materialise an atomic swap via
+/// `WebhookTransport::replace_slug_map`.
+///
+/// Per-row failures are absorbed into the returned report's
+/// `skipped` field; storage failures bubble out via
+/// [`BootstrapError::Storage`].
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Storage`] only when the underlying
+/// storage call fails.
+pub async fn collect_webhook_activations(
+    repo: &dyn WebhookActivationRepo,
+    registry: &ActionRegistry,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookContextFactory,
+) -> Result<(Vec<ResolvedActivation>, BootstrapReport), BootstrapError> {
+    let records = repo.list_active().await?;
+    let mut report = BootstrapReport::default();
+    let mut activations: Vec<ResolvedActivation> = Vec::with_capacity(records.len());
+    for record in records {
+        match resolve_one(&record, registry, secrets, ctx_factory).await {
+            Ok(resolved) => {
+                report.loaded += 1;
+                activations.push(resolved);
+            },
+            Err(err) => {
+                report.skipped += 1;
+                tracing::warn!(
+                    target: "nebula::api::webhook::bootstrap",
+                    error = %err,
+                    "skipping webhook activation during collect"
+                );
+            },
+        }
+    }
+    Ok((activations, report))
+}
+
+async fn resolve_one(
+    record: &WebhookActivationRecord,
+    registry: &ActionRegistry,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookContextFactory,
+) -> Result<ResolvedActivation, BootstrapError> {
+    let factory = registry
+        .lookup_webhook_factory(&record.spec.action_kind)
+        .ok_or_else(|| BootstrapError::UnknownProvider(record.spec.action_kind.clone()))?;
+
+    let secret = secrets
+        .resolve(&record.spec.secret_id)
+        .await
+        .map_err(|source| BootstrapError::SecretResolution {
+            secret_id: record.spec.secret_id.clone(),
+            source,
+        })?;
+    let action_spec = into_action_spec(&record.spec, secret);
+
+    let BuiltWebhookHandler { handler, config } =
+        factory
+            .build(&action_spec)
+            .map_err(|source| BootstrapError::Factory {
+                kind: record.spec.action_kind.clone(),
+                source,
+            })?;
+
+    let coords = TriggerCoordinates::new(
+        &record.coords.org_slug,
+        &record.coords.workspace_slug,
+        &record.coords.trigger_slug,
+    );
+    let ctx = ctx_factory.build(record);
+    Ok((coords, handler, config, ctx))
+}
+
+async fn register_one(
+    record: WebhookActivationRecord,
+    registry: &ActionRegistry,
+    transport: &WebhookTransport,
+    secrets: &dyn WebhookSecretResolver,
+    ctx_factory: &dyn WebhookContextFactory,
+) -> Result<(), BootstrapError> {
+    let factory = registry
+        .lookup_webhook_factory(&record.spec.action_kind)
+        .ok_or_else(|| BootstrapError::UnknownProvider(record.spec.action_kind.clone()))?;
+
+    let secret = secrets
+        .resolve(&record.spec.secret_id)
+        .await
+        .map_err(|source| BootstrapError::SecretResolution {
+            secret_id: record.spec.secret_id.clone(),
+            source,
+        })?;
+    let action_spec = into_action_spec(&record.spec, secret);
+
+    let BuiltWebhookHandler { handler, config } =
+        factory
+            .build(&action_spec)
+            .map_err(|source| BootstrapError::Factory {
+                kind: record.spec.action_kind.clone(),
+                source,
+            })?;
+
+    let coords = TriggerCoordinates::new(
+        &record.coords.org_slug,
+        &record.coords.workspace_slug,
+        &record.coords.trigger_slug,
+    );
+    let ctx = ctx_factory.build(&record);
+
+    let action_kind = record.spec.action_kind.clone();
+    register_with_transport(transport, coords.clone(), handler, config, ctx).map_err(|err| {
+        match err {
+            ActivationError::DuplicateRegistration => {
+                BootstrapError::DuplicateRegistration { coords }
+            },
+            other => BootstrapError::Factory {
+                kind: action_kind,
+                source: FactoryError::InvalidSpec {
+                    kind: "transport",
+                    reason: other.to_string(),
+                },
+            },
+        }
+    })?;
+
+    tracing::debug!(
+        target: "nebula::api::webhook::bootstrap",
+        org = %record.coords.org_slug,
+        workspace = %record.coords.workspace_slug,
+        trigger_slug = %record.coords.trigger_slug,
+        action_kind = %record.spec.action_kind,
+        "webhook activation registered"
+    );
+    Ok(())
+}
+
+fn register_with_transport(
+    transport: &WebhookTransport,
+    coords: TriggerCoordinates,
+    handler: Arc<dyn TriggerHandler>,
+    config: nebula_action::WebhookConfig,
+    ctx: TriggerRuntimeContext,
+) -> Result<(), ActivationError> {
+    transport.activate_slug(coords, handler, config, ctx)
+}
+
+fn into_action_spec(
+    storage: &StorageWebhookActivationSpec,
+    secret: Vec<u8>,
+) -> ActionWebhookActivationSpec {
+    let mut spec = ActionWebhookActivationSpec::new(storage.action_kind.clone(), secret);
+    if let Some(secs) = storage.replay_window_secs {
+        spec = spec.with_replay_window_secs(secs);
+    }
+    if let Some(header) = storage
+        .timestamp_header
+        .as_ref()
+        .or_else(|| inferred_timestamp_header(storage.timestamp_format))
+    {
+        spec = spec.with_timestamp_header(header.clone());
+    }
+    if let Some(config) = storage.provider_config.clone() {
+        spec = spec.with_provider_config(config);
+    }
+    if let Some(rpm) = storage.rate_limit_per_minute {
+        spec = spec.with_rate_limit_per_minute(rpm);
+    }
+    spec
+}
+
+/// Storage's `WebhookTimestampFormat` does not flow to the action
+/// layer (sibling crates with no direct dep). The factory infers the
+/// format from the header name; when the storage row pins a format
+/// without a header, we leave the action's default in place.
+const fn inferred_timestamp_header(
+    _format: Option<WebhookTimestampFormat>,
+) -> Option<&'static String> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use nebula_action::webhook::providers;
+    use nebula_engine::ActionRegistry;
+    use nebula_storage::repos::InMemoryWebhookActivationRepo;
+    use nebula_storage::rows::{
+        WebhookActivationCoords, WebhookActivationRecord, WebhookActivationSpec,
+    };
+
+    use crate::services::webhook::{WebhookTransport, WebhookTransportConfig};
+
+    struct StaticSecretResolver {
+        map: HashMap<String, Vec<u8>>,
+    }
+
+    #[async_trait]
+    impl WebhookSecretResolver for StaticSecretResolver {
+        async fn resolve(&self, secret_id: &str) -> Result<Vec<u8>, SecretResolutionError> {
+            self.map.get(secret_id).cloned().ok_or_else(|| {
+                Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                    "no secret for id={secret_id}"
+                ))
+            })
+        }
+    }
+
+    struct StubCtxFactory;
+
+    impl WebhookContextFactory for StubCtxFactory {
+        fn build(&self, _record: &WebhookActivationRecord) -> TriggerRuntimeContext {
+            use tokio_util::sync::CancellationToken;
+            TriggerRuntimeContext::new(
+                Arc::new(
+                    nebula_core::BaseContext::builder()
+                        .cancellation(CancellationToken::new())
+                        .build(),
+                ),
+                nebula_core::WorkflowId::new(),
+                nebula_core::node_key!("storage_bootstrap"),
+            )
+        }
+    }
+
+    fn record(slug: &str, kind: &str, secret_id: &str) -> WebhookActivationRecord {
+        WebhookActivationRecord {
+            trigger_id: vec![1u8; 16],
+            coords: WebhookActivationCoords {
+                org_slug: "acme".into(),
+                workspace_slug: "ops".into(),
+                trigger_slug: slug.into(),
+            },
+            spec: WebhookActivationSpec::new(kind, secret_id),
+        }
+    }
+
+    fn registry_with_default_factories() -> ActionRegistry {
+        let registry = ActionRegistry::new();
+        for factory in providers::default_factories() {
+            registry.register_webhook_provider(factory);
+        }
+        registry
+    }
+
+    fn transport() -> WebhookTransport {
+        WebhookTransport::new(WebhookTransportConfig::default())
+    }
+
+    fn secrets(pairs: &[(&str, &[u8])]) -> StaticSecretResolver {
+        let mut map = HashMap::new();
+        for (id, bytes) in pairs {
+            map.insert((*id).to_string(), bytes.to_vec());
+        }
+        StaticSecretResolver { map }
+    }
+
+    #[tokio::test]
+    async fn empty_repo_loads_zero_activations() {
+        let repo = InMemoryWebhookActivationRepo::new();
+        let registry = registry_with_default_factories();
+        let report = bootstrap_webhook_activations(
+            &repo,
+            &registry,
+            &transport(),
+            &secrets(&[]),
+            &StubCtxFactory,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn loads_generic_activation_end_to_end() {
+        let repo = InMemoryWebhookActivationRepo::with_records(vec![record(
+            "stripe-prod",
+            "generic",
+            "cred_x",
+        )]);
+        let registry = registry_with_default_factories();
+        let report = bootstrap_webhook_activations(
+            &repo,
+            &registry,
+            &transport(),
+            &secrets(&[("cred_x", b"super-secret-key")]),
+            &StubCtxFactory,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.loaded, 1, "exactly one activation must be loaded");
+        assert_eq!(report.skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_kind_is_skipped() {
+        let repo = InMemoryWebhookActivationRepo::with_records(vec![record(
+            "weird",
+            "no-such-provider",
+            "cred_x",
+        )]);
+        let registry = registry_with_default_factories();
+        let report = bootstrap_webhook_activations(
+            &repo,
+            &registry,
+            &transport(),
+            &secrets(&[("cred_x", b"k")]),
+            &StubCtxFactory,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn missing_secret_is_skipped() {
+        let repo = InMemoryWebhookActivationRepo::with_records(vec![record(
+            "stripe-prod",
+            "generic",
+            "cred_missing",
+        )]);
+        let registry = registry_with_default_factories();
+        let report = bootstrap_webhook_activations(
+            &repo,
+            &registry,
+            &transport(),
+            &secrets(&[]),
+            &StubCtxFactory,
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.loaded, 0);
+        assert_eq!(report.skipped, 1);
+    }
+
+    /// Storage failures bubble out — the composition root decides
+    /// whether to log + degrade or panic.
+    #[tokio::test]
+    async fn storage_error_propagates() {
+        struct FailingRepo;
+        #[async_trait]
+        impl WebhookActivationRepo for FailingRepo {
+            async fn list_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
+                Err(StorageError::Connection("boom".into()))
+            }
+            async fn find_by_webhook_path(
+                &self,
+                _: &str,
+            ) -> Result<Option<WebhookActivationRecord>, StorageError> {
+                Ok(None)
+            }
+        }
+        let registry = registry_with_default_factories();
+        let err = bootstrap_webhook_activations(
+            &FailingRepo,
+            &registry,
+            &transport(),
+            &secrets(&[]),
+            &StubCtxFactory,
+        )
+        .await
+        .expect_err("must surface storage error");
+        assert!(matches!(err, BootstrapError::Storage(_)), "got {err:?}");
+    }
+
+    /// `WebhookContextFactory` may be a closure-flavoured
+    /// implementation — keep the trait usable from a one-liner test.
+    #[allow(dead_code)]
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn marker_traits_are_satisfied() {
+        assert_send_sync::<BootstrapReport>();
+        let _ = Mutex::new(BootstrapReport::default());
+    }
+}

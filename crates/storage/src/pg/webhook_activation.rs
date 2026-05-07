@@ -26,6 +26,7 @@
 //! decode failure for the requested row is a hard `Err` because the
 //! caller wants this exact slug.
 
+use async_trait::async_trait;
 use sqlx::{Pool, Postgres, Row};
 
 use crate::error::StorageError;
@@ -83,6 +84,7 @@ SELECT t.id AS trigger_id, \
    AND t.deleted_at IS NULL \
  LIMIT 1";
 
+#[async_trait]
 impl WebhookActivationRepo for PgWebhookActivationRepo {
     async fn list_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
         tracing::debug!(

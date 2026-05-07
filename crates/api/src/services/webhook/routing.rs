@@ -110,9 +110,8 @@ impl RoutingMap {
             .count()
     }
 
-    /// Current number of active registrations. Mostly for tests
-    /// and observability.
-    #[cfg(test)]
+    /// Current number of active registrations. Used by transport
+    /// observability accessors and tests.
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }

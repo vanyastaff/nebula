@@ -283,6 +283,21 @@ impl WebhookTransport {
         self.inner.routing.remove(&key)
     }
 
+    /// Number of slug-routed activations currently in the routing
+    /// map. Driven by E1 bootstrap, E2 lifecycle subscriber, and E3
+    /// admin reload.
+    #[must_use]
+    pub fn slug_count(&self) -> usize {
+        self.inner.routing.count_by_kind("slug")
+    }
+
+    /// Total active registrations (programmatic + slug). Used by
+    /// `/healthz` reporters.
+    #[must_use]
+    pub fn total_count(&self) -> usize {
+        self.inner.routing.len()
+    }
+
     /// Atomic swap of all slug activations — used by the admin reload
     /// endpoint (E3) so external observers do not see a half-loaded
     /// routing table during a multi-thousand-row reload. Programmatic

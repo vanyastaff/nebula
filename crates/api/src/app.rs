@@ -124,10 +124,16 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // so external providers only hit one port. `Router::merge`
     // works because the webhook router carries its own state type
     // (`WebhookTransport`) that does not collide with `AppState`.
-    let routes = match state.webhook_transport {
+    let routes = match state.webhook_transport.clone() {
         Some(transport) => api_routes.merge(transport.router()),
         None => api_routes,
     };
+
+    // Internal routes (M3.3 / ADR-0049 — E3): /internal/v1/...
+    // Mounted on the plain axum `Router` so they never appear in
+    // `/api/v1/openapi.json`. Auth is the shared-token middleware
+    // gated by `AppState.internal_shared_token`.
+    let routes = routes.merge(routes::internal::router(state));
 
     // Build per-IP rate limiter from config.
     let rate_limit = RateLimitState::new(config.rate_limit_per_second);

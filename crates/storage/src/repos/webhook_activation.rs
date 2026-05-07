@@ -30,9 +30,9 @@
 //! adoption. Until the SQLite repo backend lands, the dev path uses
 //! the in-memory backing.
 
-use std::future::Future;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use parking_lot::RwLock;
 
 use crate::error::StorageError;
@@ -58,6 +58,12 @@ use crate::rows::{WebhookActivationCoords, WebhookActivationRecord};
 /// in-memory map (post-create race, pre-reload), it consults storage
 /// directly. Default implementations are not provided so backends
 /// answer with their fastest available query path.
+///
+/// `#[async_trait]` is used (not RPITIT / `impl Future`) so this
+/// trait is **dyn-compatible** — the API layer threads a
+/// `&dyn WebhookActivationRepo` through bootstrap and reload
+/// pathways without monomorphising every call site.
+#[async_trait]
 pub trait WebhookActivationRepo: Send + Sync {
     /// List every `(kind = 'webhook', state = 'active')` trigger that
     /// carries a non-null `webhook_path`, decoded into the runtime
@@ -74,9 +80,7 @@ pub trait WebhookActivationRepo: Send + Sync {
     /// Returns a [`StorageError`] only when the underlying query
     /// fails (connection error, schema drift). Decode errors are
     /// surfaced as warnings inside the result, not as `Err`.
-    fn list_active(
-        &self,
-    ) -> impl Future<Output = Result<Vec<WebhookActivationRecord>, StorageError>> + Send;
+    async fn list_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError>;
 
     /// Fetch a single activation by its `(org_slug, ws_slug, trigger_slug)`
     /// composite path.
@@ -90,10 +94,10 @@ pub trait WebhookActivationRepo: Send + Sync {
     /// when the matched row's `webhook_activation` JSON fails to
     /// decode (a hard `Err` here — the caller asked for this exact
     /// row).
-    fn find_by_webhook_path(
+    async fn find_by_webhook_path(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<Option<WebhookActivationRecord>, StorageError>> + Send;
+    ) -> Result<Option<WebhookActivationRecord>, StorageError>;
 }
 
 /// Translate a [`WebhookActivationSpecError`] into a
@@ -190,31 +194,24 @@ impl std::fmt::Debug for InMemoryWebhookActivationRepo {
     }
 }
 
+#[async_trait]
 impl WebhookActivationRepo for InMemoryWebhookActivationRepo {
-    fn list_active(
-        &self,
-    ) -> impl Future<Output = Result<Vec<WebhookActivationRecord>, StorageError>> + Send {
-        let snapshot = self.inner.read().clone();
-        async move { Ok(snapshot) }
+    async fn list_active(&self) -> Result<Vec<WebhookActivationRecord>, StorageError> {
+        Ok(self.inner.read().clone())
     }
 
-    fn find_by_webhook_path(
+    async fn find_by_webhook_path(
         &self,
         path: &str,
-    ) -> impl Future<Output = Result<Option<WebhookActivationRecord>, StorageError>> + Send {
-        let path = path.to_owned();
+    ) -> Result<Option<WebhookActivationRecord>, StorageError> {
         let snapshot = self.inner.read().clone();
-        async move {
-            Ok(snapshot.into_iter().find(|record| {
-                let composed = format!(
-                    "{}/{}/{}",
-                    record.coords.org_slug,
-                    record.coords.workspace_slug,
-                    record.coords.trigger_slug,
-                );
-                composed == path
-            }))
-        }
+        Ok(snapshot.into_iter().find(|record| {
+            let composed = format!(
+                "{}/{}/{}",
+                record.coords.org_slug, record.coords.workspace_slug, record.coords.trigger_slug,
+            );
+            composed == path
+        }))
     }
 }
 

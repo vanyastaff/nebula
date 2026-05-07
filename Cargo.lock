@@ -3353,6 +3353,7 @@ dependencies = [
  "nebula-credential",
  "nebula-engine",
  "nebula-error",
+ "nebula-eventbus",
  "nebula-execution",
  "nebula-metrics",
  "nebula-plugin",

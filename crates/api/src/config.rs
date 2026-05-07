@@ -361,6 +361,33 @@ impl Default for IdempotencyApiConfig {
     }
 }
 
+/// Webhook subsystem configuration (M3.3 / ADR-0049).
+///
+/// Controls how the slug-routed webhook surface boots. Default is
+/// `bootstrap_from_storage = true` so production deployments wire
+/// activation rows on startup; tests opt out by setting the field to
+/// `false` and seeding the transport directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookApiConfig {
+    /// When `true`, the composition root invokes
+    /// [`crate::services::webhook::bootstrap_webhook_activations`]
+    /// before `build_app` to populate the transport's slug map from
+    /// `WebhookActivationRepo`. When `false`, the slug map starts
+    /// empty and only programmatic activations are dispatched.
+    ///
+    /// Env var: `API_WEBHOOK_BOOTSTRAP_FROM_STORAGE`
+    /// (`true` / `false` / `1` / `0`; default `true`).
+    pub bootstrap_from_storage: bool,
+}
+
+impl Default for WebhookApiConfig {
+    fn default() -> Self {
+        Self {
+            bootstrap_from_storage: true,
+        }
+    }
+}
+
 /// Pagination configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationConfig {
@@ -471,6 +498,10 @@ pub struct ApiConfig {
     /// Idempotency-Key middleware configuration (see ADR-0048).
     #[serde(default)]
     pub idempotency: IdempotencyApiConfig,
+
+    /// Webhook subsystem configuration (M3.3 / ADR-0049).
+    #[serde(default)]
+    pub webhook: WebhookApiConfig,
 }
 
 impl std::fmt::Debug for ApiConfig {
@@ -645,6 +676,7 @@ impl ApiConfig {
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
             idempotency,
+            webhook: Self::webhook_from_env()?,
         })
     }
 
@@ -688,6 +720,13 @@ impl ApiConfig {
         })
     }
 
+    fn webhook_from_env() -> Result<WebhookApiConfig, ApiConfigError> {
+        let bootstrap_from_storage = parse_bool_env("WEBHOOK_BOOTSTRAP_FROM_STORAGE", true)?;
+        Ok(WebhookApiConfig {
+            bootstrap_from_storage,
+        })
+    }
+
     /// Build a config suitable for integration tests.
     ///
     /// Uses a fixed, obviously-test-only secret that bypasses the
@@ -718,6 +757,7 @@ impl ApiConfig {
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
             idempotency: IdempotencyApiConfig::default(),
+            webhook: WebhookApiConfig::default(),
         }
     }
 }
@@ -749,6 +789,19 @@ fn parse_usize_env(suffix: &'static str, default: usize) -> Result<usize, ApiCon
             var: suffix,
             source,
         }),
+        Err(_) => Ok(default),
+    }
+}
+
+/// Parse a boolean from `API_<suffix>`. Accepts `true` / `false` /
+/// `1` / `0` (case-insensitive). Empty or unset → `default`.
+fn parse_bool_env(suffix: &'static str, default: bool) -> Result<bool, ApiConfigError> {
+    match std::env::var(format!("API_{suffix}")) {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            _ => Err(ApiConfigError::ParseEnum { var: suffix, raw }),
+        },
         Err(_) => Ok(default),
     }
 }
