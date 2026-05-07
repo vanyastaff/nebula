@@ -89,8 +89,19 @@ dashmap = { workspace = true }
 moka = { workspace = true, features = ["future"] }
 url = { workspace = true }
 
+# OpenAPI 3.1 spec generation (ADR-0047). `utoipa-axum` ties the served
+# `axum::Router` to the generated `OpenApi` value through one mounting path
+# (`OpenApiRouter::routes(routes!(...))`); handlers without `#[utoipa::path]`
+# cannot pass through it — drift detection is structural, not review-time.
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
+# Spec validation in tests — typed 3.1 parser (ADR-0047). Round-trip via
+# `oas3::OpenApi::deserialize(&served_json)` is hermetic, no fixture management.
+oas3 = { workspace = true }
 # Dev-only: the knife integration test wires the A2 consumer + engine
 # end-to-end alongside the API producer (see `tests/knife.rs`). Listed in
 # `deny.toml` wrappers for the same reason. `InProcessSandbox` is re-exported
