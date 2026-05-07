@@ -36,10 +36,10 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 ```
 API / Public    api (HTTP + webhook module) · sdk (integration author façade)
-Exec            engine · runtime · storage · sandbox · plugin-sdk
-Business        credential · resource · action · plugin
+Exec            engine · storage · storage-loom-probe · sandbox · plugin-sdk
+Business        credential · credential-builtin · resource · action · plugin
 Core            core · validator · expression · workflow · execution · schema · metadata
-Cross-cutting   log · system · eventbus · telemetry · metrics · resilience · error
+Cross-cutting   log · system · eventbus · metrics · resilience · error
 ```
 
 Each layer depends only on layers below it. Cross-cutting crates are importable at any level. Layer boundaries are enforced mechanically by `cargo deny` (see `deny.toml` `wrappers`) — a missing entry fails CI before review.
@@ -49,7 +49,7 @@ Each layer depends only on layers below it. Cross-cutting crates are importable 
 ```
 Trigger (webhook / cron / event)
   -> Engine resolves workflow DAG
-    -> Runtime schedules nodes in topological order
+    -> Engine schedules nodes in topological order
       -> Each node: Action::execute(Context) -> serde_json::Value
         -> Context provides: encrypted credentials, resources, parameters, logger
           -> Cross-crate signals via EventBus (e.g., credential rotation events)
@@ -70,24 +70,24 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `expression`    | Template expression engine                                                           |
 |                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
 |                   | `execution`     | Execution state machine + transitions                                                |
-| **Business**      | `credential`    | Encrypted storage (AES-256-GCM + AAD), key rotation, 12 universal auth schemes       |
-|                   | `resource`      | External service lifecycle, typed credential refs                                    |
-|                   | `action`        | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
-|                   | `plugin`        | In-process plugin trait + registry                                                   |
-| **Exec**          | `engine`        | Frontier loop, lease lifecycle, control consumer (ADR-0008)                          |
-|                   | `runtime`       | Node scheduling, dispatch, blob spill                                                |
-|                   | `storage`       | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
-|                   | `sandbox`       | Process-isolated action execution (capability allowlist planned)                     |
-|                   | `plugin-sdk`    | Out-of-process plugin protocol (`run_duplex`)                                        |
-| **API / Public**  | `api`           | REST server, webhook transport, middleware                                           |
-|                   | `sdk`           | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
-| **Cross-cutting** | `error`         | `NebulaError<E>`, `Classify` trait, derive macro                                     |
-|                   | `resilience`    | Retry, circuit breaker, rate limiter, hedge, bulkhead                                |
-|                   | `log`           | Structured logging infrastructure                                                    |
-|                   | `eventbus`      | In-memory typed pub/sub for cross-crate signals                                      |
-|                   | `telemetry`     | Lock-free metrics primitives + label interning                                       |
-|                   | `metrics`       | `nebula_*` naming, cardinality allowlist, Prometheus export                          |
-|                   | `system`        | Process monitoring, system load tracking                                             |
+| **Business**      | `credential`         | Encrypted storage (AES-256-GCM + AAD), key rotation, 12 universal auth schemes       |
+|                   | `credential-builtin` | First-party scaffold credential types (built on the `credential` contract)           |
+|                   | `resource`           | External service lifecycle, typed credential refs                                    |
+|                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
+|                   | `plugin`             | In-process plugin trait + registry                                                   |
+| **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
+|                   | `storage`            | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
+|                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
+|                   | `sandbox`            | Process-isolated action execution (capability allowlist planned)                     |
+|                   | `plugin-sdk`         | Out-of-process plugin protocol (`run_duplex`)                                        |
+| **API / Public**  | `api`                | REST server, webhook transport, middleware                                           |
+|                   | `sdk`                | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
+| **Cross-cutting** | `error`              | `NebulaError<E>`, `Classify` trait, derive macro                                     |
+|                   | `resilience`         | Retry, circuit breaker, rate limiter, hedge, bulkhead                                |
+|                   | `log`                | Structured logging infrastructure                                                    |
+|                   | `eventbus`           | In-memory typed pub/sub for cross-crate signals                                      |
+|                   | `metrics`            | Lock-free primitives + label interning + `nebula_*` naming + Prometheus export (ADR-0046) |
+|                   | `system`             | Process monitoring, system load tracking                                             |
 
 ## Quick Start
 
@@ -125,9 +125,9 @@ This enables local hooks from `lefthook.yml`: fast checks on `pre-commit` and fu
 
 ## Status
 
-Nebula is in **active alpha development**. The core layer, credential system, resilience patterns, schema system, and error infrastructure are stable and well-tested. The execution engine, runtime, and API layer are actively being wired together.
+Nebula is in **active alpha development**. The core layer, credential system, resilience patterns, schema system, and error infrastructure are stable and well-tested. The execution engine and API layer are actively being wired together.
 
-APIs will change. Not production-ready yet. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved.
+APIs will change. Not production-ready yet. See [AGENTS.md](AGENTS.md) for the workspace map, common commands, and contribution workflow.
 
 ## License
 
