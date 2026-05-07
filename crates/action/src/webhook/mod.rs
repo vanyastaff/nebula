@@ -63,7 +63,7 @@ use std::{
 };
 
 pub use clock::{Clock, MockClock, SystemClock};
-pub use factory::{FactoryError, WebhookActionFactory, WebhookActivationSpec};
+pub use factory::{BuiltWebhookHandler, FactoryError, WebhookActionFactory, WebhookActivationSpec};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
@@ -1802,6 +1802,35 @@ where
                     "handle_event called before start or after stop — no state available",
                 ));
             };
+
+            // pre_handle hook (ADR-0049) — provider-typed actions
+            // (Slack url_verification, Stripe pending_webhook ping,
+            // Generic GET challenge) intercept verification probes
+            // here. Runs AFTER signature verification (transport
+            // already enforced the policy) but BEFORE
+            // `handle_request`, so the action's main path doesn't see
+            // probes. `RespondNow` short-circuits with the provided
+            // HTTP response and emits `TriggerEventOutcome::Skip`.
+            match self.action.pre_handle(&request, ctx).await {
+                Ok(PreHandleOutcome::Continue) => {},
+                Ok(PreHandleOutcome::RespondNow(http_response)) => {
+                    if let Some(tx) = response_tx {
+                        let _ = tx.send(http_response);
+                    }
+                    ctx.health().record_idle();
+                    return Ok(TriggerEventOutcome::Skip);
+                },
+                Err(e) => {
+                    if let Some(tx) = response_tx {
+                        let _ = tx.send(WebhookHttpResponse::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Bytes::new(),
+                        ));
+                    }
+                    ctx.health().record_error();
+                    return Err(e);
+                },
+            }
 
             // H6 — cancellation-safe dispatch. If the trigger is being
             // shut down mid-request, send `503 Service Unavailable` to

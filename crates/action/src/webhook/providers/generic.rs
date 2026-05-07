@@ -20,11 +20,12 @@ use crate::{
     context::TriggerContext,
     error::{ActionError, ValidationReason},
     metadata::ActionMetadata,
-    trigger::{TriggerEventOutcome, TriggerHandler},
+    trigger::TriggerEventOutcome,
     webhook::{
-        FactoryError, PreHandleOutcome, RequiredPolicy, SignaturePolicy, WebhookAction,
-        WebhookActionFactory, WebhookActivationSpec, WebhookConfig, WebhookHttpResponse,
-        WebhookProvider, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
+        BuiltWebhookHandler, FactoryError, PreHandleOutcome, RequiredPolicy, SignaturePolicy,
+        WebhookAction, WebhookActionFactory, WebhookActivationSpec, WebhookConfig,
+        WebhookHttpResponse, WebhookProvider, WebhookRequest, WebhookResponse,
+        WebhookTriggerAdapter,
     },
 };
 
@@ -280,7 +281,7 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
         "generic"
     }
 
-    fn build(&self, spec: &WebhookActivationSpec) -> Result<Arc<dyn TriggerHandler>, FactoryError> {
+    fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError> {
         let mut action = GenericWebhookAction::new(spec.secret.clone());
         if let Some(secs) = spec.replay_window_secs {
             action = action.with_replay_window(std::time::Duration::from_secs(secs));
@@ -299,7 +300,11 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
         {
             action = action.with_challenge_token(token.clone());
         }
-        Ok(Arc::new(WebhookTriggerAdapter::new(action)))
+        let config = action.config();
+        Ok(BuiltWebhookHandler {
+            handler: Arc::new(WebhookTriggerAdapter::new(action)),
+            config,
+        })
     }
 }
 

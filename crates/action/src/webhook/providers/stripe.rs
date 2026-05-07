@@ -21,12 +21,12 @@ use crate::{
     context::TriggerContext,
     error::{ActionError, ValidationReason},
     metadata::ActionMetadata,
-    trigger::{TriggerEventOutcome, TriggerHandler},
+    trigger::TriggerEventOutcome,
     webhook::{
-        FactoryError, PreHandleOutcome, SignatureOutcome, SignaturePolicy, WebhookAction,
-        WebhookActionFactory, WebhookActivationSpec, WebhookConfig, WebhookHttpResponse,
-        WebhookProvider, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
-        hmac_sha256_compute, verify_tag_constant_time,
+        BuiltWebhookHandler, FactoryError, PreHandleOutcome, SignatureOutcome, SignaturePolicy,
+        WebhookAction, WebhookActionFactory, WebhookActivationSpec, WebhookConfig,
+        WebhookHttpResponse, WebhookProvider, WebhookRequest, WebhookResponse,
+        WebhookTriggerAdapter, hmac_sha256_compute, verify_tag_constant_time,
     },
 };
 
@@ -298,12 +298,16 @@ impl WebhookActionFactory for StripeWebhookActionFactory {
         "stripe"
     }
 
-    fn build(&self, spec: &WebhookActivationSpec) -> Result<Arc<dyn TriggerHandler>, FactoryError> {
+    fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError> {
         let mut action = StripeWebhookAction::new(spec.secret.clone());
         if let Some(secs) = spec.replay_window_secs {
             action = action.with_tolerance(Duration::from_secs(secs));
         }
-        Ok(Arc::new(WebhookTriggerAdapter::new(action)))
+        let config = action.config();
+        Ok(BuiltWebhookHandler {
+            handler: Arc::new(WebhookTriggerAdapter::new(action)),
+            config,
+        })
     }
 }
 

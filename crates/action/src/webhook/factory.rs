@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::trigger::TriggerHandler;
+use crate::{trigger::TriggerHandler, webhook::WebhookConfig};
 
 /// Operator-supplied parameters for an activation.
 ///
@@ -77,9 +77,28 @@ pub enum FactoryError {
     SecretResolution(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// Output of [`WebhookActionFactory::build`] — the dyn-erased
+/// handler plus the cached [`WebhookConfig`] read from the action.
+///
+/// The transport needs both to register a slug activation: the
+/// handler (for dispatch) and the config (for signature/replay
+/// enforcement). The factory cannot expose only the dyn handler
+/// because [`crate::WebhookConfig`] does not flow through
+/// [`TriggerHandler`].
+pub struct BuiltWebhookHandler {
+    /// Dyn-erased handler the transport stores in its routing map.
+    /// The concrete underlying type is
+    /// <code>[crate::WebhookTriggerAdapter]&lt;A&gt;</code> for some provider `A`.
+    pub handler: Arc<dyn TriggerHandler>,
+    /// `WebhookConfig` read from the wrapped [`crate::WebhookAction`]
+    /// at construction time. Identical to what
+    /// [`crate::WebhookTriggerAdapter::config`] would return if the
+    /// transport had a typed reference.
+    pub config: WebhookConfig,
+}
+
 /// Provider factory: takes a [`WebhookActivationSpec`] and produces
-/// a dyn-erased [`TriggerHandler`] ready to register with the
-/// transport.
+/// a [`BuiltWebhookHandler`] ready to register with the transport.
 ///
 /// Implementors live in [`crate::webhook::providers`]. The engine
 /// runtime registers one instance per provider kind at startup.
@@ -88,12 +107,13 @@ pub trait WebhookActionFactory: Send + Sync + 'static {
     /// `action_kind` field in [`WebhookActivationSpec`].
     fn kind(&self) -> &'static str;
 
-    /// Build a handler from a stored activation spec.
+    /// Build a handler + config bundle from a stored activation
+    /// spec.
     ///
     /// # Errors
     ///
     /// Returns [`FactoryError::InvalidSpec`] if provider-specific
     /// fields are missing or malformed; [`FactoryError::SecretResolution`]
     /// if the secret material cannot be resolved.
-    fn build(&self, spec: &WebhookActivationSpec) -> Result<Arc<dyn TriggerHandler>, FactoryError>;
+    fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError>;
 }

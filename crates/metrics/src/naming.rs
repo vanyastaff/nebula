@@ -226,6 +226,16 @@ pub mod webhook_signature_failure_reason {
     /// shipped the default policy without supplying a secret. Returns
     /// 500 (not 401) because the misconfiguration is on our side.
     pub const MISSING_SECRET: &str = "missing_secret";
+    /// Replay-window check failed: the timestamp header was absent
+    /// when the policy required one (M3.3 / ADR-0049).
+    pub const TIMESTAMP_MISSING: &str = "timestamp_missing";
+    /// Replay-window check failed: the timestamp header was present
+    /// but unparsable (non-numeric, malformed RFC 3339, etc.).
+    pub const TIMESTAMP_MALFORMED: &str = "timestamp_malformed";
+    /// Replay-window check failed: the timestamp parsed but fell
+    /// outside the configured window (likely a replay attack or
+    /// significant clock skew).
+    pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
 }
 
 // ---------------------------------------------------------------------------

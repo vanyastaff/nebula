@@ -31,9 +31,9 @@ use axum::{
     routing::post,
 };
 use nebula_action::{
-    SignatureOutcome, SignaturePolicy, SignatureScheme, TriggerEvent, TriggerHandler,
-    TriggerRuntimeContext, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse,
-    WebhookRequest, verify_hmac_sha256, verify_hmac_sha256_base64,
+    Clock, SignatureError, SignatureOutcome, SignaturePolicy, SystemClock, TriggerEvent,
+    TriggerHandler, TriggerRuntimeContext, WebhookConfig, WebhookEndpointProvider,
+    WebhookHttpResponse, WebhookRequest,
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_metrics::{NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason};
@@ -115,6 +115,10 @@ struct TransportInner {
     /// per ADR-0022. `None` means the transport runs without emitting
     /// the counter — the enforcement behaviour is identical.
     metrics: Option<Arc<MetricsRegistry>>,
+    /// Time source for replay-window enforcement (M3.3 / ADR-0049).
+    /// Production deployments use [`SystemClock`]; tests inject
+    /// `MockClock` to drive deterministic timestamp scenarios.
+    clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for WebhookTransport {
@@ -127,18 +131,10 @@ impl std::fmt::Debug for WebhookTransport {
 }
 
 impl WebhookTransport {
-    /// Build a new transport from config.
+    /// Build a new transport from config. Defaults to [`SystemClock`].
     #[must_use]
     pub fn new(config: WebhookTransportConfig) -> Self {
-        let rate_limiter = config.rate_limit_per_minute.map(WebhookRateLimiter::new);
-        Self {
-            inner: Arc::new(TransportInner {
-                config,
-                routing: RoutingMap::new(),
-                rate_limiter,
-                metrics: None,
-            }),
-        }
+        Self::build(config, None, Arc::new(SystemClock::new()))
     }
 
     /// Build a new transport from config with a metrics registry
@@ -152,13 +148,34 @@ impl WebhookTransport {
     /// per-failure counter.
     #[must_use]
     pub fn with_metrics(config: WebhookTransportConfig, metrics: Arc<MetricsRegistry>) -> Self {
+        Self::build(config, Some(metrics), Arc::new(SystemClock::new()))
+    }
+
+    /// Build a transport with metrics and a custom [`Clock`]. Tests
+    /// pass `Arc::new(MockClock::at_unix_secs(...))` to drive
+    /// deterministic replay-window scenarios.
+    #[must_use]
+    pub fn with_metrics_and_clock(
+        config: WebhookTransportConfig,
+        metrics: Arc<MetricsRegistry>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        Self::build(config, Some(metrics), clock)
+    }
+
+    fn build(
+        config: WebhookTransportConfig,
+        metrics: Option<Arc<MetricsRegistry>>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let rate_limiter = config.rate_limit_per_minute.map(WebhookRateLimiter::new);
         Self {
             inner: Arc::new(TransportInner {
                 config,
                 routing: RoutingMap::new(),
                 rate_limiter,
-                metrics: Some(metrics),
+                metrics,
+                clock,
             }),
         }
     }
@@ -221,6 +238,78 @@ impl WebhookTransport {
     pub fn deactivate(&self, handle: &ActivationHandle) {
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
         self.inner.routing.remove(&key);
+    }
+
+    /// Register a slug-routed activation (M3.3 / ADR-0049).
+    ///
+    /// The handler comes from a [`nebula_action::WebhookActionFactory`]
+    /// invoked by the API bootstrap (E1) or the lifecycle subscriber
+    /// (E2). `config` is the [`WebhookConfig`] cached on the wrapping
+    /// adapter; the bootstrap reads it from
+    /// [`nebula_action::BuiltWebhookHandler::config`].
+    ///
+    /// `ctx` is a per-activation [`TriggerRuntimeContext`] template
+    /// the transport clones on every dispatch — same discipline as
+    /// programmatic [`Self::activate`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActivationError::DuplicateRegistration`] if a slug
+    /// activation already exists at `coords`. Pair with
+    /// [`Self::unregister_slug`] for explicit replacement, or use
+    /// [`Self::replace_slug_map`] for atomic bulk swaps.
+    pub fn activate_slug(
+        &self,
+        coords: super::key::TriggerCoordinates,
+        handler: Arc<dyn TriggerHandler>,
+        config: WebhookConfig,
+        ctx: TriggerRuntimeContext,
+    ) -> Result<(), ActivationError> {
+        let entry = ActivationEntry {
+            handler,
+            ctx,
+            config,
+        };
+        let key = WebhookKey::slug(coords);
+        if !self.inner.routing.insert(key, entry) {
+            return Err(ActivationError::DuplicateRegistration);
+        }
+        Ok(())
+    }
+
+    /// Remove a slug activation. Idempotent.
+    pub fn unregister_slug(&self, coords: &super::key::TriggerCoordinates) -> bool {
+        let key = WebhookKey::Slug(coords.clone());
+        self.inner.routing.remove(&key)
+    }
+
+    /// Atomic swap of all slug activations — used by the admin reload
+    /// endpoint (E3) so external observers do not see a half-loaded
+    /// routing table during a multi-thousand-row reload. Programmatic
+    /// activations are preserved.
+    pub fn replace_slug_map(
+        &self,
+        new: Vec<(
+            super::key::TriggerCoordinates,
+            Arc<dyn TriggerHandler>,
+            WebhookConfig,
+            TriggerRuntimeContext,
+        )>,
+    ) {
+        let payload = new
+            .into_iter()
+            .map(|(coords, handler, config, ctx)| {
+                (
+                    WebhookKey::Slug(coords),
+                    ActivationEntry {
+                        handler,
+                        ctx,
+                        config,
+                    },
+                )
+            })
+            .collect();
+        self.inner.routing.replace_slug_entries(payload);
     }
 
     /// Build the axum router that dispatches incoming webhook
@@ -304,9 +393,49 @@ async fn webhook_handler(
         Ok(u) => u,
         Err(_) => return (StatusCode::NOT_FOUND, "").into_response(),
     };
+    let key = WebhookKey::programmatic(trigger_uuid, nonce);
+    dispatch_inner(transport, key, method, uri, headers, body).await
+}
 
-    // 2. Body size check. Axum's `Bytes` extractor consumes the
-    // entire body; we enforce the cap AFTER extraction because
+/// Axum handler for `POST /api/v1/hooks/{org}/{ws}/{slug}`. Builds a
+/// [`WebhookKey::Slug`] and delegates to [`dispatch_inner`] — same
+/// signature/replay/rate-limit/pre-handle/handle pipeline as the
+/// programmatic surface.
+#[allow(dead_code)] // wired up by C3 in the next commit
+async fn slug_webhook_handler(
+    State(transport): State<WebhookTransport>,
+    Path((org, workspace, trigger)): Path<(String, String, String)>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let coords = super::key::TriggerCoordinates::new(org, workspace, trigger);
+    let key = WebhookKey::Slug(coords);
+    dispatch_inner(transport, key, method, uri, headers, body).await
+}
+
+/// Shared dispatch pipeline for both programmatic and slug webhook
+/// surfaces (M3.3 / ADR-0049). Order of operations:
+///
+/// 1. body size check → 413
+/// 2. rate-limit by [`WebhookKey`] → 429 + `Retry-After`
+/// 3. routing lookup → 404
+/// 4. construct [`WebhookRequest`] → 400 / 413
+/// 5. [`enforce_signature`] (uses [`Clock`]) → 401 / 500
+/// 6. dispatch via [`TriggerHandler::handle_event`] (the adapter
+///    runs `pre_handle` internally before `handle_request`) with a
+///    response timeout → 504 / 500 / handler response
+async fn dispatch_inner(
+    transport: WebhookTransport,
+    key: WebhookKey,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    // Body size check. Axum's `Bytes` extractor consumes the entire
+    // body; we enforce the cap AFTER extraction because
     // `axum::extract::DefaultBodyLimit` is applied at the router
     // level and we want a domain-specific 413 with our cap number.
     if body.len() > transport.inner.config.body_limit_bytes {
@@ -318,11 +447,7 @@ async fn webhook_handler(
         return (StatusCode::PAYLOAD_TOO_LARGE, "").into_response();
     }
 
-    // Build the converged routing key once and reuse for rate
-    // limiter and routing lookup.
-    let key = WebhookKey::programmatic(trigger_uuid, nonce);
-
-    // 3. Rate limit (if configured).
+    // Rate limit (if configured).
     if let Some(limiter) = &transport.inner.rate_limiter {
         let bucket = key.rate_limit_key();
         if let Err(e) = limiter.check(&bucket).await {
@@ -366,7 +491,11 @@ async fn webhook_handler(
     // `OptionalAcceptUnsigned` passes through; everything else
     // (hex / base64 / custom) runs through the existing constant-time
     // primitives before the handler sees the request.
-    match enforce_signature(entry.config.signature_policy(), &request) {
+    match enforce_signature(
+        entry.config.signature_policy(),
+        &request,
+        transport.inner.clock.as_ref(),
+    ) {
         SignatureVerdict::Pass => {},
         SignatureVerdict::MissingSecret => {
             record_signature_failure(&transport, webhook_signature_failure_reason::MISSING_SECRET);
@@ -458,55 +587,38 @@ enum SignatureVerdict {
 /// the empty-secret check) is treated as `Invalid` — a 401 — rather
 /// than a 500, because the payload came from an external caller and
 /// the specific error is not the operator's to debug.
-fn enforce_signature(policy: &SignaturePolicy, request: &WebhookRequest) -> SignatureVerdict {
+fn enforce_signature(
+    policy: &SignaturePolicy,
+    request: &WebhookRequest,
+    clock: &dyn Clock,
+) -> SignatureVerdict {
     match policy {
         SignaturePolicy::OptionalAcceptUnsigned => SignatureVerdict::Pass,
-        SignaturePolicy::Required(req) => {
-            if req.secret().is_empty() {
-                return SignatureVerdict::MissingSecret;
-            }
-            let outcome = match req.scheme() {
-                SignatureScheme::Sha256Hex => verify_with_primitive(
-                    verify_hmac_sha256(request, req.secret(), req.header().as_str()),
-                    "sha256-hex",
-                ),
-                SignatureScheme::Sha256Base64 => verify_with_primitive(
-                    verify_hmac_sha256_base64(request, req.secret(), req.header().as_str()),
-                    "sha256-base64",
-                ),
-                // `SignatureScheme` is `#[non_exhaustive]`; any future
-                // scheme is treated as a hard failure until the
-                // transport grows an explicit branch for it.
-                _ => SignatureOutcome::Invalid,
-            };
-            outcome_to_verdict(outcome)
+        SignaturePolicy::Required(req) => match req.verify_with(request, clock) {
+            Ok(()) => SignatureVerdict::Pass,
+            Err(SignatureError::SecretMissing) => SignatureVerdict::MissingSecret,
+            Err(SignatureError::SignatureMissing) => {
+                SignatureVerdict::Fail(webhook_signature_failure_reason::MISSING)
+            },
+            Err(SignatureError::SignatureInvalid) => {
+                SignatureVerdict::Fail(webhook_signature_failure_reason::INVALID)
+            },
+            Err(SignatureError::TimestampMissing) => {
+                SignatureVerdict::Fail(webhook_signature_failure_reason::TIMESTAMP_MISSING)
+            },
+            Err(SignatureError::TimestampMalformed { reason }) => {
+                debug!(reason = %reason, "webhook timestamp malformed");
+                SignatureVerdict::Fail(webhook_signature_failure_reason::TIMESTAMP_MALFORMED)
+            },
+            Err(SignatureError::TimestampOutOfWindow { skew_secs }) => {
+                debug!(skew_secs, "webhook timestamp outside replay window");
+                SignatureVerdict::Fail(webhook_signature_failure_reason::TIMESTAMP_OUT_OF_WINDOW)
+            },
+            // `SignatureError` is `#[non_exhaustive]` — fail-closed
+            // on any future variant.
+            Err(_) => SignatureVerdict::Fail(webhook_signature_failure_reason::INVALID),
         },
         SignaturePolicy::Custom(verifier) => outcome_to_verdict(verifier(request)),
-    }
-}
-
-/// Collapse a `verify_hmac_sha256*` result into a [`SignatureOutcome`].
-///
-/// The `ActionError` branch is unreachable by construction today —
-/// [`RequiredPolicy`] carries a pre-validated [`http::HeaderName`] and
-/// the empty-secret case is handled one level up — but keeping this
-/// helper explicit avoids a silent `unwrap_or` that would hide a
-/// future regression if either invariant changed. A `warn!` also
-/// surfaces the case in logs if it ever did fire.
-fn verify_with_primitive(
-    result: Result<SignatureOutcome, nebula_action::ActionError>,
-    scheme_label: &'static str,
-) -> SignatureOutcome {
-    match result {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            warn!(
-                scheme = scheme_label,
-                %error,
-                "webhook signature primitive returned unexpected error; treating as Invalid"
-            );
-            SignatureOutcome::Invalid
-        },
     }
 }
 

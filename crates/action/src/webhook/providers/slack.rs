@@ -23,12 +23,12 @@ use crate::{
     context::TriggerContext,
     error::{ActionError, ValidationReason},
     metadata::ActionMetadata,
-    trigger::{TriggerEventOutcome, TriggerHandler},
+    trigger::TriggerEventOutcome,
     webhook::{
-        FactoryError, PreHandleOutcome, SignatureOutcome, SignaturePolicy, WebhookAction,
-        WebhookActionFactory, WebhookActivationSpec, WebhookConfig, WebhookHttpResponse,
-        WebhookProvider, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
-        verify_hmac_sha256_with_timestamp,
+        BuiltWebhookHandler, FactoryError, PreHandleOutcome, SignatureOutcome, SignaturePolicy,
+        WebhookAction, WebhookActionFactory, WebhookActivationSpec, WebhookConfig,
+        WebhookHttpResponse, WebhookProvider, WebhookRequest, WebhookResponse,
+        WebhookTriggerAdapter, verify_hmac_sha256_with_timestamp,
     },
 };
 
@@ -215,11 +215,15 @@ impl WebhookActionFactory for SlackWebhookActionFactory {
         "slack"
     }
 
-    fn build(&self, spec: &WebhookActivationSpec) -> Result<Arc<dyn TriggerHandler>, FactoryError> {
+    fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError> {
         let mut action = SlackWebhookAction::new(spec.secret.clone());
         if let Some(secs) = spec.replay_window_secs {
             action = action.with_replay_window(Duration::from_secs(secs));
         }
-        Ok(Arc::new(WebhookTriggerAdapter::new(action)))
+        let config = action.config();
+        Ok(BuiltWebhookHandler {
+            handler: Arc::new(WebhookTriggerAdapter::new(action)),
+            config,
+        })
     }
 }
