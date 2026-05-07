@@ -18,6 +18,7 @@ pub mod bootstrap;
 pub mod events;
 pub mod key;
 pub mod provider;
+pub mod ratelimit;
 pub(crate) mod routing;
 pub mod transport;
 
@@ -32,6 +33,5 @@ pub use events::{
 };
 pub use key::{TriggerCoordinates, WebhookKey};
 pub use provider::EndpointProviderImpl;
+pub use ratelimit::{RateLimitExceeded, WebhookRateLimiter};
 pub use transport::{ActivationError, ActivationHandle, WebhookTransport, WebhookTransportConfig};
-
-pub use crate::middleware::webhook_ratelimit::{RateLimitExceeded, WebhookRateLimiter};

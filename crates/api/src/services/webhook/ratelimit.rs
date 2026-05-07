@@ -1,16 +1,26 @@
-//! Per-path webhook rate limiting.
+//! Per-path webhook rate limiting (M3.3 / ADR-0049).
 //!
-//! Wraps [`nebula_resilience::SlidingWindow`] with per-path tracking: each
-//! unique webhook path gets an independent sliding-window limiter.
+//! Wraps [`nebula_resilience::SlidingWindow`] with per-path tracking:
+//! each unique webhook path gets an independent sliding-window
+//! limiter.
 //!
-//! To prevent memory exhaustion from attacker-controlled paths, the limiter
-//! caps the number of tracked paths (`max_paths`) using an LRU-style bound
-//! via [`moka::future::Cache`]. When the cap is reached, the **least-recently
-//! used** window is evicted to make room for the new path — so rate-limiting
-//! stays enforced for every path (#271). The previous implementation let
-//! requests for untracked paths fall through without any limit once the cap
-//! was hit, which allowed an attacker who probed enough unique paths to
+//! To prevent memory exhaustion from attacker-controlled paths, the
+//! limiter caps the number of tracked paths (`max_paths`) using an
+//! LRU-style bound via [`moka::future::Cache`]. When the cap is
+//! reached, the **least-recently used** window is evicted to make
+//! room for the new path — so rate-limiting stays enforced for every
+//! path (#271). The previous implementation let requests for
+//! untracked paths fall through without any limit once the cap was
+//! hit, which allowed an attacker who probed enough unique paths to
 //! permanently disable per-path limiting for newly-deployed routes.
+//!
+//! # Module placement
+//!
+//! Lives under `services::webhook` (not `middleware/`) because it is
+//! consumed exclusively by [`super::WebhookTransport`] — no axum
+//! `Layer`/`Service` plumbing exists. The previous `middleware/`
+//! placement was a misnomer; M3.3 / ADR-0049 phase F1 collapses the
+//! parallel slug pipeline so the only consumer is the transport.
 
 use std::{sync::Arc, time::Duration};
 

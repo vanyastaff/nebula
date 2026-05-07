@@ -12,7 +12,6 @@ pub mod health;
 pub mod me;
 pub mod org;
 pub mod resource;
-pub mod webhook;
 pub mod workflow;
 
 pub use catalog::{get_action, get_plugin, list_actions, list_plugins};

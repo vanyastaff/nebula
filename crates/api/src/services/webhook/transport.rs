@@ -42,12 +42,13 @@ use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
 
+use super::ratelimit::WebhookRateLimiter;
 use super::{
     key::WebhookKey,
     provider::EndpointProviderImpl,
     routing::{ActivationEntry, RoutingMap},
 };
-use crate::{errors::ProblemDetails, middleware::webhook_ratelimit::WebhookRateLimiter};
+use crate::errors::ProblemDetails;
 
 /// Configuration for the webhook HTTP transport.
 #[derive(Debug, Clone)]

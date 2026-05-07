@@ -12,7 +12,6 @@ pub mod rbac;
 pub mod request_id;
 pub mod security_headers;
 pub mod tenancy;
-pub mod webhook_ratelimit;
 
 pub use auth::auth_middleware;
 pub use csrf::csrf_middleware;

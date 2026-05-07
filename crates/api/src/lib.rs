@@ -7,7 +7,7 @@
 //! ## Key modules
 //!
 //! - `handlers` — thin HTTP handlers: extract, validate, delegate, return. Includes `auth`, `me`,
-//!   `org`, `workflow`, `execution`, `credential`, `catalog`, `openapi`, `webhook`.
+//!   `org`, `workflow`, `execution`, `credential`, `catalog`, `openapi`.
 //! - `middleware` — auth (JWT + API-key → `AuthContext`), tenancy (path-based org/workspace
 //!   resolution via `nebula-core::Slug`), RBAC, CSRF, tracing, security headers, request ID.
 //! - `errors` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4. Includes
@@ -15,17 +15,20 @@
 //!   `SlugConflict`, `CsrfRejected`, `PaginationInvalid`, `RateLimited`, `TenantMismatch` among
 //!   others.
 //! - `models::pagination` — cursor-based pagination: `CursorParams`, `PaginatedResponse<T>`.
-//! - `webhook` — inbound trigger transport: `WebhookTransport` activate/deactivate/router,
-//!   `EndpointProviderImpl`, `WebhookRateLimiter` (§11.3 / §13.4). Located under
-//!   [`services::webhook`] with rate limiting in [`middleware::webhook_ratelimit`].
+//! - `services::webhook` — converged inbound webhook transport
+//!   (programmatic + slug-routed surfaces, M3.3 / ADR-0049):
+//!   `WebhookTransport`, `WebhookKey`, `WebhookRateLimiter`,
+//!   `EndpointProviderImpl`, storage bootstrap, lifecycle subscriber.
 //! - `state` — `AppState` holds port trait references: `WorkflowRepo`, `ExecutionRepo`,
 //!   `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `AuthBackend`, `MembershipStore`.
 //! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CookieConfig`, `CorsConfig`,
 //!   `VersioningConfig`, `PaginationConfig`) / `JwtSecret`; startup fails hard on a missing or
 //!   short secret — no `Default` impl (§4.5 operational honesty).
 //! - `routes` — domain-scoped route builders: `auth`, `me`, `org`, `workspace`, `workflow`,
-//!   `execution`, `credential`, `catalog`, `webhook`, `openapi`. All tenant-scoped routes nest
-//!   under `/api/v1/orgs/{org}/workspaces/{ws}/…`.
+//!   `execution`, `credential`, `catalog`, `openapi`. All tenant-scoped routes nest
+//!   under `/api/v1/orgs/{org}/workspaces/{ws}/…`. Slug-routed webhooks
+//!   are mounted directly by the transport (see [`services::webhook`]).
+//!   Internal ops endpoints live under [`routes::internal`].
 //!
 //! ## Authentication planes (ADR-0033)
 //!
@@ -68,7 +71,6 @@ pub mod routes;
 pub mod server;
 pub mod services;
 pub mod state;
-pub mod webhook;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
