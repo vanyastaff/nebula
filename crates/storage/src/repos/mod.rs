@@ -50,6 +50,7 @@ mod quota;
 mod resource;
 mod trigger;
 mod user;
+pub(crate) mod webhook_activation;
 mod workflow;
 mod workspace;
 
@@ -68,5 +69,6 @@ pub use quota::QuotaRepo;
 pub use resource::ResourceRepo;
 pub use trigger::TriggerRepo;
 pub use user::{PatRepo, SessionRepo, UserRepo};
+pub use webhook_activation::{InMemoryWebhookActivationRepo, WebhookActivationRepo};
 pub use workflow::{WorkflowRepo, WorkflowVersionRepo};
 pub use workspace::WorkspaceRepo;

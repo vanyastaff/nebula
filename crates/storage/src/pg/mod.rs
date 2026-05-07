@@ -19,11 +19,13 @@ use crate::error::StorageError;
 mod control_queue;
 mod idempotency;
 mod org;
+mod webhook_activation;
 mod workspace;
 
 pub use control_queue::PgControlQueueRepo;
 pub use idempotency::PgIdempotencyStore;
 pub use org::PgOrgRepo;
+pub use webhook_activation::PgWebhookActivationRepo;
 pub use workspace::PgWorkspaceRepo;
 
 /// Translate an [`sqlx::Error`] into a [`StorageError`].

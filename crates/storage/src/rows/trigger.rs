@@ -17,9 +17,27 @@ pub struct TriggerRow {
     pub display_name: String,
     /// `'manual'` / `'cron'` / `'webhook'` / `'event'` / `'polling'`.
     pub kind: String,
+    /// Kind-namespaced configuration JSONB.
+    ///
+    /// Each `kind` owns a top-level key inside the JSON object so
+    /// fields cannot collide across kinds:
+    ///
+    /// - `kind = 'cron'` → `{ "schedule": "...", "timezone": "..." }`
+    ///   at the top level (legacy shape preserved for existing rows).
+    /// - `kind = 'webhook'` → `{ "webhook_activation": WebhookActivationSpec }`.
+    /// - `kind = 'event'` → `{ "event_types": [...] }`.
+    ///
+    /// PG migration `0025_triggers_config_namespace_comment.sql`
+    /// attaches the canonical contract as `COMMENT ON COLUMN
+    /// triggers.config` so DBA tooling sees the same shape. See
+    /// [`crate::rows::WebhookActivationSpec`] for the webhook decoder.
     pub config: Value,
     /// `'active'` / `'paused'` / `'archived'`.
     pub state: String,
+    /// Operator-supplied URL slug for `kind = 'webhook'` triggers.
+    /// `NULL` for every other kind. Indexed (migration 0018) for
+    /// O(1) `(org, ws, slug)` → trigger lookup at request time.
+    pub webhook_path: Option<String>,
     /// `ServiceAccountId`; `None` uses workspace default.
     pub run_as: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
