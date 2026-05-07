@@ -48,6 +48,8 @@
 //! primitives.
 
 mod clock;
+pub mod factory;
+pub mod providers;
 mod source;
 use std::{
     fmt,
@@ -61,6 +63,7 @@ use std::{
 };
 
 pub use clock::{Clock, MockClock, SystemClock};
+pub use factory::{FactoryError, WebhookActionFactory, WebhookActivationSpec};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;

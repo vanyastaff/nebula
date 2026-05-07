@@ -167,10 +167,11 @@ pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
 pub use webhook::{
-    Clock, DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT, MockClock, PreHandleOutcome, RequiredPolicy,
-    SignatureError, SignatureOutcome, SignaturePolicy, SignatureScheme, SystemClock,
-    TimestampFormat, WebhookAction, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse,
-    WebhookProvider, WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter,
-    hmac_sha256_compute, validate_timestamp, verify_hmac_sha256, verify_hmac_sha256_base64,
-    verify_hmac_sha256_with_timestamp, verify_tag_constant_time,
+    Clock, DEFAULT_MAX_BODY_BYTES, FactoryError, MAX_HEADER_COUNT, MockClock, PreHandleOutcome,
+    RequiredPolicy, SignatureError, SignatureOutcome, SignaturePolicy, SignatureScheme,
+    SystemClock, TimestampFormat, WebhookAction, WebhookActionFactory, WebhookActivationSpec,
+    WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse, WebhookProvider, WebhookRequest,
+    WebhookResponse, WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute, validate_timestamp,
+    verify_hmac_sha256, verify_hmac_sha256_base64, verify_hmac_sha256_with_timestamp,
+    verify_tag_constant_time,
 };

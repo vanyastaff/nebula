@@ -26,7 +26,7 @@ use nebula_action::{
     GenericStatelessFactory, GenericTriggerFactory, PollAction, PollTriggerAdapter, ResourceAction,
     ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
     StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
-    WebhookTriggerAdapter,
+    WebhookActionFactory, WebhookTriggerAdapter,
 };
 use nebula_core::ActionKey;
 use semver::Version;
@@ -57,6 +57,12 @@ pub struct ActionRegistry {
     /// dispatch consults this first and falls back to `actions` when no
     /// factory has been registered for the key.
     factories: DashMap<ActionKey, Vec<FactoryEntry>>,
+    /// Provider-typed webhook factory map (M3.3 / ADR-0049). Sibling
+    /// to `factories` because provider kinds are coarser than
+    /// `ActionKey` and arrive as runtime strings from operator-supplied
+    /// storage rows. Use [`Self::register_webhook_provider`] /
+    /// [`Self::lookup_webhook_factory`] to access it.
+    webhook_factories: DashMap<&'static str, Arc<dyn WebhookActionFactory>>,
 }
 
 impl ActionRegistry {
@@ -255,6 +261,25 @@ impl ActionRegistry {
             entries.push(FactoryEntry { metadata, factory });
             entries.sort_by(|a, b| a.metadata.base.version.cmp(&b.metadata.base.version));
         }
+    }
+
+    /// Register a provider-typed webhook factory (M3.3 / ADR-0049).
+    ///
+    /// String-keyed (factory.kind()) because provider names come from
+    /// operator-supplied storage rows, not Rust types. Subsequent
+    /// registrations with the same key replace the previous factory.
+    pub fn register_webhook_provider(&self, factory: Arc<dyn WebhookActionFactory>) {
+        let kind = factory.kind();
+        self.webhook_factories.insert(kind, factory);
+    }
+
+    /// Look up a registered webhook factory by provider kind.
+    ///
+    /// Used by the API webhook bootstrap to instantiate handlers
+    /// from stored activation specs.
+    #[must_use]
+    pub fn lookup_webhook_factory(&self, kind: &str) -> Option<Arc<dyn WebhookActionFactory>> {
+        self.webhook_factories.get(kind).map(|e| Arc::clone(&*e))
     }
 
     /// Register a stateless action via the factory pipeline (Variant A).
