@@ -190,6 +190,54 @@ line at startup so production logs can pin against it. To regenerate
 locally, run any test that calls `nebula_api::build_app` — for example
 `cargo nextest run -p nebula-api --test openapi_spec`.
 
+### Idempotency-Key (M3.4 / ADR-0048)
+
+Every state-changing endpoint reachable from `build_app` is replay-protected
+through the `IdempotencyLayer` middleware. Clients opt in by sending an
+`Idempotency-Key` header on a `POST` request — the middleware caches the
+first response (status + body + filtered headers) keyed by
+`(method, path, key, identity-fingerprint, body-fingerprint)` and replays
+it byte-for-byte on subsequent requests within the configured TTL.
+
+**Protocol contract** — the IETF draft
+[`draft-ietf-httpapi-idempotency-key`](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key/)
+governs header semantics. Highlights:
+
+- Same `Idempotency-Key` + same body within the TTL → cached replay
+  (response carries `Idempotent-Replay: true`).
+- Same key + different body → **422 Unprocessable Entity** with
+  `application/problem+json`.
+- `5xx` responses are passed through uncached so transient backend failures
+  do not pin a permanent error for the TTL window.
+
+**Environment variables** (defaults applied by `ApiConfig::from_env`):
+
+| Var | Default | Notes |
+|---|---|---|
+| `API_IDEMPOTENCY_BACKEND` | `memory` | `memory` \| `postgres`. See backend tradeoffs below. |
+| `API_IDEMPOTENCY_TTL_SECS` | `86400` | Cached-entry lifetime (24h matches the IETF draft). |
+| `API_IDEMPOTENCY_MAX_ENTRIES` | `10000` | Cap for the in-memory backend; PG honours `expires_at` instead. |
+| `API_IDEMPOTENCY_MAX_REQUEST_BODY_BYTES` | `1048576` | Requests beyond this skip caching (forwarded as-is). |
+| `API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES` | `1048576` | Responses beyond this are returned uncached. |
+| `API_IDEMPOTENCY_SWEEP_INTERVAL_SECS` | `300` | PG-only: cadence for the `evict_expired` background sweep. `0` disables. `< 60` triggers a startup `WARN`. |
+
+**Store-backend tradeoffs** (see `docs/adr/0048-idempotency-store-backend.md`):
+
+| Backend | When | Restart-survival | Multi-replica share |
+|---|---|---|---|
+| `memory` | Dev / single-process tests / one-replica deployments | No — state lost on restart | No — process-local |
+| `postgres` | Production deployments (≥ 2 replicas, or restart-tolerance required) | Yes — table survives restart | Yes — same `DATABASE_URL` shared |
+
+> **Operator warning:** selecting `memory` outside `NEBULA_ENV=development`
+> emits a startup `tracing::warn!` — dedup state is lost on restart and
+> across runners. The §M3 1.0 closure criterion requires `postgres` for
+> production.
+
+The `postgres` backend is gated behind the `nebula-api/postgres` cargo
+feature so default builds remain lightweight. Selecting
+`API_IDEMPOTENCY_BACKEND=postgres` without that feature compiled in fails
+closed at startup (per ADR-0048; no silent fallback).
+
 ### Cross-layer schema strategy
 
 Per ADR-0047 §3, API DTOs MUST NOT embed types from `nebula-core`,

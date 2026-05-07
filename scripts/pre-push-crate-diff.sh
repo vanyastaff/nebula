@@ -56,3 +56,24 @@ for crate in resilience log expression; do
     cargo check -p "nebula-$crate" --no-default-features --quiet
   fi
 done
+
+# DATABASE_URL-gated PG storage tests (M2.2 / M3.4 contract). When the
+# operator has a Postgres reachable, run the `feature = "postgres"`
+# integration tests for nebula-storage to catch concurrency / migration
+# regressions before push. When `DATABASE_URL` is unset, emit a single
+# WARN line and skip — exit 0 so dev machines without Postgres don't
+# fail on this gate.
+if printf '%s\n' "${existing_crates[@]}" | rg -x "storage" >/dev/null; then
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    echo "lefthook: DATABASE_URL set — running PG-gated storage tests"
+    cargo nextest run \
+      -p nebula-storage \
+      --features postgres \
+      --test execution_lease_pg_integration \
+      --test pg_idempotency \
+      --test refresh_claim_pg_integration \
+      --profile agent
+  else
+    echo "lefthook: WARN — DATABASE_URL unset; skipping PG-gated storage tests (pg_idempotency, pg_execution_lease, refresh_claim_pg)"
+  fi
+fi

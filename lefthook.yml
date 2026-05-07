@@ -44,6 +44,12 @@ pre-push:
   parallel: false
   commands:
     crate-diff-gate:
+      # Runs `cargo nextest run` for changed crates plus, when
+      # `DATABASE_URL` is set, the `--features postgres` storage
+      # integration tests (`pg_idempotency`, `execution_lease_pg_integration`,
+      # `refresh_claim_pg_integration`). Skips with a single WARN line
+      # when `DATABASE_URL` is unset (M2.2 / M3.4 contract — see
+      # `feedback_lefthook_mirrors_ci.md`).
       run: bash scripts/pre-push-crate-diff.sh
 
 # Doctests / docs / MSRV remain CI-owned checks.

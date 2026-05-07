@@ -199,6 +199,7 @@ contract consumers should depend on today.
 | `stateful_checkpoints` | **Best-effort** | Write failure logs, does not abort; may replay |
 | `executions.lease_holder` / `lease_expires_at` (Layer 1) | **Durable + enforced** (M2.2, ADR-0008/0015) | Heartbeat-driven; multi-runner takeover via TTL expiry. Verified by `crates/engine/tests/lease_takeover.rs` + `crates/storage/tests/execution_lease_pg_integration.rs` + loom probe at `crates/storage-loom-probe/src/lease_handoff.rs` |
 | `executions.claimed_by` / `claimed_until` (Layer 2, Sprint E) | **Schema may precede enforcement** | Spec-16 scaffolding, deferred to 1.1 — no engine consumers today |
+| `api_idempotency_dedup` (Layer 1, M3.4 / ADR-0048) | **Durable** (`PgIdempotencyStore`) | First-writer-wins via `INSERT ... ON CONFLICT (cache_key) DO NOTHING`; sweep task drives `evict_expired` on `expires_at`. Verified by `crates/storage/tests/pg_idempotency.rs` (round-trip, concurrent first-writer-wins, body-mismatch race, TTL expiry — all `DATABASE_URL`-gated). |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 
 ### Supported backends
