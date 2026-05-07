@@ -51,19 +51,23 @@
   + spec-16 row model) remains Sprint E (1.1) scaffolding.
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
-- **API layer** — routing wired; **3 remaining feature gaps** (tracing
-  context propagation, shift-left `validate_workflow` audit, and
-  composition-root wiring of the shipped `IdempotencyLayer`). Auth backend
-  and webhook dispatch closed via PR #638 (`feat(api): Plane-A auth, slug
-  webhooks, idempotency`, merged 2026-05-04). **OpenAPI 3.1 closed via
-  M3.2 (`feat/api-openapi-spec`, 2026-05-07)** — utoipa-axum mounts
-  every handler through `routes!()` so spec drift is a compile error;
-  Stub Endpoint Policy (ADR-0047) tags class-(c) handlers as
-  `deprecated` + 501 so canon §4.5 stays mechanically verifiable; full
-  drift / 3.1-validation test suite in `crates/api/tests/openapi_*.rs`.
-  The Idempotency middleware ships in PR #638 too but is **not** yet
-  mounted in `build_app` — the layer exists, the layer is not wired
-  (see `idempotency.rs:48-50`). Webhook handlers ship; production
+- **API layer** — routing wired; **2 remaining feature gaps** (tracing
+  context propagation §M3.5 and shift-left `validate_workflow` audit
+  §M3.6). Auth backend and webhook dispatch closed via PR #638
+  (`feat(api): Plane-A auth, slug webhooks, idempotency`, merged
+  2026-05-04). **OpenAPI 3.1 closed via M3.2** (`feat/api-openapi-spec`,
+  2026-05-07) — utoipa-axum mounts every handler through `routes!()` so
+  spec drift is a compile error; Stub Endpoint Policy (ADR-0047) tags
+  class-(c) handlers as `deprecated` + 501 so canon §4.5 stays
+  mechanically verifiable; full drift / 3.1-validation test suite in
+  `crates/api/tests/openapi_*.rs`. **M3.4 closed 2026-05-07
+  (`feat/api-m3-4-idempotency`)** — `IdempotencyLayer` mounted in
+  `build_app` on api routes only (webhook ingress keeps its own dedup
+  contract); ADR-0048 ratifies the hybrid store backend (`InMemory` for
+  dev/tests, `Pg` for production); `nebula_api_idempotency_*` metrics
+  + tracing span fields land in `crates/metrics/src/naming.rs`; e2e
+  tests in `crates/api/tests/idempotency_e2e.rs` exercise the full
+  `build_app` stack. Webhook handlers ship; production
   trigger-registration wiring through the storage layer remains a
   separate follow-up flagged in `crates/api/src/routes/webhook.rs:25-28`.
 - **GitHub:** 19+ open issues, all p2/p3 needs-triage/discussion. No p0/p1.
@@ -340,19 +344,27 @@ The largest 1.0 area. Six blocks; can be parallelized once unblocked.
       cached.
 - [x] `crates/api/tests/idempotency_middleware.rs` covers core paths
       against minimal routers.
-- [ ] **Mount `IdempotencyLayer` in `crate::app::build_app`** —
-      explicit TODO in `idempotency.rs:48-50`. Today production POST
-      endpoints lack replay protection.
-- [ ] **Shared-store decision (in-memory vs PG-backed) + ADR.** Default
-      `InMemoryIdempotencyStore` loses dedup state across restart and
-      across runners → not safe for multi-process deployments.
-- [ ] If PG-backed: migration + repo trait + concurrency tests
-      (concurrent first writer wins, body-mismatch race).
-- [ ] **End-to-end integration test** against the real `build_app`
-      router (not minimal test routers) covering replay + body
-      mismatch + 5xx-bypass.
-- [ ] **Observability:** `nebula_api_idempotency_*` (hit rate, store
-      saturation, evictions) + `tracing` span field for cache hits.
+- [x] **Mount `IdempotencyLayer` in `crate::app::build_app`** — wired on
+      api routes BEFORE the webhook transport merge (webhook ingress has its
+      own dedup contract per ROADMAP §M3.3). `crates/api/src/app.rs`.
+- [x] **Shared-store decision (in-memory vs PG-backed) + ADR.**
+      ADR-0048 — hybrid backend: `InMemoryIdempotencyStore` for dev/tests,
+      `StorageBackedIdempotencyStore<PgIdempotencyStore>` for production.
+      Selection via `ApiConfig.idempotency.backend` (`API_IDEMPOTENCY_BACKEND`).
+      `docs/adr/0048-idempotency-store-backend.md`.
+- [x] **PG-backed: migration + repo trait + concurrency tests.** Trait
+      `IdempotencyStoreRepo` in `crates/storage/src/repos/idempotency.rs`;
+      impl `PgIdempotencyStore` in `crates/storage/src/pg/idempotency.rs`;
+      migration `0024_add_idempotency_dedup.sql` (PG + SQLite parity);
+      `DATABASE_URL`-gated tests in `crates/storage/tests/pg_idempotency.rs`
+      (round-trip, concurrent first-writer-wins, body-mismatch race, TTL).
+- [x] **End-to-end integration test** against the real `build_app` router
+      (not minimal test routers) covering replay + body-mismatch + 5xx
+      bypass + per-principal scope. `crates/api/tests/idempotency_e2e.rs`.
+- [x] **Observability:** `nebula_api_idempotency_{hits,misses,rejects,store_saturation_ppm,latency_ms}`
+      live in `crates/metrics/src/naming.rs`; middleware records them on
+      every outcome branch. Tracing span carries `cache_key_prefix`,
+      `identity_prefix`, `body_size_bytes`, `outcome`.
 
 #### M3.5 Tracing context propagation
 

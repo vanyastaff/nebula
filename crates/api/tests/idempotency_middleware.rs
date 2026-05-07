@@ -21,7 +21,16 @@ use axum::{
     routing::{get, post},
 };
 use nebula_api::middleware::idempotency::{
-    IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER, IdempotencyLayer, InMemoryIdempotencyStore,
+    IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER, IdempotencyConfig, IdempotencyLayer,
+    InMemoryIdempotencyStore,
+};
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{
+        NEBULA_API_IDEMPOTENCY_HITS_TOTAL, NEBULA_API_IDEMPOTENCY_LATENCY_MS,
+        NEBULA_API_IDEMPOTENCY_MISSES_TOTAL, NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL,
+        NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM, idempotency_reject_reason,
+    },
 };
 use tower::ServiceExt;
 
@@ -343,6 +352,250 @@ async fn cache_entry_expires_after_ttl() {
         "after TTL expiry, the same key must produce a fresh response (counter advances)"
     );
     assert_eq!(counter.load(Ordering::SeqCst), 2);
+}
+
+/// Build an app variant that wires `IdempotencyLayer::with_metrics(Some(registry))`
+/// so the C2 metrics path is exercised end-to-end.
+fn build_app_with_metrics(
+    counter: Arc<AtomicUsize>,
+    store: Arc<InMemoryIdempotencyStore>,
+    registry: Arc<MetricsRegistry>,
+) -> Router {
+    let counter_for_post = counter.clone();
+    let counter_for_failing = counter;
+
+    Router::new()
+        .route(
+            "/echo",
+            post(move |body: axum::body::Bytes| {
+                let counter = counter_for_post.clone();
+                async move {
+                    let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                    let payload = String::from_utf8_lossy(&body);
+                    (StatusCode::OK, format!("echo-{n}-{payload}")).into_response()
+                }
+            }),
+        )
+        .route(
+            "/fail",
+            post(move || {
+                let counter = counter_for_failing.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response()
+                }
+            }),
+        )
+        .layer(IdempotencyLayer::new(store).with_metrics(Some(registry)))
+}
+
+#[tokio::test]
+async fn metrics_hits_and_misses_increment() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(InMemoryIdempotencyStore::new());
+    let registry = Arc::new(MetricsRegistry::new());
+    let app = build_app_with_metrics(counter, store, registry.clone());
+
+    // First call → miss.
+    let _ = app
+        .clone()
+        .oneshot(post_with_key("/echo", "metric-key", "x"))
+        .await
+        .unwrap();
+    // Second call → hit.
+    let _ = app
+        .clone()
+        .oneshot(post_with_key("/echo", "metric-key", "x"))
+        .await
+        .unwrap();
+
+    let hits = registry
+        .counter(NEBULA_API_IDEMPOTENCY_HITS_TOTAL)
+        .unwrap()
+        .get();
+    let misses = registry
+        .counter(NEBULA_API_IDEMPOTENCY_MISSES_TOTAL)
+        .unwrap()
+        .get();
+    assert_eq!(hits, 1, "second call must record a hit");
+    assert_eq!(misses, 1, "first call must record a miss");
+
+    let histogram = registry
+        .histogram(NEBULA_API_IDEMPOTENCY_LATENCY_MS)
+        .unwrap();
+    assert_eq!(
+        histogram.count(),
+        2,
+        "latency histogram must observe one sample per request that reached the layer"
+    );
+
+    let saturation = registry
+        .gauge(NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM)
+        .unwrap()
+        .get();
+    assert!(
+        saturation >= 0,
+        "saturation gauge must be set after a successful put"
+    );
+}
+
+#[tokio::test]
+async fn metrics_rejects_record_body_mismatch_label() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(InMemoryIdempotencyStore::new());
+    let registry = Arc::new(MetricsRegistry::new());
+    let app = build_app_with_metrics(counter, store, registry.clone());
+
+    // Prime the cache.
+    let _ = app
+        .clone()
+        .oneshot(post_with_key("/echo", "mismatch-key", "first"))
+        .await
+        .unwrap();
+    // Same key, different body → 422 + rejects[body_mismatch].
+    let r2 = app
+        .clone()
+        .oneshot(post_with_key("/echo", "mismatch-key", "second"))
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let labels = registry
+        .interner()
+        .single("reason", idempotency_reject_reason::BODY_MISMATCH);
+    let rejects = registry
+        .counter_labeled(NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL, &labels)
+        .unwrap()
+        .get();
+    assert_eq!(
+        rejects, 1,
+        "body-mismatch must increment rejects[body_mismatch]"
+    );
+}
+
+#[tokio::test]
+async fn metrics_rejects_record_invalid_key_label() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(InMemoryIdempotencyStore::new());
+    let registry = Arc::new(MetricsRegistry::new());
+    let app = build_app_with_metrics(counter, store, registry.clone());
+
+    // Empty key → reject:invalid_key (`IdempotencyKeyError::Empty`).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/echo")
+        .header("content-type", "text/plain")
+        .header(IDEMPOTENCY_KEY_HEADER, "")
+        .body(Body::from("x"))
+        .unwrap();
+    let r = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let labels = registry
+        .interner()
+        .single("reason", idempotency_reject_reason::INVALID_KEY);
+    let rejects = registry
+        .counter_labeled(NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL, &labels)
+        .unwrap()
+        .get();
+    assert_eq!(
+        rejects, 1,
+        "empty Idempotency-Key must increment rejects[invalid_key]"
+    );
+}
+
+/// Build the app fixture with a custom [`IdempotencyConfig`] so tests can
+/// exercise the small-cap path on request and response bodies.
+fn build_app_with_config(
+    counter: Arc<AtomicUsize>,
+    store: Arc<InMemoryIdempotencyStore>,
+    config: IdempotencyConfig,
+) -> Router {
+    let counter_for_post = counter;
+
+    Router::new()
+        .route(
+            "/echo",
+            post(move |body: axum::body::Bytes| {
+                let counter = counter_for_post.clone();
+                async move {
+                    let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                    let payload = String::from_utf8_lossy(&body);
+                    (StatusCode::OK, format!("echo-{n}-{payload}")).into_response()
+                }
+            }),
+        )
+        .layer(IdempotencyLayer::new(store).with_config(config))
+}
+
+/// Regression: when the response body exceeds
+/// `max_response_body_bytes`, the caller MUST receive the full body
+/// from the inner handler (not an empty `Body::empty()`). The previous
+/// implementation returned an empty body on overflow; PR #658 (Codex
+/// P1) fixes this via a Content-Length pre-check.
+#[tokio::test]
+async fn oversized_response_body_returns_full_body_unchanged() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(InMemoryIdempotencyStore::new());
+    // Cap responses at 4 bytes so the echo handler's "echo-1-x" output
+    // (8 bytes) trips the pre-check.
+    let config = IdempotencyConfig {
+        max_request_body_bytes: 1024,
+        max_response_body_bytes: 4,
+    };
+    let app = build_app_with_config(counter.clone(), store, config);
+
+    let response = app
+        .oneshot(post_with_key("/echo", "oversize", "x"))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response).await;
+    assert_eq!(
+        body, "echo-1-x",
+        "oversized response must forward the full inner-handler body, not an empty body \
+         (regression: Codex P1 finding on PR #658)"
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "inner handler must have run exactly once"
+    );
+}
+
+/// Regression: when the request body exceeds
+/// `max_request_body_bytes`, the inner handler MUST see the full
+/// request body (not an empty body). The previous implementation
+/// silently substituted `Body::empty()` on overflow; PR #658 fixes
+/// this via a Content-Length pre-check.
+#[tokio::test]
+async fn oversized_request_body_passes_through_with_full_body() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(InMemoryIdempotencyStore::new());
+    // Cap requests at 4 bytes — the test payload "abcdef" is 6 bytes
+    // and trips the pre-check.
+    let config = IdempotencyConfig {
+        max_request_body_bytes: 4,
+        max_response_body_bytes: 1024,
+    };
+    let app = build_app_with_config(counter.clone(), store, config);
+
+    let response = app
+        .oneshot(post_with_key("/echo", "oversize-req", "abcdef"))
+        .await
+        .expect("request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_string(response).await;
+    assert_eq!(
+        body, "echo-1-abcdef",
+        "oversized request body must reach the inner handler unchanged \
+         (regression: Codex P1 finding on PR #658, request side)"
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "inner handler must have run exactly once"
+    );
 }
 
 #[tokio::test]

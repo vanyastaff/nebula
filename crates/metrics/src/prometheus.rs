@@ -19,8 +19,11 @@ use crate::{labels::LabelInterner, registry::MetricsRegistry};
 
 use crate::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
-    NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, NEBULA_CACHE_EVICTIONS,
-    NEBULA_CACHE_HITS, NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL,
+    NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
+    NEBULA_API_IDEMPOTENCY_HITS_TOTAL, NEBULA_API_IDEMPOTENCY_LATENCY_MS,
+    NEBULA_API_IDEMPOTENCY_MISSES_TOTAL, NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL,
+    NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM, NEBULA_CACHE_EVICTIONS, NEBULA_CACHE_HITS,
+    NEBULA_CACHE_MISSES, NEBULA_CACHE_SIZE, NEBULA_CREDENTIAL_ACTIVE_TOTAL,
     NEBULA_CREDENTIAL_EXPIRED_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
@@ -118,6 +121,18 @@ fn counter_help(name: &str) -> &'static str {
         NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL => {
             "Total webhook HMAC signature failures (labeled by reason)."
         },
+        NEBULA_API_IDEMPOTENCY_HITS_TOTAL => {
+            "Total idempotent-replay cache hits served by the API \
+             middleware."
+        },
+        NEBULA_API_IDEMPOTENCY_MISSES_TOTAL => {
+            "Total idempotency cache misses (first-seen Idempotency-Key) — \
+             the inner handler ran and the response was stored."
+        },
+        NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL => {
+            "Total requests the API idempotency layer did not cache \
+             (hard rejects + pass-through skips, labeled by reason)."
+        },
         _ => "Custom counter.",
     }
 }
@@ -137,6 +152,10 @@ fn gauge_help(name: &str) -> &'static str {
         NEBULA_CACHE_MISSES => "Cache misses snapshot.",
         NEBULA_CACHE_EVICTIONS => "Cache evictions snapshot.",
         NEBULA_CACHE_SIZE => "Current cache size in entries.",
+        NEBULA_API_IDEMPOTENCY_STORE_SATURATION_PPM => {
+            "Idempotency store saturation (entries / max_capacity) \
+             scaled by 1_000_000."
+        },
         _ => "Custom gauge.",
     }
 }
@@ -155,6 +174,10 @@ fn histogram_help(name: &str) -> &'static str {
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS => "Credential rotation duration in seconds.",
         NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS => {
             "Refresh-coordinator hold duration in seconds (heartbeats + user closure)."
+        },
+        NEBULA_API_IDEMPOTENCY_LATENCY_MS => {
+            "Idempotency middleware path latency in milliseconds \
+             (cache lookup + body buffering + inner handler)."
         },
         _ => "Custom histogram.",
     }

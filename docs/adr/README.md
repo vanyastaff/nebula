@@ -14,6 +14,7 @@ The repository's full ADR archive lives at the parent project's `docs/adr/` (e.g
 | [0045](./0045-eventtrigger-scope-deferral.md) | EventTrigger DX-wrapper deferral (candidate ROADMAP §M6.4) | accepted (2026-04-29) | trigger, dx, deferral, m6, m11, roadmap |
 | [0046](./0046-metrics-telemetry-boundary.md) | Merge `nebula-telemetry` into `nebula-metrics` — single observability crate | accepted (2026-05-06) | metrics, telemetry, observability, boundary, m9 |
 | [0047](./0047-openapi-31-generator.md) | OpenAPI 3.1 spec generation — adopt `utoipa` for `nebula-api` | accepted (2026-05-06) | api, openapi, drift-detection, layer-boundary, m3 |
+| [0048](./0048-idempotency-store-backend.md) | Idempotency-Store Backend — Hybrid (in-memory + PG-backed) | accepted (2026-05-07) | api, idempotency, storage, m3 |
 
 ## Supersession
 

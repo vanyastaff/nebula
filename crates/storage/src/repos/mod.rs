@@ -43,6 +43,7 @@ mod control_queue;
 mod credential;
 mod execution;
 mod execution_node;
+mod idempotency;
 mod journal;
 mod org;
 mod quota;
@@ -60,6 +61,7 @@ pub use control_queue::{
 pub use credential::CredentialRepo;
 pub use execution::ExecutionRepo;
 pub use execution_node::ExecutionNodeRepo;
+pub use idempotency::{CachedRecord, IdempotencyStoreRepo, InMemoryIdempotencyStoreRepo};
 pub use journal::JournalRepo;
 pub use org::OrgRepo;
 pub use quota::QuotaRepo;

@@ -83,6 +83,14 @@ parking_lot = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 async-trait = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+# Optional — only used by the PG-backed idempotency path in
+# `examples/simple_server.rs` (gated by `feature = "postgres"`).
+sqlx = { version = "0.8", optional = true, default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+  "tls-rustls-ring-native-roots",
+] }
+tokio-util = { workspace = true }
 
 # Webhook transport
 dashmap = { workspace = true }
@@ -130,6 +138,12 @@ default = []
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
 test-util = []
+# Enables the PG-backed idempotency-store path in `examples/simple_server.rs`
+# (M3.4 / ADR-0048). Forwards to `nebula-storage/postgres` so the
+# `PgIdempotencyStore` impl + sqlx pool become available. When this feature
+# is OFF, setting `API_IDEMPOTENCY_BACKEND=postgres` fails closed at
+# startup (per ADR-0048 fail-closed contract).
+postgres = ["nebula-storage/postgres", "dep:sqlx"]
 # Note: `credential-oauth` rollout feature gate deleted 2026-04-24 —
 # OAuth ceremony deps (nebula-credential, reqwest, hmac, sha2, zeroize)
 # are now unconditional base deps per ADR-0031 §6 (rollout window closed).
