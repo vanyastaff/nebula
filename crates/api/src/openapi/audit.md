@@ -36,7 +36,17 @@ pub struct AckResponse {
 }
 ```
 
-…and migrate the three auth handlers to return `Json<AckResponse>`. The existing JSON keys (`queued`, `reset`, `verified`) are not load-bearing — they were ad-hoc. Migrating to `ok` is a non-breaking simplification (or use a tagged enum if we want to preserve the verb-specific keys; `AckResponse` is recommended for spec clarity).
+…and migrate the three auth handlers to return `Json<AckResponse>`.
+
+**This IS a breaking response-key rename** — any client that unmarshals
+the existing `{"queued": true}` / `{"reset": true}` / `{"verified": true}`
+keys will fail against the new `{"ok": true}` shape. Acceptable for
+M3.2 because the only documented consumer is the upcoming Plane-A
+frontend (not yet shipped). External clients should migrate to
+`AckResponse` reading `ok` instead of the verb-specific keys; the spec
+publishes the new shape as authoritative. If a versioned/compat
+transition becomes necessary, return a tagged enum that carries both
+the new `ok` field and the legacy verb-specific key.
 
 ### `crates/api/src/handlers/me.rs`
 

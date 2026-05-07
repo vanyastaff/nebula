@@ -693,7 +693,9 @@ pub async fn terminate_execution(
     Path((_org, _ws, _exec)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     // TODO: Forcefully terminate execution (kill running nodes)
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// Restart execution from the beginning.
@@ -721,5 +723,7 @@ pub async fn restart_execution(
     Path((_org, _ws, _exec)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     // TODO: Restart a failed/cancelled execution
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }

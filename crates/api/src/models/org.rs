@@ -32,7 +32,12 @@ pub struct UpdateOrgRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Org-level settings blob — caller-defined, validated downstream.
+    /// Per ADR-0047 §3 cross-layer schema strategy, an opaque
+    /// `serde_json::Value` field documents itself as an object with
+    /// `additionalProperties: true` so consumers know the shape is
+    /// genuinely caller-defined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<serde_json::Value>)]
     pub settings: Option<serde_json::Value>,
 }
 

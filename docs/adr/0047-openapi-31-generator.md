@@ -59,7 +59,9 @@ Canon §4.5 ("no false capability") is enforced by `feedback_observability_as_co
 
 Aide's drift model is opt-in: `ApiRouter::api_route()` documents, plain `.route()` does not. A future contributor copy-pasting an existing route block can silently land an endpoint in production without it appearing in the spec. The bug class is exactly the "discipline rule that drifts" pattern called out in `docs/pitfalls.md` (re-entry into the evaluator) — and `feedback_type_enforce_not_discipline.md` mandates structural fixes over discipline.
 
-`utoipa-axum` inverts this: `OpenApiRouter::routes(routes!(handler1, handler2))` is the only mounting path; handlers without `#[utoipa::path]` cannot be passed to `routes!`. Adding a route AND forgetting to document it is a compile error, not a review-time catch.
+`utoipa-axum` inverts this: `OpenApiRouter::routes(routes!(handler1, handler2))` is the documenting mounting path — handlers without `#[utoipa::path]` cannot be passed to `routes!`, so adding a route via `routes!` AND forgetting to annotate it is a compile error, not a review-time catch.
+
+**Caveat (not a total guarantee):** `OpenApiRouter` also exposes `route(path, MethodRouter)` (mirroring `axum::Router::route`) as a pass-through that mounts an axum route without contributing to the spec. This is the right escape hatch for endpoints we deliberately keep out of the public contract (Prometheus `/metrics`, Tower-served `SwaggerUi`). It does **not** raise a compile error when a contributor uses it for a regular handler that should be in the spec — the runtime drift tests in `crates/api/tests/openapi_spec.rs` (path inventory + smoke list) are the second line of defence for that case. Reviewers must call out any new `OpenApiRouter::route(...)` invocation that documents an application endpoint.
 
 ## Decision
 

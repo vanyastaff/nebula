@@ -47,7 +47,9 @@ pub async fn get_org(
     State(_state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `PATCH /api/v1/orgs/{org}` — update organisation settings (requires `OrgUpdate`).
@@ -74,7 +76,9 @@ pub async fn update_org(
     Json(_body): Json<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::OrgUpdate)?;
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `DELETE /api/v1/orgs/{org}` — delete organisation (requires `OrgDelete`).
@@ -98,7 +102,9 @@ pub async fn delete_org(
     Extension(tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::OrgDelete)?;
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `GET /api/v1/orgs/{org}/members` — list organisation members.
@@ -121,7 +127,9 @@ pub async fn list_members(
     State(_state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `POST /api/v1/orgs/{org}/members` — invite a new member (requires `MemberInvite`).
@@ -148,7 +156,9 @@ pub async fn invite_member(
     Json(_body): Json<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::MemberInvite)?;
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `DELETE /api/v1/orgs/{org}/members/{principal}` — remove a member
@@ -176,7 +186,9 @@ pub async fn remove_member(
     Path((_org, _principal_id)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::MemberRemove)?;
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `GET /api/v1/orgs/{org}/service-accounts` — list service accounts.
@@ -199,7 +211,9 @@ pub async fn list_service_accounts(
     State(_state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `POST /api/v1/orgs/{org}/service-accounts` — create a service account
@@ -227,7 +241,9 @@ pub async fn create_service_account(
     Json(_body): Json<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::ServiceAccountManage)?;
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `DELETE /api/v1/orgs/{org}/service-accounts/{sa}` — delete a service
@@ -255,5 +271,7 @@ pub async fn delete_service_account(
     Path((_org, _sa_id)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::ServiceAccountManage)?;
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }

@@ -22,10 +22,10 @@ use serde::Deserialize;
 use crate::{
     auth::{
         AuthBackend, AuthError, CSRF_COOKIE, ForgotPasswordRequest, LoginRequest, LoginResponse,
-        MfaChallengeResponse, MfaEnrollResponse, MfaVerifyRequest, OAuthProvider,
-        OAuthStartResponse, PasswordOutcome, ResetPasswordRequest, SESSION_COOKIE, SignupRequest,
-        SignupResponse, UserProfile, VerifyEmailRequest, cleared_cookie, csrf_cookie,
-        session_cookie,
+        MfaChallengeResponse, MfaEnrollResponse, MfaVerifyRequest, MfaVerifyResponse,
+        OAuthProvider, OAuthStartResponse, PasswordOutcome, ResetPasswordRequest, SESSION_COOKIE,
+        SignupRequest, SignupResponse, UserProfile, VerifyEmailRequest, cleared_cookie,
+        csrf_cookie, session_cookie,
     },
     errors::{ApiError, ApiResult, ProblemDetails},
     models::AckResponse,
@@ -326,7 +326,7 @@ pub async fn mfa_enroll(
     security(()),
     request_body = MfaVerifyRequest,
     responses(
-        (status = 200, description = "Either the second factor for an in-flight login (with `challenge_token`) succeeded — body is `LoginResponse` with session/CSRF cookies — OR the enrolled user confirmed their authenticator (without `challenge_token`) — body is `AckResponse`.", body = LoginResponse),
+        (status = 200, description = "Either the second factor for an in-flight login (with `challenge_token`) succeeded — body is `LoginResponse` with session/CSRF cookies — OR the enrolled user confirmed their authenticator (without `challenge_token`) — body is `AckResponse`. The OpenAPI body advertises `oneOf` via the `MfaVerifyResponse` untagged enum so client generators receive both shapes.", body = MfaVerifyResponse),
         (status = 401, description = "Invalid TOTP code, missing session, or expired challenge token.", body = ProblemDetails),
         (status = 403, description = "Authenticated principal is not a user.", body = ProblemDetails),
         (status = 503, description = "Auth backend is not configured.", body = ProblemDetails),

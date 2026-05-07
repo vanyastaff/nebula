@@ -200,6 +200,7 @@ pub async fn list_workflows(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn get_workflow(
@@ -263,6 +264,7 @@ pub async fn get_workflow(
         (status = 400, description = "Validation error (e.g. blank name).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn create_workflow(
@@ -344,6 +346,7 @@ pub async fn create_workflow(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected (optimistic concurrency).", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn update_workflow(
@@ -473,6 +476,7 @@ pub async fn update_workflow(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn delete_workflow(
@@ -519,6 +523,7 @@ pub async fn delete_workflow(
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
         (status = 422, description = "Workflow definition fails structural validation.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn activate_workflow(
@@ -643,6 +648,7 @@ pub async fn activate_workflow(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository or execution repository unavailable.", body = ProblemDetails),
         (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
     ),
 )]

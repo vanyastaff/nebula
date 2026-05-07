@@ -36,5 +36,7 @@ pub async fn list_resources(
     State(_state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }

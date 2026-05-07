@@ -231,6 +231,16 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:STORAGE_FULL")]
     #[error("Storage full")]
     StorageFull,
+
+    /// The endpoint is documented but the handler is not yet implemented (501).
+    ///
+    /// Used by class-(c) stub handlers under ADR-0047 Stub Endpoint Policy
+    /// so the runtime status code matches the `responses(501)` annotation
+    /// in the OpenAPI document. Migrating from `Internal("not implemented")`
+    /// (500) to this variant keeps the stub-honesty contract self-consistent.
+    #[classify(category = "internal", code = "API:NOT_IMPLEMENTED")]
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 /// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
@@ -603,6 +613,15 @@ impl ApiError {
                     "Storage Full",
                     StatusCode::INSUFFICIENT_STORAGE,
                 ),
+            ),
+            ApiError::NotImplemented(reason) => (
+                StatusCode::NOT_IMPLEMENTED,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/not-implemented",
+                    "Not Implemented",
+                    StatusCode::NOT_IMPLEMENTED,
+                )
+                .with_detail(reason),
             ),
         }
     }

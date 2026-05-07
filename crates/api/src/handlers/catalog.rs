@@ -30,6 +30,8 @@ use crate::{
     security(("bearer" = []), ("api_key" = [])),
     responses(
         (status = 200, description = "All registered actions.", body = ListActionsResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to the catalog.", body = ProblemDetails),
         (status = 503, description = "Action registry is not configured on this instance.", body = ProblemDetails),
     ),
 )]
@@ -83,6 +85,8 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
     responses(
         (status = 200, description = "Action detail.", body = ActionDetailResponse),
         (status = 400, description = "Invalid action key.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to the catalog.", body = ProblemDetails),
         (status = 404, description = "Action key is not registered.", body = ProblemDetails),
         (status = 503, description = "Action registry is not configured on this instance.", body = ProblemDetails),
     ),
@@ -129,6 +133,8 @@ pub async fn get_action(
     security(("bearer" = []), ("api_key" = [])),
     responses(
         (status = 200, description = "All registered plugins.", body = ListPluginsResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to the catalog.", body = ProblemDetails),
         (status = 503, description = "Plugin registry is not configured on this instance.", body = ProblemDetails),
     ),
 )]
@@ -175,6 +181,8 @@ pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListP
     responses(
         (status = 200, description = "Plugin detail.", body = PluginDetailResponse),
         (status = 400, description = "Invalid plugin key.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to the catalog.", body = ProblemDetails),
         (status = 404, description = "Plugin key is not registered.", body = ProblemDetails),
         (status = 503, description = "Plugin registry is not configured on this instance.", body = ProblemDetails),
     ),

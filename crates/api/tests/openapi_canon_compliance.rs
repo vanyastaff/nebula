@@ -5,12 +5,20 @@
 //!
 //! - **Static check** — every operation flagged `deprecated = true` MUST
 //!   declare a `501` response. ADR-0047 Stub Endpoint Policy.
-//! - **Runtime check** — a curated subset of stub endpoints is hit on a
-//!   booted in-memory app and asserted to return either `500` (current
-//!   `ApiError::Internal("not implemented")` baseline) or `501`. The
-//!   transition from 500 → 501 is a single follow-up PR (`Internal` →
-//!   `NotImplemented`) tracked by the Plane-A backend extension milestone;
-//!   the test accepts both so that follow-up does not silently slip.
+//! - **Runtime check** — every stub endpoint registered under
+//!   `me/*`, `org/*`, `resource::list_resources`,
+//!   `execution::{terminate,restart}` is probed against a booted
+//!   in-memory app. The accepted outcomes are **501** (the
+//!   `ApiError::NotImplemented` variant) for stubs that reach the
+//!   handler body and **403** (`ApiError::InsufficientRole` /
+//!   `Forbidden`) for stubs whose RBAC gate (`tenant.require(...)`)
+//!   runs before the handler — both 403 and 501 are explicitly
+//!   advertised in the spec for RBAC-gated stubs (see ADR-0047
+//!   §4 Stub Endpoint Policy + the per-handler `responses(...)`
+//!   blocks). The legacy 500 outcome (when the stub returned
+//!   `ApiError::Internal("not implemented")`) is no longer accepted —
+//!   that deviation closed when stubs migrated to
+//!   `ApiError::NotImplemented`.
 
 mod common;
 
@@ -103,58 +111,128 @@ async fn deprecated_operations_must_advertise_501_response() {
     );
 }
 
+/// Every stub mounted today, keyed by the M3.2 audit. Methods that take
+/// a JSON body get the empty `{}` payload — every stub handler accepts
+/// `Json<serde_json::Value>`, so an empty object satisfies extraction
+/// without tripping into 400 Bad Request before the handler runs.
+fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
+    let principal = "user_00000000000000000000000000";
+    let pat_id = "pat_00000000000000000000000001";
+    let sa_id = "sa_00000000000000000000000001";
+    let exec_id = "exe_00000000000000000000000001";
+    vec![
+        // me/* — 6 stubs
+        ("GET", "/api/v1/me".to_owned(), None),
+        ("PATCH", "/api/v1/me".to_owned(), Some("{}")),
+        ("GET", "/api/v1/me/orgs".to_owned(), None),
+        ("GET", "/api/v1/me/tokens".to_owned(), None),
+        ("POST", "/api/v1/me/tokens".to_owned(), Some("{}")),
+        ("DELETE", format!("/api/v1/me/tokens/{pat_id}"), None),
+        // orgs/* — 9 stubs
+        ("GET", format!("/api/v1/orgs/{TEST_ORG}"), None),
+        ("PATCH", format!("/api/v1/orgs/{TEST_ORG}"), Some("{}")),
+        ("DELETE", format!("/api/v1/orgs/{TEST_ORG}"), None),
+        ("GET", format!("/api/v1/orgs/{TEST_ORG}/members"), None),
+        (
+            "POST",
+            format!("/api/v1/orgs/{TEST_ORG}/members"),
+            Some("{}"),
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/orgs/{TEST_ORG}/members/{principal}"),
+            None,
+        ),
+        (
+            "GET",
+            format!("/api/v1/orgs/{TEST_ORG}/service-accounts"),
+            None,
+        ),
+        (
+            "POST",
+            format!("/api/v1/orgs/{TEST_ORG}/service-accounts"),
+            Some("{}"),
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/orgs/{TEST_ORG}/service-accounts/{sa_id}"),
+            None,
+        ),
+        // resource — 1 stub
+        (
+            "GET",
+            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/resources"),
+            None,
+        ),
+        // execution — 2 stubs
+        (
+            "POST",
+            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/executions/{exec_id}/terminate"),
+            None,
+        ),
+        (
+            "POST",
+            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/executions/{exec_id}/restart"),
+            None,
+        ),
+    ]
+}
+
 #[tokio::test]
-async fn stub_endpoints_return_500_or_501_at_runtime() {
+async fn stub_endpoints_return_501_at_runtime() {
     let (state, _queue) = create_state_with_queue().await;
     let config = ApiConfig::for_test();
     let app = build_app(state, &config);
 
     let token = create_test_jwt();
+    let stubs = stub_endpoints();
+    assert_eq!(
+        stubs.len(),
+        18,
+        "stub coverage list must enumerate all 18 audit class-(c) endpoints; \
+         got {}",
+        stubs.len()
+    );
 
-    // One representative endpoint per stub module per the M3.2 audit.
-    // Tenant-scoped paths (`/orgs/{org}/...`) need the test-org / -ws
-    // resolved by the resolvers wired in `create_state_with_queue`.
-    let stubs: &[(&str, String)] = &[
-        ("GET", "/api/v1/me".to_owned()),
-        ("GET", format!("/api/v1/orgs/{TEST_ORG}")),
-        (
-            "GET",
-            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/resources"),
-        ),
-    ];
-
-    for (method, path) in stubs {
+    for (method, path, body) in &stubs {
+        let mut req = Request::builder()
+            .method(*method)
+            .uri(path)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Cookie", TEST_CSRF_COOKIE)
+            .header("X-CSRF-Token", "test-csrf-token");
+        let request_body = match body {
+            Some(payload) => {
+                req = req.header("Content-Type", "application/json");
+                Body::from(*payload)
+            },
+            None => Body::empty(),
+        };
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method(*method)
-                    .uri(path)
-                    .header("Authorization", format!("Bearer {token}"))
-                    .header("Cookie", TEST_CSRF_COOKIE)
-                    .header("X-CSRF-Token", "test-csrf-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(req.body(request_body).unwrap())
             .await
             .expect("stub endpoint must respond");
 
         let status = response.status().as_u16();
         assert!(
-            status == 500 || status == 501,
-            "Stub endpoint {method} {path} expected 500 (current `ApiError::Internal` baseline) \
-             or 501 (post-conversion target); got {status}. Either the stub got accidentally \
-             implemented (drop the #[deprecated] + 501 response declaration) or auth/tenancy \
-             middleware rejected the request — verify the test harness wires both."
+            status == 501 || status == 403,
+            "Stub endpoint {method} {path} expected 501 (per ADR-0047 Stub \
+             Endpoint Policy + the `ApiError::NotImplemented` variant) or \
+             403 (per the RBAC gate, when the handler carries one); got \
+             {status}. Either the stub got accidentally implemented (drop \
+             the `#[deprecated]` + 501 response declaration) or auth/tenancy \
+             middleware rejected the request with a non-RBAC failure — \
+             verify the test harness reaches the handler body."
         );
 
-        // Defense-in-depth: an `ApiError::Internal`/`NotImplemented`
-        // response goes through `IntoResponse for ApiError` which sets
-        // `Content-Type: application/problem+json` per RFC 9457. Any
-        // 500/501 emitted by middleware (auth/tenancy) instead of the
-        // stub handler would carry a different content-type — this
-        // assertion confirms the request actually reached the handler
-        // and the canon §4.5 honesty contract was exercised end-to-end.
+        // Defense-in-depth: an `ApiError::NotImplemented` response goes
+        // through `IntoResponse for ApiError` which sets `Content-Type:
+        // application/problem+json` per RFC 9457. A 501 emitted by
+        // middleware (or a generic axum error path) would carry a
+        // different content-type — this assertion confirms the request
+        // actually reached the handler and the canon §4.5 honesty
+        // contract was exercised end-to-end.
         let content_type = response
             .headers()
             .get(CONTENT_TYPE)
@@ -167,7 +245,7 @@ async fn stub_endpoints_return_500_or_501_at_runtime() {
              `application/problem+json` (RFC 9457). A non-problem+json \
              response means the request was short-circuited by middleware \
              (auth/tenancy), so this test is not actually probing the \
-             handler. Verify the test harness reaches the stub body."
+             handler."
         );
     }
 }

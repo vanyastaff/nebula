@@ -30,10 +30,29 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
     // round-trips it to the canonical version string. ADR-0047 pins the
     // generator to 3.1.0, so the assertion in T7 catches accidental drift.
-    let spec_version = serde_json::to_value(&openapi_spec.openapi)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_owned());
+    // A serialization failure here is unexpected — it would mean the
+    // generated `OpenApi` cannot be represented in JSON, which the served
+    // `/api/v1/openapi.json` endpoint depends on. Log the error so the
+    // root cause is recoverable from logs, then fall back to the pinned
+    // string so startup proceeds (the typed assertion in T7 catches the
+    // real problem).
+    let spec_version = match serde_json::to_value(&openapi_spec.openapi) {
+        Ok(serde_json::Value::String(s)) => s,
+        Ok(other) => {
+            tracing::warn!(
+                ?other,
+                "openapi: OpenApiVersion did not serialize as JSON string; falling back"
+            );
+            "3.1.0".to_owned()
+        },
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                "openapi: failed to serialize OpenApiVersion; falling back"
+            );
+            "3.1.0".to_owned()
+        },
+    };
     tracing::info!(
         spec.version = %spec_version,
         paths = path_count,

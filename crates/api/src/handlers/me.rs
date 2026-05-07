@@ -41,7 +41,9 @@ pub async fn get_me(
     State(_state): State<AppState>,
     Extension(_auth): Extension<AuthContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `PATCH /api/v1/me` — partial update of the current user's profile.
@@ -66,7 +68,9 @@ pub async fn update_me(
     Extension(_auth): Extension<AuthContext>,
     Json(_body): Json<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `GET /api/v1/me/orgs` — organisations the authenticated user belongs to.
@@ -88,7 +92,9 @@ pub async fn list_my_orgs(
     State(_state): State<AppState>,
     Extension(_auth): Extension<AuthContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `GET /api/v1/me/tokens` — list the user's personal access tokens
@@ -111,7 +117,9 @@ pub async fn list_my_tokens(
     State(_state): State<AppState>,
     Extension(_auth): Extension<AuthContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `POST /api/v1/me/tokens` — create a new personal access token.
@@ -137,7 +145,9 @@ pub async fn create_token(
     Extension(_auth): Extension<AuthContext>,
     Json(_body): Json<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// `DELETE /api/v1/me/tokens/{pat}` — revoke a personal access token.
@@ -164,5 +174,7 @@ pub async fn delete_token(
     Extension(_auth): Extension<AuthContext>,
     Path(_pat_id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }

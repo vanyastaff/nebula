@@ -77,6 +77,29 @@ pub struct MfaVerifyRequest {
     pub challenge_token: Option<String>,
 }
 
+/// `POST /api/v1/auth/mfa/verify` 200-response shape.
+///
+/// `mfa_verify` returns one of two bodies depending on whether the
+/// caller is completing a login (with `challenge_token`) or confirming
+/// a fresh enrollment (without it):
+///
+/// - [`Self::Login`] — full [`LoginResponse`] plus session/CSRF cookies.
+/// - [`Self::Enrolled`] — bare [`crate::models::AckResponse`] for the
+///   enrollment-confirmation branch.
+///
+/// `#[serde(untagged)]` lets the wire format remain backwards-compatible
+/// with each variant's existing JSON shape; OpenAPI 3.1 consumers see a
+/// `oneOf` schema covering both forms.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum MfaVerifyResponse {
+    /// Login completion path (caller passed a `challenge_token`).
+    Login(LoginResponse),
+    /// Enrollment-confirmation path (caller did NOT pass a
+    /// `challenge_token`; identity comes from the session cookie).
+    Enrolled(crate::models::AckResponse),
+}
+
 /// Response after a successful login (no MFA required).
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LoginResponse {

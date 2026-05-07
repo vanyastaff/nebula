@@ -49,10 +49,14 @@ async fn login_request_debug_does_not_leak_password() {
         !body_str.contains(PLAINTEXT_PASSWORD),
         "Debug output for LoginRequest leaked the plaintext password: {body_str}"
     );
-    assert!(
-        body_str.contains("***"),
-        "SecretString Debug must produce redaction marker '***'; got: {body_str}"
-    );
+
+    // Note: we deliberately do NOT assert any specific redaction
+    // sentinel (e.g. `"***"`). The contract this test guards is
+    // "plaintext does not leak through Debug output"; coupling to the
+    // sentinel format would re-fail this test if `SecretString` ever
+    // changes its private formatter to `[REDACTED]` etc., even though
+    // the leak guarantee still holds. The exact sentinel is verified
+    // separately in `auth::dto::tests::secret_string_debug_redacts`.
 }
 
 #[test]
