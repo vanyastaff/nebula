@@ -68,6 +68,58 @@
 
 ## Sessions
 
+### 2026-05-07 — M3.2 closure (OpenAPI 3.1 spec generation)
+
+**Shipped:** `feat/api-openapi-spec` branch — utoipa 5.5 +
+utoipa-axum 0.2 + utoipa-swagger-ui 9 wired end-to-end. ADR-0047
+captures library choice, cross-layer schema strategy (no
+`nebula-core`/storage/engine/credential types in API DTOs), and Stub
+Endpoint Policy (`deprecated` + `responses(501)` + ` (planned)` tag
+for class-(c) handlers). Eight tasks closed: T1 ADR, T2/T2.5 deps +
+skeleton, T3.0 audit (25 callsites classified), T3 ToSchema derives
++ runtime redaction test, T4 `#[utoipa::path]` on every mounted
+handler, T5 OpenApiRouter migration + `AppState::openapi_doc:
+Arc<OnceLock<OpenApi>>`, T6 served spec + Swagger UI at
+`/api/v1/{openapi.json,docs}`, T6.5 canon §4.5 stub-honesty gate,
+T7 drift-detection + 3.1 validation tests (6 tests in
+`openapi_spec`), T8 docs + ROADMAP closure. 241 nextest tests pass.
+
+**Evidence:**
+- `docs/adr/0047-openapi-31-generator.md` (ADR with cross-layer
+  rule + Stub Endpoint Policy)
+- `crates/api/src/models/{me,org,resource,system,pagination}.rs`
+  (new DTO modules with `ToSchema`)
+- `crates/api/src/handlers/openapi.rs` (cached spec + Swagger UI)
+- `crates/api/tests/openapi_secret_redaction.rs` (T3 runtime)
+- `crates/api/tests/openapi_canon_compliance.rs` (T6.5)
+- `crates/api/tests/openapi_spec.rs` (T7)
+
+**Lessons learned (carried forward to future M-x milestones):**
+
+1. **Stub Endpoint Policy is the canon §4.5 lever.** Class-(c) stub
+   handlers used to be invisible to API consumers; marking them
+   `#[deprecated]` + advertising 501 makes the gap visible without
+   pretending capability. Every future milestone that mounts a stub
+   route should follow the same pattern (deprecated + planned shape
+   in spec + 501 response) so canon §4.5 stays mechanically
+   verifiable.
+2. **Cross-layer DTO wrapping prevents `cargo deny` violations.**
+   Letting `ToSchema` propagate into lower-layer crates would couple
+   the API spec to internal type evolution AND cross
+   `[wrappers]`. Wrapping at the API boundary
+   (`OrgRoleDto(String)`, `WorkspaceRoleDto(String)`) keeps the spec
+   decoupled and the layered dependency map intact.
+3. **`OpenApiRouter` is structurally drift-resistant.** Handlers
+   without `#[utoipa::path]` cannot pass through `routes!()`, so
+   drift is a compile error rather than a review-time catch. Worth
+   making this the default for any future axum-fronted crate that
+   exposes a typed contract.
+4. **Use `Arc<OnceLock<T>>` for one-shot init across cloned state.**
+   `AppState` is cloned per-request, but `Arc<OnceLock<OpenApi>>`
+   means a single `install_openapi_doc` call is observed by every
+   clone. Cleaner than two-pass `create_routes` builds and cleaner
+   than runtime mutability via `RwLock`.
+
 ### 2026-04-28 — Initial M0 audit, roadmap, plan
 
 #### Layer audits (4 parallel zonds)

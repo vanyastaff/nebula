@@ -12,8 +12,8 @@
 //!
 //! Each sub-router is now a `utoipa_axum::router::OpenApiRouter<AppState>`
 //! with `#[utoipa::path]`-derived **relative** paths (e.g. `/auth/signup`);
-//! the `/api/v1` prefix is applied via `OpenApiRouter::nest` in
-//! [`build_openapi_router`] so the published spec and the served route
+//! the `/api/v1` prefix is applied via `OpenApiRouter::nest` inside
+//! `build_openapi_router` so the published spec and the served route
 //! table share one source of truth (ADR-0047 drift-detection guarantee).
 
 pub mod auth;
