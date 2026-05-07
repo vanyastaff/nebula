@@ -13,7 +13,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use chrono::Utc;
 
 use crate::{
-    models::{DependenciesStatus, HealthResponse, ReadinessResponse},
+    models::{DependenciesStatus, HealthResponse, ReadinessResponse, VersionInfo},
     state::AppState,
 };
 
@@ -41,11 +41,11 @@ pub async fn health_check() -> Json<HealthResponse> {
 /// Version info endpoint.
 ///
 /// Returns the application name and version. Unauthenticated.
-pub async fn version_info() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "name": "nebula",
-    }))
+pub async fn version_info() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        name: "nebula".to_string(),
+    })
 }
 
 /// Readiness endpoint — reports whether every declared dependency is reachable.

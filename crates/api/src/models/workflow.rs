@@ -1,9 +1,10 @@
 //! Workflow DTOs
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Create workflow request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateWorkflowRequest {
     /// Workflow name
     pub name: String,
@@ -17,7 +18,7 @@ pub struct CreateWorkflowRequest {
 }
 
 /// Update workflow request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateWorkflowRequest {
     /// Workflow name
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,7 +34,7 @@ pub struct UpdateWorkflowRequest {
 }
 
 /// Workflow response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkflowResponse {
     /// Workflow ID
     pub id: String,
@@ -53,7 +54,7 @@ pub struct WorkflowResponse {
 }
 
 /// List workflows response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ListWorkflowsResponse {
     /// Workflows
     pub workflows: Vec<WorkflowResponse>,
@@ -69,7 +70,7 @@ pub struct ListWorkflowsResponse {
 }
 
 /// Workflow validate response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WorkflowValidateResponse {
     /// Whether the workflow definition is valid
     pub valid: bool,

@@ -9,15 +9,15 @@
 //! - [`OpenApiDoc`] is the `#[derive(OpenApi)]` value passed to
 //!   `utoipa_axum::router::OpenApiRouter::with_openapi`. The derive captures
 //!   document metadata (title, description, version, contact) and registers
-//!   the [`SecuritySchemes`] modifier that publishes the three Plane-A
+//!   the `SecuritySchemes` modifier that publishes the three Plane-A
 //!   authentication schemes (Bearer JWT, `X-API-Key`, CSRF cookie).
 //! - Handler annotations (`#[utoipa::path]`) and DTO derives (`#[derive(ToSchema)]`)
-//!   are added in subsequent tasks (T3 + T4). The `OpenApiRouter` mounting
+//!   are added in subsequent tasks. The `OpenApiRouter` mounting
 //!   path collects them automatically — handlers without `#[utoipa::path]`
 //!   cannot pass through `routes!()`, so drift is a compile error.
-//! - The materialized [`OpenApi`] value is cached in [`AppState::openapi_doc`]
-//!   (added in T5) so the runtime `GET /api/v1/openapi.json` handler returns
-//!   it without re-deriving on every request.
+//! - The materialized `OpenApi` value will be cached in `AppState::openapi_doc`
+//!   so the runtime `GET /api/v1/openapi.json` handler returns it without
+//!   re-deriving on every request.
 //!
 //! ## Security schemes
 //!

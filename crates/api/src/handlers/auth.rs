@@ -29,6 +29,7 @@ use crate::{
         session_cookie,
     },
     errors::{ApiError, ApiResult},
+    models::AckResponse,
     state::AppState,
 };
 
@@ -164,13 +165,13 @@ pub async fn logout(
 pub async fn forgot_password(
     State(state): State<AppState>,
     Json(body): Json<ForgotPasswordRequest>,
-) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+) -> ApiResult<(StatusCode, Json<AckResponse>)> {
     let backend = backend(&state)?;
     backend
         .request_password_reset(&body.email)
         .await
         .map_err(ApiError::from)?;
-    Ok((StatusCode::ACCEPTED, Json(json!({"queued": true}))))
+    Ok((StatusCode::ACCEPTED, Json(AckResponse::ok())))
 }
 
 /// `POST /api/v1/auth/reset-password` — consume reset token, set new pass.
@@ -178,13 +179,13 @@ pub async fn forgot_password(
 pub async fn reset_password(
     State(state): State<AppState>,
     Json(body): Json<ResetPasswordRequest>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Json<AckResponse>> {
     let backend = backend(&state)?;
     backend
         .complete_password_reset(&body.token, body.new_password.expose())
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(json!({"reset": true})))
+    Ok(Json(AckResponse::ok()))
 }
 
 /// `POST /api/v1/auth/verify-email` — consume one-time verification token.
@@ -192,13 +193,13 @@ pub async fn reset_password(
 pub async fn verify_email(
     State(state): State<AppState>,
     Json(body): Json<VerifyEmailRequest>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Json<AckResponse>> {
     let backend = backend(&state)?;
     backend
         .verify_email(&body.token)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(json!({"verified": true})))
+    Ok(Json(AckResponse::ok()))
 }
 
 /// `POST /api/v1/auth/mfa/enroll` — return otpauth URI + base32 secret.

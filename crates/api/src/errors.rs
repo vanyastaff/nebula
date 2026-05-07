@@ -11,9 +11,10 @@ use axum::{
 use nebula_validator::foundation::{ValidationError, ValidationErrors};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use utoipa::ToSchema;
 
 /// RFC 9457 Problem Details
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProblemDetails {
     /// URI reference identifying the problem type
     #[serde(rename = "type")]
@@ -33,8 +34,11 @@ pub struct ProblemDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
 
-    /// Additional extension members
+    /// Additional extension members — RFC 9457 allows arbitrary
+    /// problem-type-specific keys to be flattened onto the document. utoipa
+    /// describes the `Value` payload as an open `Object`.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<serde_json::Value>)]
     pub extensions: Option<serde_json::Value>,
 
     /// Validation errors
@@ -43,7 +47,7 @@ pub struct ProblemDetails {
 }
 
 /// Validation field error
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ValidationFieldError {
     /// Validator error code
     pub code: String,

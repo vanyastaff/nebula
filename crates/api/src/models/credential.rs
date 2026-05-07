@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 // --- Capabilities ---
 
 /// Capability flags for a credential type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CredentialCapabilities {
     /// Requires multi-step user interaction (e.g. OAuth redirect, device code).
     pub interactive: bool,
@@ -27,7 +28,7 @@ pub struct CredentialCapabilities {
 // --- CRUD ---
 
 /// Request body for creating a new credential.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateCredentialRequest {
     /// Credential type key (e.g. "oauth2", "api_key", "basic_auth").
     pub credential_key: String,
@@ -44,7 +45,7 @@ pub struct CreateCredentialRequest {
 }
 
 /// Request body for updating an existing credential.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateCredentialRequest {
     /// Updated display name.
     #[serde(default)]
@@ -66,7 +67,7 @@ pub struct UpdateCredentialRequest {
 }
 
 /// Full credential metadata response — **never includes secrets**.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CredentialResponse {
     /// Unique credential identifier.
     pub id: String,
@@ -96,7 +97,7 @@ pub struct CredentialResponse {
 }
 
 /// Lightweight credential summary for list responses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CredentialSummary {
     /// Unique credential identifier.
     pub id: String,
@@ -114,7 +115,7 @@ pub struct CredentialSummary {
 }
 
 /// Paginated list of credential summaries.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ListCredentialsResponse {
     /// Credential summaries for the current page.
     pub credentials: Vec<CredentialSummary>,
@@ -127,7 +128,8 @@ pub struct ListCredentialsResponse {
 }
 
 /// Query parameters for listing credentials.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListCredentialsQuery {
     /// Page number (1-based). Defaults to 1.
     #[serde(default = "default_page")]
@@ -146,7 +148,7 @@ pub struct ListCredentialsQuery {
 // --- Acquisition (resolve / continue) ---
 
 /// Request body for initiating credential acquisition/resolution.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ResolveCredentialRequest {
     /// Credential type key to resolve.
     pub credential_key: String,
@@ -155,7 +157,7 @@ pub struct ResolveCredentialRequest {
 }
 
 /// Interaction type required to continue a pending credential acquisition.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcquisitionInteraction {
     /// User must be redirected to this URL (e.g. OAuth2 authorization_code).
@@ -181,7 +183,7 @@ pub enum AcquisitionInteraction {
 }
 
 /// Result of a resolve or continue_resolve operation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResolveCredentialResponse {
     /// Acquisition completed — credential is persisted.
@@ -199,7 +201,7 @@ pub enum ResolveCredentialResponse {
 }
 
 /// Request body for continuing a pending credential acquisition.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ContinueResolveRequest {
     /// Token from a previous `Pending` response.
     pub pending_token: String,
@@ -213,7 +215,7 @@ pub type ContinueResolveResponse = ResolveCredentialResponse;
 // --- Lifecycle (test / refresh / revoke) ---
 
 /// Response from testing a credential's connectivity.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TestCredentialResponse {
     /// Whether the connectivity test succeeded.
     pub success: bool,
@@ -224,7 +226,7 @@ pub struct TestCredentialResponse {
 }
 
 /// Response from refreshing a credential's tokens.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RefreshCredentialResponse {
     /// Whether the refresh succeeded.
     pub refreshed: bool,
@@ -236,7 +238,7 @@ pub struct RefreshCredentialResponse {
 }
 
 /// Response from revoking a credential.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RevokeCredentialResponse {
     /// Whether the revocation succeeded.
     pub revoked: bool,
@@ -247,7 +249,7 @@ pub struct RevokeCredentialResponse {
 // --- Type discovery ---
 
 /// Metadata and schema for a registered credential type.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CredentialTypeInfo {
     /// Unique type key (e.g. "oauth2", "api_key", "basic_auth").
     pub key: String,
@@ -270,7 +272,7 @@ pub struct CredentialTypeInfo {
 }
 
 /// Response listing all registered credential types.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ListCredentialTypesResponse {
     /// Available credential types.
     pub types: Vec<CredentialTypeInfo>,

@@ -25,12 +25,15 @@ use crate::{
         OAuthCallbackResponse,
     },
     middleware::auth::AuthenticatedUser,
-    models::credential::{
-        ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
-        CredentialResponse, CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,
-        ListCredentialsResponse, RefreshCredentialResponse, ResolveCredentialRequest,
-        ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
-        UpdateCredentialRequest,
+    models::{
+        AckResponse,
+        credential::{
+            ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
+            CredentialResponse, CredentialTypeInfo, ListCredentialTypesResponse,
+            ListCredentialsQuery, ListCredentialsResponse, RefreshCredentialResponse,
+            ResolveCredentialRequest, ResolveCredentialResponse, RevokeCredentialResponse,
+            TestCredentialResponse, UpdateCredentialRequest,
+        },
     },
     state::AppState,
 };
@@ -133,12 +136,12 @@ pub async fn delete_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
     Path((org, ws, cred)): Path<(String, String, String)>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Json<AckResponse>> {
     // Validate path parameter.
     validate_credential_id(&cred)?;
 
     crate::services::credential::delete_credential(&state, &org, &ws, &cred).await?;
-    Ok(Json(serde_json::json!({ "deleted": true })))
+    Ok(Json(AckResponse::ok()))
 }
 
 // --- Lifecycle handlers ---
