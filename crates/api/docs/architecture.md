@@ -9,12 +9,16 @@
                     ┌─────────────────────────────────────────┐
                     │           Один процесс (binary)         │
                     │                                         │
-  Client/Webhook ──►│  ┌─────────────────────────────────┐   │
-                    │  │  HTTP Server (axum)             │   │
-                    │  │  • GET /health                  │   │
-                    │  │  • GET /api/v1/status           │   │
-                    │  │  • POST /webhooks/*             │   │
-                    │  └──────────────┬──────────────────┘   │
+  Client/Webhook ──►│  ┌─────────────────────────────────────┐ │
+                    │  │  HTTP Server (axum)                 │ │
+                    │  │  • GET  /health                     │ │
+                    │  │  • GET  /api/v1/status              │ │
+                    │  │  • POST /webhooks/{uuid}/{nonce}    │ │
+                    │  │  • POST /api/v1/hooks/{org}/{ws}/   │ │
+                    │  │         {trigger_slug}              │ │
+                    │  │  • POST /internal/v1/webhooks/      │ │
+                    │  │         reload  (X-Internal-Token)  │ │
+                    │  └──────────────┬──────────────────────┘ │
                     │                 │                      │
                     │                 │ enqueue              │
                     │                 ▼                      │
@@ -59,6 +63,30 @@ async fn main() -> Result<()> {
 
 - **Один контейнер** — тот же бинарник: внутри и HTTP, и воркеры.
 - При масштабировании потом можно вынести воркеры в отдельные контейнеры (очередь в Redis), как n8n Queue Mode.
+
+## Webhook ingress (M3.3 / ADR-0049)
+
+После M3.3 у webhook-сюрфейса **одна труба** — `WebhookTransport`. Оба URL-shape проходят через единый `dispatch_inner`:
+
+| Surface | Path | Источник регистрации |
+|---|---|---|
+| Programmatic | `POST /webhooks/{trigger_uuid}/{nonce}` | Runtime через `WebhookTransport::activate(...)` (типизированные `WebhookAction`-триггеры) |
+| Slug-routed | `POST|GET /api/v1/hooks/{org}/{ws}/{trigger_slug}` | Storage bootstrap `bootstrap_webhook_activations` + lifecycle bus + admin reload |
+| Admin reload | `POST /internal/v1/webhooks/reload` | Внутренний хеадер `X-Internal-Token`, атомарный `replace_slug_map` |
+
+Pipeline в `dispatch_inner` (один источник истины для обоих shape):
+
+```
+routing-map lookup     → 404
+rate-limit (per-key)   → 429 + Retry-After
+signature verify       → 401 (HMAC + replay-window timestamp)
+pre_handle             → optional RespondNow (Slack url_verification,
+                                              Stripe pending_webhook,
+                                              Generic ?challenge=)
+handle_request         → engine
+```
+
+Provider-каталог (`Slack` / `Stripe` / `Generic`) живёт в `crates/action/src/webhook/providers/`; engine-`ActionRegistry` держит string-keyed factory map; bootstrap по `action_kind` в storage row выбирает фабрику, разрешает `secret_id` через `WebhookSecretResolver`, строит `BuiltWebhookHandler` и регистрирует через `transport.activate_slug(...)`.
 
 ## Итог
 
