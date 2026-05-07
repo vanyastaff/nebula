@@ -1,4 +1,10 @@
 //! Workflow handlers
+//!
+//! `unused_qualifications` is silenced for the module: the
+//! `IntoParams`-derived `PaginationParams` triggers it from inside the
+//! `#[utoipa::path(... params(PaginationParams))]` expansion (utoipa 5.5
+//! macro-generated code paths qualify the type).
+#![allow(unused_qualifications)]
 
 use axum::{
     Extension, Json,
@@ -10,9 +16,10 @@ use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::ExecutionState;
 use serde::Deserialize;
 use serde_json::Value;
+use utoipa::IntoParams;
 
 use crate::{
-    errors::{ApiError, ApiResult},
+    errors::{ApiError, ApiResult, ProblemDetails},
     handlers::execution::enqueue_start,
     models::{
         CreateWorkflowRequest, ExecutionResponse, ListWorkflowsResponse, StartExecutionRequest,
@@ -65,13 +72,16 @@ pub(crate) fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
 }
 
 /// Pagination query parameters
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PaginationParams {
     /// Page number (1-indexed)
     #[serde(default = "default_page")]
+    #[param(minimum = 1)]
     pub page: usize,
     /// Page size (default 10, max 100)
     #[serde(default = "default_page_size")]
+    #[param(minimum = 1, maximum = 100)]
     pub page_size: usize,
 }
 
@@ -97,6 +107,23 @@ impl PaginationParams {
 
 /// List workflows
 /// GET /api/v1/orgs/{org}/workspaces/{ws}/workflows
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/workflows",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        PaginationParams,
+    ),
+    responses(
+        (status = 200, description = "Paginated workflow summaries.", body = ListWorkflowsResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
+    ),
+)]
 pub async fn list_workflows(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -157,6 +184,24 @@ pub async fn list_workflows(
 
 /// Get workflow by ID
 /// GET /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Workflow detail.", body = WorkflowResponse),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+    ),
+)]
 pub async fn get_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -203,6 +248,23 @@ pub async fn get_workflow(
 
 /// Create workflow
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/workflows",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+    ),
+    request_body = CreateWorkflowRequest,
+    responses(
+        (status = 201, description = "Workflow created.", body = WorkflowResponse),
+        (status = 400, description = "Validation error (e.g. blank name).", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+    ),
+)]
 pub async fn create_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -264,6 +326,26 @@ pub async fn create_workflow(
 
 /// Update workflow
 /// PUT /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}
+#[utoipa::path(
+    put,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    request_body = UpdateWorkflowRequest,
+    responses(
+        (status = 200, description = "Workflow updated.", body = WorkflowResponse),
+        (status = 400, description = "Validation error or attempt to mutate immutable identity field.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent modification detected (optimistic concurrency).", body = ProblemDetails),
+    ),
+)]
 pub async fn update_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -375,6 +457,24 @@ pub async fn update_workflow(
 
 /// Delete workflow
 /// DELETE /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}
+#[utoipa::path(
+    delete,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    responses(
+        (status = 204, description = "Workflow deleted."),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+    ),
+)]
 pub async fn delete_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -401,6 +501,26 @@ pub async fn delete_workflow(
 
 /// Activate workflow
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Workflow activated.", body = WorkflowResponse),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
+        (status = 422, description = "Workflow definition fails structural validation.", body = ProblemDetails),
+    ),
+)]
 pub async fn activate_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -506,6 +626,26 @@ pub async fn activate_workflow(
 
 /// Execute workflow (enqueue and return 202 Accepted)
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    request_body = StartExecutionRequest,
+    responses(
+        (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
+    ),
+)]
 pub async fn execute_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,

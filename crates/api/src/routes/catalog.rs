@@ -1,14 +1,14 @@
 //! Action and plugin catalog routes.
 
-use axum::{Router, routing::get};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{handlers, state::AppState};
 
 /// Action and plugin catalog routes.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/actions", get(handlers::list_actions))
-        .route("/actions/{key}", get(handlers::get_action))
-        .route("/plugins", get(handlers::list_plugins))
-        .route("/plugins/{key}", get(handlers::get_plugin))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(handlers::catalog::list_actions))
+        .routes(routes!(handlers::catalog::get_action))
+        .routes(routes!(handlers::catalog::list_plugins))
+        .routes(routes!(handlers::catalog::get_plugin))
 }

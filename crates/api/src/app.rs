@@ -17,6 +17,34 @@ use crate::{
 
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
+    // Materialise the full route tree alongside the merged OpenAPI 3.1
+    // document (ADR-0047). `OpenApiRouter::split_for_parts()` is the
+    // single mounting path that ties the served `axum::Router` to the
+    // generated `OpenApi` value, so any handler missing
+    // `#[utoipa::path]` would fail to pass through `routes!()` at compile
+    // time — drift detection is structural rather than review-time.
+    let (api_routes, openapi_spec) = routes::create_routes(state.clone(), config);
+
+    // Cache the spec on the shared `AppState` so the
+    // `GET /api/v1/openapi.json` handler (T6) can serve it without
+    // re-deriving on every request. `Arc<OnceLock>` semantics mean every
+    // cloned state already in flight observes this write.
+    state.install_openapi_doc(openapi_spec.clone());
+
+    let path_count = openapi_spec.paths.paths.len();
+    // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
+    // round-trips it to the canonical version string. ADR-0047 pins the
+    // generator to 3.1.0, so the assertion in T7 catches accidental drift.
+    let spec_version = serde_json::to_value(&openapi_spec.openapi)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned());
+    tracing::info!(
+        spec.version = %spec_version,
+        paths = path_count,
+        "openapi: spec compiled"
+    );
+
     // Apply the REST body-limit layer BEFORE merging the webhook
     // router. The webhook transport already attaches its own
     // `DefaultBodyLimit` inside `transport.router()`; layering after
@@ -24,8 +52,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // REST default is not the right default for every webhook
     // provider. Operators tune the REST cap via `API_MAX_BODY_SIZE`
     // (defaulting to `config::REST_BODY_LIMIT_BYTES`).
-    let routes = routes::create_routes(state.clone(), config)
-        .layer(DefaultBodyLimit::max(config.max_body_size));
+    let routes = api_routes.layer(DefaultBodyLimit::max(config.max_body_size));
 
     // Merge the webhook transport router (if attached). Webhook
     // routes live alongside REST API routes on the same axum app,

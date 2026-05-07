@@ -6,7 +6,7 @@ use axum::{
 };
 
 use crate::{
-    errors::{ApiError, ApiResult},
+    errors::{ApiError, ApiResult, ProblemDetails},
     models::{
         ActionDetailResponse, ActionSummary, ListActionsResponse, ListPluginsResponse,
         PluginDetailResponse, PluginSummary,
@@ -23,6 +23,16 @@ use crate::{
 /// # Errors
 ///
 /// Returns [`ApiError::ServiceUnavailable`] if no action registry is configured.
+#[utoipa::path(
+    get,
+    path = "/actions",
+    tag = "catalog",
+    security(("bearer" = []), ("api_key" = [])),
+    responses(
+        (status = 200, description = "All registered actions.", body = ListActionsResponse),
+        (status = 503, description = "Action registry is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
 pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListActionsResponse>> {
     let registry = state
         .action_registry
@@ -62,6 +72,21 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
 ///
 /// - [`ApiError::ServiceUnavailable`] if no action registry is configured.
 /// - [`ApiError::NotFound`] if the action key is not registered.
+#[utoipa::path(
+    get,
+    path = "/actions/{key}",
+    tag = "catalog",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("key" = String, Path, description = "Action key (e.g. `http.request`)."),
+    ),
+    responses(
+        (status = 200, description = "Action detail.", body = ActionDetailResponse),
+        (status = 400, description = "Invalid action key.", body = ProblemDetails),
+        (status = 404, description = "Action key is not registered.", body = ProblemDetails),
+        (status = 503, description = "Action registry is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
 pub async fn get_action(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -97,6 +122,16 @@ pub async fn get_action(
 /// # Errors
 ///
 /// Returns [`ApiError::ServiceUnavailable`] if no plugin registry is configured.
+#[utoipa::path(
+    get,
+    path = "/plugins",
+    tag = "catalog",
+    security(("bearer" = []), ("api_key" = [])),
+    responses(
+        (status = 200, description = "All registered plugins.", body = ListPluginsResponse),
+        (status = 503, description = "Plugin registry is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
 pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListPluginsResponse>> {
     let registry_lock = state
         .plugin_registry
@@ -129,6 +164,21 @@ pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListP
 ///
 /// - [`ApiError::ServiceUnavailable`] if no plugin registry is configured.
 /// - [`ApiError::NotFound`] if the plugin key is not registered.
+#[utoipa::path(
+    get,
+    path = "/plugins/{key}",
+    tag = "catalog",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("key" = String, Path, description = "Plugin key (e.g. `slack`)."),
+    ),
+    responses(
+        (status = 200, description = "Plugin detail.", body = PluginDetailResponse),
+        (status = 400, description = "Invalid plugin key.", body = ProblemDetails),
+        (status = 404, description = "Plugin key is not registered.", body = ProblemDetails),
+        (status = 503, description = "Plugin registry is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
 pub async fn get_plugin(
     State(state): State<AppState>,
     Path(key): Path<String>,

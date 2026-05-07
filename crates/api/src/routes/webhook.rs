@@ -17,22 +17,31 @@
 use std::sync::Arc;
 
 use axum::{Extension, Router, routing::post};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{handlers, state::AppState, webhook::WebhookDispatcher};
 
-/// Webhook routes under `/hooks/{org}/{ws}/{trigger_slug}`.
+/// Webhook routes under `/api/v1/hooks/{org}/{ws}/{trigger_slug}` — used
+/// by [`crate::routes::create_routes`] to populate the OpenAPI document.
 ///
 /// Mounts an empty in-memory [`WebhookDispatcher`]. Until trigger
 /// lifecycle wiring lands (out of scope for M3.3), every request
 /// resolves to `404 Not Found` — the production-correct outcome for
 /// "no registered trigger".
-pub fn router() -> Router<AppState> {
-    router_with_dispatcher(Arc::new(WebhookDispatcher::new()))
+pub fn router() -> OpenApiRouter<AppState> {
+    let dispatcher = Arc::new(WebhookDispatcher::new());
+    OpenApiRouter::new()
+        .routes(routes!(
+            handlers::webhook::handle_webhook_post,
+            handlers::webhook::handle_webhook_get
+        ))
+        .layer(Extension(dispatcher))
 }
 
 /// Build a webhook router with a caller-supplied dispatcher. Used by
-/// integration tests and (eventually) by the runtime composition root
-/// once trigger registration is wired through the storage layer.
+/// integration tests that bypass the OpenAPI machinery — returns a plain
+/// `axum::Router<AppState>` so callers can `.nest("/api/v1", router)` as
+/// they did pre-ADR-0047 without touching `utoipa-axum` types.
 pub fn router_with_dispatcher(dispatcher: Arc<WebhookDispatcher>) -> Router<AppState> {
     Router::new()
         .route(

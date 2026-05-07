@@ -1,13 +1,13 @@
 //! Health check routes
 
-use axum::{Router, routing::get};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{handlers, state::AppState};
 
-/// Health routes
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/health", get(handlers::health_check))
-        .route("/ready", get(handlers::readiness_check))
-        .route("/version", get(handlers::version_info))
+/// Health routes (root level — `/health`, `/ready`, `/version`).
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(handlers::health::health_check))
+        .routes(routes!(handlers::health::readiness_check))
+        .routes(routes!(handlers::health::version_info))
 }

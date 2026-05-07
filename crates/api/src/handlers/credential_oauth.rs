@@ -13,6 +13,7 @@ use nebula_credential::{
     generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
@@ -41,7 +42,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Response with provider authorization URL and generated state.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AuthorizationUriResponse {
     /// URL where the browser should be redirected.
     pub authorize_url: String,
@@ -105,7 +106,8 @@ pub async fn get_oauth2_authorize_url(
 }
 
 /// GET callback params.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct OAuthCallbackQuery {
     /// Authorization code.
     pub code: String,
@@ -114,7 +116,7 @@ pub struct OAuthCallbackQuery {
 }
 
 /// POST callback body (for form_post response mode).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct OAuthCallbackBody {
     /// Authorization code.
     pub code: String,
@@ -123,7 +125,7 @@ pub struct OAuthCallbackBody {
 }
 
 /// Callback response while persistence wiring is still in rollout.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct OAuthCallbackResponse {
     /// Credential id from route.
     pub credential_id: String,
