@@ -41,6 +41,7 @@ mod trigger;
     reason = "row structs mirror SQL columns; per-field docs add noise without value"
 )]
 mod user;
+mod webhook_activation;
 #[expect(
     missing_docs,
     reason = "row structs mirror SQL columns; per-field docs add noise without value"
@@ -54,4 +55,8 @@ pub use org::{OrgMemberRow, OrgRow, ServiceAccountRow, WorkspaceMemberRow, Works
 pub use quota::{OrgQuotaRow, OrgQuotaUsageRow, WorkspaceQuotaUsageRow};
 pub use trigger::{CronFireSlotRow, PendingSignalRow, TriggerEventRow, TriggerRow};
 pub use user::{OAuthLinkRow, PersonalAccessTokenRow, SessionRow, UserRow, VerificationTokenRow};
+pub use webhook_activation::{
+    WEBHOOK_ACTIVATION_KEY, WebhookActivationCoords, WebhookActivationRecord,
+    WebhookActivationSpec, WebhookActivationSpecError, WebhookTimestampFormat,
+};
 pub use workflow::{WorkflowRow, WorkflowVersionRow};

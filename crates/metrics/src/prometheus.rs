@@ -45,9 +45,12 @@ use crate::naming::{
     NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
     NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
     NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
-    NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
-    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL, NEBULA_WEBHOOK_LATENCY_SECONDS,
+    NEBULA_WEBHOOK_PROVIDER_INTERCEPTS_TOTAL, NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL,
+    NEBULA_WEBHOOK_REGISTRATIONS, NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL,
+    NEBULA_WEBHOOK_REQUESTS_TOTAL, NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL,
+    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
 
 /// Prometheus exposition format version (text-based).
@@ -121,6 +124,26 @@ fn counter_help(name: &str) -> &'static str {
         NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL => {
             "Total webhook HMAC signature failures (labeled by reason)."
         },
+        NEBULA_WEBHOOK_REQUESTS_TOTAL => {
+            "Total webhook requests entering the transport (labeled by \
+             outcome, tenant_id, webhook_key_kind)."
+        },
+        NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL => {
+            "Total webhook requests rejected by replay-window enforcement \
+             (labeled by reason)."
+        },
+        NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL => {
+            "Total webhook requests rejected by per-key rate-limit \
+             enforcement (labeled by tenant_id, webhook_key_kind)."
+        },
+        NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL => {
+            "Total storage-driven webhook bootstrap rows that failed to \
+             register in the transport (labeled by reason)."
+        },
+        NEBULA_WEBHOOK_PROVIDER_INTERCEPTS_TOTAL => {
+            "Total provider-specific verification interceptions \
+             (labeled by provider, outcome)."
+        },
         NEBULA_API_IDEMPOTENCY_HITS_TOTAL => {
             "Total idempotent-replay cache hits served by the API \
              middleware."
@@ -156,6 +179,10 @@ fn gauge_help(name: &str) -> &'static str {
             "Idempotency store saturation (entries / max_capacity) \
              scaled by 1_000_000."
         },
+        NEBULA_WEBHOOK_REGISTRATIONS => {
+            "Active webhook registrations in the transport routing map \
+             (labeled by webhook_key_kind)."
+        },
         _ => "Custom gauge.",
     }
 }
@@ -174,6 +201,10 @@ fn histogram_help(name: &str) -> &'static str {
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS => "Credential rotation duration in seconds.",
         NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS => {
             "Refresh-coordinator hold duration in seconds (heartbeats + user closure)."
+        },
+        NEBULA_WEBHOOK_LATENCY_SECONDS => {
+            "Webhook transport handling latency in seconds (labeled by \
+             outcome, tenant_id, webhook_key_kind)."
         },
         NEBULA_API_IDEMPOTENCY_LATENCY_MS => {
             "Idempotency middleware path latency in milliseconds \

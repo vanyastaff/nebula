@@ -47,6 +47,9 @@
 //! clocks into this module. Build them in your action on top of the
 //! primitives.
 
+mod clock;
+pub mod factory;
+pub mod providers;
 mod source;
 use std::{
     fmt,
@@ -59,6 +62,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+pub use clock::{Clock, MockClock, SystemClock};
+pub use factory::{BuiltWebhookHandler, FactoryError, WebhookActionFactory, WebhookActivationSpec};
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
@@ -68,6 +74,7 @@ use sha2::Sha256;
 pub use source::WebhookSource;
 use subtle::ConstantTimeEq;
 use tokio::sync::{Notify, oneshot};
+use tracing::{debug, warn};
 
 use crate::{
     action::Action,
@@ -649,6 +656,41 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
         ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<WebhookResponse, ActionError>> + Send;
 
+    /// Inspect a request **after** signature + replay verification
+    /// but **before** [`Self::handle_request`].
+    ///
+    /// Provider-typed actions (Slack, Stripe, Generic) override this
+    /// to intercept verification probes — Slack's `url_verification`
+    /// POST, Stripe's `pending_webhook` ping, generic
+    /// `?challenge=<token>` GETs. Returning
+    /// [`PreHandleOutcome::RespondNow`] hands the response straight
+    /// back to the caller without touching the engine.
+    ///
+    /// # Order of operations in the transport
+    ///
+    /// `signature.verify_with` → `pre_handle` → `handle_request`. Probes
+    /// must therefore present a valid signature when the provider
+    /// requires one (this is the case for Slack and Stripe — both sign
+    /// their verification probes the same way as normal events).
+    ///
+    /// # Default
+    ///
+    /// `Ok(PreHandleOutcome::Continue)` — every request goes through
+    /// to `handle_request`. Existing implementors compile unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Return [`ActionError`] only for hard internal failures. Bad
+    /// requests should be answered with `RespondNow(...)` carrying a
+    /// 4xx body rather than an `Err`.
+    fn pre_handle(
+        &self,
+        _request: &WebhookRequest,
+        _ctx: &(impl TriggerContext + ?Sized),
+    ) -> impl Future<Output = Result<PreHandleOutcome, ActionError>> + Send {
+        async { Ok(PreHandleOutcome::Continue) }
+    }
+
     /// Unregister webhook on deactivation.
     ///
     /// Receives the state stored from `on_activate`. Default: no-op.
@@ -716,6 +758,12 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
 #[non_exhaustive]
 pub struct WebhookConfig {
     signature_policy: SignaturePolicy,
+    /// Optional provider tag. Set by provider-typed actions
+    /// ([`WebhookProvider::Slack`], [`WebhookProvider::Stripe`],
+    /// [`WebhookProvider::Generic`]); `None` for ad-hoc actions.
+    /// The transport reads this to decide telemetry labels and to
+    /// gate provider-specific lifecycle hooks.
+    provider: Option<WebhookProvider>,
 }
 
 impl WebhookConfig {
@@ -733,11 +781,75 @@ impl WebhookConfig {
         self
     }
 
+    /// Tag this config with a provider. Required for actions that
+    /// rely on provider-specific [`WebhookAction::pre_handle`]
+    /// behaviour (Slack `url_verification`, Stripe `pending_webhook`,
+    /// Generic challenge endpoints).
+    #[must_use]
+    pub fn with_provider(mut self, provider: WebhookProvider) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
     /// Signature policy enforced by the transport before dispatch.
     #[must_use]
     pub fn signature_policy(&self) -> &SignaturePolicy {
         &self.signature_policy
     }
+
+    /// Provider tag, if set via [`Self::with_provider`].
+    #[must_use]
+    pub fn provider(&self) -> Option<&WebhookProvider> {
+        self.provider.as_ref()
+    }
+}
+
+// ── WebhookProvider ──────────────────────────────────────────────────────
+
+/// Provider catalog tag for a [`WebhookAction`].
+///
+/// Lets the transport (and metrics layer) tell apart provider-specific
+/// flows without inspecting [`std::any::TypeId`] or reflecting on the
+/// underlying action type. New providers extend this enum without
+/// breaking external consumers thanks to `#[non_exhaustive]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WebhookProvider {
+    /// Slack — verification via `url_verification` POSTs and
+    /// `X-Slack-Signature` HMAC of `v0:{ts}:{body}`.
+    Slack,
+    /// Stripe — verification via `Stripe-Signature: t=…,v1=…` and
+    /// the `pending_webhook` ping payload during endpoint creation.
+    Stripe,
+    /// Generic provider-agnostic webhook. May expose a configurable
+    /// `?challenge=<token>` GET endpoint mirroring Microsoft-style
+    /// validation (Teams, SharePoint).
+    Generic {
+        /// Optional shared token compared in constant time against the
+        /// inbound `?challenge=` query parameter. `None` disables the
+        /// GET challenge endpoint.
+        challenge_token: Option<String>,
+    },
+}
+
+// ── PreHandleOutcome ─────────────────────────────────────────────────────
+
+/// Result of [`WebhookAction::pre_handle`].
+///
+/// `Continue` — request flows to [`WebhookAction::handle_request`].
+/// `RespondNow(resp)` — transport returns `resp` verbatim and
+/// **skips** `handle_request` entirely. Use this for protocol-level
+/// challenges (Slack `url_verification`, Stripe `pending_webhook`
+/// ping, generic provider GET challenge) where the response is the
+/// whole point of the request and no engine work should be done.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PreHandleOutcome {
+    /// Default: dispatch continues to `handle_request`.
+    Continue,
+    /// Short-circuit: return this HTTP response and skip
+    /// `handle_request`.
+    RespondNow(WebhookHttpResponse),
 }
 
 // ── SignaturePolicy ──────────────────────────────────────────────────────────
@@ -839,23 +951,56 @@ impl SignaturePolicy {
 /// An empty secret is *not* a misuse of the API — it is the
 /// fail-closed default surface that catches "author forgot to
 /// supply a secret" at the transport layer. See ADR-0022.
+///
+/// # Non-exhaustive
+///
+/// Marked `#[non_exhaustive]` so future webhook-layer settings
+/// (replay window, timestamp header) can land without breaking
+/// external constructors. Build via [`RequiredPolicy::new`] or
+/// [`RequiredPolicy::default`] and chain `with_*` setters.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct RequiredPolicy {
     secret: Arc<[u8]>,
     header: HeaderName,
     scheme: SignatureScheme,
+    /// Header carrying the request timestamp (Stripe / Slack style).
+    /// `None` skips replay-window enforcement, preserving behaviour
+    /// for actions that have not opted in.
+    timestamp_header: Option<HeaderName>,
+    /// Encoding of the timestamp header value. Default
+    /// [`TimestampFormat::UnixSeconds`].
+    timestamp_format: TimestampFormat,
+    /// Maximum acceptable skew between the request timestamp and
+    /// `clock.now()`. Default 300 s (5 min). Future timestamps beyond
+    /// 60 s are also rejected as a hard cap.
+    replay_window: Duration,
 }
+
+/// Default replay window. Matches the Slack and Stripe defaults; OK
+/// upstream of provider-specific overrides.
+const DEFAULT_REPLAY_WINDOW: Duration = Duration::from_mins(5);
+
+/// Hard ceiling on positive forward skew (timestamp dated *after*
+/// `clock.now()`). A replay window that accepts arbitrary future
+/// timestamps is no replay window at all — pin the future side
+/// independently of the configured window.
+const FUTURE_SKEW_SECS: i64 = 60;
 
 impl RequiredPolicy {
     /// Canonical Nebula default: `X-Nebula-Signature`,
     /// [`SignatureScheme::Sha256Hex`], empty secret (fail-closed until
-    /// an author supplies one).
+    /// an author supplies one), no timestamp header (replay-window
+    /// enforcement opt-in).
     #[must_use]
     pub fn new() -> Self {
         Self {
             secret: Arc::from(Vec::<u8>::new()),
             header: HeaderName::from_static("x-nebula-signature"),
             scheme: SignatureScheme::Sha256Hex,
+            timestamp_header: None,
+            timestamp_format: TimestampFormat::UnixSeconds,
+            replay_window: DEFAULT_REPLAY_WINDOW,
         }
     }
 
@@ -899,6 +1044,47 @@ impl RequiredPolicy {
         self
     }
 
+    /// Opt into replay-window enforcement by naming the timestamp
+    /// header. Pair with [`Self::with_replay_window`] and
+    /// [`Self::with_timestamp_format`] when the provider differs from
+    /// the defaults (Unix seconds, 5-minute window).
+    #[must_use]
+    pub fn with_timestamp_header(mut self, header: HeaderName) -> Self {
+        self.timestamp_header = Some(header);
+        self
+    }
+
+    /// String-based variant of [`Self::with_timestamp_header`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `header` is not a valid HTTP header name.
+    pub fn with_timestamp_header_str(self, header: &str) -> Result<Self, ActionError> {
+        let name = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+            ActionError::validation(
+                "webhook.signature_policy.timestamp_header",
+                ValidationReason::WrongType,
+                Some(format!("invalid HTTP header name: {header:?}")),
+            )
+        })?;
+        Ok(self.with_timestamp_header(name))
+    }
+
+    /// Replace the timestamp encoding. See [`TimestampFormat`].
+    #[must_use]
+    pub fn with_timestamp_format(mut self, format: TimestampFormat) -> Self {
+        self.timestamp_format = format;
+        self
+    }
+
+    /// Replace the replay window. Stripe/Slack default is 300 s;
+    /// providers with looser tolerances should configure their own.
+    #[must_use]
+    pub fn with_replay_window(mut self, window: Duration) -> Self {
+        self.replay_window = window;
+        self
+    }
+
     /// Shared HMAC secret. Empty slice indicates the fail-closed
     /// default; transports treat that identically to a missing
     /// credential.
@@ -918,6 +1104,102 @@ impl RequiredPolicy {
     pub fn scheme(&self) -> SignatureScheme {
         self.scheme
     }
+
+    /// Timestamp header name. `None` means replay-window enforcement
+    /// is disabled for this policy.
+    #[must_use]
+    pub fn timestamp_header(&self) -> Option<&HeaderName> {
+        self.timestamp_header.as_ref()
+    }
+
+    /// Timestamp encoding (Unix seconds, Unix milliseconds, or RFC
+    /// 3339).
+    #[must_use]
+    pub fn timestamp_format(&self) -> TimestampFormat {
+        self.timestamp_format
+    }
+
+    /// Replay window — the maximum skew between the request
+    /// timestamp and the clock.
+    #[must_use]
+    pub fn replay_window(&self) -> Duration {
+        self.replay_window
+    }
+
+    /// Run the configured timestamp + signature checks against `request`.
+    ///
+    /// The single source of truth shared by the HTTP transport's
+    /// programmatic and slug-routed paths. Timestamp validation runs
+    /// **before** HMAC math so cheap rejections do not pay the
+    /// constant-time signature cost.
+    ///
+    /// # Order of operations
+    ///
+    /// 1. Empty secret → [`SignatureError::SecretMissing`] (500 at the transport).
+    /// 2. If `timestamp_header` is set: pull, parse, and replay-check.
+    /// 3. HMAC verification via the configured [`SignatureScheme`].
+    ///
+    /// When `timestamp_header` is `None`, step 2 is skipped — preserves
+    /// behaviour for actions that have not opted into replay
+    /// protection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failing step as a typed [`SignatureError`].
+    pub fn verify_with(
+        &self,
+        request: &WebhookRequest,
+        clock: &dyn Clock,
+    ) -> Result<(), SignatureError> {
+        if self.secret.is_empty() {
+            return Err(SignatureError::SecretMissing);
+        }
+
+        if let Some(name) = self.timestamp_header.as_ref() {
+            validate_timestamp(
+                request.headers(),
+                name,
+                self.timestamp_format,
+                self.replay_window,
+                clock,
+            )?;
+        }
+
+        let outcome = match self.scheme {
+            SignatureScheme::Sha256Hex => {
+                match verify_hmac_sha256(request, &self.secret, self.header.as_str()) {
+                    Ok(o) => o,
+                    Err(error) => {
+                        warn!(
+                            scheme = "sha256-hex",
+                            %error,
+                            "webhook signature primitive returned unexpected error; treating as Invalid"
+                        );
+                        SignatureOutcome::Invalid
+                    },
+                }
+            },
+            SignatureScheme::Sha256Base64 => {
+                match verify_hmac_sha256_base64(request, &self.secret, self.header.as_str()) {
+                    Ok(o) => o,
+                    Err(error) => {
+                        warn!(
+                            scheme = "sha256-base64",
+                            %error,
+                            "webhook signature primitive returned unexpected error; treating as Invalid"
+                        );
+                        SignatureOutcome::Invalid
+                    },
+                }
+            },
+        };
+
+        match outcome {
+            SignatureOutcome::Valid => Ok(()),
+            SignatureOutcome::Missing => Err(SignatureError::SignatureMissing),
+            SignatureOutcome::Invalid => Err(SignatureError::SignatureInvalid),
+        }
+    }
 }
 
 impl Default for RequiredPolicy {
@@ -935,8 +1217,243 @@ impl fmt::Debug for RequiredPolicy {
             )
             .field("header", &self.header)
             .field("scheme", &self.scheme)
+            .field("timestamp_header", &self.timestamp_header)
+            .field("timestamp_format", &self.timestamp_format)
+            .field("replay_window", &self.replay_window)
             .finish()
     }
+}
+
+// ── Timestamp / replay-window enforcement ───────────────────────────────────
+
+/// Encoding of a timestamp header value (Stripe / Slack / RFC 3339).
+///
+/// `RequiredPolicy::timestamp_format` selects which decoder
+/// `validate_timestamp` runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TimestampFormat {
+    /// Stripe's `t=…`, Slack's `X-Slack-Request-Timestamp`. The
+    /// canonical default.
+    #[default]
+    UnixSeconds,
+    /// Some bespoke providers ship millisecond-resolution Unix epochs.
+    UnixMillis,
+    /// RFC 3339 / ISO 8601 timestamps. Acceptable forms: `2026-05-07T14:23:00Z`,
+    /// `2026-05-07T14:23:00+00:00`. Sub-second precision is preserved.
+    Rfc3339,
+}
+
+/// Failure modes for [`RequiredPolicy::verify_with`].
+///
+/// Each variant carries enough context for the transport layer to
+/// emit RFC 9457 problem+json without re-deriving the cause. The
+/// transport maps:
+/// - `SecretMissing` → 500 (operator misconfig)
+/// - `SignatureMissing` / `SignatureInvalid` → 401
+/// - `TimestampMissing` / `TimestampMalformed` / `TimestampOutOfWindow` → 401
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum SignatureError {
+    /// `Required` policy held an empty secret. 500 — operator
+    /// misconfiguration, not a caller fault.
+    #[error("webhook signature secret not configured")]
+    SecretMissing,
+    /// Signature header absent. 401.
+    #[error("webhook signature header missing")]
+    SignatureMissing,
+    /// Signature header present but did not match. 401.
+    #[error("webhook signature invalid")]
+    SignatureInvalid,
+    /// Timestamp header configured but absent on request. 401.
+    #[error("webhook timestamp header missing")]
+    TimestampMissing,
+    /// Timestamp header present but unparsable. 401.
+    #[error("webhook timestamp malformed: {reason}")]
+    TimestampMalformed {
+        /// One-line cause; safe to echo into problem+json detail.
+        reason: String,
+    },
+    /// Timestamp parsed but outside the replay window. 401.
+    #[error("webhook timestamp out of replay window: skew {skew_secs}s")]
+    TimestampOutOfWindow {
+        /// Positive when the request timestamp is older than `now`,
+        /// negative when it is in the future. Useful for diagnosing
+        /// clock skew on the producer side.
+        skew_secs: i64,
+    },
+}
+
+/// Decode and replay-check a single timestamp header value.
+///
+/// Pure: takes the raw [`HeaderMap`], the configured header name, the
+/// expected encoding, the replay window, and a [`Clock`]. Never
+/// touches the wall clock directly. Future timestamps beyond a
+/// hard-coded 60-second forward-skew cap (private constant
+/// `FUTURE_SKEW_SECS`) are rejected even if the configured window
+/// would technically admit them — a replay window that accepts
+/// arbitrary future timestamps is no replay window at all.
+pub fn validate_timestamp(
+    headers: &HeaderMap,
+    header_name: &HeaderName,
+    format: TimestampFormat,
+    window: Duration,
+    clock: &dyn Clock,
+) -> Result<(), SignatureError> {
+    let raw = match single_header_value(headers, header_name) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Err(SignatureError::TimestampMissing),
+        HeaderLookup::Multiple => {
+            return Err(SignatureError::TimestampMalformed {
+                reason: "multiple timestamp headers".to_string(),
+            });
+        },
+    };
+
+    let ts_secs = parse_timestamp_secs(raw, format)?;
+    let now_secs: i64 = match clock.now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => {
+            return Err(SignatureError::TimestampMalformed {
+                reason: "clock predates Unix epoch".to_string(),
+            });
+        },
+    };
+
+    let skew = now_secs.saturating_sub(ts_secs);
+    let window_secs = window.as_secs() as i64;
+    if skew > window_secs || skew < -FUTURE_SKEW_SECS {
+        return Err(SignatureError::TimestampOutOfWindow { skew_secs: skew });
+    }
+
+    debug!(
+        skew_secs = skew,
+        header_name = %header_name,
+        "webhook timestamp accepted"
+    );
+    Ok(())
+}
+
+fn parse_timestamp_secs(raw: &str, format: TimestampFormat) -> Result<i64, SignatureError> {
+    let trimmed = raw.trim();
+    match format {
+        TimestampFormat::UnixSeconds => {
+            trimmed
+                .parse::<i64>()
+                .map_err(|_| SignatureError::TimestampMalformed {
+                    reason: format!("not a Unix-seconds integer: {trimmed:?}"),
+                })
+        },
+        TimestampFormat::UnixMillis => {
+            let millis =
+                trimmed
+                    .parse::<i64>()
+                    .map_err(|_| SignatureError::TimestampMalformed {
+                        reason: format!("not a Unix-milliseconds integer: {trimmed:?}"),
+                    })?;
+            Ok(millis / 1_000)
+        },
+        TimestampFormat::Rfc3339 => parse_rfc3339_to_unix_secs(trimmed),
+    }
+}
+
+/// Tiny RFC 3339 parser: `YYYY-MM-DDTHH:MM:SS[.fff][Z|±HH:MM]`. Avoids
+/// pulling `chrono` into `nebula-action`. Accepts the subset shipped
+/// by mainstream webhook providers; rejects anything looser.
+fn parse_rfc3339_to_unix_secs(s: &str) -> Result<i64, SignatureError> {
+    // Split off the timezone suffix.
+    let (datetime, offset_secs) = split_rfc3339_offset(s)?;
+
+    // datetime: YYYY-MM-DDTHH:MM:SS[.fff]
+    let bytes = datetime.as_bytes();
+    if bytes.len() < 19
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || (bytes[10] != b'T' && bytes[10] != b' ')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return Err(SignatureError::TimestampMalformed {
+            reason: format!("malformed RFC 3339 timestamp: {s:?}"),
+        });
+    }
+
+    let year: i64 = parse_int(&datetime[0..4], s)?;
+    let month: u32 = parse_int(&datetime[5..7], s)?;
+    let day: u32 = parse_int(&datetime[8..10], s)?;
+    let hour: u32 = parse_int(&datetime[11..13], s)?;
+    let minute: u32 = parse_int(&datetime[14..16], s)?;
+    let second: u32 = parse_int(&datetime[17..19], s)?;
+
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return Err(SignatureError::TimestampMalformed {
+            reason: format!("RFC 3339 fields out of range: {s:?}"),
+        });
+    }
+
+    let days = days_from_civil(year, month as i32, day as i32);
+    let secs = days
+        .saturating_mul(86_400)
+        .saturating_add(i64::from(hour) * 3_600)
+        .saturating_add(i64::from(minute) * 60)
+        .saturating_add(i64::from(second));
+    Ok(secs - offset_secs)
+}
+
+fn split_rfc3339_offset(s: &str) -> Result<(&str, i64), SignatureError> {
+    if let Some(stripped) = s.strip_suffix('Z').or_else(|| s.strip_suffix('z')) {
+        return Ok((stripped, 0));
+    }
+    // Look for `+` or `-` after position 19 (i.e. inside the offset section).
+    if s.len() < 19 {
+        return Err(SignatureError::TimestampMalformed {
+            reason: format!("missing timezone designator: {s:?}"),
+        });
+    }
+    let tail = &s[19..];
+    if let Some(pos) = tail.find(['+', '-']) {
+        let datetime = &s[..19 + pos];
+        let offset = &tail[pos..];
+        if offset.len() != 6 || offset.as_bytes()[3] != b':' {
+            return Err(SignatureError::TimestampMalformed {
+                reason: format!("bad timezone offset: {offset:?}"),
+            });
+        }
+        let sign: i64 = if offset.starts_with('+') { 1 } else { -1 };
+        let hh: i64 = parse_int(&offset[1..3], s)?;
+        let mm: i64 = parse_int(&offset[4..6], s)?;
+        Ok((datetime, sign * (hh * 3_600 + mm * 60)))
+    } else {
+        Err(SignatureError::TimestampMalformed {
+            reason: format!("missing timezone designator: {s:?}"),
+        })
+    }
+}
+
+fn parse_int<T: std::str::FromStr>(slice: &str, full: &str) -> Result<T, SignatureError> {
+    slice
+        .parse::<T>()
+        .map_err(|_| SignatureError::TimestampMalformed {
+            reason: format!("non-numeric component in {full:?}"),
+        })
+}
+
+/// Howard Hinnant's date algorithm: days from 1970-01-01 to the
+/// civil-calendar date `(y, m, d)`. Handles leap years correctly for
+/// any year in `i64` range. `m` in `1..=12`; `d` in `1..=31`.
+fn days_from_civil(y: i64, m: i32, d: i32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe: i64 = y - era * 400; // [0, 399]
+    let doy = (153 * i64::from(if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
 }
 
 /// Signature encoding scheme for [`RequiredPolicy`].
@@ -1287,6 +1804,35 @@ where
                     "handle_event called before start or after stop — no state available",
                 ));
             };
+
+            // pre_handle hook (ADR-0049) — provider-typed actions
+            // (Slack url_verification, Stripe pending_webhook ping,
+            // Generic GET challenge) intercept verification probes
+            // here. Runs AFTER signature verification (transport
+            // already enforced the policy) but BEFORE
+            // `handle_request`, so the action's main path doesn't see
+            // probes. `RespondNow` short-circuits with the provided
+            // HTTP response and emits `TriggerEventOutcome::Skip`.
+            match self.action.pre_handle(&request, ctx).await {
+                Ok(PreHandleOutcome::Continue) => {},
+                Ok(PreHandleOutcome::RespondNow(http_response)) => {
+                    if let Some(tx) = response_tx {
+                        let _ = tx.send(http_response);
+                    }
+                    ctx.health().record_idle();
+                    return Ok(TriggerEventOutcome::Skip);
+                },
+                Err(e) => {
+                    if let Some(tx) = response_tx {
+                        let _ = tx.send(WebhookHttpResponse::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Bytes::new(),
+                        ));
+                    }
+                    ctx.health().record_error();
+                    return Err(e);
+                },
+            }
 
             // H6 — cancellation-safe dispatch. If the trigger is being
             // shut down mid-request, send `503 Service Unavailable` to

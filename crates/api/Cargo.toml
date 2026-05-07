@@ -36,6 +36,7 @@ nebula-engine = { path = "../engine" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
 nebula-credential = { path = "../credential" }
+nebula-eventbus = { path = "../eventbus" }
 
 tokio = { workspace = true, features = [
   "rt",

@@ -197,8 +197,16 @@ async fn drift_smoke_known_paths_are_present() {
         "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
         "/api/v1/orgs/{org}/workspaces/{ws}/executions",
         "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
-        // Webhooks
-        "/api/v1/hooks/{org}/{ws}/{trigger_slug}",
+        // Webhooks: `POST /api/v1/hooks/{org}/{ws}/{trigger_slug}` is
+        // mounted directly by `WebhookTransport::router()` (a plain
+        // axum Router, not an OpenApiRouter) so it does not appear in
+        // the served OpenAPI spec — operator-configured webhook URLs
+        // are documented in the README and ADR-0049, not the spec.
+        // The slug surface is consumed by external providers, not by
+        // SDK / Swagger users; promoting it back into the spec would
+        // require typed schemas for every provider's request envelope.
+        // ADR-0049 § "Out of scope (1.0 follow-ups)" tracks the
+        // re-promotion option.
     ];
 
     for path in expected {

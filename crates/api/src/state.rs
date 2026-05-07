@@ -14,7 +14,7 @@ use nebula_plugin::PluginRegistry;
 use nebula_storage::{
     ExecutionRepo, WorkflowRepo,
     credential::{InMemoryPendingStore, InMemoryStore},
-    repos::ControlQueueRepo,
+    repos::{ControlQueueRepo, WebhookActivationRepo},
 };
 use tokio::sync::RwLock;
 
@@ -146,6 +146,38 @@ pub struct AppState {
     /// PG-backed bridge (`StorageBackedIdempotencyStore<PgIdempotencyStore>`)
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
+
+    /// Optional webhook-activation repository (M3.3 / ADR-0049).
+    ///
+    /// When `Some`, the composition root invokes
+    /// [`crate::services::webhook::bootstrap_webhook_activations`] before
+    /// `build_app` to populate the transport's slug map. The same repo
+    /// is consulted by the admin reload endpoint
+    /// (`POST /internal/v1/webhooks/reload`).
+    pub webhook_activation_repo: Option<Arc<dyn WebhookActivationRepo>>,
+
+    /// Optional lifecycle event bus (M3.3 / ADR-0049 — E2).
+    ///
+    /// Producers (storage CRUD callsites) emit
+    /// [`crate::services::webhook::TriggerLifecycleEvent`] on this
+    /// bus; the transport-side subscriber reapplies the change
+    /// without a full reload. M3.3 ships the consumer; producer
+    /// wiring is deferred to a follow-up.
+    pub trigger_lifecycle_bus: Option<crate::services::webhook::TriggerLifecycleBus>,
+
+    /// Webhook credential resolver (M3.3 / ADR-0049 — E1+E3).
+    ///
+    /// Required for storage-driven slug bootstrap and admin reload.
+    pub webhook_secret_resolver: Option<Arc<dyn crate::services::webhook::WebhookSecretResolver>>,
+
+    /// Webhook ctx-template factory (M3.3 / ADR-0049 — E1+E3).
+    pub webhook_ctx_factory: Option<Arc<dyn crate::services::webhook::WebhookContextFactory>>,
+
+    /// Internal-routes shared token (M3.3 / ADR-0049 — E3).
+    ///
+    /// Required for `POST /internal/v1/webhooks/reload`. When `None`,
+    /// every request to `/internal/v1/...` returns 503.
+    pub internal_shared_token: Option<Arc<str>>,
 }
 
 impl AppState {
@@ -178,6 +210,11 @@ impl AppState {
             auth_backend: None,
             membership_store: None,
             idempotency_store: None,
+            webhook_activation_repo: None,
+            trigger_lifecycle_bus: None,
+            webhook_secret_resolver: None,
+            webhook_ctx_factory: None,
+            internal_shared_token: None,
         }
     }
 
@@ -260,6 +297,57 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_idempotency_store(mut self, store: Arc<dyn IdempotencyStore>) -> Self {
         self.idempotency_store = Some(store);
+        self
+    }
+
+    /// Attach a webhook-activation repository (M3.3 / ADR-0049).
+    ///
+    /// Required for storage-driven slug bootstrap and for the admin
+    /// reload endpoint. Composition roots that do not enable
+    /// `WebhookApiConfig::bootstrap_from_storage` may leave this
+    /// `None`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_webhook_activation_repo(mut self, repo: Arc<dyn WebhookActivationRepo>) -> Self {
+        self.webhook_activation_repo = Some(repo);
+        self
+    }
+
+    /// Attach a [`crate::services::webhook::TriggerLifecycleBus`]
+    /// for slug-routed activation lifecycle events (M3.3 / ADR-0049).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_trigger_lifecycle_bus(
+        mut self,
+        bus: crate::services::webhook::TriggerLifecycleBus,
+    ) -> Self {
+        self.trigger_lifecycle_bus = Some(bus);
+        self
+    }
+
+    /// Attach a webhook secret resolver (M3.3 / ADR-0049 — E1+E3).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_webhook_secret_resolver(
+        mut self,
+        resolver: Arc<dyn crate::services::webhook::WebhookSecretResolver>,
+    ) -> Self {
+        self.webhook_secret_resolver = Some(resolver);
+        self
+    }
+
+    /// Attach a webhook ctx-template factory (M3.3 / ADR-0049 — E1+E3).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_webhook_ctx_factory(
+        mut self,
+        factory: Arc<dyn crate::services::webhook::WebhookContextFactory>,
+    ) -> Self {
+        self.webhook_ctx_factory = Some(factory);
+        self
+    }
+
+    /// Attach the internal-routes shared token. Required for
+    /// `POST /internal/v1/webhooks/reload`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_internal_shared_token(mut self, token: impl Into<Arc<str>>) -> Self {
+        self.internal_shared_token = Some(token.into());
         self
     }
 }

@@ -196,15 +196,19 @@ pub const NEBULA_API_IDEMPOTENCY_LATENCY_MS: &str = "nebula_api_idempotency_late
 // ---------------------------------------------------------------------------
 
 /// Counter: webhook requests rejected by the transport-layer signature
-/// check (ADR-0022).
+/// check (ADR-0022 + M3.3 / ADR-0049).
 ///
 /// Labeled by `reason` (see [`webhook_signature_failure_reason`]). Low
-/// cardinality by design — the label set is exactly three static
-/// strings, no per-trigger dimension. Any non-zero value is an
-/// operational signal worth dashboarding: a `missing_secret` crossing
-/// means an action shipped with a `SignaturePolicy::Required` it did
-/// not populate; a `missing` / `invalid` crossing means either a
-/// provider is mis-signing or a caller is probing the endpoint.
+/// cardinality by design — the label set is a small closed set of
+/// static strings (currently six: `missing`, `invalid`,
+/// `missing_secret`, `timestamp_missing`, `timestamp_malformed`,
+/// `timestamp_out_of_window`), no per-trigger dimension. Any non-zero
+/// value is an operational signal worth dashboarding: a
+/// `missing_secret` crossing means an action shipped with a
+/// `SignaturePolicy::Required` it did not populate; `missing` /
+/// `invalid` means a provider is mis-signing or a caller is probing
+/// the endpoint; `timestamp_*` indicates clock skew, replay attacks,
+/// or a misconfigured `timestamp_format`.
 pub const NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL: &str = "nebula_webhook_signature_failures_total";
 
 /// Reason labels for [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`].
@@ -226,6 +230,130 @@ pub mod webhook_signature_failure_reason {
     /// shipped the default policy without supplying a secret. Returns
     /// 500 (not 401) because the misconfiguration is on our side.
     pub const MISSING_SECRET: &str = "missing_secret";
+    /// Replay-window check failed: the timestamp header was absent
+    /// when the policy required one (M3.3 / ADR-0049).
+    pub const TIMESTAMP_MISSING: &str = "timestamp_missing";
+    /// Replay-window check failed: the timestamp header was present
+    /// but unparsable (non-numeric, malformed RFC 3339, etc.).
+    pub const TIMESTAMP_MALFORMED: &str = "timestamp_malformed";
+    /// Replay-window check failed: the timestamp parsed but fell
+    /// outside the configured window (likely a replay attack or
+    /// significant clock skew).
+    pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
+}
+
+/// Counter: webhook requests entering the transport (M3.3 / ADR-0049).
+///
+/// Labeled by:
+/// - `outcome` — see [`webhook_request_outcome`].
+/// - `tenant_id` — `(org, workspace)` slug pair; bounded per
+///   deployment.
+/// - `webhook_key_kind` — see [`webhook_key_kind`]
+///   (`programmatic` | `slug`).
+///
+/// **Cardinality budget:** trigger-slug is deliberately omitted from
+/// this counter — per-trigger detail lives in tracing spans. The
+/// labelset cardinality is bounded by `outcome × tenant × kind`.
+pub const NEBULA_WEBHOOK_REQUESTS_TOTAL: &str = "nebula_webhook_requests_total";
+
+/// Histogram: end-to-end transport handling latency in seconds
+/// (M3.3 / ADR-0049). Same labelset as
+/// [`NEBULA_WEBHOOK_REQUESTS_TOTAL`].
+pub const NEBULA_WEBHOOK_LATENCY_SECONDS: &str = "nebula_webhook_latency_seconds";
+
+/// Counter: requests rejected by replay-window enforcement
+/// (M3.3 / ADR-0049). Labeled by `reason` (see
+/// [`webhook_replay_rejection_reason`]).
+pub const NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL: &str = "nebula_webhook_replay_rejections_total";
+
+/// Counter: requests rejected by per-key rate-limit enforcement
+/// (M3.3 / ADR-0049). Labels: `tenant_id`, `webhook_key_kind`.
+pub const NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL: &str =
+    "nebula_webhook_rate_limit_rejections_total";
+
+/// Counter: storage-driven bootstrap rows that failed to register
+/// in the transport (M3.3 / ADR-0049 / E1). Labeled by `reason` (see
+/// [`webhook_bootstrap_failure_reason`]).
+pub const NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL: &str = "nebula_webhook_bootstrap_failures_total";
+
+/// Gauge: active webhook registrations in the transport's routing
+/// map (M3.3 / ADR-0049). Labeled by `webhook_key_kind`.
+///
+/// Used by `/healthz` reporters and dashboarding. Counts move
+/// monotonically with E1 bootstrap, E2 lifecycle events, and E3
+/// admin reload swaps.
+pub const NEBULA_WEBHOOK_REGISTRATIONS: &str = "nebula_webhook_registrations";
+
+/// Counter: provider-specific verification interceptions before the
+/// action's main `handle_request` (Slack `url_verification`, Stripe
+/// `pending_webhook` ping, Generic `?challenge=…` GET — M3.3 /
+/// ADR-0049). Labels: `provider` (`slack` | `stripe` | `generic`),
+/// `outcome` (see [`webhook_provider_intercept_outcome`]).
+pub const NEBULA_WEBHOOK_PROVIDER_INTERCEPTS_TOTAL: &str =
+    "nebula_webhook_provider_intercepts_total";
+
+/// Outcome label values for [`NEBULA_WEBHOOK_REQUESTS_TOTAL`].
+pub mod webhook_request_outcome {
+    /// Action's `handle_request` returned successfully (2xx).
+    pub const ACCEPTED: &str = "accepted";
+    /// Action returned a non-2xx response (handler-level rejection).
+    pub const HANDLER_REJECTED: &str = "handler_rejected";
+    /// Signature / replay-window enforcement rejected the request.
+    pub const SIGNATURE_REJECTED: &str = "signature_rejected";
+    /// Per-key rate-limit threshold tripped.
+    pub const RATE_LIMITED: &str = "rate_limited";
+    /// `WebhookKey` did not resolve to a registered handler.
+    pub const NOT_FOUND: &str = "not_found";
+    /// `pre_handle` short-circuited via `RespondNow` (provider
+    /// challenge handshake).
+    pub const PROVIDER_INTERCEPTED: &str = "provider_intercepted";
+}
+
+/// Label values for `webhook_key_kind`.
+pub mod webhook_key_kind {
+    /// `WebhookKey::Programmatic { uuid, nonce }`.
+    pub const PROGRAMMATIC: &str = "programmatic";
+    /// `WebhookKey::Slug(TriggerCoordinates)`.
+    pub const SLUG: &str = "slug";
+}
+
+/// Reason labels for [`NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL`].
+pub mod webhook_replay_rejection_reason {
+    /// Timestamp parsed but fell outside the configured window
+    /// (replay attack or significant clock skew).
+    pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
+    /// Timestamp header configured by the policy but absent on the
+    /// request — caller can't prove freshness, fail-closed.
+    pub const TIMESTAMP_MISSING: &str = "timestamp_missing";
+    /// Timestamp header present but unparsable (non-numeric Unix,
+    /// malformed RFC 3339, etc).
+    pub const TIMESTAMP_MALFORMED: &str = "timestamp_malformed";
+    /// Future-replay-cache hit — same `(provider, signature)` tuple
+    /// observed inside the dedup window. Reserved for the
+    /// distributed replay-cache rollout (1.1).
+    pub const DEDUP_COLLISION: &str = "dedup_collision";
+}
+
+/// Reason labels for [`NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL`].
+pub mod webhook_bootstrap_failure_reason {
+    /// Storage-layer error reading active activations (DB conn,
+    /// schema drift). Surfaced by `WebhookActivationRepo::list_active`.
+    pub const STORAGE: &str = "storage";
+    /// `triggers.config.webhook_activation` JSONB failed to decode.
+    pub const DECODE: &str = "decode";
+    /// Provider factory rejected the spec or the registry held no
+    /// factory for `action_kind`.
+    pub const FACTORY: &str = "factory";
+}
+
+/// Outcome labels for [`NEBULA_WEBHOOK_PROVIDER_INTERCEPTS_TOTAL`].
+pub mod webhook_provider_intercept_outcome {
+    /// Slack `url_verification` POST handled inline.
+    pub const URL_VERIFICATION: &str = "url_verification";
+    /// Stripe `pending_webhook` test ping handled inline.
+    pub const PING: &str = "ping";
+    /// Generic provider `?challenge=` GET succeeded.
+    pub const CHALLENGE_MATCH: &str = "challenge_match";
 }
 
 // ---------------------------------------------------------------------------

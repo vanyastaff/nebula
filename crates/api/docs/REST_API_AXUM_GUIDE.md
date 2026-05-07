@@ -112,7 +112,8 @@ API **не должен**: запускать шаги workflow в потоке 
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  nebula-api (один порт: /health, /api/v1/*, /webhooks/*)        │
+│  nebula-api (один порт: /health, /api/v1/*, /webhooks/*,        │
+│              /api/v1/hooks/*, /internal/v1/*)                   │
 │  • Роуты, middleware, DTO ↔ доменные типы                       │
 │  • State: Arc<dyn WorkflowRepo>, Arc<dyn ExecutionRepo>, …       │
 │  • Handler: извлёк → вызвал сервис/порт → вернул ответ         │
@@ -162,6 +163,19 @@ API зависит только от **контрактов** (traits из `nebu
 - **INTERACTIONS:** API — downstream от webhook; engine, storage, workers — downstream от app; API получает в state уже собранные реализации портов.
 
 Соблюдение этого разделения позволяет масштабировать API горизонтально (несколько инстансов за балансировщиком), а выполнение — отдельно (пул workers, отдельные очереди), как в n8n и Temporal.
+
+#### Webhook ingress: один транспорт, два URL-shape (M3.3 / ADR-0049)
+
+`WebhookTransport` обслуживает два URL-shape через единый `dispatch_inner`:
+
+| Shape | URL | Источник регистрации |
+|---|---|---|
+| Programmatic | `POST /webhooks/{trigger_uuid}/{nonce}` | `WebhookTransport::activate(...)` от runtime'а под типизированный `WebhookAction` |
+| Slug-routed | `POST|GET /api/v1/hooks/{org}/{ws}/{trigger_slug}` | `bootstrap_webhook_activations` (storage at startup) + lifecycle bus + admin reload |
+
+Pipeline единый — signature/replay/rate-limit/pre_handle/handle. Slug-shape **не** живёт в OpenAPI-спеке (внешние провайдеры вызываются по runbook'ам, не через SDK); его документация — здесь и в ADR-0049. Per-key rate-limiter бакетит по `WebhookKey` (`Programmatic { uuid, nonce }` либо `Slug(TriggerCoordinates)`), флуд одного слага не затрагивает другие.
+
+Внутренний admin endpoint `POST /internal/v1/webhooks/reload` гейтится `X-Internal-Token` middleware и атомарно меняет slug-карту через `transport.replace_slug_map(...)`. Этот surface намеренно отсутствует в OpenAPI — операторы достают его из runbook'ов.
 
 ### 1.2 Масштабирование структуры для больших проектов
 

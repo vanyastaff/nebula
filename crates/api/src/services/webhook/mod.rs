@@ -11,14 +11,30 @@
 //! - [`provider`] — [`EndpointProviderImpl`] implementing `nebula_action::WebhookEndpointProvider`
 //!   so action code can read `ctx.webhook.endpoint_url()`.
 //! - `routing` — private `RoutingMap` (DashMap under the hood) keyed by `(trigger_uuid, nonce)`.
-//! - Rate limiting lives in [`crate::middleware::webhook_ratelimit`] and is re-exported here for
-//!   public API compatibility.
+//! - Rate limiting lives in [`ratelimit`] (moved out of
+//!   `middleware/webhook_ratelimit` in M3.3 / ADR-0049 phase F1; the
+//!   middleware/ placement was a misnomer — there was never a Tower
+//!   `Layer` wrapping the limiter, it is consumed directly by the
+//!   transport).
 
+pub mod bootstrap;
+pub mod events;
+pub mod key;
 pub mod provider;
+pub mod ratelimit;
 pub(crate) mod routing;
 pub mod transport;
 
+pub use bootstrap::{
+    BootstrapError, BootstrapReport, ResolvedActivation, SecretResolutionError,
+    WebhookContextFactory, WebhookSecretResolver, bootstrap_webhook_activations,
+    collect_webhook_activations,
+};
+pub use events::{
+    LifecycleApplyError, TriggerLifecycleBus, TriggerLifecycleEvent, TriggerLifecycleEventBus,
+    TriggerLifecycleSubscriber,
+};
+pub use key::{TriggerCoordinates, WebhookKey};
 pub use provider::EndpointProviderImpl;
+pub use ratelimit::{RateLimitExceeded, WebhookRateLimiter};
 pub use transport::{ActivationError, ActivationHandle, WebhookTransport, WebhookTransportConfig};
-
-pub use crate::middleware::webhook_ratelimit::{RateLimitExceeded, WebhookRateLimiter};
