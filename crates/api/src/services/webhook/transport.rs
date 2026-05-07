@@ -43,6 +43,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
+    key::WebhookKey,
     provider::EndpointProviderImpl,
     routing::{ActivationEntry, RoutingMap},
 };
@@ -201,11 +202,8 @@ impl WebhookTransport {
             ctx: ctx.clone(),
             config: action_config,
         };
-        if !self
-            .inner
-            .routing
-            .insert(trigger_uuid, nonce.clone(), entry)
-        {
+        let key = WebhookKey::programmatic(trigger_uuid, nonce.clone());
+        if !self.inner.routing.insert(key, entry) {
             // Should be unreachable with a freshly-generated nonce.
             return Err(ActivationError::DuplicateRegistration);
         }
@@ -221,9 +219,8 @@ impl WebhookTransport {
     /// Remove a previously-activated registration from the routing
     /// map. Idempotent — safe to call twice.
     pub fn deactivate(&self, handle: &ActivationHandle) {
-        self.inner
-            .routing
-            .remove(&handle.trigger_uuid, &handle.nonce);
+        let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
+        self.inner.routing.remove(&key);
     }
 
     /// Build the axum router that dispatches incoming webhook
@@ -321,11 +318,15 @@ async fn webhook_handler(
         return (StatusCode::PAYLOAD_TOO_LARGE, "").into_response();
     }
 
+    // Build the converged routing key once and reuse for rate
+    // limiter and routing lookup.
+    let key = WebhookKey::programmatic(trigger_uuid, nonce);
+
     // 3. Rate limit (if configured).
     if let Some(limiter) = &transport.inner.rate_limiter {
-        let key = format!("{trigger_uuid}/{nonce}");
-        if let Err(e) = limiter.check(&key).await {
-            debug!(path = %key, retry_after = e.retry_after_secs, "webhook rate limited");
+        let bucket = key.rate_limit_key();
+        if let Err(e) = limiter.check(&bucket).await {
+            debug!(path = %bucket, retry_after = e.retry_after_secs, "webhook rate limited");
             let mut resp = (StatusCode::TOO_MANY_REQUESTS, "").into_response();
             if let Ok(v) = e.retry_after_secs.to_string().parse() {
                 resp.headers_mut().insert("retry-after", v);
@@ -335,10 +336,10 @@ async fn webhook_handler(
     }
 
     // 4. Route lookup.
-    let entry = if let Some(e) = transport.inner.routing.lookup(&trigger_uuid, &nonce) {
+    let entry = if let Some(e) = transport.inner.routing.lookup(&key) {
         e
     } else {
-        debug!(uuid = %trigger_uuid, "no webhook registered for path");
+        debug!(key = ?key, "no webhook registered for path");
         return (StatusCode::NOT_FOUND, "").into_response();
     };
 

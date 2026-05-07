@@ -14,6 +14,8 @@
 
 use thiserror::Error;
 
+pub use crate::services::webhook::TriggerCoordinates;
+
 /// Reasons a webhook request fails per-trigger authentication.
 ///
 /// Mirrors [`nebula_action::SignatureOutcome`] semantics for HMAC paths
@@ -93,34 +95,10 @@ pub enum WebhookDispatchError {
     Enqueue(#[from] WebhookEnqueueError),
 }
 
-/// Slug tuple identifying a webhook trigger for the slug-routed
-/// dispatcher. Carried in errors so logs and problem-details can
-/// surface the failing path without parsing the URL again.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TriggerCoordinates {
-    /// Org slug from the URL path.
-    pub org: String,
-    /// Workspace slug from the URL path.
-    pub workspace: String,
-    /// Trigger slug from the URL path.
-    pub trigger: String,
-}
-
-impl TriggerCoordinates {
-    /// Build a coordinate triple from owned strings.
-    #[must_use]
-    pub fn new(
-        org: impl Into<String>,
-        workspace: impl Into<String>,
-        trigger: impl Into<String>,
-    ) -> Self {
-        Self {
-            org: org.into(),
-            workspace: workspace.into(),
-            trigger: trigger.into(),
-        }
-    }
-}
+// `TriggerCoordinates` definition migrated to
+// `crate::services::webhook::key`. The `pub use` at the top of this
+// module preserves the old import path until F1 deletes the legacy
+// surface entirely.
 
 #[cfg(test)]
 mod tests {

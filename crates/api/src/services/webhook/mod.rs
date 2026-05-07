@@ -14,10 +14,12 @@
 //! - Rate limiting lives in [`crate::middleware::webhook_ratelimit`] and is re-exported here for
 //!   public API compatibility.
 
+pub mod key;
 pub mod provider;
 pub(crate) mod routing;
 pub mod transport;
 
+pub use key::{TriggerCoordinates, WebhookKey};
 pub use provider::EndpointProviderImpl;
 pub use transport::{ActivationError, ActivationHandle, WebhookTransport, WebhookTransportConfig};
 

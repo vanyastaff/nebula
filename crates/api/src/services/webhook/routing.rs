@@ -1,37 +1,33 @@
-//! `RoutingMap` — `(trigger_uuid, nonce) → Arc<ActivationEntry>`
-//! lookup backed by `DashMap`.
+//! Converged routing map keyed on [`WebhookKey`].
 //!
-//! Each entry holds the `TriggerHandler` for the active webhook
-//! registration plus the `TriggerContext` template the transport
-//! clones on every incoming request. The nonce in the key is a
-//! per-activation random string (16-byte hex), so stale external
-//! hooks pointing at the same trigger UUID but an old nonce cannot
-//! route to a fresh registration.
+//! Both programmatic `(uuid, nonce)` and slug `(org, workspace, slug)`
+//! activations live in the same `DashMap`. The transport's
+//! `dispatch_inner` performs a single lookup and runs the same
+//! signature → replay → rate-limit → pre-handle → handle pipeline
+//! regardless of how the key was constructed.
 
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{TriggerHandler, TriggerRuntimeContext, WebhookConfig};
-use uuid::Uuid;
 
-/// Composite key used inside the routing map.
-pub(crate) type RouteKey = (Uuid, String);
+use super::key::WebhookKey;
 
 /// Single registered webhook activation.
 ///
-/// Holds the handler pointer, a template [`TriggerContext`] that the
-/// transport clones on every request, and the [`WebhookConfig`]
-/// enforced before dispatch (per ADR-0022). Cloning the context gives
-/// each dispatch its own independent context without locking — the
-/// capability arcs inside (`emitter`, `health`, `webhook`, etc.)
-/// share state as designed.
+/// Holds the handler pointer, a template [`TriggerRuntimeContext`]
+/// that the transport clones on every request, and the
+/// [`WebhookConfig`] enforced before dispatch (per ADR-0022). Cloning
+/// the context gives each dispatch its own independent context
+/// without locking — the capability arcs inside (`emitter`, `health`,
+/// `webhook`, etc.) share state as designed.
 ///
 /// The config is read once from the typed
-/// [`nebula_action::WebhookAction`] at activation time by whoever owns
-/// the typed handler (runtime registry or test harness) and handed to
-/// the transport alongside the handler. It is *not* read through the
-/// dyn `TriggerHandler` surface — webhook-specific configuration does
-/// not belong on the base trigger contract.
+/// [`nebula_action::WebhookAction`] at activation time by whoever
+/// owns the typed handler (runtime registry or test harness) and
+/// handed to the transport alongside the handler. It is *not* read
+/// through the dyn `TriggerHandler` surface — webhook-specific
+/// configuration does not belong on the base trigger contract.
 #[derive(Clone)]
 pub(crate) struct ActivationEntry {
     pub(crate) handler: Arc<dyn TriggerHandler>,
@@ -50,10 +46,10 @@ impl std::fmt::Debug for ActivationEntry {
     }
 }
 
-/// Thread-safe `(uuid, nonce)` → activation lookup table.
+/// Thread-safe [`WebhookKey`] → activation lookup table.
 #[derive(Debug, Default)]
 pub(crate) struct RoutingMap {
-    entries: DashMap<RouteKey, Arc<ActivationEntry>>,
+    entries: DashMap<WebhookKey, Arc<ActivationEntry>>,
 }
 
 impl RoutingMap {
@@ -65,11 +61,9 @@ impl RoutingMap {
     }
 
     /// Register a new activation. Returns `false` if an entry for
-    /// the same `(uuid, nonce)` already exists — in practice this
-    /// should never happen because the nonce is freshly generated
-    /// per activation, but we reject collisions defensively.
-    pub(crate) fn insert(&self, uuid: Uuid, nonce: String, entry: ActivationEntry) -> bool {
-        match self.entries.entry((uuid, nonce)) {
+    /// the same key already exists.
+    pub(crate) fn insert(&self, key: WebhookKey, entry: ActivationEntry) -> bool {
+        match self.entries.entry(key) {
             dashmap::Entry::Occupied(_) => false,
             dashmap::Entry::Vacant(v) => {
                 v.insert(Arc::new(entry));
@@ -78,19 +72,42 @@ impl RoutingMap {
         }
     }
 
-    /// Look up an entry by `(uuid, nonce)`. Returns a cheap `Arc`
-    /// clone so the transport can drop the DashMap guard before
-    /// `await`-ing the handler.
-    pub(crate) fn lookup(&self, uuid: &Uuid, nonce: &str) -> Option<Arc<ActivationEntry>> {
-        self.entries
-            .get(&(*uuid, nonce.to_string()))
-            .map(|e| Arc::clone(&*e))
+    /// Look up an entry by key. Returns a cheap `Arc` clone so the
+    /// transport can drop the DashMap guard before `await`-ing the
+    /// handler.
+    pub(crate) fn lookup(&self, key: &WebhookKey) -> Option<Arc<ActivationEntry>> {
+        self.entries.get(key).map(|e| Arc::clone(&*e))
     }
 
     /// Remove an entry. Called by the transport on trigger
     /// deactivation.
-    pub(crate) fn remove(&self, uuid: &Uuid, nonce: &str) -> bool {
-        self.entries.remove(&(*uuid, nonce.to_string())).is_some()
+    pub(crate) fn remove(&self, key: &WebhookKey) -> bool {
+        self.entries.remove(key).is_some()
+    }
+
+    /// Atomic swap of all slug entries. Used by the admin-reload
+    /// endpoint (E3) so external observers do not see a half-loaded
+    /// routing table during reload.
+    #[allow(dead_code)] // wired up by C2 / E3 in subsequent commits
+    pub(crate) fn replace_slug_entries(&self, new: Vec<(WebhookKey, ActivationEntry)>) {
+        // Drop existing slug entries (programmatic activations stay
+        // in place — they are owned by the typed runtime).
+        self.entries
+            .retain(|k, _| !matches!(k, WebhookKey::Slug(_)));
+        for (key, entry) in new {
+            self.entries.insert(key, Arc::new(entry));
+        }
+    }
+
+    /// Number of entries with the given kind label, for telemetry
+    /// gauges (M3.3 / `NEBULA_WEBHOOK_REGISTRATIONS`).
+    #[must_use]
+    #[allow(dead_code)] // wired into G2 metrics in a subsequent commit
+    pub(crate) fn count_by_kind(&self, kind: &'static str) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.key().kind_label() == kind)
+            .count()
     }
 
     /// Current number of active registrations. Mostly for tests
@@ -104,8 +121,12 @@ impl RoutingMap {
 #[cfg(test)]
 mod tests {
     use nebula_action::TriggerContext;
+    use uuid::Uuid;
 
-    use super::*;
+    use super::{
+        super::key::{TriggerCoordinates, WebhookKey},
+        *,
+    };
 
     // A minimal dummy TriggerHandler for the routing tests so we
     // don't need a real webhook action here.
@@ -152,29 +173,68 @@ mod tests {
     }
 
     #[test]
-    fn insert_lookup_remove_roundtrip() {
+    fn insert_lookup_remove_roundtrip_programmatic() {
         let map = RoutingMap::new();
-        let uuid = Uuid::new_v4();
-        assert!(map.insert(uuid, "nonce1".into(), dummy_entry()));
+        let key = WebhookKey::programmatic(Uuid::new_v4(), "nonce1");
+        assert!(map.insert(key.clone(), dummy_entry()));
         assert_eq!(map.len(), 1);
-        assert!(map.lookup(&uuid, "nonce1").is_some());
-        assert!(map.lookup(&uuid, "nonce2").is_none());
-        assert!(map.remove(&uuid, "nonce1"));
+        assert!(map.lookup(&key).is_some());
+        assert!(map.remove(&key));
         assert_eq!(map.len(), 0);
-        assert!(map.lookup(&uuid, "nonce1").is_none());
+    }
+
+    #[test]
+    fn insert_lookup_remove_roundtrip_slug() {
+        let map = RoutingMap::new();
+        let key = WebhookKey::slug(TriggerCoordinates::new("acme", "main", "github"));
+        assert!(map.insert(key.clone(), dummy_entry()));
+        assert!(map.lookup(&key).is_some());
+        assert!(map.remove(&key));
     }
 
     #[test]
     fn insert_rejects_duplicate_key() {
         let map = RoutingMap::new();
-        let uuid = Uuid::new_v4();
-        assert!(map.insert(uuid, "n".into(), dummy_entry()));
-        assert!(!map.insert(uuid, "n".into(), dummy_entry()));
+        let key = WebhookKey::programmatic(Uuid::new_v4(), "n");
+        assert!(map.insert(key.clone(), dummy_entry()));
+        assert!(!map.insert(key, dummy_entry()));
     }
 
     #[test]
-    fn remove_non_existent_returns_false() {
+    fn replace_slug_entries_preserves_programmatic() {
         let map = RoutingMap::new();
-        assert!(!map.remove(&Uuid::new_v4(), "whatever"));
+        let prog = WebhookKey::programmatic(Uuid::new_v4(), "n");
+        map.insert(prog.clone(), dummy_entry());
+
+        let slug_a = WebhookKey::slug(TriggerCoordinates::new("a", "b", "c"));
+        let slug_b = WebhookKey::slug(TriggerCoordinates::new("a", "b", "d"));
+        map.insert(slug_a.clone(), dummy_entry());
+
+        // Swap in just one slug entry — the original slug is gone,
+        // the new one lives, programmatic survives.
+        map.replace_slug_entries(vec![(slug_b.clone(), dummy_entry())]);
+
+        assert!(map.lookup(&prog).is_some());
+        assert!(map.lookup(&slug_a).is_none());
+        assert!(map.lookup(&slug_b).is_some());
+    }
+
+    #[test]
+    fn count_by_kind_separates_programmatic_and_slug() {
+        let map = RoutingMap::new();
+        map.insert(
+            WebhookKey::programmatic(Uuid::new_v4(), "n1"),
+            dummy_entry(),
+        );
+        map.insert(
+            WebhookKey::slug(TriggerCoordinates::new("a", "b", "c")),
+            dummy_entry(),
+        );
+        map.insert(
+            WebhookKey::slug(TriggerCoordinates::new("a", "b", "d")),
+            dummy_entry(),
+        );
+        assert_eq!(map.count_by_kind("programmatic"), 1);
+        assert_eq!(map.count_by_kind("slug"), 2);
     }
 }
