@@ -22,7 +22,8 @@ pub mod health;
 pub mod me;
 pub mod metrics;
 pub mod org;
-pub mod webhook;
+// `pub mod webhook;` — removed by M3.3 task C3. The slug-routed
+// surface is mounted by `services::webhook::WebhookTransport::router`.
 pub mod workspace;
 
 pub mod credential;
@@ -61,9 +62,10 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     // Auth routes — no auth middleware, no tenant scope.
     let auth_routes = auth::router();
 
-    // Webhook routes — special: no standard auth, separate per-trigger
-    // authentication enforced inside the dispatcher.
-    let webhook_routes = webhook::router();
+    // Webhook routes (M3.3 / ADR-0049): mounted by `transport.router()`
+    // in `app::build_app` directly. The legacy `routes::webhook`
+    // module has been absorbed into `services::webhook::transport`
+    // — slug and programmatic surfaces share `dispatch_inner` there.
 
     // User routes — auth required, no tenant scope.
     let me_routes = me::router()
@@ -111,7 +113,6 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     // itself, not application content).
     let api_v1 = OpenApiRouter::new()
         .merge(auth_routes)
-        .merge(webhook_routes)
         .merge(me_routes)
         .merge(catalog_routes)
         .merge(credential_routes)

@@ -315,20 +315,29 @@ impl WebhookTransport {
     /// Build the axum router that dispatches incoming webhook
     /// requests to registered triggers.
     ///
-    /// The route is gated to `POST` only: the webhook contract at
-    /// the top of this file specifies `POST /{prefix}/{trigger_uuid}/{nonce}`,
-    /// and axum returns `405 Method Not Allowed` with `Allow: POST`
-    /// automatically for non-POST requests. Gating at the routing
-    /// boundary (rather than inside the handler) means middlewares,
-    /// rate limiters, and the routing-map lookup never count the
-    /// offending request — cheaper *and* more correct.
+    /// Mounts both URL shapes (M3.3 / ADR-0049):
+    ///
+    /// - Programmatic: `POST {path_prefix}/{trigger_uuid}/{nonce}` —
+    ///   minted by [`Self::activate`].
+    /// - Slug: `POST /api/v1/hooks/{org}/{ws}/{slug}` and
+    ///   `GET /api/v1/hooks/{org}/{ws}/{slug}` (provider-specific
+    ///   challenge handshakes via `pre_handle`) — registered by
+    ///   [`Self::activate_slug`].
+    ///
+    /// Both routes funnel into [`dispatch_inner`] for a single
+    /// source of truth on signature, replay, rate-limit, and
+    /// pre-handle pipelines.
     pub fn router(&self) -> Router {
-        let route = format!(
+        let programmatic = format!(
             "{prefix}/{{trigger_uuid}}/{{nonce}}",
             prefix = self.inner.config.path_prefix,
         );
         Router::new()
-            .route(&route, post(webhook_handler))
+            .route(&programmatic, post(webhook_handler))
+            .route(
+                "/api/v1/hooks/{org}/{ws}/{trigger_slug}",
+                post(slug_webhook_handler).get(slug_webhook_handler),
+            )
             .layer(DefaultBodyLimit::max(self.inner.config.body_limit_bytes))
             .with_state(self.clone())
     }
@@ -401,7 +410,6 @@ async fn webhook_handler(
 /// [`WebhookKey::Slug`] and delegates to [`dispatch_inner`] — same
 /// signature/replay/rate-limit/pre-handle/handle pipeline as the
 /// programmatic surface.
-#[allow(dead_code)] // wired up by C3 in the next commit
 async fn slug_webhook_handler(
     State(transport): State<WebhookTransport>,
     Path((org, workspace, trigger)): Path<(String, String, String)>,
