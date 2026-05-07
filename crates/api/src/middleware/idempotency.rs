@@ -753,21 +753,46 @@ where
     // inner service. Anything beyond `max_request_body_bytes` opts the request
     // out of caching entirely — we still forward it, but cannot guarantee
     // replay safety, so we do not store the response either.
+    //
+    // Buffer with `usize::MAX` (no middleware-level cap) so the bytes
+    // are never lost on overflow. The router-level
+    // `axum::extract::DefaultBodyLimit` (default 1 MiB) is the
+    // authoritative request-size cap for the public surface — it
+    // rejects oversized bodies with 413 before reaching this layer.
+    // After buffering we check the size against
+    // `max_request_body_bytes` and forward without caching when it
+    // exceeds the cap — handler MUST see the original body unchanged
+    // (Codex P1 on PR #658: silent body truncation broke handler
+    // semantics on every oversized request).
     let (parts, body) = request.into_parts();
-    let body_result = axum::body::to_bytes(body, config.max_request_body_bytes).await;
-    let Ok(body_bytes) = body_result else {
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(err) => {
+            record_outcome(&metrics, "error:body_read", MetricOutcome::None);
+            tracing::error!(
+                error = %err,
+                "request body read failed — failing closed"
+            );
+            return Ok(internal_error(
+                "request body read failed; cannot evaluate idempotency",
+            ));
+        },
+    };
+    if body_bytes.len() > config.max_request_body_bytes {
         record_outcome(
             &metrics,
             "skip:body_too_large",
             MetricOutcome::Reject(idempotency_reject_reason::BODY_TOO_LARGE),
         );
         tracing::warn!(
+            body_size = body_bytes.len(),
+            limit = config.max_request_body_bytes,
             "request body exceeds idempotency max_request_body_bytes — \
-                 forwarding without caching"
+             forwarding without caching"
         );
-        let request = Request::from_parts(parts, Body::from(Vec::new()));
+        let request = Request::from_parts(parts, Body::from(body_bytes));
         return inner.oneshot(request).await;
-    };
+    }
     let body_vec: Vec<u8> = body_bytes.into();
     tracing::Span::current().record("body_size_bytes", body_vec.len());
 
@@ -824,15 +849,42 @@ where
     let response = inner.oneshot(request).await?;
 
     let (resp_parts, resp_body) = response.into_parts();
-    let resp_result = axum::body::to_bytes(resp_body, config.max_response_body_bytes).await;
-    let Ok(resp_bytes) = resp_result else {
+
+    // Buffer with `usize::MAX` (no middleware-level cap) so the bytes
+    // are never lost on overflow. axum's IntoResponse does not set
+    // `Content-Length` inside the middleware chain (hyper sets it on
+    // serialization), so a Content-Length pre-check would be dead code.
+    // Memory bound: response bodies in this codebase are produced by
+    // first-party handlers and are not adversarial; if a future handler
+    // can return unbounded output it must apply its own streaming cap
+    // upstream of this layer.
+    let resp_bytes = match axum::body::to_bytes(resp_body, usize::MAX).await {
+        Ok(b) => b,
+        Err(err) => {
+            record_outcome(&metrics, "error:resp_read", MetricOutcome::Miss);
+            tracing::error!(
+                error = %err,
+                "response body read failed — returning 500"
+            );
+            return Ok(internal_error(
+                "response body read failed; idempotency layer cannot forward",
+            ));
+        },
+    };
+    if resp_bytes.len() > config.max_response_body_bytes {
+        // Forward the full body to the caller; just skip caching it.
+        // Previously this branch returned `Body::empty()`, which
+        // truncated valid responses once the layer was mounted in
+        // production (Codex P1 on PR #658).
         record_outcome(&metrics, "miss:resp_too_large", MetricOutcome::Miss);
         tracing::warn!(
+            body_size = resp_bytes.len(),
+            limit = config.max_response_body_bytes,
             "response body exceeds idempotency max_response_body_bytes — \
-                 returning to caller without caching"
+             forwarding without caching"
         );
-        return Ok(Response::from_parts(resp_parts, Body::empty()));
-    };
+        return Ok(Response::from_parts(resp_parts, Body::from(resp_bytes)));
+    }
     let resp_vec: Vec<u8> = resp_bytes.into();
 
     if should_cache(resp_parts.status) {
