@@ -1,6 +1,11 @@
 //! Prometheus metrics endpoint.
+//!
+//! Returned as a plain `OpenApiRouter` (no `#[utoipa::path]`) because the
+//! Prometheus text format is consumed by scrapers, not by HTTP API clients
+//! — the spec deliberately omits this endpoint.
 
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing};
+use utoipa_axum::router::OpenApiRouter;
 
 use crate::state::AppState;
 
@@ -29,6 +34,6 @@ async fn prometheus_handler(State(state): State<AppState>) -> impl IntoResponse 
 }
 
 /// Metrics router -- unauthenticated (Prometheus scrapes without auth).
-pub fn router() -> Router<AppState> {
-    Router::new().route("/metrics", routing::get(prometheus_handler))
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().route("/metrics", routing::get(prometheus_handler))
 }

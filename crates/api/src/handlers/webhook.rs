@@ -21,7 +21,7 @@ use axum::{
 use tracing::{debug, info_span};
 
 use crate::{
-    errors::ApiError,
+    errors::{ApiError, ProblemDetails},
     state::AppState,
     webhook::{
         TriggerCoordinates, WebhookAuthError, WebhookDispatchError, WebhookDispatcher,
@@ -42,6 +42,25 @@ use crate::{
 /// | Operator-side misconfig (empty secret etc.)  | 500    |
 /// | Sink unavailable (closed)                    | 500    |
 /// | Sink saturated (back-pressure)               | 503    |
+#[utoipa::path(
+    post,
+    path = "/hooks/{org}/{ws}/{trigger_slug}",
+    tag = "webhooks",
+    security(()),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("trigger_slug" = String, Path, description = "Per-trigger slug registered with the workspace."),
+    ),
+    request_body(content_type = "*/*", description = "Raw provider payload — opaque bytes."),
+    responses(
+        (status = 202, description = "Event accepted by the engine sink."),
+        (status = 401, description = "Per-trigger authentication failed (missing/invalid signature, missing/invalid bearer token).", body = ProblemDetails),
+        (status = 404, description = "No active webhook is registered for this slug.", body = ProblemDetails),
+        (status = 500, description = "Operator-side misconfiguration or the sink is unavailable.", body = ProblemDetails),
+        (status = 503, description = "Sink saturated (back-pressure).", body = ProblemDetails),
+    ),
+)]
 pub async fn handle_webhook_post(
     State(_state): State<AppState>,
     Extension(dispatcher): Extension<Arc<WebhookDispatcher>>,
@@ -82,6 +101,20 @@ pub async fn handle_webhook_post(
 /// on the typed-action transport in [`crate::services::webhook`]. We
 /// reply with `405 Method Not Allowed` so the contract is explicit
 /// rather than silently 5xx'ing.
+#[utoipa::path(
+    get,
+    path = "/hooks/{org}/{ws}/{trigger_slug}",
+    tag = "webhooks",
+    security(()),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("trigger_slug" = String, Path, description = "Per-trigger slug registered with the workspace."),
+    ),
+    responses(
+        (status = 405, description = "GET is not yet supported on the slug-routed webhook surface; the response carries the `Allow: POST` header."),
+    ),
+)]
 pub async fn handle_webhook_get(
     State(_state): State<AppState>,
     Path((_org, _ws, _trigger_slug)): Path<(String, String, String)>,

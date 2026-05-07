@@ -11,11 +11,11 @@ use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
 use uuid::Uuid;
 
 use crate::{
-    errors::{ApiError, ApiResult},
+    errors::{ApiError, ApiResult, ProblemDetails},
     handlers::workflow::{PaginationParams, extract_timestamp},
     models::{
-        ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse, ListExecutionsResponse,
-        RunningExecutionSummary, StartExecutionRequest,
+        AckResponse, ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse,
+        ListExecutionsResponse, RunningExecutionSummary, StartExecutionRequest,
     },
     state::AppState,
 };
@@ -25,6 +25,23 @@ use crate::{
 /// # Errors
 ///
 /// Returns [`ApiError::Internal`] if the execution repository is unavailable.
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/executions",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        PaginationParams,
+    ),
+    responses(
+        (status = 200, description = "Page of running execution summaries.", body = ListExecutionsResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 500, description = "Execution repository unavailable.", body = ProblemDetails),
+    ),
+)]
 pub async fn list_executions(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -61,6 +78,25 @@ pub async fn list_executions(
 /// # Errors
 ///
 /// Returns [`ApiError::Internal`] if the execution repository is unavailable.
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+        PaginationParams,
+    ),
+    responses(
+        (status = 200, description = "Page of running execution summaries scoped to this workflow.", body = ListExecutionsResponse),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 500, description = "Execution repository unavailable.", body = ProblemDetails),
+    ),
+)]
 pub async fn list_executions_for_workflow(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -145,6 +181,24 @@ pub async fn get_execution_outputs(
 
 /// Get execution by ID
 /// GET /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/executions/{exec}",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Execution detail.", body = ExecutionResponse),
+        (status = 400, description = "Invalid execution identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Execution does not exist.", body = ProblemDetails),
+    ),
+)]
 pub async fn get_execution(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -214,6 +268,26 @@ pub async fn get_execution(
 
 /// Start workflow execution (enqueue and return 202 Accepted)
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    request_body = StartExecutionRequest,
+    responses(
+        (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
+    ),
+)]
 pub async fn start_execution(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -356,6 +430,26 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
 
 /// Cancel execution
 /// DELETE /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}
+#[utoipa::path(
+    delete,
+    path = "/orgs/{org}/workspaces/{ws}/executions/{exec}",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Execution cancelled; cancel signal enqueued for the engine.", body = ExecutionResponse),
+        (status = 400, description = "Invalid execution identifier or already in a terminal state.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Execution does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
+        (status = 503, description = "Control queue is unavailable; the cancel signal cannot reach the engine.", body = ProblemDetails),
+    ),
+)]
 pub async fn cancel_execution(
     State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
@@ -575,22 +669,61 @@ pub async fn get_execution_logs(
 
 /// Terminate execution — forceful stop.
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
+    ),
+    responses(
+        (status = 501, description = "Not yet implemented; tracked under engine terminate-action milestone.", body = AckResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 404, description = "Execution does not exist.", body = ProblemDetails),
+        (status = 409, description = "Execution already in a terminal state.", body = ProblemDetails),
+    ),
+)]
+#[deprecated(note = "Stub: returns 501 once engine terminate-action milestone closes.")]
 pub async fn terminate_execution(
     State(_state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
     Path((_org, _ws, _exec)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     // TODO: Forcefully terminate execution (kill running nodes)
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }
 
 /// Restart execution from the beginning.
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/executions/{exec}/restart",
+    tag = "workspaces.executions",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
+    ),
+    responses(
+        (status = 501, description = "Not yet implemented; tracked under engine execution-restart semantics milestone. Planned response carries the new execution identifier.", body = ExecutionResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 404, description = "Execution does not exist.", body = ProblemDetails),
+    ),
+)]
+#[deprecated(note = "Stub: returns 501 once engine execution-restart milestone closes.")]
 pub async fn restart_execution(
     State(_state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
     Path((_org, _ws, _exec)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     // TODO: Restart a failed/cancelled execution
-    Err(ApiError::Internal("not implemented".to_string()))
+    Err(ApiError::NotImplemented(
+        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+    ))
 }

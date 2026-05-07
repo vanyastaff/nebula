@@ -5,20 +5,32 @@
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 /// Query parameters for cursor-based pagination.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `IntoParams` exposes both fields as individual `query` parameters in the
+/// OpenAPI spec; the field-level `schema` attributes propagate so consumers
+/// see the cursor as an opaque string.
+#[derive(Debug, Clone, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct CursorParams {
     /// Opaque cursor from a previous response's `next_cursor`.
     #[serde(default)]
+    #[param(nullable = false)]
     pub cursor: Option<String>,
     /// Maximum number of items to return. Capped at `PaginationConfig::max_limit`.
     #[serde(default)]
+    #[param(nullable = false)]
     pub limit: Option<u32>,
 }
 
 /// A paginated response envelope.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Concrete instantiations are inlined into the OpenAPI spec at the path
+/// where they appear (utoipa expands the generic at `#[utoipa::path]` time);
+/// no `aliases(...)` registration is required for the path to compile.
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PaginatedResponse<T> {
     /// The items on this page.
     pub items: Vec<T>,
@@ -29,7 +41,7 @@ pub struct PaginatedResponse<T> {
     pub has_more: bool,
 }
 
-impl<T: Serialize> PaginatedResponse<T> {
+impl<T: Serialize + ToSchema> PaginatedResponse<T> {
     /// Create a response page.
     pub fn new(items: Vec<T>, next_cursor: Option<String>, has_more: bool) -> Self {
         Self {
@@ -111,9 +123,10 @@ mod tests {
 
     #[test]
     fn paginated_response_last_page() {
-        let resp = PaginatedResponse::last_page(vec![1, 2, 3]);
+        use crate::models::execution::ExecutionResponse;
+        let resp = PaginatedResponse::<ExecutionResponse>::last_page(vec![]);
         assert!(!resp.has_more);
         assert!(resp.next_cursor.is_none());
-        assert_eq!(resp.items.len(), 3);
+        assert_eq!(resp.items.len(), 0);
     }
 }

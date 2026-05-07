@@ -14,7 +14,7 @@
 //!   `SessionExpired`, `MfaRequired`, `InsufficientRole`, `OrgNotFound`, `WorkspaceNotFound`,
 //!   `SlugConflict`, `CsrfRejected`, `PaginationInvalid`, `RateLimited`, `TenantMismatch` among
 //!   others.
-//! - `pagination` — cursor-based pagination: `CursorParams`, `PaginatedResponse<T>`.
+//! - `models::pagination` — cursor-based pagination: `CursorParams`, `PaginatedResponse<T>`.
 //! - `webhook` — inbound trigger transport: `WebhookTransport` activate/deactivate/router,
 //!   `EndpointProviderImpl`, `WebhookRateLimiter` (§11.3 / §13.4). Located under
 //!   [`services::webhook`] with rate limiting in [`middleware::webhook_ratelimit`].
@@ -63,7 +63,7 @@ pub mod extractors;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
-pub mod pagination;
+pub mod openapi;
 pub mod routes;
 pub mod server;
 pub mod services;
@@ -73,5 +73,5 @@ pub mod webhook;
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
 pub use errors::{ApiError, ApiResult};
-pub use pagination::{CursorParams, PaginatedResponse};
+pub use models::pagination::{CursorParams, PaginatedResponse};
 pub use state::AppState;

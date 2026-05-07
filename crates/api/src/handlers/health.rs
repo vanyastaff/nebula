@@ -13,7 +13,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use chrono::Utc;
 
 use crate::{
-    models::{DependenciesStatus, HealthResponse, ReadinessResponse},
+    models::{DependenciesStatus, HealthResponse, ReadinessResponse, VersionInfo},
     state::AppState,
 };
 
@@ -30,6 +30,15 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Does not consult any dependency. Kubernetes / operators use this to
 /// decide whether the container should be restarted; a dependency outage
 /// must not cause a restart loop.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "system",
+    security(()),
+    responses(
+        (status = 200, description = "Process is up; HTTP listener is responsive.", body = HealthResponse),
+    ),
+)]
 pub async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
@@ -41,11 +50,20 @@ pub async fn health_check() -> Json<HealthResponse> {
 /// Version info endpoint.
 ///
 /// Returns the application name and version. Unauthenticated.
-pub async fn version_info() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "name": "nebula",
-    }))
+#[utoipa::path(
+    get,
+    path = "/version",
+    tag = "system",
+    security(()),
+    responses(
+        (status = 200, description = "Application name and version.", body = VersionInfo),
+    ),
+)]
+pub async fn version_info() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        name: "nebula".to_string(),
+    })
 }
 
 /// Readiness endpoint — reports whether every declared dependency is reachable.
@@ -55,6 +73,16 @@ pub async fn version_info() -> Json<serde_json::Value> {
 /// orchestrators understand the process cannot currently serve traffic.
 /// The body always carries the per-dependency breakdown for operator
 /// visibility.
+#[utoipa::path(
+    get,
+    path = "/ready",
+    tag = "system",
+    security(()),
+    responses(
+        (status = 200, description = "All declared dependencies are reachable.", body = ReadinessResponse),
+        (status = 503, description = "At least one dependency is degraded; the body still carries the per-dependency breakdown.", body = ReadinessResponse),
+    ),
+)]
 pub async fn readiness_check(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<ReadinessResponse>) {

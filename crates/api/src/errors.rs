@@ -11,9 +11,10 @@ use axum::{
 use nebula_validator::foundation::{ValidationError, ValidationErrors};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use utoipa::ToSchema;
 
 /// RFC 9457 Problem Details
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProblemDetails {
     /// URI reference identifying the problem type
     #[serde(rename = "type")]
@@ -33,8 +34,11 @@ pub struct ProblemDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
 
-    /// Additional extension members
+    /// Additional extension members — RFC 9457 allows arbitrary
+    /// problem-type-specific keys to be flattened onto the document. utoipa
+    /// describes the `Value` payload as an open `Object`.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<serde_json::Value>)]
     pub extensions: Option<serde_json::Value>,
 
     /// Validation errors
@@ -43,7 +47,7 @@ pub struct ProblemDetails {
 }
 
 /// Validation field error
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ValidationFieldError {
     /// Validator error code
     pub code: String,
@@ -227,6 +231,16 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:STORAGE_FULL")]
     #[error("Storage full")]
     StorageFull,
+
+    /// The endpoint is documented but the handler is not yet implemented (501).
+    ///
+    /// Used by class-(c) stub handlers under ADR-0047 Stub Endpoint Policy
+    /// so the runtime status code matches the `responses(501)` annotation
+    /// in the OpenAPI document. Migrating from `Internal("not implemented")`
+    /// (500) to this variant keeps the stub-honesty contract self-consistent.
+    #[classify(category = "internal", code = "API:NOT_IMPLEMENTED")]
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 /// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
@@ -599,6 +613,15 @@ impl ApiError {
                     "Storage Full",
                     StatusCode::INSUFFICIENT_STORAGE,
                 ),
+            ),
+            ApiError::NotImplemented(reason) => (
+                StatusCode::NOT_IMPLEMENTED,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/not-implemented",
+                    "Not Implemented",
+                    StatusCode::NOT_IMPLEMENTED,
+                )
+                .with_detail(reason),
             ),
         }
     }

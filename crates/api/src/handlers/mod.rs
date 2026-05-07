@@ -10,7 +10,6 @@ pub mod credential_oauth;
 pub mod execution;
 pub mod health;
 pub mod me;
-pub mod openapi;
 pub mod org;
 pub mod resource;
 pub mod webhook;

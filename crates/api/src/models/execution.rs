@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Start workflow execution request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StartExecutionRequest {
     /// Input data for the workflow
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -13,7 +14,7 @@ pub struct StartExecutionRequest {
 }
 
 /// Execution response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExecutionResponse {
     /// Execution ID
     pub id: String,
@@ -41,14 +42,14 @@ pub struct ExecutionResponse {
 }
 
 /// Minimal summary returned inside a list of running executions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RunningExecutionSummary {
     /// Execution ID
     pub id: String,
 }
 
 /// List executions response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ListExecutionsResponse {
     /// Running executions (summary)
     pub executions: Vec<RunningExecutionSummary>,
@@ -64,7 +65,7 @@ pub struct ListExecutionsResponse {
 }
 
 /// All node outputs for an execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExecutionOutputsResponse {
     /// Execution ID
     pub execution_id: String,
@@ -74,7 +75,7 @@ pub struct ExecutionOutputsResponse {
 }
 
 /// Execution log entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExecutionLogEntry {
     /// Raw journal entry value
     #[serde(flatten)]
@@ -82,7 +83,7 @@ pub struct ExecutionLogEntry {
 }
 
 /// Execution logs response
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExecutionLogsResponse {
     /// Execution ID
     pub execution_id: String,

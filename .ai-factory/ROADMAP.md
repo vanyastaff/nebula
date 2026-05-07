@@ -10,7 +10,7 @@
 > verifiably met. README-driven product claims (canon §4.5 honesty) override
 > roadmap optimism.
 
-## Status Snapshot (2026-05-06)
+## Status Snapshot (2026-05-07)
 
 - **Cross-cutting layer** (`error`, `log`, `eventbus`, `metrics`,
   `resilience`, `system`) — **stable, no pending breaks**. `nebula-telemetry`
@@ -51,16 +51,21 @@
   + spec-16 row model) remains Sprint E (1.1) scaffolding.
   `sandbox` is correctness-grade; capability discovery enforcement gap (canon
   §4.5).
-- **API layer** — routing wired; **4 remaining feature gaps** (OpenAPI 3.1,
-  tracing context propagation, shift-left `validate_workflow` audit, and
+- **API layer** — routing wired; **3 remaining feature gaps** (tracing
+  context propagation, shift-left `validate_workflow` audit, and
   composition-root wiring of the shipped `IdempotencyLayer`). Auth backend
   and webhook dispatch closed via PR #638 (`feat(api): Plane-A auth, slug
-  webhooks, idempotency`, merged 2026-05-04). The Idempotency middleware
-  ships in PR #638 too but is **not** yet mounted in `build_app` — the
-  layer exists, the layer is not wired (see `idempotency.rs:48-50`).
-  Webhook handlers ship; production trigger-registration wiring through
-  the storage layer remains a separate follow-up flagged in
-  `crates/api/src/routes/webhook.rs:25-28`.
+  webhooks, idempotency`, merged 2026-05-04). **OpenAPI 3.1 closed via
+  M3.2 (`feat/api-openapi-spec`, 2026-05-07)** — utoipa-axum mounts
+  every handler through `routes!()` so spec drift is a compile error;
+  Stub Endpoint Policy (ADR-0047) tags class-(c) handlers as
+  `deprecated` + 501 so canon §4.5 stays mechanically verifiable; full
+  drift / 3.1-validation test suite in `crates/api/tests/openapi_*.rs`.
+  The Idempotency middleware ships in PR #638 too but is **not** yet
+  mounted in `build_app` — the layer exists, the layer is not wired
+  (see `idempotency.rs:48-50`). Webhook handlers ship; production
+  trigger-registration wiring through the storage layer remains a
+  separate follow-up flagged in `crates/api/src/routes/webhook.rs:25-28`.
 - **GitHub:** 19+ open issues, all p2/p3 needs-triage/discussion. No p0/p1.
   5 open dependabot PRs.
 
@@ -279,19 +284,26 @@ The largest 1.0 area. Six blocks; can be parallelized once unblocked.
       `nebula_api_auth_*` metrics family for failed/locked-out
       attempts.
 
-#### M3.2 OpenAPI 3.1 spec generation
+#### M3.2 OpenAPI 3.1 spec generation — ✅ CLOSED 2026-05-07
 
-- [ ] Replace the `openapi.rs:9-10` stub with a real generator
-      (`utoipa` or equivalent — pick in a short ADR).
-- [ ] Annotate every handler with request/response schemas (auth,
-      webhook, execution, workflow, credential, resource).
-- [ ] Spec served at `GET /api/v1/openapi.json` matches the actual
-      route table at runtime (compile-time or startup-time check).
-- [ ] Swagger UI (or RapiDoc) mounted at `GET /api/v1/docs`
-      (`openapi.rs:14-17` stub).
-- [ ] Integration test: spec validates against the OpenAPI 3.1 schema.
-- [ ] Doc test or CI lint: every router-mounted route appears in the
-      generated spec (catches drift).
+- [x] Replace the `openapi.rs:9-10` stub with a real generator —
+      utoipa 5.5 + utoipa-axum 0.2 (ADR-0047).
+- [x] Annotate every handler with request/response schemas (auth,
+      webhook, execution, workflow, credential, resource, me, org,
+      catalog, system).
+- [x] Spec served at `GET /api/v1/openapi.json` matches the actual
+      route table at runtime — `OpenApiRouter::routes(routes!(...))`
+      is the only mounting path, so handlers without `#[utoipa::path]`
+      fail to compile (structural drift detection).
+- [x] Swagger UI mounted at `GET /api/v1/docs` (handler returns the
+      self-contained UI shell that fetches `/api/v1/openapi.json`).
+- [x] Integration test: spec validates against the OpenAPI 3.1 schema
+      via `oas3::OpenApiV3Spec` round-trip in
+      `crates/api/tests/openapi_spec.rs`.
+- [x] CI lint: every router-mounted route appears in the generated
+      spec — drift smoke + operationId uniqueness + `$ref` resolution
+      + canon §4.5 stub-honesty gate
+      (`tests/openapi_canon_compliance.rs`).
 
 #### M3.3 Webhook handler dispatch
 

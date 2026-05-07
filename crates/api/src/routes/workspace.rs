@@ -1,104 +1,63 @@
 //! Workspace-scoped routes — authenticated + tenant-scoped.
 //!
-//! All routes under `/orgs/{org}/workspaces/{ws}/*` are behind
+//! All routes under `/api/v1/orgs/{org}/workspaces/{ws}/*` are behind
 //! auth + tenancy + RBAC middleware layers.
+//!
+//! `resource::list_resources`, `execution::terminate_execution`, and
+//! `execution::restart_execution` are still stubbed (501) and carry
+//! `#[deprecated]` so the OpenAPI spec flags them per ADR-0047 Stub
+//! Endpoint Policy. The deprecation lint is silenced at module level —
+//! these handlers are intentionally mounted so the route table stays in
+//! sync with the published spec.
+#![allow(deprecated)]
 
-use axum::{
-    Router,
-    routing::{get, post},
-};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{handlers, state::AppState};
 
 /// Workspace-scoped routes.
-pub fn router() -> Router<AppState> {
-    let router = Router::new()
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
         // Workflows
-        .route(
-            "/orgs/{org}/workspaces/{ws}/workflows",
-            get(handlers::workflow::list_workflows)
-                .post(handlers::workflow::create_workflow),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/workflows/{wf}",
-            get(handlers::workflow::get_workflow)
-                .put(handlers::workflow::update_workflow)
-                .delete(handlers::workflow::delete_workflow),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate",
-            post(handlers::workflow::activate_workflow),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute",
-            post(handlers::workflow::execute_workflow),
-        )
+        .routes(routes!(
+            handlers::workflow::list_workflows,
+            handlers::workflow::create_workflow
+        ))
+        .routes(routes!(
+            handlers::workflow::get_workflow,
+            handlers::workflow::update_workflow,
+            handlers::workflow::delete_workflow
+        ))
+        .routes(routes!(handlers::workflow::activate_workflow))
+        .routes(routes!(handlers::workflow::execute_workflow))
         // Executions
-        .route(
-            "/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
-            get(handlers::execution::list_executions_for_workflow)
-                .post(handlers::execution::start_execution),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/executions",
-            get(handlers::execution::list_executions),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/executions/{exec}",
-            get(handlers::execution::get_execution)
-                .delete(handlers::execution::cancel_execution),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate",
-            post(handlers::execution::terminate_execution),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/executions/{exec}/restart",
-            post(handlers::execution::restart_execution),
-        )
+        .routes(routes!(
+            handlers::execution::list_executions_for_workflow,
+            handlers::execution::start_execution
+        ))
+        .routes(routes!(handlers::execution::list_executions))
+        .routes(routes!(
+            handlers::execution::get_execution,
+            handlers::execution::cancel_execution
+        ))
+        .routes(routes!(handlers::execution::terminate_execution))
+        .routes(routes!(handlers::execution::restart_execution))
         // Resources
-        .route(
-            "/orgs/{org}/workspaces/{ws}/resources",
-            get(handlers::resource::list_resources),
-        );
-
-    // Credentials (Plane B — ADR-0031).
-    //
-    // Route order: literal segments first (`resolve`, `resolve/continue`),
-    // then collection, then parameterized `{cred}`, then sub-resources.
-    router
-        // ── Credential acquisition (literal paths before {cred}) ────
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials/resolve",
-            post(handlers::credential::resolve_credential),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials/resolve/continue",
-            post(handlers::credential::continue_resolve_credential),
-        )
-        // ── Credential CRUD ─────────────────────────────────────────
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials",
-            get(handlers::credential::list_credentials)
-                .post(handlers::credential::create_credential),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
-            get(handlers::credential::get_credential)
-                .put(handlers::credential::update_credential)
-                .delete(handlers::credential::delete_credential),
-        )
-        // ── Credential lifecycle ────────────────────────────────────
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
-            post(handlers::credential::test_credential),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
-            post(handlers::credential::refresh_credential),
-        )
-        .route(
-            "/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
-            post(handlers::credential::revoke_credential),
-        )
+        .routes(routes!(handlers::resource::list_resources))
+        // Credentials (Plane B — ADR-0031). Literal paths first, then
+        // collection, then parameterized `{cred}`, then sub-resources.
+        .routes(routes!(handlers::credential::resolve_credential))
+        .routes(routes!(handlers::credential::continue_resolve_credential))
+        .routes(routes!(
+            handlers::credential::list_credentials,
+            handlers::credential::create_credential
+        ))
+        .routes(routes!(
+            handlers::credential::get_credential,
+            handlers::credential::update_credential,
+            handlers::credential::delete_credential
+        ))
+        .routes(routes!(handlers::credential::test_credential))
+        .routes(routes!(handlers::credential::refresh_credential))
+        .routes(routes!(handlers::credential::revoke_credential))
 }

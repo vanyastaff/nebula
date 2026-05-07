@@ -134,7 +134,7 @@ between siblings at the same layer.
 | Product overview       | `README.md`                   | What Nebula is, design principles, architecture |
 | Contribution workflow  | `AGENTS.md`                   | This file — branch / commit / PR rules + project map |
 | Security policy        | `.github/SECURITY.md`         | Reporting vulnerabilities |
-| Architecture decisions | `docs/adr/`                   | M6 / M11 cascade ADRs (0042+) accepted in this worktree |
+| Architecture decisions | `docs/adr/`                   | M6 / M11 cascade ADRs (0042+) accepted in this worktree (ADR-0047 covers OpenAPI 3.1 generation + Stub Endpoint Policy) |
 | Per-crate READMEs      | `crates/<crate>/README.md`    | Crate-level usage and design notes |
 | Per-crate design docs  | `crates/<crate>/docs/`        | Where present |
 | Recurring pitfalls     | `docs/pitfalls.md`            | Source of truth for trap classes |

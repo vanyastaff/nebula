@@ -36,8 +36,9 @@ pub mod session;
 pub use backend::{AuthBackend, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome};
 pub use dto::{
     ForgotPasswordRequest, LoginRequest, LoginResponse, MfaChallengeResponse, MfaEnrollRequest,
-    MfaEnrollResponse, MfaVerifyRequest, OAuthStartResponse, ResetPasswordRequest, SecretString,
-    SignupRequest, SignupResponse, UserProfile, VerifyEmailRequest,
+    MfaEnrollResponse, MfaVerifyRequest, MfaVerifyResponse, OAuthStartResponse,
+    ResetPasswordRequest, SecretString, SignupRequest, SignupResponse, UserProfile,
+    VerifyEmailRequest,
 };
 pub use error::AuthError;
 pub use in_memory::InMemoryAuthBackend;

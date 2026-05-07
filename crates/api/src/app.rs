@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::{Router, extract::DefaultBodyLimit, middleware, response::Response};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     config::ApiConfig,
@@ -17,6 +18,56 @@ use crate::{
 
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
+    // Materialise the full route tree alongside the merged OpenAPI 3.1
+    // document (ADR-0047). `OpenApiRouter::split_for_parts()` is the
+    // single mounting path that ties the served `axum::Router` to the
+    // generated `OpenApi` value, so any handler missing
+    // `#[utoipa::path]` would fail to pass through `routes!()` at compile
+    // time — drift detection is structural rather than review-time.
+    let (api_routes, openapi_spec) = routes::create_routes(state.clone(), config);
+
+    let path_count = openapi_spec.paths.paths.len();
+    // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
+    // round-trips it to the canonical version string. ADR-0047 pins the
+    // generator to 3.1.0, so the assertion in T7 catches accidental drift.
+    // A serialization failure here is unexpected — it would mean the
+    // generated `OpenApi` cannot be represented in JSON, which the served
+    // `/api/v1/openapi.json` endpoint depends on. Log the error so the
+    // root cause is recoverable from logs, then fall back to the pinned
+    // string so startup proceeds (the typed assertion in T7 catches the
+    // real problem).
+    let spec_version = match serde_json::to_value(&openapi_spec.openapi) {
+        Ok(serde_json::Value::String(s)) => s,
+        Ok(other) => {
+            tracing::warn!(
+                ?other,
+                "openapi: OpenApiVersion did not serialize as JSON string; falling back"
+            );
+            "3.1.0".to_owned()
+        },
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                "openapi: failed to serialize OpenApiVersion; falling back"
+            );
+            "3.1.0".to_owned()
+        },
+    };
+    tracing::info!(
+        spec.version = %spec_version,
+        paths = path_count,
+        "openapi: spec compiled"
+    );
+
+    // Self-hosted Swagger UI — `utoipa_swagger_ui` ships every static
+    // asset (HTML, CSS, JS) embedded in the binary, so `/api/v1/docs/`
+    // never reaches a third-party CDN. Spec is served back to the UI
+    // from `/api/v1/openapi.json`. The `Router::from(SwaggerUi)` impl
+    // is provided by the `axum` feature on `utoipa-swagger-ui`.
+    let api_routes = api_routes.merge(Router::<()>::from(
+        SwaggerUi::new("/api/v1/docs").url("/api/v1/openapi.json", openapi_spec),
+    ));
+
     // Apply the REST body-limit layer BEFORE merging the webhook
     // router. The webhook transport already attaches its own
     // `DefaultBodyLimit` inside `transport.router()`; layering after
@@ -24,8 +75,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // REST default is not the right default for every webhook
     // provider. Operators tune the REST cap via `API_MAX_BODY_SIZE`
     // (defaulting to `config::REST_BODY_LIMIT_BYTES`).
-    let routes = routes::create_routes(state.clone(), config)
-        .layer(DefaultBodyLimit::max(config.max_body_size));
+    let routes = api_routes.layer(DefaultBodyLimit::max(config.max_body_size));
 
     // Merge the webhook transport router (if attached). Webhook
     // routes live alongside REST API routes on the same axum app,

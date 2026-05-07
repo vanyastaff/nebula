@@ -1,9 +1,10 @@
 //! Catalog DTOs — action and plugin catalog response types.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Summary entry in the action list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ActionSummary {
     /// Action key (e.g. `"http.request"`)
     pub key: String,
@@ -14,14 +15,14 @@ pub struct ActionSummary {
 }
 
 /// Response for `GET /actions`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ListActionsResponse {
     /// All registered actions
     pub actions: Vec<ActionSummary>,
 }
 
 /// Detailed action metadata response for `GET /actions/{key}`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ActionDetailResponse {
     /// Action key (e.g. `"http.request"`)
     pub key: String,
@@ -36,7 +37,7 @@ pub struct ActionDetailResponse {
 }
 
 /// Summary entry in the plugin list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PluginSummary {
     /// Plugin key (e.g. `"slack"`)
     pub key: String,
@@ -47,14 +48,14 @@ pub struct PluginSummary {
 }
 
 /// Response for `GET /plugins`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ListPluginsResponse {
     /// All registered plugins
     pub plugins: Vec<PluginSummary>,
 }
 
 /// Detailed plugin metadata response for `GET /plugins/{key}`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PluginDetailResponse {
     /// Plugin key (e.g. `"slack"`)
     pub key: String,

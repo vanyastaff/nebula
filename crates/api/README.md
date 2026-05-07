@@ -132,6 +132,72 @@ Every rejection increments `nebula_webhook_signature_failures_total` with
 attached via `WebhookTransport::with_metrics`. The counter is low cardinality
 by design (three static reason labels, no per-trigger dimension).
 
+## Machine-Readable API
+
+`nebula-api` publishes its full route surface as an **OpenAPI 3.1**
+specification (ADR-0047). The document is regenerated on every startup
+from the same source as the served `axum::Router`, so the published
+contract and the runtime cannot drift apart.
+
+| Endpoint                  | Purpose |
+|---------------------------|---------|
+| `GET /api/v1/openapi.json` | OpenAPI 3.1 specification document — fetched by client generators (openapi-generator-cli, oapi-codegen, …). Unauthenticated. |
+| `GET /api/v1/docs/`        | Swagger UI rendering of the served spec. Unauthenticated. **Self-hosted** via `utoipa_swagger_ui::SwaggerUi` — every static asset (HTML, CSS, JS) ships embedded in the server binary; no third-party CDN is reached at request time. |
+
+### Drift-detection guarantee
+
+The router is built through `utoipa_axum::router::OpenApiRouter::routes(routes!(handler))`,
+which is the **only** mounting path that ties the served `axum::Router`
+to the generated `OpenApi` value. Handlers without `#[utoipa::path]`
+cannot pass through `routes!()` — drift is a compile error rather than
+a review-time catch.
+
+`crates/api/tests/openapi_spec.rs` adds runtime guards on top:
+
+- `served_spec_pins_openapi_3_1_0` — `openapi == "3.1.0"`.
+- `operation_ids_are_unique` — every handler function name is observed
+  exactly once across the spec.
+- `all_refs_resolve_to_declared_components` — recursive `$ref` walk.
+- `security_schemes_match_adr_0047` — `bearer` / `api_key` / `csrf`.
+- `drift_smoke_known_paths_are_present` — load-bearing paths inventory.
+- `served_spec_round_trips_through_oas3_parser` — strict 3.1 parse.
+
+### Stub Endpoint Policy
+
+Endpoints whose handler currently returns `ApiError::Internal("not
+implemented")` (e.g. `me/*`, `org/*`, `resource/list`,
+`execution/{terminate,restart}`) are documented honestly per
+ADR-0047 §4:
+
+- `#[deprecated]` on the handler so utoipa flags the operation in spec.
+- `responses((status = 501, …))` carries the **planned** payload shape.
+- Tag suffix ` (planned)` groups the stubs visibly in Swagger UI.
+
+`crates/api/tests/openapi_canon_compliance.rs` enforces the policy in
+both directions (every deprecated operation has a 501 response; every
+stub module reaches the handler at runtime returning 500/501) so a
+silently-shipped endpoint cannot pass review.
+
+### Regeneration
+
+The spec is materialised inside `build_app` via
+`OpenApiRouter::split_for_parts()` and handed straight to
+`utoipa_swagger_ui::SwaggerUi`, which serves both `/api/v1/openapi.json`
+and `/api/v1/docs/` as a Tower service merged into the application
+router. `build_app` writes a stable
+`tracing::info!(spec.version=%, paths=N, "openapi: spec compiled")`
+line at startup so production logs can pin against it. To regenerate
+locally, run any test that calls `nebula_api::build_app` — for example
+`cargo nextest run -p nebula-api --test openapi_spec`.
+
+### Cross-layer schema strategy
+
+Per ADR-0047 §3, API DTOs MUST NOT embed types from `nebula-core`,
+`nebula-storage`, `nebula-engine`, or `nebula-credential`. Cross-layer
+types (`OrgRole`, `WorkspaceRole`) are wrapped at the API boundary as
+`OrgRoleDto` / `WorkspaceRoleDto` so the spec is decoupled from internal
+type evolution.
+
 ## Non-goals
 
 - Not a storage driver — no SQL or schema knowledge; see `nebula-storage`.

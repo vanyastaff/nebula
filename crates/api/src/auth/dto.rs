@@ -6,27 +6,30 @@
 //! state-lock dance.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use zeroize::ZeroizeOnDrop;
 
 /// `POST /auth/signup` request body.
 ///
 /// `password` is wrapped so it never lingers in memory after dropping.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SignupRequest {
     /// Caller-supplied email address — lowercased and trimmed before storage.
     pub email: String,
     /// Plaintext password — handed straight to the Argon2id hasher.
+    #[schema(value_type = String, format = "password", write_only = true)]
     pub password: SecretString,
     /// Caller-chosen display name (1..=128 chars).
     pub display_name: String,
 }
 
 /// `POST /auth/login` request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
     /// Account email.
     pub email: String,
     /// Plaintext password — handed straight to the Argon2id verifier.
+    #[schema(value_type = String, format = "password", write_only = true)]
     pub password: SecretString,
     /// Optional 6-digit TOTP code when the account has MFA enabled.
     #[serde(default)]
@@ -34,7 +37,7 @@ pub struct LoginRequest {
 }
 
 /// `POST /auth/forgot-password` request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ForgotPasswordRequest {
     /// Account email — endpoint always responds 202 Accepted to avoid
     /// account enumeration.
@@ -42,16 +45,17 @@ pub struct ForgotPasswordRequest {
 }
 
 /// `POST /auth/reset-password` request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ResetPasswordRequest {
     /// One-time reset token previously emailed to the user.
     pub token: String,
     /// New plaintext password.
+    #[schema(value_type = String, format = "password", write_only = true)]
     pub new_password: SecretString,
 }
 
 /// `POST /auth/verify-email` request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct VerifyEmailRequest {
     /// One-time verification token previously emailed to the user.
     pub token: String,
@@ -59,11 +63,11 @@ pub struct VerifyEmailRequest {
 
 /// `POST /auth/mfa/enroll` request body — empty; identity comes from the
 /// authenticated session.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, ToSchema)]
 pub struct MfaEnrollRequest {}
 
 /// `POST /auth/mfa/verify` request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct MfaVerifyRequest {
     /// 6-digit TOTP code from the user's authenticator app.
     pub code: String,
@@ -73,8 +77,31 @@ pub struct MfaVerifyRequest {
     pub challenge_token: Option<String>,
 }
 
+/// `POST /api/v1/auth/mfa/verify` 200-response shape.
+///
+/// `mfa_verify` returns one of two bodies depending on whether the
+/// caller is completing a login (with `challenge_token`) or confirming
+/// a fresh enrollment (without it):
+///
+/// - [`Self::Login`] — full [`LoginResponse`] plus session/CSRF cookies.
+/// - [`Self::Enrolled`] — bare [`crate::models::AckResponse`] for the
+///   enrollment-confirmation branch.
+///
+/// `#[serde(untagged)]` lets the wire format remain backwards-compatible
+/// with each variant's existing JSON shape; OpenAPI 3.1 consumers see a
+/// `oneOf` schema covering both forms.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum MfaVerifyResponse {
+    /// Login completion path (caller passed a `challenge_token`).
+    Login(LoginResponse),
+    /// Enrollment-confirmation path (caller did NOT pass a
+    /// `challenge_token`; identity comes from the session cookie).
+    Enrolled(crate::models::AckResponse),
+}
+
 /// Response after a successful login (no MFA required).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LoginResponse {
     /// Resolved user profile (no secrets).
     pub user: UserProfile,
@@ -85,7 +112,7 @@ pub struct LoginResponse {
 }
 
 /// Response when login succeeded the password step but MFA is required.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MfaChallengeResponse {
     /// MFA-required flag for the client.
     #[serde(rename = "mfa_required")]
@@ -95,7 +122,7 @@ pub struct MfaChallengeResponse {
 }
 
 /// Response after a successful signup.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SignupResponse {
     /// Resolved user profile (no secrets).
     pub user: UserProfile,
@@ -105,7 +132,7 @@ pub struct SignupResponse {
 
 /// Response after MFA enrollment — exposes the otpauth URI **once**
 /// so the client can render a QR code.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct MfaEnrollResponse {
     /// `otpauth://totp/...` URI to be displayed as a QR code.
     pub otpauth_uri: String,
@@ -114,7 +141,7 @@ pub struct MfaEnrollResponse {
 }
 
 /// Response for the OAuth start endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct OAuthStartResponse {
     /// Provider authorization URL the client should redirect to.
     pub authorize_url: String,
@@ -124,7 +151,7 @@ pub struct OAuthStartResponse {
 
 /// User profile shape returned to the client. **Never** contains password
 /// hashes, MFA secrets, or PAT material.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct UserProfile {
     /// `user_<ULID>` string form.
     pub user_id: String,
