@@ -33,7 +33,7 @@ jobs:
         with:
           toolchain: stable
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8 # v2.77.5
         with:
           tool: cargo-semver-checks
       - name: Run cargo-semver-checks (advisory, skip if unpublished)
