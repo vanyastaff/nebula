@@ -26,7 +26,7 @@
 //!   lifecycle.
 //! - **Auth** — `AuthScheme` trait, `AuthPattern` enum (module `auth`).
 //! - **Lifecycle** — `LayerLifecycle`, `ShutdownOutcome`.
-//! - **Observability** — `TraceId`, `SpanId`.
+//! - **Observability** — `TraceId`, `SpanId`, `W3cTraceContext`, W3C trace parsing.
 //! - **Errors** — `CoreError` (typed, thiserror; no anyhow).
 //! - **Roles** — `OrgRole`, `WorkspaceRole`, `effective_workspace_role` (module `role`).
 //! - **Permissions** — `Permission`, `PermissionDenied` (module `permission`).
@@ -83,7 +83,10 @@ pub use guard::{Guard, TypedGuard, debug_redacted, debug_typed};
 pub use id::*;
 pub use keys::*;
 pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
-pub use obs::{SpanId, TraceId};
+pub use obs::{
+    ParsedTraceparent, SpanId, TRACESTATE_MAX_BYTES, TraceId, W3C_TRACEPARENT, W3C_TRACESTATE,
+    W3cTraceContext, W3cTraceContextError, parse_traceparent,
+};
 pub use permission::Permission;
 pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
