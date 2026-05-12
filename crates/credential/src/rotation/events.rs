@@ -666,7 +666,7 @@ mod tests {
         let event = NotificationEvent::RotationScheduled {
             credential_id: cred_id,
             scheduled_at: Utc::now(),
-            time_until: std::time::Duration::from_secs(3600),
+            time_until: std::time::Duration::from_hours(1),
         };
 
         assert_eq!(event.credential_id(), &cred_id);

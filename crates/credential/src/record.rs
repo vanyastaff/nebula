@@ -246,8 +246,8 @@ mod tests {
 
         let policy = RotationPolicy::Periodic(
             PeriodicConfig::new(
-                Duration::from_secs(90 * 24 * 3600), // 90 days
-                Duration::from_secs(24 * 3600),      // 1 day
+                Duration::from_hours(2160), // 90 days
+                Duration::from_hours(24),   // 1 day
                 true,
             )
             .unwrap(),
@@ -258,7 +258,7 @@ mod tests {
         assert!(record.rotation_policy.is_some());
         match record.rotation_policy.unwrap() {
             RotationPolicy::Periodic(config) => {
-                assert_eq!(config.interval(), Duration::from_secs(90 * 24 * 3600));
+                assert_eq!(config.interval(), Duration::from_hours(2160));
             },
             _ => panic!("Expected Periodic policy"),
         }

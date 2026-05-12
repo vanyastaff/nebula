@@ -493,16 +493,16 @@ mod tests {
     fn test_periodic_validation() {
         // Valid configuration using constructor
         let valid = PeriodicConfig::new(
-            Duration::from_secs(90 * 24 * 60 * 60), // 90 days
-            Duration::from_secs(24 * 60 * 60),      // 24 hours
+            Duration::from_hours(2160), // 90 days
+            Duration::from_hours(24),   // 24 hours
             true,
         );
         assert!(valid.is_ok());
 
         // Invalid: interval too short
         let invalid_interval = PeriodicConfig::new(
-            Duration::from_secs(1800), // 30 minutes
-            Duration::from_secs(600),
+            Duration::from_mins(30), // 30 minutes
+            Duration::from_mins(10),
             false,
         );
         assert!(invalid_interval.is_err());
@@ -515,7 +515,7 @@ mod tests {
 
         // Invalid: grace period exceeds interval
         let invalid_grace =
-            PeriodicConfig::new(Duration::from_secs(3600), Duration::from_secs(7200), false);
+            PeriodicConfig::new(Duration::from_hours(1), Duration::from_hours(2), false);
         assert!(invalid_grace.is_err());
         assert!(
             invalid_grace
@@ -530,14 +530,14 @@ mod tests {
         // Valid configuration using constructor
         let valid = BeforeExpiryConfig::new(
             0.80,
-            Duration::from_secs(5 * 60),  // 5 minutes
-            Duration::from_secs(10 * 60), // 10 minutes
+            Duration::from_mins(5),  // 5 minutes
+            Duration::from_mins(10), // 10 minutes
         );
         assert!(valid.is_ok());
 
         // Invalid: threshold too low
         let invalid_threshold_low =
-            BeforeExpiryConfig::new(0.3, Duration::from_secs(300), Duration::from_secs(600));
+            BeforeExpiryConfig::new(0.3, Duration::from_mins(5), Duration::from_mins(10));
         assert!(invalid_threshold_low.is_err());
         assert!(
             invalid_threshold_low
@@ -548,7 +548,7 @@ mod tests {
 
         // Invalid: threshold too high
         let invalid_threshold_high =
-            BeforeExpiryConfig::new(0.99, Duration::from_secs(300), Duration::from_secs(600));
+            BeforeExpiryConfig::new(0.99, Duration::from_mins(5), Duration::from_mins(10));
         assert!(invalid_threshold_high.is_err());
         assert!(
             invalid_threshold_high
@@ -559,7 +559,7 @@ mod tests {
 
         // Invalid: zero minimum time
         let invalid_min_time =
-            BeforeExpiryConfig::new(0.80, Duration::ZERO, Duration::from_secs(600));
+            BeforeExpiryConfig::new(0.80, Duration::ZERO, Duration::from_mins(10));
         assert!(invalid_min_time.is_err());
         assert!(
             invalid_min_time

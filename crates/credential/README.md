@@ -143,7 +143,7 @@ Capabilities are not const flags — they are **sub-traits**. A credential opts 
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
 - `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations.
 - `StaticProtocol` — reusable pattern for static credentials (State = Scheme).
-- `ExternalProvider`, `ExternalReference`, `ProviderKind`, `ProviderError` — external provider abstraction for Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and other secret managers.
+- `ExternalProvider`, `ExternalProviderChain`, `ExternalReference`, `ProviderFuture`, `ProviderResolution`, `LeaseHandle`, `ProviderKind`, `ProviderError` — external provider abstraction (per ADR-0051) for Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and other secret managers. Trait is dyn-safe via the `ProviderFuture<'a>` newtype (AWS `NowOrLater` pattern); resolutions return a `ProviderResolution` envelope (secret + optional lease + optional TTL); `ExternalProviderChain` composes providers with error-discriminated fallback (only `ProviderError::NotFound` falls through to the next provider, all other errors short-circuit).
 - `CredentialMetrics` — standardized credential operation metric names and label helpers (`resolve_total`, `refresh_total`, `rotations_total`, etc.).
 - `prelude` module — convenient re-exports of common credential types.
 
