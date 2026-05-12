@@ -543,6 +543,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
             processed_at: Some(stale),
             error_message: None,
             reclaim_count: 0,
+            w3c_trace_context: None,
         })
         .await
         .unwrap();

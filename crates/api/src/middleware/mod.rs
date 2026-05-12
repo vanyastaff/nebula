@@ -12,6 +12,7 @@ pub mod rbac;
 pub mod request_id;
 pub mod security_headers;
 pub mod tenancy;
+pub mod trace_w3c;
 
 pub use auth::auth_middleware;
 pub use csrf::csrf_middleware;
@@ -22,3 +23,6 @@ pub use rbac::rbac_middleware;
 pub use request_id::RequestIdLayer;
 pub use security_headers::security_headers_middleware;
 pub use tenancy::tenancy_middleware;
+pub use trace_w3c::{
+    InboundW3cTraceContext, inject_w3c_trace_response_headers, trace_context_middleware,
+};

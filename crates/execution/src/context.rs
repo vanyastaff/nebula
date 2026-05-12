@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use nebula_core::ExecutionId;
+use nebula_core::{ExecutionId, W3cTraceContext};
 use serde::{Deserialize, Deserializer};
 
 fn default_max_concurrent_nodes() -> usize {
@@ -145,13 +145,19 @@ impl ExecutionBudget {
 
 /// Lightweight execution context.
 ///
-/// This is a minimal placeholder until execution context is properly designed.
+/// Carries the execution identity and budget. When present,
+/// [`Self::w3c_trace_context`] is intended to be **propagated across async
+/// boundaries** (for example HTTP → control queue → engine) so distributed
+/// traces stay parent-linked (M3.5).
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
     /// Unique identifier for this execution.
     pub execution_id: ExecutionId,
     /// Resource budget for this execution.
     pub budget: ExecutionBudget,
+    /// Optional validated W3C Trace Context (`traceparent` / `tracestate`) for
+    /// correlation when work leaves the synchronous HTTP span.
+    pub w3c_trace_context: Option<W3cTraceContext>,
 }
 
 impl ExecutionContext {
@@ -160,7 +166,22 @@ impl ExecutionContext {
         Self {
             execution_id,
             budget,
+            w3c_trace_context: None,
         }
+    }
+
+    /// Attach or clear W3C trace context for downstream async consumers.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_w3c_trace_context(mut self, ctx: Option<W3cTraceContext>) -> Self {
+        if let Some(ref carrier) = ctx {
+            tracing::debug!(
+                traceparent_len = carrier.traceparent().len(),
+                has_tracestate = carrier.tracestate().is_some(),
+                "execution_context: W3C trace context set for async propagation"
+            );
+        }
+        self.w3c_trace_context = ctx;
+        self
     }
 }
 

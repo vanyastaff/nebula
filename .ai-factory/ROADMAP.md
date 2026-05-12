@@ -384,20 +384,25 @@ programmatic `(uuid, nonce)` and operator-configured
 
 #### M3.5 Tracing context propagation
 
-- [ ] Adopt W3C Trace Context in `request_id` middleware: parse
-      `traceparent` / `tracestate` request headers (today
-      `request_id.rs` only handles `X-Request-ID`).
-- [ ] Attach extracted span context to the per-request `tracing::Span`
-      so child spans link to the parent trace.
-- [ ] Propagate span context into engine via `ExecutionContext`
-      (engine spawns its own span; today there is no parent link).
-- [ ] Engine span exposes a child-span helper that action `Context`
-      uses for outgoing resource calls (so traces extend through HTTP
-      out-calls via `nebula-resilience`).
-- [ ] Emit `traceparent` on responses so synchronous callers see the
-      trace ID for correlation.
-- [ ] Integration test: trace flows API → engine → action → resource
-      with one root span and correct parent links.
+- [x] Adopt W3C Trace Context on the HTTP edge: parse `traceparent` /
+      `tracestate` in `crates/api/src/middleware/trace_w3c.rs` (request
+      ID middleware remains `X-Request-ID` only).
+- [x] Attach extracted span context to the per-request `tracing::Span`
+      (`TraceLayer` + `tracing_opentelemetry`; see ADR-0050). API binaries
+      install the required `OpenTelemetryLayer` via
+      `nebula_api::init_api_telemetry` so the attach is not a no-op without
+      OTLP.
+- [ ] Propagate span context into engine via `ExecutionContext` for
+      every synchronous API→engine touchpoint (queue row stamping
+      ships today; field on `ExecutionContext` exists for downstream).
+- [x] Engine / action boundary: `ActionRuntimeContext` exposes
+      `resource_http_request_span` / `instrument_resource_http_request`
+      for outbound resource HTTP (callers wrap `nebula-resilience`).
+- [x] Emit `traceparent` / `tracestate` on responses where policy allows
+      (CORS allow/expose aligned).
+- [ ] Integration test: full stack API → engine → action → resource with
+      one root span (engine `control_trace` unit test + lease_takeover
+      cancel path cover subsets today).
 - [ ] OpenTelemetry exporter wired (depends on M9.2 verification).
 
 #### M3.6 Shift-left workflow validation

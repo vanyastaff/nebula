@@ -39,7 +39,9 @@ bounded concurrency.
   frontier loop (ADR-0008 A3; ADR-0016).
 - `ControlConsumer` — durable control-queue consumer drained via `ControlQueueRepo`
   (canon §12.2, ADR-0008). All five commands — `Start` / `Resume` / `Restart` / `Cancel` /
-  `Terminate` — are wired via `EngineControlDispatch` (A2 + A3).
+  `Terminate` — are wired via `EngineControlDispatch` (A2 + A3). Optional
+  `ControlQueueEntry::w3c_trace_context` restores an OpenTelemetry parent on the
+  dispatch span (`control_trace`, ADR-0050).
 - `ControlDispatch` — engine-owned trait implementors provide to deliver typed commands
   (`ExecutionId` + command kind) to the engine's start / cancel paths. Must be idempotent
   per `(execution_id, command)` pair (ADR-0008 §5).

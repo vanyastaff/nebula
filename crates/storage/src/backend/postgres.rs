@@ -219,8 +219,7 @@ impl WorkflowRepo for PgWorkflowRepo {
                         actual as u64,
                     )),
                     None => Err(WorkflowRepoError::Internal(format!(
-                        "workflow {} not found during save",
-                        id,
+                        "workflow {id} not found during save",
                     ))),
                 }
             } else {

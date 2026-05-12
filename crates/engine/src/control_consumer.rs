@@ -25,6 +25,9 @@
 //!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted. Each sweep emits
 //!   the `nebula_engine_control_reclaim_total{outcome}` counter (ADR-0017 Seam) — wire the shared
 //!   registry via [`ControlConsumer::with_metrics`].
+//! - M3.5 — before each dispatch, optional `w3c_trace_context` on the row is attached as the
+//!   OpenTelemetry parent of an `engine.control_queue.dispatch` span (`.instrument` across await).
+//!   Redelivery reuses the **same** carrier from the row — no nested synthetic roots.
 //!
 //! [`EngineControlDispatch`]: crate::control_dispatch::EngineControlDispatch
 
@@ -38,6 +41,7 @@ use nebula_metrics::{
 use nebula_storage::repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 /// Default batch size for each `claim_pending` call.
 ///
@@ -486,40 +490,66 @@ impl ControlConsumer {
             },
         };
 
-        let dispatch_result = match entry.command {
-            ControlCommand::Start => {
-                tracing::debug!(%execution_id, "control-queue: dispatching Start (A2)");
-                self.dispatch.dispatch_start(execution_id).await
-            },
-            ControlCommand::Cancel => {
-                tracing::debug!(%execution_id, "control-queue: dispatching Cancel (A3)");
-                self.dispatch.dispatch_cancel(execution_id).await
-            },
-            ControlCommand::Terminate => {
-                tracing::debug!(%execution_id, "control-queue: dispatching Terminate (A3)");
-                self.dispatch.dispatch_terminate(execution_id).await
-            },
-            ControlCommand::Resume => {
-                tracing::debug!(%execution_id, "control-queue: dispatching Resume (A2)");
-                self.dispatch.dispatch_resume(execution_id).await
-            },
-            ControlCommand::Restart => {
-                tracing::debug!(%execution_id, "control-queue: dispatching Restart (A2)");
-                self.dispatch.dispatch_restart(execution_id).await
-            },
-        };
+        let row_id = entry.id;
+        let command = entry.command;
+        let w3c_opt = entry.w3c_trace_context;
+
+        let has_carrier = w3c_opt.is_some();
+        let span = tracing::info_span!(
+            "engine.control_queue.dispatch",
+            execution_id = %execution_id,
+            command = command.as_str(),
+            queue_row_has_w3c = has_carrier,
+        );
+        if let Some(ref w3c) = w3c_opt {
+            crate::control_trace::attach_control_queue_w3c_parent(&span, w3c);
+        }
+
+        let dispatch = Arc::clone(&self.dispatch);
+        let dispatch_result = async move {
+            tracing::info!(
+                execution_id = %execution_id,
+                command = command.as_str(),
+                queue_row_has_w3c = has_carrier,
+                "control-queue: dispatch command (span carries M3.5 parent when row had carrier)"
+            );
+            match command {
+                ControlCommand::Start => {
+                    tracing::debug!(%execution_id, "control-queue: dispatching Start (A2)");
+                    dispatch.dispatch_start(execution_id).await
+                },
+                ControlCommand::Cancel => {
+                    tracing::debug!(%execution_id, "control-queue: dispatching Cancel (A3)");
+                    dispatch.dispatch_cancel(execution_id).await
+                },
+                ControlCommand::Terminate => {
+                    tracing::debug!(%execution_id, "control-queue: dispatching Terminate (A3)");
+                    dispatch.dispatch_terminate(execution_id).await
+                },
+                ControlCommand::Resume => {
+                    tracing::debug!(%execution_id, "control-queue: dispatching Resume (A2)");
+                    dispatch.dispatch_resume(execution_id).await
+                },
+                ControlCommand::Restart => {
+                    tracing::debug!(%execution_id, "control-queue: dispatching Restart (A2)");
+                    dispatch.dispatch_restart(execution_id).await
+                },
+            }
+        }
+        .instrument(span)
+        .await;
 
         match dispatch_result {
-            Ok(()) => self.ack_completed(&entry.id).await,
+            Ok(()) => self.ack_completed(&row_id).await,
             Err(e) => {
                 tracing::error!(
-                    id = %hex_display(&entry.id),
+                    id = %hex_display(&row_id),
                     %execution_id,
-                    command = entry.command.as_str(),
+                    command = command.as_str(),
                     error = %e,
                     "control-queue dispatch failed; marking failed (no auto-retry — ADR-0008 §5)"
                 );
-                self.ack_failed(&entry.id, &e.to_string()).await;
+                self.ack_failed(&row_id, &e.to_string()).await;
             },
         }
     }

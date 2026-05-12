@@ -43,7 +43,8 @@ Patterns:
 - `ExecutionPlan` — pre-computed parallel execution schedule derived from `DependencyGraph`.
   Feeds the engine scheduler.
 - `ReplayPlan` — resume plan for restarting from a checkpoint.
-- `ExecutionContext` — lightweight runtime context: `execution_id`, `ExecutionBudget`.
+- `ExecutionContext` — lightweight runtime context: `execution_id`, `ExecutionBudget`, optional
+  `W3cTraceContext` for M3.5 distributed trace propagation across async boundaries.
 - `ExecutionResult` — post-execution summary: status, timing, node counts, outputs.
 - `JournalEntry` — audit log entry type. Each entry is appended to the durable
   `execution_journal` table via `ExecutionRepo::append_journal`.

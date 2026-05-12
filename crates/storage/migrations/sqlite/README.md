@@ -24,6 +24,9 @@ parity with Layer 1 migration `00000000000009_add_resume_persistence.sql`
 Migration `0021_add_control_queue_reclaim_count.sql` lands in both dialects
 in parity with ADR-0017 (control-queue reclaim policy, ADR-0008 B1 follow-up).
 
+Migration `0026_execution_control_queue_w3c_trace_context.sql` adds nullable
+`w3c_trace_context` to `execution_control_queue` in both dialects (M3.5).
+
 ## Schema parity
 
 This directory and `../postgres/` must define logically identical tables.

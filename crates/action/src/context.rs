@@ -26,6 +26,7 @@ use nebula_core::{
 };
 use nebula_credential::{AuthScheme, CredentialGuard, CredentialSnapshot};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::{
     capability::{
@@ -240,6 +241,71 @@ impl ActionRuntimeContext {
             return false;
         };
         self.resources.has(&rk)
+    }
+
+    /// Stable child span for outbound **resource-scoped HTTP** wrapped in
+    /// `nebula-resilience` (or similar) so traces stay attached under the
+    /// action's current span.
+    ///
+    /// Records `resource_id` plus **host-level** URL parts only (`scheme`,
+    /// `host`, `port`). Path, query, fragment, and userinfo are never
+    /// attached — avoid leaking secrets or PII in trace backends.
+    #[must_use]
+    pub fn resource_http_request_span(
+        &self,
+        resource_id: &str,
+        request_endpoint: &url::Url,
+    ) -> tracing::Span {
+        let scheme = request_endpoint.scheme();
+        let host = request_endpoint.host_str().unwrap_or("");
+        let port = request_endpoint.port_or_known_default();
+        tracing::debug_span!(
+            "nebula.action.resource_http.request",
+            resource_id = resource_id,
+            http.scheme = %scheme,
+            http.host = %host,
+            http.port = port,
+            execution_id = ?self.scope().execution_id,
+            workflow_id = ?self.scope().workflow_id,
+            node_key = %self.node_key,
+            attempt_id = %self.attempt_id,
+        )
+    }
+
+    /// Run an async operation (typically `nebula_resilience::retry_with` or
+    /// `nebula_resilience::ResiliencePipeline::execute`) under
+    /// [`Self::resource_http_request_span`], with `DEBUG` enter/exit logs.
+    ///
+    /// `nebula-resilience` is **not** a direct dependency of `nebula-action`, so the references
+    /// above are typed as plain code rather than intra-doc links — rustdoc `-D warnings` would
+    /// otherwise fail with `unresolved link to nebula_resilience::...`.
+    pub async fn instrument_resource_http_request<F, Fut, T>(
+        &self,
+        resource_id: &str,
+        request_endpoint: &url::Url,
+        operation: F,
+    ) -> T
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = T> + Send,
+        T: Send,
+    {
+        let span = self.resource_http_request_span(resource_id, request_endpoint);
+        let resource_id = resource_id.to_string();
+        async move {
+            tracing::debug!(
+                resource_id = %resource_id,
+                "resource_http: enter outbound request span"
+            );
+            let out = operation().await;
+            tracing::debug!(
+                resource_id = %resource_id,
+                "resource_http: exit outbound request span"
+            );
+            out
+        }
+        .instrument(span)
+        .await
     }
 }
 

@@ -4,9 +4,13 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-use axum::{Router, extract::DefaultBodyLimit, middleware, response::Response};
+use axum::{Router, body::Body, extract::DefaultBodyLimit, middleware, response::Response};
 use tower::ServiceBuilder;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::CorsLayer,
+    trace::{DefaultMakeSpan, MakeSpan, TraceLayer},
+};
 use utoipa_swagger_ui::SwaggerUi;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -138,24 +142,52 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // Build per-IP rate limiter from config.
     let rate_limit = RateLimitState::new(config.rate_limit_per_second);
 
-    // Build middleware stack (ServiceBuilder — сверху вниз)
+    // Build middleware stack (tower `ServiceBuilder`: **first** `.layer()` sees the request
+    // first — outermost). Order is therefore:
+    // `TraceLayer` → `inject_w3c_trace_response_headers` → compression → CORS → merged routes
+    // (public API, webhooks, `/internal/v1/*` — same W3C response policy everywhere; internal
+    // routes are not in OpenAPI but still emit trace headers for operators).
     let middleware_stack = ServiceBuilder::new()
-        // 1. Request tracing
-        .layer(TraceLayer::new_for_http())
-        // 2. Response compression (if enabled)
+        // 1. Request tracing — link to inbound W3C parent when `InboundW3cTraceContext` is present.
+        // Span level is **INFO** (not the `DefaultMakeSpan` `DEBUG` default): a default
+        // `RUST_LOG=info` filter would otherwise drop the per-request span before
+        // `tracing_opentelemetry::OpenTelemetryLayer` can observe it, leaving every response
+        // without a `traceparent` even though `init_api_telemetry` wired the layer correctly.
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<Body>| {
+                let mut make_span = DefaultMakeSpan::new().level(tracing::Level::INFO);
+                let span = make_span.make_span(request);
+                if let Some(w3c) = request.extensions().get::<crate::middleware::InboundW3cTraceContext>()
+                {
+                    crate::middleware::trace_w3c::attach_inbound_trace_parent(&span, &w3c.0);
+                }
+                span
+            },
+        ))
+        // 2. Response `traceparent` / `tracestate` (M3.5) — must stay **inside** `TraceLayer`'s
+        // span scope on the async return path.
+        .layer(middleware::from_fn(
+            crate::middleware::inject_w3c_trace_response_headers,
+        ))
+        // 3. Response compression (if enabled)
         .layer(if config.enable_compression {
             CompressionLayer::new()
         } else {
             CompressionLayer::new().no_br().no_gzip().no_zstd()
         })
-        // 3. CORS
+        // 4. CORS
         .layer(build_cors_layer(config));
 
     // Apply middleware to routes.
     // Layers are applied bottom-up: rate_limit runs first (outermost),
-    // then request_id, then security_headers, then the inner stack.
+    // then request_id, then security_headers, then W3C trace extraction
+    // (must run before `TraceLayer` inside `middleware_stack`), then the inner stack
+    // (`TraceLayer` → response trace inject → compression → CORS).
     routes
         .layer(middleware_stack)
+        .layer(middleware::from_fn(
+            crate::middleware::trace_context_middleware,
+        ))
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(request_id_middleware))
         // Global per-IP rate limiting — placed outermost so it runs first
@@ -304,6 +336,9 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
         header::HeaderName::from_static(X_REQUEST_ID),
         crate::middleware::auth::X_API_KEY.clone(),
         header::HeaderName::from_static(IDEMPOTENCY_KEY_HEADER),
+        // W3C Trace Context (M3.5) — browser preflight must allow clients to send `traceparent`.
+        header::HeaderName::from_static("traceparent"),
+        header::HeaderName::from_static("tracestate"),
     ])
     // `Idempotent-Replay` is exposed so JS clients can read it on the
     // response and tell a cache-hit replay apart from a fresh handler
@@ -312,6 +347,8 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     .expose_headers([
         header::HeaderName::from_static(X_REQUEST_ID),
         IDEMPOTENT_REPLAY_HEADER,
+        header::HeaderName::from_static("traceparent"),
+        header::HeaderName::from_static("tracestate"),
     ])
     .max_age(Duration::from_secs(cors_cfg.max_age_secs))
 }
