@@ -34,11 +34,17 @@ use super::{ExternalProvider, ExternalReference, ProviderError, ProviderFuture};
 ///
 /// ```ignore
 /// use std::sync::Arc;
-/// use nebula_credential::{ExternalProviderChain, ExternalProvider};
+/// use nebula_credential::{ExternalProvider, ExternalProviderChain};
 ///
-/// let chain = ExternalProviderChain::first_try("env", env_provider)
-///     .or_else("vault", vault_provider)
-///     .or_else("aws_sm", aws_sm_provider);
+/// // `first_try` / `or_else` take `Arc<dyn ExternalProvider>` — wrap concrete
+/// // provider values explicitly to share them across the chain (and across
+/// // multiple chains, if needed).
+/// let chain = ExternalProviderChain::first_try(
+///         "env",
+///         Arc::new(env_provider) as Arc<dyn ExternalProvider>,
+///     )
+///     .or_else("vault", Arc::new(vault_provider) as Arc<dyn ExternalProvider>)
+///     .or_else("aws_sm", Arc::new(aws_sm_provider) as Arc<dyn ExternalProvider>);
 ///
 /// // `chain` is itself an `ExternalProvider`; can be registered or further nested.
 /// ```
@@ -85,9 +91,15 @@ impl ExternalProviderChain {
         self.providers.len()
     }
 
-    /// `true` if the chain has no providers (only constructable by user code
-    /// that explicitly cleared it; [`first_try`](Self::first_try) always yields
-    /// `len() == 1`).
+    /// `true` if the chain has no providers.
+    ///
+    /// The public builder API ([`first_try`](Self::first_try) +
+    /// [`or_else`](Self::or_else)) always yields a non-empty chain (`len() >=
+    /// 1`); this predicate exists so internal callers (e.g. unit tests that
+    /// reach into [`Self`] via mutable patterns) and future API surface that
+    /// may permit an explicitly-empty chain can guard the dispatch loop. The
+    /// `providers` field is private, so downstream crates cannot construct
+    /// an empty chain through the public API today.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.providers.is_empty()

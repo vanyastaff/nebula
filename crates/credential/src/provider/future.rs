@@ -62,11 +62,16 @@ impl<'a> ProviderFuture<'a> {
     }
 }
 
-// `ProviderFuture<'a>: Unpin` is auto-derived: both `Option<Result<…>>` and
-// `Pin<Box<dyn Future + Send>>` are `Unpin` (the latter via the blanket
-// `impl<P> Unpin for Pin<P>`), so the inner enum and the outer struct inherit
-// `Unpin` without an explicit impl. This lets us project safely via
-// `Pin::into_inner` in `poll`.
+// `ProviderFuture<'a>: Unpin` is auto-derived. The chain of reasoning:
+// - `Box<T>: Unpin` for any `T` (heap pointers are freely movable regardless
+//   of pointee pinning state).
+// - `Pin<P>: Unpin` when `P: Unpin` (via `impl<P: Unpin> Unpin for Pin<P>`),
+//   so `Pin<Box<dyn Future + Send>>: Unpin`.
+// - `Option<T>: Unpin` when `T: Unpin`, so `Option<Result<…>>: Unpin`.
+// - Both `Inner` variants therefore satisfy `Unpin`, and so does the outer
+//   struct via auto-derive.
+//
+// This lets us project safely via `Pin::into_inner` in `poll` without `unsafe`.
 
 impl Future for ProviderFuture<'_> {
     type Output = Result<ProviderResolution, ProviderError>;
@@ -74,11 +79,20 @@ impl Future for ProviderFuture<'_> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = Pin::into_inner(self);
         match &mut this.inner {
-            Inner::Ready(slot) => {
-                let value = slot
-                    .take()
-                    .expect("ProviderFuture::Ready polled after completion");
-                Poll::Ready(value)
+            Inner::Ready(slot) => match slot.take() {
+                Some(value) => Poll::Ready(value),
+                // Double-poll: the `Future` contract permits us to return any
+                // `Poll::Ready` here (further polls are undefined per contract).
+                // Returning a `Backend` error rather than panicking complies
+                // with the no-`panic!`/`expect` rule for library code (see
+                // AGENTS.md → Agent Rules). Hitting this path indicates a
+                // caller bug — a properly-driven future stops being polled
+                // after `Poll::Ready`.
+                None => Poll::Ready(Err(ProviderError::Backend(
+                    "ProviderFuture::Ready polled after completion (caller bug)"
+                        .to_owned()
+                        .into(),
+                ))),
             },
             Inner::Boxed(fut) => fut.as_mut().poll(cx),
         }
@@ -116,5 +130,35 @@ mod tests {
         }));
         let err = fut.await.unwrap_err();
         assert!(matches!(err, ProviderError::NotFound { .. }));
+    }
+
+    #[test]
+    fn double_poll_returns_backend_error_not_panic() {
+        // Drive the future manually so we can poll it twice — the second
+        // poll must produce a `Backend` error rather than panicking,
+        // honouring the no-`panic!`/`expect` rule for library code.
+        use std::{
+            future::Future as _,
+            task::{Context, Poll, Waker},
+        };
+
+        let mut fut = std::pin::pin!(ProviderFuture::ready(Ok(ProviderResolution::from_secret(
+            SecretString::new("once")
+        ))));
+
+        // `Waker::noop` is stable since Rust 1.85; no extra crate needed.
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        // First poll: ready with the original value.
+        let first = fut.as_mut().poll(&mut cx);
+        assert!(matches!(first, Poll::Ready(Ok(_))));
+
+        // Second poll: ready with a Backend error, NOT a panic.
+        let second = fut.as_mut().poll(&mut cx);
+        match second {
+            Poll::Ready(Err(ProviderError::Backend(_))) => {},
+            other => panic!("expected Ready(Err(Backend(_))), got {other:?}"),
+        }
     }
 }

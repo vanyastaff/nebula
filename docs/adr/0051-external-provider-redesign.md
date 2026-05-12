@@ -23,9 +23,14 @@ The current shape carried three smells against the rest of the crate:
 
 1. **`#[async_trait]` is the lone holdout.** `CredentialStore`, `Credential`,
    `Refreshable`, and every other async trait in `nebula-credential` already use
-   `impl Future + Send` (RTPIT). Memory `feedback_idiom_currency` flags this as
-   an anti-pattern for Rust 1.95+. Keeping it forces a transitive `async-trait`
-   dep that is otherwise unused in the crate.
+   `impl Future + Send` (RTPIT) — see `crates/credential/src/store.rs:137-182`
+   and `crates/credential/src/contract/refreshable.rs:87-93`. With the
+   workspace pinned to Rust 1.95 (`rust-toolchain.toml`), edition 2024 and
+   stable RPITIT, the `async-trait` macro adds no capability the language
+   doesn't already provide; it only adds a per-call `Box<dyn Future>`
+   allocation, a transitive proc-macro dep, and inconsistency with the rest
+   of the crate. Aligning `ExternalProvider` with the established idiom is a
+   small consistency win.
 2. **Return type is `SecretString`.** No way to express Vault leased secrets
    (lease id + TTL), no way for a downstream cache layer to honour a
    provider-suggested expiry. AWS solved this with the `Identity` envelope.
@@ -120,5 +125,10 @@ The current shape carried three smells against the rest of the crate:
   expiry semantics, mirrored here in `ProviderResolution::ttl`).
 - Cross-crate placement: ADR-0032 (encryption/cache/audit/scope layers live in
   `nebula-storage`, not `nebula-credential`).
-- Idiom rule: `feedback_idiom_currency` user memory (no `async_trait` on
-  contracts that already exist as RTPIT elsewhere in the same crate).
+- Idiom precedent in this crate: `CredentialStore` (`crates/credential/src/store.rs:137-182`)
+  and `Refreshable::refresh` (`crates/credential/src/contract/refreshable.rs:87-93`)
+  both return `impl Future + Send` rather than using `async-trait` — this ADR
+  brings `ExternalProvider` in line. Rust 1.95 + edition 2024 (per
+  `rust-toolchain.toml`) makes `async-trait` redundant on contracts that do
+  not require dyn-safe async methods; `ProviderFuture<'a>` covers the
+  dyn-safe case without the macro.
