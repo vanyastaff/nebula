@@ -2448,6 +2448,51 @@ impl WorkflowEngine {
                 },
                 Ok((task_id, (node_key, Err(ref err)))) => {
                     task_nodes.remove(&task_id);
+
+                    // Cooperative cancel: the action returned after awaiting the same
+                    // `CancellationToken` that control-queue `Cancel` / external cancel trips.
+                    // If we route this through `mark_node_failed`, `run_frontier` returns
+                    // `Some(failed_node)` and [`determine_final_status`] picks **Failed** over
+                    // `cancel_token.is_cancelled()` — wrong for ADR-0008 A3 / lease_takeover T4.
+                    // Mirror [`WakeReason::Cancel`]: mark the node `Cancelled`, drain in-flight
+                    // bookkeeping, and exit without a synthetic `failed_node`.
+                    if cancel_token.is_cancelled()
+                        && matches!(
+                            err,
+                            EngineError::Cancelled | EngineError::Action(ActionError::Cancelled)
+                        )
+                    {
+                        tracing::debug!(
+                            target = "engine::frontier",
+                            %execution_id,
+                            %node_key,
+                            "node returned cooperative cancel under active cancel token; \
+                             tearing down frontier (not Failed)"
+                        );
+                        if exec_state
+                            .transition_node(node_key.clone(), NodeState::Cancelled)
+                            .is_ok()
+                        {
+                            join_set.abort_all();
+                            while join_set.join_next_with_id().await.is_some() {}
+                            task_nodes.clear();
+                            drain_pending_to_cancelled(
+                                &mut retry_heap,
+                                &mut ready_queue,
+                                exec_state,
+                                execution_id,
+                            );
+                            break;
+                        }
+                        tracing::warn!(
+                            target = "engine::frontier",
+                            %execution_id,
+                            %node_key,
+                            "transition_node(Cancelled) failed after cooperative cancel; \
+                             continuing through normal failure path"
+                        );
+                    }
+
                     // Node failed at runtime. Ordering (§11.5, #297 PR
                     // review by Copilot — route stages OnError payload
                     // that checkpoint must capture so resume can read
