@@ -25,7 +25,8 @@ API layer are in active development. Not production-ready yet.
 - **Serialization:** `serde` / `serde_json`.
 - **Errors:** `thiserror` in libraries, `anyhow` in binaries.
 - **Observability:** `tracing` + crate-local `nebula-log` and
-  `nebula-metrics`.
+  `nebula-metrics`; W3C Trace Context on the API edge and durable handoff into
+  the engine control queue (ADR-0050).
 - **Concurrency primitives:** `dashmap`, `parking_lot`, `arc-swap`, `moka`,
   custom resilience patterns in `nebula-resilience`.
 - **Storage:** abstract `nebula-storage` with `loom`-checked probes and
