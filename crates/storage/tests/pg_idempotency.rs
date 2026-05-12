@@ -78,7 +78,7 @@ async fn round_trip_put_get_returns_equal_record() {
     let repo = PgIdempotencyStore::new(pool);
     let key = random_cache_key("rt");
 
-    repo.put(key.clone(), record(b"hello", 0xab), Duration::from_secs(60))
+    repo.put(key.clone(), record(b"hello", 0xab), Duration::from_mins(1))
         .await
         .expect("put");
 
@@ -116,8 +116,8 @@ async fn concurrent_first_writer_wins() {
     let repo_b = repo.clone();
 
     let (a, b) = tokio::join!(
-        async move { repo_a.put(key_a, r1, Duration::from_secs(60)).await },
-        async move { repo_b.put(key_b, r2, Duration::from_secs(60)).await },
+        async move { repo_a.put(key_a, r1, Duration::from_mins(1)).await },
+        async move { repo_b.put(key_b, r2, Duration::from_mins(1)).await },
     );
     a.expect("first put must succeed");
     b.expect("second put must be a no-op (ON CONFLICT DO NOTHING), not an error");
@@ -143,12 +143,12 @@ async fn body_mismatch_race_keeps_first_record() {
     let repo = PgIdempotencyStore::new(pool);
     let key = random_cache_key("bmr");
 
-    repo.put(key.clone(), record(b"alpha", 0xa1), Duration::from_secs(60))
+    repo.put(key.clone(), record(b"alpha", 0xa1), Duration::from_mins(1))
         .await
         .expect("first put");
 
     // Different fingerprint, same key — must be a no-op.
-    repo.put(key.clone(), record(b"beta", 0xb2), Duration::from_secs(60))
+    repo.put(key.clone(), record(b"beta", 0xb2), Duration::from_mins(1))
         .await
         .expect("second put must be a no-op, not an error");
 
