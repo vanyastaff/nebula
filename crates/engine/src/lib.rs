@@ -21,6 +21,8 @@
 //!   follow-up A3; closes #330). `Cancel` signals the live frontier loop via
 //!   [`WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body until a
 //!   distinct forced-shutdown path is wired (see ADR-0016).
+//! - **implemented** — M3.5: [`control_consumer::ControlConsumer`] restores W3C trace parents from
+//!   queue rows onto the per-dispatch span (`control_trace` + `tracing_opentelemetry`).
 //!
 //! Wiring and atomicity decisions live in `docs/adr/0008-execution-control-queue-consumer.md`
 //! and `docs/adr/0016-engine-cancel-registry.md`.
@@ -61,6 +63,7 @@
 
 pub mod control_consumer;
 pub mod control_dispatch;
+mod control_trace;
 pub mod credential;
 pub mod credential_accessor;
 pub mod daemon;

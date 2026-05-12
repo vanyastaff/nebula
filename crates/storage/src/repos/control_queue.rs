@@ -89,6 +89,11 @@ pub struct ControlQueueEntry {
     /// by `max_reclaim_count` on the consumer; rows past the budget move to
     /// `Failed` with a `"reclaim exhausted:"` error.
     pub reclaim_count: u32,
+    /// Optional W3C Trace Context captured at enqueue time (M3.5).
+    ///
+    /// Persisted for async handoff so the engine consumer can restore a
+    /// distributed-trace parent. `None` when the API did not stamp a carrier.
+    pub w3c_trace_context: Option<nebula_core::W3cTraceContext>,
 }
 
 /// Summary of a single `reclaim_stuck` sweep (ADR-0017).
@@ -195,6 +200,20 @@ impl InMemoryControlQueueRepo {
 #[async_trait]
 impl ControlQueueRepo for InMemoryControlQueueRepo {
     async fn enqueue(&self, entry: &ControlQueueEntry) -> Result<(), StorageError> {
+        tracing::debug!(
+            command = entry.command.as_str(),
+            has_trace_context = entry.w3c_trace_context.is_some(),
+            traceparent_len = entry
+                .w3c_trace_context
+                .as_ref()
+                .map(|c| c.traceparent().len()),
+            has_tracestate = entry
+                .w3c_trace_context
+                .as_ref()
+                .and_then(|c| c.tracestate())
+                .is_some(),
+            "control_queue: in-memory enqueue"
+        );
         self.entries.lock().await.push(entry.clone());
         Ok(())
     }
@@ -345,6 +364,7 @@ mod tests {
             processed_at: Some(now),
             error_message: None,
             reclaim_count: 1,
+            w3c_trace_context: None,
         };
         repo.enqueue(&entry).await.unwrap();
 
@@ -376,6 +396,7 @@ mod tests {
             processed_at: None,
             error_message: None,
             reclaim_count: 0,
+            w3c_trace_context: None,
         };
         repo.enqueue(&entry).await.unwrap();
 
@@ -412,6 +433,7 @@ mod tests {
             processed_at,
             error_message: None,
             reclaim_count,
+            w3c_trace_context: None,
         }
     }
 

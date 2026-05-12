@@ -63,7 +63,7 @@
 //!
 //! ```text
 //! outermost                                                            innermost
-//!  rate_limit -> request_id -> security_headers -> middleware_stack -> idempotency -> routes
+//!  rate_limit -> request_id -> security_headers -> trace_w3c -> trace -> trace_response_inject -> compression -> cors -> idempotency -> routes
 //!                                                                       (api only)
 //! ```
 //!

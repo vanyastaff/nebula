@@ -38,6 +38,10 @@ nebula-resilience = { path = "../resilience" }
 nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
 tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",

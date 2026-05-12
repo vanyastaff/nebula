@@ -699,7 +699,9 @@ pub async fn execute_workflow(
     // Enqueue the Start signal on the durable control queue — closes the
     // §4.5 gap where the API advertised dispatch but never reached the
     // engine (#332). Shared with `start_execution` via the `enqueue_start`
-    // helper so the create + enqueue contract lives in one place.
+    // helper so the create + enqueue contract lives in one place. M3.5:
+    // `enqueue_start` stamps optional W3C trace context on the row when the
+    // HTTP span is OTel-linked.
     enqueue_start(&state, execution_id).await?;
 
     // Report `created_at` as the observable timestamp — the engine has not

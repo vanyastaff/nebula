@@ -18,6 +18,7 @@ use crate::{
         ListExecutionsResponse, RunningExecutionSummary, StartExecutionRequest,
     },
     state::AppState,
+    trace_capture::w3c_trace_context_for_control_queue,
 };
 
 /// List all executions (workspace-scoped) — returns running execution IDs with count.
@@ -397,7 +398,18 @@ pub async fn start_execution(
 /// step 6) and `ApiError::Internal` for other write failures so the caller
 /// can retry. The engine-side consumer guards against double-start via CAS
 /// (ADR-0008 §5), so a retry after a partial failure is safe.
+///
+/// M3.5: stamps optional [`nebula_core::W3cTraceContext`] on the row from the active HTTP span
+/// when the global propagator yields a valid carrier; otherwise enqueues without one (never
+/// fails the request for trace stamping alone).
 pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -> ApiResult<()> {
+    let w3c_trace_context = w3c_trace_context_for_control_queue();
+    tracing::debug!(
+        execution_id = %execution_id,
+        command = ControlCommand::Start.as_str(),
+        has_trace_context = w3c_trace_context.is_some(),
+        "execution: enqueue Start on control queue"
+    );
     let entry = ControlQueueEntry {
         id: Uuid::new_v4().as_bytes().to_vec(),
         execution_id: execution_id.to_string().into_bytes(),
@@ -409,6 +421,7 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
         processed_at: None,
         error_message: None,
         reclaim_count: 0,
+        w3c_trace_context,
     };
     state.control_queue_repo.enqueue(&entry).await.map_err(|e| {
         use nebula_storage::StorageError;
@@ -542,6 +555,15 @@ pub async fn cancel_execution(
     // call fails, we return a 500 so the caller knows to retry the cancel
     // request — the retry will see the already-cancelled DB row and short-circuit
     // at the terminal-status guard above without re-enqueuing (idempotent).
+    //
+    // M3.5: same W3C stamping policy as [`enqueue_start`] — operator correlation for Cancel.
+    let w3c_trace_context = w3c_trace_context_for_control_queue();
+    tracing::debug!(
+        execution_id = %execution_id,
+        command = ControlCommand::Cancel.as_str(),
+        has_trace_context = w3c_trace_context.is_some(),
+        "execution: enqueue Cancel on control queue"
+    );
     let entry = ControlQueueEntry {
         id: Uuid::new_v4().as_bytes().to_vec(),
         execution_id: execution_id.to_string().into_bytes(),
@@ -553,6 +575,7 @@ pub async fn cancel_execution(
         processed_at: None,
         error_message: None,
         reclaim_count: 0,
+        w3c_trace_context,
     };
     state
         .control_queue_repo

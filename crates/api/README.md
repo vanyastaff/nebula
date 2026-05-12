@@ -38,7 +38,11 @@ layer via port traits injected into `AppState`.
 constructor + builder methods (`with_api_keys`, `with_metrics_registry`,
 `with_webhook_transport`, …).
 - `build_app` — assembles the axum `Router` with all middleware (tracing,
-CORS, compression, security headers, auth, tenancy, RBAC, CSRF).
+  CORS, compression, security headers, auth, tenancy, RBAC, CSRF).
+  W3C Trace Context (`traceparent` / optional `tracestate`) is parsed in
+  `middleware::trace_w3c`, linked into the per-request `TraceLayer` span, echoed on
+  responses where applicable, and stamped onto durable `execution_control_queue` rows
+  for `Start` / `Cancel` (see ADR-0050).
 - `ApiConfig` / `ApiConfig::from_env` — runtime configuration with sub-configs:
 `TlsConfig`, `CookieConfig`, `CorsConfig`, `VersioningConfig`,
 `PaginationConfig`. Startup fails hard on a missing or short JWT secret

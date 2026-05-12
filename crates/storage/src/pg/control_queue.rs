@@ -2,11 +2,10 @@
 //!
 //! Schema: migrations `0013_execution_lifecycle.sql` (base table) +
 //! `0021_add_control_queue_reclaim_count.sql` (reclaim column + partial
-//! index). No migration changes needed — this module binds the trait
-//! against the existing schema.
+//! index) + `0026_execution_control_queue_w3c_trace_context.sql` (M3.5).
 
 use async_trait::async_trait;
-use sqlx::{Pool, Postgres};
+use sqlx::{Pool, Postgres, types::Json};
 
 use crate::{
     error::StorageError,
@@ -15,20 +14,21 @@ use crate::{
 };
 
 type EntryTuple = (
-    Vec<u8>,                               // id
-    Vec<u8>,                               // execution_id
-    String,                                // command
-    Option<Vec<u8>>,                       // issued_by
-    chrono::DateTime<chrono::Utc>,         // issued_at
-    String,                                // status
-    Option<Vec<u8>>,                       // processed_by
-    Option<chrono::DateTime<chrono::Utc>>, // processed_at
-    Option<String>,                        // error_message
-    i64,                                   // reclaim_count
+    Vec<u8>,                                    // id
+    Vec<u8>,                                    // execution_id
+    String,                                     // command
+    Option<Vec<u8>>,                            // issued_by
+    chrono::DateTime<chrono::Utc>,              // issued_at
+    String,                                     // status
+    Option<Vec<u8>>,                            // processed_by
+    Option<chrono::DateTime<chrono::Utc>>,      // processed_at
+    Option<String>,                             // error_message
+    i64,                                        // reclaim_count
+    Option<Json<nebula_core::W3cTraceContext>>, // w3c_trace_context
 );
 
 const SELECT_COLS: &str = "id, execution_id, command, issued_by, issued_at, status, processed_by, \
-     processed_at, error_message, reclaim_count";
+     processed_at, error_message, reclaim_count, w3c_trace_context";
 
 fn decode_command(s: &str) -> Result<ControlCommand, StorageError> {
     match s {
@@ -66,13 +66,14 @@ fn tuple_to_entry(t: EntryTuple) -> Result<ControlQueueEntry, StorageError> {
         processed_at: t.7,
         error_message: t.8,
         reclaim_count,
+        w3c_trace_context: t.10.map(|json| json.0),
     })
 }
 
 /// Postgres-backed durable control queue (canon §12.2).
 ///
 /// Implements the [`ControlQueueRepo`] trait against the
-/// `execution_control_queue` table defined by migration 0013 + 0021.
+/// `execution_control_queue` table defined by migration 0013 + 0021 + 0026.
 ///
 /// - `claim_pending` uses `FOR UPDATE SKIP LOCKED` per ADR-0008 §1; two concurrent claimers never
 ///   double-claim a row.
@@ -99,8 +100,8 @@ impl ControlQueueRepo for PgControlQueueRepo {
         sqlx::query(
             "INSERT INTO execution_control_queue \
              (id, execution_id, command, issued_by, issued_at, status, \
-              processed_at, processed_by, error_message, reclaim_count) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+              processed_at, processed_by, error_message, reclaim_count, w3c_trace_context) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&entry.id)
         .bind(&entry.execution_id)
@@ -112,9 +113,29 @@ impl ControlQueueRepo for PgControlQueueRepo {
         .bind(entry.processed_by.as_deref())
         .bind(entry.error_message.as_deref())
         .bind(i64::from(entry.reclaim_count))
+        .bind(
+            entry
+                .w3c_trace_context
+                .as_ref()
+                .map(|ctx| Json(ctx.clone())),
+        )
         .execute(&self.pool)
         .await
         .map_err(|e| map_db_err("control_queue", e))?;
+        tracing::debug!(
+            command = entry.command.as_str(),
+            has_trace_context = entry.w3c_trace_context.is_some(),
+            traceparent_len = entry
+                .w3c_trace_context
+                .as_ref()
+                .map(|c| c.traceparent().len()),
+            has_tracestate = entry
+                .w3c_trace_context
+                .as_ref()
+                .and_then(|c| c.tracestate())
+                .is_some(),
+            "control_queue: postgres enqueue"
+        );
         Ok(())
     }
 
@@ -313,7 +334,7 @@ mod tests {
     /// which runs the layer-1 (storage_kv / simple workflow) schema. Our tests
     /// bind against the `orgs / workspaces / workflows / workflow_versions /
     /// executions / execution_control_queue` family defined by migrations
-    /// 0001-0021 under `crates/storage/migrations/postgres/`.
+    /// 0001-0026 under `crates/storage/migrations/postgres/`.
     static SPEC16_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
 
     /// Runs spec-16 migrations at most once per test-binary run. `sqlx::Migrator`
@@ -476,7 +497,7 @@ mod tests {
         .bind(&wfv_id)
         .bind(&wf_id)
         .bind(1_i32)
-        .bind(sqlx::types::Json(serde_json::json!({"nodes": []})))
+        .bind(Json(serde_json::json!({"nodes": []})))
         .bind(1_i32)
         .bind("Published")
         .bind(now)
@@ -495,7 +516,7 @@ mod tests {
         .bind(&org_id)
         .bind(&wfv_id)
         .bind("Pending")
-        .bind(sqlx::types::Json(serde_json::json!({"kind": "Manual"})))
+        .bind(Json(serde_json::json!({"kind": "Manual"})))
         .bind(now)
         .execute(&mut *tx)
         .await
@@ -518,6 +539,7 @@ mod tests {
             processed_at: None,
             error_message: None,
             reclaim_count: 0,
+            w3c_trace_context: None,
         }
     }
 
@@ -540,14 +562,15 @@ mod tests {
             Option<Vec<u8>>,
             DateTime<Utc>,
             String,
-            Option<DateTime<Utc>>,
             Option<Vec<u8>>,
+            Option<DateTime<Utc>>,
             Option<String>,
             i64,
+            Option<serde_json::Value>,
         );
         let row: Row = sqlx::query_as(
             "SELECT id, execution_id, command, issued_by, issued_at, status, \
-                    processed_at, processed_by, error_message, reclaim_count \
+                    processed_by, processed_at, error_message, reclaim_count, w3c_trace_context \
              FROM execution_control_queue WHERE id = $1",
         )
         .bind(&row_id)
@@ -560,10 +583,11 @@ mod tests {
         assert_eq!(row.2, "Cancel");
         assert!(row.3.is_none());
         assert_eq!(row.5, "Pending");
-        assert!(row.6.is_none());
-        assert!(row.7.is_none());
+        assert!(row.6.is_none(), "processed_by");
+        assert!(row.7.is_none(), "processed_at");
         assert!(row.8.is_none());
         assert_eq!(row.9, 0);
+        assert!(row.10.is_none(), "w3c_trace_context");
     }
 
     #[tokio::test]
@@ -983,7 +1007,7 @@ mod tests {
 
         // retention = 10 minutes — old rows are past, fresh row is under.
         let deleted = repo
-            .cleanup(std::time::Duration::from_secs(600))
+            .cleanup(std::time::Duration::from_mins(10))
             .await
             .unwrap();
         assert_eq!(deleted, 2, "only old Completed + old Failed removed");
@@ -996,7 +1020,7 @@ mod tests {
                     .fetch_one(&pool)
                     .await
                     .unwrap();
-            let expected_rows = if status == "Pending" { 1 } else { 0 };
+            let expected_rows = i64::from(status == "Pending");
             assert_eq!(
                 rows, expected_rows,
                 "row with status {status} expected {expected_rows} row(s)"
@@ -1041,8 +1065,7 @@ mod tests {
         let overlap: Vec<_> = ids_a.intersection(&ids_b).collect();
         assert!(
             overlap.is_empty(),
-            "runners claimed the same row twice: {:?}",
-            overlap
+            "runners claimed the same row twice: {overlap:?}"
         );
         // The 20 rows we enqueued here must all be among the claimed set
         // (union). Other test runs may have left rows; we don't assert

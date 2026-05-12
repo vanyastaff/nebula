@@ -183,6 +183,7 @@ fn queue_entry(
         processed_at: None,
         error_message: None,
         reclaim_count: 0,
+        w3c_trace_context: None,
     }
 }
 
@@ -501,6 +502,7 @@ async fn reclaim_sweep_emits_counter_metric_per_outcome() {
         processed_at: Some(stale),
         error_message: None,
         reclaim_count,
+        w3c_trace_context: None,
     };
     let exec_a = ExecutionId::new();
     let exec_b = ExecutionId::new();

@@ -39,6 +39,9 @@ nebula-resilience = { path = "../resilience" }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
 
+opentelemetry = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
 async-channel = { workspace = true }
 async-trait = { workspace = true }
 semver = { workspace = true }
@@ -82,6 +85,8 @@ proptest = { workspace = true }
 rstest = { workspace = true }
 tracing-test = { workspace = true }
 wiremock = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["trace"] }
+tracing-subscriber = { workspace = true, default-features = false, features = ["registry", "std"] }
 
 [lib]
 doctest = false
