@@ -55,11 +55,17 @@ pub(crate) fn attach_control_queue_w3c_parent(span: &Span, w3c: &W3cTraceContext
         (ctx.is_valid(), ctx.trace_id())
     };
     if is_valid {
-        let _ = span.set_parent(parent);
-        tracing::debug!(
-            trace_id = %trace_id,
-            "engine.control_trace: linked dispatch span to W3C parent from control-queue row"
-        );
+        match span.set_parent(parent) {
+            Ok(()) => tracing::debug!(
+                trace_id = %trace_id,
+                "engine.control_trace: linked dispatch span to W3C parent from control-queue row"
+            ),
+            Err(err) => tracing::warn!(
+                trace_id = %trace_id,
+                error = ?err,
+                "engine.control_trace: span.set_parent failed after carrier validation; dispatch span stays root"
+            ),
+        }
     } else {
         tracing::debug!(
             "engine.control_trace: W3C carrier on row did not yield valid OTel parent; dispatch span stays root"

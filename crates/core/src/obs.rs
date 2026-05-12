@@ -61,6 +61,13 @@ impl W3cTraceContext {
     /// Parse from optional header values. Missing `traceparent` yields `Ok(None)`.
     /// Present but invalid `traceparent` yields `Err`. `tracestate` without `traceparent`
     /// is ignored (returns `Ok(None)`).
+    ///
+    /// **W3C compliance (RFC §3.3.2):** a malformed `tracestate` must **not** drop a valid
+    /// `traceparent`. Therefore validation order is `traceparent` first, then `tracestate`; if
+    /// `tracestate` is present but invalid, it is silently dropped while the validated
+    /// `traceparent` is preserved. `nebula-core` has no `tracing` dependency (cross-cutting
+    /// layer), so the drop is not logged here — the HTTP-edge middleware and queue-stamp paths
+    /// validate `tracestate` separately and surface their own `WARN` events.
     pub fn from_optional_headers(
         traceparent: Option<&str>,
         tracestate: Option<&str>,
@@ -68,15 +75,14 @@ impl W3cTraceContext {
         let Some(tp) = traceparent.map(str::trim).filter(|s| !s.is_empty()) else {
             return Ok(None);
         };
+        let traceparent = parse_and_canonicalize_traceparent(tp)?;
         let ts = tracestate
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(Self::validate_tracestate)
-            .transpose()?;
-        let traceparent = parse_and_canonicalize_traceparent(tp)?;
+            .and_then(|s| Self::validate_tracestate(s).ok().map(str::to_owned));
         Ok(Some(Self {
             traceparent,
-            tracestate: ts.map(String::from),
+            tracestate: ts,
         }))
     }
 
@@ -139,6 +145,14 @@ impl W3cTraceContext {
                 reason: "tracestate must be ASCII",
             });
         }
+        // W3C Trace Context §3.3.2: tracestate uses VCHAR + horizontal tab + delimiters; reject
+        // ASCII control bytes (CR/LF/NUL/DEL etc.) so header-splitting / log-injection attempts
+        // cannot survive round-trip via `Display` or HTTP re-injection.
+        if s.bytes().any(|b| b < 0x20 || b == 0x7F) {
+            return Err(W3cTraceContextError::InvalidTracestate {
+                reason: "tracestate must not contain ASCII control characters",
+            });
+        }
         Ok(s)
     }
 }
@@ -177,6 +191,14 @@ fn parse_traceparent_parts(s: &str) -> Result<ParsedTraceparent, W3cTraceContext
     if s.len() != 55 {
         return Err(W3cTraceContextError::InvalidTraceparent {
             reason: "traceparent must be 55 characters",
+        });
+    }
+    // Reject non-ASCII bytes BEFORE slicing `&str` at fixed offsets — otherwise a malicious
+    // but length-55 multibyte input would land slice boundaries inside a UTF-8 codepoint and
+    // panic. The lowercase-hex checks below catch all *valid* ASCII shapes that survive here.
+    if !s.is_ascii() {
+        return Err(W3cTraceContextError::InvalidTraceparent {
+            reason: "traceparent must be ASCII",
         });
     }
     let bytes = s.as_bytes();
@@ -316,17 +338,66 @@ mod tests {
     }
 
     #[test]
-    fn tracestate_too_long_rejected() {
-        let ts = "a".repeat(TRACESTATE_MAX_BYTES + 1);
-        let err = W3cTraceContext::from_optional_headers(
+    fn tracestate_too_long_drops_silently_when_paired_with_valid_traceparent() {
+        // W3C §3.3.2 — malformed tracestate must NOT drop a valid traceparent. Direct
+        // `validate_tracestate` still surfaces the typed error for callers that opt in.
+        let too_long = "a".repeat(TRACESTATE_MAX_BYTES + 1);
+        let out = W3cTraceContext::from_optional_headers(
             Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
-            Some(&ts),
+            Some(&too_long),
         )
-        .expect_err("long");
-        assert!(matches!(
-            err,
-            W3cTraceContextError::InvalidTracestate { .. }
-        ));
+        .expect("traceparent must be preserved")
+        .expect("Some");
+        assert_eq!(
+            out.traceparent(),
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        );
+        assert!(
+            out.tracestate().is_none(),
+            "invalid tracestate must be dropped"
+        );
+    }
+
+    #[test]
+    fn tracestate_with_control_chars_rejected() {
+        // Reject `\r`, `\n`, NUL, DEL embedded *inside* the value (trim would strip them off the
+        // ends). Defends against header-splitting / log-injection that survives `Display`
+        // round-trip into HTTP headers or structured logs.
+        for poison in ["a=b\r\nc=d", "a=\0b", "a=b\x7fc", "a\tb=c"] {
+            let direct = W3cTraceContext::from_traceparent_str(
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            )
+            .expect("ok")
+            .with_tracestate(poison);
+            assert!(
+                matches!(
+                    direct,
+                    Err(W3cTraceContextError::InvalidTracestate { reason })
+                        if reason.contains("control")
+                ),
+                "expected control-char rejection for {poison:?}, got {direct:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_traceparent_rejected_without_panic() {
+        // Length-55 string of NON-ASCII multibyte chars would normally panic on
+        // `&s[..2]` / `&s[3..35]` slice boundaries. The early `is_ascii()` guard returns the
+        // typed error instead.
+        let s: String = "ä".repeat(55 / 2) + "ö"; // length-55 bytes mismatch — but enforces non-ascii
+        // Build something length-exactly-55 in bytes by repeating a 2-byte char carefully.
+        let s55 = "x".repeat(54) + "ä"; // 54 + 2 = 56; trim to 55? Use exact-55 ascii + 1 nonascii?
+        let _ = s;
+        let _ = s55;
+        // Simpler: take 53 ASCII + one 2-byte char => len = 55 bytes, non-ascii.
+        let mixed = format!("{}{}", "x".repeat(53), "ä");
+        assert_eq!(mixed.len(), 55, "must be length-55 bytes");
+        let err = parse_traceparent(&mixed).expect_err("must reject non-ASCII");
+        assert!(
+            matches!(err, W3cTraceContextError::InvalidTraceparent { reason } if reason.contains("ASCII")),
+            "got {err:?}"
+        );
     }
 
     #[test]

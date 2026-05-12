@@ -5,7 +5,7 @@
 //! `POST /{path_prefix}/{trigger_uuid}/{nonce}` plus a routing map,
 //! an optional rate limiter, and activation APIs for the runtime.
 //!
-//! The router is merged into [`crate::build_app`](crate::build_app), so **W3C Trace Context**
+//! The router is merged into [`crate::build_app`], so **W3C Trace Context**
 //! (`traceparent` / `tracestate`) on requests and responses matches the public API stack
 //! (M3.5 — extraction, `TraceLayer` parent linking, and response injection).
 //!

@@ -273,8 +273,12 @@ impl ActionRuntimeContext {
     }
 
     /// Run an async operation (typically `nebula_resilience::retry_with` or
-    /// [`nebula_resilience::ResiliencePipeline::execute`]) under
+    /// `nebula_resilience::ResiliencePipeline::execute`) under
     /// [`Self::resource_http_request_span`], with `DEBUG` enter/exit logs.
+    ///
+    /// `nebula-resilience` is **not** a direct dependency of `nebula-action`, so the references
+    /// above are typed as plain code rather than intra-doc links — rustdoc `-D warnings` would
+    /// otherwise fail with `unresolved link to nebula_resilience::...`.
     pub async fn instrument_resource_http_request<F, Fut, T>(
         &self,
         resource_id: &str,

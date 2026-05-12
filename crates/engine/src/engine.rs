@@ -2456,10 +2456,23 @@ impl WorkflowEngine {
                     // `cancel_token.is_cancelled()` — wrong for ADR-0008 A3 / lease_takeover T4.
                     // Mirror [`WakeReason::Cancel`]: mark the node `Cancelled`, drain in-flight
                     // bookkeeping, and exit without a synthetic `failed_node`.
+                    //
+                    // **Match the runtime-wrapped variant too.** `execute_action_with_node`
+                    // returns `Err(e)` which the caller wraps as `EngineError::Runtime(e)`
+                    // (see this file's `execute_action` future — `Err(e) => …
+                    // Err(EngineError::Runtime(e))`). So an in-flight action that picks up
+                    // cancel via the token surfaces here as
+                    // `EngineError::Runtime(RuntimeError::ActionError(ActionError::Cancelled))`,
+                    // **not** the bare `EngineError::Action(...)` variant. Missing that arm
+                    // is what `lease_takeover` T4 catches.
                     if cancel_token.is_cancelled()
                         && matches!(
                             err,
-                            EngineError::Cancelled | EngineError::Action(ActionError::Cancelled)
+                            EngineError::Cancelled
+                                | EngineError::Action(ActionError::Cancelled)
+                                | EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
+                                    ActionError::Cancelled,
+                                ),)
                         )
                     {
                         tracing::debug!(

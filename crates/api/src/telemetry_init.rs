@@ -1,6 +1,6 @@
 //! API binary telemetry bootstrap (M3.5).
 //!
-//! Installs the W3C [`TraceContextPropagator`](opentelemetry_sdk::propagation::TraceContextPropagator)
+//! Installs the W3C `TraceContextPropagator` (from `opentelemetry_sdk::propagation`)
 //! **and** wires a `tracing` Subscriber that includes
 //! [`tracing_opentelemetry::OpenTelemetryLayer`]. Both pieces are mandatory for in-process W3C
 //! propagation to actually take effect:
@@ -41,9 +41,17 @@ pub fn init_api_telemetry() {
     let fmt_layer = tracing_subscriber::fmt::layer();
     let otel_layer = tracing_opentelemetry::OpenTelemetryLayer::new(tracer);
 
-    let _ = tracing_subscriber::registry()
+    // `try_init` returns `Err` when a subscriber is already installed (common in tests). That
+    // is not a fatal startup failure, but the error is surfaced via `eprintln!` so operators
+    // see double-init mishaps in CI logs even before any `tracing` subscriber accepts events.
+    if let Err(err) = tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
         .with(otel_layer)
-        .try_init();
+        .try_init()
+    {
+        eprintln!(
+            "nebula_api::init_api_telemetry: subscriber already installed — re-init skipped ({err})"
+        );
+    }
 }

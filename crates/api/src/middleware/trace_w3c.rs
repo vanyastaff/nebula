@@ -37,7 +37,7 @@ pub async fn trace_context_middleware(mut request: Request, next: Next) -> Respo
     match W3cTraceContext::from_optional_headers(traceparent, tracestate) {
         Ok(Some(ctx)) => {
             tracing::debug!(
-                trace_id_len = ctx.traceparent().len(),
+                traceparent_len = ctx.traceparent().len(),
                 has_tracestate = ctx.tracestate().is_some(),
                 "w3c_trace_context: accepted inbound trace context"
             );
@@ -139,11 +139,17 @@ pub(crate) fn attach_inbound_trace_parent(span: &Span, w3c: &W3cTraceContext) {
         (ctx.is_valid(), ctx.trace_id())
     };
     if is_valid {
-        let _ = span.set_parent(parent);
-        tracing::debug!(
-            trace_id = %trace_id,
-            "w3c_trace_context: linked HTTP span to remote OpenTelemetry parent"
-        );
+        match span.set_parent(parent) {
+            Ok(()) => tracing::debug!(
+                trace_id = %trace_id,
+                "w3c_trace_context: linked HTTP span to remote OpenTelemetry parent"
+            ),
+            Err(err) => tracing::warn!(
+                trace_id = %trace_id,
+                error = ?err,
+                "w3c_trace_context: span.set_parent failed after carrier validation; span stays root"
+            ),
+        }
     } else {
         tracing::debug!(
             "w3c_trace_context: extracted OpenTelemetry context invalid; span stays root"
