@@ -165,8 +165,15 @@ pub use no_credential::{NoCredential, NoCredentialState};
 pub use pending_store::{PendingStateStore, PendingStoreError};
 #[cfg(any(test, feature = "test-util"))]
 pub use pending_store_memory::InMemoryPendingStore;
-// External provider abstraction
-pub use provider::{ExternalProvider, ExternalReference, ProviderError, ProviderKind};
+// External provider abstraction (redesigned per ADR-0051):
+// - Trait & data types (ExternalProvider, ExternalReference, ProviderError, ProviderKind)
+// - Future newtype (ProviderFuture) for dyn-safe + zero-alloc-ready resolve
+// - Envelope (ProviderResolution, LeaseHandle) carrying secret + lease + TTL
+// - Composition (ExternalProviderChain) with error-discriminated fallback
+pub use provider::{
+    ExternalProvider, ExternalProviderChain, ExternalReference, LeaseHandle, ProviderError,
+    ProviderFuture, ProviderKind, ProviderResolution,
+};
 // Refresh coordination — moved to nebula-engine::credential::refresh (ADR-0030 §3 amendment)
 // Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.
 // Auth schemes — open trait + 11-variant classification + 9 built-in scheme types.
