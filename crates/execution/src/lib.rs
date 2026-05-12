@@ -21,7 +21,8 @@
 //! - [`ExecutionStatus`] — 8-state machine; transitions validated by [`transition`] module.
 //! - [`ExecutionState`], [`NodeExecutionState`] — persistent state tracking.
 //! - [`ExecutionPlan`] — pre-computed parallel schedule derived from the workflow DAG.
-//! - [`ExecutionContext`] — lightweight runtime context (`execution_id`, [`ExecutionBudget`]).
+//! - [`ExecutionContext`] — lightweight runtime context (`execution_id`, [`ExecutionBudget`],
+//!   optional [`W3cTraceContext`] for M3.5 trace propagation).
 //! - [`ExecutionResult`] — post-execution summary.
 //! - [`JournalEntry`] — audit log entry; backs `execution_journal` append-only table.
 //! - [`NodeOutput`], [`ExecutionOutput`] — node output data with metadata.
@@ -54,6 +55,7 @@ pub use context::{ExecutionBudget, ExecutionContext};
 pub use error::ExecutionError;
 pub use idempotency::IdempotencyKey;
 pub use journal::JournalEntry;
+pub use nebula_core::W3cTraceContext;
 /// Re-export the shared serde helper so internal `crate::serde_duration_opt` still resolves.
 pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt;
 pub use output::{ExecutionOutput, NodeOutput};
