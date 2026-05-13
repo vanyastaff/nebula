@@ -39,8 +39,8 @@ use std::{
 
 use moka::{Expiry, future::Cache};
 use nebula_credential::provider::{
-    ExternalProvider, ExternalReference, ProviderError, ProviderFuture, ProviderKind,
-    ProviderResolution,
+    ExternalProvider, ExternalReference, LeasedProvider, ProviderError, ProviderFuture,
+    ProviderKind, ProviderResolution,
 };
 
 /// Cache key derived from [`ExternalReference`].
@@ -346,6 +346,17 @@ impl ExternalProvider for ProviderCacheLayer {
 
     fn provider_name(&self) -> &str {
         &self.name
+    }
+
+    /// Forward lease capability discovery to the wrapped provider.
+    ///
+    /// Without this override the base-trait default returns `None`, which
+    /// would silently hide leasing from every consumer that goes through
+    /// the cache layer — even when the wrapped provider implements
+    /// [`LeasedProvider`]. Delegation preserves capability across the
+    /// wrapping, matching the pattern documented on the base trait.
+    fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+        self.inner.lease_renewal()
     }
 }
 
@@ -827,5 +838,76 @@ mod tests {
         // circuits on `Some(_)` so the default never participates, and the
         // filter then drops the zero. Result: do not cache.
         assert_eq!(policy.effective_ttl(Some(Duration::ZERO)), Duration::ZERO);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // A7/B5 cross-phase fold — lease capability propagation.
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Mock leased provider — used to verify `ProviderCacheLayer` forwards
+    /// `ExternalProvider::lease_renewal` to its inner. The renew / revoke
+    /// bodies are stubs; only the capability-discovery hop is exercised.
+    #[derive(Debug)]
+    struct LeasedMock {
+        name: &'static str,
+    }
+
+    impl ExternalProvider for LeasedMock {
+        fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+            ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+                "leased",
+            ))))
+        }
+
+        fn provider_name(&self) -> &str {
+            self.name
+        }
+
+        fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+            Some(self)
+        }
+    }
+
+    impl LeasedProvider for LeasedMock {
+        fn renew<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+                "renewed",
+            ))))
+        }
+
+        fn revoke<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+                "revoked",
+            ))))
+        }
+    }
+
+    #[test]
+    fn cache_layer_propagates_inner_lease_renewal() {
+        // Wrapping a leased provider preserves the capability through the
+        // cache hop — without the delegation override the base-trait
+        // default `None` would shadow it.
+        let leased: Arc<dyn ExternalProvider> = Arc::new(LeasedMock { name: "vault-stub" });
+        let layer_leased =
+            ProviderCacheLayer::new(Arc::clone(&leased), ProviderCacheConfig::default());
+        let view = layer_leased
+            .lease_renewal()
+            .expect("cache layer must surface inner lease capability");
+        assert_eq!(
+            view.provider_name(),
+            "vault-stub",
+            "capability points at the wrapped provider, not at the cache layer"
+        );
+
+        // Wrapping a non-leased provider continues to report no capability.
+        // `MockProvider` (the existing scaffolding) does not override
+        // `lease_renewal`, so it inherits the trait default `None`.
+        let plain: Arc<dyn ExternalProvider> =
+            MockProvider::new("plain", vec![ok("v", None)]) as Arc<dyn ExternalProvider>;
+        let layer_plain = ProviderCacheLayer::new(plain, ProviderCacheConfig::default());
+        assert!(
+            layer_plain.lease_renewal().is_none(),
+            "cache layer over non-leased provider must report no lease capability"
+        );
     }
 }

@@ -15,7 +15,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use tracing::Instrument;
 
-use super::{ExternalProvider, ExternalReference, ProviderError, ProviderFuture};
+use super::{ExternalProvider, ExternalReference, LeasedProvider, ProviderError, ProviderFuture};
 
 /// Ordered composition of [`ExternalProvider`] instances with discriminated
 /// fallback.
@@ -143,6 +143,18 @@ impl ExternalProvider for ExternalProviderChain {
 
     fn provider_name(&self) -> &'static str {
         "chain"
+    }
+
+    /// Surface the first leased child's capability view.
+    ///
+    /// Each child decides for itself whether it advertises leasing — we
+    /// just forward the first `Some(_)` answer. No runtime downcast is
+    /// involved: each child's own `lease_renewal` override is the source
+    /// of truth, and a nested chain forwards through this same method.
+    fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+        self.providers
+            .iter()
+            .find_map(|(_, provider)| provider.lease_renewal())
     }
 }
 

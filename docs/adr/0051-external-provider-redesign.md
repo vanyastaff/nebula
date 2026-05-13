@@ -132,3 +132,24 @@ The current shape carried three smells against the rest of the crate:
   `rust-toolchain.toml`) makes `async-trait` redundant on contracts that do
   not require dyn-safe async methods; `ProviderFuture<'a>` covers the
   dyn-safe case without the macro.
+
+## Update — 2026-05-13
+
+The `LeasedProvider` sub-trait deferral noted under **Non-decisions** is
+**resolved**. `LeasedProvider: ExternalProvider` (with dyn-safe `renew` /
+`revoke` returning `ProviderFuture<'a>`) lands in
+`crates/credential/src/provider/leased.rs`, sibling to the existing
+`Refreshable` capability sub-trait (Tech Spec §15.4 pattern).
+
+Capability discovery is done through a defaulted
+`ExternalProvider::lease_renewal() -> Option<&dyn LeasedProvider>` on the
+base trait. Leased backends override it to return `Some(self)`; composed
+providers forward to their inner — `ExternalProviderChain` returns the
+first leased child, and `nebula-storage`'s `ProviderCacheLayer` (added in
+PR #664, Phase A of this ADR's follow-up plan) delegates to the wrapped
+provider. No runtime downcasts are involved.
+
+The first concrete `LeasedProvider` implementation is still pending (Vault
+dynamic-secret backend is the expected first consumer); shipping the trait
+ahead of an implementor lets the cache layer and chain wiring be reviewed
+once rather than as a series of churn-y follow-ups.
