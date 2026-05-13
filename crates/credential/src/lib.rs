@@ -170,9 +170,11 @@ pub use pending_store_memory::InMemoryPendingStore;
 // - Future newtype (ProviderFuture) for dyn-safe + zero-alloc-ready resolve
 // - Envelope (ProviderResolution, LeaseHandle) carrying secret + lease + TTL
 // - Composition (ExternalProviderChain) with error-discriminated fallback
+// - Lease lifecycle (LeasedProvider) — renew / revoke, capability-discovered
+//   via ExternalProvider::lease_renewal (no runtime downcasts).
 pub use provider::{
-    ExternalProvider, ExternalProviderChain, ExternalReference, LeaseHandle, ProviderError,
-    ProviderFuture, ProviderKind, ProviderResolution,
+    ExternalProvider, ExternalProviderChain, ExternalReference, LeaseHandle, LeasedProvider,
+    ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
 };
 // Refresh coordination — moved to nebula-engine::credential::refresh (ADR-0030 §3 amendment)
 // Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.

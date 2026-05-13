@@ -132,3 +132,50 @@ The current shape carried three smells against the rest of the crate:
   `rust-toolchain.toml`) makes `async-trait` redundant on contracts that do
   not require dyn-safe async methods; `ProviderFuture<'a>` covers the
   dyn-safe case without the macro.
+
+## Update — 2026-05-13
+
+The `LeasedProvider` sub-trait deferral noted under **Non-decisions** is
+**resolved**. `LeasedProvider: ExternalProvider` (with dyn-safe `renew` /
+`revoke` returning `ProviderFuture<'a>`) lands in
+`crates/credential/src/provider/leased.rs`, sibling to the existing
+`Refreshable` capability sub-trait (Tech Spec §15.4 pattern).
+
+Capability discovery is done through a defaulted
+`ExternalProvider::lease_renewal() -> Option<&dyn LeasedProvider>` on the
+base trait. Leased backends override it to return `Some(self)`; composed
+providers act as **dispatchers** rather than transparently exposing the
+first inner — `ExternalProviderChain` and `nebula-storage`'s
+`ProviderCacheLayer` (added in PR #664, Phase A of this ADR's follow-up
+plan) both impl `LeasedProvider` themselves and route lifecycle calls
+through:
+
+1. **`LeaseHandle::provider`** — new `Cow<'static, str>` attribution
+   field. The issuing provider stamps its `provider_name()` here at
+   resolve time. `LeaseHandle` is `#[non_exhaustive]`; a `LeaseHandle::new`
+   constructor is the canonical public path.
+2. **`LeasedProvider::handles_lease(&self, lease) -> bool`** — default
+   matches `provider_name()` against `lease.provider`; chain / cache
+   override to delegate the decision to children / inner. This is the
+   single-source-of-truth for renew/revoke routing through composed
+   providers.
+
+`ExternalProviderChain::renew` / `revoke` iterate children, picking the
+one whose `handles_lease` returns `true` — multi-leased chains route
+correctly, where the naïve "first leased child wins" rule would
+misdispatch.
+
+`ProviderCacheLayer::revoke` invalidates every cached entry whose stored
+resolution carries the matching `lease_id` before forwarding to the
+inner — guarantees that the next `resolve` after revoke does not serve a
+now-invalid secret from cache. `renew` does the same after a successful
+inner renew so the refreshed lease metadata reaches subsequent resolves.
+
+`ProviderResolution::empty()` is the public no-secret marker — recommended
+return value for `LeasedProvider::revoke` success and reused by the
+default `health_check` impl.
+
+The first concrete `LeasedProvider` implementation is still pending (Vault
+dynamic-secret backend is the expected first consumer); shipping the
+trait ahead of an implementor lets the cache layer and chain wiring be
+reviewed once rather than as a series of churn-y follow-ups.

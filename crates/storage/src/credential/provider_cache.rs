@@ -39,8 +39,8 @@ use std::{
 
 use moka::{Expiry, future::Cache};
 use nebula_credential::provider::{
-    ExternalProvider, ExternalReference, ProviderError, ProviderFuture, ProviderKind,
-    ProviderResolution,
+    ExternalProvider, ExternalReference, LeaseHandle, LeasedProvider, ProviderError,
+    ProviderFuture, ProviderKind, ProviderResolution,
 };
 
 /// Cache key derived from [`ExternalReference`].
@@ -346,6 +346,122 @@ impl ExternalProvider for ProviderCacheLayer {
 
     fn provider_name(&self) -> &str {
         &self.name
+    }
+
+    /// Surface the cache layer itself as the lease dispatcher when the
+    /// wrapped provider advertises lease capability.
+    ///
+    /// Returning the inner's view directly (a tempting shortcut) is
+    /// **wrong**: it lets callers issue `renew` / `revoke` straight to
+    /// the backing provider, bypassing this cache layer entirely. A
+    /// revoked lease would then remain visible from the cache until its
+    /// TTL expired, serving a now-invalid secret to subsequent resolves.
+    /// Routing through `self` lets [`LeasedProvider::revoke`] /
+    /// [`LeasedProvider::renew`] invalidate cached entries before
+    /// forwarding to the inner.
+    fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+        self.inner
+            .lease_renewal()
+            .is_some()
+            .then_some(self as &dyn LeasedProvider)
+    }
+}
+
+impl ProviderCacheLayer {
+    /// Collect cache keys whose stored resolution carries `lease_id`.
+    ///
+    /// Iteration is moka's lazy snapshot — entries inserted concurrently
+    /// with the walk may not be observed. That is acceptable here:
+    /// revoke / renew run *before* the next resolve repopulates the
+    /// cache, so a concurrently-inserted entry will reach the cache after
+    /// invalidation and naturally see the post-revoke state on its own
+    /// next read. The contract guaranteed to the caller is "no stale
+    /// entry persists past this call", which the post-await invalidation
+    /// upholds for everything visible at iteration time.
+    fn cache_keys_for_lease(&self, lease_id: &str) -> Vec<CacheKey> {
+        self.cache
+            .iter()
+            .filter_map(|(key_arc, value_arc)| {
+                value_arc
+                    .lease
+                    .as_ref()
+                    .filter(|l| l.lease_id == lease_id)
+                    .map(|_| (*key_arc).clone())
+            })
+            .collect()
+    }
+}
+
+impl LeasedProvider for ProviderCacheLayer {
+    /// Delegate to the wrapped provider's leased view — the cache layer
+    /// itself never issues leases, so attribution must come from inner.
+    fn handles_lease(&self, lease: &LeaseHandle) -> bool {
+        self.inner
+            .lease_renewal()
+            .is_some_and(|leased| leased.handles_lease(lease))
+    }
+
+    /// Renew via the wrapped provider, then invalidate any cached entry
+    /// holding the renewed lease so the next resolve picks up the refreshed
+    /// lease/TTL.
+    ///
+    /// We invalidate **after** the inner renew succeeds: a failed renew
+    /// leaves the lease still valid (the caller will retry), so dropping
+    /// the cached entry pre-emptively would force an unnecessary backend
+    /// round-trip on the next resolve.
+    fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+        ProviderFuture::new(async move {
+            let Some(inner_leased) = self.inner.lease_renewal() else {
+                return Err(ProviderError::Backend(
+                    "ProviderCacheLayer::renew: wrapped provider is not leased"
+                        .to_owned()
+                        .into(),
+                ));
+            };
+            let renewed = inner_leased.renew(lease).await?;
+            for key in self.cache_keys_for_lease(&lease.lease_id) {
+                self.cache.invalidate(&key).await;
+            }
+            tracing::debug!(
+                target: "nebula_storage::provider_cache",
+                provider = %self.inner.provider_name(),
+                lease_id = %lease.lease_id,
+                lease_provider = %lease.provider,
+                "lease renewed; cache invalidated for matching entries"
+            );
+            Ok(renewed)
+        })
+    }
+
+    /// Revoke via the wrapped provider, invalidating cached entries up-front
+    /// so concurrent resolves cannot serve the revoked secret.
+    ///
+    /// Invalidation runs **before** the inner revoke so a slow revoke
+    /// cannot keep stale entries reachable; if revoke itself errors, the
+    /// next resolve will repopulate from inner (which now reflects the
+    /// half-finished revoke state) — correct behaviour for a recoverable
+    /// failure.
+    fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+        ProviderFuture::new(async move {
+            for key in self.cache_keys_for_lease(&lease.lease_id) {
+                self.cache.invalidate(&key).await;
+            }
+            let Some(inner_leased) = self.inner.lease_renewal() else {
+                return Err(ProviderError::Backend(
+                    "ProviderCacheLayer::revoke: wrapped provider is not leased"
+                        .to_owned()
+                        .into(),
+                ));
+            };
+            tracing::debug!(
+                target: "nebula_storage::provider_cache",
+                provider = %self.inner.provider_name(),
+                lease_id = %lease.lease_id,
+                lease_provider = %lease.provider,
+                "cache invalidated for matching entries; forwarding revoke to inner"
+            );
+            inner_leased.revoke(lease).await
+        })
     }
 }
 
@@ -827,5 +943,295 @@ mod tests {
         // circuits on `Some(_)` so the default never participates, and the
         // filter then drops the zero. Result: do not cache.
         assert_eq!(policy.effective_ttl(Some(Duration::ZERO)), Duration::ZERO);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // A7/B5 cross-phase fold — lease capability propagation + invalidation.
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Mock leased provider. `resolve` returns a resolution whose lease
+    /// uses the configured `lease_id` (so multiple instances can be
+    /// distinguished), and the renew / revoke paths track invocation
+    /// counts so tests can assert the cache layer actually delegated.
+    #[derive(Debug)]
+    struct LeasedMock {
+        name: &'static str,
+        lease_id: String,
+        lease_ttl: Duration,
+        resolve_calls: AtomicU64,
+        renew_calls: AtomicU64,
+        revoke_calls: AtomicU64,
+    }
+
+    impl LeasedMock {
+        fn new(name: &'static str, lease_id: &str, lease_ttl: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                lease_id: lease_id.to_owned(),
+                lease_ttl,
+                resolve_calls: AtomicU64::new(0),
+                renew_calls: AtomicU64::new(0),
+                revoke_calls: AtomicU64::new(0),
+            })
+        }
+
+        fn renew_count(&self) -> u64 {
+            self.renew_calls.load(Ordering::Relaxed)
+        }
+
+        fn revoke_count(&self) -> u64 {
+            self.revoke_calls.load(Ordering::Relaxed)
+        }
+
+        fn resolve_count(&self) -> u64 {
+            self.resolve_calls.load(Ordering::Relaxed)
+        }
+
+        fn issued_lease(&self) -> LeaseHandle {
+            LeaseHandle::new(
+                self.name,
+                self.lease_id.clone(),
+                chrono::Utc::now(),
+                self.lease_ttl,
+            )
+        }
+    }
+
+    impl ExternalProvider for LeasedMock {
+        fn resolve<'a>(&'a self, _reference: &'a ExternalReference) -> ProviderFuture<'a> {
+            self.resolve_calls.fetch_add(1, Ordering::Relaxed);
+            let lease = self.issued_lease();
+            ProviderFuture::ready(Ok(ProviderResolution::with_lease(
+                SecretString::new("leased-secret"),
+                lease,
+            )))
+        }
+
+        fn provider_name(&self) -> &str {
+            self.name
+        }
+
+        fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+            Some(self)
+        }
+    }
+
+    impl LeasedProvider for LeasedMock {
+        fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            if !self.handles_lease(lease) {
+                return ProviderFuture::ready(Err(ProviderError::NotFound {
+                    path: format!(
+                        "misrouted to {} (lease.provider={})",
+                        self.name, lease.provider
+                    ),
+                }));
+            }
+            self.renew_calls.fetch_add(1, Ordering::Relaxed);
+            ProviderFuture::ready(Ok(ProviderResolution::with_lease(
+                SecretString::new("renewed-secret"),
+                self.issued_lease(),
+            )))
+        }
+
+        fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            if !self.handles_lease(lease) {
+                return ProviderFuture::ready(Err(ProviderError::NotFound {
+                    path: format!(
+                        "misrouted to {} (lease.provider={})",
+                        self.name, lease.provider
+                    ),
+                }));
+            }
+            self.revoke_calls.fetch_add(1, Ordering::Relaxed);
+            ProviderFuture::ready(Ok(ProviderResolution::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_layer_propagates_inner_lease_renewal() {
+        // The cache layer surfaces itself (not the inner) as the lease
+        // dispatcher so renew/revoke can invalidate cached entries before
+        // forwarding to the inner provider. Without this override the
+        // base-trait `None` default would shadow the inner's capability;
+        // returning the inner verbatim — a tempting alternative — would
+        // let renew/revoke bypass the cache.
+        let inner = LeasedMock::new("vault-stub", "lease-xyz", Duration::from_mins(1));
+        let layer_leased = ProviderCacheLayer::new(
+            Arc::clone(&inner) as Arc<dyn ExternalProvider>,
+            ProviderCacheConfig::default(),
+        );
+
+        let view = layer_leased
+            .lease_renewal()
+            .expect("cache layer must surface lease capability");
+        // The dispatcher is the cache layer itself; `provider_name` reflects
+        // the wrapper. Routing into the inner happens via `handles_lease`,
+        // which the cache delegates to the wrapped provider.
+        assert_eq!(view.provider_name(), "cache(vault-stub)");
+        assert!(
+            view.handles_lease(&inner.issued_lease()),
+            "cache must report it can handle the inner-issued lease"
+        );
+
+        // Wrapping a non-leased provider continues to report no capability.
+        // `MockProvider` (the existing scaffolding) does not override
+        // `lease_renewal`, so it inherits the trait default `None`.
+        let plain: Arc<dyn ExternalProvider> =
+            MockProvider::new("plain", vec![ok("v", None)]) as Arc<dyn ExternalProvider>;
+        let layer_plain = ProviderCacheLayer::new(plain, ProviderCacheConfig::default());
+        assert!(
+            layer_plain.lease_renewal().is_none(),
+            "cache layer over non-leased provider must report no lease capability"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_layer_revoke_invalidates_matching_entry_and_delegates() {
+        // Regression guard for the Codex P1 finding on cache coherence:
+        // revoke must drop any cached resolution carrying the revoked
+        // lease id, *and* forward to the inner provider.
+        let inner = LeasedMock::new("vault-stub", "lease-1", Duration::from_mins(1));
+        let layer = ProviderCacheLayer::new(
+            Arc::clone(&inner) as Arc<dyn ExternalProvider>,
+            ProviderCacheConfig::default(),
+        );
+        let r = refer("secret/leased");
+
+        // Prime the cache with a leased resolution.
+        let first = layer.resolve(&r).await.expect("first resolve");
+        assert_eq!(first.secret.expose_secret(), "leased-secret");
+        assert_eq!(inner.resolve_count(), 1);
+
+        // A second resolve hits the cache (single inner call so far).
+        let _ = layer.resolve(&r).await.expect("second resolve cached");
+        assert_eq!(inner.resolve_count(), 1, "second resolve served from cache");
+
+        // Revoke the lease via the cache layer's `LeasedProvider` view.
+        let view = layer
+            .lease_renewal()
+            .expect("cache layer advertises lease capability");
+        let revoked = view.revoke(&inner.issued_lease()).await.expect("revoke ok");
+        assert!(
+            revoked.secret.expose_secret().is_empty(),
+            "revoke success returns the empty marker (no usable secret)"
+        );
+        assert_eq!(inner.revoke_count(), 1, "revoke delegated to inner");
+
+        // The next resolve must miss the cache and hit the inner again —
+        // proves the revoked entry was actually dropped, not still served.
+        let _ = layer.resolve(&r).await.expect("third resolve after revoke");
+        assert_eq!(
+            inner.resolve_count(),
+            2,
+            "post-revoke resolve hits the inner provider again"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_layer_renew_invalidates_matching_entry_and_delegates() {
+        // Renew should refresh the cached lease metadata: the simplest
+        // correct behaviour is to drop the cached entry so the next
+        // resolve picks up the renewed lease/TTL.
+        let inner = LeasedMock::new("vault-stub", "lease-2", Duration::from_mins(1));
+        let layer = ProviderCacheLayer::new(
+            Arc::clone(&inner) as Arc<dyn ExternalProvider>,
+            ProviderCacheConfig::default(),
+        );
+        let r = refer("secret/leased-2");
+
+        let _ = layer.resolve(&r).await.expect("first resolve");
+        let _ = layer.resolve(&r).await.expect("second resolve cached");
+        assert_eq!(inner.resolve_count(), 1);
+
+        let view = layer.lease_renewal().expect("cache leased view");
+        let renewed = view.renew(&inner.issued_lease()).await.expect("renew ok");
+        assert_eq!(renewed.secret.expose_secret(), "renewed-secret");
+        assert_eq!(inner.renew_count(), 1, "renew delegated to inner");
+
+        let _ = layer.resolve(&r).await.expect("resolve post-renew");
+        assert_eq!(
+            inner.resolve_count(),
+            2,
+            "post-renew resolve refreshes from inner"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_layer_revoke_only_invalidates_matching_lease_id() {
+        // A revoke must NOT scorch unrelated cached entries — only the
+        // ones whose stored resolution carries the same lease id.
+        let inner_a = LeasedMock::new("vault-a", "lease-A", Duration::from_mins(1));
+        let r_a = ExternalReference {
+            provider: ProviderKind::Custom("vault-a".to_owned()),
+            path: "secret/a".to_owned(),
+            version: None,
+            field: None,
+        };
+        let r_b = ExternalReference {
+            provider: ProviderKind::Custom("vault-a".to_owned()),
+            path: "secret/b".to_owned(),
+            version: None,
+            field: None,
+        };
+        let layer = ProviderCacheLayer::new(
+            Arc::clone(&inner_a) as Arc<dyn ExternalProvider>,
+            ProviderCacheConfig::default(),
+        );
+
+        // Two distinct cache keys, same provider + lease id (every resolve
+        // returns the same lease in this mock — typical of a Vault dynamic
+        // secret bound by lease id, not by path).
+        let _ = layer.resolve(&r_a).await.expect("resolve a");
+        let _ = layer.resolve(&r_b).await.expect("resolve b");
+        assert_eq!(inner_a.resolve_count(), 2);
+
+        // Revoke that lease — both entries share it, so both should drop.
+        let view = layer.lease_renewal().expect("leased view");
+        view.revoke(&inner_a.issued_lease())
+            .await
+            .expect("revoke ok");
+
+        // Both keys re-resolve from inner.
+        let _ = layer.resolve(&r_a).await.expect("resolve a 2");
+        let _ = layer.resolve(&r_b).await.expect("resolve b 2");
+        assert_eq!(
+            inner_a.resolve_count(),
+            4,
+            "both shared-lease entries dropped on revoke"
+        );
+
+        // Now seed a cached entry with a different lease id and verify a
+        // revoke of *that* lease does NOT drop the original mock's entries.
+        let inner_c = LeasedMock::new("vault-c", "lease-C", Duration::from_mins(1));
+        let layer_c = ProviderCacheLayer::new(
+            Arc::clone(&inner_c) as Arc<dyn ExternalProvider>,
+            ProviderCacheConfig::default(),
+        );
+        let _ = layer_c
+            .resolve(&refer("secret/c"))
+            .await
+            .expect("resolve c");
+        assert_eq!(inner_c.resolve_count(), 1);
+
+        // Revoke "lease-A" against layer_c — the cache has only
+        // "lease-C" entries, so nothing matches; inner_c.revoke gets
+        // forwarded the unrelated lease and returns NotFound (handles_lease
+        // false). The cache should still be intact.
+        let view_c = layer_c.lease_renewal().expect("leased view c");
+        let err = view_c
+            .revoke(&inner_a.issued_lease())
+            .await
+            .expect_err("misrouted revoke surfaces NotFound");
+        assert!(matches!(err, ProviderError::NotFound { .. }));
+
+        let _ = layer_c
+            .resolve(&refer("secret/c"))
+            .await
+            .expect("resolve c 2");
+        assert_eq!(
+            inner_c.resolve_count(),
+            1,
+            "unrelated revoke did not invalidate the c entry"
+        );
     }
 }

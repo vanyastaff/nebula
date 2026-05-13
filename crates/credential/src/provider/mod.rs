@@ -30,12 +30,14 @@
 
 mod chain;
 mod future;
+mod leased;
 mod resolution;
 
 use std::fmt;
 
 pub use chain::ExternalProviderChain;
 pub use future::ProviderFuture;
+pub use leased::LeasedProvider;
 pub use resolution::{LeaseHandle, ProviderResolution};
 
 /// Known external provider kinds.
@@ -157,12 +159,15 @@ pub enum ProviderError {
 /// - `AzureKvProvider` — Azure Key Vault (planned)
 /// - `EnvProvider` — `std::env::var` (planned, uses [`ProviderFuture::ready`] for zero-alloc resolve)
 ///
-/// # Lease support (deferred)
+/// # Lease support
 ///
-/// Per ADR-0051 a `LeasedProvider: ExternalProvider` sub-trait will add
-/// `renew` / `revoke` methods when the first lease-aware implementation
-/// lands. The [`LeaseHandle`] data type ships now so resolutions can carry
-/// lease metadata without trait support for renewal yet.
+/// Per ADR-0051 the [`LeasedProvider`] sub-trait adds `renew` / `revoke`
+/// for time-bounded grants. Providers advertise the capability without
+/// runtime downcasts by overriding [`lease_renewal`](Self::lease_renewal)
+/// to return `Some(self)`; composed providers
+/// ([`ExternalProviderChain`], `ProviderCacheLayer`) forward the call to
+/// their inner. The [`LeaseHandle`] data type carries lease metadata on
+/// any [`ProviderResolution`], even from non-leased providers.
 pub trait ExternalProvider: Send + Sync + fmt::Debug {
     /// Resolve a secret from the external system.
     ///
@@ -180,6 +185,18 @@ pub trait ExternalProvider: Send + Sync + fmt::Debug {
 
     /// Human-readable provider name for diagnostics and chain logs.
     fn provider_name(&self) -> &str;
+
+    /// Capability discovery for the [`LeasedProvider`] sub-trait — return
+    /// `Some(self)` when the provider supports lease renew / revoke,
+    /// `None` otherwise (default).
+    ///
+    /// Composed providers (`ExternalProviderChain`, `ProviderCacheLayer`)
+    /// MUST forward this call to their inner so capability is preserved
+    /// through wrapping. The pattern avoids runtime downcasts: callers
+    /// receive the capability view directly through the trait.
+    fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+        None
+    }
 }
 
 #[cfg(test)]
