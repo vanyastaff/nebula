@@ -1,5 +1,17 @@
 //! Credential persistence — `InMemoryStore`, `KeyProvider`, and composable
-//! layers (`EncryptionLayer`, `CacheLayer`, `AuditLayer`, `ScopeLayer`).
+//! layers.
+//!
+//! Two distinct layer families live here:
+//!
+//! - `CredentialStore` wrappers — [`EncryptionLayer`], [`CacheLayer`],
+//!   [`AuditLayer`], [`ScopeLayer`]. They compose around a backing store
+//!   that persists [`StoredCredential`](nebula_credential::StoredCredential)
+//!   rows.
+//! - `ExternalProvider` wrappers — [`ProviderCacheLayer`]. They compose
+//!   around an `Arc<dyn ExternalProvider>` that resolves secrets from a
+//!   remote system (Vault, AWS SM, env var, …) per ADR-0051. The
+//!   `Provider`-prefixed types are scoped to that trait and do not interact
+//!   with the `CredentialStore` cache.
 //!
 //! The `CredentialStore` trait + DTOs live in `nebula_credential` per
 //! [ADR-0032](../../../../docs/adr/0032-credential-store-canonical-home.md);
@@ -7,10 +19,14 @@
 //! ([ADR-0029](../../../../docs/adr/0029-storage-owns-credential-persistence.md)).
 //!
 //! See also [ADR-0028](../../../../docs/adr/0028-cross-crate-credential-invariants.md)
-//! for the umbrella cross-crate invariants.
+//! for the umbrella cross-crate invariants, and
+//! [ADR-0051](../../../../docs/adr/0051-external-provider-redesign.md) for
+//! the [`ExternalProvider`](nebula_credential::provider::ExternalProvider)
+//! design that motivates [`ProviderCacheLayer`].
 
 pub mod key_provider;
 pub mod layer;
+pub mod provider_cache;
 
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub mod memory;
@@ -37,6 +53,7 @@ pub use layer::{
 pub use memory::InMemoryStore;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
+pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
 #[cfg(feature = "postgres")]
 pub use refresh_claim::PgRefreshClaimRepo;
 #[cfg(feature = "sqlite")]

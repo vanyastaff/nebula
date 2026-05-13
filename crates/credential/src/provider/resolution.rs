@@ -28,7 +28,12 @@ use crate::SecretString;
 /// - [`ttl`](Self::ttl) — caching hint. `None` means "do not cache" (treat every
 ///   resolve as authoritative); a cache layer MUST honour `Some(d)` and refresh
 ///   no later than `d` after resolution.
-#[derive(Debug)]
+///
+/// `Clone` is required by downstream cache layers (moka's value type bound).
+/// Cloning a resolution clones the `SecretString` (and the lease, if any);
+/// callers that want to share the underlying allocation cheaply should wrap
+/// the resolution in `Arc<ProviderResolution>` themselves.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ProviderResolution {
     /// The resolved secret value.
