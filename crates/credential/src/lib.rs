@@ -173,8 +173,8 @@ pub use pending_store_memory::InMemoryPendingStore;
 // - Lease lifecycle (LeasedProvider) — renew / revoke, capability-discovered
 //   via ExternalProvider::lease_renewal (no runtime downcasts).
 pub use provider::{
-    ExternalProvider, ExternalProviderChain, ExternalReference, LeaseHandle, LeasedProvider,
-    ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
+    ExternalProvider, ExternalProviderChain, ExternalReference, LeaseEvent, LeaseExpiryReason,
+    LeaseHandle, LeasedProvider, ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
 };
 // Refresh coordination — moved to nebula-engine::credential::refresh (ADR-0030 §3 amendment)
 // Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.

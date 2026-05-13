@@ -571,7 +571,15 @@ impl RotationTransaction {
         self.transition_to(RotationState::Committing)
     }
 
-    /// Mark rotation as committed
+    /// Mark rotation as committed.
+    ///
+    /// **Revoke-on-rotate hook (ADR-0051 Phase D).** Composition roots
+    /// that wire a [`LeaseLifecycle`](crate::credential::LeaseLifecycle)
+    /// SHOULD call
+    /// [`LeaseLifecycle::revoke_for_credential(self.credential_id)`](crate::credential::LeaseLifecycle::revoke_for_credential)
+    /// after this transition succeeds, so any upstream lease attributed
+    /// to the rotated credential is torn down. Revoke failures are
+    /// best-effort — they do NOT roll the rotation back.
     pub fn mark_committed(&mut self) -> RotationResult<()> {
         self.transition_to(RotationState::Committed)
     }
