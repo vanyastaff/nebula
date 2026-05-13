@@ -84,15 +84,40 @@ use super::{ExternalProvider, LeaseHandle, ProviderFuture};
 /// }
 /// ```
 pub trait LeasedProvider: ExternalProvider {
+    /// Whether this provider issued the given lease and is the correct
+    /// target for renew/revoke. Default: name match against
+    /// [`LeaseHandle::provider`](super::LeaseHandle::provider).
+    ///
+    /// Composed providers ([`ExternalProviderChain`](super::ExternalProviderChain),
+    /// `ProviderCacheLayer`) override this to delegate the decision to their
+    /// inner — a chain asks each child, a cache layer asks the provider it
+    /// wraps. The default keeps the common case (single backend with a
+    /// stable name) one-line.
+    fn handles_lease(&self, lease: &LeaseHandle) -> bool {
+        self.provider_name() == lease.provider.as_ref()
+    }
+
     /// Extend the lease's TTL. Returns the refreshed lease metadata in a
     /// [`ProviderResolution`](super::ProviderResolution); the `secret` field
     /// is implementation-defined — providers MAY return the same secret or a
     /// rolled value depending on backend semantics.
+    ///
+    /// Implementations SHOULD reject leases for which
+    /// [`handles_lease`](Self::handles_lease) returns `false` — typically
+    /// with [`ProviderError::NotFound`](super::ProviderError::NotFound) —
+    /// rather than acting on an unrelated lease. The chain / cache layer
+    /// guarantee correct routing on their side, but a misrouted call
+    /// through a hand-built dispatcher should still surface as an error.
     fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a>;
 
     /// Tear down the lease so the backing secret is invalidated immediately.
-    /// On success the returned resolution carries no usable secret; callers
-    /// MUST NOT consume it as one.
+    /// On success the returned resolution carries no usable secret; prefer
+    /// [`ProviderResolution::empty`](super::ProviderResolution::empty) for
+    /// the success value.
+    ///
+    /// Implementations SHOULD reject leases for which
+    /// [`handles_lease`](Self::handles_lease) returns `false` — see
+    /// [`renew`](Self::renew) for the rationale.
     fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a>;
 }
 
@@ -152,26 +177,45 @@ mod tests {
 
     impl LeasedProvider for LeasedMock {
         fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            // Defensively check attribution: a chain that misroutes should
+            // surface as NotFound rather than acting on the wrong lease.
+            if !self.handles_lease(lease) {
+                return ProviderFuture::ready(Err(ProviderError::NotFound {
+                    path: format!(
+                        "lease attributed to {:?}, but this provider is {:?}",
+                        lease.provider, self.name
+                    ),
+                }));
+            }
             // Echo the lease id back as the "secret" so the test can assert
             // the call reached the right provider with the right lease.
             ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
-                format!("renewed:{}", lease.lease_id),
+                format!("renewed:{}@{}", lease.lease_id, self.name),
             ))))
         }
 
         fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            if !self.handles_lease(lease) {
+                return ProviderFuture::ready(Err(ProviderError::NotFound {
+                    path: format!(
+                        "lease attributed to {:?}, but this provider is {:?}",
+                        lease.provider, self.name
+                    ),
+                }));
+            }
             ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
-                format!("revoked:{}", lease.lease_id),
+                format!("revoked:{}@{}", lease.lease_id, self.name),
             ))))
         }
     }
 
-    fn sample_lease() -> LeaseHandle {
-        LeaseHandle {
-            lease_id: "lease-abc".to_owned(),
-            issued_at: chrono::Utc::now(),
-            ttl: std::time::Duration::from_mins(1),
-        }
+    fn sample_lease(provider: &'static str, id: &str) -> LeaseHandle {
+        LeaseHandle::new(
+            provider,
+            id,
+            chrono::Utc::now(),
+            std::time::Duration::from_mins(1),
+        )
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -199,7 +243,11 @@ mod tests {
     }
 
     #[test]
-    fn chain_lease_renewal_finds_first_leased_child() {
+    fn chain_lease_renewal_surfaces_self_when_any_child_is_leased() {
+        // The chain becomes a `LeasedProvider` (it dispatches by
+        // `handles_lease`), so `lease_renewal()` returns `Some(self)` —
+        // the chain itself — rather than directly handing out the first
+        // leased child. That keeps routing centralised in the chain.
         let chain = ExternalProviderChain::first_try(
             "plain",
             Arc::new(PlainProvider { name: "plain" }) as Arc<dyn ExternalProvider>,
@@ -215,8 +263,19 @@ mod tests {
 
         let view = chain
             .lease_renewal()
-            .expect("chain must surface the first leased child");
-        assert_eq!(view.provider_name(), "vault-stub");
+            .expect("chain with a leased child must advertise capability");
+        // `provider_name` reports `"chain"` — the chain wears its own name
+        // when acting as the lease dispatcher. Children are reached via
+        // `handles_lease` lookup at renew/revoke time.
+        assert_eq!(view.provider_name(), "chain");
+        assert!(
+            view.handles_lease(&sample_lease("vault-stub", "lease-abc")),
+            "chain reports it can handle a lease attributed to its leased child"
+        );
+        assert!(
+            !view.handles_lease(&sample_lease("unrelated", "lease-xyz")),
+            "chain rejects leases attributed to providers not in the chain"
+        );
     }
 
     #[test]
@@ -237,18 +296,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chain_routes_renew_revoke_by_lease_attribution() {
+        // Regression guard for the Codex P1 finding: a chain with multiple
+        // leased children must dispatch renew/revoke to the provider that
+        // actually issued the lease, not the first-encountered leased child.
+        let chain = ExternalProviderChain::first_try(
+            "first-leased",
+            Arc::new(LeasedMock { name: "alpha" }) as Arc<dyn ExternalProvider>,
+        )
+        .or_else(
+            "second-leased",
+            Arc::new(LeasedMock { name: "beta" }) as Arc<dyn ExternalProvider>,
+        );
+
+        // Lease attributed to `beta` (the second child) — naïve
+        // "first-leased-child wins" routing would send this to `alpha`,
+        // which now defensively rejects it.
+        let lease_beta = sample_lease("beta", "lease-from-beta");
+        let renewed = chain
+            .renew(&lease_beta)
+            .await
+            .expect("renew routed to beta");
+        assert_eq!(
+            renewed.secret.expose_secret(),
+            "renewed:lease-from-beta@beta"
+        );
+
+        let revoked = chain
+            .revoke(&lease_beta)
+            .await
+            .expect("revoke routed to beta");
+        assert_eq!(
+            revoked.secret.expose_secret(),
+            "revoked:lease-from-beta@beta"
+        );
+
+        // Unknown attribution surfaces as NotFound (the chain does not
+        // silently fall back to "any leased child").
+        let lease_unknown = sample_lease("gamma", "lease-from-gamma");
+        let err = chain
+            .renew(&lease_unknown)
+            .await
+            .expect_err("unattributed lease must fail");
+        assert!(matches!(err, ProviderError::NotFound { .. }));
+    }
+
+    #[tokio::test]
     async fn renew_and_revoke_round_trip_through_arc_dyn() {
         // Exercise the trait shape through `Arc<dyn LeasedProvider>` so
         // dyn-safety is verified at compile time, and `renew` / `revoke`
         // wire end-to-end through the future envelope.
         let p: Arc<dyn LeasedProvider> = Arc::new(LeasedMock { name: "vault-stub" });
-        let lease = sample_lease();
+        let lease = sample_lease("vault-stub", "lease-abc");
 
         let renewed = p.renew(&lease).await.expect("renew ok");
-        assert_eq!(renewed.secret.expose_secret(), "renewed:lease-abc");
+        assert_eq!(
+            renewed.secret.expose_secret(),
+            "renewed:lease-abc@vault-stub"
+        );
 
         let revoked = p.revoke(&lease).await.expect("revoke ok");
-        assert_eq!(revoked.secret.expose_secret(), "revoked:lease-abc");
+        assert_eq!(
+            revoked.secret.expose_secret(),
+            "revoked:lease-abc@vault-stub"
+        );
+    }
+
+    #[test]
+    fn default_handles_lease_uses_provider_name_attribution() {
+        let p = LeasedMock { name: "vault-stub" };
+        assert!(
+            p.handles_lease(&sample_lease("vault-stub", "any")),
+            "matching provider_name → handles_lease true"
+        );
+        assert!(
+            !p.handles_lease(&sample_lease("other", "any")),
+            "mismatched attribution → handles_lease false"
+        );
     }
 
     #[test]

@@ -15,7 +15,9 @@ use std::{borrow::Cow, sync::Arc};
 
 use tracing::Instrument;
 
-use super::{ExternalProvider, ExternalReference, LeasedProvider, ProviderError, ProviderFuture};
+use super::{
+    ExternalProvider, ExternalReference, LeaseHandle, LeasedProvider, ProviderError, ProviderFuture,
+};
 
 /// Ordered composition of [`ExternalProvider`] instances with discriminated
 /// fallback.
@@ -145,16 +147,86 @@ impl ExternalProvider for ExternalProviderChain {
         "chain"
     }
 
-    /// Surface the first leased child's capability view.
+    /// Surface the chain itself as the lease dispatcher when any child
+    /// advertises lease capability.
     ///
-    /// Each child decides for itself whether it advertises leasing — we
-    /// just forward the first `Some(_)` answer. No runtime downcast is
-    /// involved: each child's own `lease_renewal` override is the source
-    /// of truth, and a nested chain forwards through this same method.
+    /// The chain owns routing: renew/revoke land here and we forward to
+    /// the child that actually issued the lease (matched via
+    /// [`LeasedProvider::handles_lease`]). Returning the first leased
+    /// child directly — as a naïve implementation might — silently
+    /// misdispatches lifecycle calls when the chain holds more than one
+    /// leased backend, because lease attribution is per-issuer, not
+    /// per-chain. See the `chain_routes_renew_revoke_by_lease_attribution`
+    /// regression test in `provider/leased.rs`.
     fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
         self.providers
             .iter()
-            .find_map(|(_, provider)| provider.lease_renewal())
+            .any(|(_, provider)| provider.lease_renewal().is_some())
+            .then_some(self as &dyn LeasedProvider)
+    }
+}
+
+impl LeasedProvider for ExternalProviderChain {
+    /// `true` if any leased child claims the lease via its own
+    /// `handles_lease` — composes through nested chains and cache layers.
+    fn handles_lease(&self, lease: &LeaseHandle) -> bool {
+        self.providers.iter().any(|(_, provider)| {
+            provider
+                .lease_renewal()
+                .is_some_and(|leased| leased.handles_lease(lease))
+        })
+    }
+
+    fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+        ProviderFuture::new(async move {
+            for (name, provider) in &self.providers {
+                let Some(leased) = provider.lease_renewal() else {
+                    continue;
+                };
+                if !leased.handles_lease(lease) {
+                    continue;
+                }
+                let span = tracing::debug_span!(
+                    "provider_chain_renew",
+                    provider = %name,
+                    lease_id = %lease.lease_id,
+                    lease_provider = %lease.provider,
+                );
+                return leased.renew(lease).instrument(span).await;
+            }
+            Err(ProviderError::NotFound {
+                path: format!(
+                    "no leased provider in chain handles lease {:?} (provider={:?})",
+                    lease.lease_id, lease.provider
+                ),
+            })
+        })
+    }
+
+    fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+        ProviderFuture::new(async move {
+            for (name, provider) in &self.providers {
+                let Some(leased) = provider.lease_renewal() else {
+                    continue;
+                };
+                if !leased.handles_lease(lease) {
+                    continue;
+                }
+                let span = tracing::debug_span!(
+                    "provider_chain_revoke",
+                    provider = %name,
+                    lease_id = %lease.lease_id,
+                    lease_provider = %lease.provider,
+                );
+                return leased.revoke(lease).instrument(span).await;
+            }
+            Err(ProviderError::NotFound {
+                path: format!(
+                    "no leased provider in chain handles lease {:?} (provider={:?})",
+                    lease.lease_id, lease.provider
+                ),
+            })
+        })
     }
 }
 

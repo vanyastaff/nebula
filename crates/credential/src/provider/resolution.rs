@@ -8,7 +8,7 @@
 //! additional fields (e.g. typed `properties` sidecar) without breaking
 //! implementors.
 
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use crate::SecretString;
 
@@ -78,32 +78,84 @@ impl ProviderResolution {
         }
     }
 
-    /// Marker used by the default `health_check` implementation to return
-    /// a no-secret success without allocating a real `SecretString`. The
-    /// `secret` field is set to an empty string; callers MUST NOT consume
-    /// this resolution as a real secret.
-    pub(crate) fn health_ok() -> Self {
+    /// Marker resolution with no usable secret — public constructor for the
+    /// "operation succeeded without producing a secret" return value. Used by
+    /// the default [`ExternalProvider::health_check`](super::ExternalProvider::health_check)
+    /// implementation and recommended for [`LeasedProvider::revoke`](super::LeasedProvider::revoke)
+    /// success returns, where the resolution carries no meaningful secret.
+    ///
+    /// Callers MUST NOT consume the [`secret`](Self::secret) field of an
+    /// `empty()` resolution as a real secret — it is an empty
+    /// [`SecretString`] purely so the value satisfies the struct shape
+    /// without an `Option` allocation on every health probe.
+    #[must_use]
+    pub fn empty() -> Self {
         Self {
             secret: SecretString::new(String::new()),
             lease: None,
             ttl: None,
         }
     }
+
+    /// Backwards-compatible alias for [`empty`](Self::empty).
+    pub(crate) fn health_ok() -> Self {
+        Self::empty()
+    }
 }
 
 /// Handle to a lease issued by a [`ExternalProvider`](super::ExternalProvider).
 ///
-/// Carried in [`ProviderResolution::lease`]; opaque to the caller except for
-/// the `lease_id` (used for diagnostics and as the key passed to a future
-/// `LeasedProvider::renew` / `LeasedProvider::revoke` API).
+/// Carried in [`ProviderResolution::lease`]; passed to
+/// [`LeasedProvider::renew`](super::LeasedProvider::renew) /
+/// [`LeasedProvider::revoke`](super::LeasedProvider::revoke) at lifecycle
+/// time. The [`provider`](Self::provider) field carries attribution so
+/// composed providers (chain, cache layer) can route lifecycle calls back
+/// to the issuing backend — without it, a multi-leased
+/// [`ExternalProviderChain`](super::ExternalProviderChain) could
+/// misdispatch renew/revoke to the wrong child.
+///
+/// Construction via [`LeaseHandle::new`] is the canonical public path;
+/// `#[non_exhaustive]` reserves additive fields (e.g. backend-specific
+/// metadata) without further break.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LeaseHandle {
+    /// Name of the provider that issued this lease — matches
+    /// [`ExternalProvider::provider_name`](super::ExternalProvider::provider_name)
+    /// of the issuer. Used by
+    /// [`LeasedProvider::handles_lease`](super::LeasedProvider::handles_lease)
+    /// for routing inside composed providers.
+    pub provider: Cow<'static, str>,
     /// Provider-specific lease identifier (e.g. Vault lease id).
     pub lease_id: String,
     /// When the provider issued this lease.
     pub issued_at: chrono::DateTime<chrono::Utc>,
     /// Time-to-live communicated by the provider at issue time.
     pub ttl: Duration,
+}
+
+impl LeaseHandle {
+    /// Build a lease handle with the issuing provider's name as attribution.
+    ///
+    /// `provider` should match the issuer's
+    /// [`ExternalProvider::provider_name`](super::ExternalProvider::provider_name)
+    /// so chain / cache routing through
+    /// [`LeasedProvider::handles_lease`](super::LeasedProvider::handles_lease)
+    /// finds the right backend.
+    #[must_use]
+    pub fn new(
+        provider: impl Into<Cow<'static, str>>,
+        lease_id: impl Into<String>,
+        issued_at: chrono::DateTime<chrono::Utc>,
+        ttl: Duration,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            lease_id: lease_id.into(),
+            issued_at,
+            ttl,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -120,13 +172,23 @@ mod tests {
 
     #[test]
     fn with_lease_derives_ttl_from_lease() {
-        let lease = LeaseHandle {
-            lease_id: "vault-lease-abc".to_owned(),
-            issued_at: chrono::Utc::now(),
-            ttl: Duration::from_hours(1),
-        };
+        let lease = LeaseHandle::new(
+            "vault",
+            "vault-lease-abc",
+            chrono::Utc::now(),
+            Duration::from_hours(1),
+        );
         let r = ProviderResolution::with_lease(SecretString::new("vault-secret"), lease);
         assert_eq!(r.ttl, Some(Duration::from_hours(1)));
         assert!(r.lease.is_some());
+        assert_eq!(r.lease.as_ref().expect("lease set").provider, "vault");
+    }
+
+    #[test]
+    fn empty_has_no_secret_or_lease_or_ttl() {
+        let r = ProviderResolution::empty();
+        assert!(r.secret.expose_secret().is_empty());
+        assert!(r.lease.is_none());
+        assert!(r.ttl.is_none());
     }
 }
