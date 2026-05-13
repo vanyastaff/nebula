@@ -6,6 +6,7 @@ members = [
   "crates/core",
   "crates/credential",
   "crates/credential-builtin",
+  "crates/credential-vault",
   "crates/engine",
   "crates/eventbus",
   "crates/execution",
