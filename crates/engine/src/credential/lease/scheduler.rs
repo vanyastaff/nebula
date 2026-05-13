@@ -77,8 +77,10 @@ pub(super) enum RevokeOutcome {
     /// Lease was found, revoke completed successfully.
     Revoked,
     /// Lease was found, but the provider returned an error. Carries the
-    /// underlying message; the revoke event already fired.
-    ProviderFailed(String),
+    /// typed [`ProviderError`] so callers preserve variant semantics
+    /// (transient `Unavailable` vs. auth `AccessDenied`) and the source
+    /// chain. The revoke event already fired before this is returned.
+    ProviderFailed(ProviderError),
     /// No lease found under that token — likely already expired or
     /// previously revoked.
     Unknown,
@@ -428,13 +430,11 @@ impl Scheduler {
             provider: std::borrow::Cow::Owned(provider_name.to_owned()),
             reason,
         });
-        self.emit_counter(
-            CredentialMetrics::DYNAMIC_LEASE_RENEWED_TOTAL,
-            &[
-                (CredentialMetrics::LABEL_OUTCOME, "failure"),
-                (CredentialMetrics::LABEL_PROVIDER, provider_name),
-            ],
-        );
+        // `DYNAMIC_LEASE_RENEWED_TOTAL` counts only successful renewals
+        // — failures are surfaced exclusively through
+        // `DYNAMIC_LEASE_RENEW_FAILED_TOTAL` (labelled by reason). This
+        // keeps dashboards built on the obvious metric name correct and
+        // avoids double-counting failed attempts across both counters.
         self.emit_counter(
             CredentialMetrics::DYNAMIC_LEASE_RENEW_FAILED_TOTAL,
             &[
@@ -575,7 +575,7 @@ impl Scheduler {
                     credential_id,
                     lease_id,
                     provider: std::borrow::Cow::Owned(provider_name.clone()),
-                    reason: reason.clone(),
+                    reason,
                 });
                 self.emit_counter(
                     CredentialMetrics::DYNAMIC_LEASE_REVOKED_TOTAL,
@@ -584,7 +584,7 @@ impl Scheduler {
                         (CredentialMetrics::LABEL_PROVIDER, &provider_name),
                     ],
                 );
-                RevokeOutcome::ProviderFailed(reason)
+                RevokeOutcome::ProviderFailed(err)
             },
         }
     }
@@ -614,7 +614,18 @@ impl Scheduler {
 
     fn emit_lease_event(&self, event: LeaseEvent) {
         if let Some(bus) = &self.inputs.lease_bus {
-            let _ = bus.emit(event);
+            // Emission is best-effort — a no-subscriber bus or a
+            // lagged broadcast channel must not interrupt the lifecycle
+            // loop. Surface failures at debug so a quiet event bus is
+            // observable when subscribers are expected.
+            let outcome = bus.emit(event);
+            if !outcome.is_sent() {
+                tracing::debug!(
+                    target: "nebula_engine::credential::lease",
+                    ?outcome,
+                    "lease event bus emit did not reach any subscriber"
+                );
+            }
         }
     }
 

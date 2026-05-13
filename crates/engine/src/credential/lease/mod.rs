@@ -61,7 +61,9 @@ mod scheduler;
 use std::sync::Arc;
 
 use nebula_core::accessor::MetricsEmitter;
-use nebula_credential::{CredentialId, LeaseEvent, LeasedProvider, ProviderResolution};
+use nebula_credential::{
+    CredentialId, LeaseEvent, LeasedProvider, ProviderError, ProviderResolution,
+};
 use nebula_eventbus::EventBus;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -156,7 +158,7 @@ impl LeaseLifecycle {
         let outcome = reply_rx.await.map_err(|_| LeaseLifecycleError::Shutdown)?;
         match outcome {
             RevokeOutcome::Revoked | RevokeOutcome::Unknown => Ok(()),
-            RevokeOutcome::ProviderFailed(reason) => Err(LeaseLifecycleError::Revoke { reason }),
+            RevokeOutcome::ProviderFailed(err) => Err(LeaseLifecycleError::Revoke(err)),
         }
     }
 
@@ -177,13 +179,27 @@ impl LeaseLifecycle {
             })
             .is_err()
         {
+            tracing::warn!(
+                target: "nebula_engine::credential::lease",
+                %credential_id,
+                "lease lifecycle is shut down; revoke_for_credential is a no-op"
+            );
             return 0;
         }
-        reply_rx.await.unwrap_or(0)
+        reply_rx.await.unwrap_or_else(|_| {
+            tracing::warn!(
+                target: "nebula_engine::credential::lease",
+                %credential_id,
+                "lease lifecycle dropped reply during revoke_for_credential"
+            );
+            0
+        })
     }
 
     /// Current count of tracked leases. Useful for observability and
-    /// shutdown drains.
+    /// shutdown drains. A return value of `0` is overloaded — it can
+    /// mean either "no leases" or "scheduler is gone"; the latter case
+    /// emits a `warn` at this site so the degraded state is observable.
     pub async fn active_lease_count(&self) -> usize {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self
@@ -192,9 +208,19 @@ impl LeaseLifecycle {
             .send(Command::Snapshot { reply: reply_tx })
             .is_err()
         {
+            tracing::warn!(
+                target: "nebula_engine::credential::lease",
+                "lease lifecycle is shut down; active_lease_count returns 0"
+            );
             return 0;
         }
-        reply_rx.await.unwrap_or(0)
+        reply_rx.await.unwrap_or_else(|_| {
+            tracing::warn!(
+                target: "nebula_engine::credential::lease",
+                "lease lifecycle dropped reply during active_lease_count"
+            );
+            0
+        })
     }
 }
 
@@ -215,11 +241,13 @@ pub enum LeaseLifecycleError {
     /// The provider returned an error from `revoke`. The lease has
     /// still been removed from the registry; future `track` calls with
     /// the same lease id will create a fresh entry.
-    #[error("provider revoke failed: {reason}")]
-    Revoke {
-        /// Provider error message.
-        reason: String,
-    },
+    ///
+    /// Carries the underlying [`ProviderError`] so callers can
+    /// distinguish transient (`Unavailable`) from auth
+    /// (`AccessDenied`) failure modes and walk the source chain for
+    /// observability, rather than parsing a stringified message.
+    #[error("provider revoke failed: {0}")]
+    Revoke(#[source] ProviderError),
 
     /// The scheduler task has shut down (cancellation token fired) and
     /// is no longer accepting commands.

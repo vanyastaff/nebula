@@ -241,10 +241,18 @@ leases at 70% of TTL and accepts on-demand revoke through an opaque
 
 Default policy mirrors HashiCorp Vault Agent guidance: 70% renewal
 ratio, bounded backoff `[1s, 2s, 4s, 8s, 16s]`, five-attempt budget.
+Each individual `renew` / `revoke` call is additionally bounded by a
+`provider_call_timeout` (default `30s`) so a hung backend cannot
+monopolise the single scheduler task and starve other due leases —
+timeouts map to `ProviderError::Unavailable` and count against the
+five-attempt budget like any other transient failure.
 `ProviderError::NotFound` and `AccessDenied` drop the lease immediately
 (the upstream grant is gone, retries are useless); `Unavailable` and
 `Backend` retry on the backoff schedule, then drop with `Expired
-{ reason: RenewalFailed }`.
+{ reason: RenewalFailed }`. A renew that succeeds but returns a
+zero TTL (the Vault convention for non-renewable grants) drops the
+lease with `Expired { reason: NonRenewable }` — distinct from
+`NotFoundUpstream` for clean observability.
 
 Cross-crate signalling uses a new `LeaseEvent` enum at
 `crates/credential/src/provider/event.rs` (sibling to `LeaseHandle`),
@@ -254,7 +262,7 @@ new TTL, expiry reason) and a sizeable subset of leases will be
 unattributed to a nebula `CredentialId`. Variants cover the full state
 machine: `LeaseRenewed`, `LeaseRevoked`, `LeaseRenewalFailed`,
 `LeaseRevocationFailed`, `LeaseExpired { reason: RenewalFailed |
-NotFoundUpstream | Shutdown }`.
+NotFoundUpstream | NonRenewable | Shutdown }`.
 
 Revoke-on-rotation is wired through
 `LeaseLifecycle::revoke_for_credential(id)` — a registry scan that
