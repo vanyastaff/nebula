@@ -1,0 +1,34 @@
+[package]
+name = "nebula-credential-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "HashiCorp Vault backend for Nebula's ExternalProvider / LeasedProvider trait surface (KV v2 + dynamic secrets, lease renew/revoke)."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nebula-credential = { path = "../credential" }
+
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+chrono = { workspace = true, features = ["serde"] }
+url = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+nebula-storage = { path = "../storage" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true

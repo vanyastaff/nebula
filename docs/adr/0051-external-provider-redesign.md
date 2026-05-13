@@ -179,3 +179,53 @@ The first concrete `LeasedProvider` implementation is still pending (Vault
 dynamic-secret backend is the expected first consumer); shipping the
 trait ahead of an implementor lets the cache layer and chain wiring be
 reviewed once rather than as a series of churn-y follow-ups.
+
+## Update — 2026-05-13 (Phase C)
+
+The first concrete `LeasedProvider` implementation lands in a new
+Business-tier crate `nebula-credential-vault`
+(`crates/credential-vault/`). Sibling to `nebula-credential-builtin`;
+HTTP stack is `reqwest` + `rustls` to match the workspace TLS policy
+(see `crates/api/Cargo.toml`).
+
+The Vault backend covers both canonical read shapes the design
+anticipated:
+
+1. **KV v2 static reads** — `GET /v1/{kv_mount}/data/{path}?version=N`.
+   `ProviderResolution::from_secret` with no lease metadata; caching
+   requires the consumer to set a non-zero `ProviderCacheConfig::default_ttl`
+   (the `ZERO` default is bypass per Phase A).
+2. **Dynamic secrets** — opt-in via a `dyn/<rest>` prefix on
+   `ExternalReference::path`, routed to `GET /v1/<rest>` and decoded
+   into a `ProviderResolution::with_lease(secret, LeaseHandle::new("vault",
+   …))`. The lease's `ttl` is the Vault-reported `lease_duration`, which
+   `ProviderResolution::with_lease` mirrors into the envelope-level
+   `ttl` — so cache eviction tracks the upstream lease lifetime without
+   further wiring.
+
+`LeasedProvider::renew` and `revoke` hit `/v1/sys/leases/renew` and
+`/v1/sys/leases/revoke` respectively; `renew` returns a metadata-only
+resolution because Vault's `/renew` endpoint never echoes the secret
+payload. Both methods short-circuit with `ProviderError::NotFound` when
+the supplied `LeaseHandle::provider` is not `"vault"` — defence against
+hand-built dispatchers that bypass the chain / cache routing.
+
+Error mapping matches the Phase B + cache-layer contract:
+
+| Vault outcome           | `ProviderError`                    |
+|-------------------------|------------------------------------|
+| HTTP 404                | `NotFound`   (chain fall-through)  |
+| HTTP 403                | `AccessDenied`                     |
+| HTTP 5xx, transport err | `Unavailable`                      |
+| Other 4xx, decode err   | `Backend`                          |
+
+Layer placement is enforced through `deny.toml`: an empty `[wrappers]`
+allowlist on `nebula-credential-vault` ensures upper-tier crates wire it
+through their composition root rather than via direct deps. The
+integration test (`crates/credential-vault/tests/cache_integration.rs`)
+proves the cache layer + Vault composition end-to-end — KV v2 caching,
+dynamic-secret caching via `lease_duration`, and `cache.revoke`
+invalidating the cached entry while forwarding to Vault exactly once.
+
+Phase D (engine-side consumption of the `LeasedProvider` capability —
+proactive renew, revoke-on-rotation) remains tracked separately.

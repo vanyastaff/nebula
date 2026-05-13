@@ -84,6 +84,12 @@ deny = [
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
     "nebula-api",
+    # Dev-only: `crates/credential-vault/tests/cache_integration.rs`
+    # exercises `ProviderCacheLayer` over `VaultProvider` to prove the
+    # cache/lease wiring from ADR-0051 Phase A composes with the Vault
+    # backend introduced in Phase C. Same pattern as the engine dev-dep
+    # carved out above for the §13 knife integration test.
+    "nebula-credential-vault",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
   { crate = "nebula-sdk", wrappers = [
     "nebula-examples",
@@ -141,6 +147,17 @@ deny = [
   { crate = "nebula-credential-builtin", wrappers = [
     "nebula-credential-builtin",
   ], reason = "Built-in credential types are a first-party scaffold; П1 has only the self-reference (the crate's own dev-deps), П3+ extends this allowlist with composition-root crates that wire concrete types" },
+
+  # nebula-credential-vault is the first concrete LeasedProvider impl per
+  # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault
+  # HTTP API (KV v2 + dynamic secrets). Plugin authors depend on the
+  # contract crate (`nebula-credential`); composition roots wire this
+  # backend in via `Arc<dyn ExternalProvider>` so it stays decoupled from
+  # any specific Exec/API consumer. The wrapper allowlist starts empty
+  # and is widened as composition roots adopt the provider.
+  { crate = "nebula-credential-vault", wrappers = [
+    "nebula-credential-vault",
+  ], reason = "Vault is a first-party LeasedProvider backend (ADR-0051 Phase C); consumers wire it through their composition root, not via direct deps from upper tiers" },
 ]
 skip = [
   "bitflags",
