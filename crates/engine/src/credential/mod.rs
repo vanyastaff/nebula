@@ -8,6 +8,7 @@
 
 pub mod dispatchers;
 pub mod executor;
+pub mod lease;
 pub mod refresh;
 pub mod registry;
 pub mod resolver;
@@ -16,6 +17,9 @@ pub mod rotation;
 
 pub use dispatchers::{dispatch_release, dispatch_revoke, dispatch_test};
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
+pub use lease::{
+    LeaseLifecycle, LeaseLifecycleConfig, LeaseLifecycleError, LeaseToken, RenewalPolicy,
+};
 // Re-export TestResult for the dispatchers module to reference, and to
 // give downstream callers a single import surface for the capability
 // dispatch path.

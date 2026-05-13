@@ -229,3 +229,67 @@ invalidating the cached entry while forwarding to Vault exactly once.
 
 Phase D (engine-side consumption of the `LeasedProvider` capability —
 proactive renew, revoke-on-rotation) remains tracked separately.
+
+## Update — 2026-05-13 (Phase D)
+
+Engine-side consumption of the `LeasedProvider` capability lands as a
+new `nebula_engine::credential::lease` subsystem
+(`crates/engine/src/credential/lease/`). One background tokio task per
+engine owns a min-heap-driven scheduler that proactively renews tracked
+leases at 70% of TTL and accepts on-demand revoke through an opaque
+[`LeaseToken`](nebula_engine::credential::LeaseToken).
+
+Default policy mirrors HashiCorp Vault Agent guidance: 70% renewal
+ratio, bounded backoff `[1s, 2s, 4s, 8s, 16s]`, five-attempt budget.
+`ProviderError::NotFound` and `AccessDenied` drop the lease immediately
+(the upstream grant is gone, retries are useless); `Unavailable` and
+`Backend` retry on the backoff schedule, then drop with `Expired
+{ reason: RenewalFailed }`.
+
+Cross-crate signalling uses a new `LeaseEvent` enum at
+`crates/credential/src/provider/event.rs` (sibling to `LeaseHandle`),
+published on `EventBus<LeaseEvent>` — not folded into `CredentialEvent`
+because lease events carry richer payload (lease id, provider name,
+new TTL, expiry reason) and a sizeable subset of leases will be
+unattributed to a nebula `CredentialId`. Variants cover the full state
+machine: `LeaseRenewed`, `LeaseRevoked`, `LeaseRenewalFailed`,
+`LeaseRevocationFailed`, `LeaseExpired { reason: RenewalFailed |
+NotFoundUpstream | Shutdown }`.
+
+Revoke-on-rotation is wired through
+`LeaseLifecycle::revoke_for_credential(id)` — a registry scan that
+fires `revoke` on every tracked lease attributed to the credential.
+Failed revokes are best-effort: logged, emitted as
+`LeaseRevocationFailed`, but **do not block** rotation. The integration
+point is documented inline on `RotationTransaction::mark_committed` so
+future composition-root work has a clear hook. The orchestrator pattern
+is exercised end-to-end in
+`crates/engine/tests/credential_lease_lifecycle.rs`.
+
+New `CredentialMetrics` constants (engine-side lease lifecycle counters):
+
+| Metric                                          | Type      | Labels             |
+|-------------------------------------------------|-----------|--------------------|
+| `nebula.credential.dynamic_lease_renewed_total` | counter   | `outcome`,`provider` |
+| `nebula.credential.dynamic_lease_revoked_total` | counter   | `outcome`,`provider` |
+| `nebula.credential.dynamic_lease_renew_failed_total` | counter | `reason`,`provider` |
+| `nebula.credential.dynamic_lease_active`        | gauge     | (none)             |
+
+### Non-goals
+
+Two follow-ups stay explicitly out of scope of Phase D — flagged here
+so future cascade waves do not re-litigate them:
+
+- **Wiring `ExternalProvider::resolve` into `CredentialResolver`.** The
+  resolver still operates on `CredentialStore` state today. Phase D
+  delivers the lease lifecycle mechanism so the bridge work only has
+  to call `LeaseLifecycle::track` at resolve time.
+- **Cross-replica lease coordination.** Phase D ships single-replica
+  semantics — every engine instance that calls `track` will
+  independently try to renew. Multi-replica coordination would gate
+  renewal through `RefreshCoordinator`'s L2 claim repo; deferred to a
+  separate ADR.
+
+Phase D closes the ADR-0051 follow-up cascade. The cascade's PR chain
+is #664 (cache) → #665 (sub-trait + routing) → #666 (Vault impl) →
+this PR.

@@ -29,6 +29,7 @@
 //! [`ExternalProvider`] (Liskov), so nested chains compose.
 
 mod chain;
+mod event;
 mod future;
 mod leased;
 mod resolution;
@@ -36,6 +37,7 @@ mod resolution;
 use std::fmt;
 
 pub use chain::ExternalProviderChain;
+pub use event::{LeaseEvent, LeaseExpiryReason};
 pub use future::ProviderFuture;
 pub use leased::LeasedProvider;
 pub use resolution::{LeaseHandle, ProviderResolution};

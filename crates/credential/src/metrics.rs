@@ -40,6 +40,27 @@ impl CredentialMetrics {
     pub const DYNAMIC_LEASE_RELEASED_TOTAL: &'static str =
         "nebula.credential.dynamic_lease_released_total";
 
+    /// Total dynamic credential lease renewals attempted (success or failure).
+    /// Engine-side lease lifecycle counter; labels: `outcome`, `provider`.
+    pub const DYNAMIC_LEASE_RENEWED_TOTAL: &'static str =
+        "nebula.credential.dynamic_lease_renewed_total";
+
+    /// Total dynamic credential lease revocations attempted (success or failure).
+    /// Engine-side lease lifecycle counter; labels: `outcome`, `provider`.
+    pub const DYNAMIC_LEASE_REVOKED_TOTAL: &'static str =
+        "nebula.credential.dynamic_lease_revoked_total";
+
+    /// Total dynamic credential lease renewal failures, labelled by reason.
+    /// Distinct from `_RENEWED_TOTAL{outcome=failure}` because individual
+    /// failed attempts within a retry budget are observable separately.
+    /// Labels: `reason`, `provider`.
+    pub const DYNAMIC_LEASE_RENEW_FAILED_TOTAL: &'static str =
+        "nebula.credential.dynamic_lease_renew_failed_total";
+
+    /// Gauge of currently-tracked dynamic credential leases.
+    /// No labels — pre-aggregated across providers.
+    pub const DYNAMIC_LEASE_ACTIVE: &'static str = "nebula.credential.dynamic_lease_active";
+
     /// Total tamper detection events.
     pub const TAMPER_DETECTION_TOTAL: &'static str = "nebula.credential.tamper_detection_total";
 
@@ -56,6 +77,9 @@ impl CredentialMetrics {
 
     /// Label: refresh failure reason.
     pub const LABEL_FAILURE_REASON: &'static str = "reason";
+
+    /// Label: external provider name (e.g. `"vault"`).
+    pub const LABEL_PROVIDER: &'static str = "provider";
 
     // ── Helper methods ─────────────────────────────────────────────────
 
