@@ -84,8 +84,15 @@ unattributed to a `CredentialId`.
      state has already committed; upstream cleanup is best-effort. A
      downstream audit subscriber can flag unrevoked leases via the
      event stream.
-   - Public surface returns typed `LeaseLifecycleError` (thiserror): `Renew`,
-     `Revoke`, `Expired`, `Unattributed`, `Shutdown`.
+   - Public surface returns typed `LeaseLifecycleError` (thiserror).
+     Only three variants need to escape the lifecycle — internal failures
+     are absorbed by the backoff / event-publishing path and do not
+     surface to callers:
+     - `ResolutionMissingLease` — `track` called with an empty
+       `ProviderResolution.lease`.
+     - `Revoke { reason }` — provider returned an error from `revoke`.
+       The lease is still removed from the registry.
+     - `Shutdown` — scheduler task no longer accepting commands.
    - **No `unwrap` / `expect` / `panic!`** anywhere on the lifecycle path.
 
 5. **Observability.**
@@ -102,7 +109,10 @@ unattributed to a `CredentialId`.
      - `LeaseRevoked { credential_id, lease_id, provider }`.
      - `LeaseRenewalFailed { credential_id, lease_id, provider, reason }`.
      - `LeaseRevocationFailed { credential_id, lease_id, provider, reason }`.
-     - `LeaseExpired { credential_id, lease_id, provider, reason }`.
+     - `LeaseExpired { credential_id, lease_id, provider, reason }`
+       where `reason` is one of `RenewalFailed` (budget exhausted) /
+       `NotFoundUpstream` (gone upstream) / `NonRenewable` (renewed
+       with zero TTL) / `Shutdown` (lifecycle cancelled).
    - Every new state transition (track → renew-scheduled, scheduled →
      renewing, renewing → re-scheduled / dropped) emits exactly one of the
      above (DoD per AGENTS.md).
@@ -138,7 +148,12 @@ impl LeaseLifecycle {
 ```
 
 `LeaseLifecycleConfig` carries `RenewalPolicy { ratio: f32, backoff:
-Vec<Duration>, max_retries: u32 }` with a Vault-style default.
+Vec<Duration>, max_retries: u32 }` with a Vault-style default plus a
+`provider_call_timeout: Duration` (default 30s) that bounds each
+`renew` / `revoke` call so a hung backend cannot monopolise the
+scheduler task. On timeout the call is mapped to
+`ProviderError::Unavailable` and the standard backoff schedule
+absorbs it.
 
 ### Non-goals (for Phase D)
 

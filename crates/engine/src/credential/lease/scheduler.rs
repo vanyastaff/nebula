@@ -20,16 +20,34 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use super::policy::RenewalPolicy;
 use super::registry::{LeaseEntry, LeaseToken};
 
 /// Configuration for the lease lifecycle.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LeaseLifecycleConfig {
     /// Renewal policy. Defaults to the Vault Agent recommendation (see
     /// [`RenewalPolicy`]).
     pub policy: RenewalPolicy,
+    /// Hard upper bound on a single `renew` / `revoke` call. Protects
+    /// the single scheduler task from a hung backend monopolising the
+    /// loop and starving other due leases. Mirrors the 30s framework
+    /// timeout used elsewhere in `nebula-engine` (see
+    /// `CredentialResolver::perform_refresh`). On elapsed the call is
+    /// treated as `ProviderError::Unavailable` — the standard backoff
+    /// schedule applies.
+    pub provider_call_timeout: Duration,
+}
+
+impl Default for LeaseLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            policy: RenewalPolicy::default(),
+            provider_call_timeout: Duration::from_secs(30),
+        }
+    }
 }
 
 /// Command messages the public handle sends to the scheduler task.
@@ -146,8 +164,19 @@ impl Scheduler {
             } => {
                 let token = self.allocate_token();
                 let policy = &self.inputs.config.policy;
-                let renew_after = policy.renew_after(lease.ttl);
-                let next_renew_at = Instant::now() + renew_after;
+                // Compute the renewal point from the lease's *issue time*,
+                // not from "now": a resolution may sit in a cache for a
+                // non-trivial fraction of its TTL before reaching the
+                // lifecycle, and scheduling a full fresh window from now
+                // would let the lease expire before the first renew. If
+                // the lease is already past its renewal point, fire
+                // immediately (the heap pop loop tolerates `next_renew_at
+                // <= now`).
+                let renew_after_from_issue = policy.renew_after(lease.ttl);
+                let aged = chrono::Utc::now().signed_duration_since(lease.issued_at);
+                let aged_std = aged.to_std().unwrap_or(Duration::ZERO);
+                let remaining = renew_after_from_issue.saturating_sub(aged_std);
+                let next_renew_at = Instant::now() + remaining;
                 let provider_name = provider.provider_name().to_owned();
                 let lease_id = lease.lease_id.clone();
 
@@ -166,7 +195,8 @@ impl Scheduler {
                     target: "nebula_engine::credential::lease",
                     provider = %provider_name,
                     lease_id = %lease_id,
-                    ttl_secs = renew_after.as_secs(),
+                    renew_in_secs = remaining.as_secs(),
+                    aged_secs = aged_std.as_secs(),
                     "lease tracked; renewal scheduled"
                 );
                 // Best-effort reply — caller may have dropped the future.
@@ -256,9 +286,21 @@ impl Scheduler {
             provider = %provider_name,
             lease_id = %lease_id,
         );
-        let _enter = span.enter();
 
-        let result = provider.renew(&lease).await;
+        // Bounded provider call: instrument via `Instrument` so the
+        // span propagates correctly across the `.await` (an `Entered`
+        // guard would not survive task scheduling on a multi-thread
+        // runtime). Timeout maps to `Unavailable` so the standard
+        // backoff schedule absorbs a hung backend instead of stalling
+        // the lifecycle.
+        let timeout = self.inputs.config.provider_call_timeout;
+        let result =
+            match tokio::time::timeout(timeout, provider.renew(&lease).instrument(span)).await {
+                Ok(r) => r,
+                Err(_) => Err(ProviderError::Unavailable {
+                    reason: format!("provider renew timed out after {}s", timeout.as_secs()),
+                }),
+            };
         match result {
             Ok(resolution) => {
                 self.on_renew_success(token, &provider_name, &lease_id, credential_id, &resolution);
@@ -297,7 +339,9 @@ impl Scheduler {
 
         // If the provider reports zero TTL on renew, treat that as a
         // signal that no further renew is meaningful (some backends
-        // return zero to indicate "non-renewable").
+        // return zero to indicate "non-renewable"). Distinct from
+        // `NotFoundUpstream` (the lease is gone) — the renew succeeded
+        // but the grant is exhausted.
         let renew_after = self.inputs.config.policy.renew_after(new_ttl);
         if renew_after.is_zero() {
             self.drop_lease(
@@ -305,11 +349,18 @@ impl Scheduler {
                 lease_id,
                 provider_name,
                 credential_id,
-                LeaseExpiryReason::NotFoundUpstream,
+                LeaseExpiryReason::NonRenewable,
             );
             return;
         }
 
+        // Use the refreshed lease_id (when the backend rotated it) for
+        // the renewed event so subscribers can correlate against the
+        // identifier the lifecycle now tracks.
+        let event_lease_id = resolution
+            .lease
+            .as_ref()
+            .map_or_else(|| lease_id.to_owned(), |l| l.lease_id.clone());
         let next_renew_at = Instant::now() + renew_after;
         if let Some(entry) = self.registry.get_mut(&token) {
             // Update the stored lease so future renew calls carry the
@@ -328,13 +379,13 @@ impl Scheduler {
         tracing::debug!(
             target: "nebula_engine::credential::lease",
             provider = provider_name,
-            lease_id = lease_id,
+            lease_id = %event_lease_id,
             new_ttl_secs = new_ttl.as_secs(),
             "lease renewed; renewal rescheduled"
         );
         self.emit_lease_event(LeaseEvent::LeaseRenewed {
             credential_id,
-            lease_id: lease_id.to_owned(),
+            lease_id: event_lease_id,
             provider: std::borrow::Cow::Owned(provider_name.to_owned()),
             new_ttl,
         });
@@ -472,9 +523,22 @@ impl Scheduler {
             provider = %provider_name,
             lease_id = %lease_id,
         );
-        let _enter = span.enter();
 
-        let result = entry.provider.revoke(&entry.lease).await;
+        // Same bounded-call pattern as renew: a hung backend must not
+        // monopolise the scheduler. Span propagated via `Instrument`
+        // because an `Entered` guard would not survive task scheduling.
+        let timeout = self.inputs.config.provider_call_timeout;
+        let result = match tokio::time::timeout(
+            timeout,
+            entry.provider.revoke(&entry.lease).instrument(span),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(ProviderError::Unavailable {
+                reason: format!("provider revoke timed out after {}s", timeout.as_secs()),
+            }),
+        };
         self.update_active_gauge();
         match result {
             Ok(_) => {

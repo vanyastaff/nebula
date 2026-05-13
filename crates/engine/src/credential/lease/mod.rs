@@ -403,6 +403,53 @@ mod tests {
         shutdown.cancel();
     }
 
+    /// Regression guard for Codex P1: a lease registered with an
+    /// `issued_at` already in the past (cached resolution, slow
+    /// composition root) must schedule its first renewal off the lease
+    /// issue time, not off "now". A 100s lease that was issued 60s ago
+    /// should fire after ~10s (70s renewal point minus 60s already
+    /// elapsed), not after a fresh 70s window.
+    #[tokio::test(start_paused = true)]
+    async fn scheduler_first_renew_accounts_for_lease_age() {
+        let shutdown = CancellationToken::new();
+        let lifecycle = LeaseLifecycle::spawn(
+            LeaseLifecycleConfig::default(),
+            None,
+            None,
+            shutdown.clone(),
+        );
+        let provider = CountingProvider::new("mock", 100);
+        let provider_arc = Arc::clone(&provider) as Arc<dyn LeasedProvider>;
+
+        // Back-date the lease's `issued_at` by 60 seconds.
+        let backdated = LeaseHandle::new(
+            Cow::Borrowed("mock"),
+            "aged-lease",
+            chrono::Utc::now() - chrono::Duration::seconds(60),
+            Duration::from_secs(100),
+        );
+        let resolution = ProviderResolution::with_lease(SecretString::new("secret"), backdated);
+
+        lifecycle
+            .track(provider_arc, resolution, None)
+            .await
+            .expect("track ok");
+
+        // Only 10s of remaining-to-renew (70% of 100s = 70s, minus 60s
+        // already aged). Advancing by 11s tokio-time should fire.
+        tokio::time::advance(Duration::from_secs(11)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            provider.renew_calls.load(Ordering::SeqCst),
+            1,
+            "aged lease should renew quickly, not wait a full 70s window"
+        );
+
+        shutdown.cancel();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn scheduler_renews_at_seventy_percent_of_ttl() {
         let shutdown = CancellationToken::new();

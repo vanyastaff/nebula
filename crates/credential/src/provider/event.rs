@@ -38,6 +38,11 @@ pub enum LeaseExpiryReason {
     /// Provider responded with `NotFound` / `AccessDenied` — the upstream
     /// lease no longer exists, retries are pointless.
     NotFoundUpstream,
+    /// Provider succeeded a `renew` call but reported a zero TTL on the
+    /// refreshed lease (the Vault convention for "this grant is not
+    /// renewable"); the lifecycle dropped it rather than busy-loop on
+    /// instant re-renewal.
+    NonRenewable,
     /// The lifecycle was shut down via its `CancellationToken` while the
     /// lease was still active.
     Shutdown,
