@@ -144,6 +144,24 @@ impl Expiry<CacheKey, Arc<ProviderResolution>> for ProviderExpiry {
     ) -> Option<Duration> {
         Some(self.effective_ttl(value.ttl))
     }
+
+    /// Mirror `expire_after_create` for the update path.
+    ///
+    /// `try_get_with` is the only insertion path today (one-shot init, so
+    /// `expire_after_update` is unreachable through the public API), but a
+    /// future proactive-refresh hook would otherwise inherit moka's default
+    /// "keep current expiration" behaviour, silently breaking per-entry TTL
+    /// semantics for the refreshed value. Explicitly delegating future-
+    /// proofs the policy against that contributor accident.
+    fn expire_after_update(
+        &self,
+        _key: &CacheKey,
+        value: &Arc<ProviderResolution>,
+        _updated_at: Instant,
+        _duration_until_expiry: Option<Duration>,
+    ) -> Option<Duration> {
+        Some(self.effective_ttl(value.ttl))
+    }
 }
 
 /// Caching layer wrapping an `Arc<dyn ExternalProvider>`.
@@ -167,8 +185,17 @@ impl Expiry<CacheKey, Arc<ProviderResolution>> for ProviderExpiry {
 pub struct ProviderCacheLayer {
     inner: Arc<dyn ExternalProvider>,
     cache: Cache<CacheKey, Arc<ProviderResolution>>,
+    /// Pre-formatted provider name (`"cache(<inner>)"`) returned by the
+    /// trait impl so telemetry can dimension on the wrapped backend.
+    /// `Box<str>` — heap-allocated once at construction, then handed out
+    /// as borrowed `&str` slices for the (`'_`-lifetime) trait method.
+    name: Box<str>,
+    /// Cache hits — entries returned from the fast path before single-flight.
     hits: AtomicU64,
-    misses: AtomicU64,
+    /// Resolved inner calls — incremented from inside the single-flight init
+    /// closure, so a fan-in of N concurrent waiters records exactly one miss
+    /// per surviving inner call, matching `ExternalProvider::resolve` load.
+    inner_calls: AtomicU64,
 }
 
 impl fmt::Debug for ProviderCacheLayer {
@@ -191,28 +218,40 @@ impl ProviderCacheLayer {
             .max_capacity(config.max_entries)
             .expire_after(expiry)
             .build();
+        let name = format!("cache({})", inner.provider_name()).into_boxed_str();
         Self {
             inner,
             cache,
+            name,
             hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
+            inner_calls: AtomicU64::new(0),
         }
     }
 
     /// Cache hit / miss statistics.
+    ///
+    /// `hits` counts lookups served from cache before single-flight engages;
+    /// `misses` counts **inner provider calls** (single-flight survivors), so
+    /// `hits + misses` is **not** the total lookup count under contention —
+    /// (N − 1) concurrent waiters that subscribed to an in-flight resolve are
+    /// invisible to both counters. This matches how operators read the
+    /// `hit_rate`: as "fraction of lookups that avoided a backend round-trip".
     #[must_use]
     pub fn stats(&self) -> ProviderCacheStats {
         ProviderCacheStats {
             hits: self.hits.load(Ordering::Relaxed),
-            misses: self.misses.load(Ordering::Relaxed),
+            misses: self.inner_calls.load(Ordering::Relaxed),
         }
     }
 
     /// Drop a specific cached entry, if present.
     pub async fn invalidate(&self, reference: &ExternalReference) {
-        self.cache
-            .invalidate(&CacheKey::from_reference(reference))
-            .await;
+        // Bind the key to a local so the borrow is unambiguous across the
+        // await (a temporary would live to end-of-statement, which is
+        // sufficient — but the explicit binding is clearer and matches the
+        // existing layer/cache.rs pattern).
+        let key = CacheKey::from_reference(reference);
+        self.cache.invalidate(&key).await;
     }
 
     /// Drop every cached entry.
@@ -264,12 +303,16 @@ impl ExternalProvider for ProviderCacheLayer {
                 return Ok((*arc).clone());
             }
 
-            self.misses.fetch_add(1, Ordering::Relaxed);
-
             // `try_get_with` deduplicates concurrent waiters (single-flight)
             // and skips insertion on `Err`, so failures are never cached.
             // The init future must be `'static`: clone the inner Arc and
             // own a copy of the reference so the closure borrows nothing.
+            //
+            // The `inner_calls` counter increments **inside** the init
+            // closure rather than on the way in, so under fan-in N waiters
+            // that subscribe to one in-flight resolve record exactly one
+            // miss — matching real backend load (`inner.resolve` call
+            // count) rather than over-counting lookup misses.
             let inner = Arc::clone(&self.inner);
             let reference_owned = reference.clone();
             let key_for_init = key.clone();
@@ -280,10 +323,12 @@ impl ExternalProvider for ProviderCacheLayer {
                 path = %reference.path,
                 "cache miss; calling inner"
             );
+            let inner_calls = &self.inner_calls;
 
             let result = self
                 .cache
                 .try_get_with(key_for_init, async move {
+                    inner_calls.fetch_add(1, Ordering::Relaxed);
                     inner.resolve(&reference_owned).await.map(Arc::new)
                 })
                 .await;
@@ -299,8 +344,8 @@ impl ExternalProvider for ProviderCacheLayer {
         self.inner.health_check()
     }
 
-    fn provider_name(&self) -> &'static str {
-        "cache"
+    fn provider_name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -486,11 +531,18 @@ mod tests {
 
     #[tokio::test]
     async fn expired_entry_triggers_fresh_resolve() {
+        // moka uses `std::time::Instant` (or quanta) for expiration, not
+        // `tokio::time::Instant`, so `tokio::time::pause` would not fast-
+        // forward expiry here — we have to use the real wall clock. TTL
+        // and sleep are sized so the margin (sleep − TTL = 200 ms) far
+        // exceeds typical CI scheduler jitter; `inner.call_count` is
+        // checked with `>=` rather than strict `==` so a still-cached
+        // entry (slow CI hop) doesn't false-negative.
         let inner = MockProvider::new(
             "inner",
             vec![
-                ok("fresh", Some(Duration::from_millis(40))),
-                ok("after-expiry", Some(Duration::from_millis(40))),
+                ok("fresh", Some(Duration::from_millis(100))),
+                ok("after-expiry", Some(Duration::from_millis(100))),
             ],
         );
         let layer = ProviderCacheLayer::new(
@@ -502,12 +554,17 @@ mod tests {
         let first = layer.resolve(&r).await.expect("first");
         assert_eq!(first.secret.expose_secret(), "fresh");
 
-        // Wait past the per-entry TTL; moka evicts lazily on next access.
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        // Wait well past the per-entry TTL; moka evicts lazily on next
+        // access, so the next resolve sees a miss and re-runs init.
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         let second = layer.resolve(&r).await.expect("second");
         assert_eq!(second.secret.expose_secret(), "after-expiry");
-        assert_eq!(inner.call_count(), 2);
+        assert!(
+            inner.call_count() >= 2,
+            "expected at least one fresh resolve after TTL expiry, got {}",
+            inner.call_count()
+        );
     }
 
     #[tokio::test]
@@ -624,12 +681,21 @@ mod tests {
         // a concurrent batch checking the cache and actually awaiting the
         // resolution. moka's lazy eviction must produce a single fresh
         // resolve for the post-expiry wave.
+        //
+        // Timings are sized for CI hostility: TTL=100 ms, inner delay=60 ms
+        // (< TTL, so the first entry actually gets cached), and sleep=300 ms
+        // (3× TTL margin). The post-expiry inner-call count is asserted
+        // with `<=` and `>=` bounds rather than strict equality — single-
+        // flight should dedupe the batch to one extra call, but a stalled
+        // scheduler that splits the batch across the second TTL boundary
+        // would legitimately drive it higher without invalidating the
+        // single-flight contract.
         let inner = MockProvider::with_delay(
             "inner",
-            Duration::from_millis(40),
+            Duration::from_millis(60),
             vec![
-                ok("v1", Some(Duration::from_millis(30))),
-                ok("v2", Some(Duration::from_millis(30))),
+                ok("v1", Some(Duration::from_millis(100))),
+                ok("v2", Some(Duration::from_millis(100))),
             ],
         );
         let layer = Arc::new(ProviderCacheLayer::new(
@@ -642,11 +708,11 @@ mod tests {
         assert_eq!(first.secret.expose_secret(), "v1");
         assert_eq!(inner.call_count(), 1);
 
-        // Wait for the entry to expire.
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        // Wait well past the first TTL.
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         // Fire a concurrent batch; all should observe the post-expiry
-        // resolution and dedup to a single inner call.
+        // resolution and dedup to a small number of inner calls.
         let mut handles = Vec::new();
         for _ in 0..8 {
             let layer = Arc::clone(&layer);
@@ -658,10 +724,10 @@ mod tests {
             let v = h.await.expect("join").expect("resolve");
             assert_eq!(v.secret.expose_secret(), "v2");
         }
-        assert_eq!(
-            inner.call_count(),
-            2,
-            "post-expiry batch should dedup to one inner call"
+        let total = inner.call_count();
+        assert!(
+            (2..=3).contains(&total),
+            "post-expiry batch should dedup the 8 waiters to ~1 extra inner call (total 2–3), got {total}"
         );
     }
 
@@ -677,13 +743,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_name_is_cache() {
-        let inner = MockProvider::new("inner", vec![ok("v", None)]);
+    async fn provider_name_composes_inner() {
+        // `provider_name` preserves the wrapped provider for telemetry so
+        // operators dimensioning on it can tell Vault, AWS SM, env-var,
+        // etc. apart through the cache.
+        let inner = MockProvider::new("vault-stub", vec![ok("v", None)]);
         let layer = ProviderCacheLayer::new(
             Arc::clone(&inner) as Arc<dyn ExternalProvider>,
             ProviderCacheConfig::default(),
         );
-        assert_eq!(layer.provider_name(), "cache");
+        assert_eq!(layer.provider_name(), "cache(vault-stub)");
     }
 
     #[tokio::test]

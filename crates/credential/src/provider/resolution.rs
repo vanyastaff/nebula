@@ -25,9 +25,11 @@ use crate::SecretString;
 /// - [`secret`](Self::secret) — the resolved secret value.
 /// - [`lease`](Self::lease) — `Some` when the provider issued a time-bounded grant.
 ///   The caller may renew or revoke via the (future) `LeasedProvider` sub-trait.
-/// - [`ttl`](Self::ttl) — caching hint. `None` means "do not cache" (treat every
-///   resolve as authoritative); a cache layer MUST honour `Some(d)` and refresh
-///   no later than `d` after resolution.
+/// - [`ttl`](Self::ttl) — caching hint. **`None` means the provider supplies
+///   no TTL** (static secrets, env vars). The consumer chooses the policy:
+///   `ProviderCacheLayer` falls back to its configured `default_ttl`, treating
+///   `default_ttl: ZERO` as "pass through". A cache layer MUST honour
+///   `Some(d)` and refresh no later than `d` after resolution.
 ///
 /// `Clone` is required by downstream cache layers (moka's value type bound).
 /// Cloning a resolution clones the `SecretString` (and the lease, if any);
@@ -41,16 +43,18 @@ pub struct ProviderResolution {
     /// Optional lease for providers that issue time-bounded grants
     /// (HashiCorp Vault leased secrets, AWS STS-issued temporary creds).
     pub lease: Option<LeaseHandle>,
-    /// Suggested time-to-live for the resolved secret. Consumed by a
-    /// downstream cache layer (`ProviderCacheLayer` in `nebula-storage`,
-    /// future work per ADR-0051). `None` ⇒ do not cache.
+    /// Suggested time-to-live for the resolved secret. `None` means the
+    /// provider has no TTL hint — the consumer (e.g.
+    /// `ProviderCacheLayer` in `nebula-storage`, future work per ADR-0051)
+    /// applies its own default, which may itself be "do not cache".
     pub ttl: Option<Duration>,
 }
 
 impl ProviderResolution {
     /// Convenience constructor for static providers without lease / TTL
-    /// metadata. The resulting resolution will not be cached by a
-    /// `ProviderCacheLayer` (TTL is `None`).
+    /// metadata. Whether the result is cached is up to the consumer:
+    /// `ProviderCacheLayer` with the default `default_ttl: Duration::ZERO`
+    /// will not cache it; configured with a positive default it will.
     #[must_use]
     pub fn from_secret(secret: SecretString) -> Self {
         Self {
