@@ -288,8 +288,9 @@ async fn concurrent_reclaim_returns_each_stuck_row_to_exactly_one_sweeper() {
     let repo2 = SqliteRefreshClaimRepo::new(pool.clone());
 
     // Insert N expired rows, marking each as RefreshInFlight to mimic the
-    // worst case (a presumed mid-IdP-call crash).
-    let mut credential_ids = Vec::new();
+    // worst case (a presumed mid-IdP-call crash). The credential ids are
+    // not retained: the assertion below only checks that the union of both
+    // sweepers' results partitions the rows without overlap.
     for _ in 0..50 {
         let cid = CredentialId::new();
         let claim = match repo1
@@ -301,7 +302,6 @@ async fn concurrent_reclaim_returns_each_stuck_row_to_exactly_one_sweeper() {
             ClaimAttempt::Contended { .. } => panic!("setup must always acquire"),
         };
         repo1.mark_sentinel(&claim.token).await.unwrap();
-        credential_ids.push(cid);
     }
     // Wait past expiry so reclaim_stuck has work to do.
     tokio::time::sleep(Duration::from_millis(150)).await;
