@@ -35,6 +35,16 @@ impl<S> SlotCell<S> {
     pub fn load(&self) -> Option<Arc<S>> {
         self.inner.load_full()
     }
+
+    /// Revoke the slot, returning the previously held value (if any).
+    pub fn take(&self) -> Option<Arc<S>> {
+        self.inner.swap(None)
+    }
+
+    /// Returns `true` if the slot currently holds a resolved value.
+    pub fn is_some(&self) -> bool {
+        self.inner.load().is_some()
+    }
 }
 
 impl<S> Default for SlotCell<S> {
@@ -64,5 +74,27 @@ mod tests {
         assert_eq!(cell.load().expect("v1").0, 1);
         cell.store(Arc::new(FakeGuard(2)));
         assert_eq!(cell.load().expect("v2").0, 2);
+    }
+
+    #[test]
+    fn take_and_is_some() {
+        let cell: SlotCell<FakeGuard> = SlotCell::empty();
+
+        // Empty cell: is_some is false, take returns None.
+        assert!(!cell.is_some());
+        assert!(cell.take().is_none());
+
+        // After store: is_some is true, take returns the value.
+        cell.store(Arc::new(FakeGuard(1)));
+        assert!(cell.is_some());
+        let taken = cell.take();
+        assert_eq!(taken.expect("should be Some").0, 1);
+
+        // After take: cell is empty again.
+        assert!(cell.load().is_none());
+        assert!(!cell.is_some());
+
+        // Second take on now-empty cell returns None.
+        assert!(cell.take().is_none());
     }
 }
