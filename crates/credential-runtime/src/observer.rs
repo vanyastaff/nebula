@@ -1,0 +1,138 @@
+//! Non-optional observability seam. Closes canon §12.5/§3.5: emission
+//! sits on the single facade code path, so "never wired" is
+//! unrepresentable. `CredentialObserver` is object-safe by design
+//! (`Arc<dyn CredentialObserver>`).
+
+use std::sync::Arc;
+
+use nebula_core::accessor::MetricsEmitter;
+use nebula_credential::metrics::CredentialMetrics;
+use nebula_credential::provider::LeaseEvent;
+use nebula_credential::{CredentialEvent, CredentialId};
+use nebula_eventbus::EventBus;
+
+/// Observability hooks the facade calls on every lifecycle transition.
+/// Object-safe (no RPITIT / generics) so it can be `Arc<dyn …>`.
+pub trait CredentialObserver: Send + Sync {
+    /// Event bus the internally-built `CredentialResolver` is wired to
+    /// (`.with_event_bus`). Non-optional — the resolver always gets a
+    /// real bus.
+    fn event_bus(&self) -> Arc<EventBus<CredentialEvent>>;
+    /// Optional lease event bus handed to `LeaseLifecycle::spawn`.
+    fn lease_bus(&self) -> Option<Arc<EventBus<LeaseEvent>>>;
+    /// Optional metrics emitter handed to `LeaseLifecycle::spawn` and
+    /// used by the facade for resolve/refresh/test counters.
+    fn metrics(&self) -> Option<Arc<dyn MetricsEmitter>>;
+    /// Called after a successful resolve.
+    fn on_resolve(&self, credential_id: &CredentialId);
+    /// Called after a successful refresh.
+    fn on_refresh(&self, credential_id: &CredentialId);
+    /// Called after a successful revoke.
+    fn on_revoke(&self, credential_id: &CredentialId);
+}
+
+/// Silent observer. Must be chosen *explicitly* at the composition root
+/// (tests) — never a default that hides missing wiring.
+#[derive(Debug)]
+pub struct NoopObserver;
+
+impl CredentialObserver for NoopObserver {
+    fn event_bus(&self) -> Arc<EventBus<CredentialEvent>> {
+        Arc::new(EventBus::new(1))
+    }
+    fn lease_bus(&self) -> Option<Arc<EventBus<LeaseEvent>>> {
+        None
+    }
+    fn metrics(&self) -> Option<Arc<dyn MetricsEmitter>> {
+        None
+    }
+    fn on_resolve(&self, _credential_id: &CredentialId) {}
+    fn on_refresh(&self, _credential_id: &CredentialId) {}
+    fn on_revoke(&self, _credential_id: &CredentialId) {}
+}
+
+/// Production observer: emits `CredentialEvent` to an `EventBus`,
+/// increments `CredentialMetrics` counters via the supplied emitter.
+pub struct EventMetricObserver {
+    events: Arc<EventBus<CredentialEvent>>,
+    leases: Arc<EventBus<LeaseEvent>>,
+    metrics: Option<Arc<dyn MetricsEmitter>>,
+}
+
+impl EventMetricObserver {
+    /// `buffer` is the per-bus capacity.
+    #[must_use]
+    pub fn new(buffer: usize) -> Self {
+        Self {
+            events: Arc::new(EventBus::new(buffer)),
+            leases: Arc::new(EventBus::new(buffer)),
+            metrics: None,
+        }
+    }
+
+    /// Attach a metrics emitter (counters for resolve/refresh).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_metrics(mut self, emitter: Arc<dyn MetricsEmitter>) -> Self {
+        self.metrics = Some(emitter);
+        self
+    }
+
+    fn count(&self, name: &str, outcome: &str) {
+        if let Some(m) = &self.metrics {
+            m.counter(name, 1, &[("outcome", outcome)]);
+        }
+    }
+}
+
+impl CredentialObserver for EventMetricObserver {
+    fn event_bus(&self) -> Arc<EventBus<CredentialEvent>> {
+        Arc::clone(&self.events)
+    }
+    fn lease_bus(&self) -> Option<Arc<EventBus<LeaseEvent>>> {
+        Some(Arc::clone(&self.leases))
+    }
+    fn metrics(&self) -> Option<Arc<dyn MetricsEmitter>> {
+        self.metrics.clone()
+    }
+    fn on_resolve(&self, _credential_id: &CredentialId) {
+        self.count(CredentialMetrics::RESOLVE_TOTAL, "ok");
+    }
+    fn on_refresh(&self, credential_id: &CredentialId) {
+        let _ = self.events.emit(CredentialEvent::Refreshed {
+            credential_id: *credential_id,
+        });
+        self.count(CredentialMetrics::REFRESH_TOTAL, "ok");
+    }
+    fn on_revoke(&self, credential_id: &CredentialId) {
+        let _ = self.events.emit(CredentialEvent::Revoked {
+            credential_id: *credential_id,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CredentialObserver, EventMetricObserver, NoopObserver};
+    use nebula_credential::CredentialId;
+    use std::sync::Arc;
+
+    #[test]
+    fn noop_observer_is_object_safe_and_silent() {
+        let obs: Arc<dyn CredentialObserver> = Arc::new(NoopObserver);
+        obs.on_revoke(&CredentialId::new());
+        assert!(obs.lease_bus().is_none());
+        assert!(obs.metrics().is_none());
+    }
+
+    #[tokio::test]
+    async fn event_metric_observer_emits_on_event_bus() {
+        let obs = EventMetricObserver::new(8);
+        let mut sub = obs.event_bus().subscribe();
+        obs.on_refresh(&CredentialId::new());
+        let ev = sub.try_recv().expect("event emitted");
+        assert!(matches!(
+            ev,
+            nebula_credential::CredentialEvent::Refreshed { .. }
+        ));
+    }
+}

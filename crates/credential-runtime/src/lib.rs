@@ -15,7 +15,9 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod observer;
 pub mod scope;
 
 pub use error::CredentialServiceError;
+pub use observer::{CredentialObserver, EventMetricObserver, NoopObserver};
 pub use scope::{FixedScopeResolver, TenantScope};
