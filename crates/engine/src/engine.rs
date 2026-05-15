@@ -2010,7 +2010,10 @@ impl WorkflowEngine {
                         .get(&node_key)
                         .and_then(|nd| effective_retry_policy(nd, workflow_retry_policy.as_ref()))
                         .cloned();
-                    compute_retry_decision(&node_key, exec_state, setup_retry_policy.as_ref())
+                    // Setup failures (param resolution etc.) have no typed
+                    // `ActionError` and stay retry-eligible — "the action
+                    // never started", so no fatal short-circuit applies.
+                    compute_retry_decision(&node_key, exec_state, setup_retry_policy.as_ref(), None)
                 } else {
                     RetryDecision::Finalize
                 };
@@ -2582,6 +2585,7 @@ impl WorkflowEngine {
                             &node_key,
                             exec_state,
                             retry_policy_resolved.as_ref(),
+                            err.as_action_error(),
                         )
                     } else {
                         RetryDecision::Finalize
@@ -3917,6 +3921,15 @@ enum RetryDecision {
 ///
 /// Ordering of checks (whichever caps first wins):
 ///
+/// 0. **Fatal-error short-circuit** — if the just-recorded attempt's typed
+///    [`ActionError`] is fatal ([`ActionError::is_fatal`]), finalize
+///    immediately, *before* any policy/budget check. Retry is otherwise a
+///    pure attempts/budget/backoff policy that never consulted error
+///    fatality at all — so a `Fatal` action error (or a sandbox
+///    after-send close, which maps to fatal) used to be re-dispatched
+///    under policy. This early-return makes "bytes reached the plugin ⇒
+///    never re-dispatch" structural for *all* actions and closes that
+///    pre-existing, sandbox-independent gap.
 /// 1. **Global budget cap** — `ExecutionState::has_exhausted_retry_budget` consults
 ///    `ExecutionBudget.max_total_retries`. A `Some(0)` cap disables retry entirely; a `None` cap
 ///    leaves the per-node policy as the only gate.
@@ -3926,11 +3939,28 @@ enum RetryDecision {
 /// 4. **Backoff calc** — `policy.delay_for_attempt(attempt_count - 1)` where `attempt_count` is the
 ///    just-finished attempt number (1-indexed). This yields the same wait the
 ///    `nebula-resilience::retry` crate would for the same `RetryConfig`.
+///
+/// `recorded_error` is the typed error of the attempt just pushed to
+/// history (the runtime-failure path supplies it; the setup-failure path
+/// passes `None` because a param-resolution failure has no `ActionError`
+/// and stays retry-eligible — "the action never started").
 fn compute_retry_decision(
     node_key: &NodeKey,
     exec_state: &ExecutionState,
     retry_policy: Option<&nebula_workflow::RetryConfig>,
+    recorded_error: Option<&ActionError>,
 ) -> RetryDecision {
+    if recorded_error.is_some_and(ActionError::is_fatal) {
+        tracing::debug!(
+            target = "engine::retry",
+            execution_id = %exec_state.execution_id,
+            %node_key,
+            "retry skipped: just-recorded attempt error is fatal \
+             (no re-dispatch — closes the pre-existing engine-fatality gap)"
+        );
+        return RetryDecision::Finalize;
+    }
+
     if exec_state.has_exhausted_retry_budget() {
         tracing::debug!(
             target = "engine::retry",

@@ -139,13 +139,29 @@ impl TryDispatchError {
     /// original #257 logic treated every `PluginClosed` as safe to
     /// respawn, conflating "stale handle on entry" with "EOF observed by
     /// `recv` after a successful send"; the `sent` bit separates them.
-    /// Every other variant is terminal regardless.
+    ///
+    /// An EOF observed *after* a successful send is re-typed to the
+    /// distinct [`SandboxError::PluginClosedAfterSend`] variant so the
+    /// no-resend guarantee survives the crate boundary structurally:
+    /// `nebula-plugin`'s classifier maps that variant to a fatal
+    /// `ActionError` and the engine's retry decision finalizes it without
+    /// re-dispatch. Plain [`SandboxError::PluginClosed`] is kept *only*
+    /// for the `!sent` / pre-send / stale-on-entry case, preserving the
+    /// safe respawn path. Every other variant is terminal regardless and
+    /// passes through unchanged.
     fn from_sandbox_error_after_send(err: SandboxError, sent: bool) -> Self {
-        let respawnable = !sent && matches!(err, SandboxError::PluginClosed);
-        if respawnable {
-            Self::Respawnable(err)
-        } else {
-            Self::Terminal(err)
+        match (sent, &err) {
+            // No bytes reached a running plugin → safe to respawn-retry.
+            (false, SandboxError::PluginClosed) => Self::Respawnable(err),
+            // EOF after a successful send: the action may have run. Re-type
+            // to the distinct variant so "bytes reached the plugin ⇒ never
+            // re-dispatch" is enforced by type across the crate boundary,
+            // not by a `bool` that does not cross it.
+            (true, SandboxError::PluginClosed) => {
+                Self::Terminal(SandboxError::PluginClosedAfterSend)
+            },
+            // Every other failure mode is terminal as before.
+            _ => Self::Terminal(err),
         }
     }
 
@@ -793,28 +809,43 @@ mod tests {
     // engine already gave up on the call.
 
     #[test]
-    fn eof_after_send_is_terminal_not_respawnable() {
+    fn eof_after_send_is_terminal_and_distinct_variant_by_type() {
         // PluginClosed observed by recv AFTER a successful send: the
         // plugin may have received and begun a non-idempotent action
         // before dying. Resending on a fresh process would
-        // double-execute, so this MUST be terminal.
+        // double-execute, so this MUST be terminal AND re-typed to the
+        // distinct `PluginClosedAfterSend` variant so the no-resend
+        // guarantee is structural across the crate boundary (the `sent`
+        // bool does not cross it; the variant does).
         let tde = TryDispatchError::from_sandbox_error_after_send(SandboxError::PluginClosed, true);
         assert!(
             !tde.is_respawnable(),
             "EOF after a successful send must not silently resend the action, got {tde:?}",
         );
+        match tde.into_sandbox_error() {
+            SandboxError::PluginClosedAfterSend => {},
+            other => panic!(
+                "sent==true PluginClosed must re-type to PluginClosedAfterSend, got {other:?}"
+            ),
+        }
     }
 
     #[test]
-    fn stale_handle_before_send_is_respawnable() {
+    fn stale_handle_before_send_is_respawnable_and_keeps_plain_variant() {
         // PluginClosed with no bytes written for this attempt: nothing
-        // reached a running plugin, so respawn-and-retry is safe.
+        // reached a running plugin, so respawn-and-retry is safe and the
+        // variant stays the plain `PluginClosed` (NOT re-typed) so the
+        // safe pre-send respawn path is preserved.
         let tde =
             TryDispatchError::from_sandbox_error_after_send(SandboxError::PluginClosed, false);
         assert!(
             tde.is_respawnable(),
             "no bytes reached a running plugin — respawn must be allowed, got {tde:?}",
         );
+        match tde.into_sandbox_error() {
+            SandboxError::PluginClosed => {},
+            other => panic!("!sent PluginClosed must stay PluginClosed, got {other:?}"),
+        }
     }
 
     #[test]

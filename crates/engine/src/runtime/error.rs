@@ -134,6 +134,17 @@ impl RuntimeError {
             _ => false,
         }
     }
+
+    /// The wrapped `ActionError`, if this runtime error is one. Lets the
+    /// engine consult `ActionError::is_fatal` on the just-recorded attempt
+    /// so a fatal action error is never re-dispatched by retry policy.
+    #[must_use]
+    pub fn as_action_error(&self) -> Option<&nebula_action::ActionError> {
+        match self {
+            Self::ActionError(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

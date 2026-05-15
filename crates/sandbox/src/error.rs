@@ -56,10 +56,26 @@ pub enum SandboxError {
     },
 
     /// The plugin closed its end of the transport without sending a
-    /// response envelope. Signals abnormal plugin exit, not a protocol
-    /// violation.
+    /// response envelope, and **no** request bytes had reached a running
+    /// plugin for this attempt (stale handle on entry / failure at or
+    /// before the write). Safe to respawn-and-retry: nothing was executed.
     #[error("plugin closed transport without sending a response envelope")]
     PluginClosed,
+
+    /// The plugin closed its end of the transport **after** the request
+    /// envelope was successfully written to it. The plugin may have
+    /// received and begun (or completed) a non-idempotent action before
+    /// dying, so the request MUST NOT be resent: re-dispatching would risk
+    /// double-executing the action. This is a distinct, typed variant
+    /// (not a `bool` on `PluginClosed`) so the no-resend guarantee is
+    /// structural across the crate boundary — `nebula-plugin`'s
+    /// classifier maps it to a fatal `ActionError` and the engine never
+    /// re-dispatches it.
+    #[error(
+        "plugin closed transport after the request was sent — \
+         action may have run; not resendable"
+    )]
+    PluginClosedAfterSend,
 
     /// An operation was attempted on a transport connection that was
     /// previously poisoned by an oversize read. This is an internal

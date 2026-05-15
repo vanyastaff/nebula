@@ -25,8 +25,16 @@ use nebula_sandbox::SandboxError;
 #[must_use]
 pub fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
     match err {
-        // Retryable: plugin crashed / exited, respawn path is safe.
+        // Retryable: plugin crashed / exited with NO request bytes on a
+        // running plugin for this attempt (pre-send / stale-on-entry).
+        // Respawn-and-retry is safe — nothing was executed. UNCHANGED.
         SandboxError::PluginClosed => ActionError::retryable_from(err),
+        // Fatal: the plugin closed AFTER the request was sent. The action
+        // may already have run; resending would risk double-execution.
+        // The engine's retry decision finalizes a fatal error before the
+        // policy check, so "bytes reached the plugin ⇒ no re-dispatch" is
+        // structural, not best-effort.
+        SandboxError::PluginClosedAfterSend => ActionError::fatal_from(err),
         // Timeout surfaces as retryable so the engine's higher-level retry
         // policy can decide; the sandbox itself never silently retries.
         SandboxError::Timeout { .. } => ActionError::retryable_from(err),
@@ -96,12 +104,27 @@ mod tests {
 
     #[test]
     fn plugin_closed_converts_to_retryable_action_error() {
-        // Plugin-closed is benign relative to DoS — retry to respawn is safe.
+        // Plugin-closed (pre-send / stale-on-entry) is benign relative to
+        // DoS and nothing was executed — retry to respawn is safe.
+        // UNCHANGED behaviour; preserves Phase-1's safe respawn.
         let sandbox_err = SandboxError::PluginClosed;
         let ae = sandbox_error_to_action_error(sandbox_err);
         assert!(
             matches!(ae, ActionError::Retryable { .. }),
             "PluginClosed should classify as Retryable, got {ae:?}",
+        );
+    }
+
+    #[test]
+    fn plugin_closed_after_send_converts_to_fatal_action_error() {
+        // Plugin closed AFTER the request was sent: the action may have
+        // run. This MUST be fatal so the engine's retry decision
+        // finalizes it without re-dispatch — the structural half of the
+        // no-resend guarantee.
+        let ae = sandbox_error_to_action_error(SandboxError::PluginClosedAfterSend);
+        assert!(
+            matches!(ae, ActionError::Fatal { .. }),
+            "PluginClosedAfterSend must classify as Fatal (no resend), got {ae:?}",
         );
     }
 
