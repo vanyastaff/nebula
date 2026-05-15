@@ -2,12 +2,12 @@
 //! through the engine-owned plugin pool with a `Lease`.
 //!
 //! Behind the `out-of-process-plugins` Cargo feature (default OFF, never in
-//! the default CI profile). Verifies the §9.3 B wiring: with the feature on
-//! AND a non-empty `plugin_dirs`, `discover_into_registry` scans the
-//! directory via `nebula_plugin::discovery::discover_directory`, registers
-//! a pooled factory per action, and a factory dispatch round-trips through
-//! `PluginPool::acquire` → `Lease` → `ProcessSandbox` → the live plugin
-//! process.
+//! the default CI profile). With the feature on AND a non-empty
+//! `plugin_dirs`, `discover_into_registry` scans the directory via
+//! `nebula_plugin::discovery::discover_directory`, registers a pooled
+//! factory per action, and a factory dispatch round-trips through
+//! `PluginSupervisor::acquire` → `Lease` → `ProcessSandbox` → the live
+//! plugin process; `shutdown()` then drains the warm process.
 //!
 //! # Running
 //!
@@ -108,7 +108,7 @@ async fn discovered_plugin_action_round_trips_through_engine_pool() {
 
     let action_registry = Arc::new(ActionRegistry::new());
     let mut plugin_registry = PluginRegistry::new();
-    discover_into_registry(&config, &mut plugin_registry, &action_registry).await;
+    let supervisor = discover_into_registry(&config, &mut plugin_registry, &action_registry).await;
 
     // The schema fixture exposes `com.author.schema.describe` and replies
     // `{ "received": <input> }`.
@@ -179,4 +179,13 @@ async fn discovered_plugin_action_round_trips_through_engine_pool() {
         },
         other => panic!("expected ActionResult::Success, got {other:?}"),
     }
+
+    // The supervisor owns the pools; shutdown drains the warm process
+    // kept alive across the two dispatches (one pooled conn for this
+    // single (binary, empty-scope) key) and SIGKILLs its child.
+    assert_eq!(
+        supervisor.shutdown(),
+        1,
+        "shutdown must drain the one warm pooled plugin process"
+    );
 }

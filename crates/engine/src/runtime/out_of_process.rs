@@ -42,7 +42,8 @@ use serde_json::Value;
 
 use crate::runtime::{
     ActionRegistry,
-    plugin_pool::{Lease, PluginPool, PoolRegistry, pool_key},
+    plugin_pool::{Lease, PoolKey, pool_key},
+    plugin_supervisor::PluginSupervisor,
 };
 
 /// Operator-only runtime configuration for out-of-process plugin dispatch.
@@ -90,7 +91,7 @@ pub struct PooledRemoteActionFactory {
     local_key: String,
     binary: PathBuf,
     timeout: Duration,
-    pools: Arc<PoolRegistry<ProcessSandbox>>,
+    supervisor: PluginSupervisor,
 }
 
 impl std::fmt::Debug for PooledRemoteActionFactory {
@@ -109,14 +110,14 @@ impl PooledRemoteActionFactory {
         local_key: String,
         binary: PathBuf,
         timeout: Duration,
-        pools: Arc<PoolRegistry<ProcessSandbox>>,
+        supervisor: PluginSupervisor,
     ) -> Self {
         Self {
             metadata,
             local_key,
             binary,
             timeout,
-            pools,
+            supervisor,
         }
     }
 }
@@ -134,15 +135,16 @@ impl ActionFactory for PooledRemoteActionFactory {
     {
         // ADR-0025 §2: the per-process isolation key is derived here, from
         // the workflow node's credential-slot bindings, engine-side. The
-        // leaf transport never sees the node.
+        // leaf transport never sees the node. The supervisor resolves the
+        // per-key pool at acquire time.
         let key = pool_key(node, self.binary.clone());
-        let pool = self.pools.pool_for(&key);
         let erased: Box<dyn ErasedStateless> = Box::new(PooledErasedStateless {
             metadata: self.metadata.clone(),
             local_key: self.local_key.clone(),
             binary: self.binary.clone(),
             timeout: self.timeout,
-            pool,
+            key,
+            supervisor: self.supervisor.clone(),
         });
         Box::pin(async move { Ok(ErasedAction::Stateless(erased)) })
     }
@@ -162,7 +164,9 @@ struct PooledErasedStateless {
     local_key: String,
     binary: PathBuf,
     timeout: Duration,
-    pool: Arc<PluginPool<ProcessSandbox>>,
+    /// ADR-0025 §2 pool key derived from the node at `instantiate`.
+    key: PoolKey,
+    supervisor: PluginSupervisor,
 }
 
 #[async_trait]
@@ -179,16 +183,19 @@ impl ErasedStateless for PooledErasedStateless {
         let binary = self.binary.clone();
         let timeout = self.timeout;
 
-        // The pool awaits a capacity permit, then either reuses a warm
-        // process or runs this spawn closure. A spawn failure surfaces as
-        // a per-call `ActionError` and never leaks a permit or wedges the
-        // pool (see `PluginPool::acquire`). `ProcessSandbox::new` is
-        // infallible — the actual fork/exec/dial happens lazily on the
-        // first envelope round-trip — so the closure is `Ok` here; a
-        // genuine spawn failure surfaces from `invoke_with_cancel` below.
+        // The supervisor resolves the per-key pool, awaits a capacity
+        // permit, then either reuses a warm process or runs this spawn
+        // closure. A spawn failure surfaces as a per-call `ActionError`
+        // and never leaks a permit or wedges the key's pool (see
+        // `PluginPool::acquire`). `ProcessSandbox::new` is infallible — the
+        // actual fork/exec/dial happens lazily on the first envelope
+        // round-trip — so the closure is `Ok` here; a genuine spawn
+        // failure surfaces from `invoke_with_cancel` below.
         let mut lease: Lease<ProcessSandbox> = self
-            .pool
-            .acquire(|| Ok::<_, ActionError>(ProcessSandbox::new(binary, timeout)))
+            .supervisor
+            .acquire(&self.key, || {
+                Ok::<_, ActionError>(ProcessSandbox::new(binary, timeout))
+            })
             .await?;
 
         let Some(sandbox) = lease.get() else {
@@ -225,27 +232,38 @@ impl ErasedStateless for PooledErasedStateless {
 }
 
 /// Composition-root entry: discover out-of-process plugins per the
-/// operator config and register each action behind the engine pool.
+/// operator config, register each action behind the engine pool, and
+/// return the owning [`PluginSupervisor`].
 ///
-/// No-op when `config.plugin_dirs` is empty (the inner gate). With the
+/// The caller holds the returned supervisor for the engine's lifetime and
+/// calls [`PluginSupervisor::shutdown`] on teardown to drain every warm
+/// plugin process (`kill_on_drop`) at a controlled point.
+///
+/// No-op when `config.plugin_dirs` is empty (the inner gate): returns an
+/// empty supervisor that owns no pools and registers nothing. With the
 /// `out-of-process-plugins` feature off the whole module — and therefore
 /// this function — does not exist, so the live path is byte-identical.
 ///
-/// Emits exactly one `tracing::warn!` invariant when the gate is open,
-/// stating the honest pre-broker security posture (no egress / credential
+/// When the gate is open it emits exactly one `tracing::warn!` invariant
+/// (the honest pre-broker security posture: no egress / credential
 /// mediation), then for every configured directory calls
 /// [`nebula_plugin::discovery::discover_directory`] (which registers the
 /// plugins in `plugin_registry`) and registers a
 /// [`PooledRemoteActionFactory`] per discovered action into
-/// `action_registry`.
+/// `action_registry`, all sharing the returned supervisor's per-key
+/// pools.
 pub async fn discover_into_registry(
     config: &OutOfProcessConfig,
     plugin_registry: &mut PluginRegistry,
     action_registry: &ActionRegistry,
-) {
+) -> PluginSupervisor {
+    let supervisor = PluginSupervisor::new(config.max_processes_per_key);
+
     if config.plugin_dirs.is_empty() {
-        // Inner gate closed: no discovery, no pool, no behavior change.
-        return;
+        // Inner gate closed: no discovery, no pooled processes, no
+        // behavior change. The supervisor owns no pools; shutdown is a
+        // no-op.
+        return supervisor;
     }
 
     tracing::warn!(
@@ -255,9 +273,6 @@ pub async fn discover_into_registry(
          until the ADR-0025 broker lands — untrusted plugins have unmediated \
          network/credential access"
     );
-
-    let pools: Arc<PoolRegistry<ProcessSandbox>> =
-        Arc::new(PoolRegistry::new(config.max_processes_per_key));
 
     for dir in &config.plugin_dirs {
         let discovered = nebula_plugin::discovery::discover_directory(
@@ -288,11 +303,13 @@ pub async fn discover_into_registry(
                 action.local_key.clone(),
                 action.binary.clone(),
                 config.default_timeout,
-                Arc::clone(&pools),
+                supervisor.clone(),
             );
             action_registry.register_factory(metadata, Arc::new(factory));
         }
     }
+
+    supervisor
 }
 
 #[cfg(test)]
@@ -319,11 +336,16 @@ mod tests {
         let mut plugin_registry = PluginRegistry::new();
         let action_registry = ActionRegistry::new();
 
-        discover_into_registry(&cfg, &mut plugin_registry, &action_registry).await;
+        let supervisor = discover_into_registry(&cfg, &mut plugin_registry, &action_registry).await;
 
         assert!(
             action_registry.is_empty(),
             "empty plugin_dirs must register nothing (inner gate closed)"
+        );
+        assert_eq!(
+            supervisor.shutdown(),
+            0,
+            "the gate-closed supervisor owns no pools — shutdown drains nothing"
         );
     }
 }

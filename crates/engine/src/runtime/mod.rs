@@ -30,6 +30,8 @@ pub mod error;
 #[cfg(feature = "out-of-process-plugins")]
 pub mod out_of_process;
 pub(crate) mod plugin_pool;
+#[cfg(feature = "out-of-process-plugins")]
+pub mod plugin_supervisor;
 pub mod queue;
 pub mod registry;
 #[allow(
@@ -45,6 +47,8 @@ pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
 #[cfg(feature = "out-of-process-plugins")]
 pub use out_of_process::{OutOfProcessConfig, discover_into_registry};
+#[cfg(feature = "out-of-process-plugins")]
+pub use plugin_supervisor::PluginSupervisor;
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
 pub use registry::ActionRegistry;
 pub use runtime::{ActionRuntime, StatefulCheckpoint, StatefulCheckpointSink};

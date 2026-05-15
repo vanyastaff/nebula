@@ -242,6 +242,29 @@ impl<T: PooledConn> PluginPool<T> {
     fn push_idle(&self, conn: T) {
         self.idle.lock().push(conn);
     }
+
+    /// Drop every idle (warm, pooled) connection, returning how many were
+    /// destroyed.
+    ///
+    /// Each dropped `T` runs its own destructor — for [`ProcessSandbox`]
+    /// that SIGKILLs the plugin child via `kill_on_drop`. Connections
+    /// currently held by an outstanding [`Lease`] are NOT touched (they
+    /// are not in the idle set); they are destroyed when their lease
+    /// drops. This is the shutdown primitive the supervisor calls to
+    /// reclaim warm processes cleanly without a persisted state file.
+    fn drain_idle(&self) -> usize {
+        // Swap the idle vec out under the lock, then drop it *after*
+        // releasing the lock so each `T::drop` (which for ProcessSandbox
+        // is just a debug log + kill_on_drop) does not run while the
+        // idle mutex is held.
+        let drained: Vec<T> = {
+            let mut idle = self.idle.lock();
+            std::mem::take(&mut *idle)
+        };
+        let n = drained.len();
+        drop(drained);
+        n
+    }
 }
 
 /// RAII handle to a pooled connection.
@@ -377,6 +400,20 @@ impl<T: PooledConn> PoolRegistry<T> {
     #[cfg(test)]
     fn pool_count(&self) -> usize {
         self.pools.len()
+    }
+
+    /// Drain every pool's idle set, returning the total number of warm
+    /// connections destroyed across all keys.
+    ///
+    /// The per-key pool `Arc`s remain registered (a post-drain `acquire`
+    /// on a key simply spawns fresh); only the pooled connections are
+    /// reclaimed. Used by the supervisor's shutdown path. Connections held
+    /// by live leases are untouched and die with their lease.
+    pub(crate) fn drain_all(&self) -> usize {
+        self.pools
+            .iter()
+            .map(|entry| entry.value().drain_idle())
+            .sum()
     }
 }
 
