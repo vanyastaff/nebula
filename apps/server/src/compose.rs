@@ -80,61 +80,18 @@ pub enum TransportInitError {
     },
 }
 
-/// Shared application context passed through transport bootstrapping.
-#[derive(Clone)]
-pub struct AppContext {
-    /// Parsed API configuration.
-    pub api_config: ApiConfig,
-    /// App state for handlers and middleware.
-    pub state: AppState,
-}
-
-/// Factory for constructing [`AppContext`] at process startup.
-pub trait AppContextFactory {
-    /// Build a context from loaded API configuration.
-    fn build_context(&self, api_config: ApiConfig) -> Result<AppContext, TransportInitError>;
-}
-
-/// Default local-first context factory used by transport binaries.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultAppContextFactory;
-
-impl AppContextFactory for DefaultAppContextFactory {
-    fn build_context(&self, api_config: ApiConfig) -> Result<AppContext, TransportInitError> {
-        Ok(AppContext {
-            state: default_state(&api_config)?,
-            api_config,
-        })
-    }
-}
-
 /// Start a server binary for a selected transport profile.
 pub async fn run_transport<T: ServerTransport>(transport: T) -> Result<(), ServerRunError> {
-    ServerRuntime::default().run_transport(transport).await
+    ServerRuntime::new().run_transport(transport).await
 }
 
 /// Transport runtime orchestrator for binary composition roots.
-pub struct ServerRuntime<F = DefaultAppContextFactory> {
-    context_factory: F,
-}
+pub struct ServerRuntime;
 
-impl Default for ServerRuntime<DefaultAppContextFactory> {
-    fn default() -> Self {
-        Self {
-            context_factory: DefaultAppContextFactory,
-        }
-    }
-}
-
-impl<F: AppContextFactory> ServerRuntime<F> {
-    /// Build a runtime with a custom app-context factory.
-    #[must_use]
-    #[expect(
-        dead_code,
-        reason = "generic factory seam carried verbatim from server/mod.rs; trim decision deferred to Task 0.2"
-    )]
-    pub fn new(context_factory: F) -> Self {
-        Self { context_factory }
+impl ServerRuntime {
+    /// Create a new runtime.
+    pub fn new() -> Self {
+        Self
     }
 
     /// Run a selected transport with this runtime.
@@ -143,20 +100,18 @@ impl<F: AppContextFactory> ServerRuntime<F> {
         transport: T,
     ) -> Result<(), ServerRunError> {
         let api_config = ApiConfig::from_env()?;
-        let mut context = self.context_factory.build_context(api_config)?;
-        let bind_address = resolve_bind_address(
-            transport.bind_override_var(),
-            context.api_config.bind_address,
-        )?;
-        context.state = transport.prepare_state(context.state, bind_address)?;
+        let mut state = default_state(&api_config)?;
+        let bind_address =
+            resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
+        state = transport.prepare_state(state, bind_address)?;
         // Attach the idempotency store inside the async context so the
         // PG-backed path can await sqlx pool construction. Memory-backed
         // builds resolve immediately; PG-backed builds also fail closed
         // here when the feature is missing or `DATABASE_URL` is unset
         // (per ADR-0048).
-        let idempotency_store = build_idempotency_store(&context.api_config).await?;
-        context.state = context.state.with_idempotency_store(idempotency_store);
-        let app = transport.build_router(context.state, &context.api_config)?;
+        let idempotency_store = build_idempotency_store(&api_config).await?;
+        state = state.with_idempotency_store(idempotency_store);
+        let app = transport.build_router(state, &api_config)?;
 
         tracing::info!(transport = transport.name(), %bind_address, "starting transport");
         app::serve(app, bind_address).await?;
