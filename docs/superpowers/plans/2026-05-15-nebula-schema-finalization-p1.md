@@ -508,7 +508,7 @@ In `crates/validator/src/policy/mod.rs` `mod tests`, add:
 
         // Exactly one required failure: the visible, required, absent field.
         // The hidden field is skipped → its `Always` required does not fire.
-        let failures: Vec<_> = res.required_failures.iter().collect();
+        let failures: Vec<_> = res.required_failures.errors().iter().collect();
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].code, "required");
     }
@@ -620,7 +620,7 @@ where
             && requiredness == Requiredness::Required
             && !d.value_present
         {
-            out.required_failures.push(
+            out.required_failures.add(
                 ValidationError::new("required", "field is required")
                     .with_field_path(d.path.clone()),
             );
@@ -1023,7 +1023,9 @@ In `crates/schema/src/validated.rs`, replace the body of `validate` (lines 333-3
         });
 
         let resolution = resolve_field_policies(decls, &ctx);
-        for e in resolution.required_failures.iter() {
+        // `ValidationErrors` exposes `.errors() -> &[ValidationError]` (no
+        // inherent `.iter()`); iterate the slice by ref.
+        for e in resolution.required_failures.errors() {
             report.push(e.clone());
         }
 
