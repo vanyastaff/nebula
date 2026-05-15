@@ -1776,7 +1776,7 @@ mod tests {
 
     #[test]
     fn validate_handshake_addr_accepts_matching_pair() {
-        let line = "NEBULA-PROTO-2|unix|/tmp/nebula-plugin-host-abc/sock\n";
+        let line = "NEBULA-PROTO-3|unix|/tmp/nebula-plugin-host-abc/sock\n";
         let result = validate_handshake_addr(line, "/tmp/nebula-plugin-host-abc/sock", "unix");
         assert!(result.is_ok(), "matching addr+kind must be accepted");
     }
@@ -1788,7 +1788,7 @@ mod tests {
         // allocated `/tmp/nebula-plugin-host-ours/sock`, but the plugin
         // announces `/tmp/nebula-plugin-host-other/sock`. Must fail
         // BEFORE `dial` so the host never connects to the sibling.
-        let line = "NEBULA-PROTO-2|unix|/tmp/nebula-plugin-host-other/sock\n";
+        let line = "NEBULA-PROTO-3|unix|/tmp/nebula-plugin-host-other/sock\n";
         let err = validate_handshake_addr(line, "/tmp/nebula-plugin-host-ours/sock", "unix")
             .expect_err("forged sibling path must be rejected");
         match err {
@@ -1811,7 +1811,7 @@ mod tests {
         // Plugin tries to smuggle a pipe address on a Unix host (or
         // vice versa). Kind mismatch is a protocol violation and must
         // be rejected with the same error type.
-        let line = "NEBULA-PROTO-2|pipe|some-pipe-name\n";
+        let line = "NEBULA-PROTO-3|pipe|some-pipe-name\n";
         let err = validate_handshake_addr(line, "/tmp/nebula/sock", "unix")
             .expect_err("kind mismatch must be rejected");
         assert!(matches!(err, SandboxError::HandshakeAddrMismatch { .. }));
@@ -1821,7 +1821,7 @@ mod tests {
     fn validate_handshake_addr_rejects_malformed_handshake() {
         // Missing kind/addr entirely → mismatch error (with a clear
         // "<malformed handshake>" marker on the got side).
-        let line = "NEBULA-PROTO-2\n";
+        let line = "NEBULA-PROTO-3\n";
         let err = validate_handshake_addr(line, "/tmp/nebula/sock", "unix")
             .expect_err("malformed handshake must be rejected");
         match err {
