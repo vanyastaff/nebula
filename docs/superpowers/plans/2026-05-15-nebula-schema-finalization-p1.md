@@ -1497,6 +1497,155 @@ Expected: PR created, CI required jobs (fmt, clippy, nextest, doctests, MSRV, de
 
 ---
 
+## Panel plan-objection round (4/4 — NO BLOCKING OBJECTION) — BINDING hardenings
+
+All four panelists cleared the corrected plan. Each returned one substantive
+**non-blocking** refinement; they converge (SRP + type-system independently
+on plan↔field alignment; canon on seam-test theater; security on lint depth).
+These are **merge-blocking for P1** — the implementer MUST apply them in the
+named tasks. They do not change the design; they harden it.
+
+**H1 — `resolve_field_policies` ordering invariant (Task 4; SRP + type-system).**
+In Task 4 Step 3, the `resolve_field_policies` doc comment MUST state, and the
+body MUST honor: *one `FieldPlan` pushed per input decl, in input order, with
+no filtering, reordering, dedup, or early `continue` that skips a push*. A
+`Presence::Skipped` decl still pushes its plan (with `presence: Skipped`). The
+Task 4 loop already does unconditional push-per-decl — it must stay that way.
+Add this line to the doc comment:
+
+```rust
+/// INVARIANT: exactly one `FieldPlan` is emitted per input decl, in input
+/// order — never filtered, reordered, or deduped. Callers rely on positional
+/// `plans[i] ↔ decls[i]` correspondence; breaking it silently misvalidates.
+```
+
+**H2 — caller alignment guard (Task 7 Step 3; type-system + SRP).** In the
+`ValidSchema::validate` body, immediately before the `for (i, plan) in
+resolution.plans.iter().enumerate()` loop, insert (no mutation of
+`resolution.plans` may occur between `resolve_field_policies` and this loop;
+the `required_failures` drain above is read-only and is fine):
+
+```rust
+        // INVARIANT: plan index ≡ field index ≡ path index. `resolve_field_policies`
+        // emits one plan per decl in input order (H1). Any future filter/reorder
+        // of `plans` silently breaks the presence gate — the correct P2 fix is to
+        // carry `&'a Field` (or an opaque token minted by resolve_field_policies)
+        // inside `FieldPlan` so the runner cannot obtain a `Field` except via the
+        // matched plan. Do NOT `retain`/`sort`/filter `resolution.plans`.
+        debug_assert_eq!(
+            resolution.plans.len(),
+            self.0.fields.len(),
+            "policy resolution must be 1:1 with schema fields (H1)"
+        );
+```
+
+**H3 — middle-skipped alignment regression test (new; SRP).** Append to
+`crates/schema/tests/validate_schema.rs` (Task 7 Step 1's file) a test with
+**≥3 top-level fields where a MIDDLE field is `VisibilityMode::Never`**, with
+distinct value-rule violations on the first and last fields, asserting the
+reported error paths point at the first and last fields (not shifted by the
+skipped middle). This catches an off-by-one that the 1-2 field cases cannot:
+
+```rust
+#[test]
+fn middle_skipped_field_does_not_shift_plan_to_field_mapping() {
+    use nebula_schema::{Schema, FieldKey, FieldValues};
+    use serde_json::json;
+
+    // f_first (min_length 5), f_mid (Never-visible), f_last (min_length 5).
+    // Both f_first and f_last get too-short values. If plan↔field shifts by
+    // the skipped middle, the error paths land on the wrong fields.
+    let schema = Schema::builder()
+        .string(FieldKey::new("f_first").unwrap())
+        .min_length(FieldKey::new("f_first").unwrap(), 5)
+        .string(FieldKey::new("f_mid").unwrap())
+        .visible(FieldKey::new("f_mid").unwrap(), nebula_schema::VisibilityMode::Never)
+        .string(FieldKey::new("f_last").unwrap())
+        .min_length(FieldKey::new("f_last").unwrap(), 5)
+        .build()
+        .expect("schema builds");
+
+    let values = FieldValues::from_json(&json!({"f_first": "ab", "f_last": "cd"})).unwrap();
+    let err = schema.validate(&values).expect_err("both short fields must fail");
+
+    let codes_paths: Vec<(String, String)> = err
+        .iter()
+        .map(|e| (e.code.to_string(), e.field.as_deref().unwrap_or("").to_string()))
+        .collect();
+    assert!(
+        codes_paths.iter().any(|(_, p)| p.contains("f_first")),
+        "f_first must be the error path, not shifted: {codes_paths:?}"
+    );
+    assert!(
+        codes_paths.iter().any(|(_, p)| p.contains("f_last")),
+        "f_last must be the error path, not shifted: {codes_paths:?}"
+    );
+}
+```
+
+> Implementer: adapt `.min_length(key, n)` / `.visible(key, VisibilityMode)`
+> to the real builder API (same verification discipline as Task 7 Step 1).
+> Keep the asserted property identical: with a middle field skipped, the
+> first/last fields' error paths are NOT shifted. `ValidationError::field`
+> accessor — confirm name (`e.field` / `e.field_pointer()`); the assertion
+> only needs the path string to contain the field key.
+
+**H4 — replace the theater seam test with a real structural guarantee
+(Task 10 + Task 11; canon).** In Task 10, **delete** the
+`condition_eval_did_not_leak_token_constructors` test and its empty
+`_assert_no_public_ctor()` body entirely (canon §14 "green tests, wrong
+product" — it asserts nothing). Keep `valid_values_only_minted_by_validate`
+(the real custody assertion that alone satisfies canon §0.1/§17). Replace the
+deleted test's guarantee with a trybuild compile-fail case. Add to Task 11 a
+new file `crates/schema/tests/compile_fail/valid_values_no_public_ctor.rs`:
+
+```rust
+//! ADR-0052 custody: ValidValues has no public constructor other than the
+//! pipeline. Any `new`/`from_*` ctor must NOT exist.
+fn main() {
+    let _ = nebula_schema::ValidValues::new();
+}
+```
+
+and register it in `crates/schema/tests/compile_fail.rs` next to the other two
+Task 11 cases:
+
+```rust
+    t.compile_fail("tests/compile_fail/valid_values_no_public_ctor.rs");
+```
+
+Expected trybuild failure: `no function or associated item named `new` found
+for struct `ValidValues``. If `ValidValues` is not publicly re-exported,
+qualify via the real public path (`nebula_schema::validated::ValidValues` per
+`crates/schema/src/lib.rs:239`); do not make it constructible to satisfy the
+test.
+
+**H5 — Task 11 trybuild is necessary-but-not-sufficient (note; type-system +
+canon).** Add to Task 11 (after Step 5) and to the Self-Review a one-line
+statement: the `policy_presence_non_exhaustive.rs` case proves `Presence` is
+`#[non_exhaustive]` + the `Skipped` arm is mandatory; it does **not** prove
+the runner cannot obtain a `Field` outside the matched arm. That stronger
+guarantee is the named **P2 hardening**: `FieldPlan` carries `&'a Field` /
+opaque token. P1 relies on H1+H2 (invariant + `debug_assert` + comment) for
+that property; this is explicitly an interim, not the end state.
+
+**H6 — `secret.predicate_on_value` lint must recurse objects (Task 9;
+security).** In Task 9 Step 3, `lint_secret_predicate_on_value`'s
+`secret_keys` collection MUST recurse `Field::Object` so a value-predicate
+targeting a nested secret (`/auth/api_key` where `api_key` is `Field::Secret`
+inside object `auth`) is also flagged — matching Task 6's depth-awareness.
+Collect normalized RFC-6901 paths of every `Field::Secret` at any depth and
+compare against the predicate's normalized `p.field()` pointer. This is
+advisory completeness only — runtime #1 is already closed by Task 6's
+recursive scrub (the predicate fails closed against an absent value), so this
+is a quality refinement, not a leak fix; still required for P1.
+
+**P2 backlog (record so it is not lost):** (a) `FieldPlan` carries `&'a Field`
+/ opaque token so plan↔field desync is unrepresentable (type-system end
+state); (b) single schema→validator behavioral crossing + a test asserting it
+(delete `run_root_rules`/`validator_bridge.rs`, SRP lockdown #1 end state);
+(c) these belong to the P2 plan authored against P1's landed signatures.
+
 ## Self-Review
 
 **1. Spec coverage (P1 slice of `2026-05-15-nebula-schema-finalization-design.md`):**
