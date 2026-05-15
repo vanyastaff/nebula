@@ -1,45 +1,62 @@
-//! [`RuleContext`] implementations backed by [`FieldValues`] subtrees.
+//! Builds the `nebula_validator::PredicateContext` for a schema's
+//! visibility/required evaluation.
 //!
-//! These adapters let predicate rules (visibility/required `When(rule)`) run
-//! directly against the current value tree without allocating a `HashMap`.
+//! Walks the schema field tree and the value tree together, emitting
+//! RFC-6901 pointers (`/a/b`) for non-secret `Literal` values at any
+//! depth, and excluding any `Field::Secret` subtree by schema type —
+//! pre-resolve a secret is `FieldValue::Literal(plaintext)`, so a
+//! runtime-tag check would leak it. Nested resolution is required: a
+//! flat top-level-only context makes every nested predicate fail open.
 
 use indexmap::IndexMap;
-use nebula_validator::RuleContext;
-use serde_json::Value;
+use nebula_validator::{PredicateContext, foundation::FieldPath};
 
 use crate::{
+    field::Field,
     key::FieldKey,
     value::{FieldValue, FieldValues},
 };
 
-/// Root context — borrowed view over top-level [`FieldValues`].
-pub struct RootContext<'a>(pub &'a FieldValues);
-
-impl RuleContext for RootContext<'_> {
-    fn get(&self, key: &str) -> Option<&Value> {
-        // FieldKey: Borrow<str> — get_by_str queries the inner IndexMap without
-        // constructing a FieldKey (no Arc allocation for the lookup).
-        match self.0.get_by_str(key)? {
-            FieldValue::Literal(v) => Some(v),
-            // Do not leak secret sentinels into predicate evaluation.
-            // Non-literal values are treated as non-addressable by `RuleContext`.
-            _ => None,
-        }
-    }
+/// Build a `PredicateContext` from the value tree, recursively, excluding
+/// every field declared as `Field::Secret` at any depth.
+///
+/// Only `FieldValue::Literal` leaves are addressable by predicates;
+/// expression / list / mode / secret-sentinel subtrees are non-addressable.
+#[must_use]
+pub fn predicate_context_for(fields: &[Field], values: &FieldValues) -> PredicateContext {
+    let mut pairs: Vec<(FieldPath, serde_json::Value)> = Vec::new();
+    collect_non_secret(fields, values.as_map(), None, &mut pairs);
+    PredicateContext::from_fields(pairs)
 }
 
-/// Sub-context — borrowed view over a nested object's field map.
-pub struct ObjectContext<'a>(pub &'a IndexMap<FieldKey, FieldValue>);
-
-impl RuleContext for ObjectContext<'_> {
-    fn get(&self, key: &str) -> Option<&Value> {
-        // IndexMap<FieldKey, _>::get accepts Q: Hash + Eq where FieldKey: Borrow<Q>.
-        // Passing &str directly avoids constructing a FieldKey.
-        match self.0.get(key)? {
-            FieldValue::Literal(v) => Some(v),
-            // Do not leak secret sentinels into predicate evaluation.
-            // Non-literal values are treated as non-addressable by `RuleContext`.
-            _ => None,
+/// Recurse fields <-> values in lockstep, scrubbing `Field::Secret` at every
+/// level and descending `Field::Object` <-> `FieldValue::Object`.
+fn collect_non_secret(
+    fields: &[Field],
+    values: &IndexMap<FieldKey, FieldValue>,
+    prefix: Option<&FieldPath>,
+    out: &mut Vec<(FieldPath, serde_json::Value)>,
+) {
+    for field in fields {
+        if matches!(field, Field::Secret(_)) {
+            continue; // exclude secret-typed fields by schema type, any depth
+        }
+        let key = field.key();
+        let Some(val) = values.get(key) else { continue };
+        let path = match prefix {
+            None => FieldPath::single(key.as_str()),
+            Some(p) => p.push(key.as_str()),
+        };
+        match (field, val) {
+            (Field::Object(obj), FieldValue::Object(sub)) => {
+                collect_non_secret(obj.fields.as_slice(), sub, Some(&path), out);
+            },
+            (_, FieldValue::Literal(v)) => {
+                out.push((path, v.clone()));
+            },
+            // Expression / SecretLiteral / List / Mode subtrees are
+            // non-addressable by predicates.
+            _ => {},
         }
     }
 }
@@ -51,54 +68,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn root_context_returns_literal() {
+    fn literal_field_is_visible_to_predicates() {
+        let fields = vec![Field::from(Field::string(FieldKey::new("name").unwrap()))];
         let mut values = FieldValues::new();
-        let fk = FieldKey::new("x").unwrap();
-        values.set(fk, FieldValue::Literal(json!(42)));
-        let ctx = RootContext(&values);
-        assert_eq!(ctx.get("x"), Some(&json!(42)));
-    }
-
-    #[test]
-    fn root_context_returns_none_for_expression() {
-        let mut values = FieldValues::new();
-        let fk = FieldKey::new("x").unwrap();
         values.set(
-            fk,
-            FieldValue::Expression(crate::expression::Expression::new("{{ $x }}")),
+            FieldKey::new("name").unwrap(),
+            FieldValue::Literal(json!("alice")),
         );
-        let ctx = RootContext(&values);
-        // Expressions don't resolve at this layer.
-        assert_eq!(ctx.get("x"), None);
+        let ctx = predicate_context_for(&fields, &values);
+        assert_eq!(
+            ctx.get(&FieldPath::parse("name").unwrap()),
+            Some(&json!("alice"))
+        );
     }
 
     #[test]
-    fn root_context_returns_none_for_missing() {
-        let values = FieldValues::new();
-        let ctx = RootContext(&values);
-        assert_eq!(ctx.get("missing"), None);
-    }
-
-    #[test]
-    fn root_context_hides_secret_literals_from_rules() {
+    fn pre_resolve_plaintext_secret_is_scrubbed_by_schema_type() {
+        // A Field::Secret holding a pre-resolve plaintext Literal MUST NOT
+        // enter the predicate context. The old runtime-tag scrub failed this.
+        let fields = vec![Field::from(Field::secret(
+            FieldKey::new("api_key").unwrap(),
+        ))];
         let mut values = FieldValues::new();
-        let fk = FieldKey::new("api_key").unwrap();
         values.set(
-            fk,
-            FieldValue::SecretLiteral(crate::secret::SecretValue::string("s3cr3t".to_owned())),
+            FieldKey::new("api_key").unwrap(),
+            FieldValue::Literal(json!("s3cr3t-plaintext")),
         );
-        let ctx = RootContext(&values);
-        assert_eq!(ctx.get("api_key"), None);
+        let ctx = predicate_context_for(&fields, &values);
+        assert!(
+            ctx.get(&FieldPath::parse("api_key").unwrap()).is_none(),
+            "secret-typed field must be excluded from the predicate context"
+        );
     }
 
     #[test]
-    fn object_context_hides_secret_literals_from_rules() {
-        let mut map = IndexMap::new();
-        map.insert(
-            FieldKey::new("token").unwrap(),
-            FieldValue::SecretLiteral(crate::secret::SecretValue::string("abc".to_owned())),
+    fn predicate_context_debug_redacts_keys_and_values() {
+        // Even for NON-secret fields that are legitimately in the context,
+        // Debug prints neither keys nor values (only a count). Pins the full
+        // "no keys, no values" redaction guarantee.
+        let fields = vec![Field::from(Field::string(FieldKey::new("region").unwrap()))];
+        let mut values = FieldValues::new();
+        values.set(
+            FieldKey::new("region").unwrap(),
+            FieldValue::Literal(json!("eu-secret-marker")),
         );
-        let ctx = ObjectContext(&map);
-        assert_eq!(ctx.get("token"), None);
+        let ctx = predicate_context_for(&fields, &values);
+        let dbg = format!("{ctx:?}");
+        assert!(
+            dbg.contains("PredicateContext"),
+            "must name the type: {dbg}"
+        );
+        assert!(
+            !dbg.contains("eu-secret-marker"),
+            "must not print values: {dbg}"
+        );
+        assert!(!dbg.contains("region"), "must not print keys: {dbg}");
     }
 }
