@@ -55,3 +55,23 @@ this PR; the prior fail-open is the §4.5 violation being closed.
   and moves report assembly fully validator-side; P1 leaves `run_root_rules`.
 - The `slot_bindings` confused-deputy (spec Non-goals) is untouched and
   unworsened — tracked separately.
+
+## Amendment (2026-05-15) — hidden-but-present `required` emission seam
+
+The validator policy engine owns the required-ness *decision*:
+`resolve_field_policies` computes `Requiredness` for every field and emits
+`required_failures` only for `Presence::Active`. The legacy safety contract is
+preserved: a field is skipped only when hidden AND absent; a hidden field with
+a present value is still structurally validated (so a smuggled `{{expr}}` in a
+no-payload Mode-variant placeholder cannot escape to `resolve`). Consequently,
+for the bounded corner `Presence != Active` ∧ value-present ∧
+`Requiredness::Required` ∧ absent-for-required, the **schema gate** emits the
+single `required` error, because the policy engine deliberately does not
+self-report for non-`Active`. This is a split of emission *site*, not of
+*ownership* (the validator remains the sole required-ness decision authority);
+it is intentional and behaviour-required. A later phase that centralises
+report assembly validator-side MUST **move** this emission into
+`resolve_field_policies` (validator as sole emitter) while **preserving** the
+behaviour — exactly one `required` error for a hidden+present+required+empty
+field — and MUST NOT delete the carve-out. Seam anchor: the
+`hidden_present_required_empty_emits_single_required` regression test.

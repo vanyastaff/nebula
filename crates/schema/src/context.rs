@@ -7,6 +7,14 @@
 //! pre-resolve a secret is `FieldValue::Literal(plaintext)`, so a
 //! runtime-tag check would leak it. Nested resolution is required: a
 //! flat top-level-only context makes every nested predicate fail open.
+//!
+//! A structured-typed field (`Object`/`List`/`Mode`) whose value is not the
+//! matching structured shape is non-addressable: scrub-by-type holds even
+//! for unvalidated [`FieldValues::set`] input — a `Literal` blob handed to a
+//! structured field never enters the context, so a secret nested inside such
+//! a blob cannot leak. Non-secret leaves nested under `Field::List` /
+//! `Field::Mode` are likewise unreachable to `When` predicates: a deliberate
+//! capability boundary matching prior behaviour, not only a secret guard.
 
 use indexmap::IndexMap;
 use nebula_validator::{PredicateContext, foundation::FieldPath};
@@ -30,7 +38,10 @@ pub fn predicate_context_for(fields: &[Field], values: &FieldValues) -> Predicat
 }
 
 /// Recurse fields <-> values in lockstep, scrubbing `Field::Secret` at every
-/// level and descending `Field::Object` <-> `FieldValue::Object`.
+/// level, descending `Field::Object` <-> `FieldValue::Object`, and treating
+/// any structured-typed field (`Object`/`List`/`Mode`) whose value is not the
+/// matching structured shape as non-addressable (no `Literal` blob escapes a
+/// structured field).
 fn collect_non_secret(
     fields: &[Field],
     values: &IndexMap<FieldKey, FieldValue>,
@@ -51,10 +62,17 @@ fn collect_non_secret(
             (Field::Object(obj), FieldValue::Object(sub)) => {
                 collect_non_secret(obj.fields.as_slice(), sub, Some(&path), out);
             },
+            // A structured-typed field with any non-matching value shape is
+            // non-addressable. This MUST precede the blanket `Literal` arm so
+            // a `Literal` blob handed to an `Object`/`List`/`Mode` field (e.g.
+            // via the public unvalidated `FieldValues::set`) is never pushed —
+            // it could otherwise carry a nested secret's plaintext.
+            (Field::Object(_) | Field::List(_) | Field::Mode(_), _) => {},
+            // Reached only for scalar-typed leaves now.
             (_, FieldValue::Literal(v)) => {
                 out.push((path, v.clone()));
             },
-            // Expression / SecretLiteral / List / Mode subtrees are
+            // Expression / SecretLiteral / nested non-literal subtrees are
             // non-addressable by predicates.
             _ => {},
         }
@@ -98,6 +116,45 @@ mod tests {
         assert!(
             ctx.get(&FieldPath::parse("api_key").unwrap()).is_none(),
             "secret-typed field must be excluded from the predicate context"
+        );
+    }
+
+    #[test]
+    fn structured_field_with_literal_blob_does_not_leak_nested_secret() {
+        // A `Field::Object` whose value is a `Literal` blob (the bypass shape
+        // reachable via the public unvalidated `FieldValues::set`) must NOT
+        // enter the context — the blob can carry a nested secret's plaintext.
+        let obj = Field::object(FieldKey::new("cfg").unwrap())
+            .add(Field::secret(FieldKey::new("the_secret").unwrap()));
+        let fields = vec![Field::from(obj)];
+        let mut values = FieldValues::new();
+        values.set(
+            FieldKey::new("cfg").unwrap(),
+            FieldValue::Literal(json!({ "the_secret": "PLAINTEXT-LEAK" })),
+        );
+        let ctx = predicate_context_for(&fields, &values);
+
+        assert!(
+            ctx.get(&FieldPath::parse("cfg").unwrap()).is_none(),
+            "structured-typed field must not contribute a Literal blob"
+        );
+        assert!(
+            ctx.get(&FieldPath::parse("/cfg/the_secret").unwrap())
+                .is_none(),
+            "nested secret must not be addressable"
+        );
+        // No plausible pointer yields the plaintext.
+        for ptr in ["cfg", "/cfg/the_secret", "the_secret", "/cfg"] {
+            if let Some(v) = ctx.get(&FieldPath::parse(ptr).unwrap()) {
+                assert!(
+                    !v.to_string().contains("PLAINTEXT-LEAK"),
+                    "secret plaintext leaked via {ptr}: {v}"
+                );
+            }
+        }
+        assert!(
+            !format!("{ctx:?}").contains("PLAINTEXT-LEAK"),
+            "redacted Debug must never carry the plaintext"
         );
     }
 

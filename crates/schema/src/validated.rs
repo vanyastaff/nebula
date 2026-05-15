@@ -1088,9 +1088,11 @@ struct LevelEntry<'a> {
 /// only input to the per-field step — not enum exhaustiveness; carrying the
 /// field reference inside `FieldPlan` is the future hardening.
 ///
-/// `value_present` mirrors the legacy `required` emptiness semantics: an
-/// empty string / empty collection / null counts as ABSENT for the required
-/// check (HTML-form parity), not merely `Option::is_some`.
+/// Each decl's `value_present` is computed here as
+/// `!is_absent_for_required(field, raw)`, mirroring the legacy `required`
+/// emptiness semantics: an empty string / empty collection / null counts as
+/// ABSENT for the required check (HTML-form parity), not merely
+/// `Option::is_some`.
 fn gate_and_validate_level(
     entries: &[LevelEntry<'_>],
     ctx: &nebula_validator::PredicateContext,

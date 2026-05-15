@@ -721,3 +721,38 @@ fn middle_skipped_field_does_not_shift_plan_to_field_mapping() {
         "f_last must be the error path, not shifted: {codes_paths:?}"
     );
 }
+
+#[test]
+fn hidden_present_required_empty_emits_single_required() {
+    // Seam anchor: a field that is hidden (VisibilityMode::Never) AND
+    // required, supplied with a PRESENT-but-empty value. The policy engine
+    // self-reports `required` only for Presence::Active, so the schema gate
+    // emits the single `required` for this Presence != Active corner. Pins
+    // exactly-one `required` on the field path.
+    let schema = Schema::builder()
+        .add(
+            Field::string(fk("secret_slot"))
+                .visible(VisibilityMode::Never)
+                .required(),
+        )
+        .build()
+        .expect("schema builds");
+
+    let values = FieldValues::from_json(json!({"secret_slot": ""})).unwrap();
+    let report = schema
+        .validate(&values)
+        .expect_err("hidden+present+required+empty must reject");
+
+    let errors: Vec<_> = report.errors().collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {:?}",
+        errors
+            .iter()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(errors[0].code, "required");
+    assert_eq!(errors[0].path.to_string(), "secret_slot");
+}
