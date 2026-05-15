@@ -1708,7 +1708,22 @@ is a quality refinement, not a leak fix; still required for P1.
 / opaque token so plan↔field desync is unrepresentable (type-system end
 state); (b) single schema→validator behavioral crossing + a test asserting it
 (delete `run_root_rules`/`validator_bridge.rs`, SRP lockdown #1 end state);
-(c) these belong to the P2 plan authored against P1's landed signatures.
+(c) **sole-emitter fold (panel-mandated):** move the hidden-but-present
+`required` emission out of the schema gate into `resolve_field_policies`
+(validator becomes the sole `required` emitter; delete the gate-side
+`required` builder) — P2's report-assembly centralization MUST *move* this
+emission site while *preserving* the behavior (one `required` error for a
+hidden+present+required+empty field), NOT delete the carve-out; back it with
+the seam-anchor regression test. The ADR-0052 amendment landed in P1 records
+this as intentional so P2 does not mistake it for a seam violation;
+(d) **security follow-up:** schema lint
+`mode.no_payload_variant_must_forbid_expression` — a no-payload Mode variant's
+placeholder field must pin `ExpressionMode::Forbidden`; otherwise a smuggled
+`{{expr}}` in the hidden placeholder passes `parse_at` and is evaluated at
+resolve (pre-existing hole, neither introduced nor worsened by P1; the
+end-to-end block today is `ExpressionMode::Forbidden` in `validate_field`,
+relied on by convention);
+(e) these belong to the P2 plan authored against P1's landed signatures.
 
 ## Self-Review
 
