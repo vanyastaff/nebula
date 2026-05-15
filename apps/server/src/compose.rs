@@ -54,7 +54,13 @@ pub enum TransportInitError {
     },
     /// Failed to construct a transport app context.
     #[error("{0}")]
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(feature = "postgres"),
+        expect(
+            dead_code,
+            reason = "constructed only in the postgres-gated build_pg_idempotency_store arm"
+        )
+    )]
     ContextFactory(String),
     /// `API_IDEMPOTENCY_BACKEND` selects a backend that the current build
     /// cannot satisfy.
@@ -123,7 +129,10 @@ impl Default for ServerRuntime<DefaultAppContextFactory> {
 impl<F: AppContextFactory> ServerRuntime<F> {
     /// Build a runtime with a custom app-context factory.
     #[must_use]
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "generic factory seam carried verbatim from server/mod.rs; trim decision deferred to Task 0.2"
+    )]
     pub fn new(context_factory: F) -> Self {
         Self { context_factory }
     }
