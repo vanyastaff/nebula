@@ -76,6 +76,11 @@ deny = [
     # `apps/server` composition root is still tracked as a separate follow-up;
     # until it exists this is the only place the two layers meet in-process.
     "nebula-api",
+    # nebula-credential-runtime is the Exec-tier owner of the credential
+    # management bounded context; its build() composes the engine-owned
+    # resolver + lease lifecycle internally. The edge is acyclic — engine
+    # does NOT depend back on runtime (see docs/adr/0052).
+    "nebula-credential-runtime",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-sandbox", wrappers = [
     "nebula-engine",
@@ -90,6 +95,9 @@ deny = [
     # backend introduced in Phase C. Same pattern as the engine dev-dep
     # carved out above for the §13 knife integration test.
     "nebula-credential-vault",
+    # nebula-credential-runtime composes the storage-owned layered
+    # CredentialStore stack (Scope/Audit/Cache/Encryption) inside build().
+    "nebula-credential-runtime",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
   { crate = "nebula-sdk", wrappers = [
     "nebula-examples",
@@ -136,17 +144,20 @@ deny = [
   # concrete credential types. Plugin authors depend on the contract crate
   # (`nebula-credential`), NOT on this one — see crate README and
   # `docs/superpowers/specs/2026-04-24-credential-redesign-strategy.md` §2.4.
-  # П1 ships only the empty scaffold; the wrappers allowlist starts empty and
-  # is widened in П3 when first-party concrete types land and composition
-  # roots wire them in.
-  # Allowed deps: nebula-credential, -macros, -core, -error, -schema (declared
-  # in crates/credential-builtin/Cargo.toml). Upward deps on Exec/API tier
-  # crates (nebula-engine, -storage, -api, -resource, -action, -runtime,
-  # -sandbox, -plugin, -sdk) are forbidden by the wrapper allowlists on each
-  # of those crates, which deliberately omit nebula-credential-builtin.
+  # The wrappers allowlist is widened when a composition-root crate wires
+  # the concrete types in via `register_builtins`. nebula-credential-runtime
+  # is exactly that root (Exec-tier owner of the credential management
+  # bounded context, docs/adr/0052). Upward deps from other Exec/API tier
+  # crates (nebula-engine, -storage, -api, -resource, -action, -sandbox,
+  # -plugin, -sdk) remain forbidden by the wrapper allowlists on each of
+  # those crates, which deliberately omit nebula-credential-builtin.
   { crate = "nebula-credential-builtin", wrappers = [
     "nebula-credential-builtin",
-  ], reason = "Built-in credential types are a first-party scaffold; П1 has only the self-reference (the crate's own dev-deps), П3+ extends this allowlist with composition-root crates that wire concrete types" },
+    # The credential-runtime composition root calls
+    # `nebula_credential_builtin::register_builtins` to populate the
+    # CredentialRegistry/CredentialDispatch (docs/adr/0052).
+    "nebula-credential-runtime",
+  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0052)" },
 
   # nebula-credential-vault is the first concrete LeasedProvider impl per
   # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault
@@ -161,13 +172,13 @@ deny = [
   # nebula-credential-runtime is the Exec-tier owner of the credential
   # management bounded context (CredentialService facade + type registry +
   # state-source resolution + observability). Narrowly supersedes the
-  # facade-ownership slice of ADR-0030 (see docs/adr/0052). This scaffold
-  # increment ships an empty crate; the wrapper allowlist starts at self
-  # only and is widened to { nebula-api, nebula-cli } when the facade lands
-  # and api depends on it (Plan 2).
+  # facade-ownership slice of ADR-0030 (see docs/adr/0052). The facade
+  # lands here; only the API and CLI composition roots may depend on it.
   { crate = "nebula-credential-runtime", wrappers = [
     "nebula-credential-runtime",
-  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (allowlist widened when the facade lands)" },
+    "nebula-api",
+    "nebula-cli",
+  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0052)" },
 ]
 skip = [
   "bitflags",

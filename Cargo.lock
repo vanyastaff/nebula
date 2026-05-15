@@ -3485,9 +3485,24 @@ dependencies = [
 name = "nebula-credential-runtime"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "chrono",
+ "nebula-core",
+ "nebula-credential",
+ "nebula-credential-builtin",
+ "nebula-engine",
  "nebula-error",
+ "nebula-eventbus",
+ "nebula-resilience",
+ "nebula-schema",
+ "nebula-storage",
  "pretty_assertions",
+ "serde_json",
  "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "trybuild",
 ]
 
 [[package]]

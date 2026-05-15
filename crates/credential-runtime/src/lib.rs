@@ -15,5 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod scope;
 
 pub use error::CredentialServiceError;
+pub use scope::{FixedScopeResolver, TenantScope};

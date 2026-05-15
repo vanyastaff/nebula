@@ -12,9 +12,25 @@ repository.workspace = true
 [dependencies]
 nebula-error = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+nebula-credential = { path = "../credential" }
+nebula-credential-builtin = { path = "../credential-builtin" }
+nebula-storage = { path = "../storage", features = ["credential-in-memory", "test-util"] }
+nebula-engine = { path = "../engine" }
+nebula-core = { path = "../core" }
+nebula-schema = { path = "../schema" }
+nebula-eventbus = { path = "../eventbus" }
+nebula-resilience = { path = "../resilience" }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+arc-swap = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+trybuild = "1.0"
 
 [features]
 default = []
