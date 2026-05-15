@@ -29,3 +29,9 @@ fn derive_resource_compile_pass_positive() {
     let t = trybuild::TestCases::new();
     t.pass("tests/probes/derive_positive_unit_resource.rs");
 }
+
+#[test]
+fn derive_emits_slot_accessor() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/trybuild/derive_slot_accessor.rs");
+}

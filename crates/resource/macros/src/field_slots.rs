@@ -1,23 +1,28 @@
-//! Field-level credential slot detection for `#[derive(Resource)]` (Phase 4 / ADR-0044).
+//! Field-level credential slot detection for `#[derive(Resource)]` (ADR-0044).
 //!
 //! Walks the struct fields and identifies `#[credential(...)]` attributes.
-//! For each, the field type must follow one of:
+//! Each slot field is a [`SlotCell`] cell holding the resolved guard — the
+//! framework swaps a rotated guard in through `&self` without `&mut` on the
+//! resource, so the cell wrapper is mandatory. The recognised shapes are:
 //!
-//! - `CredentialGuard<C>` — required + eager
-//! - `Option<CredentialGuard<C>>` — optional + eager
-//! - `Lazy<CredentialGuard<C>>` — required + lazy
-//! - `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
+//! - `SlotCell<CredentialGuard<C>>` — required + eager
+//! - `Option<SlotCell<CredentialGuard<C>>>` — optional + eager
+//! - `SlotCell<Lazy<CredentialGuard<C>>>` — required + lazy
+//! - `Option<SlotCell<Lazy<CredentialGuard<C>>>>` — optional + lazy
 //!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
-//! macro accepts both bare `CredentialGuard<...>` and fully-qualified
+//! macro accepts both bare `SlotCell<...>` / `CredentialGuard<...>` and
+//! fully-qualified `nebula_resource::SlotCell<...>` /
 //! `nebula_credential::CredentialGuard<...>`.
+//!
+//! [`SlotCell`]: nebula_resource::SlotCell
 //!
 //! Resources do not declare resource-typed slots — they ARE resources.
 //! `#[resource]` field attributes are rejected with a clear error.
 
 use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Field, Fields, GenericArgument, Ident, PathArguments, Result, Type};
 
 /// One parsed credential slot field.
@@ -129,6 +134,10 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs) -> Result<ParsedCredenti
 }
 
 /// Decode the field type, recognising the four allowed shapes.
+///
+/// Layering, outermost first: an optional `Option<…>` (optional slot), the
+/// mandatory `SlotCell<…>` cell, an optional `Lazy<…>` (lazy slot), then the
+/// required `CredentialGuard<C>` carrying the inner concrete credential `C`.
 fn decode_field_type(ty: &Type) -> Result<(bool, bool, Type)> {
     let (optional, after_option) = if let Some(inner) = strip_path_tail(ty, "Option") {
         (true, inner)
@@ -136,25 +145,35 @@ fn decode_field_type(ty: &Type) -> Result<(bool, bool, Type)> {
         (false, ty.clone())
     };
 
-    let (lazy, after_lazy) = if let Some(inner) = strip_path_tail(&after_option, "Lazy") {
+    let Some(after_cell) = strip_path_tail(&after_option, "SlotCell") else {
+        return Err(field_shape_error(ty));
+    };
+
+    let (lazy, after_lazy) = if let Some(inner) = strip_path_tail(&after_cell, "Lazy") {
         (true, inner)
     } else {
-        (false, after_option)
+        (false, after_cell)
     };
 
     let Some(inner) = strip_path_tail(&after_lazy, "CredentialGuard") else {
-        return Err(syn::Error::new_spanned(
-            ty,
-            format!(
-                "field with `#[credential]` must have type `CredentialGuard<C>` \
-                 (optionally wrapped in `Option<...>` and/or `Lazy<...>`) \
-                 — got: {}",
-                quote!(#ty),
-            ),
-        ));
+        return Err(field_shape_error(ty));
     };
 
     Ok((optional, lazy, inner))
+}
+
+/// Diagnostic for a `#[credential]` field that does not match a recognised
+/// slot-cell shape.
+fn field_shape_error(ty: &Type) -> syn::Error {
+    syn::Error::new_spanned(
+        ty,
+        format!(
+            "field with `#[credential]` must have type `SlotCell<CredentialGuard<C>>` \
+             (optionally wrapped in `Option<...>`, and/or with `Lazy<...>` between \
+             the cell and the guard) — got: {}",
+            quote!(#ty),
+        ),
+    )
 }
 
 /// Match `Wrapper<Inner>` by path-tail (last segment ident == `wrapper_name`).
@@ -205,4 +224,34 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> T
         .collect();
 
     quote! { #(#calls)* }
+}
+
+/// Per slot, emit a read accessor over the author-declared
+/// `SlotCell<CredentialGuard<C>>` field.
+///
+/// A pure derive macro cannot add or rewrite struct fields, and
+/// `ManagedResource` hands out `Arc<R>` (no `&mut R`). So the slot cell is
+/// declared by the author; the framework populates and rotates it through
+/// `&self` (`SlotCell::store`), and this accessor is the read side —
+/// `self.<field>.load()` returns the current `Arc<CredentialGuard<C>>`, or
+/// `None` until the framework binds it. No fields are added (ADR-0044).
+pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+    let accessors: Vec<TokenStream2> = slots
+        .iter()
+        .map(|slot| {
+            let field = &slot.field_ident;
+            let acc_ident = format_ident!("{}_slot", field);
+            let inner = &slot.inner_type;
+            quote! {
+                #[doc = "Resolved credential for this slot, or `None` until the framework binds it."]
+                pub fn #acc_ident(&self) -> ::std::option::Option<
+                    ::std::sync::Arc<::nebula_credential::CredentialGuard<#inner>>
+                > {
+                    self.#field.load()
+                }
+            }
+        })
+        .collect();
+
+    quote! { #(#accessors)* }
 }

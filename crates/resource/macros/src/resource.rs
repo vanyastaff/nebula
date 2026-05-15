@@ -6,11 +6,15 @@
 //!   attribute. The `create` body is left as `todo!()` so the implementor must provide one — the
 //!   macro emits the trait shape and the `key()` / metadata wiring only.
 //! - `impl DeclaresDependencies for Foo` enumerating credential slot fields.
+//! - An inherent `impl Foo` exposing one read accessor per credential slot:
+//!   `fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>`. The macro
+//!   adds no fields — the `SlotCell` is author-declared and the framework
+//!   populates/rotates it through `&self`.
 //!
 //! Field-level attributes recognised:
 //! - `#[credential]` / `#[credential(key = "...", purpose = "...")]` — declares a credential slot.
-//!   Field type must be `CredentialGuard<C>` (optionally wrapped in `Option<...>` and/or
-//!   `Lazy<...>`).
+//!   Field type must be `SlotCell<CredentialGuard<C>>` (optionally wrapped in `Option<...>`,
+//!   and/or with `Lazy<...>` between the cell and the guard).
 
 use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
@@ -47,6 +51,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     let slots = field_slots::parse_credential_slot_fields(fields)?;
     let slot_registrations = field_slots::emit_slot_field_registrations(&slots);
+    let slot_accessors = field_slots::emit_slot_accessors(&slots);
 
     let key_lit = &attrs.key;
     let config_ty = &attrs.config;
@@ -108,9 +113,19 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    // Inherent read accessors over the author-declared `SlotCell` slot
+    // fields. The macro adds no fields — the cell is declared by the author
+    // and populated/rotated by the framework through `&self` (ADR-0044).
+    let slot_accessor_impl = quote! {
+        impl #impl_generics #struct_name #ty_generics #where_clause {
+            #slot_accessors
+        }
+    };
+
     Ok(quote! {
         #resource_impl
         #deps_impl
         #topology_const
+        #slot_accessor_impl
     })
 }
