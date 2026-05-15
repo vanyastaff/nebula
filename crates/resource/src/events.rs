@@ -86,6 +86,30 @@ pub enum ResourceEvent {
         /// Human-readable description of the new gate state.
         state: String,
     },
+    /// A `#[credential]` slot was refreshed on this resource (engine fan-out).
+    SlotRefreshed {
+        /// The key of the resource whose slot was refreshed.
+        key: ResourceKey,
+        /// The slot name that was refreshed.
+        slot: String,
+    },
+    /// A `#[credential]` slot's credential was revoked; runtime tainted+drained.
+    SlotRevoked {
+        /// The key of the resource whose slot was revoked.
+        key: ResourceKey,
+        /// The slot name that was revoked.
+        slot: String,
+    },
+    /// The per-resource refresh hook failed or timed out. `error` is an
+    /// already-redacted string (NEVER credential material — PRODUCT_CANON §12.5).
+    SlotRefreshFailed {
+        /// The key of the resource whose slot refresh failed.
+        key: ResourceKey,
+        /// The slot name whose refresh failed.
+        slot: String,
+        /// Already-redacted error description.
+        error: String,
+    },
 }
 
 impl ResourceEvent {
@@ -101,7 +125,34 @@ impl ResourceEvent {
             | Self::ConfigReloaded { key }
             | Self::RetryAttempt { key, .. }
             | Self::BackpressureDetected { key }
-            | Self::RecoveryGateChanged { key, .. } => Some(key),
+            | Self::RecoveryGateChanged { key, .. }
+            | Self::SlotRefreshed { key, .. }
+            | Self::SlotRevoked { key, .. }
+            | Self::SlotRefreshFailed { key, .. } => Some(key),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slot_events_carry_no_credential_data() {
+        let k = ResourceKey::new("k").expect("valid key");
+        let e = ResourceEvent::SlotRefreshed {
+            key: k.clone(),
+            slot: "db".into(),
+        };
+        assert_eq!(e.key().map(ResourceKey::as_str), Some("k"));
+        let _ = ResourceEvent::SlotRevoked {
+            key: k.clone(),
+            slot: "db".into(),
+        };
+        let _ = ResourceEvent::SlotRefreshFailed {
+            key: k,
+            slot: "db".into(),
+            error: "transient: upstream 503".into(),
+        };
     }
 }
