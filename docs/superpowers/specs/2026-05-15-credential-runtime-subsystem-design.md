@@ -217,29 +217,43 @@ split to fix by relocation. The real gap is that the **П3 reference types
 `nebula-credential-builtin` exists to ship were never written** — its
 `sealed_caps` module has sat dormant since П1.
 
-Fix: write **3 net-new production-grade reference credentials** in
-`nebula-credential-builtin`, each exercising one dormant sealed capability
-(`BearerSealed`, `BasicSealed`, `SigningSealed`) via the `#[capability]`
-macro + `mod sealed_caps`. These demonstrate the П3 author pattern, take zero
-upper-tier dependencies (charter intact, `deny.toml` wrappers stay `{self}`),
-and add no importer churn. This delivers the user's "contract + 2–3 эталона"
-(2–3 reference impls in builtin) and activates the П1 scaffold for its stated
-purpose (lib.rs:30 — "becomes load-bearing in П3", Tech Spec §16.1).
+Fix: write **3 net-new production-grade static reference credentials** in
+`nebula-credential-builtin`, each mirroring the proven `BasicAuthCredential`
+shape (`crates/credential/src/credentials/basic_auth.rs` — `impl Credential`
++ `#[derive(Schema, Deserialize, Default)]` Properties + five
+`plugin_capability_report::Is*` = `false`). Zero upper-tier dependencies
+(charter intact, `deny.toml` wrappers stay `{self}`), zero importer churn.
+Delivers the user's "contract + 2–3 эталона" (2–3 reference impls in
+builtin).
+
+**`sealed_caps` / `#[capability]` activation is explicitly NOT in scope
+here.** The phantom-shim П3 work needs scheme-acceptance traits
+(`Accepts*`) and `dyn`-capability consumers that do not exist yet — that is
+a separate research-bearing concern, not credential-subsystem completion.
+`nebula-credential-builtin/src/lib.rs:30`'s `#[allow(dead_code)]`
+"`becomes load-bearing in П3`" stays accurate and dormant; this effort does
+not claim to reach phantom-shim П3.
+
+**Concrete reference set** (distinct verified-static schemes; final field
+names pinned in the plan):
+- `BearerTokenCredential` — `Scheme = State = SecretToken`
+  (`identity_state!` confirmed `scheme/secret_token.rs:45`), KEY
+  `"bearer_token"`, `AuthPattern::SecretToken`.
+- `SharedKeyCredential` — `Scheme = State = SharedKey`, KEY
+  `"shared_key"`, `AuthPattern::SharedSecret`. Plan adds
+  `identity_state!(SharedKey, "shared_key", 1);` to
+  `scheme/shared_key.rs` (additive one-liner mirroring
+  `secret_token.rs:45`; grep-verified absent first).
+- `SigningKeyCredential` — `Scheme = State = SigningKey`, KEY
+  `"signing_key"`, `AuthPattern::RequestSigning`. Plan adds
+  `identity_state!(SigningKey, "signing_key", 1);` to
+  `scheme/signing_key.rs` (same additive pattern, grep-verified first).
 
 `nebula_credential_builtin::register_builtins(&mut CredentialRegistry)`
-registers these 3 types; `nebula-credential-runtime` calls it (alongside the
-contract crate's own ApiKey/Basic/OAuth2 and plugin-discovered types) when
-constructing the `Arc<CredentialRegistry>` passed to the service builder.
-
-**Concrete reference set** (final names fixed in the plan after reading the
-`#[capability]` macro + an existing `Credential` derive for exact shape):
-- `BearerTokenCredential` — static opaque bearer, `SecretToken` scheme,
-  `BearerSealed`.
-- `BasicCredential` — username+password, `IdentityPassword` scheme,
-  `BasicSealed` (distinct from the contract crate's `BasicAuthCredential`:
-  this one is the sealed-cap reference, not the SDK-prelude type).
-- `SigningKeyCredential` — asymmetric signing material, `SigningKey`
-  scheme, `SigningSealed`.
+registers these 3 via `CredentialRegistry::register(_, env!("CARGO_CRATE_NAME"))`;
+`nebula-credential-runtime` calls it (alongside the contract crate's own
+ApiKey/Basic/OAuth2 and plugin-discovered types) when constructing the
+`Arc<CredentialRegistry>` passed to the service builder.
 
 ## 10. A — API wiring
 
@@ -315,9 +329,10 @@ Detailed task graph is produced by `writing-plans`. High-level phases:
 
 1. **Crate scaffold + layer wiring:** create `nebula-credential-runtime`,
    `deny.toml` wrappers, ADR-0052 draft.
-2. **C — net-new П3 reference types** in `nebula-credential-builtin`
-   (3 sealed-cap credentials + `register_builtins`); no relocation, no
-   importer churn (grep-gate verdict §3.2).
+2. **C — 3 net-new static reference credentials** in
+   `nebula-credential-builtin` (mirror `BasicAuthCredential`) +
+   `register_builtins`; no relocation, no importer churn, no
+   `#[capability]`/phantom-shim (grep-gate verdict §3.2, §9).
 3. **Facade core:** typestate builder, crate-private layered-store
    composition, `CredentialServiceError`, validation pipeline.
 4. **B — `CredentialObserver`** (events + metrics + spans + resilience
