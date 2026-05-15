@@ -284,10 +284,23 @@ no panic path.
   `CredentialTypeInfo.schema` is populated by `ValidSchema::json_schema()`;
   credential `data` request body stays `serde_json::Value`; the write path
   validates `data` against the resolved `ValidSchema` before persist.
-- **Housekeeping (separate trivial PR, flagged not fixed here):**
-  `docs/adr/` has a `0042` filename collision — `0042-layered-retry.md` and
-  `0042-node-binding-mechanism.md` (the README index lists only the latter).
-  Renumber one.
+- **ADR numbering landscape (read before allocating 0052).** Three ADR
+  number spaces are in play and have diverged: (1) the canon archive
+  `C:/Users/vanya/RustroverProjects/docs/adr/` holds `0001–0041` (the
+  authoritative canon ADRs cited by this spec — `PRODUCT_CANON.md` 4/27,
+  `INTEGRATION_MODEL.md` 4/24, all real and current; that directory ALSO
+  contains stale working logs under `superpowers/`, `tracking/`, `drafts/`
+  which are NOT authority) and now also a fresh external
+  `0042-tool-provider-typed-resource-tools.md` (5/15) — i.e. the external
+  archive advanced its own 0042; (2) this worktree's `docs/adr/` holds the
+  M6/M11 cascade `0042–0051` per its README convention, with a pre-existing
+  in-worktree `0042` filename collision (`0042-layered-retry.md` vs
+  `0042-node-binding-mechanism.md`; README indexes only the latter). **ADR-0052
+  is allocated deliberately in the worktree cascade space** (next free after
+  the worktree's 0051), because the schema-seam decision belongs to the M-cascade
+  ADR set, not the external canon archive. Housekeeping (separate trivial PR,
+  not fixed here): renumber one of the in-worktree `0042` files; the external
+  vs worktree 0042 divergence is a pre-existing archive split, out of scope.
 
 ### Phasing
 
