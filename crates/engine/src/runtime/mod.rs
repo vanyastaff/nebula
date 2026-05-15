@@ -27,6 +27,7 @@
 pub mod blob;
 pub mod data_policy;
 pub mod error;
+pub(crate) mod plugin_pool;
 pub mod queue;
 pub mod registry;
 #[allow(

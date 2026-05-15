@@ -3849,6 +3849,7 @@ dependencies = [
  "nebula-plugin-sdk",
  "nix 0.31.2",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror",
  "tokio",
