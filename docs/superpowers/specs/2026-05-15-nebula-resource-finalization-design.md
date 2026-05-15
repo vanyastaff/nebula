@@ -19,9 +19,14 @@
    `OutcomeBoundCounters`, `RefreshOutcome/RevokeOutcome/RotationOutcome`) was
    **deleted** in Phase 4 because every signature referenced the now-removed
    `R::Credential` projection (`PHASE4_BLOCKED.md §1`).
-2. **`Manager::register_from_value<R>(json, …)`** — JSON/template config path is a
-   **stub** (`PHASE4_BLOCKED.md §2`). This is the only bridge from stored
-   `ResourceEntry.config` (JSON) to a typed registration.
+2. **Engine-side `kind → registrar` bridge** — the resource-side
+   `Manager::register_from_value<R>(json, expr_engine, slot_bindings, …)` is
+   **verified implemented** (`manager/mod.rs:611-681`: template resolve +
+   schema validate + deserialize + dispatch to typed `register`) —
+   `PHASE4_BLOCKED.md §2`'s "stubbed" note is **stale** (landed since). The
+   real remaining gap is the engine-side erased `kind: &str → registrar`
+   indirection from `PluginRegistry` so a stored `ResourceEntry.kind` string
+   reaches the right typed `register_from_value::<R>`.
 3. **API** — `crates/api/src/handlers/resource.rs` is a 501 stub per ADR-0047;
    `ResourceRepo`+`ResourceEntry` exist in `crates/storage/src/repos/resource.rs`
    but are **not wired into `AppState`**.
@@ -174,7 +179,7 @@ impl Manager {
 
 | # | Abuse | Invariant enforced by this design |
 |---|---|---|
-| 1 | Cross-tenant dedup: README dedups single-runtime topologies by config `fingerprint()`; two tenants → one runtime → credential bleed | The dedup fingerprint **must** incorporate the resolved credential-slot identity (CredentialId per slot). Track A audits `fingerprint()` and, if slot-identity is absent, **fixes it** (treated as a real bug, not a hand-wave). Test: two scopes, same `R`, different credential per slot ⇒ two distinct runtimes. |
+| 1 | Cross-tenant dedup: `ResourceConfig::fingerprint()` **defaults to `0`** (`resource.rs:64-66`) — every config of a type collapses to one runtime regardless of resolved credential → cross-tenant bleed | **Confirmed bug.** The dedup key is fixed **structurally at the `Manager` level**: the dedup tuple becomes `(R::key(), ScopeLevel, slot-identity-hash)` where slot-identity-hash is derived from the resolved `CredentialKey`/`CredentialId` per `#[credential]` slot — **independent of the author's `fingerprint()`** (relying on authors to override `fingerprint()` is discipline-based and rejected, `feedback_type_enforce_not_discipline`). Test: two scopes, same `R`, default `fingerprint()`, different credential per slot ⇒ two distinct runtimes. |
 | 2 | Revoke race on shared runtime (ADR-0036: zero authenticated traffic post-revoke) | Ordering, engine-driven: engine marks credential `revoking` → `Manager::revoke_slot` taints the runtime (reject new acquires via existing guard `tainted`) → drains in-flight `ResourceGuard`s via `ReleaseQueue` + `drain_tracker` → reports → engine completes revoke. No new acquire observes the revoked credential. |
 | 3 | Secret in config JSON via API (ADR-0028 §7) | `register_from_value(json)` validates against `<R::Config as HasSchema>::schema()`; `ResourceConfig` carries no secrets by §3.5 (slots are credential *references* by key/id). API DTOs use ADR-0047 wrappers — zero `nebula-core`/`engine`/`storage` types in the wire schema. |
 | 4 | Type confusion `kind:String → R` in `register_from_value` | `kind → registrar` is a **closed allowlist** built from `PluginRegistry` (INTEGRATION_MODEL §114-120 closed dependency graph), never reflection. Unknown `kind` ⇒ typed activation error, never a silent runtime grab. |
@@ -184,11 +189,22 @@ impl Manager {
 ### Track A — §M11.5 per-slot rotation (engine-owned fan-out)
 
 **`nebula-resource` changes:**
-- `resource.rs`: replace `on_credential_refresh(&mut self, slot_name)` with the
-  D2 `&self` + `&Self::Runtime` pair (`on_credential_refresh` +
-  `on_credential_revoke`). Update the `#[derive(Resource)]` macro
-  (`crates/resource/macros/src/resource.rs`) to emit slots behind per-slot
-  `ArcSwap` and an accessor; no `&mut self` anywhere in generated code.
+- **Slot-storage substrate (verified absent today).** `#[derive(Resource)]`
+  currently emits only `DeclaresDependencies` + a `todo!()` `create` body
+  (`macros/src/resource.rs:60-94`); **nothing stores a resolved
+  `CredentialGuard<C>` on a resource instance at runtime** — the "slots
+  already populated on `&self`" comment in `resource.rs` has no implementing
+  code. Track A builds the substrate: a per-slot `Cell<CredentialGuard<C>>`
+  (the existing lock-free `ArcSwapOption` cell, `cell.rs:10-46`) stored on
+  `ManagedResource`, plus a generated typed accessor. `CredentialGuard` is
+  `!Clone` + `Drop`-zeroizing (`credential/src/secrets/guard.rs:36-64`) — the
+  cell holds `Arc<CredentialGuard<C>>` so swap does not clone secret material.
+- `resource.rs`: replace `on_credential_refresh(&mut self, slot_name)`
+  (`resource.rs:289-295`) with the D2 `&self` + `&Self::Runtime` pair
+  (`on_credential_refresh` + `on_credential_revoke`), async default no-op.
+  Update `#[derive(Resource)]` (`macros/src/resource.rs`,
+  `macros/src/field_slots.rs:180-208`) to emit the slot cells + accessor;
+  no `&mut self` anywhere in generated code.
 - `manager/mod.rs`: add `refresh_slot` / `revoke_slot` (the D1 port). They
   resolve `(key, scope)` to the live `ManagedResource`, dispatch through
   `TopologyRuntime` to invoke the hook with `&Self::Runtime`. Per-topology:
@@ -202,8 +218,11 @@ impl Manager {
   in the payload (engine owns that mapping).
 - `error.rs`: add typed variants for slot-refresh failure paths; keep the
   existing `nebula_error::Classify` impl coherent (category mapping).
-- Fingerprint fix (abuse #1) in the dedup path (`registry.rs` /
-  `runtime/*` fingerprint).
+- Dedup-key fix (abuse #1): `Manager` register/acquire path
+  (`manager/mod.rs:265,423` `config.fingerprint()` call sites +
+  `runtime/pool.rs:138` `current_fingerprint`) — the dedup key gains a
+  structural slot-identity component derived from resolved `CredentialKey`
+  per slot, independent of the (default-`0`) author `fingerprint()`.
 - DoD per operation: typed `Error` variant + `tracing` span
   (`nebula.resource.slot_refresh`, fields: `key`, `slot`, `topology`,
   duration; **never** credential material) + `ResourceEvent` + metrics
@@ -244,12 +263,16 @@ revoke. Invariant: no acquire after taint observes the revoked credential.
 
 ### Track B — JSON/typed registration bridge
 
-- `nebula-resource`: implement `Manager::register_from_value<R>(json,
-  expr_engine, …)`: deserialize `R::Config` from JSON, resolve `{{ … }}`
-  templates via `nebula_expression` (the `cache` feature is already enabled),
-  validate against `<R::Config as HasSchema>::schema()`
-  (`nebula_schema::ValidSchema`), then dispatch into the existing typed
-  `register::<R>(…)`. Reject secret-shaped config (abuse #3).
+- `nebula-resource`: **verified already implemented** —
+  `Manager::register_from_value<R>(config_json, expr_engine, slot_bindings,
+  resource, scope, topology, resilience, recovery_gate)` at
+  `manager/mod.rs:611-681` already resolves `{{ … }}` templates via
+  `nebula_expression`, validates against `<R::Config as HasSchema>::schema()`,
+  deserializes, and dispatches into typed `register()`. Track B's
+  resource-side work is limited to: (a) a regression test for secret-shaped
+  config rejection (abuse #3) if not already covered, (b) confirming
+  `slot_bindings: HashMap<String, CredentialKey>` is the seam the engine
+  reverse-index (Track A) keys off. No re-implementation.
   Authority: `deny.toml:121-133` already whitelists the
   `nebula-resource → nebula-expression` edge with the reason "ADR-0043 §9 /
   Phase 9: register_from_value bridges resource config to expression engine for
@@ -394,7 +417,11 @@ only after this gate passes with Tracks A/B/C landed.
 
 None. D1/D2/D3 resolved by panel + owner; abuse invariants fixed; non-goals
 explicit; doc-authority topology + the stale Apr-24 concerns register + the
-missing master plan reconciled in §1.1 / Track D (verified 2026-05-15:
-MATURITY taxonomy is `frontier→stable`, deny.toml edge pre-declared,
-R-040 already resolved). The 4 plan tracks are dependency-ordered: A
+missing master plan reconciled in §1.1 / Track D. Source-verified 2026-05-15:
+MATURITY taxonomy is `frontier→stable`; `deny.toml:121-133` edge pre-declared;
+R-040 resolved (`deny.toml:108`); `register_from_value` **already implemented**
+(`manager/mod.rs:611-681`) so Track B is engine-side-only; slot runtime storage
+**absent today** (Track A builds the substrate); `fingerprint()` defaults to
+`0` (`resource.rs:64-66`) so abuse #1 is a confirmed bug fixed structurally at
+the `Manager` dedup key. The 4 plan tracks are dependency-ordered: A
 independent; B before C; D is closure (ADR-0052 + MATURITY + docs).
