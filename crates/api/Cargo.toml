@@ -11,18 +11,6 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 
-[[bin]]
-name = "nebula-server"
-path = "src/bin/nebula-server.rs"
-
-[[bin]]
-name = "nebula-webhook"
-path = "src/bin/nebula-webhook.rs"
-
-[[bin]]
-name = "nebula-realtime"
-path = "src/bin/nebula-realtime.rs"
-
 [dependencies]
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }

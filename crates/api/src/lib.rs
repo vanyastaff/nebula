@@ -68,7 +68,6 @@ pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod routes;
-pub mod server;
 pub mod services;
 pub mod state;
 pub mod telemetry_init;
