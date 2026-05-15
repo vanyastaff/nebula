@@ -12,9 +12,12 @@ use crate::{BearerTokenCredential, SharedKeyCredential, SigningKeyCredential};
 
 /// Register every first-party reference credential into `registry`.
 ///
-/// First-wins on duplicate KEY (Tech Spec §15.6) — a [`RegisterError`]
-/// surfaces the colliding key to the operator; the registry is unchanged
-/// for the rejected entry.
+/// Fail-closed on duplicate KEY (Tech Spec §15.6): if a KEY is already
+/// present the second registration is **rejected** with
+/// [`RegisterError::DuplicateKey`], the first registration remains
+/// authoritative, and `registry` is left unchanged for the rejected
+/// entry. This is not silent "first-wins" — the collision surfaces as an
+/// error the caller must handle.
 ///
 /// # Errors
 ///
