@@ -13,7 +13,9 @@
 //! `Resource::create(&self, ctx)` no longer takes an explicit
 //! `scheme: &<R::Credential as Credential>::Scheme` argument: the framework
 //! resolves every declared `#[credential]` slot **before** invoking
-//! `create`, so the implementation reads credentials directly off `&self`.
+//! `create`. Each slot field is a `SlotCell<CredentialGuard<C>>` cell; the
+//! implementation reads the resolved guard through the `#[derive(Resource)]`-
+//! emitted `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`).
 //!
 //! Per-credential rotation is exposed via
 //! [`Resource::on_credential_refresh`], which receives the **slot name**
@@ -257,10 +259,12 @@ pub trait Resource: Send + Sync + 'static {
 
     /// Creates a new runtime instance from config.
     ///
-    /// Credential slot fields declared via `#[credential(key = "...")]`
+    /// Credential slot cells declared via `#[credential(key = "...")]`
     /// are already populated on `&self` by the framework before this
-    /// call (per ADR-0044). Implementations read them directly off
-    /// `self.<field_name>`.
+    /// call (per ADR-0044). Implementations read each resolved guard
+    /// through the derive-emitted `self.<field>_slot()` accessor
+    /// (`Option<Arc<CredentialGuard<C>>>`) — handling the `None`
+    /// (unbound) case explicitly — never off the raw cell field.
     fn create(
         &self,
         config: &Self::Config,
