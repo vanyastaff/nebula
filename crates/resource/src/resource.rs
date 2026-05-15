@@ -299,7 +299,7 @@ pub trait Resource: Send + Sync + 'static {
     }
 
     /// Called by the engine fan-out when a slot's credential is revoked.
-    /// Post-invocation invariant (ADR-0036): the resource emits no further
+    /// Post-invocation invariant (ADR-0044): the resource emits no further
     /// authenticated traffic on the revoked credential. Default: no-op
     /// (the engine still taints + drains the runtime around this call).
     fn on_credential_revoke(

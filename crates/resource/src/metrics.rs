@@ -6,10 +6,11 @@
 //! point-in-time view as [`ResourceOpsSnapshot`].
 //!
 //! Per ADR-0044 the credential rotation/revoke counters that the previous
-//! `Resource::Credential` model owned have been removed; per-slot rotation
-//! metrics will be re-introduced when the new
-//! `on_credential_refresh(&mut self, slot_name)` fan-out is implemented
-//! (see `.ai-factory/PHASE4_BLOCKED.md`).
+//! `Resource::Credential` model owned have been removed. Per-slot rotation
+//! counters are not yet wired; the hook shape is
+//! `on_credential_refresh(&self, slot_name, runtime)` and
+//! `on_credential_revoke(&self, slot_name, runtime)` per ADR-0044
+//! (see `.ai-factory/PHASE4_BLOCKED.md` for the deferral rationale).
 
 use nebula_metrics::{Counter, MetricsRegistry};
 use nebula_metrics::{
@@ -112,9 +113,9 @@ impl ResourceOpsMetrics {
 /// Per-`outcome` counter snapshot. Mirrors the
 /// `nebula_metrics::naming::rotation_outcome` closed label set.
 ///
-/// Retained for forward-compatibility with the per-slot rotation metrics
-/// that will reappear when the new `on_credential_refresh(slot_name)`
-/// fan-out is implemented (see `.ai-factory/PHASE4_BLOCKED.md`).
+/// Retained for forward-compatibility with the per-slot rotation metrics;
+/// counters are not yet wired into Manager::{refresh_slot,revoke_slot}
+/// (see `.ai-factory/PHASE4_BLOCKED.md` for the deferral rationale).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OutcomeCountersSnapshot {
     /// Resources that completed the dispatch hook with `Ok(())`.
