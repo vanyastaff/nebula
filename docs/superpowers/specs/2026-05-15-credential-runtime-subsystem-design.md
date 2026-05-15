@@ -131,6 +131,23 @@ cross-cutting `nebula-eventbus`/`nebula-metrics`/`nebula-error`/
 
 A missing mandatory collaborator is a **compile error**, not a runtime panic.
 
+**Panel refinement (2026-05-15, user-empowered panel, supersedes the
+12-phantom typestate):** the phantom-typestate builder is replaced by the
+simpler idiomatic form — `CredentialServiceBuilder::new(<all mandatory
+by value>)` + chained optional setters + an **infallible `build(self)`**.
+Same compile-time guarantee (you cannot call `new` without every
+mandatory argument), but **zero `unwrap`/`Option` by construction**
+(mandatory fields are owned values, not `Option`s unwrapped at build).
+Drastically simpler/maintainable ("великолепно", not baroque). Tenant
+isolation is enforced at the **facade operation level**: `create` writes
+`StoredCredential.metadata["owner_id"] = scope.owner_id()`; `get/list/
+update/delete` load then reject `owner_id != scope.owner_id()` with
+`CredentialServiceError::NotFound` (no cross-tenant existence leak). The
+crate-private store stack is `AuditLayer(CacheLayer(EncryptionLayer(B)))`
+composed once at `build()` (storage `ScopeLayer`'s per-call resolver
+conflicts with build-once; facade-level check is equivalent, build-once
+safe, and directly testable).
+
 **Recon-driven refinement (2026-05-15, verified against engine/storage):**
 `CredentialStore` and `PendingStateStore` use RPITIT (`-> impl Future`) +
 generic methods → **not object-safe**; `Arc<dyn CredentialStore>` is not a
