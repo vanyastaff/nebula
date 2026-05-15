@@ -521,7 +521,21 @@ Expected: FAIL — `cannot find type `FieldPolicyDecl``.
 
 - [ ] **Step 3: Implement the decl/plan structs + entry point**
 
-First, extend the imports with the types this task adds (Task 3 already
+First, replace the module doc-comment block (the `//!` lines, including
+the scaffolding line "Imports are added by later tasks (Task 3 adds …;
+Task 4 adds …)") with this permanent, plan-independent description — no
+plan/task references may remain in committed code (project rule):
+
+```rust
+//! Field visibility / required policy evaluation (ADR-0052).
+//!
+//! Owns the *engine* for `When(Rule)` conditions. Callers get typed
+//! `Presence`/`Requiredness` verdicts — never a raw `bool` they could
+//! forget to branch on. `resolve_field_policies` is the single entry
+//! point `nebula-schema`'s `validate` uses.
+```
+
+Then, extend the imports with the types this task adds (Task 3 already
 added `use crate::rule::{PredicateContext, Rule};`). Add a second `use`
 line right below it:
 
