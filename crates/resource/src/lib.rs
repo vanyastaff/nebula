@@ -52,6 +52,7 @@ pub mod reload;
 pub mod resource;
 pub mod resource_ref;
 pub mod runtime;
+pub mod slot;
 pub mod state;
 pub mod topology;
 pub mod topology_tag;
@@ -101,6 +102,7 @@ pub use resource::{
     AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
 };
 pub use resource_ref::ResourceRef;
+pub use slot::SlotCell;
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{
