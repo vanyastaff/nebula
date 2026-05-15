@@ -719,8 +719,13 @@ impl Manager {
     /// rejects new leases once `revoke_slot` has tainted the resource —
     /// the same single-funnel discipline `lookup` uses for the
     /// `shutting_down` race. Diagnostic paths (`health_check`,
-    /// `pool_stats`, `reload_config`, `warmup_pool`) intentionally use the
-    /// plain `lookup` so they keep working on a tainted resource.
+    /// `pool_stats`, `reload_config`) intentionally use the plain
+    /// `lookup` so they keep working on a tainted resource.
+    ///
+    /// `warmup_pool` is intentionally routed through here (taint-gated),
+    /// **not** the plain `lookup`: it runs `R::create` to materialize new
+    /// instances against the credential, so it is acquire-like and must
+    /// be blocked once the resource is tainted by a revoke.
     fn lookup_for_acquire<R: Resource>(
         &self,
         scope: &ScopeLevel,

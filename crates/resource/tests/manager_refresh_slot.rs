@@ -218,49 +218,119 @@ async fn refresh_slot_invokes_hook_with_runtime() {
     );
 }
 
+/// Proves the safety-critical happens-before of `revoke_slot`:
+/// `taint` → (`wait_for_drain` blocks on a still-held guard) → (guard
+/// dropped) → `on_credential_revoke` fires *last*.
+///
+/// The earlier version dropped the in-flight guard *before* calling
+/// `revoke_slot`, so `wait_for_drain` early-returned (`active == 0`) and
+/// the drain never actually waited — ordering was only inferred. Here a
+/// real `ResourceGuard` is held for the whole window so the drain is
+/// genuinely parked on it, and we observe the revoke future as *pending*
+/// while a new acquire is *already rejected* and the hook has *not* run.
 #[tokio::test]
 async fn revoke_slot_taints_then_drains_then_hooks() {
+    use std::sync::Arc;
+
     use nebula_core::scope::Scope;
-    use nebula_error::Classify;
+    use nebula_error::{Classify, ErrorCategory};
     use nebula_resource::AcquireOptions;
     use tokio_util::sync::CancellationToken;
 
     let (mgr, key, ledger) = registered().await;
+    // `Manager` is shared via `Arc<Manager>`; wrap so the revoke can run
+    // on a task while we keep an in-flight guard held on this task.
+    let mgr = Arc::new(mgr);
 
-    // Acquire then drop a guard so an in-flight count exists and drains.
-    {
-        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-        let _g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
-            .await
-            .expect("acquire must succeed");
+    // 1. Acquire a *real* in-flight guard and KEEP it held. This keeps the
+    //    shared drain counter at 1, so `wait_for_drain` inside `revoke_slot`
+    //    must actually block (it does not early-return on `active == 0`).
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let in_flight_guard = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    // 2. Spawn `revoke_slot` so it runs *while the guard is still held*.
+    //    It taints first, then parks in `wait_for_drain` on our guard.
+    let revoke_handle = {
+        let mgr = Arc::clone(&mgr);
+        let key = key.clone();
+        tokio::spawn(async move { mgr.revoke_slot(&key, ScopeLevel::Global, "db").await })
+    };
+
+    // 3. While the guard is held and revoke is in-flight, prove the
+    //    happens-before precondition:
+    //
+    //    (a) the taint is ALREADY active — a fresh acquire is rejected
+    //        with the exact `Cancelled` category, even though the revoke
+    //        future has not resolved; and
+    //    (b) the revoke task is still pending (parked in `wait_for_drain`
+    //        on our held guard) and the revoke hook has NOT fired.
+    //
+    // Give the spawned task a few scheduler turns to reach the taint +
+    // `wait_for_drain` park point without an arbitrary sleep.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
     }
 
-    mgr.revoke_slot(&key, ScopeLevel::Global, "db")
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let rejected = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
-        .expect("revoke_slot must succeed");
+        .expect_err("acquire while revoke in-flight must be rejected (resource tainted)");
+    assert_eq!(
+        rejected.category(),
+        ErrorCategory::Cancelled,
+        "tainted resource must reject new acquires with Cancelled, got: {rejected}"
+    );
 
+    // The revoke future must still be pending: it is blocked in
+    // `wait_for_drain` because we still hold `in_flight_guard`. A short
+    // bounded timeout that *expires* is the proof of "drain is waiting".
+    let mut revoke_handle = revoke_handle;
+    let still_pending =
+        tokio::time::timeout(std::time::Duration::from_millis(150), &mut revoke_handle).await;
+    assert!(
+        still_pending.is_err(),
+        "revoke_slot must still be pending while the in-flight guard is held \
+         (blocked in wait_for_drain)"
+    );
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        0,
+        "on_credential_revoke must NOT fire while drain is still waiting on the held guard"
+    );
+
+    // 4. Drop the in-flight guard → drain counter hits 0 → `wait_for_drain`
+    //    wakes → `revoke_slot` proceeds to the hook and returns.
+    drop(in_flight_guard);
+
+    revoke_handle
+        .await
+        .expect("revoke task must not panic")
+        .expect("revoke_slot must succeed once the guard is dropped");
+
+    // The hook fired exactly once, *after* the taint and *after* the drain
+    // unblocked — a genuine taint → drain-blocks → guard-dropped → hook-last
+    // happens-before proof.
     assert_eq!(
         ledger.revoke_calls.load(Ordering::SeqCst),
         1,
-        "on_credential_revoke must fire exactly once"
+        "on_credential_revoke must fire exactly once, as the last step"
     );
 
-    // Taint must have taken effect *before* the revoke hook ran (the hook
-    // is the last step of `revoke_slot`, so by the time it returned a new
-    // acquire is already rejected). This is the observable proof that taint
-    // preceded the drain+hook, reusing the existing guard-taint mechanism.
+    // Resource stays tainted after revoke: a post-revoke acquire is still
+    // rejected with the exact `Cancelled` category.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-    let err = mgr
+    let post = mgr
         .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
-        .expect_err("acquire after revoke must be rejected (resource tainted)");
-    assert!(
-        matches!(
-            err.category(),
-            nebula_error::ErrorCategory::Cancelled | nebula_error::ErrorCategory::Internal
-        ),
-        "tainted resource must reject new acquires, got: {err}"
+        .expect_err("acquire after revoke must still be rejected (resource tainted)");
+    assert_eq!(
+        post.category(),
+        ErrorCategory::Cancelled,
+        "post-revoke acquire must still be rejected with Cancelled, got: {post}"
     );
 }
 
