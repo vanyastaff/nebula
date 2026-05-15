@@ -2,7 +2,7 @@
 name: nebula-sandbox
 role: Process Sandboxing (Correctness Boundary)
 status: partial
-last-reviewed: 2026-04-20
+last-reviewed: 2026-05-15
 canon-invariants: [L1-4.5, L1-7.1, L1-12.6]
 related: [nebula-plugin-sdk, nebula-plugin, nebula-runtime]
 ---
@@ -11,46 +11,58 @@ related: [nebula-plugin-sdk, nebula-plugin, nebula-runtime]
 
 ## Purpose
 
-A workflow engine that dispatches to community plugins needs an isolation boundary between the
-engine host and plugin code. That boundary must be honest about what it actually provides:
-in-process execution for trusted built-in actions (cooperative cancellation and capability
-checks, not OS-level isolation) and child-process execution for community plugins over a duplex
-JSON envelope protocol (the trust model canon §12.6 names explicitly). `nebula-sandbox` defines
-and owns both execution modes, the capability declaration model, the plugin discovery path, and
-the OS-level hardening primitives — while being clear that **this is not a security boundary
-against malicious native code**.
+A workflow engine that dispatches to community plugins needs a transport between the engine
+host and plugin code that is honest about what it actually provides: child-process execution
+for community plugins over a duplex JSON envelope protocol (the trust model canon §12.6 names
+explicitly). `nebula-sandbox` is a **transport-only Plugin-Proto leaf**: it owns
+`ProcessSandbox` (the duplex envelope transport), the pure credential-scope identity
+(`ScopeHash`), and the Linux OS-level hardening primitives. It does **not** own discovery, the
+registry adapters, the runner abstraction, or any in-process execution path — those were
+relocated (see "Relocation" below). There is **no per-plugin capability/scope model** —
+egress, credential, and filesystem mediation is the broker's responsibility (ADR-0025), not
+this crate — and **this is not a security boundary against malicious native code**.
 
 ## Role
 
-*Process Sandboxing (Correctness Boundary).* Provides `InProcessSandbox` (trusted dispatch
-with cooperative cancellation) and `ProcessSandbox` (child-process JSON envelope broker per
-ADR 0006). Correctness and least privilege for accidental misuse — not attacker-grade isolation
-against malicious native code. Canon §12.6 is the normative statement.
+*Process Sandbox Transport (Correctness Boundary).* Provides `ProcessSandbox` — the host side
+of the child-process duplex JSON-envelope transport per ADR 0006. Correctness and least
+privilege for accidental misuse — not attacker-grade isolation against malicious native code.
+Canon §12.6 is the normative statement. A leaf crate with no Business-tier dependency.
 
 ## Public API
 
-- `InProcessSandbox` — trusted in-process execution for built-in actions. No OS isolation.
-  Capability checks via `SandboxedContext::check_cancelled`. Correctness boundary only.
 - `ProcessSandbox` — child-process execution over a duplex line-delimited JSON envelope
-  (ADR 0006 Phase 1). Long-lived plugin process; spawn cost paid once. Sequential dispatch
-  within a single plugin process today.
-- `ProcessSandboxHandler` — bridges `ProcessSandbox` into `ActionRegistry` so the runtime
-  sees a unified `ActionExecutor`.
-- `SandboxRunner`, `ActionExecutor`, `ActionExecutorFuture`, `SandboxedContext` — core sandbox
-  runner abstraction used by `nebula-runtime`.
-- `capabilities::PluginCapabilities` — iOS-style per-plugin capability declarations
-  (network / filesystem / env allowlists). Sourced from workflow-config at spawn time
-  (ADR-0025 D4); per-call enforcement gate is not yet wired (see Appendix).
-- `discovery` module — scans directories for plugin binaries via `plugin.toml` markers.
-- `os_sandbox` module — OS-level hardening primitives (best-effort; per-platform status in
-  Appendix).
-- `SandboxError` — typed error.
+  (ADR 0006 Phase 1). Long-lived plugin process; spawn cost paid once (lazily, on the first
+  envelope round-trip). Sequential dispatch within a single plugin process today. Transport
+  methods return `SandboxError`.
+- `scope::{ScopeHash, scope_hash}` — pure credential-scope identity (ADR-0025 §2), computed
+  from caller-supplied slot-name strings only. The engine owns the process pool that keys on
+  it; this crate never sees a workflow node.
+- `os_sandbox` module — Linux Landlock (fixed system paths, best-effort, fail-closed) plus
+  `setrlimit` child caps, applied fork-safely via `PreparedSandbox`. No-op on non-Linux.
+- `SandboxError` — typed transport error.
+
+## Relocation
+
+These were **moved out of this crate** (host-registry population and dispatch belong with
+their owners; the leaf stays transport-only):
+
+- Plugin **discovery** path, the `RemoteAction` / `ProcessSandboxHandler` registry adapters,
+  and the `SandboxError` → `ActionError` mapping (`sandbox_bridge`) → **`nebula-plugin`**.
+- `SandboxRunner`, `SandboxedContext`, and `InProcessSandbox` (the in-process trusted-dispatch
+  path and the runner abstraction the dispatcher owns) → **`nebula-engine`**.
+
+Migration path: code that constructed an `InProcessSandbox` or named `SandboxRunner` /
+`SandboxedContext` now imports them from `nebula-engine`; code that discovered plugins or
+referenced `ProcessSandboxHandler` / `RemoteAction` now imports them from `nebula-plugin`.
+`ProcessSandbox`, `SandboxError`, and `scope::*` continue to come from `nebula-sandbox`.
 
 ## Contract
 
-- **[L1-§12.6]** In-process sandbox / capability checks provide **correctness and least
-  privilege for accidental misuse**, not a security boundary against malicious native code.
-  `InProcessSandbox` is pure dispatch with cooperative cancellation.
+- **[L1-§12.6]** This crate is **transport only**: child-process execution provides
+  **correctness and cooperative cancellation**, not a security boundary against malicious
+  native code. The in-process trusted-dispatch path (`InProcessSandbox`) lives in
+  `nebula-engine`, not here.
 
 - **[L1-§12.6]** Plugin IPC today is **sequential dispatch over a JSON envelope to a child
   process** (ADR 0006 slices 1a–1c). That is the trust model. Do not describe it as sandboxed
@@ -61,19 +73,24 @@ against malicious native code. Canon §12.6 is the normative statement.
   `wasm32-wasip2`. Offering WASM as "the future sandbox" is a §4.5 false capability and a §4.4
   DX regression. It must not appear as `planned` in any README or `lib.rs`.
 
-- **[L1-§4.5]** `PluginCapabilities` enforcement from **workflow-config** at spawn time
-  (ADR-0025 D4) is a `false capability` until slice 1d broker RPC lands — the allowlist is
-  passed through to `ProcessSandbox` but the per-call enforcement gate is not yet wired.
+- **[L1-§4.5]** No per-plugin capability/scope surface is advertised. The previously-shipped
+  `PluginCapabilities` enum was unenforced on the dispatch path and has been removed (roadmap
+  §Delete + ADR-0025 D4). Egress, credential, and filesystem mediation is the broker's
+  (ADR-0025), introduced when slice 1d lands — not a passthrough allowlist here.
 
-- **[L1-§7.1]** Plugin is the unit of registration. `ProcessSandbox` hosts the duplex broker;
-  `nebula-plugin-sdk` is the plugin-author side. Wire protocol types live in the SDK because
-  plugin authors link against them; the sandbox imports them back to speak the same protocol.
+- **[L1-§7.1]** Plugin is the unit of registration. `ProcessSandbox` hosts the duplex
+  transport; `nebula-plugin-sdk` is the plugin-author side. Wire protocol types live in the
+  SDK because plugin authors link against them; the sandbox imports them back to speak the
+  same protocol. Host-side registration of discovered actions lives in `nebula-plugin`, not
+  here.
 
 ## Non-goals
 
 - Not an attacker-grade isolation boundary against malicious native code.
 - Not a WASM / WASI runtime — see §12.6 rationale.
-- Not the action dispatcher — see `nebula-runtime` (drives this crate).
+- Not the action dispatcher / runner abstraction — `SandboxRunner` lives in `nebula-engine`.
+- Not the in-process execution path — `InProcessSandbox` lives in `nebula-engine`.
+- Not the plugin discovery path or registry adapters — see `nebula-plugin`.
 - Not the plugin trait / registry — see `nebula-plugin`.
 - Not the plugin-author SDK — see `nebula-plugin-sdk`.
 
@@ -81,14 +98,13 @@ against malicious native code. Canon §12.6 is the normative statement.
 
 See `docs/MATURITY.md` row for `nebula-sandbox`.
 
-- API stability: `partial` — `InProcessSandbox` and `ProcessSandbox` are in active use;
-  capability enforcement and OS hardening backends are incomplete (see Appendix).
-- `PluginCapabilities` is passed from the caller to `ProcessSandbox` but per-call enforcement
-  is not yet wired — `false capability` (§4.5) until ADR-0025 slice 1d broker RPC lands.
-- `os_sandbox` per-platform backends are partial — check `src/os_sandbox.rs` before claiming
-  any platform-specific hardening.
+- API stability: `partial` — `ProcessSandbox` is in active use; the broker (egress /
+  credential / scope mediation) is not yet built (see Appendix).
+- No per-plugin capability/scope surface (removed; the broker owns scope per ADR-0025).
+- `os_sandbox` is Linux-only: Landlock fixed system paths + `setrlimit`, best-effort and
+  fail-closed, applied fork-safely. No macOS/Windows OS confinement — `is_available()`
+  reports this honestly.
 - ADR 0006 slice 1d (broker RPC, `PluginSupervisor`, reattach) is `proposed` / not yet landed.
-- 3 panic sites — candidates for typed `SandboxError`.
 - 1 integration test (`discovery_schema_roundtrip`, `#[ignore]`-gated — requires pre-built
   fixture); cancel path and protocol envelope covered only by unit tests.
 
@@ -99,19 +115,19 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 - Plugin model: `docs/INTEGRATION_MODEL.md` §7.
 - Glossary: `docs/GLOSSARY.md` §4 (sandbox / resource).
 - Siblings: `nebula-plugin-sdk` (plugin-author side / wire protocol), `nebula-plugin`
-  (host-side registry), `nebula-runtime` (dispatches through sandbox runners).
+  (host-side registry + discovery + `ProcessSandboxHandler`/`RemoteAction` + the
+  `SandboxError` → `ActionError` mapping), `nebula-engine` (owns `SandboxRunner`,
+  `SandboxedContext`, `InProcessSandbox`, and dispatches through this transport).
 
 ## Appendix
 
 ### Real isolation roadmap (priority order, replacing any historical WASM language)
 
-1. **Capability wiring.** Plugin capabilities are sourced from
-   **workflow-config** at spawn time (per
-   [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md) D4) —
-   not from `plugin.toml`. The sandbox receives a `PluginCapabilities`
-   from its caller (engine / runtime); enforcing it at
-   `ProcessSandbox` boundaries remains the slice 1d work. Older revisions
-   of this roadmap mentioned `plugin.toml` capabilities; ADR-0025 superseded that.
+1. **Broker scope model.** There is no per-plugin capability enum. Egress,
+   credential, and filesystem mediation is the host-side broker's
+   responsibility, keyed by the workflow-config credential-scope hash per
+   [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md)
+   (D4 + §2 / §3 / §6). The broker module is slice 1d work, not yet built.
 2. **`plugin.toml` signing verification** — canon §7.1; tooling (`cargo-nebula` or equivalent)
    verifies signatures before the host trusts a plugin's `plugin.toml`.
 3. **`os_sandbox` per-platform backends** — seccomp-bpf + landlock (Linux), `sandbox_init`
@@ -127,9 +143,8 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 Slice B of the plugin load-path stabilization closed the `plugin.toml`
 parsing gap: discovery now reads `[nebula].sdk` + `[plugin].id` before
 spawning the binary, enforces the SDK semver constraint, and honors the
-optional id override. Workflow-config-sourced `PluginCapabilities`
-enforcement at the broker is the remaining piece (item 1 of the roadmap
-above), tracked under ADR-0025 slice 1d.
+optional id override. The broker scope model (item 1 of the roadmap
+above) is the remaining piece, tracked under ADR-0025 slice 1d.
 
 ### ADR 0006 status
 
@@ -145,8 +160,13 @@ logging via the broker RPC. The `PluginCtx` in `nebula-plugin-sdk` is a placehol
 
 ### Architecture notes
 
-- `ActionExecutor`, `SandboxRunner`, `InProcessSandbox`, `SandboxedContext` are owned here
-  and re-exported by `nebula-runtime` via `pub use nebula_sandbox::...`. The legacy
-  `nebula-runtime/src/sandbox.rs` shim was deleted in commit `eae0b54e`.
+- `SandboxRunner`, `InProcessSandbox`, and `SandboxedContext` are **not** owned here — they
+  live in `nebula-engine` (the dispatcher that owns the runner abstraction). This crate
+  exports only the transport (`ProcessSandbox`), the typed `SandboxError`, the credential-
+  scope identity (`scope::{ScopeHash, scope_hash}`), and the `os_sandbox` hardening
+  primitives.
+- The `SandboxError` → `ActionError` mapping, plugin discovery, and the
+  `ProcessSandboxHandler` / `RemoteAction` registry adapters live in `nebula-plugin` (the
+  host-registry crate), keeping this leaf free of any Business-tier dependency.
 - Dependency on `nebula-plugin-sdk` (wire protocol types) is correct: this crate is the
-  **host** of the duplex broker; the SDK is the **plugin** side.
+  **host** of the duplex transport; the SDK is the **plugin** side.

@@ -3538,6 +3538,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -3725,6 +3726,7 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "insta",
  "nebula-action",
  "nebula-core",
@@ -3732,13 +3734,21 @@ dependencies = [
  "nebula-error",
  "nebula-metadata",
  "nebula-plugin-macros",
+ "nebula-plugin-sdk",
  "nebula-resource",
+ "nebula-sandbox",
  "nebula-schema",
  "nebula-workflow",
  "pretty_assertions",
  "rstest",
  "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]
@@ -3835,29 +3845,16 @@ dependencies = [
 name = "nebula-sandbox"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "insta",
  "landlock",
- "nebula-action",
- "nebula-core",
- "nebula-credential",
  "nebula-metadata",
- "nebula-plugin",
  "nebula-plugin-sdk",
- "nebula-resource",
- "nebula-schema",
- "nebula-workflow",
  "nix 0.31.2",
- "pretty_assertions",
- "rstest",
- "semver",
- "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
  "tracing",
  "uuid",
 ]

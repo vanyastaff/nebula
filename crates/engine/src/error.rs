@@ -182,6 +182,27 @@ pub enum EngineError {
     },
 }
 
+impl EngineError {
+    /// The typed [`ActionError`] this engine error carries, if any.
+    ///
+    /// An in-flight action failure surfaces either as the bare
+    /// [`EngineError::Action`] variant or, when it travelled through the
+    /// runtime dispatcher, wrapped inside [`EngineError::Runtime`] as a
+    /// [`crate::runtime::RuntimeError::ActionError`]. The frontier loop
+    /// consults this so [`ActionError::is_fatal`] on the just-recorded
+    /// attempt can finalize the node *before* the retry policy runs — a
+    /// fatal action error must never be re-dispatched by attempts/budget
+    /// policy.
+    #[must_use]
+    pub fn as_action_error(&self) -> Option<&ActionError> {
+        match self {
+            Self::Action(e) => Some(e),
+            Self::Runtime(e) => e.as_action_error(),
+            _ => None,
+        }
+    }
+}
+
 impl nebula_error::Classify for EngineError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
@@ -299,6 +320,47 @@ mod tests {
         assert_eq!(Classify::category(&err), ErrorCategory::Conflict);
         assert_eq!(Classify::code(&err).as_str(), "ENGINE:LEASED");
         assert!(!Classify::is_retryable(&err));
+    }
+
+    #[test]
+    fn action_variant_returns_some() {
+        // The bare `EngineError::Action` wrapper must expose its inner
+        // `ActionError` so the frontier loop can consult `is_fatal` on the
+        // just-recorded attempt before retry policy runs.
+        let err = EngineError::Action(ActionError::fatal("bad schema"));
+        let inner = err
+            .as_action_error()
+            .expect("Action variant must yield Some(&ActionError)");
+        assert!(
+            matches!(inner, ActionError::Fatal { .. }),
+            "the wrapped ActionError must round-trip unchanged, got {inner:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_action_error_returns_some() {
+        // An action failure that travelled through the runtime dispatcher
+        // surfaces as `EngineError::Runtime(RuntimeError::ActionError(..))`
+        // — `as_action_error` must see through the Runtime wrapper too.
+        let err = EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
+            ActionError::retryable("transient"),
+        ));
+        let inner = err
+            .as_action_error()
+            .expect("Runtime-wrapped ActionError must yield Some(&ActionError)");
+        assert!(
+            matches!(inner, ActionError::Retryable { .. }),
+            "the action error must surface through EngineError::Runtime, got {inner:?}"
+        );
+    }
+
+    #[test]
+    fn non_action_variant_returns_none() {
+        // A non-action engine error has no inner `ActionError`.
+        assert!(
+            EngineError::Cancelled.as_action_error().is_none(),
+            "a non-action variant must yield None"
+        );
     }
 
     #[test]

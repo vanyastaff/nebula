@@ -97,10 +97,26 @@ any level.
 | Layer        | Crates |
 |--------------|--------|
 | API / Public | `api`, `sdk` |
-| Exec         | `engine`, `storage`, `storage-loom-probe`, `sandbox`, `plugin-sdk` |
-| Business     | `credential`, `credential-builtin`, `resource`, `action`, `plugin` |
+| Exec         | `engine`, `storage`, `storage-loom-probe` |
+| Business     | `credential-builtin`, `resource`, `action`, `plugin` |
+| Plugin-Proto | `plugin-sdk`, `sandbox` |
 | Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata` |
 | Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error` |
+
+**Plugin-Proto** is a leaf tier between Core and Business: the
+out-of-process plugin protocol (`plugin-sdk`) and the duplex transport
+(`sandbox`). It depends only on Core (+ tokio/serde); Business (`plugin`)
+and Exec (`engine`) depend on it *downward*. The discovery path and the
+`SandboxError` → `ActionError` seam live in `plugin`; the `SandboxRunner`
+runner abstraction lives in `engine`.
+
+`nebula-credential` is **shared infra**, not a single-tier Business crate:
+the Exec tier (`engine`, `storage`) and the API tier consume the
+credential contract directly alongside Business (`action`, `plugin`,
+`resource`) and the first-party backends (`credential-builtin`,
+`credential-vault`). Like the cross-cutting crates it is importable from
+those tiers; the `deny.toml` `[wrappers]` allowlist locks the exact
+consumer set.
 
 Each `+macros` companion (`action/macros`, `credential/macros`, `error/macros`,
 `plugin/macros`, `resource/macros`, `schema/macros`, `validator/macros`,

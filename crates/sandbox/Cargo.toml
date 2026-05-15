@@ -12,24 +12,17 @@ homepage.workspace = true
 documentation.workspace = true
 publish = false
 
+# Plugin-Proto leaf: Core (nebula-metadata) + the plugin protocol
+# (nebula-plugin-sdk) only. No Business/Exec dependency — see deny.toml
+# and the AGENTS.md "Layered Dependency Map" Plugin-Proto tier.
 [dependencies]
-nebula-action = { path = "../action" }
-nebula-core = { path = "../core" }
-nebula-credential = { path = "../credential" }
 nebula-metadata = { path = "../metadata" }
-nebula-plugin = { path = "../plugin" }
 nebula-plugin-sdk = { path = "../plugin-sdk" }
-nebula-resource = { path = "../resource" }
-nebula-schema = { path = "../schema" }
-nebula-workflow = { path = "../workflow" }
 
-async-trait = { workspace = true }
-semver = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
-toml = "0.8"
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "net"] }
 tokio-util = { workspace = true }
@@ -41,9 +34,7 @@ landlock = "0.4"
 nix = { version = "0.31", features = ["resource"] }
 
 [dev-dependencies]
-insta = { workspace = true }
-pretty_assertions = { workspace = true }
-rstest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

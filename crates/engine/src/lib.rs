@@ -109,6 +109,8 @@ pub use runtime::{
     RuntimeError, SandboxRunner, SandboxedContext, StatefulCheckpoint, StatefulCheckpointSink,
     TaskQueue,
 };
+#[cfg(feature = "out-of-process-plugins")]
+pub use runtime::{OutOfProcessConfig, PluginSupervisor, discover_into_registry};
 pub use scoped_resources::{
     BranchId, CleanupOutcome, DEFAULT_CLEANUP_TIMEOUT, DashScopedResourceMap,
     EmptyScopedResourceMap, LayeredResourceAccessor, MAX_ANCESTOR_DEPTH, PoppedEntry, ScopedLookup,

@@ -22,16 +22,28 @@ nebula-metadata = { path = "../metadata" }
 nebula-action = { path = "../action" }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
+nebula-workflow = { path = "../workflow" }
+# Plugin-Proto leaf: the duplex transport + plugin protocol. Depended on
+# downward (Business -> Plugin-Proto); see deny.toml [bans] wrappers.
+nebula-sandbox = { path = "../sandbox" }
+nebula-plugin-sdk = { path = "../plugin-sdk" }
 
+async-trait = { workspace = true }
 semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml = "0.8"
+tokio = { workspace = true, features = ["fs"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 nebula-schema = { path = "../schema" }
-nebula-workflow = { path = "../workflow" }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

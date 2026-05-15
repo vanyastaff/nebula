@@ -14,8 +14,9 @@ use std::sync::Arc;
 use nebula_action::ActionFactory;
 use nebula_credential::AnyCredential;
 use nebula_metadata::PluginManifest;
-use nebula_plugin::{Plugin, PluginError};
 use nebula_resource::AnyResource;
+
+use crate::{Plugin, PluginError};
 
 /// Host-side `impl Plugin` wrapper for an out-of-process plugin.
 ///

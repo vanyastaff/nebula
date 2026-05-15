@@ -27,6 +27,11 @@
 pub mod blob;
 pub mod data_policy;
 pub mod error;
+#[cfg(feature = "out-of-process-plugins")]
+pub mod out_of_process;
+pub(crate) mod plugin_pool;
+#[cfg(feature = "out-of-process-plugins")]
+pub mod plugin_supervisor;
 pub mod queue;
 pub mod registry;
 #[allow(
@@ -34,13 +39,18 @@ pub mod registry;
     reason = "runtime/runtime.rs carries ActionRuntime; kept stable for external callers"
 )]
 pub mod runtime;
+pub mod sandbox_runner;
 pub mod stream_backpressure;
 
 pub use blob::{BlobRef, BlobStorage};
 pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
-pub use nebula_sandbox::{ActionExecutor, InProcessSandbox, SandboxRunner, SandboxedContext};
+#[cfg(feature = "out-of-process-plugins")]
+pub use out_of_process::{OutOfProcessConfig, discover_into_registry};
+#[cfg(feature = "out-of-process-plugins")]
+pub use plugin_supervisor::PluginSupervisor;
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
 pub use registry::ActionRegistry;
 pub use runtime::{ActionRuntime, StatefulCheckpoint, StatefulCheckpointSink};
+pub use sandbox_runner::{ActionExecutor, InProcessSandbox, SandboxRunner, SandboxedContext};
 pub use stream_backpressure::{BoundedStreamBuffer, PushOutcome};
