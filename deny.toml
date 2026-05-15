@@ -62,19 +62,19 @@ deny = [
   { crate = "openssl", reason = "Prefer rustls-based TLS stack across the workspace" },
 
   # ---- Layer enforcement: API (top) ----
-  # nebula-api may only be depended on by itself (dev-dep for test-util feature).
+  # nebula-api may only be depended on by itself (dev-dep for test-util feature)
+  # and by the apps/server composition root that wires the binary.
   # nebula-cli talks to the engine directly, not through the API crate.
   { crate = "nebula-api", wrappers = [
     "nebula-api",
+    "nebula-server",
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
 
   # ---- Layer enforcement: Exec ----
   { crate = "nebula-engine", wrappers = [
     "nebula-cli",
     # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
-    # for the §13 knife integration test (ADR-0008 follow-up A2). A dedicated
-    # `apps/server` composition root is still tracked as a separate follow-up;
-    # until it exists this is the only place the two layers meet in-process.
+    # for the §13 knife integration test (ADR-0008 follow-up A2).
     "nebula-api",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   # ---- Layer enforcement: Plugin-Proto (leaf tier) ----
@@ -91,6 +91,8 @@ deny = [
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
     "nebula-api",
+    # apps/server composition root wires in-memory repos directly (default_state).
+    "nebula-server",
     # Dev-only: `crates/credential-vault/tests/cache_integration.rs`
     # exercises `ProviderCacheLayer` over `VaultProvider` to prove the
     # cache/lease wiring from ADR-0051 Phase A composes with the Vault

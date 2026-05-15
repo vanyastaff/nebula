@@ -1,0 +1,30 @@
+[package]
+name = "nebula-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "nebula-server"
+path = "src/main.rs"
+
+[dependencies]
+nebula-api = { path = "../../crates/api" }
+nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+clap = { workspace = true, features = ["derive", "env"] }
+axum = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+postgres = ["nebula-api/postgres"]
+
+[lints]
+workspace = true
