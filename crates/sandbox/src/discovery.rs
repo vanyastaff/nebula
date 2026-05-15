@@ -29,9 +29,9 @@ use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, Plu
 
 use crate::{
     DiscoveredPlugin, RemoteAction,
+    dispatch::ProcessSandbox,
     handler::ProcessSandboxHandler,
     plugin_toml::{PluginTomlError, parse_plugin_toml},
-    process::ProcessSandbox,
     remote_action::RemoteActionFactory,
 };
 
@@ -596,7 +596,7 @@ mod tests {
     use serde_json::json;
 
     use super::{DiscoveryError, WireMetadata, parse_metadata_response};
-    use crate::process::ProcessSandbox;
+    use crate::dispatch::ProcessSandbox;
 
     #[test]
     fn v2_envelope_surfaces_as_protocol_version_mismatch_not_missing_field() {

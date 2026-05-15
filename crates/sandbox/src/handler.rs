@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessHandler};
 
-use crate::{SandboxRunner, process::ProcessSandbox, runner::SandboxedContext};
+use crate::{SandboxRunner, dispatch::ProcessSandbox, runner::SandboxedContext};
 
 /// Wraps a [`ProcessSandbox`] as a [`StatelessHandler`].
 ///

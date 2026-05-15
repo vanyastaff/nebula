@@ -42,14 +42,18 @@ mod handler;
 mod in_process;
 pub mod os_sandbox;
 pub mod plugin_toml;
-mod process;
 mod remote_action;
 mod runner;
 
+mod codec;
+mod dispatch;
+mod handshake;
+mod spawn;
+
 pub use discovered_plugin::DiscoveredPlugin;
+pub use dispatch::ProcessSandbox;
 pub use error::SandboxError;
 pub use handler::ProcessSandboxHandler;
 pub use in_process::InProcessSandbox;
-pub use process::ProcessSandbox;
 pub use remote_action::{RemoteAction, RemoteActionFactory};
 pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};

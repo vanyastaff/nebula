@@ -14,6 +14,8 @@
 
 use std::io;
 
+use nebula_action::ActionError;
+
 /// Errors produced by the plugin transport layer of
 /// [`crate::ProcessSandbox`].
 ///
@@ -125,4 +127,30 @@ pub enum SandboxError {
     /// also a pre-`fork` spawn-time hardening failure.
     #[error("rlimit setup failed: {0}")]
     Rlimit(String),
+}
+
+/// Convert an internal [`SandboxError`] into the public `ActionError` the
+/// sandbox runner trait returns. Transport-level issues are fatal
+/// (non-retryable) by design: once the plugin has misbehaved on the wire,
+/// the next caller gets a fresh process, not a blind retry on the same
+/// poisoned channel.
+pub(crate) fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
+    match err {
+        // Retryable: plugin crashed / exited, respawn path is safe.
+        SandboxError::PluginClosed => ActionError::retryable_from(err),
+        // Fatal: DoS / protocol-abuse signals. Do not paper over with retry.
+        SandboxError::PluginLineTooLarge { .. }
+        | SandboxError::HandshakeLineTooLarge { .. }
+        | SandboxError::HandshakeAddrMismatch { .. }
+        | SandboxError::ResponseIdMismatch { .. }
+        | SandboxError::TransportPoisoned
+        | SandboxError::Transport(_)
+        | SandboxError::MalformedEnvelope(_)
+        | SandboxError::HostMalformedEnvelope(_)
+        // Pre-`fork` spawn-time hardening failures. They reach the public
+        // boundary as fatal; a retry on the same misconfigured host would
+        // fail identically.
+        | SandboxError::Landlock(_)
+        | SandboxError::Rlimit(_) => ActionError::fatal_from(err),
+    }
 }
