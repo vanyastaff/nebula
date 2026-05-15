@@ -19,7 +19,6 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
 };
 use nebula_metrics::{Counter, Histogram, MetricsError, MetricsRegistry};
-use nebula_sandbox::{SandboxRunner, SandboxedContext};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +27,7 @@ use super::{
     data_policy::{DataPassingPolicy, LargeDataStrategy},
     error::RuntimeError,
     registry::ActionRegistry,
+    sandbox_runner::{SandboxRunner, SandboxedContext},
 };
 
 /// Compute a digest of the erased stateful state for stuck-state detection.
@@ -1366,8 +1366,9 @@ mod tests {
         id::{ExecutionId, WorkflowId},
         node_key,
     };
-    use nebula_sandbox::{ActionExecutor, InProcessSandbox};
     use nebula_schema::{HasSchema, ValidSchema};
+
+    use crate::runtime::sandbox_runner::{ActionExecutor, InProcessSandbox};
 
     use super::*;
 

@@ -30,19 +30,15 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
-use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
 use nebula_plugin_sdk::protocol::{HostToPlugin, PluginToHost};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    SandboxRunner,
     codec::{PluginHandle, envelope_kind, sanitize_plugin_string},
-    error::{SandboxError, sandbox_error_to_action_error},
+    error::SandboxError,
     handshake::{request_id, response_id, response_id_from_value},
     os_sandbox::LinuxRlimits,
-    runner::SandboxedContext,
     spawn::spawn_and_dial,
 };
 
@@ -253,6 +249,15 @@ impl ProcessSandbox {
         self
     }
 
+    /// The plugin binary this sandbox dispatches to.
+    ///
+    /// Exposed for the engine-side runner adapter's tracing spans; not on
+    /// any hot path.
+    #[must_use]
+    pub fn binary(&self) -> &std::path::Path {
+        &self.binary
+    }
+
     /// Invoke an action and return the plugin's response envelope.
     pub(crate) async fn call_action(
         &self,
@@ -266,6 +271,24 @@ impl ProcessSandbox {
             input,
         };
         self.dispatch_envelope(request, cancel).await
+    }
+
+    /// Invoke an action, racing the round-trip against a cancellation
+    /// token, and return the unwrapped output value.
+    ///
+    /// This is the transport entry point the engine-side `SandboxRunner`
+    /// adapter uses for `IsolationLevel::CapabilityGated|Isolated`
+    /// dispatch. It stays free of `ActionError`: the `SandboxError` ->
+    /// `ActionError` and `Value` -> `ActionResult` mapping is the engine
+    /// adapter's responsibility.
+    pub async fn invoke_with_cancel(
+        &self,
+        action_key: &str,
+        input: serde_json::Value,
+        cancel: &CancellationToken,
+    ) -> Result<serde_json::Value, SandboxError> {
+        let envelope = self.call_action(action_key, input, Some(cancel)).await?;
+        action_response_to_value(envelope)
     }
 
     /// Query plugin metadata via a `MetadataRequest` envelope.
@@ -642,34 +665,6 @@ impl ProcessSandbox {
     }
 }
 
-#[async_trait]
-impl SandboxRunner for ProcessSandbox {
-    async fn execute(
-        &self,
-        context: SandboxedContext,
-        metadata: &ActionMetadata,
-        input: serde_json::Value,
-    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        context.check_cancelled()?;
-
-        let action_key = metadata.base.key.as_str();
-
-        tracing::debug!(
-            action_key = %action_key,
-            plugin = %self.binary.display(),
-            "executing action in process sandbox"
-        );
-
-        let envelope = self
-            .call_action(action_key, input, Some(context.cancellation()))
-            .await
-            .map_err(sandbox_error_to_action_error)?;
-        action_response_to_value(envelope)
-            .map(ActionResult::success)
-            .map_err(sandbox_error_to_action_error)
-    }
-}
-
 /// Drop the cached handle on sandbox drop so the child is killed promptly.
 ///
 /// `kill_on_drop(true)` on the spawned `Command` handles this at the OS
@@ -687,59 +682,16 @@ impl Drop for ProcessSandbox {
 
 #[cfg(test)]
 mod tests {
-    //! Dispatch-level regression guards: `SandboxError` → `ActionError`
-    //! classification, the cancellation/timeout race (#257), monotonic
-    //! correlation ids (#285), and the narrowed respawn-retry policy.
+    //! Dispatch-level regression guards: the cancellation/timeout race
+    //! (#257), monotonic correlation ids (#285), and the narrowed
+    //! respawn-retry policy. The `SandboxError` → `ActionError`
+    //! classification guards moved to `nebula-engine` with
+    //! `sandbox_error_to_action_error` (the transport crate no longer
+    //! knows about `ActionError`).
 
     use std::path::PathBuf;
 
     use super::*;
-
-    // ---- SandboxError → ActionError conversion -----------------------
-
-    #[test]
-    fn plugin_line_too_large_converts_to_fatal_action_error() {
-        let sandbox_err = SandboxError::PluginLineTooLarge {
-            limit: 1024,
-            observed: 2048,
-        };
-        let ae = sandbox_error_to_action_error(sandbox_err);
-        // Fatal classification is the contract: we do not want the
-        // engine to quietly retry a DoS attempt on a fresh connection.
-        assert!(
-            matches!(ae, ActionError::Fatal { .. }),
-            "PluginLineTooLarge must classify as Fatal, got {ae:?}",
-        );
-    }
-
-    #[test]
-    fn handshake_line_too_large_converts_to_fatal_action_error() {
-        let sandbox_err = SandboxError::HandshakeLineTooLarge {
-            limit: 4096,
-            observed: 8192,
-        };
-        let ae = sandbox_error_to_action_error(sandbox_err);
-        assert!(matches!(ae, ActionError::Fatal { .. }));
-    }
-
-    #[test]
-    fn plugin_closed_converts_to_retryable_action_error() {
-        // Plugin-closed is benign relative to DoS — retry to respawn is safe.
-        let sandbox_err = SandboxError::PluginClosed;
-        let ae = sandbox_error_to_action_error(sandbox_err);
-        assert!(
-            matches!(ae, ActionError::Retryable { .. }),
-            "PluginClosed should classify as Retryable, got {ae:?}",
-        );
-    }
-
-    #[test]
-    fn host_malformed_envelope_converts_to_fatal_action_error() {
-        let parse_err = serde_json::from_str::<serde_json::Value>("{")
-            .expect_err("fixture must produce serde_json::Error");
-        let ae = sandbox_error_to_action_error(SandboxError::HostMalformedEnvelope(parse_err));
-        assert!(matches!(ae, ActionError::Fatal { .. }));
-    }
 
     // ---- race_cancel_timeout (#257 regression guard) -----------------
 
@@ -830,19 +782,6 @@ mod tests {
         assert_eq!(first, 1);
         assert_eq!(second, 2);
         assert_eq!(third, 3);
-    }
-
-    #[test]
-    fn response_id_mismatch_converts_to_fatal_action_error() {
-        let err = SandboxError::ResponseIdMismatch {
-            expected: 42,
-            got: 41,
-        };
-        let ae = sandbox_error_to_action_error(err);
-        assert!(
-            matches!(ae, ActionError::Fatal { .. }),
-            "ResponseIdMismatch must classify as Fatal, got {ae:?}",
-        );
     }
 
     // ---- #257 review: narrowed dispatch retry policy -----------------

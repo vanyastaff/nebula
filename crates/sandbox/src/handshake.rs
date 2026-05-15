@@ -188,12 +188,11 @@ pub(crate) fn response_id_from_value(value: &serde_json::Value) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     //! Handshake address-validation and correlation-id regression guards
-    //! (#260 forged-handshake, #285 stale-response detection).
-
-    use nebula_action::ActionError;
+    //! (#260 forged-handshake, #285 stale-response detection). The
+    //! `HandshakeAddrMismatch` → `ActionError` classification guard moved
+    //! to `nebula-engine` with `sandbox_error_to_action_error`.
 
     use super::*;
-    use crate::error::sandbox_error_to_action_error;
 
     // ---- #260 forged-handshake regression guard ----------------------
 
@@ -256,19 +255,6 @@ mod tests {
             },
             other => panic!("expected HandshakeAddrMismatch, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn handshake_addr_mismatch_converts_to_fatal_action_error() {
-        let err = SandboxError::HandshakeAddrMismatch {
-            expected: String::from("unix|/tmp/ok"),
-            got: String::from("unix|/tmp/evil"),
-        };
-        let ae = sandbox_error_to_action_error(err);
-        assert!(
-            matches!(ae, ActionError::Fatal { .. }),
-            "HandshakeAddrMismatch must classify as Fatal (no retry on forged handshake), got {ae:?}",
-        );
     }
 
     #[cfg(unix)]

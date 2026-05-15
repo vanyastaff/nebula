@@ -34,13 +34,14 @@ pub mod registry;
     reason = "runtime/runtime.rs carries ActionRuntime; kept stable for external callers"
 )]
 pub mod runtime;
+pub mod sandbox_runner;
 pub mod stream_backpressure;
 
 pub use blob::{BlobRef, BlobStorage};
 pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
-pub use nebula_sandbox::{ActionExecutor, InProcessSandbox, SandboxRunner, SandboxedContext};
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
 pub use registry::ActionRegistry;
 pub use runtime::{ActionRuntime, StatefulCheckpoint, StatefulCheckpointSink};
+pub use sandbox_runner::{ActionExecutor, InProcessSandbox, SandboxRunner, SandboxedContext};
 pub use stream_backpressure::{BoundedStreamBuffer, PushOutcome};

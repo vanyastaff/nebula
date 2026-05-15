@@ -16,10 +16,11 @@
 //!
 //! ## Key types
 //!
-//! - `InProcessSandbox` — trusted in-process dispatch; no isolation.
 //! - `ProcessSandbox` — child-process execution via JSON envelope (ADR 0006).
+//!   Transport methods return `SandboxError`; the `SandboxError` →
+//!   `ActionError` mapping and the `SandboxRunner` runner abstraction live
+//!   in `nebula-engine` (the dispatcher that owns them).
 //! - `ProcessSandboxHandler` — bridge into `ActionRegistry`.
-//! - `SandboxRunner`, `ActionExecutor`, `SandboxedContext` — runner abstraction.
 //! - `discovery` — scan directories for plugin binaries via `plugin.toml`.
 //! - `os_sandbox` — Linux Landlock + rlimit child hardening (fixed system
 //!   paths; no per-plugin grant).
@@ -39,11 +40,9 @@ pub mod discovered_plugin;
 pub mod discovery;
 pub mod error;
 mod handler;
-mod in_process;
 pub mod os_sandbox;
 pub mod plugin_toml;
 mod remote_action;
-mod runner;
 
 mod codec;
 mod dispatch;
@@ -54,6 +53,4 @@ pub use discovered_plugin::DiscoveredPlugin;
 pub use dispatch::ProcessSandbox;
 pub use error::SandboxError;
 pub use handler::ProcessSandboxHandler;
-pub use in_process::InProcessSandbox;
 pub use remote_action::{RemoteAction, RemoteActionFactory};
-pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};
