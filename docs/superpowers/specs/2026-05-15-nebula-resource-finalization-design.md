@@ -28,6 +28,27 @@
 4. **§M12.4 frontier→stable** — plan-file audit, honest MATURITY flip
    (ADR-0028 §5), topology docstring cleanup (`PHASE4_BLOCKED.md §4`).
 
+### 1.1 Authority topology & known gaps (verified 2026-05-15)
+
+Per `docs/adr/README.md:5`: the parent **`C:/Users/vanya/RustroverProjects/docs/`**
+holds the L1 canon — `PRODUCT_CANON.md`, `INTEGRATION_MODEL.md`, `MATURITY.md`,
+ADR `0001..0041` — **and** historical cascade logs (`tracking/`, `plans/`,
+`research/`). The worktree **`docs/`** holds the *current* cascade ADRs
+`0042..0051` + `audits/` + `superpowers/specs/`. Consequence for this spec:
+
+- `tracking/nebula-resource-concerns-register.md` is the **2026-04-24
+  ADR-0036-cascade log, pre-ADR-0044/Phase-4**. Its `R-002/R-003/R-004/R-060`
+  "landed П2" rows describe the rotation machinery that Phase 4 then
+  **deleted** (`PHASE4_BLOCKED.md §1`) — they are **not** current truth and are
+  not used as authority here (the owner flagged this tree as "old logs").
+- The master plan `m6-resource-finalization-integration-audit.md` is
+  referenced by `docs/adr/README.md:29`, `PHASE4_BLOCKED.md`, and ROADMAP but
+  is **absent** from the repo (verified: `find` + empty `.ai-factory/plans/`).
+  Surviving authority for "done" = ROADMAP §M11.5/§M12.4 + `PHASE4_BLOCKED.md`
+  + the stale-aware concerns register + the frozen tech spec
+  (`docs/superpowers/specs/2026-04-24-nebula-resource-tech-spec.md`). The plan
+  phase must not block on the missing master plan.
+
 ## 2. Scope
 
 In scope: Tracks **A+B+C+D** (full §M11.5 + §M12.4 close + bridge + API).
@@ -229,6 +250,11 @@ revoke. Invariant: no acquire after taint observes the revoked credential.
   validate against `<R::Config as HasSchema>::schema()`
   (`nebula_schema::ValidSchema`), then dispatch into the existing typed
   `register::<R>(…)`. Reject secret-shaped config (abuse #3).
+  Authority: `deny.toml:121-133` already whitelists the
+  `nebula-resource → nebula-expression` edge with the reason "ADR-0043 §9 /
+  Phase 9: register_from_value bridges resource config to expression engine for
+  `{{ }}` template resolution" — this design is the sanctioned closure of that
+  pre-declared edge, not a new dependency.
 - `nebula-engine`: erased `ResourceRegistrar` trait + a registry
   `kind: &str → Arc<dyn ErasedResourceRegistrar>` built from `PluginRegistry`
   (closed dependency graph, abuse #4). `ErasedResourceRegistrar::register`
@@ -268,14 +294,49 @@ revoke. Invariant: no acquire after taint observes the revoked credential.
   this spec's tracks or explicitly defer with a marker.
 - Topology docstring cleanup (`PHASE4_BLOCKED.md §4`): remove stale
   scheme-threading references in `crates/resource/src/topology/*`.
-- Honest MATURITY flip: `crates/resource/README.md` "frontier" → "stable"
-  **only after** Tracks A/B/C land and pass the verification gate
-  (ADR-0028 §5 operational honesty — no early flip).
+- **Concerns-register reconciliation** (`RustroverProjects/docs/tracking/nebula-resource-concerns-register.md`,
+  stale Apr-24 ADR-0036 log — see §1.1):
+  - Already closed, no action: R-013/R-030..R-037/R-051 (landed post-cascade),
+    R-040 (**verified resolved** — `deny.toml:108` has the `nebula-resource`
+    wrapper rule).
+  - Superseded by this spec's Tracks A/B/D: R-002/R-003/R-004/R-060 (the П2
+    rotation machinery they reference was deleted Phase 4; Track A rebuilds it
+    engine-side per D1, not in `resource::Manager`), R-020/R-021/R-053
+    (manager file-split already done; `integration/` rename folded into
+    Track A touch), R-043 (`DeclaresDependencies` trace wiring — covered by
+    the Track A macro rework).
+  - **Explicitly deferred with trigger markers** (register lifecycle rule 4;
+    `feedback_incomplete_work` — not silently dropped): R-006
+    (`AuthScheme: Clone` zeroize obligation — future-cascade, trigger:
+    cross-crate credential reshape), R-041 (no `benches/`/CodSpeed —
+    post-cascade, trigger: bench harness milestone), R-042 (zero feature flags
+    — future-cascade, trigger: constrained-context requirement), R-050
+    (5 assoc types combinatorial bounds — future-cascade, trigger: second
+    consumer needing distinct shape), R-052 (`Resource::destroy` no-op leak —
+    revisit post Track A). These are recorded in ADR-0052's "Deferred" section.
+  - Register **retires** when the MATURITY flip below lands (its own
+    close-condition; the register's "→ core" wording is the stale Strategy-§6.4
+    term — the live taxonomy is `frontier → stable`, see next bullet).
+- Honest MATURITY flip — authoritative file is the **parent**
+  `C:/Users/vanya/RustroverProjects/docs/MATURITY.md:37` (the worktree has no
+  `docs/MATURITY.md`; `crates/resource/README.md:162` points at it). Taxonomy
+  is `frontier`/`stable` (NOT `core`). Flip the `nebula-resource`
+  **Engine-integration column** `partial (lifecycle visible; CAS guards
+  partial)` → `stable` (mirroring the honest `partial → stable` credential
+  upgrade at `MATURITY.md:66`) **only after** Tracks A/B/C land and pass the
+  verification gate (ADR-0028 §5 operational honesty — no early flip). This is
+  a **parent-tree edit** outside the worktree — the plan must call it out as a
+  distinct, gated step.
 - **ADR-0052** "Engine-owned per-slot rotation fan-out + `&self` refresh hook":
   records D1+D2+D3, supersedes ADR-0044's hook signature, overrides
-  `PHASE4_BLOCKED.md §1`'s "re-add to `resource::Manager`" candidate. Filed in
-  the worktree `docs/adr/` (next free number is 0052; the pre-existing 0042
-  triple-collision is noted but out of scope).
+  `PHASE4_BLOCKED.md §1`'s "re-add to `resource::Manager`" candidate, and
+  carries a **"Deferred" section** enumerating the concerns-register
+  future/post-cascade items (R-006/R-041/R-042/R-050/R-052) with their trigger
+  conditions so retirement of the stale register is traceable. Filed in the
+  worktree `docs/adr/` (next free number is **0052** — verified highest
+  existing is `0051`; the pre-existing `0042` collision —
+  `0042-layered-retry.md` + `0042-node-binding-mechanism.md` + parent
+  `0042-tool-provider` — is noted but out of scope).
 
 ## 6. Breaking changes
 
@@ -332,5 +393,8 @@ only after this gate passes with Tracks A/B/C landed.
 ## 10. Open questions
 
 None. D1/D2/D3 resolved by panel + owner; abuse invariants fixed; non-goals
-explicit. The 4 plan tracks are dependency-ordered: A independent; B before C;
-D is closure (ADR-0052 + MATURITY + docs).
+explicit; doc-authority topology + the stale Apr-24 concerns register + the
+missing master plan reconciled in §1.1 / Track D (verified 2026-05-15:
+MATURITY taxonomy is `frontier→stable`, deny.toml edge pre-declared,
+R-040 already resolved). The 4 plan tracks are dependency-ordered: A
+independent; B before C; D is closure (ADR-0052 + MATURITY + docs).
