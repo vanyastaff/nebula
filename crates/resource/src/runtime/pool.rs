@@ -173,6 +173,22 @@ impl<R: Resource> PoolRuntime<R> {
     /// idle lock. The first hook error is returned; remaining idle
     /// instances are still visited so one bad instance doesn't skip the
     /// rest.
+    ///
+    /// Tradeoff: because the idle lock spans every entry's hook `.await`,
+    /// a slow hook blocks concurrent idle checkouts for the full rotation
+    /// duration (head-of-line blocking). New-instance creation is
+    /// unaffected — that path does not take this lock. This is acceptable
+    /// because rotation is rare (not a hot path) and the caller bounds
+    /// each hook with a timeout, so the stall is short and finite. Do not
+    /// "optimize" by dropping and reacquiring the lock between entries:
+    /// that reopens the window for an instance to be checked out
+    /// mid-rotation and miss its hook, violating the post-revoke
+    /// invariant guaranteed here (ADR-0036). If rotation ever moves onto
+    /// a hot path, or hook latency becomes unbounded, revisit this only
+    /// via a snapshot-with-epoch-reconcile design (capture the idle set
+    /// under a brief lock, run hooks lock-free, then reconcile against
+    /// the epoch on release) — never by simply widening the unlocked
+    /// window.
     pub(crate) async fn dispatch_slot_hook_over_idle(
         &self,
         resource: &R,

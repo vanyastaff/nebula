@@ -1,5 +1,5 @@
 //! `Manager::{refresh_slot, revoke_slot}` — port of the per-slot rotation
-//! entry points (ADR-0044 / ADR-0052).
+//! entry points (ADR-0044).
 //!
 //! These exercise the real `Manager::register_resident` + `ResourceKey` /
 //! `ScopeLevel` API. The test resource carries a real
