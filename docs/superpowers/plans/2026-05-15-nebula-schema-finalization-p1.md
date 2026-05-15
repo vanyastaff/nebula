@@ -791,6 +791,24 @@ mod tests {
             "secret-typed field must be excluded from the predicate context"
         );
     }
+
+    #[test]
+    fn predicate_context_debug_redacts_keys_and_values() {
+        // #5 contract consolidated here: even for NON-secret fields that are
+        // legitimately in the context, Debug prints neither keys nor values
+        // (only a count). Pins the full "no keys, no values" guarantee.
+        let fields = vec![Field::string(FieldKey::new("region").unwrap())];
+        let mut values = FieldValues::new();
+        values.set(
+            FieldKey::new("region").unwrap(),
+            FieldValue::Literal(json!("eu-secret-marker")),
+        );
+        let ctx = predicate_context_for(&fields, &values);
+        let dbg = format!("{ctx:?}");
+        assert!(dbg.contains("PredicateContext"), "must name the type: {dbg}");
+        assert!(!dbg.contains("eu-secret-marker"), "must not print values: {dbg}");
+        assert!(!dbg.contains("region"), "must not print keys: {dbg}");
+    }
 }
 ```
 
