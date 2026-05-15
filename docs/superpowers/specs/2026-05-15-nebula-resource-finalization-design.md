@@ -1,0 +1,336 @@
+# nebula-resource finalization — design spec
+
+> Status: **APPROVED for planning** (panel verdict D1/D2/D3 accepted by owner 2026-05-15).
+> Scope: close §M11.5 (per-slot rotation fan-out) + §M12.4 (frontier→stable) end-to-end,
+> plus the JSON/typed registration bridge and the HTTP API surface.
+> Authority lineage: PRODUCT_CANON §3.5/§11.4/§13.1/§13.2, INTEGRATION_MODEL §3.6/§114-120,
+> ADR-0028/0030/0036/0043/0044/0047/0051, `.ai-factory/PHASE4_BLOCKED.md`, `.ai-factory/ROADMAP.md §M6/§M11.5/§M12.4`.
+
+## 1. Problem
+
+`nebula-resource` has **no inline stubs** (`grep` clean: no `TODO`/`unimplemented!`/`panic!`),
+81 unit tests green, 5 topologies + `Manager` + `ResourceGuard` + `ReleaseQueue` authoritative.
+"No markers" is **not** "finalized". The canon and ROADMAP track four unclosed pieces:
+
+1. **§M11.5** — per-slot credential rotation: the trait hook
+   `on_credential_refresh` exists but **nothing invokes it**. The entire
+   reverse-index + fan-out subsystem (`manager/rotation.rs`,
+   `credential_resources` DashMap, `ResourceEvent::CredentialRefreshed/Revoked`,
+   `OutcomeBoundCounters`, `RefreshOutcome/RevokeOutcome/RotationOutcome`) was
+   **deleted** in Phase 4 because every signature referenced the now-removed
+   `R::Credential` projection (`PHASE4_BLOCKED.md §1`).
+2. **`Manager::register_from_value<R>(json, …)`** — JSON/template config path is a
+   **stub** (`PHASE4_BLOCKED.md §2`). This is the only bridge from stored
+   `ResourceEntry.config` (JSON) to a typed registration.
+3. **API** — `crates/api/src/handlers/resource.rs` is a 501 stub per ADR-0047;
+   `ResourceRepo`+`ResourceEntry` exist in `crates/storage/src/repos/resource.rs`
+   but are **not wired into `AppState`**.
+4. **§M12.4 frontier→stable** — plan-file audit, honest MATURITY flip
+   (ADR-0028 §5), topology docstring cleanup (`PHASE4_BLOCKED.md §4`).
+
+## 2. Scope
+
+In scope: Tracks **A+B+C+D** (full §M11.5 + §M12.4 close + bridge + API).
+
+Non-goals (explicit):
+- No `cargo-nebula-migrate-resource` codemod (YAGNI — no external consumers; the
+  ~33 internal impl sites are re-touched in-pass under ADR-0052; `feedback_no_shims`).
+- No HTTP acquire/release/drain endpoints (engine-owned lifecycle, §11.4 — see D3).
+- No ADR-0042 numbering-collision fix (`docs/adr/0042-layered-retry.md` +
+  `docs/adr/0042-node-binding-mechanism.md` + canon `0042-tool-provider`) — flagged
+  out-of-scope, separate task.
+- ToolProvider (ADR-0042 PROPOSED, `unstable-*`) — untouched.
+
+## 3. Panel verdict (SOLID-defended, adversarially survived)
+
+### D1 — Reverse-index + fan-out lives in `nebula-engine`, not `resource::Manager`
+
+- **SRP**: `resource::Manager`'s single responsibility is resource lifecycle
+  (register/acquire/health/release/shutdown). Credential-rotation orchestration
+  (when, fan-out, timeout budgets, outcome aggregation, cross-replica coalescing)
+  is a different responsibility that ADR-0030 ("engine owns credential
+  orchestration") already placed in engine. Re-adding it to `resource::Manager`
+  (as `PHASE4_BLOCKED.md §1` *proposes* — a phase-note, not an ADR) re-violates
+  ADR-0030 and gives `Manager` two reasons to change.
+- **DIP**: engine (Exec layer) depends on a narrow port exposed by resource
+  (Business layer); resource does not absorb credential-rotation internals.
+  No `nebula-resource → nebula-engine` edge is introduced (engine already holds
+  `Arc<nebula_resource::Manager>` at `crates/engine/src/engine.rs:49` and owns
+  `crates/engine/src/credential/`). No layer cycle.
+- **Survived counter (locality)**: "Manager already holds the ManagedResource
+  map; routing through engine adds indirection." Rejected: rotation is rare
+  (per expiry window, cross-replica-coalesced per ADR-0030/0041);
+  `engine→manager.refresh_slot` is one typed call of the same class as
+  `engine→manager.acquire` — no extra hop; the SRP/DIP win dominates.
+
+Narrow port exposed by `resource::Manager`:
+
+```rust
+impl Manager {
+    /// Engine-driven. Apply a rotated/revoked slot to the live resource.
+    /// Reentrancy model per D2. Idempotent; returns typed Error (Classify).
+    pub async fn refresh_slot(
+        &self, key: &ResourceKey, scope: ScopeLevel, slot_name: &str,
+    ) -> Result<(), crate::Error>;
+
+    pub async fn revoke_slot(
+        &self, key: &ResourceKey, scope: ScopeLevel, slot_name: &str,
+    ) -> Result<(), crate::Error>;
+}
+```
+
+### D2 — Hook signature → `&self` + interior-mutable slots (ArcSwap) + `&Self::Runtime`; **supersedes ADR-0044 hook signature**
+
+- The resource impl object `Self` holds **only** slot fields + static config
+  (ADR-0043 §5: per-execution data is in `Self::Input`, not on `self`). The
+  reaction to rotation (blue-green pool swap) acts on the **live
+  `Self::Runtime`**, not on the factory object. ADR-0036 itself states
+  blue-green is "internalised by the resource impl … owns its
+  `Arc<RwLock<Pool>>` write-lock window" — the swap point lives in `Runtime`.
+- ADR-0044's `&mut self` is therefore a modeling error: it conflates
+  "immutable factory descriptor" with "mutable rotation target" (SRP), and
+  forces `Arc<RwLock<R>>` on **every** `ManagedResource` → a lock on the
+  acquire hot path for all resources to support a hook that, under correct
+  blue-green, does not need `&mut self`. `PHASE4_BLOCKED.md §1.2` itself flags
+  this as an unresolved trade-off.
+- **Corrected trait shape** (in `crates/resource/src/resource.rs`):
+
+  ```rust
+  /// Default no-op. Called by the engine fan-out (D1) after it has swapped the
+  /// rotated credential into this resource's interior-mutable slot.
+  /// `&self`: the impl object is an immutable descriptor. Blue-green / re-auth
+  /// acts on `runtime`'s own interior mutability (e.g. ArcSwap<Pool>).
+  fn on_credential_refresh(
+      &self,
+      slot_name: &str,
+      runtime: &Self::Runtime,
+  ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+      let _ = (slot_name, runtime);
+      async { Ok(()) }
+  }
+
+  /// Default: no-op. Post-invocation invariant: the resource emits no further
+  /// authenticated traffic on the revoked credential (ADR-0036).
+  fn on_credential_revoke(
+      &self,
+      slot_name: &str,
+      runtime: &Self::Runtime,
+  ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+      let _ = (slot_name, runtime);
+      async { Ok(()) }
+  }
+  ```
+
+- Credential slot fields become interior-mutable so the engine can swap the
+  resolved credential without `&mut`. `arc-swap` is already a dependency
+  (used for `Cell<T>`). The slot wrapper used by `#[credential]` fields
+  (`CredentialGuard<C>` / `Option<…>` / `Lazy<…>`) is stored behind a per-slot
+  `ArcSwap` inside `ManagedResource`; the resource reads the current value
+  through an accessor, never a bare `&mut` field.
+- Rejected sub-option (hybrid "opt-in RwLock if author declared a mut field"):
+  discipline-based escape hatch for a case the corrected model does not
+  produce; complicates the derive macro for dead weight
+  (`feedback_type_enforce_not_discipline`).
+- **Survived counter (churn)**: "ADR-0044 is freshly accepted in this same
+  epic." Rejected: ADR-0044's core (drop `type Credential`, slot-binding) is
+  correct and untouched; only the reentrancy modeling — which
+  `PHASE4_BLOCKED.md §1.2` left explicitly open — is corrected. User authorized
+  breaking changes for correctness. Recorded in **ADR-0052**.
+
+### D3 — API surface = config CRUD (write) + read-only status/health/metrics (read); no lifecycle over HTTP
+
+- §11.4: acquire/release are engine-owned. §13.1: lifecycle must be
+  attributable in durable journal / operator trace — an observability
+  projection, not an HTTP mutation surface.
+- CQRS split: write = `ResourceEntry` config CRUD (validated against
+  `R::Config` schema via Track B); read = list/get config + a status
+  projection (phase/health/ops-metrics from `Manager` + metrics registry).
+- Exposing acquire/release over HTTP = confused-deputy ("acquire arbitrary
+  resource") + SRP violation (API owning lifecycle it does not own). Matches
+  the existing workflow/credential CRUD pattern in `crates/api`.
+
+## 4. Abuse-case invariants (security review before design freeze)
+
+| # | Abuse | Invariant enforced by this design |
+|---|---|---|
+| 1 | Cross-tenant dedup: README dedups single-runtime topologies by config `fingerprint()`; two tenants → one runtime → credential bleed | The dedup fingerprint **must** incorporate the resolved credential-slot identity (CredentialId per slot). Track A audits `fingerprint()` and, if slot-identity is absent, **fixes it** (treated as a real bug, not a hand-wave). Test: two scopes, same `R`, different credential per slot ⇒ two distinct runtimes. |
+| 2 | Revoke race on shared runtime (ADR-0036: zero authenticated traffic post-revoke) | Ordering, engine-driven: engine marks credential `revoking` → `Manager::revoke_slot` taints the runtime (reject new acquires via existing guard `tainted`) → drains in-flight `ResourceGuard`s via `ReleaseQueue` + `drain_tracker` → reports → engine completes revoke. No new acquire observes the revoked credential. |
+| 3 | Secret in config JSON via API (ADR-0028 §7) | `register_from_value(json)` validates against `<R::Config as HasSchema>::schema()`; `ResourceConfig` carries no secrets by §3.5 (slots are credential *references* by key/id). API DTOs use ADR-0047 wrappers — zero `nebula-core`/`engine`/`storage` types in the wire schema. |
+| 4 | Type confusion `kind:String → R` in `register_from_value` | `kind → registrar` is a **closed allowlist** built from `PluginRegistry` (INTEGRATION_MODEL §114-120 closed dependency graph), never reflection. Unknown `kind` ⇒ typed activation error, never a silent runtime grab. |
+
+## 5. Target architecture per track
+
+### Track A — §M11.5 per-slot rotation (engine-owned fan-out)
+
+**`nebula-resource` changes:**
+- `resource.rs`: replace `on_credential_refresh(&mut self, slot_name)` with the
+  D2 `&self` + `&Self::Runtime` pair (`on_credential_refresh` +
+  `on_credential_revoke`). Update the `#[derive(Resource)]` macro
+  (`crates/resource/macros/src/resource.rs`) to emit slots behind per-slot
+  `ArcSwap` and an accessor; no `&mut self` anywhere in generated code.
+- `manager/mod.rs`: add `refresh_slot` / `revoke_slot` (the D1 port). They
+  resolve `(key, scope)` to the live `ManagedResource`, dispatch through
+  `TopologyRuntime` to invoke the hook with `&Self::Runtime`. Per-topology:
+  Pooled fans the hook across pooled instances (or blue-green-swaps the pool
+  wholesale per author design); Resident/Service/Transport/Exclusive invoke
+  once on the shared runtime.
+- `events.rs`: reinstate rotation events in the new (credential-data-free)
+  form: `ResourceEvent::SlotRefreshed { key, slot }`,
+  `ResourceEvent::SlotRevoked { key, slot }`,
+  `ResourceEvent::SlotRefreshFailed { key, slot, error }`. No `CredentialId`
+  in the payload (engine owns that mapping).
+- `error.rs`: add typed variants for slot-refresh failure paths; keep the
+  existing `nebula_error::Classify` impl coherent (category mapping).
+- Fingerprint fix (abuse #1) in the dedup path (`registry.rs` /
+  `runtime/*` fingerprint).
+- DoD per operation: typed `Error` variant + `tracing` span
+  (`nebula.resource.slot_refresh`, fields: `key`, `slot`, `topology`,
+  duration; **never** credential material) + `ResourceEvent` + metrics
+  (`ResourceOpsMetrics` gains `slot_refresh_total` / `slot_refresh_error_total`).
+
+**`nebula-engine` changes:**
+- New module `crates/engine/src/credential/rotation/resource_fanout.rs`
+  (sibling of the existing `scheduler.rs`/`grace_period.rs`/`blue_green.rs`/
+  `transaction.rs`/`token_refresh.rs` per ADR-0030 §1):
+  - Reverse index `DashMap<CredentialId, SmallVec<[(ResourceKey, ScopeLevel, SlotName); 2]>>`,
+    populated when the engine resolves a credential into a resource slot at
+    `Resource::create` time, drained on resource removal/shutdown.
+  - On a credential rotation event (from the ADR-0030 scheduler) or a
+    lease-revoke (ADR-0051 `LeaseEvent`), look up affected resources and
+    `futures::future::join_all` over `manager.refresh_slot/revoke_slot` with a
+    **per-resource timeout budget** (ADR-0036 invariant — never a single
+    global timeout; one slow resource must not cascade-fail siblings).
+  - Aggregate into a `RotationOutcome` summary; emit via `nebula-eventbus`
+    (metrics/dashboard fanout only — not a substitute for any audit write,
+    ADR-0028 §4).
+- Subscriptions wired via `nebula-eventbus` (AGENTS.md: cross-crate comms
+  through eventbus, not direct sibling imports).
+
+**Data flow (rotation):**
+```
+credential expiry  → engine ADR-0030 scheduler → engine resolves new material
+                   → engine swaps material into resource slot (ArcSwap)
+                   → engine resource_fanout: index lookup CredentialId
+                   → join_all[ per (key,scope,slot): manager.refresh_slot
+                          (per-resource timeout) → Resource::on_credential_refresh
+                          (&self, slot, &Runtime) → author blue-green on Runtime ]
+                   → RotationOutcome → eventbus (metrics/alerts)
+```
+**Data flow (revoke):** engine marks `revoking` → `manager.revoke_slot` taints
+runtime (reject new acquires) → drain in-flight guards (`ReleaseQueue` +
+`drain_tracker`) → `Resource::on_credential_revoke` → report → engine completes
+revoke. Invariant: no acquire after taint observes the revoked credential.
+
+### Track B — JSON/typed registration bridge
+
+- `nebula-resource`: implement `Manager::register_from_value<R>(json,
+  expr_engine, …)`: deserialize `R::Config` from JSON, resolve `{{ … }}`
+  templates via `nebula_expression` (the `cache` feature is already enabled),
+  validate against `<R::Config as HasSchema>::schema()`
+  (`nebula_schema::ValidSchema`), then dispatch into the existing typed
+  `register::<R>(…)`. Reject secret-shaped config (abuse #3).
+- `nebula-engine`: erased `ResourceRegistrar` trait + a registry
+  `kind: &str → Arc<dyn ErasedResourceRegistrar>` built from `PluginRegistry`
+  (closed dependency graph, abuse #4). `ErasedResourceRegistrar::register`
+  takes the `ResourceEntry.config` JSON and calls the right
+  `register_from_value::<R>` for that plugin-declared type. Unknown `kind` ⇒
+  typed activation error.
+
+### Track C — API
+
+- `crates/api/src/state.rs`: add `pub resource_repo: Arc<dyn ResourceRepo>`
+  (port trait from `crates/storage/src/repos/resource.rs`) + builder
+  `with_resource_repo`. Optional like other registries; the composition root
+  (`nebula-server`) injects the concrete impl.
+- `crates/api/src/handlers/resource.rs`: replace the 501 stub with:
+  - `list_resources` (GET, paginated `ListResourcesResponse`),
+  - `get_resource` (GET one),
+  - `create_resource` (POST — body validated against the target `R::Config`
+    schema through the Track B bridge; CAS `version`),
+  - `update_resource` (PUT — `expected_version` CAS),
+  - `delete_resource` (DELETE — `soft_delete`),
+  - `get_resource_status` (GET `…/resources/{id}/status` — read model:
+    `ResourcePhase`/health/`ResourceOpsSnapshot` from `Manager` +
+    metrics registry; **no** secret/credential material).
+  Drop `#[deprecated]` and the 501 response; honest `#[utoipa::path]` per
+  ADR-0047. Error mapping: 401/403/404/409(version)/422(schema)/500 →
+  `ProblemDetails` (RFC 9457, existing `ApiError`).
+- `crates/api/src/models/resource.rs`: extend DTOs (status projection,
+  pagination); ADR-0047 wrappers only (no core/engine/storage types).
+- `crates/api/src/routes/workspace.rs`: register the handlers via
+  `routes!(…)` (utoipa-axum) so the OpenAPI spec stays drift-checked.
+
+### Track D — frontier→stable (§M12.4)
+
+- Audit `crates/resource/plans/*.md` non-SUPERSEDED set (01-core, 02-topology,
+  03-infrastructure, 04-recovery-resilience, 05-manager, 07-implementation,
+  08-correctness, 09-topology-guide): mark closed items, fold residue into
+  this spec's tracks or explicitly defer with a marker.
+- Topology docstring cleanup (`PHASE4_BLOCKED.md §4`): remove stale
+  scheme-threading references in `crates/resource/src/topology/*`.
+- Honest MATURITY flip: `crates/resource/README.md` "frontier" → "stable"
+  **only after** Tracks A/B/C land and pass the verification gate
+  (ADR-0028 §5 operational honesty — no early flip).
+- **ADR-0052** "Engine-owned per-slot rotation fan-out + `&self` refresh hook":
+  records D1+D2+D3, supersedes ADR-0044's hook signature, overrides
+  `PHASE4_BLOCKED.md §1`'s "re-add to `resource::Manager`" candidate. Filed in
+  the worktree `docs/adr/` (next free number is 0052; the pre-existing 0042
+  triple-collision is noted but out of scope).
+
+## 6. Breaking changes
+
+- `Resource::on_credential_refresh` signature change (`&mut self` →
+  `&self` + `&Self::Runtime`) + new `on_credential_revoke`. All ~33 internal
+  impl sites + the `#[derive(Resource)]` macro output updated in one pass
+  (`feedback_bold_refactor_pace`). No deprecated alias (`feedback_no_shims`).
+- `ManagedResource` internal: slot fields move behind per-slot `ArcSwap`
+  (no public `&mut` slot access). Internal to the crate; not a consumer break
+  beyond the trait signature.
+- `ResourceEvent` gains `SlotRefreshed/SlotRevoked/SlotRefreshFailed`
+  (`#[non_exhaustive]` already, so additive at the enum level).
+
+## 7. Error handling
+
+- All new failure paths return typed `crate::Error` (resource) /
+  `thiserror` enums classified via `#[derive(nebula_error::Classify)]`
+  (`#[classify(category=…, code=…)]`), matching the established
+  `crates/credential/src/error.rs` pattern. No `unwrap`/`expect`/`panic!` in
+  library code (clippy `-D warnings`; tests/const/bins exempt).
+- Engine fan-out: per-resource error isolation; one resource's `Err` does not
+  abort sibling dispatches; aggregated into `RotationOutcome`.
+- Redaction: no credential/token material in any `tracing` span, event
+  payload, metrics label, or error string (PRODUCT_CANON §12.5, ADR-0030 §4).
+
+## 8. Testing strategy
+
+- **Unit** (`nebula-resource`): `refresh_slot`/`revoke_slot` per topology;
+  ArcSwap slot swap visibility; fingerprint includes slot identity
+  (abuse #1 regression test); taint→drain ordering (abuse #2).
+- **Macro** (`trybuild`): `#[derive(Resource)]` emits `&self` hooks, no
+  `&mut self`; compile-fail probe for the old signature.
+- **Integration** (`crates/engine/tests/`): rotation fan-out end-to-end
+  (credential rotate → affected resources' hooks fire, unaffected do not);
+  per-resource timeout isolation (one slow resource does not fail siblings);
+  revoke ⇒ zero post-revoke authenticated acquire.
+- **Redaction** (`crates/engine/tests/`): inject secret-bearing material into
+  rotation path; assert no substring in spans/events/metrics/errors
+  (ADR-0030 §4 CI gate pattern).
+- **API**: handler tests for CRUD + status; OpenAPI drift is structural
+  (utoipa-axum compile gate); schema-validation rejection of secret-shaped
+  config (abuse #3); unknown `kind` ⇒ typed error (abuse #4).
+- Existing `crates/engine/tests/resource_integration.rs::shared_resource`
+  cross-workflow dedup test must stay green.
+
+## 9. Verification gate
+
+`task dev:check` (fmt + clippy `-D warnings` + nextest + doctests + deny)
+green workspace-wide; `cargo doc` with broken-intra-doc-links denied green for
+touched crates; `task build` examples green; `cargo deny` layer-wrapper check
+green (no new cross-layer edge — engine→resource only). MATURITY row flips
+only after this gate passes with Tracks A/B/C landed.
+
+## 10. Open questions
+
+None. D1/D2/D3 resolved by panel + owner; abuse invariants fixed; non-goals
+explicit. The 4 plan tracks are dependency-ordered: A independent; B before C;
+D is closure (ADR-0052 + MATURITY + docs).
