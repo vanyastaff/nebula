@@ -44,10 +44,21 @@ the plan must be built on the corrected facts:
    validator), and the error re-map (`push_validator_rule_errors`,
    `translate_validator_code`).
 
-4. **`RequiredMode::When(Rule)` is a standing §4.5 [L1] false capability.** It
-   is a public type with **zero engine consumers** (`value.rs` never reads
-   it). Shipping/keeping it without an evaluator is a canon §4.5 +
-   §14 ("phantom types") violation that exists *today*.
+4. **`RequiredMode::When(Rule)` / `VisibilityMode::When(Rule)` are a standing
+   §4.5 [L1] fail-open, not a missing consumer.** Correction to the panel's
+   "zero consumers" framing: both ARE consumed at `crates/schema/src/validated.rs`
+   — `validate_field` evaluates `VisibilityMode::When(rule) => rule.evaluate(ctx)`
+   (`:1049`) and `RequiredMode::When(rule) => rule.evaluate(ctx)` (`:1059`).
+   The §4.5 violation is that the capability is present but **not honored
+   correctly end-to-end**: `Rule::evaluate(&dyn RuleContext)` does a flat-key
+   lookup and **silently returns `false` for nested JSON-Pointer paths**
+   (documented Known Limitation, `crates/validator/src/rule/mod.rs:175-185`;
+   `RootContext::get` is flat, `crates/schema/src/context.rs:18-29`). A
+   `required_when`/`visible_when` predicate on a nested sibling path
+   (`/auth/mode`) therefore fails OPEN — a mandatory field silently becomes
+   optional / a hidden field silently shows. The fix is the same as the panel
+   prescribed (evaluate via the nested-correct `PredicateContext`), so the
+   design is unchanged; only this justification is made accurate.
 
 5. **The real API violation is not the `serde_json::Value` transport.**
    `serde_json::Value` for credential `data` is canon-sanctioned (ADR-0011
