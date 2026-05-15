@@ -128,9 +128,6 @@ jobs:
             log:
               - 'crates/log/**'
               - '!crates/log/**/*.md'
-            system:
-              - 'crates/system/**'
-              - '!crates/system/**/*.md'
 
       - name: Plan shards
         id: plan
@@ -142,7 +139,6 @@ jobs:
           E: ${{ steps.filter.outputs.eventbus }}
           X: ${{ steps.filter.outputs.expression }}
           L: ${{ steps.filter.outputs.log }}
-          S: ${{ steps.filter.outputs.system }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
@@ -159,7 +155,7 @@ jobs:
             force=1
           fi
           if [[ "$force" == "1" ]]; then
-            R=true; V=true; C=true; E=true; X=true; L=true; S=true
+            R=true; V=true; C=true; E=true; X=true; L=true
           fi
 
           SHARDS='[]'
@@ -181,7 +177,6 @@ jobs:
           [[ "$E" == "true" ]] && add_misc_pkg "nebula-eventbus"
           [[ "$X" == "true" ]] && add_misc_pkg "nebula-expression"
           [[ "$L" == "true" ]] && add_misc_pkg "nebula-log"
-          [[ "$S" == "true" ]] && add_misc_pkg "nebula-system"
           if [[ -n "$M_PACKAGES" ]]; then
             add "$(jq -cn --arg packages "$M_PACKAGES" '{shard:"misc",packages:$packages}')"
           fi

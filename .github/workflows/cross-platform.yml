@@ -6,7 +6,6 @@ on:
       - "crates/sandbox/**"
       - "crates/runtime/**"
       - "crates/plugin-sdk/**"
-      - "crates/system/**"
       - ".github/workflows/cross-platform.yml"
   push:
     branches: [main]
@@ -54,5 +53,3 @@ jobs:
         run: cargo test -p nebula-engine
       - name: Test nebula-plugin-sdk
         run: cargo test -p nebula-plugin-sdk
-      - name: Test nebula-system (all features)
-        run: cargo test -p nebula-system --all-features
