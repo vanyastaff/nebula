@@ -40,9 +40,11 @@ pub(crate) mod sealed_caps {
 // resolution settle ahead of the type-shape commits.
 
 pub mod bearer_token;
+pub mod registry;
 pub mod shared_key;
 pub mod signing_key;
 
 pub use bearer_token::{BearerTokenCredential, BearerTokenProperties};
+pub use registry::register_builtins;
 pub use shared_key::{SharedKeyCredential, SharedKeyProperties};
 pub use signing_key::{SigningKeyCredential, SigningKeyProperties};
