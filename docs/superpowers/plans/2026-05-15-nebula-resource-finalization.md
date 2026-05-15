@@ -601,47 +601,104 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task A7: Metrics — `slot_refresh_total` / `slot_refresh_error_total`
+### Task A7: Rotation outcome metrics + `ErrorKind::Revoked` + dispatch dedup
 
-**Files:**
-- Modify: `crates/resource/src/metrics.rs` (`ResourceOpsMetrics` + `ResourceOpsSnapshot`)
-- Test: `crates/resource/src/metrics.rs` `#[cfg(test)]`
+**Scope note (reconciled after A6):** A6 already shipped **unlabeled attempt
+counters** (`ResourceOpsMetrics::record_slot_refresh()` / `record_slot_revoke()`
+backed by `NEBULA_RESOURCE_CREDENTIAL_{ROTATION,REVOKE}_ATTEMPTS_TOTAL`) and
+updated the stale `OutcomeCountersSnapshot` "not yet wired" doc notes. A7 does
+NOT re-add attempt counters. A7 closes three A6-deferred items, all in files A7
+already touches:
 
-- [ ] **Step 1: Write the failing test**
+1. **Per-outcome labeled split** — feed the retained `OutcomeCountersSnapshot`
+   (`success` / `failed` / `timed_out`) from the existing `match &result {Ok|Err}`
+   branch points already present in `Manager::refresh_slot`/`revoke_slot`, and
+   add the `timed_out` increment at the `revoke_slot` drain-timeout branch
+   (`manager/mod.rs` ~:861-870, currently only `tracing::warn!`s). Decide and
+   **document explicitly** whether the unlabeled `*_ATTEMPTS_TOTAL` stays a
+   distinct metric or becomes the rollup of the labeled set — they are
+   semantically distinct (attempts vs per-outcome), so keep both but state the
+   relationship in the metric docs; do not leave two overlapping silent totals.
+2. **`ErrorKind::Revoked` (A6 I1)** — taint rejection currently returns
+   `ErrorKind::Cancelled` (terminal, non-retryable), which misclassifies a
+   transient rotation/revoke window as "world shutting down". Add a
+   `Revoked` variant to `ErrorKind` (`error.rs` — enum is `#[non_exhaustive]`,
+   additive); map it in the `nebula_error::Classify` impl to a **non-terminal**
+   category with a short retry hint (a tainted resource becomes acquirable
+   again after re-register; treat like `Unavailable`/`exhausted`-with-short-
+   `retry_after`, NOT `Cancelled`); `is_retryable()` → true. Reclassify the
+   `lookup_for_acquire` taint rejection (`manager/mod.rs` ~:730-742) to build
+   `ErrorKind::Revoked`. Update the `lookup_for_acquire` doc that advertises
+   `ErrorKind::Cancelled`, and tighten `manager_refresh_slot.rs`'s post-taint
+   assertions from `ErrorCategory::Cancelled` to the new category.
+3. **Collapse dispatch duplication (A6 M1)** — `runtime/managed.rs`
+   `dispatch_on_refresh`/`dispatch_on_revoke` are near-identical (differ only by
+   which hook they call); collapse to one `dispatch_slot_hook(&self, slot,
+   refresh: bool)` with the per-topology match written once (mirrors how
+   `pool.rs::dispatch_slot_hook_over_idle` already uses a `refresh` selector).
+   Update `*_erased` forwarders + both registry test fixtures accordingly. Pure
+   refactor — behavior identical, all A6 tests stay green.
+
+**Files:** Modify `crates/resource/src/metrics.rs`, `crates/resource/src/error.rs`,
+`crates/resource/src/manager/mod.rs`, `crates/resource/src/runtime/managed.rs`,
+`crates/resource/src/registry.rs` (erased forwarders + fixtures). Tests in the
+respective `#[cfg(test)]` + extend `crates/resource/tests/manager_refresh_slot.rs`.
+No plan/task IDs in code/comments; cite ADR-0036/0044 only (NOT ADR-0052 — it
+does not exist until Task D1). No `unwrap/expect/panic/todo` in non-test code.
+`cargo fmt -p nebula-resource` (workspace `task fmt` broken — per-crate; lefthook
+fmt-check gates).
+
+- [ ] **Step 1: Write failing tests**
 
 ```rust
+// metrics.rs #[cfg(test)] — labeled outcome split
 #[test]
-fn slot_refresh_counters_increment() {
+fn slot_outcome_counters_split_by_result() {
     let reg = nebula_metrics::MetricsRegistry::new();
     let m = ResourceOpsMetrics::new(&reg).expect("metrics");
-    m.record_slot_refresh();
-    m.record_slot_refresh_error();
+    m.record_slot_refresh_outcome(SlotOutcome::Success);
+    m.record_slot_refresh_outcome(SlotOutcome::Failed);
+    m.record_slot_revoke_outcome(SlotOutcome::TimedOut);
     let s = m.snapshot();
-    assert_eq!(s.slot_refresh_total, 1);
-    assert_eq!(s.slot_refresh_error_total, 1);
+    assert_eq!(s.slot_refresh_success, 1);
+    assert_eq!(s.slot_refresh_failed, 1);
+    assert_eq!(s.slot_revoke_timed_out, 1);
+}
+// error.rs #[cfg(test)] — Revoked is retryable, not Cancelled
+#[test]
+fn revoked_kind_is_retryable_not_cancelled() {
+    let e = Error::new(ErrorKind::Revoked, "tainted");
+    assert!(e.is_retryable());
+    assert_ne!(
+        nebula_error::Classify::category(&e),
+        nebula_error::ErrorCategory::Cancelled
+    );
 }
 ```
+(Adjust `SlotOutcome`/`record_*_outcome`/snapshot field names to the actual
+`OutcomeCountersSnapshot` shape you read in `metrics.rs`; the intent is the
+binding part. Add a `manager_refresh_slot.rs` test asserting a post-taint
+acquire is classified the new non-terminal category, not `Cancelled`.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run — expect FAIL** (`cargo test -p nebula-resource metrics:: error:: -- slot_outcome revoked_kind`; `cargo test -p nebula-resource --test manager_refresh_slot`).
 
-Run: `cargo test -p nebula-resource metrics:: -- slot_refresh`
-Expected: FAIL — no such fields/methods.
+- [ ] **Step 3: Implement** the three items above. Read `metrics.rs`
+`OutcomeCountersSnapshot`, `error.rs` `ErrorKind`/`Classify` impl, and
+`manager/mod.rs` `lookup_for_acquire` + `refresh_slot`/`revoke_slot` result
+arms first; wire minimally and consistently with existing patterns.
 
-- [ ] **Step 3: Write minimal implementation**
-
-Add two `Counter`s to `ResourceOpsMetrics::new` (names `nebula_metrics::naming::NEBULA_RESOURCE_SLOT_REFRESH_TOTAL` / `_ERROR_TOTAL` — add the constants in `nebula-metrics/src/naming.rs`), `record_slot_refresh`/`record_slot_refresh_error`, and the two snapshot fields.
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `cargo test -p nebula-resource metrics:: -- slot_refresh`
-Expected: PASS.
+- [ ] **Step 4: Run — expect PASS.** Then `cargo nextest run -p nebula-resource`
+(243+ tests, **0 failed** — proves the dispatch-dedup refactor + reclassify
+broke nothing), `cargo clippy -p nebula-resource --all-targets -- -D warnings`
+clean, `cargo test -p nebula-resource --test manager_refresh_slot` (3 pass with
+updated category assertion).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-task fmt
-git add crates/resource/src/metrics.rs crates/metrics/src/naming.rs
-git commit -m "feat(resource): slot-refresh metrics counters + snapshot
+cargo fmt -p nebula-resource
+git add crates/resource/src/metrics.rs crates/resource/src/error.rs crates/resource/src/manager/mod.rs crates/resource/src/runtime/managed.rs crates/resource/src/registry.rs crates/resource/tests/manager_refresh_slot.rs
+git commit -m "feat(resource): rotation outcome metrics + ErrorKind::Revoked; dedup dispatch
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
