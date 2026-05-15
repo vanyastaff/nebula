@@ -4000,6 +4000,7 @@ dependencies = [
  "nebula-api",
  "nebula-storage",
  "serde_json",
+ "sqlx",
  "thiserror",
  "tokio",
  "tracing",

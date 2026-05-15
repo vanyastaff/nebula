@@ -22,9 +22,18 @@ axum = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
+# Optional — only linked by the PG-backed idempotency path in
+# `compose::build_pg_idempotency_store` (gated by `feature = "postgres"`).
+# Mirrors `crates/api/Cargo.toml` exactly so the verbatim `use sqlx::...`
+# port resolves identically.
+sqlx = { version = "0.8", optional = true, default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+  "tls-rustls-ring-native-roots",
+] }
 
 [features]
-postgres = ["nebula-api/postgres"]
+postgres = ["nebula-api/postgres", "dep:sqlx"]
 
 [lints]
 workspace = true
