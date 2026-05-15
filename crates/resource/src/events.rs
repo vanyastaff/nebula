@@ -93,7 +93,7 @@ pub enum ResourceEvent {
         /// The slot name that was refreshed.
         slot: String,
     },
-    /// A `#[credential]` slot's credential was revoked; runtime tainted+drained.
+    /// A `#[credential]` slot's credential was revoked.
     SlotRevoked {
         /// The key of the resource whose slot was revoked.
         key: ResourceKey,
@@ -101,7 +101,7 @@ pub enum ResourceEvent {
         slot: String,
     },
     /// The per-resource refresh hook failed or timed out. `error` is an
-    /// already-redacted string (NEVER credential material — PRODUCT_CANON §12.5).
+    /// already-redacted string (NEVER credential material).
     SlotRefreshFailed {
         /// The key of the resource whose slot refresh failed.
         key: ResourceKey,
@@ -140,19 +140,28 @@ mod tests {
     #[test]
     fn slot_events_carry_no_credential_data() {
         let k = ResourceKey::new("k").expect("valid key");
-        let e = ResourceEvent::SlotRefreshed {
+
+        let refreshed = ResourceEvent::SlotRefreshed {
             key: k.clone(),
             slot: "db".into(),
         };
-        assert_eq!(e.key().map(ResourceKey::as_str), Some("k"));
-        let _ = ResourceEvent::SlotRevoked {
+        assert_eq!(refreshed.key().map(ResourceKey::as_str), Some("k"));
+
+        let revoked = ResourceEvent::SlotRevoked {
             key: k.clone(),
             slot: "db".into(),
         };
-        let _ = ResourceEvent::SlotRefreshFailed {
+        assert_eq!(revoked.key().map(ResourceKey::as_str), Some("k"));
+
+        let failed = ResourceEvent::SlotRefreshFailed {
             key: k,
             slot: "db".into(),
             error: "transient: upstream 503".into(),
         };
+        assert_eq!(failed.key().map(ResourceKey::as_str), Some("k"));
+        let ResourceEvent::SlotRefreshFailed { error, .. } = &failed else {
+            unreachable!()
+        };
+        assert!(!error.contains("secret"), "error must be redacted");
     }
 }
