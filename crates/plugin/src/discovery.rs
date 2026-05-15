@@ -34,6 +34,44 @@ use crate::{
     remote_action::RemoteActionFactory,
 };
 
+// ── Discovered-action record ─────────────────────────────────────────────────
+
+/// One discovered out-of-process action: its host-side metadata, the
+/// dispatch handler built during discovery, and the plugin binary it came
+/// from.
+///
+/// The `binary` is exposed so an engine-side composition root can key an
+/// engine-owned plugin-process pool on `(binary, scope)` per ADR-0025 §2.
+/// The pre-existing `handler` (a `ProcessSandboxHandler` over one
+/// long-lived process) is unchanged — the binary is purely additive
+/// context for callers that pool processes themselves.
+#[derive(Clone)]
+pub struct DiscoveredAction {
+    /// Plugin binary this action is dispatched to.
+    pub binary: std::path::PathBuf,
+    /// Host-side metadata resolved from the wire `ActionDescriptor`. Its
+    /// `base.key` is **namespaced** (`<plugin>.<local>`).
+    pub metadata: ActionMetadata,
+    /// The raw wire `ActionDescriptor.key` the plugin matches on in its
+    /// own `PluginHandler::execute` — i.e. the un-namespaced local key. A
+    /// pooling caller MUST send this (not the namespaced metadata key)
+    /// over the transport, otherwise the plugin rejects the invocation
+    /// with `UNKNOWN_ACTION`.
+    pub local_key: String,
+    /// Discovery-built dispatch handler (shared long-lived process).
+    pub handler: ActionHandler,
+}
+
+impl std::fmt::Debug for DiscoveredAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscoveredAction")
+            .field("binary", &self.binary)
+            .field("key", &self.metadata.base.key)
+            .field("local_key", &self.local_key)
+            .finish_non_exhaustive()
+    }
+}
+
 // ── Wire-response parse ──────────────────────────────────────────────────────
 
 /// Wire metadata returned from a single plugin probe.
@@ -276,16 +314,17 @@ fn resolve_action_key(
 
 /// Try to discover one plugin binary.
 ///
-/// Returns `(resolved_plugin, action_handlers)` on success, where
-/// `action_handlers` is a flat `(metadata, handler)` list the caller can
-/// bulk-register into a runtime `ActionRegistry`. Both share the same
-/// underlying `Arc<ProcessSandboxHandler>` — no double-spawn occurs.
+/// Returns `(resolved_plugin, discovered_actions)` on success, where
+/// `discovered_actions` is a flat [`DiscoveredAction`] list (metadata +
+/// handler + binary) the caller can bulk-register into a runtime
+/// `ActionRegistry`. All actions share the same underlying
+/// `Arc<ProcessSandboxHandler>` — no double-spawn occurs.
 ///
 /// Returns `Err(SkipReason)` on any failure. All failures are warn-and-skip.
 async fn discover_one(
     binary: &Path,
     default_timeout: Duration,
-) -> Result<(ResolvedPlugin, Vec<(ActionMetadata, ActionHandler)>), SkipReason> {
+) -> Result<(ResolvedPlugin, Vec<DiscoveredAction>), SkipReason> {
     // Step 1: parse sibling plugin.toml (required).
     // `binary` came from `read_dir(dir)` — it always has a parent in practice.
     // Route the theoretically-impossible `None` case through `SkipReason`
@@ -350,7 +389,7 @@ async fn discover_one(
     // simultaneously wrap as `Arc<dyn ActionFactory>` (for DiscoveredPlugin via
     // RemoteActionFactory, post-Variant A) and coerce to `Arc<dyn StatelessHandler>`
     // (for the returned handler list).
-    let mut remote_actions: Vec<Arc<RemoteAction>> = Vec::new();
+    let mut remote_actions: Vec<(Arc<RemoteAction>, String)> = Vec::new();
     for descriptor in &wire.actions {
         let action_key = match resolve_action_key(&namespace_prefix, &descriptor.key) {
             // Cross-namespace: fail the whole plugin (symmetric with
@@ -382,23 +421,34 @@ async fn discover_one(
             Arc::clone(&sandbox),
             metadata.clone(),
         ));
-        remote_actions.push(Arc::new(RemoteAction::new(metadata, handler)));
+        remote_actions.push((
+            Arc::new(RemoteAction::new(metadata, handler)),
+            descriptor.key.clone(),
+        ));
     }
 
-    // Build the flat handler list — coerce each Arc<RemoteAction> to dyn StatelessHandler.
-    let action_handlers: Vec<(ActionMetadata, ActionHandler)> = remote_actions
+    // Build the flat discovered-action list — coerce each
+    // Arc<RemoteAction> to dyn StatelessHandler and carry the binary +
+    // plugin-local key so a pooling caller can key on (binary, scope) and
+    // send the key the plugin actually matches on.
+    let action_handlers: Vec<DiscoveredAction> = remote_actions
         .iter()
-        .map(|r| {
-            let meta = r.metadata().clone();
+        .map(|(r, local_key)| {
+            let metadata = r.metadata().clone();
             let h: Arc<dyn StatelessHandler> = Arc::clone(r) as Arc<dyn StatelessHandler>;
-            (meta, ActionHandler::Stateless(h))
+            DiscoveredAction {
+                binary: binary.to_path_buf(),
+                metadata,
+                local_key: local_key.clone(),
+                handler: ActionHandler::Stateless(h),
+            }
         })
         .collect();
 
     // Wrap each in `RemoteActionFactory` for `DiscoveredPlugin` / `Plugin` trait.
     let actions: Vec<Arc<dyn ActionFactory>> = remote_actions
         .into_iter()
-        .map(|r| {
+        .map(|(r, _local_key)| {
             let factory = RemoteActionFactory::new(r);
             Arc::new(factory) as Arc<dyn ActionFactory>
         })
@@ -436,8 +486,9 @@ async fn discover_one(
 /// `Arc<dyn StatelessHandler>`. Both wrappings require the concrete
 /// `Arc<RemoteAction>` — which is available during construction but lost
 /// after coercion. `discover_directory` performs both at construction time
-/// and returns the handler list to callers that need to populate a runtime
-/// registry.
+/// and returns the [`DiscoveredAction`] list to callers that need to
+/// populate a runtime registry. Each record also carries the plugin
+/// `binary` so an engine-side pooling caller can key on `(binary, scope)`.
 ///
 /// Per-plugin capability/scope is **not** modeled here — egress, credential,
 /// and filesystem mediation is the broker's responsibility (ADR-0025), not
@@ -446,8 +497,8 @@ pub async fn discover_directory(
     dir: &Path,
     registry: &mut PluginRegistry,
     default_timeout: Duration,
-) -> Vec<(ActionMetadata, ActionHandler)> {
-    let mut all_handlers: Vec<(ActionMetadata, ActionHandler)> = Vec::new();
+) -> Vec<DiscoveredAction> {
+    let mut all_handlers: Vec<DiscoveredAction> = Vec::new();
 
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,

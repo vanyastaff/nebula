@@ -27,6 +27,8 @@
 pub mod blob;
 pub mod data_policy;
 pub mod error;
+#[cfg(feature = "out-of-process-plugins")]
+pub mod out_of_process;
 pub(crate) mod plugin_pool;
 pub mod queue;
 pub mod registry;
@@ -41,6 +43,8 @@ pub mod stream_backpressure;
 pub use blob::{BlobRef, BlobStorage};
 pub use data_policy::{DataPassingPolicy, LargeDataStrategy};
 pub use error::RuntimeError;
+#[cfg(feature = "out-of-process-plugins")]
+pub use out_of_process::{OutOfProcessConfig, discover_into_registry};
 pub use queue::{MemoryQueue, QueueError, TaskQueue};
 pub use registry::ActionRegistry;
 pub use runtime::{ActionRuntime, StatefulCheckpoint, StatefulCheckpointSink};

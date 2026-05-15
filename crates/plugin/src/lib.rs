@@ -55,6 +55,7 @@ pub mod sandbox_bridge;
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use discovered_plugin::DiscoveredPlugin;
+pub use discovery::DiscoveredAction;
 pub use error::{ComponentKind, PluginError};
 pub use handler::ProcessSandboxHandler;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
