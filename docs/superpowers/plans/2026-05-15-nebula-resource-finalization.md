@@ -226,25 +226,43 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Task A3: `#[derive(Resource)]` emits slot cells + typed accessor
 
-**Files:**
-- Modify: `crates/resource/macros/src/resource.rs:60-94` (add slot-cell storage struct + accessor emission)
-- Modify: `crates/resource/macros/src/field_slots.rs` (reuse `ParsedCredentialSlot` from `:23-48`, add an accessor emitter next to `emit_slot_field_registrations` at `:180-208`)
-- Test: `crates/resource/tests/trybuild/derive_slot_accessor.rs` + harness `crates/resource/tests/trybuild.rs`
+**Design (resolved 2026-05-15 — Alternative (a), supersedes the original
+`__slot_lookup`/ManagedResource-side framing):** a pure `#[proc_macro_derive]`
+cannot add/rewrite struct fields, and `ManagedResource` hands out `Arc<R>`
+(no `&mut R`). Therefore the `#[credential]` field type **is**
+`SlotCell<CredentialGuard<C>>` declared directly on the author's struct (was
+bare `CredentialGuard<C>` per ADR-0044's now-superseded migration note). The
+derive emits only an inherent **read accessor** `fn <field>_slot(&self) ->
+Option<Arc<CredentialGuard<C>>>` = `self.<field>.load()`. The framework
+populates/rotates via `SlotCell::store` through `&self` (A6). No
+`__slot_lookup`, no framework side-table, fully per-instance, secret-safe
+(`Arc<CredentialGuard>`, never cloned). Recorded in ADR-0052 (Task D1) as a
+supersession of ADR-0044's slot-field/migration shape.
 
-The derive must generate, per `#[credential]` field, a `SlotCell` and a `fn <field>(&self) -> Option<Arc<CredentialGuard<C>>>` accessor so `create`/hooks read the resolved credential off `&self` without `&mut`.
+**Files:**
+- Modify: `crates/resource/macros/src/field_slots.rs` — extend
+  `decode_field_type` (`:131-158`) to accept `SlotCell<CredentialGuard<C>>`
+  (with optional `Option<…>` / `Lazy<…>` wrappers, same tail-strip pattern);
+  add an accessor emitter next to `emit_slot_field_registrations` (`:180-208`).
+- Modify: `crates/resource/macros/src/resource.rs` — emit the accessor inherent
+  impl alongside the existing `resource_impl` / `deps_impl` (`:60-94`).
+- Test: `crates/resource/tests/trybuild/derive_slot_accessor.rs` + a harness
+  entry (reuse the crate's existing trybuild harness if one exists — inspect
+  `crates/resource/tests/` first; only create `trybuild.rs` if absent, matching
+  any existing trybuild pattern in the crate).
 
 - [ ] **Step 1: Write the failing test (trybuild pass-case)**
 
 ```rust
 // crates/resource/tests/trybuild/derive_slot_accessor.rs
-use nebula_resource::Resource;
+use nebula_resource::{Resource, SlotCell};
 use nebula_credential::CredentialGuard;
 
 #[derive(Resource)]
 #[resource(key = "demo", topology = "resident", config = DemoCfg)]
 struct Demo {
     #[credential(key = "db")]
-    db: CredentialGuard<FakeCred>,
+    db: SlotCell<CredentialGuard<FakeCred>>,
 }
 
 #[derive(Clone, Default)]
@@ -254,17 +272,21 @@ impl nebula_schema::HasSchema for DemoCfg {
 }
 impl nebula_resource::ResourceConfig for DemoCfg {}
 
+// Minimal Credential fixture — inspect the real `nebula_credential::Credential`
+// trait and satisfy its required items (or reuse an existing crate/test
+// credential fixture if one exists; prefer reuse).
 struct FakeCred;
-impl nebula_credential::Credential for FakeCred { const KEY: &'static str = "fake"; /* ...minimal... */ }
+/* impl nebula_credential::Credential for FakeCred { ... } */
 
 fn main() {
-    let d = Demo { db: CredentialGuard::new(FakeCred) };
-    // generated accessor must exist and return the resolved guard:
+    let d = Demo { db: SlotCell::empty() };
+    // generated accessor exists, type-checks, returns None when unresolved:
     let _maybe: Option<std::sync::Arc<CredentialGuard<FakeCred>>> = d.db_slot();
 }
 ```
 
-Add to `crates/resource/tests/trybuild.rs`:
+Add a harness test (in the crate's existing trybuild harness, else a new
+`crates/resource/tests/trybuild.rs`):
 
 ```rust
 #[test]
@@ -277,68 +299,72 @@ fn derive_emits_slot_accessor() {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p nebula-resource --test trybuild derive_emits_slot_accessor`
-Expected: FAIL — generated type has no `db_slot()` accessor / no slot cell.
+Expected: FAIL — no `db_slot()` accessor emitted (and/or `decode_field_type`
+rejects the `SlotCell<…>` field shape).
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `crates/resource/macros/src/field_slots.rs`, add below `emit_slot_field_registrations` (`:208`):
+In `crates/resource/macros/src/field_slots.rs`, extend `decode_field_type` so
+a `#[credential]` field of shape `SlotCell<CredentialGuard<C>>` (optionally
+`Option<…>` / `Lazy<…>` wrapped, reusing the existing `strip_path_tail`
+pattern) parses, yielding inner `C`. Then add an accessor emitter:
 
 ```rust
-/// Emits, per slot, a `SlotCell<CredentialGuard<C>>` field name + an
-/// accessor `fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>`.
-pub(crate) fn emit_slot_cells_and_accessors(
+/// Per slot, emit a read accessor over the author-declared
+/// `SlotCell<CredentialGuard<C>>` field. The field already exists on the
+/// struct (the author declares it); the derive adds no fields.
+pub(crate) fn emit_slot_accessors(
     slots: &[ParsedCredentialSlot],
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let mut cell_fields = Vec::new();
-    let mut accessors = Vec::new();
-    for slot in slots {
+) -> proc_macro2::TokenStream {
+    let accessors = slots.iter().map(|slot| {
         let field = &slot.field_ident;
-        let cell_ident = quote::format_ident!("__slot_{}", field);
         let acc_ident = quote::format_ident!("{}_slot", field);
         let inner = &slot.inner_type;
-        cell_fields.push(quote::quote! {
-            #cell_ident: ::nebula_resource::SlotCell<
-                ::nebula_credential::CredentialGuard<#inner>
-            >,
-        });
-        accessors.push(quote::quote! {
-            #[doc = "Resolved credential for this slot, if the engine has bound it."]
+        quote::quote! {
+            #[doc = "Resolved credential for this slot, or `None` until the framework binds it."]
             pub fn #acc_ident(&self) -> ::std::option::Option<
                 ::std::sync::Arc<::nebula_credential::CredentialGuard<#inner>>
             > {
-                self.#cell_ident.load()
+                self.#field.load()
             }
-        });
-    }
-    (quote::quote!(#(#cell_fields)*), quote::quote!(#(#accessors)*))
+        }
+    });
+    quote::quote!(#(#accessors)*)
 }
 ```
 
-In `crates/resource/macros/src/resource.rs`, after the `deps_impl` block (`:94`), emit an inherent impl carrying the accessors (the cells are framework-managed; expose only the read accessor on the user type):
+In `crates/resource/macros/src/resource.rs`, after the existing `deps_impl`
+block, emit an inherent impl with the accessors and add it to the final
+expansion:
 
 ```rust
-let (_cell_fields, accessors) = crate::field_slots::emit_slot_cells_and_accessors(&slots);
+let slot_accessors = crate::field_slots::emit_slot_accessors(&slots);
 let slot_accessor_impl = quote! {
     impl #impl_generics #struct_name #ty_generics #where_clause {
-        #accessors
+        #slot_accessors
     }
 };
-// add `slot_accessor_impl` to the final `quote!{ #resource_impl #deps_impl #slot_accessor_impl }`
+// final: quote!{ #resource_impl #deps_impl #slot_accessor_impl }
 ```
 
-> Storage note: the `SlotCell`s live on the framework `ManagedResource` wrapper (Task A6), keyed by slot name, NOT as raw struct fields on the user type — the accessor delegates through a framework hook. Implement the accessor body to call `::nebula_resource::__slot_lookup::<#inner>(self, #slot_key)` and add that thin generic in `crates/resource/src/slot.rs` returning from a per-instance registry installed at `create` time. (Keep the public surface = the accessor only.)
+(If `nebula-resource-macros` lacks a path dep that lets it name `SlotCell`,
+note it: the macro only emits `::nebula_resource::SlotCell` *tokens* — no
+build-dep needed; the generated code resolves it in the user crate.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p nebula-resource --test trybuild derive_emits_slot_accessor`
-Expected: PASS.
+Expected: PASS. Then `cargo check -p nebula-resource` and
+`cargo check -p nebula-resource-macros` clean; run the full
+`cargo test -p nebula-resource --test trybuild` to confirm no regression of
+other derive trybuild cases.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-task fmt
-git add crates/resource/macros/src/ crates/resource/src/slot.rs crates/resource/tests/
-git commit -m "feat(resource): derive(Resource) emits per-slot accessor over SlotCell
+cargo fmt -p nebula-resource -p nebula-resource-macros
+git add crates/resource/macros/src/ crates/resource/tests/
+git commit -m "feat(resource): derive(Resource) emits per-slot SlotCell accessor
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -351,10 +377,10 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - Modify: every in-repo `impl Resource` overriding `on_credential_refresh` (find via grep below) — `crates/**`, `examples/**`
 - Test: `cargo check --workspace --all-targets`
 
-- [ ] **Step 1: Enumerate the impls to migrate**
+- [ ] **Step 1: Enumerate the impls + `#[credential]` fields to migrate**
 
-Run: `rg -n "on_credential_refresh" --type rust crates examples` and `rg -n "impl .*Resource for" --type rust crates examples`
-Record the file:line list. Expected ≈ a handful of adapters/examples (`m6_postgres_pool`, `m6_resident_http`, `m6_telegram_multi_workflow` per README) plus any test fixtures.
+Run: `rg -n "on_credential_refresh|on_credential_revoke" --type rust crates examples`, `rg -n "impl .*Resource for" --type rust crates examples`, and `rg -n "#\[credential" --type rust crates examples`.
+Record the file:line list. Expected ≈ a handful of adapters/examples (`m6_postgres_pool`, `m6_resident_http`, `m6_telegram_multi_workflow` per README) + any test fixtures + every `#[derive(Resource)]` struct with `#[credential]` fields.
 
 - [ ] **Step 2: Run the workspace check to see the failures**
 
@@ -363,7 +389,11 @@ Expected: FAIL — overrides using `&mut self` / old arity no longer match the t
 
 - [ ] **Step 3: Apply the mechanical migration to each site**
 
-For every override: change `fn on_credential_refresh(&mut self, slot_name: &str)` → `fn on_credential_refresh(&self, slot_name: &str, runtime: &Self::Runtime)`; move any blue-green mutation onto `runtime`'s interior mutability (the adapter already owns an `Arc<...>`/`ArcSwap` inside its `Runtime` per ADR-0036). Where an impl previously mutated `self`, route the change through the slot accessor (`self.<field>_slot()`) or the runtime. No deprecated alias (`feedback_no_shims`).
+Two mechanical changes per site:
+1. **`#[credential]` field type:** `#[credential(...)] f: CredentialGuard<C>` → `#[credential(...)] f: SlotCell<CredentialGuard<C>>` (likewise `Option<…>` / `Lazy<…>` wrappers stay outside). Construct with `SlotCell::empty()`. Read the resolved credential via the derive-generated accessor `self.f_slot()` (returns `Option<Arc<CredentialGuard<C>>>`) instead of `&self.f`. Update `create`/hook bodies accordingly.
+2. **Hook signature:** `fn on_credential_refresh(&mut self, slot_name: &str)` → `fn on_credential_refresh(&self, slot_name: &str, runtime: &Self::Runtime)`; add `on_credential_revoke` override only where the old code had revoke logic. Move blue-green mutation onto `runtime`'s interior mutability (adapters own an `Arc<…>`/`ArcSwap` inside their `Runtime`). No deprecated alias (`feedback_no_shims`).
+
+Also update the `crates/resource/README.md` migration-note/contract prose that shows `&self.auth` to the `self.auth_slot()` + `SlotCell` field shape (same-crate doc, in scope here).
 
 - [ ] **Step 4: Re-run the workspace check**
 
@@ -373,9 +403,9 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-task fmt
+cargo fmt --all  # if `task fmt` fails on this Windows path (OS 206), fall back to per-crate `cargo fmt -p <crate>` for each touched crate; lefthook fmt-check still gates
 git add crates examples
-git commit -m "refactor(resource)!: migrate Resource impls to &self refresh hook
+git commit -m "refactor(resource)!: migrate Resource impls to SlotCell slots + &self hook
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -449,9 +479,19 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Task A6: `Manager::{refresh_slot,revoke_slot}` port + slot-cell install on create
 
+**Slot model (per A3 Alternative (a)):** the `SlotCell<CredentialGuard<C>>`
+lives on the **author's resource struct** (declared field), NOT in a
+`ManagedResource`-side map. The framework "installs" a resolved credential by
+calling `resource.<field>.store(Arc::new(guard))` via `&self` (lock-free); the
+generated `<field>_slot()` accessor reads it. There is no `__slot_lookup` and
+no `slots: DashMap` on `ManagedResource` — drop that from the original plan.
+
 **Files:**
-- Modify: `crates/resource/src/manager/mod.rs` (add the two methods near the `register*` block ≈`:196-681`; install per-slot `SlotCell`s on the `ManagedResource` at register/create)
-- Modify: `crates/resource/src/runtime/managed.rs` (hold `slots: dashmap::DashMap<String, Arc<dyn Any+Send+Sync>>` of `SlotCell`s + a typed getter used by `__slot_lookup`)
+- Modify: `crates/resource/src/manager/mod.rs` (add `refresh_slot`/`revoke_slot`
+  near the `register*` block ≈`:196-681`)
+- Modify: `crates/resource/src/runtime/managed.rs` (add `taint()`,
+  `drain_in_flight()`, `dispatch_on_refresh(slot)`, `dispatch_on_revoke(slot)`;
+  these borrow the live `Self::Runtime` and call the `&self` hook — no slot map)
 - Test: `crates/resource/tests/manager_refresh_slot.rs`
 
 - [ ] **Step 1: Write the failing test**
@@ -542,7 +582,7 @@ impl Manager {
 }
 ```
 
-In `crates/resource/src/runtime/managed.rs` add `taint()`, `drain_in_flight()`, `dispatch_on_refresh(slot)`, `dispatch_on_revoke(slot)`, and a `slots` map; `dispatch_on_refresh` borrows the live `Self::Runtime` and calls `resource.on_credential_refresh(slot, &runtime).await` per topology (Resident/Service/Transport/Exclusive: single runtime; Pooled: iterate pool instances). Wire `__slot_lookup` (Task A3) to read `slots`.
+In `crates/resource/src/runtime/managed.rs` add `taint()`, `drain_in_flight()`, `dispatch_on_refresh(slot)`, `dispatch_on_revoke(slot)`; `dispatch_on_refresh` borrows the live `Self::Runtime` and calls `resource.on_credential_refresh(slot, &runtime).await` per topology (Resident/Service/Transport/Exclusive: single runtime; Pooled: iterate pool instances). No slot map / no `__slot_lookup` — the resolved credential is read by the author via the generated `<field>_slot()` accessor over the struct-owned `SlotCell` (A3). A `register`/create-time credential-resolution step that calls `resource.<field>.store(...)` is wired by the engine (Task A10) — for THIS task's unit tests, construct the resource with its `SlotCell`s pre-populated via `SlotCell::store` in the test helper.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1243,9 +1283,9 @@ Expected: `0051` ⇒ use `0052`.
 
 - [ ] **Step 2: Write the ADR**
 
-Sections: Context (PHASE4_BLOCKED §1 left reentrancy + ownership open; ADR-0030 says engine owns orchestration); Decision D1 (engine `resource_fanout` reverse-index + `join_all` per-resource timeout; `Manager::{refresh_slot,revoke_slot}` narrow port), D2 (`&self` + `&Runtime` hook + `SlotCell` substrate; **supersedes ADR-0044 hook signature** — core slot-binding of 0044 untouched), D3 (API config-CRUD + read-only status; no lifecycle over HTTP); Abuse invariants 1–4 (esp. structural dedup-key fix); **Deferred** section: R-006/R-041/R-042/R-050/R-052 with trigger conditions (verbatim from spec Track D); Consequences; Supersession (overrides `PHASE4_BLOCKED.md §1` candidate).
+Sections: Context (PHASE4_BLOCKED §1 left reentrancy + ownership open; ADR-0030 says engine owns orchestration; a pure `#[proc_macro_derive]` cannot add fields so ADR-0044's bare-`CredentialGuard`-field migration shape is unimplementable); Decision D1 (engine `resource_fanout` reverse-index + `join_all` per-resource timeout; `Manager::{refresh_slot,revoke_slot}` narrow port), D2 (`&self` + `&Runtime` hook **and** `#[credential]` field type = `SlotCell<CredentialGuard<C>>` on the author struct + generated `<field>_slot()` accessor + framework `SlotCell::store` population; **supersedes ADR-0044's hook signature AND its slot-field/migration-note shape** — the slot-binding *declaration* model of 0044 — `#[credential(key=…)]` per-field — is untouched; only the field *type* and read pattern change), D3 (API config-CRUD + read-only status; no lifecycle over HTTP); Abuse invariants 1–4 (esp. structural dedup-key fix); **Deferred** section: R-006/R-041/R-042/R-050/R-052 with trigger conditions (verbatim from spec Track D); Consequences (call out the ~33 impl-site + README contract churn from the field-type change); Supersession (overrides `PHASE4_BLOCKED.md §1` candidate; supersedes ADR-0044 hook signature + migration shape).
 
-- [ ] **Step 3: Update `docs/adr/README.md`** — add the `| 0052 | … | accepted (2026-05-15) | resource, engine, credential, rotation, api, m11 |` index row and a Supersession row `0044 (hook signature) | 0052 | &mut self → &self + &Runtime; SlotCell substrate`.
+- [ ] **Step 3: Update `docs/adr/README.md`** — add the `| 0052 | … | accepted (2026-05-15) | resource, engine, credential, rotation, api, m11 |` index row and a Supersession row `0044 (hook signature + slot-field/migration shape) | 0052 | &mut self→&self+&Runtime; #[credential] field type CredentialGuard<C>→SlotCell<CredentialGuard<C>> + <field>_slot() accessor`.
 
 - [ ] **Step 4: Commit**
 

@@ -189,16 +189,29 @@ impl Manager {
 ### Track A — §M11.5 per-slot rotation (engine-owned fan-out)
 
 **`nebula-resource` changes:**
-- **Slot-storage substrate (verified absent today).** `#[derive(Resource)]`
-  currently emits only `DeclaresDependencies` + a `todo!()` `create` body
-  (`macros/src/resource.rs:60-94`); **nothing stores a resolved
-  `CredentialGuard<C>` on a resource instance at runtime** — the "slots
-  already populated on `&self`" comment in `resource.rs` has no implementing
-  code. Track A builds the substrate: a per-slot `Cell<CredentialGuard<C>>`
-  (the existing lock-free `ArcSwapOption` cell, `cell.rs:10-46`) stored on
-  `ManagedResource`, plus a generated typed accessor. `CredentialGuard` is
-  `!Clone` + `Drop`-zeroizing (`credential/src/secrets/guard.rs:36-64`) — the
-  cell holds `Arc<CredentialGuard<C>>` so swap does not clone secret material.
+- **Slot-storage substrate (verified absent today; shape resolved 2026-05-15).**
+  `#[derive(Resource)]` currently emits only `DeclaresDependencies` + a
+  `todo!()` `create` body (`macros/src/resource.rs:60-94`); **nothing stores a
+  resolved `CredentialGuard<C>` on a resource instance at runtime**. A pure
+  `#[proc_macro_derive]` **cannot add/rewrite struct fields**, and
+  `ManagedResource` hands out `Arc<R>` (no `&mut R`) — so ADR-0044's
+  migration-note shape (a bare `#[credential] auth: CredentialGuard<C>` field
+  the framework writes before `create`) is **unimplementable as written**.
+  Resolution (faithful to D2's "interior-mutable slots, no `&mut self`"): the
+  `#[credential]` field type **is `SlotCell<CredentialGuard<C>>`** (the A1
+  lock-free cell) directly on the author's struct. `#[derive(Resource)]`
+  emits, per slot, a read accessor `fn <field>_slot(&self) ->
+  Option<Arc<CredentialGuard<C>>>` (= `self.<field>.load()`); the framework
+  populates/rotates via `SlotCell::store` through `&self` (no `&mut`,
+  no hidden side-table, fully per-instance). `CredentialGuard` is `!Clone` +
+  `Drop`-zeroizing (`credential/src/secrets/guard.rs:36-64`); the cell holds
+  `Arc<CredentialGuard<C>>` so swap never clones secret material. This
+  **amends ADR-0044's credential-field/migration shape** (`&self.auth` →
+  `self.auth_slot()`; field type `CredentialGuard<C>` →
+  `SlotCell<CredentialGuard<C>>`) — recorded in ADR-0052 (whose supersession
+  of ADR-0044 now covers the hook signature **and** the slot-field shape).
+  `decode_field_type` (`macros/src/field_slots.rs:131-158`) extends to accept
+  `SlotCell<CredentialGuard<C>>` (+ `Option<…>` / `Lazy<…>` wrappers).
 - `resource.rs`: replace `on_credential_refresh(&mut self, slot_name)`
   (`resource.rs:289-295`) with the D2 `&self` + `&Self::Runtime` pair
   (`on_credential_refresh` + `on_credential_revoke`), async default no-op.
@@ -367,9 +380,14 @@ revoke. Invariant: no acquire after taint observes the revoked credential.
   `&self` + `&Self::Runtime`) + new `on_credential_revoke`. All ~33 internal
   impl sites + the `#[derive(Resource)]` macro output updated in one pass
   (`feedback_bold_refactor_pace`). No deprecated alias (`feedback_no_shims`).
-- `ManagedResource` internal: slot fields move behind per-slot `ArcSwap`
-  (no public `&mut` slot access). Internal to the crate; not a consumer break
-  beyond the trait signature.
+- **`#[credential]` field type change** (consumer-visible, hard break): the
+  field is now `SlotCell<CredentialGuard<C>>` (was bare `CredentialGuard<C>`
+  per ADR-0044's migration note). Authors read the resolved credential via the
+  derive-generated `self.<field>_slot()` accessor instead of `&self.<field>`.
+  All ~33 internal impl sites + examples + the crate README contract updated
+  in one pass (`feedback_bold_refactor_pace`); no deprecated alias
+  (`feedback_no_shims`). ADR-0052 records this as a supersession of ADR-0044's
+  slot-field/migration shape (in addition to the hook signature).
 - `ResourceEvent` gains `SlotRefreshed/SlotRevoked/SlotRefreshFailed`
   (`#[non_exhaustive]` already, so additive at the enum level).
 
