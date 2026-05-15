@@ -98,6 +98,22 @@ deny = [
     # carved out above for the §13 knife integration test.
     "nebula-credential-vault",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
+
+  # nebula-storage-port is the Core-tier storage contract: object-safe
+  # repository traits, port-local DTO rows, the plain-data `Scope` value
+  # type, `StorageError`, and the `TransitionBatch` unit-of-work. Being a
+  # Core-tier contract it is broadly importable: the adapter
+  # (`nebula-storage`), the loom probe, the tenancy decorator, the
+  # exec/api consumers, and the credential-vault dev-dep may depend on it
+  # downward. It has no sqlx and no upward deps.
+  { crate = "nebula-storage-port", wrappers = [
+    "nebula-storage",
+    "nebula-storage-loom-probe",
+    "nebula-tenancy",
+    "nebula-engine",
+    "nebula-api",
+    "nebula-credential-vault",
+  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and the credential-vault dev-dep may depend on it" },
   { crate = "nebula-sdk", wrappers = [
     "nebula-examples",
   ], reason = "SDK is the external integration surface; only the examples workspace member may depend on it" },
