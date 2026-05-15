@@ -23,6 +23,21 @@
 //! that, so an operator who opens the gate sees the honest security
 //! posture in the logs.
 //!
+//! Dispatch routing (single source of truth): on the pooled path every
+//! discovered action is invoked **exclusively** through `action_registry`
+//! → `PooledRemoteActionFactory` → `PluginPool`. The per-plugin
+//! `ProcessSandboxHandler` that `discover_directory` registers inside
+//! `plugin_registry` (each wraps an eagerly-built `Arc<ProcessSandbox>`)
+//! is intentionally bypassed here and never dispatched — it is left
+//! registered only so the in-process `Plugin`/registry contract stays
+//! intact. Those `Arc<ProcessSandbox>` handles are inert: a
+//! `ProcessSandbox` does not spawn until its first envelope round-trip,
+//! so an unused one never forks a child (no leak — just an idle handle).
+//! Callers and tests MUST resolve these actions via `action_registry`;
+//! resolving them through `plugin_registry` directly would dispatch on
+//! the unpooled per-plugin handler and bypass the ADR-0025 §2
+//! credential-scope pool keying entirely.
+//!
 //! The `runtime.rs` `IsolationLevel` match is deliberately untouched:
 //! discovered actions register as ordinary stateless factories, so the
 //! live in-process path and the §13 knife are byte-for-byte unaffected
@@ -41,7 +56,7 @@ use nebula_workflow::NodeDefinition;
 use serde_json::Value;
 
 use crate::runtime::{
-    ActionRegistry,
+    ActionRegistry, RuntimeError,
     plugin_pool::{Lease, PoolKey, pool_key},
     plugin_supervisor::PluginSupervisor,
 };
@@ -244,6 +259,15 @@ impl ErasedStateless for PooledErasedStateless {
 /// `out-of-process-plugins` feature off the whole module — and therefore
 /// this function — does not exist, so the live path is byte-identical.
 ///
+/// # Errors
+///
+/// Returns [`RuntimeError::InvalidPoolCapacity`] when
+/// `config.max_processes_per_key == 0` — a zero-permit pool semaphore
+/// would block every dispatch forever, so the composition root fails fast
+/// instead of registering actions that can never run. This check runs
+/// before the inner gate so a misconfigured capacity is rejected even
+/// with an empty `plugin_dirs`.
+///
 /// When the gate is open it emits exactly one `tracing::warn!` invariant
 /// (the honest pre-broker security posture: no egress / credential
 /// mediation), then for every configured directory calls
@@ -256,14 +280,17 @@ pub async fn discover_into_registry(
     config: &OutOfProcessConfig,
     plugin_registry: &mut PluginRegistry,
     action_registry: &ActionRegistry,
-) -> PluginSupervisor {
-    let supervisor = PluginSupervisor::new(config.max_processes_per_key);
+) -> Result<PluginSupervisor, RuntimeError> {
+    // Reject a zero per-key capacity before the inner gate: a misconfigured
+    // capacity must fail fast at the composition root, never register
+    // actions whose pool can never hand out a permit.
+    let supervisor = PluginSupervisor::new(config.max_processes_per_key)?;
 
     if config.plugin_dirs.is_empty() {
         // Inner gate closed: no discovery, no pooled processes, no
         // behavior change. The supervisor owns no pools; shutdown is a
         // no-op.
-        return supervisor;
+        return Ok(supervisor);
     }
 
     tracing::warn!(
@@ -309,7 +336,7 @@ pub async fn discover_into_registry(
         }
     }
 
-    supervisor
+    Ok(supervisor)
 }
 
 #[cfg(test)]
@@ -336,7 +363,9 @@ mod tests {
         let mut plugin_registry = PluginRegistry::new();
         let action_registry = ActionRegistry::new();
 
-        let supervisor = discover_into_registry(&cfg, &mut plugin_registry, &action_registry).await;
+        let supervisor = discover_into_registry(&cfg, &mut plugin_registry, &action_registry)
+            .await
+            .expect("default config has valid capacity and an empty dir list");
 
         assert!(
             action_registry.is_empty(),

@@ -39,7 +39,13 @@
               follow-up — the consumer is deliberately a separate change"
 )]
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use dashmap::DashMap;
 use nebula_sandbox::{ProcessSandbox, ScopeHash, scope_hash};
@@ -154,6 +160,17 @@ pub(crate) struct PluginPool<T: PooledConn> {
     /// Capacity gate. `max_per_key` permits; an [`OwnedSemaphorePermit`]
     /// lives in every outstanding [`Lease`].
     sem: Arc<Semaphore>,
+    /// Shutdown latch. Set once by [`drain_idle`](Self::drain_idle) (the
+    /// supervisor's shutdown primitive). After this is `true`, an
+    /// in-flight [`Lease`] dropped *post-shutdown* must NOT re-pool its
+    /// connection — `drain_idle` already reclaimed the idle set, so a
+    /// late-returning connection would resurrect a process the supervisor
+    /// believes it killed. [`Lease::drop`] consults this and discards the
+    /// connection (SIGKILL via `kill_on_drop`) instead. One-way latch:
+    /// post-drain `acquire` still spawns fresh (there is no reattach), so
+    /// the flag only governs the return-to-idle decision, never blocks
+    /// acquisition.
+    shutting_down: AtomicBool,
 }
 
 impl<T: PooledConn> PluginPool<T> {
@@ -167,6 +184,7 @@ impl<T: PooledConn> PluginPool<T> {
         Arc::new(Self {
             idle: Mutex::new(Vec::with_capacity(max_per_key)),
             sem: Arc::new(Semaphore::new(max_per_key)),
+            shutting_down: AtomicBool::new(false),
         })
     }
 
@@ -186,22 +204,52 @@ impl<T: PooledConn> PluginPool<T> {
     /// a per-call error and never leaks a permit or wedges the pool for the
     /// key. The returned [`Lease`] owns the permit; dropping it is the sole
     /// release on the success path.
+    ///
+    /// ## Capacity-gate invariant: this semaphore is never closed
+    ///
+    /// `_permit` is `Some` on every real acquisition. The structural
+    /// invariant is that **this [`Semaphore`] is never closed**:
+    /// [`Semaphore::close`] is never called anywhere on `self.sem`, and
+    /// shutdown ([`PluginPool::drain_idle`]) only *drains the idle set and
+    /// flips a latch* — it does **not** close the permit semaphore. A
+    /// closed semaphore here is therefore a bug: `acquire_owned` would
+    /// return `Err`, the permit would collapse to `None`, and that lease
+    /// would bypass the capacity gate entirely (unbounded concurrent
+    /// processes for the key). The `Err` is collapsed to `None` rather
+    /// than `unwrap`/`expect` so a future regression degrades to a fresh
+    /// spawn instead of panicking on the dispatch path, but a
+    /// `debug_assert!` makes that regression loud in debug/test builds so
+    /// it is caught before it ships.
+    ///
+    /// [`Semaphore`]: tokio::sync::Semaphore
+    /// [`Semaphore::close`]: tokio::sync::Semaphore::close
     pub(crate) async fn acquire<E>(
         self: &Arc<Self>,
         spawn: impl FnOnce() -> Result<T, E>,
     ) -> Result<Lease<T>, E> {
         // `acquire_owned` ties the permit's lifetime to the `Lease`, not to
         // a borrow of the pool — the lease is `'static` and the permit is
-        // released purely by its `Drop`. `Semaphore::close` is never called
-        // on this semaphore, so `acquire_owned` cannot return `Err`; the
-        // `Result` is collapsed without `unwrap`/`expect` so a future code
+        // released purely by its `Drop`. Per the capacity-gate invariant on
+        // this method: `self.sem` is never closed (shutdown drains the pool
+        // and flips a latch; it does not close the permit semaphore), so
+        // `acquire_owned` cannot legitimately return `Err`. The `Result` is
+        // collapsed to `Option` without `unwrap`/`expect` so a future code
         // change that *does* close it degrades to a fresh spawn rather than
-        // panicking inside the pool.
+        // panicking inside the pool; the `debug_assert!` makes that
+        // structural regression fail loudly in debug/test builds.
         let permit = Arc::clone(&self.sem)
             .acquire_owned()
             .await
             .map_err(|_| ())
             .ok();
+        debug_assert!(
+            permit.is_some(),
+            "PluginPool capacity-gate invariant violated: acquire_owned returned Err, \
+             which means this Semaphore was closed. It must never be closed — shutdown \
+             drains the idle set and flips the shutting_down latch; it does NOT close \
+             the permit semaphore. A None permit silently bypasses the per-key capacity \
+             gate (unbounded concurrent plugin processes)."
+        );
 
         let conn = {
             let mut idle = self.idle.lock();
@@ -252,7 +300,20 @@ impl<T: PooledConn> PluginPool<T> {
     /// are not in the idle set); they are destroyed when their lease
     /// drops. This is the shutdown primitive the supervisor calls to
     /// reclaim warm processes cleanly without a persisted state file.
+    ///
+    /// Also flips the `shutting_down` latch so that a [`Lease`] still
+    /// in-flight when this runs discards its connection on drop instead of
+    /// re-pooling it — otherwise a late return would resurrect a process
+    /// the supervisor already counted as killed. The latch is set
+    /// *before* the idle set is taken so there is no window where a
+    /// concurrently-dropping lease re-pools into a set this call is about
+    /// to drain.
     fn drain_idle(&self) -> usize {
+        // Latch first: any lease that drops from here on must NOT re-pool
+        // (its connection would outlive a shutdown that already reported
+        // it reclaimed). `Release` pairs with the `Acquire` load in
+        // `Lease::drop`.
+        self.shutting_down.store(true, Ordering::Release);
         // Swap the idle vec out under the lock, then drop it *after*
         // releasing the lock so each `T::drop` (which for ProcessSandbox
         // is just a debug log + kill_on_drop) does not run while the
@@ -294,8 +355,13 @@ pub(crate) struct Lease<T: PooledConn> {
     poisoned: bool,
     /// Capacity permit. Held for the lease's lifetime; released solely by
     /// this field's `Drop`. `Option` because `acquire_owned` is collapsed
-    /// to `Option` (see `PluginPool::acquire`); a `None` only occurs if the
-    /// semaphore were closed, which this module never does.
+    /// to `Option` (see [`PluginPool::acquire`]'s capacity-gate
+    /// invariant); a `None` can only occur if this [`Semaphore`] were
+    /// closed — which this module never does (shutdown drains the idle set
+    /// and flips a latch, it does not close the permit semaphore), and a
+    /// `debug_assert!` in `acquire` makes such a regression loud.
+    ///
+    /// [`Semaphore`]: tokio::sync::Semaphore
     #[allow(
         dead_code,
         reason = "value lifetime — not a method call — releases the permit on every drop path"
@@ -332,19 +398,28 @@ impl<T: PooledConn> Drop for Lease<T> {
     fn drop(&mut self) {
         // Move the connection out so we either re-pool it or drop it here.
         if let Some(conn) = self.conn.take() {
-            // Return to idle ONLY if the holder did not poison it AND the
-            // connection self-reports healthy. Either gate failing means
-            // the connection is discarded — `T`'s own `Drop` runs (for
-            // `ProcessSandbox` that SIGKILLs the child via `kill_on_drop`),
-            // so a desynced connection is destroyed, never handed to the
-            // next, different caller.
-            if !self.poisoned && conn.is_healthy() {
+            // Once the pool's shutdown drain has begun, a late-returning
+            // lease must NOT re-pool: `drain_idle` already reclaimed the
+            // idle set and the supervisor counted this key drained, so a
+            // re-pooled connection would resurrect a process believed
+            // killed and linger past shutdown. `Acquire` pairs with the
+            // `Release` store in `drain_idle`.
+            let shutting_down = self.pool.shutting_down.load(Ordering::Acquire);
+            // Return to idle ONLY if shutdown has NOT begun AND the holder
+            // did not poison it AND the connection self-reports healthy.
+            // Any gate failing means the connection is discarded — `T`'s
+            // own `Drop` runs (for `ProcessSandbox` that SIGKILLs the
+            // child via `kill_on_drop`), so a desynced or post-shutdown
+            // connection is destroyed, never handed to the next, different
+            // caller and never left running after teardown.
+            if !shutting_down && !self.poisoned && conn.is_healthy() {
                 self.pool.push_idle(conn);
             } else {
                 tracing::debug!(
                     poisoned = self.poisoned,
+                    shutting_down,
                     "plugin pool lease dropped a connection instead of re-pooling \
-                     it (poisoned or unhealthy); connection destroyed"
+                     it (poisoned, unhealthy, or pool shutting down); connection destroyed"
                 );
                 drop(conn);
             }
@@ -674,6 +749,49 @@ mod tests {
             counters.spawned.load(Ordering::SeqCst),
             spawned_before + 1,
             "a poisoned connection must force a fresh spawn, never be reused"
+        );
+    }
+
+    #[tokio::test]
+    async fn lease_dropped_after_shutdown_is_not_repooled() {
+        // Regression: shutdown drains the idle set, but a lease still
+        // in-flight when shutdown ran must NOT re-pool on drop — a late
+        // return would resurrect a process the supervisor already counted
+        // as killed.
+        let counters = Arc::new(Counters::default());
+        let pool = PluginPool::new(2);
+
+        // Acquire a lease (healthy, never poisoned) and hold it.
+        let lease = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
+
+        // Shutdown begins while the lease is still in flight: the idle set
+        // is drained (empty here) and the latch flips.
+        let drained = pool.drain_idle();
+        assert_eq!(drained, 0, "no idle conns yet — the only conn is leased");
+
+        // Dropping the lease post-shutdown must DISCARD the connection,
+        // not push it back into the idle set.
+        drop(lease);
+        assert_eq!(
+            pool.idle_len(),
+            0,
+            "a lease dropped after shutdown must NOT be returned to idle"
+        );
+        assert_eq!(
+            counters.dropped.load(Ordering::SeqCst),
+            1,
+            "the post-shutdown connection must be destroyed (kill_on_drop), not re-pooled"
+        );
+
+        // The permit is still released exactly once (latch only governs
+        // the return-to-idle decision, never permit accounting).
+        assert_eq!(
+            pool.available_permits(),
+            2,
+            "permit released exactly once even on the post-shutdown discard path"
         );
     }
 

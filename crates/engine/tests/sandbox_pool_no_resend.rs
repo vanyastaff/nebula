@@ -107,7 +107,9 @@ async fn engine_with_pool(scan_dir: &std::path::Path) -> WorkflowEngine {
     };
     let action_registry = Arc::new(ActionRegistry::new());
     let mut plugin_registry = PluginRegistry::new();
-    discover_into_registry(&config, &mut plugin_registry, &action_registry).await;
+    discover_into_registry(&config, &mut plugin_registry, &action_registry)
+        .await
+        .expect("valid pool capacity");
 
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
@@ -163,10 +165,13 @@ async fn after_send_close_executes_action_exactly_once() {
     let engine = engine_with_pool(dir.path()).await;
     let wf = workflow("com.nebula.resend.crash_after_recv");
 
-    let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
-        .await
-        .expect("workflow drives to a terminal state");
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        engine.execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default()),
+    )
+    .await
+    .expect("workflow must not hang (after-send close path)")
+    .expect("workflow drives to a terminal state");
 
     // The plugin died after receiving the request — a fatal, non-resendable
     // failure. The node fails (not retried), and crucially the plugin
@@ -196,10 +201,13 @@ async fn retryable_failure_still_retries_through_frontier() {
     let engine = engine_with_pool(dir.path()).await;
     let wf = workflow("com.nebula.resend.fail_retryable");
 
-    let result = engine
-        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
-        .await
-        .expect("workflow drives to a terminal state");
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        engine.execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default()),
+    )
+    .await
+    .expect("workflow must not hang (retryable path)")
+    .expect("workflow drives to a terminal state");
 
     assert_eq!(
         result.status,

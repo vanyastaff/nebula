@@ -18,7 +18,10 @@ use std::sync::Arc;
 
 use nebula_sandbox::ProcessSandbox;
 
-use crate::runtime::plugin_pool::{Lease, PoolKey, PoolRegistry};
+use crate::runtime::{
+    RuntimeError,
+    plugin_pool::{Lease, PoolKey, PoolRegistry},
+};
 
 /// Owns the engine's plugin-process pools and drains them on shutdown.
 ///
@@ -40,11 +43,25 @@ impl std::fmt::Debug for PluginSupervisor {
 impl PluginSupervisor {
     /// Create a supervisor whose on-demand pools each get
     /// `max_processes_per_key` capacity.
-    #[must_use]
-    pub fn new(max_processes_per_key: usize) -> Self {
-        Self {
-            registry: Arc::new(PoolRegistry::new(max_processes_per_key)),
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::InvalidPoolCapacity`] when
+    /// `max_processes_per_key == 0`: each pool's [`Semaphore`] would be
+    /// constructed with zero permits, so every `acquire` would block
+    /// forever. Rejecting at construction turns a silent runtime hang into
+    /// a typed composition-root error.
+    ///
+    /// [`Semaphore`]: tokio::sync::Semaphore
+    pub fn new(max_processes_per_key: usize) -> Result<Self, RuntimeError> {
+        if max_processes_per_key == 0 {
+            return Err(RuntimeError::InvalidPoolCapacity {
+                requested: max_processes_per_key,
+            });
         }
+        Ok(Self {
+            registry: Arc::new(PoolRegistry::new(max_processes_per_key)),
+        })
     }
 
     /// Acquire a leased [`ProcessSandbox`] for `key`, spawning a fresh one
@@ -104,11 +121,26 @@ mod tests {
         PoolKey::new(PathBuf::from(binary), scope_hash(slots))
     }
 
+    #[test]
+    fn new_rejects_zero_capacity_and_accepts_positive() {
+        // A 0-permit semaphore makes every `acquire` block forever, so the
+        // supervisor must refuse to construct rather than wedge dispatch.
+        let err = PluginSupervisor::new(0).expect_err("zero capacity must be rejected");
+        assert!(
+            matches!(err, RuntimeError::InvalidPoolCapacity { requested: 0 }),
+            "expected RuntimeError::InvalidPoolCapacity {{ requested: 0 }}, got {err:?}"
+        );
+
+        // Any positive capacity is accepted.
+        PluginSupervisor::new(1).expect("capacity 1 must be accepted");
+        PluginSupervisor::new(8).expect("capacity 8 must be accepted");
+    }
+
     #[tokio::test]
     async fn acquire_delegates_per_key_and_isolates_capacity() {
         // Capacity 1 per key. Two distinct keys ⇒ two independent pools:
         // saturating one must not block the other.
-        let sup = PluginSupervisor::new(1);
+        let sup = PluginSupervisor::new(1).expect("capacity 1 is valid");
         let k_a = key("/bin/a", &["s"]);
         let k_b = key("/bin/b", &["s"]); // different binary ⇒ different pool
 
@@ -140,7 +172,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_drains_and_kills_all_pools() {
-        let sup = PluginSupervisor::new(2);
+        let sup = PluginSupervisor::new(2).expect("capacity 2 is valid");
         let k1 = key("/bin/p", &["one"]);
         let k2 = key("/bin/p", &["two"]); // different scope ⇒ different pool
 

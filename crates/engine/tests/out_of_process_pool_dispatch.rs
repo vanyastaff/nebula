@@ -108,7 +108,9 @@ async fn discovered_plugin_action_round_trips_through_engine_pool() {
 
     let action_registry = Arc::new(ActionRegistry::new());
     let mut plugin_registry = PluginRegistry::new();
-    let supervisor = discover_into_registry(&config, &mut plugin_registry, &action_registry).await;
+    let supervisor = discover_into_registry(&config, &mut plugin_registry, &action_registry)
+        .await
+        .expect("valid pool capacity");
 
     // The schema fixture exposes `com.author.schema.describe` and replies
     // `{ "received": <input> }`.
@@ -147,10 +149,13 @@ async fn discovered_plugin_action_round_trips_through_engine_pool() {
     // Dispatch through the factory path: this acquires a pool Lease, spawns
     // (or reuses) the ProcessSandbox, and round-trips the envelope to the
     // live fixture process.
-    let result = runtime
-        .execute_action_with_node(&node, None, input.clone(), &ctx, None)
-        .await
-        .expect("pooled out-of-process dispatch must succeed");
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.execute_action_with_node(&node, None, input.clone(), &ctx, None),
+    )
+    .await
+    .expect("pooled out-of-process dispatch must not hang")
+    .expect("pooled out-of-process dispatch must succeed");
 
     match result {
         ActionResult::Success { output } => {
@@ -165,10 +170,13 @@ async fn discovered_plugin_action_round_trips_through_engine_pool() {
 
     // A second dispatch on the same key must reuse the warm pooled process
     // (no panic, identical reply) — exercises the Lease return-to-idle path.
-    let result2 = runtime
-        .execute_action_with_node(&node, None, json!({ "name": "grace" }), &ctx, None)
-        .await
-        .expect("second pooled dispatch must succeed");
+    let result2 = tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.execute_action_with_node(&node, None, json!({ "name": "grace" }), &ctx, None),
+    )
+    .await
+    .expect("second pooled dispatch must not hang")
+    .expect("second pooled dispatch must succeed");
     match result2 {
         ActionResult::Success { output } => {
             assert_eq!(
