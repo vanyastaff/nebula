@@ -2,7 +2,7 @@
 name: nebula-sandbox
 role: Process Sandboxing (Correctness Boundary)
 status: partial
-last-reviewed: 2026-04-20
+last-reviewed: 2026-05-15
 canon-invariants: [L1-4.5, L1-7.1, L1-12.6]
 related: [nebula-plugin-sdk, nebula-plugin, nebula-runtime]
 ---
@@ -13,11 +13,12 @@ related: [nebula-plugin-sdk, nebula-plugin, nebula-runtime]
 
 A workflow engine that dispatches to community plugins needs an isolation boundary between the
 engine host and plugin code. That boundary must be honest about what it actually provides:
-in-process execution for trusted built-in actions (cooperative cancellation and capability
-checks, not OS-level isolation) and child-process execution for community plugins over a duplex
-JSON envelope protocol (the trust model canon §12.6 names explicitly). `nebula-sandbox` defines
-and owns both execution modes, the capability declaration model, the plugin discovery path, and
-the OS-level hardening primitives — while being clear that **this is not a security boundary
+in-process execution for trusted built-in actions (cooperative cancellation only, not OS-level
+isolation) and child-process execution for community plugins over a duplex JSON envelope
+protocol (the trust model canon §12.6 names explicitly). `nebula-sandbox` defines and owns both
+execution modes, the plugin discovery path, and the Linux OS-level hardening primitives. There
+is **no per-plugin capability/scope model** — egress, credential, and filesystem mediation is
+the broker's responsibility (ADR-0025), not this crate — and **this is not a security boundary
 against malicious native code**.
 
 ## Role
@@ -29,28 +30,24 @@ against malicious native code. Canon §12.6 is the normative statement.
 
 ## Public API
 
-- `InProcessSandbox` — trusted in-process execution for built-in actions. No OS isolation.
-  Capability checks via `SandboxedContext::check_cancelled`. Correctness boundary only.
+- `InProcessSandbox` — trusted in-process execution for built-in actions. No OS isolation;
+  cooperative cancellation via `SandboxedContext::check_cancelled`. Correctness boundary only.
 - `ProcessSandbox` — child-process execution over a duplex line-delimited JSON envelope
   (ADR 0006 Phase 1). Long-lived plugin process; spawn cost paid once. Sequential dispatch
   within a single plugin process today.
 - `ProcessSandboxHandler` — bridges `ProcessSandbox` into `ActionRegistry` so the runtime
   sees a unified `ActionExecutor`.
 - `SandboxRunner`, `ActionExecutor`, `ActionExecutorFuture`, `SandboxedContext` — core sandbox
-  runner abstraction used by `nebula-runtime`.
-- `capabilities::PluginCapabilities` — iOS-style per-plugin capability declarations
-  (network / filesystem / env allowlists). Sourced from workflow-config at spawn time
-  (ADR-0025 D4); per-call enforcement gate is not yet wired (see Appendix).
+  runner abstraction used by the engine runtime.
 - `discovery` module — scans directories for plugin binaries via `plugin.toml` markers.
-- `os_sandbox` module — OS-level hardening primitives (best-effort; per-platform status in
-  Appendix).
+- `os_sandbox` module — Linux Landlock (fixed system paths, best-effort, fail-closed) plus
+  `setrlimit` child caps, applied fork-safely via `PreparedSandbox`. No-op on non-Linux.
 - `SandboxError` — typed error.
 
 ## Contract
 
-- **[L1-§12.6]** In-process sandbox / capability checks provide **correctness and least
-  privilege for accidental misuse**, not a security boundary against malicious native code.
-  `InProcessSandbox` is pure dispatch with cooperative cancellation.
+- **[L1-§12.6]** In-process execution provides **correctness and cooperative cancellation**,
+  not a security boundary against malicious native code. `InProcessSandbox` is pure dispatch.
 
 - **[L1-§12.6]** Plugin IPC today is **sequential dispatch over a JSON envelope to a child
   process** (ADR 0006 slices 1a–1c). That is the trust model. Do not describe it as sandboxed
@@ -61,9 +58,10 @@ against malicious native code. Canon §12.6 is the normative statement.
   `wasm32-wasip2`. Offering WASM as "the future sandbox" is a §4.5 false capability and a §4.4
   DX regression. It must not appear as `planned` in any README or `lib.rs`.
 
-- **[L1-§4.5]** `PluginCapabilities` enforcement from **workflow-config** at spawn time
-  (ADR-0025 D4) is a `false capability` until slice 1d broker RPC lands — the allowlist is
-  passed through to `ProcessSandbox` but the per-call enforcement gate is not yet wired.
+- **[L1-§4.5]** No per-plugin capability/scope surface is advertised. The previously-shipped
+  `PluginCapabilities` enum was unenforced on the dispatch path and has been removed (roadmap
+  §Delete + ADR-0025 D4). Egress, credential, and filesystem mediation is the broker's
+  (ADR-0025), introduced when slice 1d lands — not a passthrough allowlist here.
 
 - **[L1-§7.1]** Plugin is the unit of registration. `ProcessSandbox` hosts the duplex broker;
   `nebula-plugin-sdk` is the plugin-author side. Wire protocol types live in the SDK because
@@ -81,14 +79,13 @@ against malicious native code. Canon §12.6 is the normative statement.
 
 See `docs/MATURITY.md` row for `nebula-sandbox`.
 
-- API stability: `partial` — `InProcessSandbox` and `ProcessSandbox` are in active use;
-  capability enforcement and OS hardening backends are incomplete (see Appendix).
-- `PluginCapabilities` is passed from the caller to `ProcessSandbox` but per-call enforcement
-  is not yet wired — `false capability` (§4.5) until ADR-0025 slice 1d broker RPC lands.
-- `os_sandbox` per-platform backends are partial — check `src/os_sandbox.rs` before claiming
-  any platform-specific hardening.
+- API stability: `partial` — `InProcessSandbox` and `ProcessSandbox` are in active use; the
+  broker (egress / credential / scope mediation) is not yet built (see Appendix).
+- No per-plugin capability/scope surface (removed; the broker owns scope per ADR-0025).
+- `os_sandbox` is Linux-only: Landlock fixed system paths + `setrlimit`, best-effort and
+  fail-closed, applied fork-safely. No macOS/Windows OS confinement — `is_available()`
+  reports this honestly.
 - ADR 0006 slice 1d (broker RPC, `PluginSupervisor`, reattach) is `proposed` / not yet landed.
-- 3 panic sites — candidates for typed `SandboxError`.
 - 1 integration test (`discovery_schema_roundtrip`, `#[ignore]`-gated — requires pre-built
   fixture); cancel path and protocol envelope covered only by unit tests.
 
@@ -105,13 +102,11 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 
 ### Real isolation roadmap (priority order, replacing any historical WASM language)
 
-1. **Capability wiring.** Plugin capabilities are sourced from
-   **workflow-config** at spawn time (per
-   [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md) D4) —
-   not from `plugin.toml`. The sandbox receives a `PluginCapabilities`
-   from its caller (engine / runtime); enforcing it at
-   `ProcessSandbox` boundaries remains the slice 1d work. Older revisions
-   of this roadmap mentioned `plugin.toml` capabilities; ADR-0025 superseded that.
+1. **Broker scope model.** There is no per-plugin capability enum. Egress,
+   credential, and filesystem mediation is the host-side broker's
+   responsibility, keyed by the workflow-config credential-scope hash per
+   [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md)
+   (D4 + §2 / §3 / §6). The broker module is slice 1d work, not yet built.
 2. **`plugin.toml` signing verification** — canon §7.1; tooling (`cargo-nebula` or equivalent)
    verifies signatures before the host trusts a plugin's `plugin.toml`.
 3. **`os_sandbox` per-platform backends** — seccomp-bpf + landlock (Linux), `sandbox_init`
@@ -127,9 +122,8 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 Slice B of the plugin load-path stabilization closed the `plugin.toml`
 parsing gap: discovery now reads `[nebula].sdk` + `[plugin].id` before
 spawning the binary, enforces the SDK semver constraint, and honors the
-optional id override. Workflow-config-sourced `PluginCapabilities`
-enforcement at the broker is the remaining piece (item 1 of the roadmap
-above), tracked under ADR-0025 slice 1d.
+optional id override. The broker scope model (item 1 of the roadmap
+above) is the remaining piece, tracked under ADR-0025 slice 1d.
 
 ### ADR 0006 status
 

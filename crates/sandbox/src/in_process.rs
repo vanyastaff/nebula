@@ -1,7 +1,7 @@
 //! In-process sandbox: runs actions directly in the host process.
 //!
 //! This is the default sandbox for trusted, built-in actions. No isolation
-//! beyond capability checks on the [`SandboxedContext`].
+//! beyond a cooperative cancellation check on the [`SandboxedContext`].
 
 use async_trait::async_trait;
 use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
@@ -11,10 +11,12 @@ use crate::{
     runner::{ActionExecutor, SandboxedContext},
 };
 
-/// In-process sandbox: runs actions in the same process with capability checks.
+/// In-process sandbox: runs actions in the same process (cooperative
+/// cancellation check only — no isolation).
 ///
 /// Suitable for first-party (built-in) actions that are trusted code.
-/// Community/third-party plugins should use `WasmSandbox` instead.
+/// Untrusted/community plugins run out-of-process via
+/// [`ProcessSandbox`](crate::ProcessSandbox).
 pub struct InProcessSandbox {
     executor: ActionExecutor,
 }

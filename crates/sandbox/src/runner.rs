@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Sandboxed execution context wrapping an [`ActionContext`].
 ///
-/// Provides capability checks (e.g., cancellation) before action execution.
+/// Provides a cooperative cancellation check before action execution.
 pub struct SandboxedContext {
     cancellation: CancellationToken,
 }
@@ -42,9 +42,8 @@ impl SandboxedContext {
 ///
 /// Implementations provide different isolation levels:
 /// - [`InProcessSandbox`](crate::InProcessSandbox) — trusted, in-process (built-in actions)
-/// - [`ProcessSandbox`](crate::ProcessSandbox) — child-process dispatch over JSON envelope with
-///   `PluginCapabilities` allowlists and optional OS-level hardening in `os_sandbox` (community
-///   plugins)
+/// - [`ProcessSandbox`](crate::ProcessSandbox) — child-process dispatch over a JSON envelope with
+///   Linux OS-level hardening in `os_sandbox` (community plugins)
 ///
 /// WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md` §12.6.
 #[async_trait]
