@@ -16,6 +16,7 @@ The repository's full ADR archive lives at the parent project's `docs/adr/` (e.g
 | [0047](./0047-openapi-31-generator.md) | OpenAPI 3.1 spec generation — adopt `utoipa` for `nebula-api` | accepted (2026-05-06) | api, openapi, drift-detection, layer-boundary, m3 |
 | [0048](./0048-idempotency-store-backend.md) | Idempotency-Store Backend — Hybrid (in-memory + PG-backed) | accepted (2026-05-07) | api, idempotency, storage, m3 |
 | [0050](./0050-m3-5-w3c-trace-context-propagation.md) | M3.5 W3C Trace Context propagation (HTTP → control queue → engine) | accepted (2026-05-11) | observability, tracing, api, engine, m3, m9 |
+| [0052](./0052-schema-validator-condition-seam.md) | Field visibility/required condition evaluation moves to nebula-validator | accepted (2026-05-15) | schema, validator, seam, m11 |
 
 ## Supersession
 
