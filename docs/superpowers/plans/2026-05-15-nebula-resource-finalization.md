@@ -912,16 +912,21 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Task A12: Phase A verification gate
 
-- [ ] **Step 1: Run the per-crate gates**
+- [ ] **Step 1: Own the pre-existing rustdoc `-D warnings` failure (surfaced during A4)**
+
+`RUSTDOCFLAGS="-D warnings" cargo doc -p nebula-resource --no-deps` fails on a **pre-existing** unresolved/redundant intra-doc link at `crates/resource/src/lib.rs:13` (an explicit `(super::DrainTimeoutPolicy::Force)` link target in a `//!` comment that rustdoc can't resolve from crate-root scope — the recurring `feedback_intra_doc_links` trap class; `-D rustdoc::broken_intra_doc_links` alone does NOT catch it, but `task doc` / `task dev:check` use the broader `-D warnings`). It is not Phase-A-introduced but it WILL fail the Phase A / final gate, so Phase A owns the fix: read `crates/resource/src/lib.rs:13`, drop the explicit `(super::…)` link target so it renders as plain text (do not bracket non-resolvable paths in `//!` docs — `feedback_intra_doc_links`). Verify `RUSTDOCFLAGS="-D warnings" cargo doc -p nebula-resource --no-deps` then goes green. Commit `docs(resource): fix unresolved intra-doc link in crate root` + trailer.
+
+- [ ] **Step 2: Run the per-crate gates**
 
 Run: `cargo nextest run -p nebula-resource -p nebula-engine`
 Then: `cargo test -p nebula-resource --doc`
+Then: `RUSTDOCFLAGS="-D warnings" cargo doc -p nebula-resource --no-deps` (must be green after Step 1)
 Then: `cargo clippy -p nebula-resource -p nebula-engine --all-targets -- -D warnings`
 Expected: all green.
 
-- [ ] **Step 2: Commit (no-op if clean) / fix-forward**
+- [ ] **Step 3: Commit (no-op if clean) / fix-forward**
 
-If clippy/doctests surface issues, fix inline, `task fmt`, commit `fix(resource): phase A cleanup`. Phase A done when green.
+If clippy/doctests surface further issues, fix inline, `cargo fmt -p <crate>` (workspace `task fmt` is broken on this Windows path — per-crate only), commit `fix(resource): phase A cleanup` + trailer. Phase A done when green.
 
 ---
 
@@ -1300,12 +1305,12 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Task D2: Topology docstring sweep (PHASE4_BLOCKED §4)
 
-**Files:** Modify `crates/resource/src/topology/{pooled,resident,service,transport,exclusive}.rs`
+**Files:** Modify `crates/resource/src/topology/{pooled,resident,service,transport,exclusive}.rs` **and** `crates/resource/docs/api-reference.md` + `crates/resource/docs/adapters.md` (the larger pre-ADR-0036/0044 design-doc debt surfaced during A4 — these still describe `type Credential` as a 5th associated type, `create(scheme: &<Self::Credential as Credential>::Scheme, …)`, `type Credential = NoCredential`, `where R: Resource<Credential = NoCredential>`, and the old `on_credential_refresh<'a>(&self, new_scheme: SchemeGuard, ctx)` signature — all superseded by ADR-0044/ADR-0052).
 
-- [ ] **Step 1: Find stale refs** — `rg -n "scheme|Scheme|R::Credential|type Credential|&mut self.*refresh" crates/resource/src/topology`
-- [ ] **Step 2: Edit** — remove scheme-threading references; align any `on_credential_refresh` mentions with the D2 `&self, slot_name, &Runtime` shape. No behavioural change.
-- [ ] **Step 3: Verify** — `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p nebula-resource --no-deps` green.
-- [ ] **Step 4: Commit** — `docs(resource): topology docstring sweep (drop scheme threading)` (+ trailer).
+- [ ] **Step 1: Find stale refs** — `rg -n "scheme|Scheme|R::Credential|type Credential|NoCredential|&mut self.*refresh" crates/resource/src/topology crates/resource/docs/api-reference.md crates/resource/docs/adapters.md`
+- [ ] **Step 2: Edit** — remove scheme-threading / `type Credential` / `NoCredential` references; align all `on_credential_refresh`/`on_credential_revoke`/`create`/slot-field prose with the shipped contract: `#[credential]` field = `SlotCell<CredentialGuard<C>>`, read via derive-emitted `<field>_slot() -> Option<Arc<CredentialGuard<C>>>`, hook `(&self, slot_name, &Self::Runtime)` + `on_credential_revoke`, `create(&self, config, ctx)` (no scheme param). Cite ADR-0044/ADR-0052; NO plan/task IDs; no bracketed non-resolvable intra-doc links in `//!`/attribute docs (`feedback_intra_doc_links`). No behavioural change (docs only). Code examples in the `.md` files must reflect the real API (compile-mentally against the shipped trait).
+- [ ] **Step 3: Verify** — `RUSTDOCFLAGS="-D warnings" cargo doc -p nebula-resource --no-deps` green (broader than broken-intra-doc-links; A12 Step 1 already cleared `lib.rs:13`); `rg` from Step 1 returns no stale hits in the touched files.
+- [ ] **Step 4: Commit** — `docs(resource): reconcile topology + design docs to ADR-0044/0052 slot contract` (+ trailer).
 
 ---
 
