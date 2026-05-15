@@ -68,6 +68,8 @@ deny = [
   { crate = "nebula-api", wrappers = [
     "nebula-api",
     "nebula-server",
+    # examples/ member hosts the api_simple_server startup demo.
+    "nebula-examples",
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
 
   # ---- Layer enforcement: Exec ----
@@ -99,6 +101,9 @@ deny = [
     # backend introduced in Phase C. Same pattern as the engine dev-dep
     # carved out above for the §13 knife integration test.
     "nebula-credential-vault",
+    # examples/ member hosts the api_simple_server startup demo which
+    # wires in-memory repos directly (same pattern as nebula-server).
+    "nebula-examples",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
   { crate = "nebula-sdk", wrappers = [
     "nebula-examples",

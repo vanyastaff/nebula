@@ -3444,7 +3444,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "sqlx",
  "subtle",
  "thiserror",
  "tokio",
@@ -3667,16 +3666,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+ "nebula-api",
  "nebula-core",
  "nebula-expression",
  "nebula-resource",
  "nebula-schema",
+ "nebula-storage",
  "parking_lot",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
