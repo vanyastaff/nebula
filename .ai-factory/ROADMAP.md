@@ -700,7 +700,7 @@ concurrency contracts.
   before tag, not deferred to «we'll add metrics later».
 - OpenTelemetry exporter end-to-end verified against a real OTLP
   collector (`task obs:up`) — no «config exists, never tested» state.
-- The three known mutex hot-paths (#595 / #591 / #590) either have
+- The two known mutex hot-paths (#595 / #590) either have
   proven low contention with a recorded measurement, or are
   refactored to lock-free.
 
@@ -751,9 +751,6 @@ concurrency contracts.
       cost on the metrics export path; if hot, switch to
       pre-interned `LabelKey` pool or arena allocation. If cold,
       mark Out of Scope with the measurement attached.
-- [ ] **#591 (system NETWORK_STATS Mutex):** measure contention with
-      `parking_lot::Mutex` profiler or tokio-console; if hot, switch
-      to atomic counters + arc-swap snapshot. If cold, document.
 - [ ] **#590 (expression regex_cache Mutex):** verify the moka
       migration (PR #625) actually closed the contention — add a
       stress test that exercises concurrent regex compilation. Update
@@ -774,7 +771,7 @@ concurrency contracts.
       merged tree.
 
 **Exit:** observability gap report committed and gaps closed; OTLP
-exporter verified end-to-end against `task obs:up`; the three mutex
+exporter verified end-to-end against `task obs:up`; the two mutex
 hot-paths each carry a measurement + decision; spans/metrics/errors
 triple present at every new boundary.
 
@@ -1175,7 +1172,7 @@ in `docs/MATURITY.md`; state-machine invariants documented + tested.
 ### M14 — Cross-cutting maturation + Public API freeze
 
 > Why this exists: cross-cutting crates carry the seams every other
-> crate uses (eventbus, log, metrics, resilience, system) plus the
+> crate uses (eventbus, log, metrics, resilience) plus the
 > public surface plugin and integration authors consume (sdk,
 > plugin-sdk). They are mostly `stable` but carry known gaps the
 > roadmap has not tracked: `ExecutionEvent` still on raw mpsc, no
@@ -1194,7 +1191,7 @@ in `docs/MATURITY.md`; state-machine invariants documented + tested.
 - `nebula-sdk` and `nebula-plugin-sdk` flip `status: partial → stable`
   with a frozen public surface for 1.0.
 - Cross-cutting refinements landed: Health trait extracted, command
-  service extracted, system probe contracts hardened.
+  service extracted.
 
 #### M14.1 docs/MATURITY.md — actually write the dashboard
 
@@ -1265,14 +1262,11 @@ in `docs/MATURITY.md`; state-machine invariants documented + tested.
 - [ ] Resilience README frontmatter stays `stable`; observability
       triple verified per M9.1.
 
-#### M14.6 nebula-log + nebula-system — refinements
+#### M14.6 nebula-log — refinements
 
 - [ ] `nebula-log`: file rolling + runtime reload audit
       (`crates/log/README.md:58` claims stable; verify under load).
-- [ ] `nebula-system`: post-#643 host-probe-contract hardening
-      follow-ups; verify no NETWORK_STATS Mutex regression
-      (cross-dep M9.3 #591).
-- [ ] Log + system README frontmatter stays `stable`.
+- [ ] Log README frontmatter stays `stable`.
 
 #### M14.7 Health trait extraction (per memory)
 

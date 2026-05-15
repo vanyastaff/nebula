@@ -100,7 +100,7 @@ any level.
 | Exec         | `engine`, `storage`, `storage-loom-probe`, `sandbox`, `plugin-sdk` |
 | Business     | `credential`, `credential-builtin`, `resource`, `action`, `plugin` |
 | Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata` |
-| Cross-cutting| `log`, `system`, `eventbus`, `metrics`, `resilience`, `error` |
+| Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error` |
 
 Each `+macros` companion (`action/macros`, `credential/macros`, `error/macros`,
 `plugin/macros`, `resource/macros`, `schema/macros`, `validator/macros`,
