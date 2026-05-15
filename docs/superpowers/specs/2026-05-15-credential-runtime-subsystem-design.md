@@ -131,20 +131,78 @@ cross-cutting `nebula-eventbus`/`nebula-metrics`/`nebula-error`/
 
 A missing mandatory collaborator is a **compile error**, not a runtime panic.
 
+**Recon-driven refinement (2026-05-15, verified against engine/storage):**
+`CredentialStore` and `PendingStateStore` use RPITIT (`-> impl Future`) +
+generic methods → **not object-safe**; `Arc<dyn CredentialStore>` is not a
+valid type and no blanket impl bridges it. `CredentialResolver<S>` and the
+storage layers (`EncryptionLayer<S>` …) are generic over the store. There­
+fore the facade is **generic over the raw backend and pending store**:
+
 ```
-pub struct CredentialService { /* private */ }
-impl CredentialService { pub fn builder() -> CredentialServiceBuilder<…>; }
+pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> { /* private */ }
+impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
+    pub fn builder() -> CredentialServiceBuilder</* typestate */>;
+}
 ```
 
-Builder (typestate; `.build()` callable only when all mandatory set):
-- mandatory: `key_provider(Arc<dyn KeyProvider>)`, `store_backend(Arc<dyn
-  CredentialStore>)` (raw; wrapped internally), `pending_store(Arc<dyn
-  PendingStateStore>)`, `registry(Arc<CredentialRegistry>)`,
-  `observer(Arc<dyn CredentialObserver>)`,
-  `engine_resolver(Arc<CredentialResolver>)`,
-  `lease_lifecycle(LeaseLifecycle)`.
-- optional: `external_providers(ExternalProviderChain)` →
-  `StateSource::External`.
+`B`/`PS` appear **only on the struct**, never in operation signatures
+(operations are `&self` async methods) — this is not the over-generic
+anti-pattern; it is forced by RPITIT non-object-safety. The API
+composition root fixes `B = InMemoryStore`, `PS = InMemoryPendingStore`
+(feature `credential-in-memory`) now; real backends substitute later
+without touching operation call sites.
+
+Builder (typestate; `.build()` callable only when all mandatory set). The
+facade **constructs** the resolver + lease lifecycle internally inside
+`build()` — they are NOT injected (injecting a pre-built resolver would
+let a caller supply a mis-composed/unencrypted one; internal construction
+*is* the security boundary):
+- mandatory: `raw_store(B)`, `key_provider(Arc<dyn KeyProvider>)`,
+  `audit_sink(Arc<dyn AuditSink>)`, `scope_resolver(Arc<dyn ScopeResolver>)`,
+  `cache_config(CacheConfig)`, `pending_store(PS)`,
+  `registry(Arc<CredentialRegistry>)`, `dispatch(Arc<CredentialDispatch>)`
+  (see §5a), `observer(Arc<dyn CredentialObserver>)`,
+  `lease_config(LeaseLifecycleConfig)`, `shutdown(CancellationToken)`.
+- optional: `refresh_coordinator(Arc<RefreshCoordinator>)` (default
+  `RefreshCoordinator::new()`), `external_providers(ExternalProviderChain)`
+  → `StateSource::External`.
+- `build()` composes `ScopeLayer::new(AuditLayer::new(CacheLayer::new(
+  EncryptionLayer::new(raw, key_provider), cache_config), audit_sink),
+  scope_resolver)`, then
+  `CredentialResolver::new(Arc::new(store)).with_refresh_coordinator(rc)
+  .with_event_bus(observer.event_bus())`, then
+  `LeaseLifecycle::spawn(lease_config, observer.lease_bus(),
+  observer.metrics(), shutdown)`. Raw backend never escapes.
+- `CredentialObserver` is **deliberately designed object-safe** (no
+  RPITIT, no generic methods) so it can be `Arc<dyn CredentialObserver>`;
+  it exposes `event_bus() -> Arc<EventBus<CredentialEvent>>`,
+  `lease_bus() -> Option<Arc<EventBus<LeaseEvent>>>`,
+  `metrics() -> Option<Arc<dyn MetricsEmitter>>`, and `on_resolve/
+  on_refresh/on_revoke(...)` non-async hook methods.
+
+## 5a. Dispatch mechanism (the dyn→typed crux)
+
+Recon verdict: there is **no runtime string-keyed dispatch table**.
+`execute_resolve::<C,_>`, `resolve_with_refresh::<C: Refreshable>`,
+`dispatch_test::<C: Testable>`, `dispatch_revoke::<C: Revocable>` are all
+generic over a concrete `C`; the registry only does
+`resolve::<C>(key) -> Option<&C>` (downcast). Engine already re-exports
+`StateProjectionRegistry` / `StateProjectionError` — the existing
+type-erasure-by-key precedent for `C::State`.
+
+**Decision (no invention):** mirror/extend the `StateProjectionRegistry`
+pattern as `CredentialDispatch`: a `HashMap<&'static str, DispatchEntry>`
+populated **alongside** `register_builtins` via `register_dispatch::<C>()`
+(and capability-bounded `register_dispatch_refreshable::<C: Refreshable>`
+etc., so a closure exists *iff* the type has the capability — structural,
+mirrors `plugin_capability_report`). `DispatchEntry` holds boxed
+type-erased fns that capture the monomorphized generic call
+(`resolve_fn`, `refresh_fn: Option`, `test_fn: Option`,
+`revoke_fn: Option`, `project_fn`). Plan 2 **must read
+`crates/engine/src/credential/registry.rs` (`StateProjectionRegistry`)
+first** and follow its erasure shape verbatim; do not design a novel
+table. Capability-gating is by closure presence (`Option::None` ⇒
+`CredentialServiceError::CapabilityUnsupported`), not runtime reflection.
 
 Operations (replace the 12 stubs). `TenantScope { org, ws }` is a mandatory
 newtype argument (not `Option`):
