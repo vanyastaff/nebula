@@ -77,7 +77,7 @@ nebula/
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.95)
-├── crates/             # 32 workspace members (incl. 8 derive companions)
+├── crates/             # 33 workspace members (incl. 8 derive companions)
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
 ├── .claude/            # Claude Code skills + subagents

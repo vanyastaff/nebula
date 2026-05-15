@@ -771,7 +771,7 @@ concurrency contracts.
       merged tree.
 
 **Exit:** observability gap report committed and gaps closed; OTLP
-exporter verified end-to-end against `task obs:up`; the three mutex
+exporter verified end-to-end against `task obs:up`; the two mutex
 hot-paths each carry a measurement + decision; spans/metrics/errors
 triple present at every new boundary.
 
@@ -1172,7 +1172,7 @@ in `docs/MATURITY.md`; state-machine invariants documented + tested.
 ### M14 — Cross-cutting maturation + Public API freeze
 
 > Why this exists: cross-cutting crates carry the seams every other
-> crate uses (eventbus, log, metrics, resilience, system) plus the
+> crate uses (eventbus, log, metrics, resilience) plus the
 > public surface plugin and integration authors consume (sdk,
 > plugin-sdk). They are mostly `stable` but carry known gaps the
 > roadmap has not tracked: `ExecutionEvent` still on raw mpsc, no
@@ -1191,7 +1191,7 @@ in `docs/MATURITY.md`; state-machine invariants documented + tested.
 - `nebula-sdk` and `nebula-plugin-sdk` flip `status: partial → stable`
   with a frozen public surface for 1.0.
 - Cross-cutting refinements landed: Health trait extracted, command
-  service extracted, system probe contracts hardened.
+  service extracted.
 
 #### M14.1 docs/MATURITY.md — actually write the dashboard
 
