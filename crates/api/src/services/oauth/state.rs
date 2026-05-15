@@ -16,7 +16,7 @@ use hmac::{Hmac, Mac, digest::KeyInit};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::errors::ApiError;
+use crate::error::ApiError;
 
 type HmacSha256 = Hmac<Sha256>;
 

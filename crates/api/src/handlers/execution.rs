@@ -11,7 +11,7 @@ use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
 use uuid::Uuid;
 
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     handlers::workflow::{PaginationParams, extract_timestamp},
     models::{
         AckResponse, ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse,

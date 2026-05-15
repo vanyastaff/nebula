@@ -10,7 +10,7 @@
 //!   `org`, `workflow`, `execution`, `credential`, `catalog`, `openapi`.
 //! - `middleware` — auth (JWT + API-key → `AuthContext`), tenancy (path-based org/workspace
 //!   resolution via `nebula-core::Slug`), RBAC, CSRF, tracing, security headers, request ID.
-//! - `errors` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4. Includes
+//! - `error` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4. Includes
 //!   `SessionExpired`, `MfaRequired`, `InsufficientRole`, `OrgNotFound`, `WorkspaceNotFound`,
 //!   `SlugConflict`, `CsrfRejected`, `PaginationInvalid`, `RateLimited`, `TenantMismatch` among
 //!   others.
@@ -61,7 +61,7 @@
 pub mod app;
 pub mod auth;
 pub mod config;
-pub mod errors;
+pub mod error;
 pub mod extractors;
 pub mod handlers;
 pub mod middleware;
@@ -75,7 +75,7 @@ mod trace_capture;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
-pub use errors::{ApiError, ApiResult};
+pub use error::{ApiError, ApiResult, ProblemDetails};
 pub use models::pagination::{CursorParams, PaginatedResponse};
 pub use state::AppState;
 pub use telemetry_init::init_api_telemetry;

@@ -6,7 +6,7 @@ use axum::{
 };
 
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     models::{
         ActionDetailResponse, ActionSummary, ListActionsResponse, ListPluginsResponse,
         PluginDetailResponse, PluginSummary,

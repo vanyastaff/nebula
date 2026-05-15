@@ -3,7 +3,7 @@
 //! Each handler is a thin shim over [`crate::auth::AuthBackend`]. Validation
 //! lives in the backend; the HTTP layer extracts the request body, dispatches,
 //! attaches `Set-Cookie` headers, and translates [`crate::auth::AuthError`]
-//! into [`crate::errors::ApiError`].
+//! into [`crate::error::ApiError`].
 //!
 //! Per ADR-0033 these endpoints belong to **Plane A** (host login). They
 //! never touch the credential / Plane B OAuth state.
@@ -27,7 +27,7 @@ use crate::{
         SignupRequest, SignupResponse, UserProfile, VerifyEmailRequest, cleared_cookie,
         csrf_cookie, session_cookie,
     },
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     models::AckResponse,
     state::AppState,
 };

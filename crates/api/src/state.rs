@@ -19,7 +19,7 @@ use nebula_storage::{
 use tokio::sync::RwLock;
 
 use crate::{
-    auth::AuthBackend, config::JwtSecret, errors::ApiError, middleware::IdempotencyStore,
+    auth::AuthBackend, config::JwtSecret, error::ApiError, middleware::IdempotencyStore,
     services::webhook::WebhookTransport,
 };
 

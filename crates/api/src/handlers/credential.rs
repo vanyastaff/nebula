@@ -15,7 +15,7 @@ pub use crate::handlers::credential_oauth::{
     AuthorizationUriResponse as AuthUriResponse, OAuthCallbackResponse as CallbackResponse,
 };
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     extractors::credential::{
         validate_credential_id, validate_credential_key, validate_credential_name,
         validate_data_is_object,

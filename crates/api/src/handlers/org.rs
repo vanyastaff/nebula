@@ -18,7 +18,7 @@ use axum::{
 use nebula_core::TenantContext;
 
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     models::{
         AckResponse, CreateServiceAccountRequest, CreateServiceAccountResponse,
         InviteMemberRequest, InviteMemberResponse, MembersResponse, OrgResponse,

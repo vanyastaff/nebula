@@ -19,7 +19,7 @@ use serde_json::Value;
 use utoipa::IntoParams;
 
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     handlers::execution::enqueue_start,
     models::{
         CreateWorkflowRequest, ExecutionResponse, ListWorkflowsResponse, StartExecutionRequest,

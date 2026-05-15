@@ -6,7 +6,7 @@
 //! credential storage ports are wired into `AppState`.
 
 use crate::{
-    errors::{ApiError, ApiResult},
+    error::{ApiError, ApiResult},
     models::credential::{
         ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
         CredentialResponse, CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,

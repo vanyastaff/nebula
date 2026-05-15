@@ -17,7 +17,7 @@ use utoipa::{IntoParams, ToSchema};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
-    errors::{ApiError, ApiResult},
+    error::{ApiError, ApiResult},
     middleware::auth::AuthenticatedUser,
     services::oauth::{
         flow::{

@@ -56,7 +56,7 @@ use super::{
     provider::EndpointProviderImpl,
     routing::{ActivationEntry, RoutingMap},
 };
-use crate::errors::ProblemDetails;
+use crate::error::ProblemDetails;
 
 /// Configuration for the webhook HTTP transport.
 #[derive(Debug, Clone)]
@@ -790,7 +790,7 @@ const PROBLEM_JSON_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("applica
 
 /// Shared assembly for `application/problem+json` responses returned
 /// from the webhook transport. Matches the convention in
-/// [`crate::errors::ApiError::into_response`].
+/// [`crate::error::ApiError::into_response`].
 fn problem_response(status: StatusCode, problem: ProblemDetails) -> Response {
     let mut resp = (status, Json(problem)).into_response();
     resp.headers_mut()

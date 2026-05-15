@@ -10,7 +10,7 @@ use axum::{Extension, Json, extract::State};
 use nebula_core::TenantContext;
 
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     models::ListResourcesResponse,
     state::AppState,
 };

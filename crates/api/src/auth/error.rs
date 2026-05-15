@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use crate::errors::ApiError;
+use crate::error::ApiError;
 
 /// Failure modes for the auth backend.
 #[derive(Debug, Error)]

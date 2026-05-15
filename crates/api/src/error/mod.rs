@@ -1,102 +1,36 @@
-//! Error Handling
+//! Error handling — RFC 9457 `application/problem+json` seam (canon §12.4).
 //!
-//! RFC 9457 Problem Details for HTTP APIs implementation.
-//! Единая обработка ошибок для всего API.
+//! ## Structure
+//!
+//! - [`problem`] — `ProblemDetails` wire type (RFC 9457) and `ValidationFieldError`.
+//! - [`classify`] — `From<…>` conversions from domain error types into [`ApiError`].
+//! - This file — [`ApiError`] enum, [`ApiResult`] alias, and the
+//!   [`axum::response::IntoResponse`] impl that sets `Content-Type:
+//!   application/problem+json`.
+//!
+//! ## Wire contract
+//!
+//! The serialized shape of [`ProblemDetails`] and the HTTP status codes
+//! produced by [`ApiError::to_problem_details`] are enforced byte-for-byte by
+//! `tests/openapi_canon_compliance.rs`.  Do not alter field names,
+//! `type_uri` strings, or status codes without updating that test.
+
+pub mod classify;
+pub mod problem;
+
+pub use problem::{ProblemDetails, ValidationFieldError};
 
 use axum::{
     Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use nebula_validator::foundation::{ValidationError, ValidationErrors};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use utoipa::ToSchema;
 
-/// RFC 9457 Problem Details
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ProblemDetails {
-    /// URI reference identifying the problem type
-    #[serde(rename = "type")]
-    pub type_uri: String,
-
-    /// Short human-readable summary
-    pub title: String,
-
-    /// HTTP status code
-    pub status: u16,
-
-    /// Human-readable explanation specific to this occurrence
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-
-    /// URI reference identifying the specific occurrence
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instance: Option<String>,
-
-    /// Additional extension members — RFC 9457 allows arbitrary
-    /// problem-type-specific keys to be flattened onto the document. utoipa
-    /// describes the `Value` payload as an open `Object`.
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<serde_json::Value>)]
-    pub extensions: Option<serde_json::Value>,
-
-    /// Validation errors
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub errors: Option<Vec<ValidationFieldError>>,
-}
-
-/// Validation field error
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ValidationFieldError {
-    /// Validator error code
-    pub code: String,
-    /// Error detail message
-    pub detail: String,
-    /// JSON Pointer to the field (RFC 6901), e.g. "/age"
-    pub pointer: String,
-}
-
-impl ProblemDetails {
-    /// Create a new ProblemDetails
-    pub fn new(type_uri: impl Into<String>, title: impl Into<String>, status: StatusCode) -> Self {
-        Self {
-            type_uri: type_uri.into(),
-            title: title.into(),
-            status: status.as_u16(),
-            detail: None,
-            instance: None,
-            extensions: None,
-            errors: None,
-        }
-    }
-
-    /// Add detail message
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = Some(detail.into());
-        self
-    }
-
-    /// Add instance URI
-    pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
-        self.instance = Some(instance.into());
-        self
-    }
-
-    /// Add extension data
-    pub fn with_extensions(mut self, extensions: serde_json::Value) -> Self {
-        self.extensions = Some(extensions);
-        self
-    }
-
-    /// Add validation errors
-    pub fn with_errors(mut self, errors: Vec<ValidationFieldError>) -> Self {
-        self.errors = Some(errors);
-        self
-    }
-}
+use crate::error::classify::workflow_error_pointer;
 
 /// Main API Error Type
+#[non_exhaustive]
 #[derive(Debug, Error, nebula_error::Classify)]
 pub enum ApiError {
     /// Validation error (400)
@@ -243,111 +177,6 @@ pub enum ApiError {
     NotImplemented(String),
 }
 
-/// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
-/// that identifies the offending location in the workflow JSON document.
-///
-/// The workflow JSON schema is:
-/// ```json
-/// {
-///   "nodes":       [ { "id": "<key>", … }, … ],
-///   "connections": [ { "from_node": "<f>", "to_node": "<t>", … }, … ],
-///   "trigger":     { … },
-///   …
-/// }
-/// ```
-///
-/// Pointer conventions used here:
-/// - Node-specific errors: `/nodes/<node_key>`
-/// - Connection-specific: `/connections/<from>/<to>`
-/// - Trigger errors:      `/trigger`
-/// - Structural / whole-document errors: `""` (the root pointer, RFC 6901 §4)
-fn workflow_error_pointer(err: &nebula_workflow::WorkflowError) -> String {
-    use nebula_workflow::WorkflowError;
-    match err {
-        // Node-keyed errors
-        WorkflowError::DuplicateNodeKey(key)
-        | WorkflowError::UnknownNode(key)
-        | WorkflowError::SelfLoop(key) => format!("/nodes/{key}"),
-
-        WorkflowError::InvalidParameterReference { node_key, .. } => {
-            format!("/nodes/{node_key}")
-        },
-
-        WorkflowError::InvalidActionKey { key, .. } => {
-            // The key string is the node's action_key; best we can do without
-            // the node key is to point at the nodes array.
-            let _ = key;
-            "/nodes".to_owned()
-        },
-
-        // Connection-keyed errors
-        WorkflowError::DuplicateConnection { from, to } => {
-            format!("/connections/{from}/{to}")
-        },
-
-        // Trigger errors
-        WorkflowError::InvalidTrigger { .. } => "/trigger".to_owned(),
-
-        // Schema-level / structural — point at root
-        WorkflowError::EmptyName
-        | WorkflowError::NoNodes
-        | WorkflowError::CycleDetected
-        | WorkflowError::NoEntryNodes
-        | WorkflowError::UnsupportedSchema { .. }
-        | WorkflowError::InvalidOwnerId
-        | WorkflowError::GraphError(_) => String::new(), // RFC 6901 root pointer
-
-        // `WorkflowError` is `#[non_exhaustive]`. Future variants without an
-        // API-side mapping fall back to the root pointer rather than failing
-        // to compile the API layer on every validator extension.
-        _ => String::new(),
-    }
-}
-
-fn normalize_pointer(pointer: Option<&str>) -> String {
-    let pointer = pointer.unwrap_or("/").trim();
-    if pointer.is_empty() || pointer == "#" {
-        return "/".to_owned();
-    }
-
-    if let Some(rest) = pointer.strip_prefix('#') {
-        if rest.is_empty() {
-            return "/".to_owned();
-        }
-        if rest.starts_with('/') {
-            return rest.to_owned();
-        }
-    }
-
-    if pointer.starts_with('/') {
-        pointer.to_owned()
-    } else {
-        format!("/{pointer}")
-    }
-}
-
-fn flatten_validation_error(
-    err: &ValidationError,
-    inherited_pointer: Option<&str>,
-    out: &mut Vec<ValidationFieldError>,
-) {
-    let pointer = err
-        .field_pointer()
-        .map(std::borrow::Cow::into_owned)
-        .or_else(|| inherited_pointer.map(str::to_owned))
-        .unwrap_or_else(|| "/".to_owned());
-
-    out.push(ValidationFieldError {
-        code: err.code.to_string(),
-        detail: err.message.to_string(),
-        pointer: normalize_pointer(Some(&pointer)),
-    });
-
-    for nested in err.nested() {
-        flatten_validation_error(nested, Some(&pointer), out);
-    }
-}
-
 impl ApiError {
     /// Create validation error without field-level details.
     pub fn validation_message(detail: impl Into<String>) -> Self {
@@ -356,46 +185,7 @@ impl ApiError {
             errors: Vec::new(),
         }
     }
-}
 
-impl From<ValidationError> for ApiError {
-    fn from(value: ValidationError) -> Self {
-        let mut errors = Vec::new();
-        flatten_validation_error(&value, None, &mut errors);
-        let detail = if value.code.is_empty() {
-            value.message.to_string()
-        } else {
-            format!("[{}] {}", value.code, value.message)
-        };
-
-        Self::Validation { detail, errors }
-    }
-}
-
-impl From<nebula_core::PermissionDenied> for ApiError {
-    fn from(pd: nebula_core::PermissionDenied) -> Self {
-        Self::InsufficientRole {
-            required_role: pd.required_role,
-            current_role: pd.current_role,
-        }
-    }
-}
-
-impl From<ValidationErrors> for ApiError {
-    fn from(value: ValidationErrors) -> Self {
-        let mut errors = Vec::new();
-        for item in value.errors() {
-            flatten_validation_error(item, None, &mut errors);
-        }
-
-        Self::Validation {
-            detail: format!("Validation failed with {} error(s)", errors.len()),
-            errors,
-        }
-    }
-}
-
-impl ApiError {
     /// Convert to ProblemDetails
     pub fn to_problem_details(&self) -> (StatusCode, ProblemDetails) {
         match self {
@@ -653,7 +443,10 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[cfg(test)]
 mod tests {
+    use axum::http::StatusCode;
+
     use super::*;
+    use nebula_validator::foundation::ValidationError;
 
     #[test]
     fn validation_error_conversion_preserves_code_and_pointer() {

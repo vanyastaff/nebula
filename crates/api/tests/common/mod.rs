@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use nebula_api::{
     ApiConfig, AppState,
-    errors::ApiError,
+    error::ApiError,
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, WorkspaceId};

@@ -13,7 +13,7 @@ use axum::{
 };
 
 use crate::{
-    errors::{ApiError, ApiResult, ProblemDetails},
+    error::{ApiError, ApiResult, ProblemDetails},
     middleware::auth::AuthContext,
     models::{
         AckResponse, CreateTokenRequest, CreateTokenResponse, MeResponse, MyOrgsResponse,
