@@ -41,6 +41,8 @@ pub(crate) mod sealed_caps {
 
 pub mod bearer_token;
 pub mod shared_key;
+pub mod signing_key;
 
 pub use bearer_token::{BearerTokenCredential, BearerTokenProperties};
 pub use shared_key::{SharedKeyCredential, SharedKeyProperties};
+pub use signing_key::{SigningKeyCredential, SigningKeyProperties};
