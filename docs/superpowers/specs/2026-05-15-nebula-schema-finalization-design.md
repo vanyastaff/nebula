@@ -329,6 +329,41 @@ One cascade, four PRs, ordered by dependency:
    `json_schema()` population (V3); public DTO projection stripping
    `x-nebula-root-rules` (#6); ADR-0047 amendment.
 
+### Plan lockdown requirements (panel final-objection round — 4/4 no blocking objection)
+
+All four panelists returned NO BLOCKING OBJECTION / ACCEPTABLE. The one
+adjudicated conflict (the SOLID critic's "zero `nebula-validator` dependency"
+criterion, overruled as over-rotation) was accepted by that panelist on
+re-review — consensus is earned by reasoned overrule + explicit acceptance,
+not unanimity-from-start. Each panelist returned one binding constraint the
+implementation plan MUST encode as a merge-blocker, not implementation
+discretion:
+
+1. **P2 delegation contract (cohesion).** Pin the exact signature of the
+   single validator entry point; schema-owned structural conformance is
+   ordered before and short-circuits rule/predicate evaluation so predicates
+   never run against structurally-invalid values (else the `Rule::matches`
+   fail-open class returns as an under-specified merge boundary); a test
+   asserts this is the ONLY schema→validator behavioral crossing.
+2. **Presence wiring is data-flow-enforced, not call-order-enforced
+   (type-safety, P1).** `FieldPlan` is the sole input type to the field-rule
+   loop; `run_value_rules` reachable only via `match plan.presence {
+   Presence::Skipped => continue, Presence::Active => … }`; the runner cannot
+   observe a raw `Field`/`VisibilityPolicy` except through `plan`; the
+   "iterate `fields` + separately consult `HashMap<FieldPath, Presence>`"
+   relocation of the old `if !visible && raw.is_none() { return; }` discipline
+   is forbidden structurally. trybuild proves enum exhaustiveness, not
+   bypass-impossibility — the constraint is explicit, not test-implied.
+3. **ADR-0052 + proof-token-custody seam test land inside P1's PR
+   (canon §0.1/§17).** Hard P1 merge-blocker — not P2, not "ADR follows";
+   P1 is the L2 seam change, so the ADR + seam test ship in the same PR.
+4. **#2 is a hard-blocking separate task before the credential write path is
+   exposed to untrusted workflow authors in production (security).** Verified:
+   P1–P4 neither touches nor worsens it (`Rule::matches` only tightens a
+   `required` fail-open; P4 only adds a pre-persist gate; the `&str`-keyed
+   resolution signature is unchanged; no new id-controlled caller). "nebula-schema
+   finalized" MUST NOT be read as "#2 closed."
+
 ## Non-goals
 
 - **Security #2 — `slot_bindings` confused deputy — OUT OF SCOPE, tracked
