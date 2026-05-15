@@ -8,12 +8,12 @@
 //! Landlock's.
 //!
 //! Non-Linux: no-op (a warning is emitted once, pre-`fork`, in
-//! [`PreparedSandbox::prepare`]).
+//! `PreparedSandbox::prepare`).
 //!
 //! ## Fork safety
 //!
-//! [`PreparedSandbox::prepare`] performs **all** allocation and Landlock
-//! ruleset construction *before* `fork()`. [`PreparedSandbox::apply_in_child`]
+//! `PreparedSandbox::prepare` performs **all** allocation and Landlock
+//! ruleset construction *before* `fork()`. `PreparedSandbox::apply_in_child`
 //! runs between `fork()` and `exec()` and calls only `setrlimit(2)` and
 //! `landlock_restrict_self(2)` on the already-built ruleset — no allocation,
 //! no `serde`, no `PathFd::new`, no `tracing` on the success path. This
@@ -55,9 +55,9 @@ impl Default for LinuxRlimits {
 
 /// A sandbox prepared *before* `fork`, applied *in the child* before `exec`.
 ///
-/// Construct with [`PreparedSandbox::prepare`] on the host thread (allocation
+/// Construct with `PreparedSandbox::prepare` on the host thread (allocation
 /// allowed). Move it into the `Command::pre_exec` closure and call
-/// [`PreparedSandbox::apply_in_child`] there — that call path performs no heap
+/// `PreparedSandbox::apply_in_child` there — that call path performs no heap
 /// allocation on success.
 ///
 /// Linux-only: there is no non-Linux variant — other platforms have no OS

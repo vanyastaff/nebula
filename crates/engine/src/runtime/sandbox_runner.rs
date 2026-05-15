@@ -2,12 +2,12 @@
 //! action dispatcher and the isolation transport.
 //!
 //! The dispatcher owns the runner trait: it is the consumer that decides,
-//! per [`IsolationLevel`](nebula_action::IsolationLevel), whether an action
+//! per `IsolationLevel`, whether an action
 //! runs in-process (trusted built-ins) or through the out-of-process
 //! transport (community plugins). The transport crate (`nebula-sandbox`)
 //! stays free of `nebula_action`: the `SandboxError` -> `ActionError` and
 //! `Value` -> `ActionResult` mapping lives here, in the adapter that bridges
-//! [`ProcessSandbox`](nebula_sandbox::ProcessSandbox) to [`SandboxRunner`].
+//! `ProcessSandbox` to [`SandboxRunner`].
 //!
 //! ## Key types
 //!
@@ -60,7 +60,7 @@ impl SandboxedContext {
 ///
 /// Implementations provide different isolation levels:
 /// - [`InProcessSandbox`] — trusted, in-process (built-in actions)
-/// - [`ProcessSandbox`](nebula_sandbox::ProcessSandbox) — child-process dispatch over a JSON
+/// - `ProcessSandbox` — child-process dispatch over a JSON
 ///   envelope with Linux OS-level hardening (community plugins)
 ///
 /// WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md` §12.6.
@@ -92,7 +92,7 @@ pub type ActionExecutor = Arc<
 ///
 /// Suitable for first-party (built-in) actions that are trusted code.
 /// Untrusted/community plugins run out-of-process via
-/// [`ProcessSandbox`](nebula_sandbox::ProcessSandbox).
+/// `ProcessSandbox`.
 pub struct InProcessSandbox {
     executor: ActionExecutor,
 }
@@ -131,7 +131,7 @@ impl SandboxRunner for InProcessSandbox {
 /// The plugin output `Value` is wrapped in an `ActionResult`; the
 /// transport's `SandboxError` is classified into the engine's
 /// `ActionError` taxonomy via the single shared
-/// [`sandbox_error_to_action_error`](nebula_plugin::sandbox_error_to_action_error)
+/// `sandbox_error_to_action_error`
 /// seam. The transport crate owns neither — keeping `nebula-sandbox` a
 /// Business-dependency-free leaf.
 #[async_trait]

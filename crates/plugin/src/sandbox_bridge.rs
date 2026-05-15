@@ -1,8 +1,8 @@
 //! `SandboxError` → `ActionError` classification.
 //!
 //! This is the single seam where the transport crate's typed
-//! [`SandboxError`](nebula_sandbox::SandboxError) is mapped to the
-//! engine's [`ActionError`](nebula_action::ActionError) taxonomy. It lives
+//! `SandboxError` is mapped to the
+//! engine's `ActionError` taxonomy. It lives
 //! in `nebula-plugin` because both consumers reach it via a legal
 //! downward edge:
 //!
