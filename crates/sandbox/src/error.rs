@@ -127,17 +127,77 @@ pub enum SandboxError {
     /// also a pre-`fork` spawn-time hardening failure.
     #[error("rlimit setup failed: {0}")]
     Rlimit(String),
+
+    /// The plugin binary could not be spawned, the handshake could not be
+    /// read/validated, or the announced transport could not be dialled.
+    /// This is a spawn-time failure before any envelope round-trip — a
+    /// blind respawn-retry on the same misconfigured host/binary would
+    /// fail identically.
+    #[error("plugin spawn/dial failed: {0}")]
+    Spawn(String),
+
+    /// The plugin replied with an `ActionResultError` envelope. Carries the
+    /// plugin-reported code/message and its own retry hint. The host maps
+    /// this to the public `ActionError` classification at the engine-side
+    /// runner boundary; `retryable` is the plugin's advice, not a transport
+    /// fact.
+    #[error("plugin returned an action error [{code}]: {message}")]
+    PluginActionError {
+        /// Plugin-supplied error code.
+        code: String,
+        /// Plugin-supplied human-readable message (sanitized before use).
+        message: String,
+        /// Whether the plugin marked this error as retryable.
+        retryable: bool,
+    },
+
+    /// The plugin returned an envelope kind that does not match what the
+    /// host requested (e.g. a `log` line where an `ActionResult*` was
+    /// expected).
+    #[error("plugin returned unexpected envelope (got {kind})")]
+    UnexpectedEnvelope {
+        /// The envelope kind the plugin sent instead.
+        kind: String,
+    },
+
+    /// The per-call envelope round-trip exceeded its wall-clock deadline.
+    /// The connection is dropped (state is undefined after a partial
+    /// write); the engine-side adapter decides retry policy.
+    #[error("plugin {plugin} timed out on {envelope} after {timeout:?}")]
+    Timeout {
+        /// Plugin binary path (display form) that timed out.
+        plugin: String,
+        /// Envelope tag (`action_invoke` / `metadata_request` / `other`).
+        envelope: String,
+        /// The configured per-call timeout that elapsed.
+        timeout: std::time::Duration,
+    },
+
+    /// The dispatch was cancelled mid-round-trip via the engine
+    /// cancellation token. The connection is dropped; the action must not
+    /// be silently resent (it may already be running on the plugin).
+    #[error("plugin dispatch cancelled")]
+    Cancelled,
 }
 
 /// Convert an internal [`SandboxError`] into the public `ActionError` the
-/// sandbox runner trait returns. Transport-level issues are fatal
-/// (non-retryable) by design: once the plugin has misbehaved on the wire,
-/// the next caller gets a fresh process, not a blind retry on the same
-/// poisoned channel.
+/// engine-side sandbox runner adapter returns. Transport-level issues are
+/// fatal (non-retryable) by design: once the plugin has misbehaved on the
+/// wire, the next caller gets a fresh process, not a blind retry on the
+/// same poisoned channel.
 pub(crate) fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
     match err {
         // Retryable: plugin crashed / exited, respawn path is safe.
         SandboxError::PluginClosed => ActionError::retryable_from(err),
+        // Timeout surfaces as retryable so the engine's higher-level retry
+        // policy can decide; the sandbox itself never silently retries.
+        SandboxError::Timeout { .. } => ActionError::retryable_from(err),
+        // Cancellation must round-trip as the canonical cancelled error so
+        // the engine honours its standard cancellation path.
+        SandboxError::Cancelled => ActionError::Cancelled,
+        // The plugin itself classified this error; honour its retry hint.
+        SandboxError::PluginActionError { retryable: true, .. } => ActionError::retryable_from(err),
+        SandboxError::PluginActionError { retryable: false, .. } => ActionError::fatal_from(err),
         // Fatal: DoS / protocol-abuse signals. Do not paper over with retry.
         SandboxError::PluginLineTooLarge { .. }
         | SandboxError::HandshakeLineTooLarge { .. }
@@ -147,10 +207,12 @@ pub(crate) fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
         | SandboxError::Transport(_)
         | SandboxError::MalformedEnvelope(_)
         | SandboxError::HostMalformedEnvelope(_)
-        // Pre-`fork` spawn-time hardening failures. They reach the public
-        // boundary as fatal; a retry on the same misconfigured host would
-        // fail identically.
+        | SandboxError::UnexpectedEnvelope { .. }
+        // Pre-`fork` spawn-time hardening / spawn failures. They reach the
+        // public boundary as fatal; a retry on the same misconfigured host
+        // or binary would fail identically.
         | SandboxError::Landlock(_)
-        | SandboxError::Rlimit(_) => ActionError::fatal_from(err),
+        | SandboxError::Rlimit(_)
+        | SandboxError::Spawn(_) => ActionError::fatal_from(err),
     }
 }

@@ -10,7 +10,6 @@
 
 use std::time::Duration;
 
-use nebula_action::ActionError;
 use nebula_plugin_sdk::protocol::{HostToPlugin, PluginToHost};
 
 use crate::error::SandboxError;
@@ -45,7 +44,7 @@ pub(crate) const HANDSHAKE_LINE_CAP: usize = 4 * 1024;
 /// the plugin and released when the plugin process exits; no
 /// directory-level cleanup is needed.
 pub(crate) fn allocate_host_socket_addr()
--> Result<(String, &'static str, Option<tempfile::TempDir>), ActionError> {
+-> Result<(String, &'static str, Option<tempfile::TempDir>), SandboxError> {
     #[cfg(unix)]
     {
         use std::{os::unix::ffi::OsStrExt, path::PathBuf};
@@ -89,18 +88,22 @@ pub(crate) fn allocate_host_socket_addr()
 
             let addr = socket_path
                 .to_str()
-                .ok_or_else(|| ActionError::fatal("plugin socket tempdir path is not valid UTF-8"))?
+                .ok_or_else(|| {
+                    SandboxError::Spawn(String::from(
+                        "plugin socket tempdir path is not valid UTF-8",
+                    ))
+                })?
                 .to_owned();
             return Ok((addr, "unix", Some(dir)));
         }
 
         if let Some((root, e)) = last_alloc_error {
-            return Err(ActionError::fatal(format!(
+            return Err(SandboxError::Spawn(format!(
                 "failed to allocate plugin socket tempdir in {}: {e}",
                 root.display()
             )));
         }
-        Err(ActionError::fatal(format!(
+        Err(SandboxError::Spawn(format!(
             "failed to allocate a Unix socket path within {} bytes",
             transport::MAX_UNIX_SOCKET_PATH_BYTES
         )))
@@ -186,6 +189,8 @@ pub(crate) fn response_id_from_value(value: &serde_json::Value) -> Option<u64> {
 mod tests {
     //! Handshake address-validation and correlation-id regression guards
     //! (#260 forged-handshake, #285 stale-response detection).
+
+    use nebula_action::ActionError;
 
     use super::*;
     use crate::error::sandbox_error_to_action_error;

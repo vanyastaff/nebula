@@ -20,7 +20,6 @@
 
 use std::path::Path;
 
-use nebula_action::ActionError;
 use nebula_plugin_sdk::transport::{self, ENV_SOCKET_ADDR, ENV_SOCKET_KIND};
 use tokio::{io::BufReader, process::Command};
 
@@ -29,7 +28,7 @@ use crate::{
         BoundedReadOutcome, PluginHandle, drain_plugin_stderr, read_bounded_line,
         sanitize_plugin_string,
     },
-    error::{SandboxError, sandbox_error_to_action_error},
+    error::SandboxError,
     handshake::{
         HANDSHAKE_LINE_CAP, HANDSHAKE_TIMEOUT, allocate_host_socket_addr, validate_handshake_addr,
     },
@@ -46,7 +45,7 @@ use crate::{
 pub(crate) async fn spawn_and_dial(
     binary: &Path,
     linux_rlimits: LinuxRlimits,
-) -> Result<PluginHandle, ActionError> {
+) -> Result<PluginHandle, SandboxError> {
     // rlimits are only consumed by the Linux `pre_exec` hardening block
     // below; on other platforms they are accepted for a uniform signature
     // but intentionally not applied.
@@ -80,7 +79,7 @@ pub(crate) async fn spawn_and_dial(
     #[cfg(target_os = "linux")]
     {
         let mut prepared = crate::os_sandbox::PreparedSandbox::prepare(linux_rlimits)
-            .map_err(|e| ActionError::fatal(format!("sandbox prepare failed: {e}")))?;
+            .map_err(|e| SandboxError::Spawn(format!("sandbox prepare failed: {e}")))?;
 
         // SAFETY: the closure runs between fork() and exec(). It calls
         // only setrlimit(2) and landlock_restrict_self(2) on data
@@ -99,7 +98,7 @@ pub(crate) async fn spawn_and_dial(
     }
 
     let mut child = cmd.spawn().map_err(|e| {
-        ActionError::fatal(format!("failed to spawn plugin {}: {e}", binary.display()))
+        SandboxError::Spawn(format!("failed to spawn plugin {}: {e}", binary.display()))
     })?;
 
     // Spawn a background task that drains the plugin's stderr and logs
@@ -140,7 +139,7 @@ pub(crate) async fn spawn_and_dial(
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| ActionError::fatal("failed to open plugin stdout"))?;
+        .ok_or_else(|| SandboxError::Spawn(String::from("failed to open plugin stdout")))?;
     let mut stdout_reader = BufReader::new(stdout);
     let mut handshake_buf: Vec<u8> = Vec::with_capacity(256);
 
@@ -150,7 +149,7 @@ pub(crate) async fn spawn_and_dial(
     .await;
 
     let outcome = read_result.map_err(|_| {
-        ActionError::fatal(format!(
+        SandboxError::Spawn(format!(
             "plugin {} handshake timeout after {HANDSHAKE_TIMEOUT:?}",
             binary.display()
         ))
@@ -159,7 +158,7 @@ pub(crate) async fn spawn_and_dial(
     let body_len = match outcome {
         Ok(BoundedReadOutcome::Line { body_len }) => body_len,
         Ok(BoundedReadOutcome::Eof) => {
-            return Err(ActionError::fatal(format!(
+            return Err(SandboxError::Spawn(format!(
                 "plugin {} exited before printing handshake line",
                 binary.display()
             )));
@@ -171,15 +170,13 @@ pub(crate) async fn spawn_and_dial(
                 observed,
                 "plugin handshake exceeded cap — refusing to dial",
             );
-            return Err(sandbox_error_to_action_error(
-                SandboxError::HandshakeLineTooLarge {
-                    limit: HANDSHAKE_LINE_CAP,
-                    observed,
-                },
-            ));
+            return Err(SandboxError::HandshakeLineTooLarge {
+                limit: HANDSHAKE_LINE_CAP,
+                observed,
+            });
         },
         Err(e) => {
-            return Err(ActionError::fatal(format!(
+            return Err(SandboxError::Spawn(format!(
                 "plugin {} handshake read error: {e}",
                 binary.display()
             )));
@@ -191,7 +188,7 @@ pub(crate) async fn spawn_and_dial(
     // validation on an unbounded buffer.
     let handshake_bytes = &handshake_buf[..body_len];
     let handshake_line = std::str::from_utf8(handshake_bytes).map_err(|e| {
-        ActionError::fatal(format!(
+        SandboxError::Spawn(format!(
             "plugin {} handshake line is not valid UTF-8: {e}",
             binary.display()
         ))
@@ -214,13 +211,13 @@ pub(crate) async fn spawn_and_dial(
             error = %err,
             "plugin handshake address mismatch — refusing to dial",
         );
-        return Err(sandbox_error_to_action_error(err));
+        return Err(err);
     }
 
     // Dial the announced transport.
     let stream = transport::dial(handshake_line)
         .await
-        .map_err(|e| ActionError::fatal(format!("plugin transport dial failed: {e}")))?;
+        .map_err(|e| SandboxError::Spawn(format!("plugin transport dial failed: {e}")))?;
 
     Ok(PluginHandle::new(child, stream, socket_dir))
 }

@@ -46,6 +46,34 @@ use crate::{
     spawn::spawn_and_dial,
 };
 
+/// Map a plugin response envelope to the transport-level result value.
+///
+/// `ActionResultOk` → the raw output `Value`. `ActionResultError` → a
+/// [`SandboxError::PluginActionError`] carrying the plugin's own code /
+/// message / retry hint. Any other envelope kind →
+/// [`SandboxError::UnexpectedEnvelope`]. The engine-side runner adapter
+/// owns the `SandboxError` → `ActionError` / `Value` → `ActionResult`
+/// classification; this crate stays free of `ActionError` on the transport
+/// path.
+fn action_response_to_value(envelope: PluginToHost) -> Result<serde_json::Value, SandboxError> {
+    match envelope {
+        PluginToHost::ActionResultOk { output, .. } => Ok(output),
+        PluginToHost::ActionResultError {
+            code,
+            message,
+            retryable,
+            ..
+        } => Err(SandboxError::PluginActionError {
+            code: sanitize_plugin_string(&code),
+            message: sanitize_plugin_string(&message),
+            retryable,
+        }),
+        other => Err(SandboxError::UnexpectedEnvelope {
+            kind: envelope_kind(&other).to_owned(),
+        }),
+    }
+}
+
 /// Process sandbox: spawns the plugin binary once and keeps the connection
 /// alive for the lifetime of this sandbox instance.
 ///
@@ -93,14 +121,14 @@ enum TryDispatchError {
     /// exited between calls). No envelope bytes reached a running plugin
     /// process, so the outer [`ProcessSandbox::dispatch_envelope`] is
     /// safe to respawn and retry exactly once.
-    Respawnable(ActionError),
+    Respawnable(SandboxError),
     /// Terminal for this dispatch — either cancellation, timeout, a
     /// mid-round-trip transport error, a protocol violation, or a spawn
     /// failure. Must NOT be retried silently; the engine's higher-level
     /// retry policy (if any) remains free to retry externally, but the
     /// sandbox itself has to surface the error as-is so cancellation and
     /// fatal classifications round-trip correctly.
-    Terminal(ActionError),
+    Terminal(SandboxError),
 }
 
 impl TryDispatchError {
@@ -118,11 +146,10 @@ impl TryDispatchError {
     /// Every other variant is terminal regardless.
     fn from_sandbox_error_after_send(err: SandboxError, sent: bool) -> Self {
         let respawnable = !sent && matches!(err, SandboxError::PluginClosed);
-        let action_err = sandbox_error_to_action_error(err);
         if respawnable {
-            Self::Respawnable(action_err)
+            Self::Respawnable(err)
         } else {
-            Self::Terminal(action_err)
+            Self::Terminal(err)
         }
     }
 
@@ -133,9 +160,9 @@ impl TryDispatchError {
         matches!(self, Self::Respawnable(_))
     }
 
-    /// Unwrap the carried [`ActionError`] once the dispatch-level retry
+    /// Unwrap the carried [`SandboxError`] once the dispatch-level retry
     /// decision has been made.
-    fn into_action_error(self) -> ActionError {
+    fn into_sandbox_error(self) -> SandboxError {
         match self {
             Self::Respawnable(err) | Self::Terminal(err) => err,
         }
@@ -232,7 +259,7 @@ impl ProcessSandbox {
         action_key: &str,
         input: serde_json::Value,
         cancel: Option<&CancellationToken>,
-    ) -> Result<PluginToHost, ActionError> {
+    ) -> Result<PluginToHost, SandboxError> {
         let request = HostToPlugin::ActionInvoke {
             id: self.next_envelope_id(),
             action_key: action_key.to_owned(),
@@ -242,7 +269,7 @@ impl ProcessSandbox {
     }
 
     /// Query plugin metadata via a `MetadataRequest` envelope.
-    pub async fn get_metadata(&self) -> Result<PluginToHost, ActionError> {
+    pub async fn get_metadata(&self) -> Result<PluginToHost, SandboxError> {
         let request = HostToPlugin::MetadataRequest {
             id: self.next_envelope_id(),
         };
@@ -267,7 +294,7 @@ impl ProcessSandbox {
     /// `serde_json::from_value`.
     ///
     /// Used by `discover_directory` in the `discovery` module (private path).
-    pub async fn get_metadata_raw(&self) -> Result<Vec<u8>, ActionError> {
+    pub async fn get_metadata_raw(&self) -> Result<Vec<u8>, SandboxError> {
         let request = HostToPlugin::MetadataRequest {
             id: self.next_envelope_id(),
         };
@@ -288,28 +315,9 @@ impl ProcessSandbox {
         &self,
         action_key: &str,
         input: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionError> {
+    ) -> Result<serde_json::Value, SandboxError> {
         let envelope = self.call_action(action_key, input, None).await?;
-        match envelope {
-            PluginToHost::ActionResultOk { output, .. } => Ok(output),
-            PluginToHost::ActionResultError {
-                code,
-                message,
-                retryable,
-                ..
-            } => {
-                let msg = sanitize_plugin_string(&format!("{code}: {message}"));
-                if retryable {
-                    Err(ActionError::retryable(msg))
-                } else {
-                    Err(ActionError::fatal(msg))
-                }
-            },
-            other => Err(ActionError::fatal(format!(
-                "plugin returned unexpected envelope (expected ActionResult*, got {})",
-                envelope_kind(&other)
-            ))),
-        }
+        action_response_to_value(envelope)
     }
 
     /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
@@ -331,7 +339,7 @@ impl ProcessSandbox {
         &self,
         envelope: HostToPlugin,
         cancel: Option<&CancellationToken>,
-    ) -> Result<PluginToHost, ActionError> {
+    ) -> Result<PluginToHost, SandboxError> {
         match self.try_dispatch(envelope.clone(), cancel).await {
             Ok(response) => Ok(response),
             Err(TryDispatchError::Respawnable(_)) => {
@@ -341,10 +349,10 @@ impl ProcessSandbox {
                 *self.handle.lock().await = None;
                 match self.try_dispatch(envelope, cancel).await {
                     Ok(response) => Ok(response),
-                    Err(err) => Err(err.into_action_error()),
+                    Err(err) => Err(err.into_sandbox_error()),
                 }
             },
-            Err(err) => Err(err.into_action_error()),
+            Err(err) => Err(err.into_sandbox_error()),
         }
     }
 
@@ -359,17 +367,17 @@ impl ProcessSandbox {
         &self,
         envelope: HostToPlugin,
         cancel: Option<&CancellationToken>,
-    ) -> Result<Vec<u8>, ActionError> {
+    ) -> Result<Vec<u8>, SandboxError> {
         match self.try_dispatch_bytes(envelope.clone(), cancel).await {
             Ok(response) => Ok(response),
             Err(TryDispatchError::Respawnable(_)) => {
                 *self.handle.lock().await = None;
                 match self.try_dispatch_bytes(envelope, cancel).await {
                     Ok(response) => Ok(response),
-                    Err(err) => Err(err.into_action_error()),
+                    Err(err) => Err(err.into_sandbox_error()),
                 }
             },
-            Err(err) => Err(err.into_action_error()),
+            Err(err) => Err(err.into_sandbox_error()),
         }
     }
 
@@ -390,12 +398,12 @@ impl ProcessSandbox {
         }
         let Some(handle) = guard.as_mut() else {
             // Unreachable in practice: we just set `*guard = Some(..)`
-            // above. Prefer a typed fatal error over `expect(..)` so a
+            // above. Prefer a typed error over `expect(..)` so a
             // hypothetical logic bug surfaces through the engine's
             // standard error path instead of panicking inside the
             // sandbox lock.
-            return Err(TryDispatchError::Terminal(ActionError::fatal(
-                "process sandbox handle missing after successful spawn",
+            return Err(TryDispatchError::Terminal(SandboxError::Spawn(
+                String::from("process sandbox handle missing after successful spawn"),
             )));
         };
 
@@ -444,9 +452,9 @@ impl ProcessSandbox {
                     // from an attacker replaying a prior reply, and a
                     // retry on a fresh handle would still send a fresh
                     // request the plugin may already have processed.
-                    return Err(TryDispatchError::Terminal(sandbox_error_to_action_error(
+                    return Err(TryDispatchError::Terminal(
                         SandboxError::ResponseIdMismatch { expected, got },
-                    )));
+                    ));
                 }
                 Ok(response)
             },
@@ -480,27 +488,28 @@ impl ProcessSandbox {
                 // engine already gave up on this call would risk the
                 // plugin running the action twice (#257 review).
                 *guard = None;
-                Err(TryDispatchError::Terminal(ActionError::retryable(format!(
-                    "plugin {} timed out on {envelope_tag} after {:?}",
-                    self.binary.display(),
-                    self.timeout
-                ))))
+                Err(TryDispatchError::Terminal(SandboxError::Timeout {
+                    plugin: self.binary.display().to_string(),
+                    envelope: envelope_tag.to_owned(),
+                    timeout: self.timeout,
+                }))
             },
             RaceOutcome::Cancelled => {
                 // Cancellation observed mid-round-trip. We may have
                 // written part of an envelope to the plugin; the stream
                 // position is undefined, so drop the handle and force a
-                // respawn on the next call. Surface as `ActionError::Cancelled`
-                // so the engine honours the standard cancellation path —
-                // and crucially do NOT retry (would duplicate work the
-                // engine already asked us to abort; see #257 review).
+                // respawn on the next call. Surface as
+                // [`SandboxError::Cancelled`] so the engine-side adapter
+                // maps it to the canonical cancellation path — and
+                // crucially do NOT retry (would duplicate work the engine
+                // already asked us to abort; see #257 review).
                 *guard = None;
                 tracing::debug!(
                     plugin = %self.binary.display(),
                     envelope = %envelope_tag,
                     "plugin dispatch cancelled via CancellationToken; clearing handle",
                 );
-                Err(TryDispatchError::Terminal(ActionError::Cancelled))
+                Err(TryDispatchError::Terminal(SandboxError::Cancelled))
             },
         }
     }
@@ -527,8 +536,8 @@ impl ProcessSandbox {
             *guard = Some(handle);
         }
         let Some(handle) = guard.as_mut() else {
-            return Err(TryDispatchError::Terminal(ActionError::fatal(
-                "process sandbox handle missing after successful spawn",
+            return Err(TryDispatchError::Terminal(SandboxError::Spawn(
+                String::from("process sandbox handle missing after successful spawn"),
             )));
         };
 
@@ -585,9 +594,9 @@ impl ProcessSandbox {
                             "plugin response id mismatch — poisoning handle",
                         );
                         *guard = None;
-                        return Err(TryDispatchError::Terminal(sandbox_error_to_action_error(
+                        return Err(TryDispatchError::Terminal(
                             SandboxError::ResponseIdMismatch { expected, got },
-                        )));
+                        ));
                     }
                 }
                 Ok(response_bytes)
@@ -614,11 +623,11 @@ impl ProcessSandbox {
             },
             RaceOutcome::Timeout => {
                 *guard = None;
-                Err(TryDispatchError::Terminal(ActionError::retryable(format!(
-                    "plugin {} timed out on {envelope_tag} after {:?}",
-                    self.binary.display(),
-                    self.timeout
-                ))))
+                Err(TryDispatchError::Terminal(SandboxError::Timeout {
+                    plugin: self.binary.display().to_string(),
+                    envelope: envelope_tag.to_owned(),
+                    timeout: self.timeout,
+                }))
             },
             RaceOutcome::Cancelled => {
                 *guard = None;
@@ -627,7 +636,7 @@ impl ProcessSandbox {
                     envelope = %envelope_tag,
                     "plugin dispatch cancelled via CancellationToken; clearing handle",
                 );
-                Err(TryDispatchError::Terminal(ActionError::Cancelled))
+                Err(TryDispatchError::Terminal(SandboxError::Cancelled))
             },
         }
     }
@@ -653,27 +662,11 @@ impl SandboxRunner for ProcessSandbox {
 
         let envelope = self
             .call_action(action_key, input, Some(context.cancellation()))
-            .await?;
-        match envelope {
-            PluginToHost::ActionResultOk { output, .. } => Ok(ActionResult::success(output)),
-            PluginToHost::ActionResultError {
-                code,
-                message,
-                retryable,
-                ..
-            } => {
-                let msg = sanitize_plugin_string(&format!("{code}: {message}"));
-                if retryable {
-                    Err(ActionError::retryable(msg))
-                } else {
-                    Err(ActionError::fatal(msg))
-                }
-            },
-            other => Err(ActionError::fatal(format!(
-                "plugin returned unexpected envelope (expected ActionResult*, got {})",
-                envelope_kind(&other)
-            ))),
-        }
+            .await
+            .map_err(sandbox_error_to_action_error)?;
+        action_response_to_value(envelope)
+            .map(ActionResult::success)
+            .map_err(sandbox_error_to_action_error)
     }
 }
 
@@ -982,20 +975,20 @@ mod tests {
     }
 
     #[test]
-    fn terminal_and_respawnable_into_action_error_round_trip() {
-        // Both classifications must carry the underlying ActionError
+    fn terminal_and_respawnable_into_sandbox_error_round_trip() {
+        // Both classifications must carry the underlying SandboxError
         // through unmodified — the classification only governs the
         // dispatch-level retry decision, never the error surfaced to
-        // the engine.
-        let respawn = TryDispatchError::Respawnable(ActionError::fatal("r"));
+        // the engine-side adapter.
+        let respawn = TryDispatchError::Respawnable(SandboxError::PluginClosed);
         assert!(matches!(
-            respawn.into_action_error(),
-            ActionError::Fatal { .. }
+            respawn.into_sandbox_error(),
+            SandboxError::PluginClosed
         ));
-        let terminal = TryDispatchError::Terminal(ActionError::Cancelled);
+        let terminal = TryDispatchError::Terminal(SandboxError::Cancelled);
         assert!(matches!(
-            terminal.into_action_error(),
-            ActionError::Cancelled
+            terminal.into_sandbox_error(),
+            SandboxError::Cancelled
         ));
     }
 }
