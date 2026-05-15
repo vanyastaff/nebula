@@ -26,10 +26,13 @@ probes. The gaps are in its wiring, not the crate:
   constants never incremented (only engine lease metrics wired). No
   `#[instrument]` on resolve/refresh. No resilience/backoff on the main
   refresh path; the CAS retry loop is a tight loop without jitter.
-- **C — `nebula-credential-builtin` is an empty П1 scaffold.** Only
-  `sealed_caps`; zero concrete types. First-party concrete credentials are
-  split incoherently: the contract crate itself ships 3
-  (`crates/credential/src/credentials/{api_key,basic_auth,oauth2}.rs`).
+- **C — `nebula-credential-builtin` is an empty П1 scaffold.** Only the
+  dormant `sealed_caps` module (`BearerSealed`/`BasicSealed`/`SigningSealed`/
+  `TlsIdentitySealed`, `#[allow(dead_code)]` "becomes load-bearing in П3");
+  zero concrete types. The П3 reference types it exists to ship were never
+  written. (The contract crate also ships 3 types in
+  `crates/credential/src/credentials/` — see §9 for why these legitimately
+  stay there.)
 - **D — `ExternalProvider::resolve` not wired into resolution.** Vault /
   external secrets never reach actual credential resolution (explicit
   deferred non-goal of ADR-0051 Phase D).
@@ -89,9 +92,19 @@ organize structure").
 **Refinements folded in (non-blocking):**
 1. ADR-0052 must record full extraction (engine de-god, variant B) as the
    deferred ideal so the goal is not lost.
-2. The C relocation is a real breaking change: the plan must include a
-   grep-verification step enumerating every importer of
-   `nebula_credential::credentials::*` before asserting a clean move.
+2. The C relocation grep-gate **fired and falsified the relocation premise**
+   (2026-05-15). Importer enumeration showed `OAuth2Credential` + the
+   `oauth2` submodule are production contract for the engine resolver
+   (`crates/engine/src/credential/resolver.rs:13,435,439`,
+   `rotation/token_refresh.rs:25,72`; ADR-0030), the api OAuth ceremony
+   (`crates/api/src/handlers/credential_oauth.rs:11,378`,
+   `services/oauth/flow.rs:7`; ADR-0031), and the public SDK prelude
+   (`crates/sdk/src/prelude.rs:37-57`). `nebula-credential-builtin` is a
+   charter-bound plugin-facing leaf upper tiers must not depend on
+   (`deny.toml` wrappers `{self}`). Conclusion: **no relocation**; the
+   contract crate legitimately owns ApiKey/Basic/OAuth2. §9 rewritten
+   accordingly. This is the grep-gate working as designed, not validation
+   theatre.
 
 ## 4. Decision: `nebula-credential-runtime` (Exec)
 
@@ -188,23 +201,45 @@ enum StateSource { LocalEncrypted, External(Arc<dyn ExternalProvider>) }
 `lease_lifecycle.track(...)`. ADR-0051 Phase-D non-goal is *fulfilled* here,
 not worked around; ADR-0051 itself is untouched.
 
-## 9. C — `nebula-credential-builtin` populated (breaking, no shim)
+## 9. C — `nebula-credential-builtin` populated with net-new П3 types
 
-First-party concrete types are currently split across two crates. Fix:
-**move** `ApiKeyCredential`, `BasicAuthCredential`, `OAuth2Credential` from
-`crates/credential/src/credentials/` into `nebula-credential-builtin`,
-leaving `nebula-credential` as pure contract + primitives. Direct move +
-update importers; **no re-export shim** (project rule). These three become
-the production-grade reference impls ("contract + 2–3 эталона"). OAuth2 HTTP
-ceremony stays in api per ADR-0031 — only the credential *type* relocates.
+**No relocation** (grep-gate verdict, §3 refinement 2). `ApiKeyCredential`,
+`BasicAuthCredential`, `OAuth2Credential` **stay in `nebula-credential`**:
+they are the SDK prelude's public credential surface
+(`crates/sdk/src/prelude.rs:37-57`) and `OAuth2Credential`/`oauth2::*` is
+production contract for the engine resolver + token refresh (ADR-0030) and
+the api OAuth ceremony (ADR-0031). Moving them would force engine/api/sdk to
+depend on a charter-bound plugin-facing leaf — architecturally wrong, not a
+junior wrapper widen.
+
+The radical critic's "incoherent split" smell was a misread: there is no
+split to fix by relocation. The real gap is that the **П3 reference types
+`nebula-credential-builtin` exists to ship were never written** — its
+`sealed_caps` module has sat dormant since П1.
+
+Fix: write **3 net-new production-grade reference credentials** in
+`nebula-credential-builtin`, each exercising one dormant sealed capability
+(`BearerSealed`, `BasicSealed`, `SigningSealed`) via the `#[capability]`
+macro + `mod sealed_caps`. These demonstrate the П3 author pattern, take zero
+upper-tier dependencies (charter intact, `deny.toml` wrappers stay `{self}`),
+and add no importer churn. This delivers the user's "contract + 2–3 эталона"
+(2–3 reference impls in builtin) and activates the П1 scaffold for its stated
+purpose (lib.rs:30 — "becomes load-bearing in П3", Tech Spec §16.1).
+
 `nebula_credential_builtin::register_builtins(&mut CredentialRegistry)`
-populates the registry (builtins + plugin-discovered); runtime passes
-`Arc<CredentialRegistry>` to the builder.
+registers these 3 types; `nebula-credential-runtime` calls it (alongside the
+contract crate's own ApiKey/Basic/OAuth2 and plugin-discovered types) when
+constructing the `Arc<CredentialRegistry>` passed to the service builder.
 
-**Plan gate:** enumerate every importer of
-`nebula_credential::credentials::{ApiKeyCredential, BasicAuthCredential,
-OAuth2Credential}` (and re-exports via `nebula_credential::…`) and update
-each in the same change; do not assert a clean move without this grep.
+**Concrete reference set** (final names fixed in the plan after reading the
+`#[capability]` macro + an existing `Credential` derive for exact shape):
+- `BearerTokenCredential` — static opaque bearer, `SecretToken` scheme,
+  `BearerSealed`.
+- `BasicCredential` — username+password, `IdentityPassword` scheme,
+  `BasicSealed` (distinct from the contract crate's `BasicAuthCredential`:
+  this one is the sealed-cap reference, not the SDK-prelude type).
+- `SigningKeyCredential` — asymmetric signing material, `SigningKey`
+  scheme, `SigningSealed`.
 
 ## 10. A — API wiring
 
@@ -280,8 +315,9 @@ Detailed task graph is produced by `writing-plans`. High-level phases:
 
 1. **Crate scaffold + layer wiring:** create `nebula-credential-runtime`,
    `deny.toml` wrappers, ADR-0052 draft.
-2. **C — relocate built-ins** (grep-gated) to `nebula-credential-builtin`;
-   `register_builtins`; update importers.
+2. **C — net-new П3 reference types** in `nebula-credential-builtin`
+   (3 sealed-cap credentials + `register_builtins`); no relocation, no
+   importer churn (grep-gate verdict §3.2).
 3. **Facade core:** typestate builder, crate-private layered-store
    composition, `CredentialServiceError`, validation pipeline.
 4. **B — `CredentialObserver`** (events + metrics + spans + resilience
