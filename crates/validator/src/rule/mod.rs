@@ -161,6 +161,25 @@ impl Rule {
         }
     }
 
+    /// Boolean predicate evaluation against a structured context.
+    ///
+    /// Replaces the removed `Rule::evaluate(&dyn RuleContext)`, which did a
+    /// flat-key lookup and silently returned `false` for nested JSON-Pointer
+    /// paths. `Value`/`Deferred` are not predicates and evaluate to `true`.
+    #[must_use]
+    pub fn matches(&self, ctx: &PredicateContext) -> bool {
+        match self {
+            Self::Value(_) | Self::Deferred(_) => true,
+            Self::Predicate(p) => p.evaluate(ctx),
+            Self::Logic(l) => match l.as_ref() {
+                Logic::All(rules) => rules.iter().all(|r| r.matches(ctx)),
+                Logic::Any(rules) => rules.iter().any(|r| r.matches(ctx)),
+                Logic::Not(inner) => !inner.matches(ctx),
+            },
+            Self::Described(inner, _) => inner.matches(ctx),
+        }
+    }
+
     /// Evaluates this rule as a boolean predicate against field values.
     ///
     /// **Compat bridge**: this method exists for callers that still pass a
