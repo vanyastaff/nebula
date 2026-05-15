@@ -138,9 +138,17 @@ impl<T: PooledConn> PluginPool<T> {
     /// when no warm connection is available; the pool does not assume how a
     /// `T` is built (the real spawn+dial wiring is the lead's).
     ///
-    /// The returned [`Lease`] owns the permit; dropping it is the sole
-    /// release.
-    pub(crate) async fn acquire(self: &Arc<Self>, spawn: impl FnOnce() -> T) -> Lease<T> {
+    /// `spawn` is **fallible**: spawning a child plugin (fork/exec, dial,
+    /// handshake) can fail (`ENOEXEC`, `EMFILE`, handshake timeout). On a
+    /// spawn failure no [`Lease`] is created and the just-acquired permit is
+    /// dropped here — released exactly once, so a spawn failure surfaces as
+    /// a per-call error and never leaks a permit or wedges the pool for the
+    /// key. The returned [`Lease`] owns the permit; dropping it is the sole
+    /// release on the success path.
+    pub(crate) async fn acquire<E>(
+        self: &Arc<Self>,
+        spawn: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Lease<T>, E> {
         // `acquire_owned` ties the permit's lifetime to the `Lease`, not to
         // a borrow of the pool — the lease is `'static` and the permit is
         // released purely by its `Drop`. `Semaphore::close` is never called
@@ -158,14 +166,21 @@ impl<T: PooledConn> PluginPool<T> {
             let mut idle = self.idle.lock();
             idle.pop()
         };
-        let conn = conn.unwrap_or_else(spawn);
+        // `spawn()?` on the no-idle path: an early return here drops `permit`
+        // (released exactly once), creates no `Lease`, and propagates the
+        // spawn error to the caller — a spawn failure is a per-call error,
+        // not a wedged pool or a panicked dispatch task.
+        let conn = match conn {
+            Some(c) => c,
+            None => spawn()?,
+        };
 
-        Lease {
+        Ok(Lease {
             conn: Some(conn),
             poisoned: false,
             _permit: permit,
             pool: Arc::clone(self),
-        }
+        })
     }
 
     /// Current idle-connection count. Test-only: production code never
@@ -373,20 +388,20 @@ mod tests {
     }
 
     impl FakeConn {
-        fn spawn(counters: &Arc<Counters>) -> Self {
+        fn spawn(counters: &Arc<Counters>) -> Result<Self, &'static str> {
             counters.spawned.fetch_add(1, Ordering::SeqCst);
-            Self {
+            Ok(Self {
                 healthy: true,
                 counters: Arc::clone(counters),
-            }
+            })
         }
 
-        fn spawn_unhealthy(counters: &Arc<Counters>) -> Self {
+        fn spawn_unhealthy(counters: &Arc<Counters>) -> Result<Self, &'static str> {
             counters.spawned.fetch_add(1, Ordering::SeqCst);
-            Self {
+            Ok(Self {
                 healthy: false,
                 counters: Arc::clone(counters),
-            }
+            })
         }
     }
 
@@ -413,7 +428,10 @@ mod tests {
         let counters = Arc::new(Counters::default());
         let pool = PluginPool::new(1);
 
-        let lease = pool.acquire(|| FakeConn::spawn(&counters)).await;
+        let lease = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         assert_eq!(pool.available_permits(), 0, "permit held while leased");
 
         drop(lease);
@@ -425,7 +443,10 @@ mod tests {
 
         // Capacity is genuinely free again: a second acquire proceeds
         // without blocking (it reuses the healthy returned conn).
-        let _lease2 = pool.acquire(|| FakeConn::spawn(&counters)).await;
+        let _lease2 = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         assert_eq!(pool.available_permits(), 0);
     }
 
@@ -440,7 +461,10 @@ mod tests {
         let pool_in = Arc::clone(&pool);
         let counters_in = Arc::clone(&counters);
         let result = std::panic::AssertUnwindSafe(async move {
-            let _lease = pool_in.acquire(|| FakeConn::spawn(&counters_in)).await;
+            let _lease = pool_in
+                .acquire(|| FakeConn::spawn(&counters_in))
+                .await
+                .expect("fake spawn is infallible");
             panic!("simulated holder panic while leasing");
         });
         // Drive the future to the panic point on the current runtime.
@@ -481,7 +505,10 @@ mod tests {
             pool: &Arc<PluginPool<FakeConn>>,
             counters: &Arc<Counters>,
         ) -> Result<(), &'static str> {
-            let _lease = pool.acquire(|| FakeConn::spawn(counters)).await;
+            let _lease = pool
+                .acquire(|| FakeConn::spawn(counters))
+                .await
+                .expect("fake spawn is infallible");
             // Early return; `_lease` drops here on the error path.
             Err("early out")
         }
@@ -495,6 +522,45 @@ mod tests {
         );
     }
 
+    /// Guards: a spawn failure must not leak a permit or wedge the pool.
+    #[tokio::test]
+    async fn spawn_failure_releases_permit_and_pool_not_wedged() {
+        let counters = Arc::new(Counters::default());
+        let pool = PluginPool::new(1);
+
+        // No idle connection → `spawn` runs and fails. No `Lease` is built,
+        // so the just-acquired permit is dropped on the failure path.
+        let res = pool
+            .acquire(|| Err::<FakeConn, &'static str>("spawn boom"))
+            .await;
+        assert!(res.is_err(), "a failing spawn surfaces as a per-call error");
+        assert_eq!(
+            res.err(),
+            Some("spawn boom"),
+            "the spawn error propagates verbatim to the caller"
+        );
+
+        assert_eq!(
+            pool.available_permits(),
+            1,
+            "the permit was released exactly once on the spawn-failure path \
+             (not leaked) — this is the whole point of the fix"
+        );
+        assert_eq!(pool.idle_len(), 0, "a failed spawn pools no connection");
+
+        // The prior spawn failure must not have wedged the pool for this
+        // key: a subsequent acquire still gets a permit and a connection.
+        let _ok = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("pool not wedged after a prior spawn failure");
+        assert_eq!(
+            pool.available_permits(),
+            0,
+            "a prior spawn failure did not wedge the pool for that key"
+        );
+    }
+
     // ---- invariant 2: poison-gated return ---------------------------
 
     #[tokio::test]
@@ -502,7 +568,10 @@ mod tests {
         let counters = Arc::new(Counters::default());
         let pool = PluginPool::new(2);
 
-        let mut lease = pool.acquire(|| FakeConn::spawn(&counters)).await;
+        let mut lease = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         lease.poison();
         drop(lease);
 
@@ -519,7 +588,10 @@ mod tests {
 
         // The next acquire cannot reuse it: it must spawn a fresh one.
         let spawned_before = counters.spawned.load(Ordering::SeqCst);
-        let _fresh = pool.acquire(|| FakeConn::spawn(&counters)).await;
+        let _fresh = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         assert_eq!(
             counters.spawned.load(Ordering::SeqCst),
             spawned_before + 1,
@@ -534,7 +606,10 @@ mod tests {
 
         // Connection self-reports unhealthy; holder never calls poison().
         // The `is_healthy()` gate alone must keep it out of idle.
-        let lease = pool.acquire(|| FakeConn::spawn_unhealthy(&counters)).await;
+        let lease = pool
+            .acquire(|| FakeConn::spawn_unhealthy(&counters))
+            .await
+            .expect("fake spawn is infallible");
         drop(lease);
 
         assert_eq!(
@@ -549,13 +624,19 @@ mod tests {
         let counters = Arc::new(Counters::default());
         let pool = PluginPool::new(1);
 
-        let lease = pool.acquire(|| FakeConn::spawn(&counters)).await;
+        let lease = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         drop(lease);
         assert_eq!(pool.idle_len(), 1, "healthy connection returned to idle");
         assert_eq!(counters.spawned.load(Ordering::SeqCst), 1);
 
         // Second acquire must reuse the idle connection — no new spawn.
-        let lease2 = pool.acquire(|| FakeConn::spawn(&counters)).await;
+        let lease2 = pool
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         assert_eq!(
             counters.spawned.load(Ordering::SeqCst),
             1,
@@ -596,7 +677,10 @@ mod tests {
 
         // pool_a is saturated at capacity 1; pool_b is independent and
         // still has its own free permit.
-        let _lease_a = pool_a.acquire(|| FakeConn::spawn(&counters)).await;
+        let _lease_a = pool_a
+            .acquire(|| FakeConn::spawn(&counters))
+            .await
+            .expect("fake spawn is infallible");
         assert_eq!(pool_a.available_permits(), 0);
         assert_eq!(
             pool_b.available_permits(),
@@ -616,7 +700,11 @@ mod tests {
         // Hold all `capacity` leases concurrently — all must proceed.
         let mut leases = Vec::new();
         for _ in 0..capacity {
-            leases.push(pool.acquire(|| FakeConn::spawn(&counters)).await);
+            leases.push(
+                pool.acquire(|| FakeConn::spawn(&counters))
+                    .await
+                    .expect("fake spawn is infallible"),
+            );
         }
         assert_eq!(
             pool.available_permits(),
@@ -630,7 +718,8 @@ mod tests {
         let waiter = tokio::spawn(async move {
             let _l = pool_for_waiter
                 .acquire(|| FakeConn::spawn(&counters_for_waiter))
-                .await;
+                .await
+                .expect("fake spawn is infallible");
         });
 
         // Give the waiter a chance to run; it must still be parked because
