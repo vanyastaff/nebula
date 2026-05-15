@@ -42,7 +42,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
-use nebula_sandbox::{ProcessSandbox, ScopeHash};
+use nebula_sandbox::{ProcessSandbox, ScopeHash, scope_hash};
+use nebula_workflow::{NodeDefinition, SlotBinding};
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -96,6 +97,46 @@ impl PoolKey {
     pub(crate) fn new(binary: PathBuf, scope: ScopeHash) -> Self {
         Self { binary, scope }
     }
+}
+
+/// Derive the [`PoolKey`] for dispatching `node`'s action to the plugin
+/// `binary`.
+///
+/// The credential-scope identity (ADR-0025 §2) is computed from the
+/// **credential** slot bindings declared on the workflow node:
+/// [`SlotBinding::CredentialId`] entries in
+/// [`NodeDefinition::slot_bindings`]. Resource bindings are excluded —
+/// the per-process isolation boundary is about which credentials a plugin
+/// can name, not which resources.
+///
+/// Each binding contributes both its slot key (the action field name a
+/// plugin would name to pull a credential) **and** the bound credential
+/// id, so two nodes that bind the same slot to *different* credentials
+/// land in different pools — they have different credential reach and must
+/// not share a process. The slot key is length-prefixed inside the
+/// contributed string so `("a", "bc")` and `("ab", "c")` slot/id splits
+/// cannot collide before [`scope_hash`] (itself order-independent and
+/// length-framing) folds the set.
+///
+/// This is read-only over the existing `NodeDefinition` API; the leaf
+/// `nebula-sandbox` never sees the node — only the resulting `&[&str]`.
+pub(crate) fn pool_key(node: &NodeDefinition, binary: PathBuf) -> PoolKey {
+    // One owned framing string per credential binding. The `slot_key`
+    // length prefix makes the (slot_key, credential_id) split
+    // unambiguous; `scope_hash` then sorts + length-frames the whole set
+    // so the result is order-independent and collision-safe.
+    let scope_inputs: Vec<String> = node
+        .slot_bindings
+        .iter()
+        .filter_map(|(slot_key, binding)| match binding {
+            SlotBinding::CredentialId(credential_id) => {
+                Some(format!("{}:{slot_key}={credential_id}", slot_key.len()))
+            },
+            SlotBinding::ResourceId(_) => None,
+        })
+        .collect();
+    let scope_refs: Vec<&str> = scope_inputs.iter().map(String::as_str).collect();
+    PoolKey::new(binary, scope_hash(&scope_refs))
 }
 
 /// Bounded pool of reusable connections for a single [`PoolKey`].
@@ -769,5 +810,87 @@ mod tests {
             );
         }
         assert_eq!(registry.pool_count(), 1, "exactly one pool for the key");
+    }
+
+    // ---- pool_key: PoolKey derived from NodeDefinition bindings ------
+    //
+    // ADR-0025 §2: a distinct bound credential-slot set ⇒ a distinct
+    // process key. `pool_key` reads `NodeDefinition.slot_bindings`
+    // (read-only over the existing workflow API) and the leaf
+    // `nebula-sandbox` never sees the node.
+
+    fn node(id: &str) -> NodeDefinition {
+        NodeDefinition::new(
+            nebula_core::NodeKey::new(id).expect("valid node key"),
+            id,
+            "plugin.act",
+        )
+        .expect("valid action key")
+    }
+
+    #[test]
+    fn pool_key_distinct_credential_sets_differ() {
+        let bin = PathBuf::from("/bin/p");
+
+        let a = node("a").with_credential_binding("auth", "cred_one");
+        let b = node("b").with_credential_binding("auth", "cred_two");
+        assert_ne!(
+            pool_key(&a, bin.clone()),
+            pool_key(&b, bin.clone()),
+            "same slot bound to different credential ids ⇒ different scope ⇒ different pool"
+        );
+
+        let one = node("one").with_credential_binding("auth", "cred_one");
+        let two = node("two")
+            .with_credential_binding("auth", "cred_one")
+            .with_credential_binding("extra", "cred_three");
+        assert_ne!(
+            pool_key(&one, bin.clone()),
+            pool_key(&two, bin),
+            "an additional credential binding widens the scope ⇒ different pool"
+        );
+    }
+
+    #[test]
+    fn pool_key_same_credential_set_is_order_independent() {
+        let bin = PathBuf::from("/bin/p");
+
+        // Same logical credential-binding set, different builder insertion
+        // order. `slot_bindings` is a HashMap and `scope_hash` sorts, so
+        // the derived key must be identical.
+        let forward = node("f")
+            .with_credential_binding("alpha", "cred_a")
+            .with_credential_binding("beta", "cred_b");
+        let reverse = node("r")
+            .with_credential_binding("beta", "cred_b")
+            .with_credential_binding("alpha", "cred_a");
+        assert_eq!(
+            pool_key(&forward, bin.clone()),
+            pool_key(&reverse, bin),
+            "binding insertion order must not change the scope key"
+        );
+    }
+
+    #[test]
+    fn pool_key_ignores_resource_bindings_and_binary_is_part_of_key() {
+        // Resource bindings are NOT part of the credential scope: a node
+        // with only resource bindings has the same scope as an unbound
+        // node (the empty credential set).
+        let with_resource = node("res").with_resource_binding("db", "pg_main");
+        let bare = node("bare");
+        let bin = PathBuf::from("/bin/p");
+        assert_eq!(
+            pool_key(&with_resource, bin.clone()),
+            pool_key(&bare, bin.clone()),
+            "resource bindings must not influence the credential scope hash"
+        );
+
+        // The binary path is part of the key: same (empty) scope but a
+        // different binary ⇒ a different pool.
+        assert_ne!(
+            pool_key(&bare, bin),
+            pool_key(&bare, PathBuf::from("/bin/other")),
+            "different plugin binary ⇒ different pool even at identical scope"
+        );
     }
 }
