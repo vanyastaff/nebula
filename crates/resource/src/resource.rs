@@ -219,10 +219,12 @@ impl ResourceMetadataBuilder {
 /// associated type was removed in favor of typed credential **slot
 /// fields** on the resource struct (declared via `#[credential(...)]`
 /// field attributes; the `#[derive(Resource)]` macro emits an impl of
-/// [`nebula_core::DeclaresDependencies`] enumerating them). The
-/// framework resolves slot fields **before** calling
-/// [`create`](Self::create) — implementors read credentials directly
-/// off `&self`.
+/// [`nebula_core::DeclaresDependencies`] enumerating them). Each slot
+/// field is a `SlotCell<CredentialGuard<C>>` cell. The framework
+/// resolves slot fields **before** calling [`create`](Self::create) —
+/// implementors read each resolved guard through the derive-emitted
+/// `<field>_slot()` accessor, which returns
+/// `Option<Arc<CredentialGuard<C>>>`, never off the raw cell field.
 ///
 /// # Associated types
 ///

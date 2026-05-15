@@ -3,12 +3,13 @@
 //! Walks the struct fields and identifies `#[credential(...)]` attributes.
 //! Each slot field is a [`SlotCell`] cell holding the resolved guard — the
 //! framework swaps a rotated guard in through `&self` without `&mut` on the
-//! resource, so the cell wrapper is mandatory. The recognised shapes are:
+//! resource, so the cell wrapper is mandatory.
 //!
-//! - `SlotCell<CredentialGuard<C>>` — required + eager
-//! - `Option<SlotCell<CredentialGuard<C>>>` — optional + eager
-//! - `SlotCell<Lazy<CredentialGuard<C>>>` — required + lazy
-//! - `Option<SlotCell<Lazy<CredentialGuard<C>>>>` — optional + lazy
+//! The only currently-accepted shape is `SlotCell<CredentialGuard<C>>`
+//! (required + eager). `Option<…>`- and `Lazy<…>`-wrapped slots are
+//! reserved for future optional/lazy binding but are currently rejected
+//! at the derive site with a compile error, because the emitted accessor
+//! only fits the plain cell shape (ADR-0044).
 //!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
 //! macro accepts both bare `SlotCell<...>` / `CredentialGuard<...>` and
