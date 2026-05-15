@@ -417,9 +417,13 @@ async fn discover_one(
             .with_version_full(interface_version.clone())
             .with_schema(descriptor.schema.clone());
 
+        // The plugin matches on the un-namespaced wire `descriptor.key` in
+        // its own `PluginHandler::execute`; the handler must send that, not
+        // the namespaced `metadata.base.key`.
         let handler = Arc::new(ProcessSandboxHandler::new(
             Arc::clone(&sandbox),
             metadata.clone(),
+            descriptor.key.clone(),
         ));
         remote_actions.push((
             Arc::new(RemoteAction::new(metadata, handler)),
@@ -473,8 +477,9 @@ async fn discover_one(
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Discover all plugins in `dir`, register them in `registry`, and return a
-/// flat list of `(ActionMetadata, ActionHandler)` for bulk registration into a
-/// runtime `ActionRegistry`.
+/// flat `Vec<DiscoveredAction>` (each [`DiscoveredAction`] carries metadata +
+/// handler + binary + plugin-local key) for bulk registration into a runtime
+/// `ActionRegistry`.
 ///
 /// Per-plugin failures are warn-and-skip — a bad plugin never poisons the
 /// directory scan.
@@ -803,6 +808,7 @@ mod tests {
         let handler = Arc::new(crate::ProcessSandboxHandler::new(
             Arc::clone(&sandbox),
             metadata.clone(),
+            "echo".to_owned(),
         ));
         let remote = crate::RemoteAction::new(metadata, handler);
         assert_eq!(remote.metadata().base.version.major, 2);

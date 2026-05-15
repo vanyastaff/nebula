@@ -150,6 +150,35 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_converts_to_cancelled_action_error() {
+        // Cancellation must round-trip as the canonical cancelled error so
+        // the engine honours its standard cancellation path (not a retry
+        // or a generic fatal).
+        let ae = sandbox_error_to_action_error(SandboxError::Cancelled);
+        assert!(
+            matches!(ae, ActionError::Cancelled),
+            "Cancelled must classify as ActionError::Cancelled, got {ae:?}",
+        );
+    }
+
+    #[test]
+    fn timeout_converts_to_retryable_action_error() {
+        // A per-call round-trip timeout surfaces as retryable so the
+        // engine's higher-level retry policy decides; the sandbox itself
+        // never silently retries.
+        let err = SandboxError::Timeout {
+            plugin: String::from("/plugins/nebula-plugin-demo"),
+            envelope: String::from("action_invoke"),
+            timeout: std::time::Duration::from_secs(5),
+        };
+        let ae = sandbox_error_to_action_error(err);
+        assert!(
+            matches!(ae, ActionError::Retryable { .. }),
+            "Timeout must classify as Retryable, got {ae:?}",
+        );
+    }
+
+    #[test]
     fn handshake_addr_mismatch_converts_to_fatal_action_error() {
         let err = SandboxError::HandshakeAddrMismatch {
             expected: String::from("unix|/tmp/ok"),

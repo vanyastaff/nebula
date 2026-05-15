@@ -19,15 +19,34 @@ use crate::sandbox_bridge::sandbox_error_to_action_error;
 /// (ADR 0006; handshake + dialed socket), not direct stdin/stdout action
 /// invocation. The transport returns a `SandboxError`; this handler maps it
 /// to the `ActionError` taxonomy at the `StatelessHandler` boundary.
+///
+/// `metadata.base.key` is the **namespaced** host-side key
+/// (`<plugin>.<local>`); the plugin's own `PluginHandler::execute` matches
+/// on the **un-namespaced local key**. The local key is therefore stored
+/// separately and is what gets sent over the transport — sending the
+/// namespaced key would make the plugin reject the call with
+/// `UNKNOWN_ACTION`.
 pub struct ProcessSandboxHandler {
     sandbox: Arc<ProcessSandbox>,
     metadata: ActionMetadata,
+    /// The un-namespaced action key the plugin matches on in its own
+    /// `PluginHandler::execute` (the raw wire `ActionDescriptor.key`). Sent
+    /// over the transport instead of the namespaced `metadata.base.key`.
+    local_key: String,
 }
 
 impl ProcessSandboxHandler {
     /// Create a new handler for an action backed by a process sandbox.
-    pub fn new(sandbox: Arc<ProcessSandbox>, metadata: ActionMetadata) -> Self {
-        Self { sandbox, metadata }
+    ///
+    /// `local_key` is the un-namespaced key the plugin matches on (the raw
+    /// wire `ActionDescriptor.key`), distinct from the namespaced
+    /// `metadata.base.key`.
+    pub fn new(sandbox: Arc<ProcessSandbox>, metadata: ActionMetadata, local_key: String) -> Self {
+        Self {
+            sandbox,
+            metadata,
+            local_key,
+        }
     }
 }
 
@@ -48,11 +67,7 @@ impl StatelessHandler for ProcessSandboxHandler {
         // the action's cancellation token (a pre-cancelled token resolves
         // on the first poll, so no separate pre-flight check is needed).
         self.sandbox
-            .invoke_with_cancel(
-                self.metadata.base.key.as_str(),
-                input,
-                context.cancellation(),
-            )
+            .invoke_with_cancel(self.local_key.as_str(), input, context.cancellation())
             .await
             .map(ActionResult::success)
             .map_err(sandbox_error_to_action_error)
