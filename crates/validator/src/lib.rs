@@ -63,6 +63,8 @@ pub mod engine;
 pub mod error;
 /// Core traits, errors, and type-erased validators.
 pub mod foundation;
+/// Field visibility / required policy evaluation (ADR-0052).
+pub mod policy;
 /// Single-import convenience module.
 pub mod prelude;
 /// Proof tokens that certify a value has been validated.

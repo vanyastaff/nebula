@@ -10,6 +10,19 @@
 
 **Scope note:** This is P1 of a 4-phase cascade (spec: `docs/superpowers/specs/2026-05-15-nebula-schema-finalization-design.md`). P2 (delete `run_rules`/`run_root_rules`/`validator_bridge.rs`/`translate_validator_code`, `derive_schema.rs:95/126`, json-schema secret-default, regex bounding), P3 (HasSchema convergence), P4 (API) get their own plans authored against P1's landed signatures. Do **not** attempt P2–P4 work here. `run_root_rules` stays as-is in P1.
 
+**Per-commit gate (read before every commit).** `lefthook.yml` `pre-commit`
+runs, on EVERY commit touching `*.rs`, the full `cargo fmt --check`,
+`cargo clippy --workspace --all-targets -q -- -D warnings`, `taplo`, and
+`cargo-deny`; `commit-msg` runs `convco`. Therefore **every task's commit
+must leave the whole workspace fmt-clean and clippy-clean with zero
+warnings** (unused imports/dead code are hard errors). Consequences for
+implementers: (a) never add an import, type, or fn before the task that
+consumes it — add each `use` line in the task that first uses it; (b) never
+silence with `#[allow(...)]` or `git commit --no-verify` (forbidden by
+AGENTS.md / lefthook-mirrors-CI); (c) if a task's code only compiles cleanly
+once a later task lands, the two tasks form one commit unit — defer the
+commit to the later task and say so explicitly (Task 6→7 already does this).
+
 ---
 
 ## File Structure
@@ -138,11 +151,12 @@ Create `crates/validator/src/policy/mod.rs`:
 //! Owns the *engine* for `When(Rule)` conditions. Callers get typed
 //! `Presence`/`Requiredness` verdicts — never a raw `bool` they could
 //! forget to branch on.
-
-use crate::{
-    foundation::{FieldPath, ValidationError, ValidationErrors},
-    rule::{PredicateContext, Rule},
-};
+//!
+//! Imports are added by later tasks as each type is first consumed
+//! (Task 3 adds `crate::rule::{PredicateContext, Rule}`; Task 4 adds
+//! `crate::foundation::{FieldPath, ValidationError, ValidationErrors}`).
+//! Do NOT add a `use` before the task that uses it — the per-commit
+//! clippy `-D warnings` gate rejects unused imports.
 
 /// Whether a field participates in this validation round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +212,7 @@ pub mod policy;
 - [ ] **Step 3: Run the test to verify it passes (enums compile)**
 
 Run: `cargo nextest run -p nebula-validator policy::tests`
-Expected: PASS (2 tests). If `FieldPath`/`ValidationError`/`ValidationErrors`/`Rule`/`PredicateContext` imports warn as unused, that is expected — they are consumed by later tasks in this same file; do not remove them.
+Expected: PASS (2 tests). The file has **no `use` block** (the two enums are self-contained; tests use `super::*`). The crate must compile clippy-clean — the lefthook pre-commit gate runs `cargo clippy --workspace --all-targets -- -D warnings` on this commit (see "Per-commit gate" near the top). There must be zero unused-import warnings because there are no imports yet.
 
 - [ ] **Step 4: Commit**
 
@@ -355,7 +369,15 @@ Expected: FAIL — `cannot find type `VisibilityPolicy` in this scope`.
 
 - [ ] **Step 3: Implement the policy enums**
 
-In `crates/validator/src/policy/mod.rs`, after the `Requiredness` enum and before `#[cfg(test)]`, add:
+First, add the imports this task consumes — at the top of
+`crates/validator/src/policy/mod.rs`, immediately after the module
+doc-comment block and before the `Presence` enum, insert:
+
+```rust
+use crate::rule::{PredicateContext, Rule};
+```
+
+Then, in `crates/validator/src/policy/mod.rs`, after the `Requiredness` enum and before `#[cfg(test)]`, add:
 
 ```rust
 /// A field's visibility policy, borrowed from the schema's serde enum.
@@ -499,7 +521,15 @@ Expected: FAIL — `cannot find type `FieldPolicyDecl``.
 
 - [ ] **Step 3: Implement the decl/plan structs + entry point**
 
-In `crates/validator/src/policy/mod.rs`, before `#[cfg(test)]`, add:
+First, extend the imports with the types this task adds (Task 3 already
+added `use crate::rule::{PredicateContext, Rule};`). Add a second `use`
+line right below it:
+
+```rust
+use crate::foundation::{FieldPath, ValidationError, ValidationErrors};
+```
+
+Then, in `crates/validator/src/policy/mod.rs`, before `#[cfg(test)]`, add:
 
 ```rust
 /// Per-field policy declaration the schema hands to the validator.
