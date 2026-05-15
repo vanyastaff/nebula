@@ -158,6 +158,16 @@ deny = [
   { crate = "nebula-credential-vault", wrappers = [
     "nebula-credential-vault",
   ], reason = "Vault is a first-party LeasedProvider backend (ADR-0051 Phase C); consumers wire it through their composition root, not via direct deps from upper tiers" },
+  # nebula-credential-runtime is the Exec-tier owner of the credential
+  # management bounded context (CredentialService facade + type registry +
+  # state-source resolution + observability). Narrowly supersedes the
+  # facade-ownership slice of ADR-0030 (see docs/adr/0052). This scaffold
+  # increment ships an empty crate; the wrapper allowlist starts at self
+  # only and is widened to { nebula-api, nebula-cli } when the facade lands
+  # and api depends on it (Plan 2).
+  { crate = "nebula-credential-runtime", wrappers = [
+    "nebula-credential-runtime",
+  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (allowlist widened when the facade lands)" },
 ]
 skip = [
   "bitflags",

@@ -1,0 +1,23 @@
+[package]
+name = "nebula-credential-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Credential management runtime: the CredentialService facade, type registry, state-source resolution, and observability seam (Exec tier)."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nebula-error = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true

@@ -3481,6 +3481,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-credential-runtime"
+version = "0.1.0"
+dependencies = [
+ "nebula-error",
+ "pretty_assertions",
+ "thiserror",
+]
+
+[[package]]
 name = "nebula-credential-vault"
 version = "0.1.0"
 dependencies = [
