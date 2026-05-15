@@ -51,11 +51,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    SandboxRunner,
-    capabilities::{Capability, PluginCapabilities},
-    error::SandboxError,
-    os_sandbox::LinuxRlimits,
-    runner::SandboxedContext,
+    SandboxRunner, error::SandboxError, os_sandbox::LinuxRlimits, runner::SandboxedContext,
 };
 
 /// Timeout for reading the plugin's handshake line from stdout.
@@ -95,8 +91,6 @@ pub struct ProcessSandbox {
     binary: PathBuf,
     /// Per-call timeout (envelope round-trip wall clock).
     timeout: Duration,
-    /// Capabilities granted to this plugin.
-    capabilities: PluginCapabilities,
     /// Linux child-process resource limits (ignored on non-Linux).
     linux_rlimits: LinuxRlimits,
     /// Long-lived handle to the spawned plugin process. Serialized via the
@@ -196,11 +190,8 @@ impl PluginHandle {
         }
         self.line_buf.clear();
         match read_bounded_line(&mut self.reader, ENVELOPE_LINE_CAP, &mut self.line_buf).await {
-            Ok(BoundedReadOutcome::Line {
-                bytes_including_newline,
-            }) => {
-                // Strip the trailing newline before parsing.
-                let body = &self.line_buf[..bytes_including_newline - 1];
+            Ok(BoundedReadOutcome::Line { body_len }) => {
+                let body = &self.line_buf[..body_len];
                 serde_json::from_slice::<PluginToHost>(body).map_err(|e| {
                     // Parse error does not leave the stream in an unknown
                     // state — we consumed exactly one line. Do NOT poison
@@ -246,9 +237,7 @@ impl PluginHandle {
         }
         self.line_buf.clear();
         match read_bounded_line(&mut self.reader, ENVELOPE_LINE_CAP, &mut self.line_buf).await {
-            Ok(BoundedReadOutcome::Line {
-                bytes_including_newline,
-            }) => Ok(self.line_buf[..bytes_including_newline - 1].to_vec()),
+            Ok(BoundedReadOutcome::Line { body_len }) => Ok(self.line_buf[..body_len].to_vec()),
             Ok(BoundedReadOutcome::Eof) => {
                 self.poisoned = true;
                 Err(SandboxError::PluginClosed)
@@ -271,10 +260,12 @@ impl PluginHandle {
 /// Outcome of a single bounded line read.
 #[derive(Debug, PartialEq, Eq)]
 enum BoundedReadOutcome {
-    /// A complete line was read; the final byte in the caller's buffer is
-    /// `b'\n'` and `bytes_including_newline` is the number of bytes
-    /// appended to the buffer by this read.
-    Line { bytes_including_newline: usize },
+    /// A complete newline-terminated line was read. `body_len` is the
+    /// length of the line **excluding** the trailing `\n`; callers slice
+    /// `&buf[..body_len]` directly, so the no-underflow / in-bounds
+    /// invariant lives in the type rather than in a recomputed `- 1` at
+    /// every call site.
+    Line { body_len: usize },
     /// EOF reached before any bytes were read. The stream is closed.
     Eof,
     /// More than `cap` bytes were consumed without encountering a
@@ -330,8 +321,10 @@ where
     //      close; the handle is not reusable either way so we surface it as Eof (poisons the handle
     //      the same way a clean EOF would) rather than as a misleading "exceeded cap" error.
     if ends_with_newline && payload_len <= cap {
+        // payload_len >= 1 here (n != 0 and the last byte is `\n`), so
+        // `payload_len - 1` (body without the newline) cannot underflow.
         return Ok(BoundedReadOutcome::Line {
-            bytes_including_newline: payload_len,
+            body_len: payload_len - 1,
         });
     }
     if payload_len > cap {
@@ -375,17 +368,20 @@ enum TryDispatchError {
 }
 
 impl TryDispatchError {
-    /// Classify a transport-layer [`SandboxError`] observed mid-round-trip.
+    /// Classify a transport-layer [`SandboxError`], given whether the
+    /// outbound envelope was already written to the plugin (`sent`).
     ///
-    /// Only [`SandboxError::PluginClosed`] is respawn-eligible — every
-    /// other variant means we already put bytes on the wire to a plugin
-    /// process that either crashed mid-processing or violated the
-    /// protocol, and a blind retry would risk double-execution of a
-    /// non-idempotent action (see #257 review). The outer
-    /// [`ProcessSandbox::dispatch_envelope`] reads this classification
-    /// to decide whether to respawn and retry once.
-    fn from_sandbox_error(err: SandboxError) -> Self {
-        let respawnable = matches!(err, SandboxError::PluginClosed);
+    /// [`SandboxError::PluginClosed`] is respawn-eligible **only** when
+    /// `sent == false` — i.e. no envelope bytes reached a running plugin
+    /// for this attempt. Once `send_envelope` has succeeded the plugin may
+    /// have received and begun executing a non-idempotent action before
+    /// dying; resending it on a fresh process would double-execute. The
+    /// original #257 logic treated every `PluginClosed` as safe to
+    /// respawn, conflating "stale handle on entry" with "EOF observed by
+    /// `recv` after a successful send"; the `sent` bit separates them.
+    /// Every other variant is terminal regardless.
+    fn from_sandbox_error_after_send(err: SandboxError, sent: bool) -> Self {
+        let respawnable = !sent && matches!(err, SandboxError::PluginClosed);
         let action_err = sandbox_error_to_action_error(err);
         if respawnable {
             Self::Respawnable(action_err)
@@ -466,11 +462,10 @@ where
 impl ProcessSandbox {
     /// Create a new process sandbox for a plugin binary.
     #[must_use]
-    pub fn new(binary: PathBuf, timeout: Duration, capabilities: PluginCapabilities) -> Self {
+    pub fn new(binary: PathBuf, timeout: Duration) -> Self {
         Self {
             binary,
             timeout,
-            capabilities,
             linux_rlimits: LinuxRlimits::default(),
             handle: Mutex::new(None),
             next_id: AtomicU64::new(1),
@@ -683,9 +678,15 @@ impl ProcessSandbox {
         // response echoes it back (#285).
         let expected_id = request_id(&envelope);
 
+        // The `bool` is `sent`: `false` if the failure happened at/before
+        // the write (no bytes reached the plugin), `true` once the write
+        // succeeded (the action may have run — no blind respawn-retry).
         let roundtrip = async {
-            handle.send_envelope(&envelope).await?;
-            handle.recv_envelope().await
+            handle
+                .send_envelope(&envelope)
+                .await
+                .map_err(|e| (false, e))?;
+            handle.recv_envelope().await.map_err(|e| (true, e))
         };
 
         let outcome = race_cancel_timeout(roundtrip, self.timeout, cancel).await;
@@ -714,7 +715,7 @@ impl ProcessSandbox {
                 }
                 Ok(response)
             },
-            RaceOutcome::Ready(Err(sandbox_err)) => {
+            RaceOutcome::Ready(Err((sent, sandbox_err))) => {
                 // Transport/protocol error — invalidate the handle so the
                 // next call respawns. Log PluginLineTooLarge at warn so it
                 // shows up in security dashboards.
@@ -732,7 +733,10 @@ impl ProcessSandbox {
                     );
                 }
                 *guard = None;
-                Err(TryDispatchError::from_sandbox_error(sandbox_err))
+                Err(TryDispatchError::from_sandbox_error_after_send(
+                    sandbox_err,
+                    sent,
+                ))
             },
             RaceOutcome::Timeout => {
                 // Timeout — also invalidate; we don't know if the plugin is
@@ -801,9 +805,14 @@ impl ProcessSandbox {
         };
         let expected_id = request_id(&envelope);
 
+        // `bool` is `sent` (see `try_dispatch`): false at/before write,
+        // true once the write succeeded.
         let roundtrip = async {
-            handle.send_envelope(&envelope).await?;
-            handle.recv_envelope_bytes().await
+            handle
+                .send_envelope(&envelope)
+                .await
+                .map_err(|e| (false, e))?;
+            handle.recv_envelope_bytes().await.map_err(|e| (true, e))
         };
 
         let outcome = race_cancel_timeout(roundtrip, self.timeout, cancel).await;
@@ -823,8 +832,11 @@ impl ProcessSandbox {
                         Ok(v) => v,
                         Err(e) => {
                             *guard = None;
-                            return Err(TryDispatchError::from_sandbox_error(
+                            // Response bytes were received, so the action
+                            // ran — terminal, never a silent resend.
+                            return Err(TryDispatchError::from_sandbox_error_after_send(
                                 SandboxError::MalformedEnvelope(e),
+                                true,
                             ));
                         },
                     };
@@ -846,7 +858,7 @@ impl ProcessSandbox {
                 }
                 Ok(response_bytes)
             },
-            RaceOutcome::Ready(Err(sandbox_err)) => {
+            RaceOutcome::Ready(Err((sent, sandbox_err))) => {
                 if matches!(
                     sandbox_err,
                     SandboxError::PluginLineTooLarge { .. }
@@ -861,7 +873,10 @@ impl ProcessSandbox {
                     );
                 }
                 *guard = None;
-                Err(TryDispatchError::from_sandbox_error(sandbox_err))
+                Err(TryDispatchError::from_sandbox_error_after_send(
+                    sandbox_err,
+                    sent,
+                ))
             },
             RaceOutcome::Timeout => {
                 *guard = None;
@@ -886,19 +901,6 @@ impl ProcessSandbox {
     /// Spawn the plugin binary, read and parse its handshake line, dial the
     /// announced transport, and return a fresh [`PluginHandle`].
     async fn spawn_and_dial(&self) -> Result<PluginHandle, ActionError> {
-        // Build allowed env vars from capabilities.
-        let allowed_env: Vec<(String, String)> = self
-            .capabilities
-            .list()
-            .iter()
-            .filter_map(|cap| match cap {
-                Capability::Env { keys } => Some(keys.clone()),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|key| std::env::var(&key).ok().map(|val| (key, val)))
-            .collect();
-
         // #260: host allocates the plugin's socket address up-front and
         // passes it via env so the child cannot forge a handshake that
         // redirects the host at a sibling plugin's socket. `socket_dir`
@@ -906,39 +908,41 @@ impl ProcessSandbox {
         // `None` on Windows (named pipes aren't in a filesystem dir).
         let (expected_addr, kind, socket_dir) = allocate_host_socket_addr()?;
 
+        // `env_clear()` then only the host-controlled transport env: a
+        // Phase-era plugin inherits **no** host environment. A
+        // host-authored, scope-keyed env allowlist returns only with the
+        // broker (ADR-0025 §6), never as a plugin-declared capability.
         let mut cmd = Command::new(&self.binary);
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .env_clear()
-            .envs(allowed_env)
-            // Host-controlled transport env: always set, regardless of
-            // the plugin's declared capability set. `env()` applied
-            // after `envs()` adds on top of the capability allowlist.
             .env(ENV_SOCKET_ADDR, &expected_addr)
             .env(ENV_SOCKET_KIND, kind);
 
-        // Apply OS-level sandbox in child process before exec (Linux only).
+        // Apply OS-level hardening in the child between fork() and exec()
+        // (Linux only). The entire Landlock ruleset + rlimit snapshot is
+        // built HERE, pre-fork, on the host thread — every allocation
+        // happens before fork.
         #[cfg(target_os = "linux")]
         {
-            let caps_json = serde_json::to_string(&self.capabilities)
-                .map_err(|e| ActionError::fatal(format!("capabilities serialization: {e}")))?;
-            let rlimits = self.linux_rlimits;
+            let mut prepared = crate::os_sandbox::PreparedSandbox::prepare(self.linux_rlimits)
+                .map_err(|e| ActionError::fatal(format!("sandbox prepare failed: {e}")))?;
 
-            // SAFETY: pre_exec runs between fork() and exec() in the child.
-            // We only call async-signal-safe operations (landlock, setrlimit).
+            // SAFETY: the closure runs between fork() and exec(). It calls
+            // only setrlimit(2) and landlock_restrict_self(2) on data
+            // allocated above (pre-fork) — no allocation, no serde, no
+            // PathFd::new, no tracing on the success path. This is the
+            // structural fix for the post-fork allocator-lock deadlock
+            // class: a multi-threaded parent may hold the allocator lock
+            // at fork, so the child must not re-enter the allocator.
             #[expect(
                 unsafe_code,
-                reason = "pre_exec runs between fork/exec; only async-signal-safe ops (landlock, setrlimit) called"
+                reason = "pre_exec: only setrlimit + landlock_restrict_self on pre-fork-allocated data; no allocation in child"
             )]
             unsafe {
-                cmd.pre_exec(move || {
-                    let caps: PluginCapabilities = serde_json::from_str(&caps_json)
-                        .map_err(|e| std::io::Error::other(format!("capability parse: {e}")))?;
-                    crate::os_sandbox::apply_sandbox(&caps, &rlimits)
-                        .map_err(|e| std::io::Error::other(format!("sandbox setup: {e}")))
-                });
+                cmd.pre_exec(move || prepared.apply_in_child());
             }
         }
 
@@ -1003,10 +1007,8 @@ impl ProcessSandbox {
             ))
         })?;
 
-        let bytes_including_newline = match outcome {
-            Ok(BoundedReadOutcome::Line {
-                bytes_including_newline,
-            }) => bytes_including_newline,
+        let body_len = match outcome {
+            Ok(BoundedReadOutcome::Line { body_len }) => body_len,
             Ok(BoundedReadOutcome::Eof) => {
                 return Err(ActionError::fatal(format!(
                     "plugin {} exited before printing handshake line",
@@ -1038,7 +1040,7 @@ impl ProcessSandbox {
         // Strip the trailing newline and decode as UTF-8 for the dial
         // address. We do this AFTER the cap check so we never run UTF-8
         // validation on an unbounded buffer.
-        let handshake_bytes = &handshake_buf[..bytes_including_newline - 1];
+        let handshake_bytes = &handshake_buf[..body_len];
         let handshake_line = std::str::from_utf8(handshake_bytes).map_err(|e| {
             ActionError::fatal(format!(
                 "plugin {} handshake line is not valid UTF-8: {e}",
@@ -1211,7 +1213,12 @@ fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
         | SandboxError::TransportPoisoned
         | SandboxError::Transport(_)
         | SandboxError::MalformedEnvelope(_)
-        | SandboxError::HostMalformedEnvelope(_) => ActionError::fatal_from(err),
+        | SandboxError::HostMalformedEnvelope(_)
+        // Pre-`fork` spawn-time hardening failures. They reach the public
+        // boundary as fatal; a retry on the same misconfigured host would
+        // fail identically.
+        | SandboxError::Landlock(_)
+        | SandboxError::Rlimit(_) => ActionError::fatal_from(err),
     }
 }
 
@@ -1326,10 +1333,8 @@ async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: S
     loop {
         line_buf.clear();
         match read_bounded_line(&mut reader, STDERR_LINE_CAP, &mut line_buf).await {
-            Ok(BoundedReadOutcome::Line {
-                bytes_including_newline,
-            }) => {
-                let body = &line_buf[..bytes_including_newline - 1];
+            Ok(BoundedReadOutcome::Line { body_len }) => {
+                let body = &line_buf[..body_len];
                 let as_str = String::from_utf8_lossy(body);
                 let sanitized = sanitize_plugin_string(as_str.trim());
                 tracing::debug!(
@@ -1440,12 +1445,7 @@ mod tests {
         let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
             .await
             .unwrap();
-        assert_eq!(
-            outcome,
-            BoundedReadOutcome::Line {
-                bytes_including_newline: 6,
-            }
-        );
+        assert_eq!(outcome, BoundedReadOutcome::Line { body_len: 5 });
         assert_eq!(buf, b"hello\n");
     }
 
@@ -1458,12 +1458,7 @@ mod tests {
         let mut reader = TokioBufReader::new(data);
         let mut buf = Vec::new();
         let outcome = read_bounded_line(&mut reader, 8, &mut buf).await.unwrap();
-        assert_eq!(
-            outcome,
-            BoundedReadOutcome::Line {
-                bytes_including_newline: 8,
-            }
-        );
+        assert_eq!(outcome, BoundedReadOutcome::Line { body_len: 7 });
     }
 
     #[tokio::test]
@@ -1535,24 +1530,14 @@ mod tests {
         let out1 = read_bounded_line(&mut reader, 1024, &mut buf)
             .await
             .unwrap();
-        assert_eq!(
-            out1,
-            BoundedReadOutcome::Line {
-                bytes_including_newline: 6,
-            }
-        );
+        assert_eq!(out1, BoundedReadOutcome::Line { body_len: 5 });
         assert_eq!(&buf[..6], b"first\n");
 
         buf.clear();
         let out2 = read_bounded_line(&mut reader, 1024, &mut buf)
             .await
             .unwrap();
-        assert_eq!(
-            out2,
-            BoundedReadOutcome::Line {
-                bytes_including_newline: 7,
-            }
-        );
+        assert_eq!(out2, BoundedReadOutcome::Line { body_len: 6 });
         assert_eq!(&buf[..7], b"second\n");
     }
 
@@ -1589,9 +1574,7 @@ mod tests {
             }
             self.line_buf.clear();
             match read_bounded_line(&mut self.reader, cap, &mut self.line_buf).await {
-                Ok(BoundedReadOutcome::Line {
-                    bytes_including_newline,
-                }) => Ok(self.line_buf[..bytes_including_newline - 1].to_vec()),
+                Ok(BoundedReadOutcome::Line { body_len }) => Ok(self.line_buf[..body_len].to_vec()),
                 Ok(BoundedReadOutcome::Eof) => {
                     self.poisoned = true;
                     Err(SandboxError::PluginClosed)
@@ -1739,12 +1722,7 @@ mod tests {
         let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
             .await
             .expect("next line must still be readable");
-        assert_eq!(
-            outcome,
-            BoundedReadOutcome::Line {
-                bytes_including_newline: 10,
-            }
-        );
+        assert_eq!(outcome, BoundedReadOutcome::Line { body_len: 9 });
         assert_eq!(buf, b"next-line\n");
     }
 
@@ -1984,11 +1962,7 @@ mod tests {
 
     #[test]
     fn next_envelope_id_is_monotonic_and_unique() {
-        let sandbox = ProcessSandbox::new(
-            PathBuf::from("/nonexistent"),
-            Duration::from_secs(1),
-            PluginCapabilities::none(),
-        );
+        let sandbox = ProcessSandbox::new(PathBuf::from("/nonexistent"), Duration::from_secs(1));
         // Starts at 1 (not 0) so a default-zeroed response id is
         // visibly stale.
         let first = sandbox.next_envelope_id();
@@ -2095,16 +2069,27 @@ mod tests {
     // engine already gave up on the call.
 
     #[test]
-    fn plugin_closed_classifies_as_respawnable() {
-        // The ONE respawn-eligible transport failure: plugin exited
-        // before we could read a response. Retrying respawns a fresh
-        // process and resends; no replay-on-the-wire risk because the
-        // original bytes were consumed by a now-dead process that
-        // produced no ActionResult.
-        let tde = TryDispatchError::from_sandbox_error(SandboxError::PluginClosed);
+    fn eof_after_send_is_terminal_not_respawnable() {
+        // PluginClosed observed by recv AFTER a successful send: the
+        // plugin may have received and begun a non-idempotent action
+        // before dying. Resending on a fresh process would
+        // double-execute, so this MUST be terminal.
+        let tde = TryDispatchError::from_sandbox_error_after_send(SandboxError::PluginClosed, true);
+        assert!(
+            !tde.is_respawnable(),
+            "EOF after a successful send must not silently resend the action, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn stale_handle_before_send_is_respawnable() {
+        // PluginClosed with no bytes written for this attempt: nothing
+        // reached a running plugin, so respawn-and-retry is safe.
+        let tde =
+            TryDispatchError::from_sandbox_error_after_send(SandboxError::PluginClosed, false);
         assert!(
             tde.is_respawnable(),
-            "PluginClosed must classify as Respawnable, got {tde:?}",
+            "no bytes reached a running plugin — respawn must be allowed, got {tde:?}",
         );
     }
 
@@ -2114,10 +2099,13 @@ mod tests {
         // would simply respawn and forward another opportunity to abuse
         // the cap; the security dashboard would also see one warn per
         // attempt instead of a single clean failure.
-        let tde = TryDispatchError::from_sandbox_error(SandboxError::PluginLineTooLarge {
-            limit: 1024,
-            observed: 2048,
-        });
+        let tde = TryDispatchError::from_sandbox_error_after_send(
+            SandboxError::PluginLineTooLarge {
+                limit: 1024,
+                observed: 2048,
+            },
+            true,
+        );
         assert!(
             !tde.is_respawnable(),
             "PluginLineTooLarge must be Terminal (no retry), got {tde:?}",
@@ -2128,10 +2116,13 @@ mod tests {
     fn response_id_mismatch_classifies_as_terminal() {
         // Protocol violation: a stale response must poison the call
         // rather than silently retrying onto a fresh connection.
-        let tde = TryDispatchError::from_sandbox_error(SandboxError::ResponseIdMismatch {
-            expected: 42,
-            got: 41,
-        });
+        let tde = TryDispatchError::from_sandbox_error_after_send(
+            SandboxError::ResponseIdMismatch {
+                expected: 42,
+                got: 41,
+            },
+            true,
+        );
         assert!(
             !tde.is_respawnable(),
             "ResponseIdMismatch must be Terminal, got {tde:?}",
@@ -2140,7 +2131,8 @@ mod tests {
 
     #[test]
     fn transport_poisoned_classifies_as_terminal() {
-        let tde = TryDispatchError::from_sandbox_error(SandboxError::TransportPoisoned);
+        let tde =
+            TryDispatchError::from_sandbox_error_after_send(SandboxError::TransportPoisoned, true);
         assert!(
             !tde.is_respawnable(),
             "TransportPoisoned must be Terminal, got {tde:?}",
@@ -2149,10 +2141,13 @@ mod tests {
 
     #[test]
     fn handshake_line_too_large_classifies_as_terminal() {
-        let tde = TryDispatchError::from_sandbox_error(SandboxError::HandshakeLineTooLarge {
-            limit: 4096,
-            observed: 8192,
-        });
+        let tde = TryDispatchError::from_sandbox_error_after_send(
+            SandboxError::HandshakeLineTooLarge {
+                limit: 4096,
+                observed: 8192,
+            },
+            true,
+        );
         assert!(
             !tde.is_respawnable(),
             "HandshakeLineTooLarge must be Terminal, got {tde:?}",
@@ -2168,7 +2163,10 @@ mod tests {
         // side effect. Classify terminal to match the general rule.
         let parse_err = serde_json::from_str::<serde_json::Value>("{")
             .expect_err("fixture must produce serde_json::Error");
-        let tde = TryDispatchError::from_sandbox_error(SandboxError::MalformedEnvelope(parse_err));
+        let tde = TryDispatchError::from_sandbox_error_after_send(
+            SandboxError::MalformedEnvelope(parse_err),
+            true,
+        );
         assert!(
             !tde.is_respawnable(),
             "MalformedEnvelope must be Terminal, got {tde:?}",
@@ -2181,8 +2179,10 @@ mod tests {
         // point retrying a deterministic host bug.
         let parse_err = serde_json::from_str::<serde_json::Value>("{")
             .expect_err("fixture must produce serde_json::Error");
-        let tde =
-            TryDispatchError::from_sandbox_error(SandboxError::HostMalformedEnvelope(parse_err));
+        let tde = TryDispatchError::from_sandbox_error_after_send(
+            SandboxError::HostMalformedEnvelope(parse_err),
+            true,
+        );
         assert!(
             !tde.is_respawnable(),
             "HostMalformedEnvelope must be Terminal, got {tde:?}",

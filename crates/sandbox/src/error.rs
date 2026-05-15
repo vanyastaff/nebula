@@ -114,4 +114,15 @@ pub enum SandboxError {
         /// The correlation id the plugin echoed back in its response.
         got: u64,
     },
+
+    /// Landlock ruleset construction or enforcement failed (Linux only).
+    /// Produced pre-`fork` while preparing the child sandbox — this is a
+    /// spawn-time hardening failure, not a transport/protocol error.
+    #[error("landlock setup failed: {0}")]
+    Landlock(String),
+
+    /// Resource-limit (`setrlimit`) configuration failed (Linux only),
+    /// also a pre-`fork` spawn-time hardening failure.
+    #[error("rlimit setup failed: {0}")]
+    Rlimit(String),
 }

@@ -34,7 +34,6 @@
 //! See `crates/sandbox/README.md` for the real isolation roadmap and ADR 0006
 //! status.
 
-pub mod capabilities;
 pub mod discovered_plugin;
 pub mod discovery;
 pub mod error;

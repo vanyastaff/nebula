@@ -21,7 +21,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use nebula_plugin::PluginRegistry;
-use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
+use nebula_sandbox::discovery;
 use nebula_schema::field_key;
 
 fn fixture_binary_path() -> PathBuf {
@@ -77,13 +77,7 @@ async fn discovery_roundtrips_action_schema() {
     .unwrap();
 
     let mut registry = PluginRegistry::new();
-    discovery::discover_directory(
-        scan_dir.path(),
-        &mut registry,
-        Duration::from_secs(5),
-        PluginCapabilities::none(),
-    )
-    .await;
+    discovery::discover_directory(scan_dir.path(), &mut registry, Duration::from_secs(5)).await;
 
     let plugin_key = "com.author.schema".parse().unwrap();
     let plugin = registry

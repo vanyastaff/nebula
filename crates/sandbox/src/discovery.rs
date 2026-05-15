@@ -6,9 +6,8 @@
 //!    like executables.
 //! 2. For each candidate, reads a sibling `plugin.toml` via
 //!    [`crate::plugin_toml::parse_plugin_toml`] and enforces the `[nebula].sdk` constraint.
-//! 3. Spawns the binary for a metadata probe (using [`PluginCapabilities::none`] for the probe —
-//!    see safety note below), deserializes the v3 wire response, and applies the optional
-//!    `[plugin].id` override.
+//! 3. Spawns the binary for a metadata probe, deserializes the v3 wire response, and applies the
+//!    optional `[plugin].id` override.
 //! 4. Builds [`crate::RemoteAction`] instances per wire `ActionDescriptor`, then wraps everything
 //!    in a [`crate::DiscoveredPlugin`] → [`nebula_plugin::ResolvedPlugin`] and registers it in the
 //!    provided [`nebula_plugin::PluginRegistry`].
@@ -16,15 +15,10 @@
 //! Per-plugin errors are warn-and-skip: a bad plugin never poisons the directory
 //! scan.
 //!
-//! # Safety note — metadata probe capabilities
-//!
-//! The metadata probe runs with [`PluginCapabilities::none`]. Scanning an
-//! untrusted binary for its manifest must never grant it network or filesystem
-//! reach. Runtime capabilities (`default_capabilities`) are applied only when
-//! the long-lived sandbox for action dispatch is constructed.
-//!
-//! Runtime `PluginCapabilities` are sourced from the caller (`default_capabilities`
-//! arg). Wiring them from workflow-config is tracked under ADR-0025 D4 / slice 1d.
+//! There is no per-plugin capability/scope model in this path: egress,
+//! credential, and filesystem mediation is the broker's responsibility
+//! (ADR-0025), not discovery (canon §12.6). The probe and the runtime
+//! sandbox spawn the binary with the same OS-level hardening.
 
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -35,7 +29,6 @@ use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, Plu
 
 use crate::{
     DiscoveredPlugin, RemoteAction,
-    capabilities::PluginCapabilities,
     handler::ProcessSandboxHandler,
     plugin_toml::{PluginTomlError, parse_plugin_toml},
     process::ProcessSandbox,
@@ -113,10 +106,9 @@ pub enum DiscoveryError {
 
 /// Probe a plugin binary and return its wire metadata.
 ///
-/// The metadata probe is locked to [`PluginCapabilities::none`]: scanning an
-/// untrusted binary for its metadata must never grant it network or filesystem
-/// reach. Runtime capabilities are applied later, only when the host builds
-/// the long-lived sandbox for action dispatch.
+/// The probe spawns the binary with the same OS-level hardening as the
+/// runtime sandbox. There is no per-plugin capability grant (canon §12.6;
+/// scope model is the broker's per ADR-0025).
 ///
 /// Uses a **two-phase parse**: the response bytes are first parsed to a
 /// `serde_json::Value`, `kind` + `protocol_version` are checked, and only
@@ -129,15 +121,7 @@ pub enum DiscoveryError {
 /// borrowed-`&str` path that `domain_key::Key<T>::Deserialize` (and
 /// therefore `PluginKey`) requires.
 async fn probe_metadata(binary: &Path) -> Result<WireMetadata, DiscoveryError> {
-    // ADR-0025 D4: runtime capabilities are sourced from workflow-config at
-    // spawn-time (slice 1d). The metadata probe deliberately uses
-    // PluginCapabilities::none() — scanning an untrusted binary for its
-    // manifest must never grant network or filesystem reach.
-    let sandbox = ProcessSandbox::new(
-        binary.to_path_buf(),
-        Duration::from_secs(5),
-        PluginCapabilities::none(),
-    );
+    let sandbox = ProcessSandbox::new(binary.to_path_buf(), Duration::from_secs(5));
 
     let bytes = sandbox
         .get_metadata_raw()
@@ -302,7 +286,6 @@ fn resolve_action_key(
 async fn discover_one(
     binary: &Path,
     default_timeout: Duration,
-    default_capabilities: &PluginCapabilities,
 ) -> Result<(ResolvedPlugin, Vec<(ActionMetadata, ActionHandler)>), SkipReason> {
     // Step 1: parse sibling plugin.toml (required).
     // `binary` came from `read_dir(dir)` — it always has a parent in practice.
@@ -336,7 +319,7 @@ async fn discover_one(
         });
     }
 
-    // Step 3: probe the plugin for its wire manifest (capabilities=none).
+    // Step 3: probe the plugin for its wire manifest.
     let wire = probe_metadata(binary)
         .await
         .map_err(SkipReason::TransportError)?;
@@ -362,11 +345,7 @@ async fn discover_one(
 
     // Step 5: build RemoteAction instances per wire ActionDescriptor.
     // Build a shared long-lived sandbox for action dispatch.
-    let sandbox = Arc::new(ProcessSandbox::new(
-        binary.to_path_buf(),
-        default_timeout,
-        default_capabilities.clone(),
-    ));
+    let sandbox = Arc::new(ProcessSandbox::new(binary.to_path_buf(), default_timeout));
 
     // Concrete `Arc<RemoteAction>` — kept before type-erasure so we can
     // simultaneously wrap as `Arc<dyn ActionFactory>` (for DiscoveredPlugin via
@@ -461,19 +440,13 @@ async fn discover_one(
 /// and returns the handler list to callers that need to populate a runtime
 /// registry.
 ///
-/// `default_capabilities` is applied to every discovered plugin's **runtime**
-/// sandbox (the long-lived one used for action dispatch). The metadata probe
-/// runs separately with [`PluginCapabilities::none`] — see the private
-/// `probe_metadata` helper. Callers are expected to source
-/// `default_capabilities` from host configuration per deployment policy.
-///
-/// Runtime `PluginCapabilities` wiring from workflow-config is tracked under
-/// ADR-0025 D4 / slice 1d.
+/// Per-plugin capability/scope is **not** modeled here — egress, credential,
+/// and filesystem mediation is the broker's responsibility (ADR-0025), not
+/// this discovery path (canon §12.6).
 pub async fn discover_directory(
     dir: &Path,
     registry: &mut PluginRegistry,
     default_timeout: Duration,
-    default_capabilities: PluginCapabilities,
 ) -> Vec<(ActionMetadata, ActionHandler)> {
     let mut all_handlers: Vec<(ActionMetadata, ActionHandler)> = Vec::new();
 
@@ -500,7 +473,7 @@ pub async fn discover_directory(
             continue;
         }
 
-        match discover_one(&path, default_timeout, &default_capabilities).await {
+        match discover_one(&path, default_timeout).await {
             Ok((resolved, handlers)) => {
                 let key = resolved.key().clone();
                 if let Err(e) = registry.register(Arc::new(resolved)) {
@@ -623,7 +596,7 @@ mod tests {
     use serde_json::json;
 
     use super::{DiscoveryError, WireMetadata, parse_metadata_response};
-    use crate::{capabilities::PluginCapabilities, process::ProcessSandbox};
+    use crate::process::ProcessSandbox;
 
     #[test]
     fn v2_envelope_surfaces_as_protocol_version_mismatch_not_missing_field() {
@@ -772,7 +745,6 @@ mod tests {
         let sandbox = Arc::new(ProcessSandbox::new(
             PathBuf::from("nebula-plugin-dummy"),
             Duration::from_secs(1),
-            PluginCapabilities::none(),
         ));
         let action_key = nebula_core::ActionKey::new("com.good.plugin.echo").expect("valid key");
         let metadata = nebula_action::ActionMetadata::new(action_key, "Echo", "ok")
