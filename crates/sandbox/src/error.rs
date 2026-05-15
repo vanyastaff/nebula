@@ -1,11 +1,11 @@
 //! Sandbox-specific error types.
 //!
 //! These errors describe failures of the plugin transport layer
-//! ([`crate::ProcessSandbox`]) independently of the broader
-//! [`nebula_action::ActionError`] classification. They are converted into
-//! `ActionError::Fatal` / `ActionError::Retryable` at the public boundary
-//! via `ActionError::fatal_from` / `retryable_from`, which preserves the
-//! full source chain for logging and metrics.
+//! ([`crate::ProcessSandbox`]) as a self-contained typed taxonomy. The
+//! crate is a leaf and does not know about the engine's `ActionError`:
+//! the `SandboxError` → `ActionError` classification lives in
+//! `nebula-plugin` (`sandbox_bridge`), shared by the discovery handler
+//! and the engine runner adapter.
 //!
 //! A dedicated type lets the caller distinguish "plugin is misbehaving /
 //! attempting DoS" (`PluginLineTooLarge`, `HandshakeLineTooLarge`) from
@@ -13,8 +13,6 @@
 //! `Transport`) — valuable signal for security dashboards.
 
 use std::io;
-
-use nebula_action::ActionError;
 
 /// Errors produced by the plugin transport layer of
 /// [`crate::ProcessSandbox`].
@@ -178,41 +176,4 @@ pub enum SandboxError {
     /// be silently resent (it may already be running on the plugin).
     #[error("plugin dispatch cancelled")]
     Cancelled,
-}
-
-/// Convert an internal [`SandboxError`] into the public `ActionError` the
-/// engine-side sandbox runner adapter returns. Transport-level issues are
-/// fatal (non-retryable) by design: once the plugin has misbehaved on the
-/// wire, the next caller gets a fresh process, not a blind retry on the
-/// same poisoned channel.
-pub(crate) fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
-    match err {
-        // Retryable: plugin crashed / exited, respawn path is safe.
-        SandboxError::PluginClosed => ActionError::retryable_from(err),
-        // Timeout surfaces as retryable so the engine's higher-level retry
-        // policy can decide; the sandbox itself never silently retries.
-        SandboxError::Timeout { .. } => ActionError::retryable_from(err),
-        // Cancellation must round-trip as the canonical cancelled error so
-        // the engine honours its standard cancellation path.
-        SandboxError::Cancelled => ActionError::Cancelled,
-        // The plugin itself classified this error; honour its retry hint.
-        SandboxError::PluginActionError { retryable: true, .. } => ActionError::retryable_from(err),
-        SandboxError::PluginActionError { retryable: false, .. } => ActionError::fatal_from(err),
-        // Fatal: DoS / protocol-abuse signals. Do not paper over with retry.
-        SandboxError::PluginLineTooLarge { .. }
-        | SandboxError::HandshakeLineTooLarge { .. }
-        | SandboxError::HandshakeAddrMismatch { .. }
-        | SandboxError::ResponseIdMismatch { .. }
-        | SandboxError::TransportPoisoned
-        | SandboxError::Transport(_)
-        | SandboxError::MalformedEnvelope(_)
-        | SandboxError::HostMalformedEnvelope(_)
-        | SandboxError::UnexpectedEnvelope { .. }
-        // Pre-`fork` spawn-time hardening / spawn failures. They reach the
-        // public boundary as fatal; a retry on the same misconfigured host
-        // or binary would fail identically.
-        | SandboxError::Landlock(_)
-        | SandboxError::Rlimit(_)
-        | SandboxError::Spawn(_) => ActionError::fatal_from(err),
-    }
 }

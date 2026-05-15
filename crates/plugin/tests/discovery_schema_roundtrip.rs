@@ -12,7 +12,7 @@
 //!
 //! ```bash
 //! cargo build -p nebula-plugin-sdk --bin nebula-plugin-schema-fixture
-//! cargo nextest run -p nebula-sandbox --test discovery_schema_roundtrip --run-ignored all
+//! cargo nextest run -p nebula-plugin --test discovery_schema_roundtrip --run-ignored all
 //! ```
 //!
 //! CI must do the same: build the fixture, then invoke nextest with
@@ -20,8 +20,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use nebula_plugin::PluginRegistry;
-use nebula_sandbox::discovery;
+use nebula_plugin::{PluginRegistry, discovery};
 use nebula_schema::field_key;
 
 fn fixture_binary_path() -> PathBuf {
@@ -47,7 +46,7 @@ fn fixture_binary_path() -> PathBuf {
 }
 
 #[tokio::test]
-#[ignore = "requires pre-built fixture binary; run `cargo build -p nebula-plugin-sdk --bin nebula-plugin-schema-fixture` first, then `cargo nextest run -p nebula-sandbox --test discovery_schema_roundtrip --run-ignored all`"]
+#[ignore = "requires pre-built fixture binary; run `cargo build -p nebula-plugin-sdk --bin nebula-plugin-schema-fixture` first, then `cargo nextest run -p nebula-plugin --test discovery_schema_roundtrip --run-ignored all`"]
 async fn discovery_roundtrips_action_schema() {
     let src_binary = fixture_binary_path();
     assert!(

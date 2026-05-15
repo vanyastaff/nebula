@@ -9,8 +9,8 @@
 //! 3. Spawns the binary for a metadata probe, deserializes the v3 wire response, and applies the
 //!    optional `[plugin].id` override.
 //! 4. Builds [`crate::RemoteAction`] instances per wire `ActionDescriptor`, then wraps everything
-//!    in a [`crate::DiscoveredPlugin`] → [`nebula_plugin::ResolvedPlugin`] and registers it in the
-//!    provided [`nebula_plugin::PluginRegistry`].
+//!    in a [`crate::DiscoveredPlugin`] → [`crate::ResolvedPlugin`] and registers it in the
+//!    provided [`crate::PluginRegistry`].
 //!
 //! Per-plugin errors are warn-and-skip: a bad plugin never poisons the directory
 //! scan.
@@ -24,12 +24,11 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use nebula_action::{ActionFactory, ActionHandler, ActionMetadata, StatelessHandler};
 use nebula_core::ActionKey;
-use nebula_plugin::{PluginRegistry, ResolvedPlugin};
 use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
+use nebula_sandbox::ProcessSandbox;
 
 use crate::{
-    DiscoveredPlugin, RemoteAction,
-    dispatch::ProcessSandbox,
+    DiscoveredPlugin, PluginRegistry, RemoteAction, ResolvedPlugin,
     handler::ProcessSandboxHandler,
     plugin_toml::{PluginTomlError, parse_plugin_toml},
     remote_action::RemoteActionFactory,
@@ -222,13 +221,13 @@ enum SkipReason {
     /// a *different* plugin's namespace. This is a whole-plugin failure (not a
     /// per-action skip) because a plugin that lies about its action namespace
     /// cannot be trusted — fail fast and surface the violation at load time.
-    /// Symmetric with [`nebula_plugin::ResolvedPlugin::from`]'s fail-fast
+    /// Symmetric with [`crate::ResolvedPlugin::from`]'s fail-fast
     /// behaviour for in-process plugins (ADR-0027 §7).
     CrossNamespaceAction {
         descriptor_key: String,
         plugin_key: String,
     },
-    RegistrationError(nebula_plugin::PluginError),
+    RegistrationError(crate::PluginError),
 }
 
 /// Sentinel returned by [`resolve_action_key`] when the descriptor key is
@@ -595,8 +594,9 @@ mod tests {
     use semver::Version;
     use serde_json::json;
 
+    use nebula_sandbox::ProcessSandbox;
+
     use super::{DiscoveryError, WireMetadata, parse_metadata_response};
-    use crate::dispatch::ProcessSandbox;
 
     #[test]
     fn v2_envelope_surfaces_as_protocol_version_mismatch_not_missing_field() {

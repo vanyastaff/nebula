@@ -77,10 +77,17 @@ deny = [
     # until it exists this is the only place the two layers meet in-process.
     "nebula-api",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
+  # ---- Layer enforcement: Plugin-Proto (leaf tier) ----
+  # nebula-sandbox is the duplex plugin transport. It is a leaf with no
+  # Business/Exec dependency (Core + plugin-sdk + tokio/serde only), so
+  # nebula-plugin (Business) -> nebula-sandbox is a legal *downward* edge.
+  # The runner abstraction lives in nebula-engine; discovery + the
+  # SandboxError->ActionError seam live in nebula-plugin.
   { crate = "nebula-sandbox", wrappers = [
     "nebula-engine",
+    "nebula-plugin",
     "nebula-cli",
-  ], reason = "Sandbox is exec/infra boundary; only engine and CLI may depend on it directly" },
+  ], reason = "Sandbox is the Plugin-Proto leaf transport; only engine (runner adapter), plugin (discovery + bridge), and CLI may depend on it directly" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
     "nebula-api",
@@ -96,7 +103,8 @@ deny = [
   ], reason = "SDK is the external integration surface; only the examples workspace member may depend on it" },
   { crate = "nebula-plugin-sdk", wrappers = [
     "nebula-sandbox",
-  ], reason = "Plugin-SDK is the out-of-process plugin protocol; only sandbox may depend on it" },
+    "nebula-plugin",
+  ], reason = "Plugin-SDK is the out-of-process plugin protocol (Plugin-Proto tier); the sandbox transport and the plugin discovery path may depend on it" },
 
   # ---- Layer enforcement: Business / shared infra ----
   # nebula-resource is the runtime resource framework consumed by both business

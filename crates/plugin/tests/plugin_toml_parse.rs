@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use nebula_sandbox::plugin_toml::{PluginTomlError, parse_plugin_toml};
+use nebula_plugin::plugin_toml::{PluginTomlError, parse_plugin_toml};
 
 fn write(contents: &str) -> tempfile::NamedTempFile {
     use std::io::Write;

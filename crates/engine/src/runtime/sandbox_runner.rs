@@ -20,7 +20,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_action::{ActionContext, ActionError, ActionMetadata, result::ActionResult};
-use nebula_sandbox::{ProcessSandbox, SandboxError};
+use nebula_plugin::sandbox_error_to_action_error;
+use nebula_sandbox::ProcessSandbox;
 use tokio_util::sync::CancellationToken;
 
 /// Sandboxed execution context wrapping an [`ActionContext`].
@@ -124,54 +125,15 @@ impl SandboxRunner for InProcessSandbox {
     }
 }
 
-/// Convert an internal [`SandboxError`] into the public [`ActionError`] the
-/// sandbox runner trait returns. Transport-level issues are fatal
-/// (non-retryable) by design: once the plugin has misbehaved on the wire,
-/// the next caller gets a fresh process, not a blind retry on the same
-/// poisoned channel.
-fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
-    match err {
-        // Retryable: plugin crashed / exited, respawn path is safe.
-        SandboxError::PluginClosed => ActionError::retryable_from(err),
-        // Timeout surfaces as retryable so the engine's higher-level retry
-        // policy can decide; the sandbox itself never silently retries.
-        SandboxError::Timeout { .. } => ActionError::retryable_from(err),
-        // Cancellation must round-trip as the canonical cancelled error so
-        // the engine honours its standard cancellation path.
-        SandboxError::Cancelled => ActionError::Cancelled,
-        // The plugin itself classified this error; honour its retry hint.
-        SandboxError::PluginActionError { retryable: true, .. } => ActionError::retryable_from(err),
-        SandboxError::PluginActionError { retryable: false, .. } => ActionError::fatal_from(err),
-        // Fatal: DoS / protocol-abuse signals. Do not paper over with retry.
-        SandboxError::PluginLineTooLarge { .. }
-        | SandboxError::HandshakeLineTooLarge { .. }
-        | SandboxError::HandshakeAddrMismatch { .. }
-        | SandboxError::ResponseIdMismatch { .. }
-        | SandboxError::TransportPoisoned
-        | SandboxError::Transport(_)
-        | SandboxError::MalformedEnvelope(_)
-        | SandboxError::HostMalformedEnvelope(_)
-        | SandboxError::UnexpectedEnvelope { .. }
-        // Pre-`fork` spawn-time hardening / spawn failures. They reach the
-        // public boundary as fatal; a retry on the same misconfigured host
-        // or binary would fail identically.
-        | SandboxError::Landlock(_)
-        | SandboxError::Rlimit(_)
-        | SandboxError::Spawn(_) => ActionError::fatal_from(err),
-        // `SandboxError` is `#[non_exhaustive]`. A future transport
-        // failure mode reaches this boundary as fatal until it is
-        // explicitly classified — never silently retried.
-        _ => ActionError::fatal_from(err),
-    }
-}
-
 /// Adapter: drive an out-of-process [`ProcessSandbox`] as a
 /// [`SandboxRunner`].
 ///
-/// This is the single place the transport's `SandboxError` is classified
-/// into the engine's `ActionError` taxonomy and the plugin output `Value`
-/// is wrapped in an `ActionResult`. The transport crate owns neither —
-/// keeping `nebula-sandbox` a Business-dependency-free leaf.
+/// The plugin output `Value` is wrapped in an `ActionResult`; the
+/// transport's `SandboxError` is classified into the engine's
+/// `ActionError` taxonomy via the single shared
+/// [`sandbox_error_to_action_error`](nebula_plugin::sandbox_error_to_action_error)
+/// seam. The transport crate owns neither — keeping `nebula-sandbox` a
+/// Business-dependency-free leaf.
 #[async_trait]
 impl SandboxRunner for ProcessSandbox {
     async fn execute(
@@ -194,85 +156,5 @@ impl SandboxRunner for ProcessSandbox {
             .await
             .map(ActionResult::success)
             .map_err(sandbox_error_to_action_error)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    //! `SandboxError` -> `ActionError` classification guards. These
-    //! moved here with `sandbox_error_to_action_error` when the runner
-    //! adapter relocated from `nebula-sandbox` to the engine: the
-    //! transport crate no longer knows about `ActionError`.
-
-    use super::*;
-
-    #[test]
-    fn plugin_line_too_large_converts_to_fatal_action_error() {
-        let sandbox_err = SandboxError::PluginLineTooLarge {
-            limit: 1024,
-            observed: 2048,
-        };
-        let ae = sandbox_error_to_action_error(sandbox_err);
-        // Fatal classification is the contract: we do not want the
-        // engine to quietly retry a DoS attempt on a fresh connection.
-        assert!(
-            matches!(ae, ActionError::Fatal { .. }),
-            "PluginLineTooLarge must classify as Fatal, got {ae:?}",
-        );
-    }
-
-    #[test]
-    fn handshake_line_too_large_converts_to_fatal_action_error() {
-        let sandbox_err = SandboxError::HandshakeLineTooLarge {
-            limit: 4096,
-            observed: 8192,
-        };
-        let ae = sandbox_error_to_action_error(sandbox_err);
-        assert!(matches!(ae, ActionError::Fatal { .. }));
-    }
-
-    #[test]
-    fn plugin_closed_converts_to_retryable_action_error() {
-        // Plugin-closed is benign relative to DoS — retry to respawn is safe.
-        let sandbox_err = SandboxError::PluginClosed;
-        let ae = sandbox_error_to_action_error(sandbox_err);
-        assert!(
-            matches!(ae, ActionError::Retryable { .. }),
-            "PluginClosed should classify as Retryable, got {ae:?}",
-        );
-    }
-
-    #[test]
-    fn host_malformed_envelope_converts_to_fatal_action_error() {
-        let parse_err = serde_json::from_str::<serde_json::Value>("{")
-            .expect_err("fixture must produce serde_json::Error");
-        let ae = sandbox_error_to_action_error(SandboxError::HostMalformedEnvelope(parse_err));
-        assert!(matches!(ae, ActionError::Fatal { .. }));
-    }
-
-    #[test]
-    fn response_id_mismatch_converts_to_fatal_action_error() {
-        let err = SandboxError::ResponseIdMismatch {
-            expected: 42,
-            got: 41,
-        };
-        let ae = sandbox_error_to_action_error(err);
-        assert!(
-            matches!(ae, ActionError::Fatal { .. }),
-            "ResponseIdMismatch must classify as Fatal, got {ae:?}",
-        );
-    }
-
-    #[test]
-    fn handshake_addr_mismatch_converts_to_fatal_action_error() {
-        let err = SandboxError::HandshakeAddrMismatch {
-            expected: String::from("unix|/tmp/ok"),
-            got: String::from("unix|/tmp/evil"),
-        };
-        let ae = sandbox_error_to_action_error(err);
-        assert!(
-            matches!(ae, ActionError::Fatal { .. }),
-            "HandshakeAddrMismatch must classify as Fatal (no retry on forged handshake), got {ae:?}",
-        );
     }
 }
