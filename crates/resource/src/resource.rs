@@ -17,8 +17,10 @@
 //!
 //! Per-credential rotation is exposed via
 //! [`Resource::on_credential_refresh`], which receives the **slot name**
-//! that rotated (so multi-credential resources can choose to refresh only
-//! the affected pool, headers, etc.).
+//! that rotated and the live `Runtime` handle (so multi-credential
+//! resources can choose to refresh only the affected pool, headers, etc.
+//! via interior mutability). Revocation is signalled via
+//! [`Resource::on_credential_revoke`].
 
 use std::future::Future;
 
@@ -265,19 +267,18 @@ pub trait Resource: Send + Sync + 'static {
         ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
-    /// Called by the engine after a successful credential refresh on
-    /// one of this resource's `#[credential]` slot fields.
+    /// Called by the engine rotation fan-out after it has swapped the
+    /// rotated credential into this resource's slot. `&self`: the resource
+    /// impl is an immutable descriptor; blue-green / re-auth acts on
+    /// `runtime`'s own interior mutability. `slot_name` identifies which
+    /// `#[credential]` slot rotated.
     ///
-    /// `slot_name` identifies which slot rotated — multi-credential
-    /// resources can choose to refresh only the affected sub-system
-    /// (e.g. swap a single pool, refresh a single header) rather than
-    /// recycling the whole runtime.
-    ///
-    /// Default: no-op. Override per resource for hot-reload behavior.
-    /// Connection-bound resources (Pool, Service, Transport) typically
-    /// override with the blue-green swap pattern: build a fresh pool
-    /// from the rotated credential, atomically swap into an
-    /// `Arc<RwLock<Pool>>`, let RAII drain old handles.
+    /// Multi-credential resources can choose to refresh only the affected
+    /// sub-system (e.g. swap a single pool, refresh a single header) rather
+    /// than recycling the whole runtime. Connection-bound resources (Pool,
+    /// Service, Transport) typically override with the blue-green swap
+    /// pattern: build a fresh pool from the rotated credential, atomically
+    /// swap into an `Arc<RwLock<Pool>>`, let RAII drain old handles.
     ///
     /// **Invariant** per ADR-0044 §Seam: implementer must handle every
     /// declared credential slot name; the engine emits a `WARN
@@ -286,11 +287,27 @@ pub trait Resource: Send + Sync + 'static {
     /// Cancellation safety: implementations MUST be cancel-safe — if
     /// the returned future is dropped mid-await, the resource MUST
     /// remain consistent.
+    ///
+    /// Default: no-op.
     fn on_credential_refresh(
-        &mut self,
+        &self,
         slot_name: &str,
+        runtime: &Self::Runtime,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let _ = slot_name;
+        let _ = (slot_name, runtime);
+        async { Ok(()) }
+    }
+
+    /// Called by the engine fan-out when a slot's credential is revoked.
+    /// Post-invocation invariant (ADR-0036): the resource emits no further
+    /// authenticated traffic on the revoked credential. Default: no-op
+    /// (the engine still taints + drains the runtime around this call).
+    fn on_credential_revoke(
+        &self,
+        slot_name: &str,
+        runtime: &Self::Runtime,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let _ = (slot_name, runtime);
         async { Ok(()) }
     }
 
