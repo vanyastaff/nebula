@@ -38,3 +38,7 @@ pub(crate) mod sealed_caps {
 // Concrete credential types land here in П3 (per Tech Spec §16.1).
 // П1 ships the empty scaffold so deny.toml + workspace member
 // resolution settle ahead of the type-shape commits.
+
+pub mod bearer_token;
+
+pub use bearer_token::{BearerTokenCredential, BearerTokenProperties};

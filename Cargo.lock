@@ -3464,6 +3464,7 @@ dependencies = [
  "nebula-schema",
  "secrecy",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "trybuild",
