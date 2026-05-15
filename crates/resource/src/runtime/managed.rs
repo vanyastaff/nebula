@@ -122,78 +122,59 @@ impl<R: Resource> ManagedResource<R> {
         self.tainted.load(Ordering::Acquire)
     }
 
-    /// Borrows the live runtime(s) for this topology and invokes
-    /// [`Resource::on_credential_refresh`] for `slot`.
+    /// Borrows the live runtime(s) for this topology and invokes the
+    /// per-slot credential hook — [`Resource::on_credential_refresh`] when
+    /// `refresh` is `true`, [`Resource::on_credential_revoke`] otherwise.
     ///
     /// Single-runtime topologies (Resident / Service / Transport /
     /// Exclusive) dispatch once against the shared runtime; Pool dispatches
-    /// per idle instance. Resident before its first acquire has no runtime
-    /// yet — nothing to refresh, so this is a no-op `Ok(())`.
-    pub(crate) async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error> {
+    /// per idle instance (delegating to
+    /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle),
+    /// which carries the same `refresh` selector). Resident before its
+    /// first acquire has no runtime yet — nothing to dispatch, so this is a
+    /// no-op `Ok(())`.
+    ///
+    /// The `refresh` flag selects the hook exactly once per topology arm
+    /// (mirroring the pool selector); both directions share identical
+    /// per-topology runtime-borrow semantics.
+    pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
         match &self.topology {
             TopologyRuntime::Resident(rt) => match rt.current() {
-                Some(runtime) => self
-                    .resource
-                    .on_credential_refresh(slot, &runtime)
-                    .await
-                    .map_err(Into::into),
+                Some(runtime) => self.invoke_slot_hook(slot, refresh, &runtime).await,
                 None => Ok(()),
             },
-            TopologyRuntime::Service(rt) => self
-                .resource
-                .on_credential_refresh(slot, rt.runtime())
-                .await
-                .map_err(Into::into),
-            TopologyRuntime::Transport(rt) => self
-                .resource
-                .on_credential_refresh(slot, rt.runtime())
-                .await
-                .map_err(Into::into),
-            TopologyRuntime::Exclusive(rt) => self
-                .resource
-                .on_credential_refresh(slot, rt.runtime())
-                .await
-                .map_err(Into::into),
+            TopologyRuntime::Service(rt) => {
+                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
+            },
+            TopologyRuntime::Transport(rt) => {
+                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
+            },
+            TopologyRuntime::Exclusive(rt) => {
+                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
+            },
             TopologyRuntime::Pool(rt) => rt
-                .dispatch_slot_hook_over_idle(&self.resource, slot, true)
+                .dispatch_slot_hook_over_idle(&self.resource, slot, refresh)
                 .await
                 .map_err(Into::into),
         }
     }
 
-    /// Borrows the live runtime(s) for this topology and invokes
-    /// [`Resource::on_credential_revoke`] for `slot`.
-    ///
-    /// Same per-topology fan-out as [`dispatch_on_refresh`](Self::dispatch_on_refresh).
-    pub(crate) async fn dispatch_on_revoke(&self, slot: &str) -> Result<(), Error> {
-        match &self.topology {
-            TopologyRuntime::Resident(rt) => match rt.current() {
-                Some(runtime) => self
-                    .resource
-                    .on_credential_revoke(slot, &runtime)
-                    .await
-                    .map_err(Into::into),
-                None => Ok(()),
-            },
-            TopologyRuntime::Service(rt) => self
-                .resource
-                .on_credential_revoke(slot, rt.runtime())
-                .await
-                .map_err(Into::into),
-            TopologyRuntime::Transport(rt) => self
-                .resource
-                .on_credential_revoke(slot, rt.runtime())
-                .await
-                .map_err(Into::into),
-            TopologyRuntime::Exclusive(rt) => self
-                .resource
-                .on_credential_revoke(slot, rt.runtime())
-                .await
-                .map_err(Into::into),
-            TopologyRuntime::Pool(rt) => rt
-                .dispatch_slot_hook_over_idle(&self.resource, slot, false)
-                .await
-                .map_err(Into::into),
-        }
+    /// Invokes the selected `&self` credential hook against one borrowed
+    /// runtime. Single-runtime topologies call this once; Pool uses its
+    /// own per-idle fan-out. The `refresh` selector is applied here so the
+    /// per-topology match in [`dispatch_slot_hook`](Self::dispatch_slot_hook)
+    /// stays written once.
+    async fn invoke_slot_hook(
+        &self,
+        slot: &str,
+        refresh: bool,
+        runtime: &R::Runtime,
+    ) -> Result<(), Error> {
+        let res = if refresh {
+            self.resource.on_credential_refresh(slot, runtime).await
+        } else {
+            self.resource.on_credential_revoke(slot, runtime).await
+        };
+        res.map_err(Into::into)
     }
 }

@@ -726,19 +726,23 @@ impl Manager {
     /// **not** the plain `lookup`: it runs `R::create` to materialize new
     /// instances against the credential, so it is acquire-like and must
     /// be blocked once the resource is tainted by a revoke.
+    ///
+    /// A tainted resource is rejected with
+    /// [`ErrorKind::Revoked`](crate::error::ErrorKind::Revoked) — a
+    /// non-terminal, retryable classification (the taint clears when the
+    /// credential is re-registered), distinct from the
+    /// [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) that
+    /// the `shutting_down` funnel raises.
     fn lookup_for_acquire<R: Resource>(
         &self,
         scope: &ScopeLevel,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         let managed = self.lookup::<R>(scope)?;
         if managed.is_tainted() {
-            return Err(Error::new(
-                crate::error::ErrorKind::Cancelled,
-                format!(
-                    "{}: resource tainted by credential revoke — new acquires rejected",
-                    R::key()
-                ),
-            )
+            return Err(Error::revoked(format!(
+                "{}: resource tainted by credential revoke — new acquires rejected",
+                R::key()
+            ))
             .with_resource_key(R::key()));
         }
         Ok(managed)
@@ -794,6 +798,9 @@ impl Manager {
 
         match &result {
             Ok(()) => {
+                if let Some(m) = &self.metrics {
+                    m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Success);
+                }
                 let _ = self.event_tx.send(ResourceEvent::SlotRefreshed {
                     key: key.clone(),
                     slot: slot.to_owned(),
@@ -801,6 +808,9 @@ impl Manager {
                 tracing::debug!("slot refresh hook completed");
             },
             Err(e) => {
+                if let Some(m) = &self.metrics {
+                    m.record_slot_refresh_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+                }
                 let _ = self.event_tx.send(ResourceEvent::SlotRefreshFailed {
                     key: key.clone(),
                     slot: slot.to_owned(),
@@ -862,6 +872,9 @@ impl Manager {
             .wait_for_drain(std::time::Duration::from_secs(30))
             .await
         {
+            if let Some(m) = &self.metrics {
+                m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::TimedOut);
+            }
             tracing::warn!(
                 outstanding = err.outstanding,
                 "slot revoke: drain timed out; proceeding to revoke hook \
@@ -880,6 +893,9 @@ impl Manager {
 
         match &result {
             Ok(()) => {
+                if let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Success);
+                }
                 let _ = self.event_tx.send(ResourceEvent::SlotRevoked {
                     key: key.clone(),
                     slot: slot.to_owned(),
@@ -887,6 +903,9 @@ impl Manager {
                 tracing::debug!("slot revoke hook completed");
             },
             Err(e) => {
+                if let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+                }
                 let _ = self.event_tx.send(ResourceEvent::SlotRefreshFailed {
                     key: key.clone(),
                     slot: slot.to_owned(),

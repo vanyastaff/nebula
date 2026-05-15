@@ -263,7 +263,7 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
     //    happens-before precondition:
     //
     //    (a) the taint is ALREADY active — a fresh acquire is rejected
-    //        with the exact `Cancelled` category, even though the revoke
+    //        with the exact `Unavailable` category, even though the revoke
     //        future has not resolved; and
     //    (b) the revoke task is still pending (parked in `wait_for_drain`
     //        on our held guard) and the revoke hook has NOT fired.
@@ -281,8 +281,8 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
         .expect_err("acquire while revoke in-flight must be rejected (resource tainted)");
     assert_eq!(
         rejected.category(),
-        ErrorCategory::Cancelled,
-        "tainted resource must reject new acquires with Cancelled, got: {rejected}"
+        ErrorCategory::Unavailable,
+        "tainted resource must reject new acquires with Unavailable, got: {rejected}"
     );
 
     // The revoke future must still be pending: it is blocked in
@@ -321,7 +321,7 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
     );
 
     // Resource stays tainted after revoke: a post-revoke acquire is still
-    // rejected with the exact `Cancelled` category.
+    // rejected with the exact `Unavailable` category.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let post = mgr
         .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
@@ -329,8 +329,8 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
         .expect_err("acquire after revoke must still be rejected (resource tainted)");
     assert_eq!(
         post.category(),
-        ErrorCategory::Cancelled,
-        "post-revoke acquire must still be rejected with Cancelled, got: {post}"
+        ErrorCategory::Unavailable,
+        "post-revoke acquire must still be rejected with Unavailable, got: {post}"
     );
 }
 

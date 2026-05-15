@@ -8,11 +8,23 @@
 //! Per ADR-0044 the credential rotation/revoke counters that the previous
 //! `Resource::Credential` model owned have been removed. The per-slot
 //! rotation hook shape is `on_credential_refresh(&self, slot_name, runtime)`
-//! / `on_credential_revoke(&self, slot_name, runtime)`. Unlabeled
-//! refresh/revoke **attempt** counters are wired into
-//! `Manager::{refresh_slot,revoke_slot}`; the per-`outcome`
-//! (`success`/`failed`/`timed_out`) labeled split — see
-//! [`OutcomeCountersSnapshot`] — is still owned by the metrics task.
+//! / `on_credential_revoke(&self, slot_name, runtime)`.
+//!
+//! Refresh/revoke dispatch is observed by **two distinct, non-overlapping**
+//! signals fed from `Manager::{refresh_slot,revoke_slot}`:
+//!
+//! - **Attempt counters** (unlabeled): incremented exactly once per dispatch
+//!   regardless of outcome — every call to `dispatch_*_erased` bumps these.
+//! - **Outcome split** (`success`/`failed`/`timed_out`, see
+//!   [`OutcomeCountersSnapshot`]): incremented once per *result* from the
+//!   `Ok`/`Err`/drain-timeout arms.
+//!
+//! They are *not* two overlapping totals of the same thing: an attempt is the
+//! act of dispatching; an outcome is how that one dispatch resolved. For a
+//! refresh path with no early skip, `attempts == success + failed`. The
+//! revoke path additionally records `timed_out` when the bounded in-flight
+//! drain expires before the hook runs (the hook still runs afterwards, so a
+//! `timed_out` revoke also records its eventual `success`/`failed`).
 
 use nebula_metrics::{Counter, MetricsRegistry};
 use nebula_metrics::{
@@ -56,6 +68,55 @@ pub struct ResourceOpsMetrics {
     destroy_total: Counter,
     slot_refresh_attempts: Counter,
     slot_revoke_attempts: Counter,
+    slot_refresh_outcomes: OutcomeCounters,
+    slot_revoke_outcomes: OutcomeCounters,
+}
+
+/// How a single per-slot dispatch resolved.
+///
+/// Closed set mirroring `nebula_metrics::naming::rotation_outcome` — one
+/// value is recorded per dispatch *result* (distinct from the unlabeled
+/// attempt counter, which counts every dispatch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotDispatchOutcome {
+    /// Hook returned `Ok(())`.
+    Success,
+    /// Hook returned `Err`.
+    Failed,
+    /// Bounded in-flight drain elapsed before the hook ran (`revoke_slot`).
+    TimedOut,
+}
+
+/// Process-local outcome split for one dispatch direction.
+///
+/// Backed by standalone [`Counter`]s (not registry-bound): the unlabeled
+/// `*_ATTEMPTS_TOTAL` registry counters carry the aggregate signal, while
+/// this per-`outcome` breakdown is exposed through
+/// [`OutcomeCountersSnapshot`] for in-process inspection. `Clone` is cheap
+/// (each `Counter` is an `Arc` handle), so clones share the same atomics.
+#[derive(Debug, Clone, Default)]
+struct OutcomeCounters {
+    success: Counter,
+    failed: Counter,
+    timed_out: Counter,
+}
+
+impl OutcomeCounters {
+    fn record(&self, outcome: SlotDispatchOutcome) {
+        match outcome {
+            SlotDispatchOutcome::Success => self.success.inc(),
+            SlotDispatchOutcome::Failed => self.failed.inc(),
+            SlotDispatchOutcome::TimedOut => self.timed_out.inc(),
+        }
+    }
+
+    fn snapshot(&self) -> OutcomeCountersSnapshot {
+        OutcomeCountersSnapshot {
+            success: self.success.get(),
+            failed: self.failed.get(),
+            timed_out: self.timed_out.get(),
+        }
+    }
 }
 
 impl ResourceOpsMetrics {
@@ -74,6 +135,8 @@ impl ResourceOpsMetrics {
                 .counter(NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL)?,
             slot_revoke_attempts: registry
                 .counter(NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL)?,
+            slot_refresh_outcomes: OutcomeCounters::default(),
+            slot_revoke_outcomes: OutcomeCounters::default(),
         })
     }
 
@@ -105,12 +168,11 @@ impl ResourceOpsMetrics {
     /// Records one per-slot credential **refresh** dispatch attempt
     /// (`Manager::refresh_slot`), regardless of hook outcome.
     ///
-    /// This is the unlabeled attempt counter only. The per-`outcome`
-    /// (`success` / `failed` / `timed_out`) split — see
-    /// [`OutcomeCountersSnapshot`] — is intentionally deferred to the
-    /// metrics task that owns the labeled `rotation_outcome` design;
-    /// failure observability today flows through
-    /// [`ResourceEvent::SlotRefreshFailed`](crate::events::ResourceEvent::SlotRefreshFailed).
+    /// This is the unlabeled *attempt* counter: it counts every dispatch.
+    /// The per-`outcome` breakdown is a separate, non-overlapping signal —
+    /// call [`record_slot_refresh_outcome`](Self::record_slot_refresh_outcome)
+    /// once the result is known. `ResourceEvent::SlotRefreshFailed`
+    /// remains the eventing surface for failure correlation.
     pub fn record_slot_refresh(&self) {
         self.slot_refresh_attempts.inc();
     }
@@ -120,6 +182,26 @@ impl ResourceOpsMetrics {
     /// attempt-only semantics as [`record_slot_refresh`](Self::record_slot_refresh).
     pub fn record_slot_revoke(&self) {
         self.slot_revoke_attempts.inc();
+    }
+
+    /// Records how one `Manager::refresh_slot` dispatch resolved.
+    ///
+    /// Distinct from [`record_slot_refresh`](Self::record_slot_refresh):
+    /// that counts the *attempt*, this partitions by *result*. With no
+    /// early skip, `slot_refresh_attempts == success + failed`.
+    pub fn record_slot_refresh_outcome(&self, outcome: SlotDispatchOutcome) {
+        self.slot_refresh_outcomes.record(outcome);
+    }
+
+    /// Records how one `Manager::revoke_slot` dispatch resolved.
+    ///
+    /// Same attempt-vs-outcome relationship as
+    /// [`record_slot_refresh_outcome`](Self::record_slot_refresh_outcome).
+    /// `TimedOut` is recorded when the bounded in-flight drain expires
+    /// before the hook runs; the hook still runs afterwards, so a
+    /// timed-out revoke also records its eventual `Success`/`Failed`.
+    pub fn record_slot_revoke_outcome(&self, outcome: SlotDispatchOutcome) {
+        self.slot_revoke_outcomes.record(outcome);
     }
 
     /// Captures a point-in-time snapshot of all counters.
@@ -138,6 +220,8 @@ impl ResourceOpsMetrics {
             destroy_total: self.destroy_total.get(),
             slot_refresh_attempts: self.slot_refresh_attempts.get(),
             slot_revoke_attempts: self.slot_revoke_attempts.get(),
+            slot_refresh_outcomes: self.slot_refresh_outcomes.snapshot(),
+            slot_revoke_outcomes: self.slot_revoke_outcomes.snapshot(),
         }
     }
 }
@@ -145,11 +229,12 @@ impl ResourceOpsMetrics {
 /// Per-`outcome` counter snapshot. Mirrors the
 /// `nebula_metrics::naming::rotation_outcome` closed label set.
 ///
-/// Forward-compatibility shape for the per-`outcome` rotation metric
-/// split. `Manager::{refresh_slot,revoke_slot}` currently feed the
-/// unlabeled attempt counters only; the `success`/`failed`/`timed_out`
-/// breakdown captured here is wired by the metrics task that owns the
-/// labeled `rotation_outcome` design.
+/// `Manager::{refresh_slot,revoke_slot}` feed this split from their
+/// `Ok` / `Err` / drain-timeout arms — one increment per dispatch
+/// *result*. It is a distinct signal from the unlabeled
+/// `*_ATTEMPTS_TOTAL` counters (one increment per dispatch *attempt*),
+/// not a second total of the same events: with no early skip,
+/// `attempts == success + failed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OutcomeCountersSnapshot {
     /// Resources that completed the dispatch hook with `Ok(())`.
@@ -173,13 +258,19 @@ pub struct ResourceOpsSnapshot {
     pub create_total: u64,
     /// Total resource instances destroyed.
     pub destroy_total: u64,
-    /// Total per-slot credential refresh dispatch attempts
-    /// (`Manager::refresh_slot`), unlabeled. Outcome split deferred —
-    /// see [`OutcomeCountersSnapshot`].
+    /// Total per-slot credential refresh dispatch *attempts*
+    /// (`Manager::refresh_slot`), unlabeled — one per dispatch. The
+    /// per-result breakdown is `slot_refresh_outcomes`.
     pub slot_refresh_attempts: u64,
-    /// Total per-slot credential revoke dispatch attempts
-    /// (`Manager::revoke_slot`), unlabeled.
+    /// Total per-slot credential revoke dispatch *attempts*
+    /// (`Manager::revoke_slot`), unlabeled — one per dispatch.
     pub slot_revoke_attempts: u64,
+    /// Per-`outcome` split of refresh dispatches (one per *result*).
+    /// Distinct from `slot_refresh_attempts`; see
+    /// [`OutcomeCountersSnapshot`].
+    pub slot_refresh_outcomes: OutcomeCountersSnapshot,
+    /// Per-`outcome` split of revoke dispatches (one per *result*).
+    pub slot_revoke_outcomes: OutcomeCountersSnapshot,
 }
 
 #[cfg(test)]
@@ -242,5 +333,43 @@ mod tests {
         // Read directly from registry to verify shared backing.
         let counter = registry.counter(NEBULA_RESOURCE_CREATE_TOTAL).unwrap();
         assert_eq!(counter.get(), 2);
+    }
+
+    #[test]
+    fn refresh_outcome_split_is_independent_of_attempts() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+
+        // Three dispatches: two ok, one failed. Attempts counts every
+        // dispatch; the outcome split partitions by result.
+        metrics.record_slot_refresh();
+        metrics.record_slot_refresh_outcome(SlotDispatchOutcome::Success);
+        metrics.record_slot_refresh();
+        metrics.record_slot_refresh_outcome(SlotDispatchOutcome::Success);
+        metrics.record_slot_refresh();
+        metrics.record_slot_refresh_outcome(SlotDispatchOutcome::Failed);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.slot_refresh_attempts, 3);
+        assert_eq!(snap.slot_refresh_outcomes.success, 2);
+        assert_eq!(snap.slot_refresh_outcomes.failed, 1);
+        assert_eq!(snap.slot_refresh_outcomes.timed_out, 0);
+    }
+
+    #[test]
+    fn revoke_outcome_split_counts_timed_out() {
+        let registry = MetricsRegistry::new();
+        let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+
+        metrics.record_slot_revoke();
+        metrics.record_slot_revoke_outcome(SlotDispatchOutcome::Success);
+        metrics.record_slot_revoke();
+        metrics.record_slot_revoke_outcome(SlotDispatchOutcome::TimedOut);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.slot_revoke_attempts, 2);
+        assert_eq!(snap.slot_revoke_outcomes.success, 1);
+        assert_eq!(snap.slot_revoke_outcomes.failed, 0);
+        assert_eq!(snap.slot_revoke_outcomes.timed_out, 1);
     }
 }

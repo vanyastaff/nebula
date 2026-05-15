@@ -76,16 +76,17 @@ pub trait AnyManagedResource: Send + Sync + 'static {
     /// Type-erased per-slot refresh dispatch.
     ///
     /// Boxed future because `dyn AnyManagedResource` cannot carry an
-    /// RPITIT method. Forwards to `ManagedResource::dispatch_on_refresh`,
-    /// which borrows the live runtime per topology and invokes the
-    /// resource's `&self` hook.
+    /// RPITIT method. Forwards to `ManagedResource::dispatch_slot_hook`
+    /// with `refresh = true`, which borrows the live runtime per topology
+    /// and invokes the resource's `&self` hook.
     fn dispatch_on_refresh_erased<'a>(
         &'a self,
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 
     /// Type-erased per-slot revoke dispatch (boxed for the same reason as
-    /// [`Self::dispatch_on_refresh_erased`]).
+    /// [`Self::dispatch_on_refresh_erased`]; forwards to
+    /// `ManagedResource::dispatch_slot_hook` with `refresh = false`).
     fn dispatch_on_revoke_erased<'a>(
         &'a self,
         slot: &'a str,
@@ -129,14 +130,14 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
         &'a self,
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(self.dispatch_on_refresh(slot))
+        Box::pin(self.dispatch_slot_hook(slot, true))
     }
 
     fn dispatch_on_revoke_erased<'a>(
         &'a self,
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-        Box::pin(self.dispatch_on_revoke(slot))
+        Box::pin(self.dispatch_slot_hook(slot, false))
     }
 }
 

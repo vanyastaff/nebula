@@ -27,6 +27,14 @@ pub enum ErrorKind {
     NotFound,
     /// `CancellationToken` fired.
     Cancelled,
+    /// Resource tainted by a credential revoke — new acquires are
+    /// rejected until the credential is re-registered.
+    ///
+    /// Non-terminal: the taint is lifted when the resource is
+    /// re-registered with a fresh credential, so this classifies as a
+    /// transient/unavailable condition (retry after a short backoff),
+    /// **not** a cancellation.
+    Revoked,
 }
 
 /// Whether the error is resource-wide or target-specific.
@@ -86,12 +94,17 @@ impl Error {
 
     /// Returns `true` if the error is retryable.
     ///
-    /// `Transient`, `Exhausted`, and `Backpressure` are retryable because they
-    /// represent transient conditions that resolve with time or backoff.
+    /// `Transient`, `Exhausted`, `Backpressure`, and `Revoked` are
+    /// retryable because they represent transient conditions that resolve
+    /// with time or backoff (`Revoked` clears once the credential is
+    /// re-registered).
     pub fn is_retryable(&self) -> bool {
         matches!(
             self.kind,
-            ErrorKind::Transient | ErrorKind::Exhausted { .. } | ErrorKind::Backpressure
+            ErrorKind::Transient
+                | ErrorKind::Exhausted { .. }
+                | ErrorKind::Backpressure
+                | ErrorKind::Revoked
         )
     }
 
@@ -99,10 +112,13 @@ impl Error {
     ///
     /// - `Exhausted` errors carry an explicit `retry_after` from the upstream.
     /// - `Backpressure` errors return a default 50ms hint (pool slots free up quickly).
+    /// - `Revoked` errors return a 100ms hint (re-registration is operator-paced;
+    ///   a short floor avoids a hot retry loop without stalling recovery).
     pub fn retry_after(&self) -> Option<Duration> {
         match &self.kind {
             ErrorKind::Exhausted { retry_after } => *retry_after,
             ErrorKind::Backpressure => Some(Duration::from_millis(50)),
+            ErrorKind::Revoked => Some(Duration::from_millis(100)),
             _ => None,
         }
     }
@@ -153,6 +169,14 @@ impl Error {
         Self::new(ErrorKind::Cancelled, "operation cancelled")
     }
 
+    /// Creates a revoked error (resource tainted by a credential revoke).
+    ///
+    /// Non-terminal — retryable with a short backoff (see
+    /// [`is_retryable`](Self::is_retryable) / [`retry_after`](Self::retry_after)).
+    pub fn revoked(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Revoked, message)
+    }
+
     /// Creates a backpressure error.
     pub fn backpressure(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Backpressure, message)
@@ -201,6 +225,11 @@ impl nebula_error::Classify for Error {
             ErrorKind::Backpressure => nebula_error::ErrorCategory::RateLimit,
             ErrorKind::NotFound => nebula_error::ErrorCategory::NotFound,
             ErrorKind::Cancelled => nebula_error::ErrorCategory::Cancelled,
+            // Non-terminal: the taint clears on credential re-registration.
+            // `Unavailable` is the retryable family the shared classifier
+            // uses for "temporarily down, try again" (see
+            // `ErrorCategory::is_default_retryable`).
+            ErrorKind::Revoked => nebula_error::ErrorCategory::Unavailable,
         }
     }
 
@@ -212,6 +241,7 @@ impl nebula_error::Classify for Error {
             ErrorKind::Backpressure => "RESOURCE:BACKPRESSURE",
             ErrorKind::NotFound => "RESOURCE:NOT_FOUND",
             ErrorKind::Cancelled => "RESOURCE:CANCELLED",
+            ErrorKind::Revoked => "RESOURCE:REVOKED",
         })
     }
 
@@ -283,6 +313,31 @@ mod tests {
     fn backpressure_has_default_retry_after() {
         let err = Error::backpressure("pool full");
         assert_eq!(err.retry_after(), Some(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn revoked_is_retryable_and_not_cancelled() {
+        use nebula_error::{Classify, ErrorCategory};
+
+        let err = Error::revoked("tainted by revoke");
+        // A tainted resource is acquirable again once the credential is
+        // re-registered — semantically transient, NOT terminal.
+        assert!(err.is_retryable());
+        assert_eq!(*err.kind(), ErrorKind::Revoked);
+        assert_ne!(
+            Classify::category(&err),
+            ErrorCategory::Cancelled,
+            "Revoked must not classify as Cancelled (it is non-terminal)"
+        );
+        assert_eq!(Classify::category(&err), ErrorCategory::Unavailable);
+        assert_eq!(Classify::code(&err).as_str(), "RESOURCE:REVOKED");
+        assert_eq!(
+            err.retry_after(),
+            Some(Duration::from_millis(100)),
+            "Revoked carries a short retry hint"
+        );
+        let hint = Classify::retry_hint(&err).expect("Revoked has a retry hint");
+        assert_eq!(hint.after, Some(Duration::from_millis(100)));
     }
 
     #[test]
