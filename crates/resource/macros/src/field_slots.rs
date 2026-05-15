@@ -133,7 +133,8 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs) -> Result<ParsedCredenti
     })
 }
 
-/// Decode the field type, recognising the four allowed shapes.
+/// Decode a `#[credential]` field type into `(optional, lazy, inner C)` per
+/// the module-level shape table.
 ///
 /// Layering, outermost first: an optional `Option<…>` (optional slot), the
 /// mandatory `SlotCell<…>` cell, an optional `Lazy<…>` (lazy slot), then the
@@ -158,6 +159,21 @@ fn decode_field_type(ty: &Type) -> Result<(bool, bool, Type)> {
     let Some(inner) = strip_path_tail(&after_lazy, "CredentialGuard") else {
         return Err(field_shape_error(ty));
     };
+
+    // The generated accessor emits a single fixed body that only fits the
+    // plain `SlotCell<CredentialGuard<C>>` shape; reject wrapper shapes at the
+    // derive site until the accessor is generalized.
+    if optional || lazy {
+        return Err(syn::Error::new_spanned(
+            ty,
+            format!(
+                "`#[credential]` slot must currently be exactly \
+                 `SlotCell<CredentialGuard<C>>` — `Option<…>`- and `Lazy<…>`-wrapped \
+                 slots are not yet supported by the generated accessor; got: {}",
+                quote!(#ty),
+            ),
+        ));
+    }
 
     Ok((optional, lazy, inner))
 }

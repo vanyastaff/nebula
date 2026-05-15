@@ -22,6 +22,7 @@ fn derive_resource_compile_fail_probes() {
     t.compile_fail("tests/probes/derive_invalid_topology.rs");
     t.compile_fail("tests/probes/derive_unknown_attr_key.rs");
     t.compile_fail("tests/probes/derive_tuple_struct.rs");
+    t.compile_fail("tests/probes/derive_slot_option_wrapped.rs");
 }
 
 #[test]
