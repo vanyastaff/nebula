@@ -216,6 +216,7 @@ impl Manager {
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             resilience,
             recovery_gate,
+            tainted: AtomicBool::new(false),
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
@@ -712,6 +713,207 @@ impl Manager {
             .ok_or_else(|| Error::not_found(&R::key()))
     }
 
+    /// [`lookup`](Self::lookup) plus the resource-level taint check.
+    ///
+    /// Every `acquire_*` path funnels through here so a single check
+    /// rejects new leases once `revoke_slot` has tainted the resource —
+    /// the same single-funnel discipline `lookup` uses for the
+    /// `shutting_down` race. Diagnostic paths (`health_check`,
+    /// `pool_stats`, `reload_config`, `warmup_pool`) intentionally use the
+    /// plain `lookup` so they keep working on a tainted resource.
+    fn lookup_for_acquire<R: Resource>(
+        &self,
+        scope: &ScopeLevel,
+    ) -> Result<Arc<ManagedResource<R>>, Error> {
+        let managed = self.lookup::<R>(scope)?;
+        if managed.is_tainted() {
+            return Err(Error::new(
+                crate::error::ErrorKind::Cancelled,
+                format!(
+                    "{}: resource tainted by credential revoke — new acquires rejected",
+                    R::key()
+                ),
+            )
+            .with_resource_key(R::key()));
+        }
+        Ok(managed)
+    }
+
+    /// Notifies a registered resource that one of its `#[credential]`
+    /// slots was rotated, after the engine has installed the fresh guard.
+    ///
+    /// Resolves `(key, scope)` to the live [`ManagedResource`] via the same
+    /// registry lookup the `acquire_*` family uses, then borrows the live
+    /// `Runtime` per topology and invokes
+    /// [`Resource::on_credential_refresh`] for `slot`. The slot cell itself
+    /// lives on the author's resource struct and is populated/rotated by
+    /// the engine through `&self` (`SlotCell::store`) — this method does
+    /// **not** own a slot map; it only drives the per-resource hook.
+    ///
+    /// Emits [`ResourceEvent::SlotRefreshed`] on success or
+    /// [`ResourceEvent::SlotRefreshFailed`] (with an already-stringified,
+    /// credential-free error) on failure, and records the corresponding
+    /// slot-refresh metric.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource is registered for
+    ///   `key` at `scope`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - Whatever the resource's `on_credential_refresh` hook maps into [`Error`].
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_refresh",
+        skip(self),
+        fields(key = %key, slot = %slot, topology, duration_ms)
+    )]
+    pub async fn refresh_slot(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+    ) -> Result<(), Error> {
+        let started = Instant::now();
+        let managed = self.lookup_any_for_slot(key, &scope)?;
+        tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
+
+        // Attempt counter — incremented once per dispatch regardless of
+        // outcome (the constant is documented as an *attempts* counter).
+        if let Some(m) = &self.metrics {
+            m.record_slot_refresh();
+        }
+
+        let result = managed.dispatch_on_refresh_erased(slot).await;
+        tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
+
+        match &result {
+            Ok(()) => {
+                let _ = self.event_tx.send(ResourceEvent::SlotRefreshed {
+                    key: key.clone(),
+                    slot: slot.to_owned(),
+                });
+                tracing::debug!("slot refresh hook completed");
+            },
+            Err(e) => {
+                let _ = self.event_tx.send(ResourceEvent::SlotRefreshFailed {
+                    key: key.clone(),
+                    slot: slot.to_owned(),
+                    error: e.to_string(),
+                });
+                tracing::warn!(error = %e, "slot refresh hook failed");
+            },
+        }
+        result
+    }
+
+    /// Notifies a registered resource that one of its `#[credential]`
+    /// slots was revoked.
+    ///
+    /// Sequence (reusing existing primitives, no parallel mechanism):
+    ///
+    /// 1. **Taint** the [`ManagedResource`] so the `acquire_*` funnel rejects new leases on the
+    ///    revoked credential *immediately* (same flag-gated rejection as `shutting_down`).
+    /// 2. **Drain** in-flight handles via the manager's shared `drain_tracker` ([`wait_for_drain`],
+    ///    the exact primitive `graceful_shutdown` uses).
+    /// 3. **Dispatch** [`Resource::on_credential_revoke`] against the live runtime per topology.
+    /// 4. Emit [`ResourceEvent::SlotRevoked`].
+    ///
+    /// The drain is best-effort bounded: a long-held handle should not wedge
+    /// revoke forever, so a bounded wait is used and a timeout still
+    /// proceeds to the revoke hook (the taint already stops *new* leases;
+    /// the hook makes the resource stop emitting on the old credential).
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource is registered for
+    ///   `key` at `scope`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_refresh",
+        skip(self),
+        fields(key = %key, slot = %slot, topology, duration_ms, op = "revoke")
+    )]
+    pub async fn revoke_slot(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+    ) -> Result<(), Error> {
+        let started = Instant::now();
+        let managed = self.lookup_any_for_slot(key, &scope)?;
+        tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
+
+        // 1. Taint first — rejects new acquires before we drain/dispatch.
+        managed.taint_erased();
+
+        // 2. Drain in-flight handles via the shared drain tracker (the same
+        //    primitive graceful_shutdown uses). Bounded so a stuck handle
+        //    cannot wedge revoke; the taint already stops new leases.
+        if let Err(err) = self
+            .wait_for_drain(std::time::Duration::from_secs(30))
+            .await
+        {
+            tracing::warn!(
+                outstanding = err.outstanding,
+                "slot revoke: drain timed out; proceeding to revoke hook \
+                 (resource already tainted, no new leases)"
+            );
+        }
+
+        // Attempt counter — once per dispatch regardless of outcome.
+        if let Some(m) = &self.metrics {
+            m.record_slot_revoke();
+        }
+
+        // 3. Dispatch the revoke hook against the live runtime.
+        let result = managed.dispatch_on_revoke_erased(slot).await;
+        tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
+
+        match &result {
+            Ok(()) => {
+                let _ = self.event_tx.send(ResourceEvent::SlotRevoked {
+                    key: key.clone(),
+                    slot: slot.to_owned(),
+                });
+                tracing::debug!("slot revoke hook completed");
+            },
+            Err(e) => {
+                let _ = self.event_tx.send(ResourceEvent::SlotRefreshFailed {
+                    key: key.clone(),
+                    slot: slot.to_owned(),
+                    error: e.to_string(),
+                });
+                tracing::warn!(error = %e, "slot revoke hook failed");
+            },
+        }
+        result
+    }
+
+    /// Type-erased `(key, scope)` → live `ManagedResource` resolution for
+    /// the slot-rotation entry points.
+    ///
+    /// `refresh_slot` / `revoke_slot` take a `ResourceKey` (not a generic
+    /// `R`), so they cannot use the typed `lookup::<R>`. This mirrors its
+    /// shutdown-race guard (reject once `shutting_down` is observed) and
+    /// resolves through the same registry the typed path uses, via the
+    /// type-erased `AnyManagedResource` view.
+    fn lookup_any_for_slot(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+    ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
+        if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
+            return Err(Error::cancelled());
+        }
+        self.registry
+            .get(key, scope)
+            .ok_or_else(|| Error::not_found(key))
+    }
+
     /// Acquires a handle to a pooled resource.
     ///
     /// Performs typed lookup, then dispatches to the pool runtime's acquire.
@@ -736,7 +938,7 @@ impl Manager {
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race: pre-count this
         // acquire from the moment `lookup()` succeeds. RAII decrements + notifies
         // on every failure / cancel / panic path; on success the slot is handed
@@ -807,7 +1009,7 @@ impl Manager {
         R::Lease: Clone + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -859,7 +1061,7 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -919,7 +1121,7 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -979,7 +1181,7 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -1045,7 +1247,7 @@ impl Manager {
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -1119,7 +1321,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        let managed = self.lookup::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         let config = managed.config();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {

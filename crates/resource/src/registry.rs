@@ -5,13 +5,17 @@
 
 use std::{
     any::{Any, TypeId},
+    future::Future,
+    pin::Pin,
     sync::Arc,
 };
 
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 
-use crate::{resource::Resource, runtime::managed::ManagedResource};
+use crate::{
+    error::Error, resource::Resource, runtime::managed::ManagedResource, topology_tag::TopologyTag,
+};
 
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
@@ -56,6 +60,36 @@ pub trait AnyManagedResource: Send + Sync + 'static {
     /// Diagnostic-only — typed callers should prefer
     /// `ManagedResource::status().phase` after a successful downcast.
     fn phase_erased(&self) -> crate::state::ResourcePhase;
+
+    /// Type-erased topology tag — used by `Manager::{refresh,revoke}_slot`
+    /// to label the rotation tracing span without a typed downcast.
+    fn topology_tag_erased(&self) -> TopologyTag;
+
+    /// Type-erased resource-level taint (credential revoke).
+    ///
+    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
+    /// it must taint through the erased registry view. Symmetric to the
+    /// other `*_erased` hooks: it forwards to `ManagedResource::taint`,
+    /// which sets the same flag the typed `acquire_*` funnel checks.
+    fn taint_erased(&self);
+
+    /// Type-erased per-slot refresh dispatch.
+    ///
+    /// Boxed future because `dyn AnyManagedResource` cannot carry an
+    /// RPITIT method. Forwards to `ManagedResource::dispatch_on_refresh`,
+    /// which borrows the live runtime per topology and invokes the
+    /// resource's `&self` hook.
+    fn dispatch_on_refresh_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+
+    /// Type-erased per-slot revoke dispatch (boxed for the same reason as
+    /// [`Self::dispatch_on_refresh_erased`]).
+    fn dispatch_on_revoke_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
@@ -81,6 +115,28 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 
     fn phase_erased(&self) -> crate::state::ResourcePhase {
         self.status().phase
+    }
+
+    fn topology_tag_erased(&self) -> TopologyTag {
+        self.topology.tag()
+    }
+
+    fn taint_erased(&self) {
+        self.taint();
+    }
+
+    fn dispatch_on_refresh_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(self.dispatch_on_refresh(slot))
+    }
+
+    fn dispatch_on_revoke_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(self.dispatch_on_revoke(slot))
     }
 }
 
@@ -283,6 +339,10 @@ mod tests {
     struct FakeA;
     struct FakeB;
 
+    fn unit_dispatch<'a>() -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     impl AnyManagedResource for FakeA {
         fn resource_key(&self) -> ResourceKey {
             ResourceKey::new("fake").unwrap()
@@ -297,6 +357,22 @@ mod tests {
         fn set_failed_erased(&self, _reason: &str) {}
         fn phase_erased(&self) -> crate::state::ResourcePhase {
             crate::state::ResourcePhase::Ready
+        }
+        fn topology_tag_erased(&self) -> TopologyTag {
+            TopologyTag::Resident
+        }
+        fn taint_erased(&self) {}
+        fn dispatch_on_refresh_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
+        }
+        fn dispatch_on_revoke_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
         }
     }
 
@@ -314,6 +390,22 @@ mod tests {
         fn set_failed_erased(&self, _reason: &str) {}
         fn phase_erased(&self) -> crate::state::ResourcePhase {
             crate::state::ResourcePhase::Ready
+        }
+        fn topology_tag_erased(&self) -> TopologyTag {
+            TopologyTag::Resident
+        }
+        fn taint_erased(&self) {}
+        fn dispatch_on_refresh_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
+        }
+        fn dispatch_on_revoke_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
         }
     }
 

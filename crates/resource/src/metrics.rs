@@ -6,18 +6,22 @@
 //! point-in-time view as [`ResourceOpsSnapshot`].
 //!
 //! Per ADR-0044 the credential rotation/revoke counters that the previous
-//! `Resource::Credential` model owned have been removed. Per-slot rotation
-//! counters are not yet wired; the hook shape is
-//! `on_credential_refresh(&self, slot_name, runtime)` and
-//! `on_credential_revoke(&self, slot_name, runtime)` per ADR-0044
-//! (see `.ai-factory/PHASE4_BLOCKED.md` for the deferral rationale).
+//! `Resource::Credential` model owned have been removed. The per-slot
+//! rotation hook shape is `on_credential_refresh(&self, slot_name, runtime)`
+//! / `on_credential_revoke(&self, slot_name, runtime)`. Unlabeled
+//! refresh/revoke **attempt** counters are wired into
+//! `Manager::{refresh_slot,revoke_slot}`; the per-`outcome`
+//! (`success`/`failed`/`timed_out`) labeled split — see
+//! [`OutcomeCountersSnapshot`] — is still owned by the metrics task.
 
 use nebula_metrics::{Counter, MetricsRegistry};
 use nebula_metrics::{
     MetricsResult,
     naming::{
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
-        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
+        NEBULA_RESOURCE_RELEASE_TOTAL,
     },
 };
 
@@ -50,6 +54,8 @@ pub struct ResourceOpsMetrics {
     release_total: Counter,
     create_total: Counter,
     destroy_total: Counter,
+    slot_refresh_attempts: Counter,
+    slot_revoke_attempts: Counter,
 }
 
 impl ResourceOpsMetrics {
@@ -64,6 +70,10 @@ impl ResourceOpsMetrics {
             release_total: registry.counter(NEBULA_RESOURCE_RELEASE_TOTAL)?,
             create_total: registry.counter(NEBULA_RESOURCE_CREATE_TOTAL)?,
             destroy_total: registry.counter(NEBULA_RESOURCE_DESTROY_TOTAL)?,
+            slot_refresh_attempts: registry
+                .counter(NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL)?,
+            slot_revoke_attempts: registry
+                .counter(NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL)?,
         })
     }
 
@@ -92,6 +102,26 @@ impl ResourceOpsMetrics {
         self.destroy_total.inc();
     }
 
+    /// Records one per-slot credential **refresh** dispatch attempt
+    /// (`Manager::refresh_slot`), regardless of hook outcome.
+    ///
+    /// This is the unlabeled attempt counter only. The per-`outcome`
+    /// (`success` / `failed` / `timed_out`) split — see
+    /// [`OutcomeCountersSnapshot`] — is intentionally deferred to the
+    /// metrics task that owns the labeled `rotation_outcome` design;
+    /// failure observability today flows through
+    /// [`ResourceEvent::SlotRefreshFailed`](crate::events::ResourceEvent::SlotRefreshFailed).
+    pub fn record_slot_refresh(&self) {
+        self.slot_refresh_attempts.inc();
+    }
+
+    /// Records one per-slot credential **revoke** dispatch attempt
+    /// (`Manager::revoke_slot`), regardless of hook outcome. Same
+    /// attempt-only semantics as [`record_slot_refresh`](Self::record_slot_refresh).
+    pub fn record_slot_revoke(&self) {
+        self.slot_revoke_attempts.inc();
+    }
+
     /// Captures a point-in-time snapshot of all counters.
     ///
     /// Each counter is read with [`Relaxed`](std::sync::atomic::Ordering::Relaxed)
@@ -106,6 +136,8 @@ impl ResourceOpsMetrics {
             release_total: self.release_total.get(),
             create_total: self.create_total.get(),
             destroy_total: self.destroy_total.get(),
+            slot_refresh_attempts: self.slot_refresh_attempts.get(),
+            slot_revoke_attempts: self.slot_revoke_attempts.get(),
         }
     }
 }
@@ -113,9 +145,11 @@ impl ResourceOpsMetrics {
 /// Per-`outcome` counter snapshot. Mirrors the
 /// `nebula_metrics::naming::rotation_outcome` closed label set.
 ///
-/// Retained for forward-compatibility with the per-slot rotation metrics;
-/// counters are not yet wired into Manager::{refresh_slot,revoke_slot}
-/// (see `.ai-factory/PHASE4_BLOCKED.md` for the deferral rationale).
+/// Forward-compatibility shape for the per-`outcome` rotation metric
+/// split. `Manager::{refresh_slot,revoke_slot}` currently feed the
+/// unlabeled attempt counters only; the `success`/`failed`/`timed_out`
+/// breakdown captured here is wired by the metrics task that owns the
+/// labeled `rotation_outcome` design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OutcomeCountersSnapshot {
     /// Resources that completed the dispatch hook with `Ok(())`.
@@ -139,6 +173,13 @@ pub struct ResourceOpsSnapshot {
     pub create_total: u64,
     /// Total resource instances destroyed.
     pub destroy_total: u64,
+    /// Total per-slot credential refresh dispatch attempts
+    /// (`Manager::refresh_slot`), unlabeled. Outcome split deferred —
+    /// see [`OutcomeCountersSnapshot`].
+    pub slot_refresh_attempts: u64,
+    /// Total per-slot credential revoke dispatch attempts
+    /// (`Manager::revoke_slot`), unlabeled.
+    pub slot_revoke_attempts: u64,
 }
 
 #[cfg(test)]
