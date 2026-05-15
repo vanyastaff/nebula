@@ -27,6 +27,9 @@
 //! - `os_sandbox` — Linux Landlock + rlimit child hardening (fixed system
 //!   paths; no per-plugin grant).
 //! - `SandboxError` — typed transport error.
+//! - `scope::{ScopeHash, scope_hash}` — pure credential-scope identity
+//!   (ADR-0025 §2). Computed from caller-supplied slot-name strings only;
+//!   the engine owns the process pool that keys on it.
 //!
 //! ## Canon
 //!
@@ -40,6 +43,7 @@
 
 pub mod error;
 pub mod os_sandbox;
+pub mod scope;
 
 mod codec;
 mod dispatch;
@@ -48,3 +52,4 @@ mod spawn;
 
 pub use dispatch::ProcessSandbox;
 pub use error::SandboxError;
+pub use scope::{ScopeHash, scope_hash};
