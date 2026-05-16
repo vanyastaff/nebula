@@ -68,6 +68,16 @@ chk "normalize_argv0 unwraps sudo -u value" cargo "$(normalize_argv0 'sudo -u ro
 chk "normalize_argv0 nice -n value" cargo "$(normalize_argv0 'nice -n 10 cargo nextest run')"
 chk "normalize_argv0 fail-closed on subshell" UNPARSEABLE "$(normalize_argv0 'cargo $(echo test)')"
 chk "normalize_argv0 fail-closed on chaining" UNPARSEABLE "$(normalize_argv0 'cargo test; rm -rf x')"
+chk "normalize_argv0 resolves quoted argv0" cargo "$(normalize_argv0 "ca'rg'o fmt --all")"
+chk "normalize_argv0 resolves dquote argv0" git "$(normalize_argv0 'g"i"t push --force')"
+chk "normalize_argv0 keeps quoted arg value" git "$(normalize_argv0 'git commit -m "fix: bug"')"
+chk "normalize_argv0 unrelated quoted ok" gh "$(normalize_argv0 'gh pr create --title "X Y"')"
+chk "normalize_argv0 wrapper-only UNPARSEABLE" UNPARSEABLE "$(normalize_argv0 'sudo')"
+chk "normalize_argv0 fail-closed unbalanced quote" UNPARSEABLE "$(normalize_argv0 'echo "oops')"
+chk "normalize_argv0 fail-closed env -S" UNPARSEABLE "$(normalize_argv0 'env -S cargo fmt --all')"
+chk "normalize_argv0 strips windows path and exe suffix" cargo "$(normalize_argv0 'C:\tools\cargo.exe fmt --all')"
+LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
+chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[]}' "$(load_state "$LS_T")"; rm -f "$LS_T"
 chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
 chk "crate_of windows path" engine "$(crate_of 'crates\\engine\\src\\engine.rs')"
 chk "crate_of none" "" "$(crate_of 'README.md')"
@@ -108,35 +118,50 @@ git_common_dir() { # $1=cwd
   fi
 }
 turn_state_path() { printf '%s/.nebula-guard/turn-%s.json' "$(git_common_dir "${2:-$PWD}")" "${1:-unknown}"; }
-load_state() { # $1=path
-  if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then cat "$1"
-  else printf '{"impl_files_edited":[],"gate_green":[]}'; fi
+load_state() { # $1=path -> always {impl_files_edited:[...],gate_green:[...]}
+  local d='{"impl_files_edited":[],"gate_green":[]}'
+  if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then
+    jq -c '{impl_files_edited:(if (.impl_files_edited|type)=="array" then .impl_files_edited else [] end),gate_green:(if (.gate_green|type)=="array" then .gate_green else [] end)}' "$1" 2>/dev/null || printf '%s' "$d"
+  else printf '%s' "$d"; fi
 }
 save_state() { mkdir -p "$(dirname "$1")" 2>/dev/null && printf '%s' "$2" >"$1" 2>/dev/null || true; }
 
 crate_of() { # $1=path -> crate name or empty
-  local p="${1//\\//}"
+  local p="${1//\\\\//}"; p="${p//\\//}"
   [[ "$p" =~ (^|/)crates/([^/]+)/ ]] && printf '%s' "${BASH_REMATCH[2]}"
 }
 is_lib_rust() { # $1=path -> return 0 if library rust
-  local p="${1//\\//}"
+  local p="${1//\\\\//}"; p="${p//\\//}"
   [[ "$p" == *.rs ]] || return 1
   [[ "$p" =~ (^|/)crates/[^/]+/src/ ]] || return 1
   [[ "$p" =~ /(tests|benches|examples)/ ]] && return 1
   [[ "$p" =~ /(main|build)\.rs$ ]] && return 1
   return 0
 }
-# Fail-closed: echoes argv0, or "UNPARSEABLE" for anything we cannot safely
-# analyze (caller MUST treat UNPARSEABLE as deny).
-normalize_argv0() { # $1=raw command
+# resolve_cmd: returns the command with BALANCED quotes removed (== the shell's
+# own concatenation, so `ca'rg'o`→`cargo`, `-m "fix: x"`→`-m fix: x`), or
+# "UNPARSEABLE" for what a non-shell tokenizer must not guess at: shell
+# substitution/chaining/metachars, UNBALANCED quotes, or `env --split-string`
+# (argument is an opaque re-split command string). Scoped fail-closed: a benign
+# quoted command (git commit -m "msg") resolves and is analyzed normally; only
+# genuinely unanalyzable input denies — so the guard does not cripple workflow.
+resolve_cmd() { # $1=raw -> resolved string OR "UNPARSEABLE"
   local c="$1"
   case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*) printf 'UNPARSEABLE'; return;; esac
   local dq="${c//[^\"]/}" sq="${c//[^\']/}"
   if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
+  c="${c//\"/}"; c="${c//\'/}"
+  case " $c " in *' env '*' -S '*|*' env '*' -S'*|*' env '*' --split-string'*|*' --split-string='*) printf 'UNPARSEABLE'; return;; esac
+  printf '%s' "$c"
+}
+# Fail-closed: echoes argv0 basename, or "UNPARSEABLE" (caller MUST deny it).
+normalize_argv0() { # $1=raw command
+  local c; c="$(resolve_cmd "$1")"
+  [ "$c" = "UNPARSEABLE" ] && { printf 'UNPARSEABLE'; return; }
   local -a t; read -ra t <<< "$c"
   local n=${#t[@]} i=0
   local -A WRAP=([env]=1 [sudo]=1 [nice]=1 [timeout]=1 [watch]=1 [xargs]=1 [command]=1 [stdbuf]=1 [nohup]=1)
-  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-S]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
+  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
   while (( i < n )); do
     local w="${t[$i]}"
     if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$w" != */* ]]; then ((i++)); continue; fi
@@ -155,7 +180,7 @@ normalize_argv0() { # $1=raw command
     break
   done
   if (( i >= n )); then printf 'UNPARSEABLE'; return; fi
-  local a="${t[$i]}"; printf '%s' "${a##*/}"
+  local a="${t[$i]//\\//}"; a="${a##*/}"; printf '%s' "${a%.exe}"
 }
 ```
 
@@ -231,6 +256,11 @@ chk "A denies cargo fmt --all"      2 "$(adeny "$(mk 'cargo fmt --all')")"
 chk "A denies timeout-wrapped fmt --all" 2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
 chk "A fail-closed on subshell"     2 "$(adeny "$(mk 'cargo \$(echo test)')")"
 chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
+chk "A allows conventional commit"  0 "$(adeny "$(mk 'git commit -m \"feat(x): y\"')")"
+chk "A allows gh pr create quoted"  0 "$(adeny "$(mk 'gh pr create --title \"Add X\"')")"
+chk "A allows grep string literal"  0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
+chk "A denies quoted-token bypass"  2 "$(adeny "$(mk 'cargo \"fmt\" --all')")"
+chk "A denies env -S fmt --all"     2 "$(adeny "$(mk 'env -S cargo fmt --all')")"
 ```
 
 - [ ] **Step 2: Run** → FAIL (`bash-deny.sh` missing).
@@ -245,9 +275,13 @@ read_input
 have_jq || deny "jq is required by the bash guard and is missing (fail-closed). Install jq."
 [ "$(jqg '.tool_name')" = "Bash" ] || allow
 cmd="$(jqg '.tool_input.command')"; [ -n "$cmd" ] || allow
+# Match deny rules against the RESOLVED command (balanced quotes removed like
+# the shell) so `--"no-verify"` / `ca"rg"o` cannot hide a violation, while
+# benign quoted commands still resolve and pass.
+raw="$(resolve_cmd "$cmd")"
+[ "$raw" = "UNPARSEABLE" ] && deny "Command not safely verifiable (shell substitution/chaining, unbalanced quotes, or env --split-string). Run it as a single plain command."
 argv0="$(normalize_argv0 "$cmd")"
-[ "$argv0" = "UNPARSEABLE" ] && deny "Command too complex to verify safely (subshell/chaining/quotes). Run it as a single plain command."
-raw="$cmd"
+[ "$argv0" = "UNPARSEABLE" ] && deny "Command not safely verifiable. Run it as a single plain command."
 if [ "$argv0" = git ] && [[ "$raw" =~ (^|[[:space:]])commit([[:space:]]|$) ]] \
    && [[ "$raw" =~ (--no-verify|(^|[[:space:]])-n([[:space:]]|$)|--no-gpg-sign|core\.hooksPath=) ]]; then
   deny "Bypassing lefthook is the top-level cheat. Commit without --no-verify/-n/--no-gpg-sign; fix what the hook flags."

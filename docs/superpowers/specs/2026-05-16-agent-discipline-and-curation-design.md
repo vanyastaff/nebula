@@ -98,11 +98,18 @@ PreToolUse/Stop — no JSON emission needed; simpler and robust in bash). `jq`
 parses stdin (`tool_input.command`, `file_path`, `session_id`,
 `stop_hook_active`, …). **Failure-mode split (the load-bearing design choice):**
 a hook that hits its *own internal error* fails **open** (`exit 0`) so a broken
-guard never wedges the session — EXCEPT hook **A**, which treats a command it
-**cannot confidently normalize** (nested quotes, `$(...)`, backticks, unknown
-wrapper) as **deny** (fail-**closed**): an over-block is a safe annoyance, an
-under-block is a security hole. This makes a deliberately *simple, conservative*
-bash matcher strictly safer than a clever tokenizer that can be evaded (the
+guard never wedges the session — EXCEPT hook **A**, which is fail-**closed** on
+input it **cannot confidently normalize**. `resolve_cmd` removes *balanced*
+quotes exactly as the shell concatenates them (`ca'rg'o`→`cargo`,
+`-m "fix: x"`→`-m fix: x`) and matches deny rules on that resolved form, so
+benign quoted commands (`git commit -m "msg"`, `gh pr create --title "X"`) pass
+and obfuscated ones (`ca"rg"o`, `--"no-verify"`) are still caught; only
+genuinely unanalyzable input — shell substitution/chaining/metachars,
+*unbalanced* quotes, or `env --split-string` — denies. Scoped fail-closed: an
+over-block on the narrow unanalyzable set is a safe annoyance, an under-block is
+a security hole; the guard does **not** cripple normal workflow. This makes a
+deliberately *simple, conservative* bash matcher strictly safer than a clever
+tokenizer that can be evaded (the
 Node draft had exactly such a bypass, caught in review). Hooks complete < 2 s.
 
 > **D9 supersession note:** the subsection headers below retain the original
@@ -354,6 +361,7 @@ cheating"): hooks rot; bypasses get found. Mitigations, mandatory:
 | Hook latency hurts UX | bash+jq, < 2 s budget, fmt-only post-edit, clippy stays at gate not per-edit |
 | D9: bash command-parsing for hook A is harder/bug-prone than a real tokenizer (a Node-draft bypass was caught in review) | Hook A is **fail-closed**: un-normalizable command ⇒ deny, so parser gaps over-block (safe) not under-block (bypass); conservative matcher + shell test suite (`task hooks:test`) |
 | D9: `jq` not installed on some machine | Present+verified here; declared a prerequisite alongside bash; hook A degrades fail-closed (deny) without jq, others fail-open |
+| Hook A: a wrapper NOT in the known set (`doas`, `proxychains`, `ssh host …`) makes the wrapper the resolved argv0, so `doas cargo fmt --all` is allowed | **Tracked residual, accepted** (out of Plan-1 scope, owner-scoped, low likelihood for an agent's own shell). `env --split-string` (the realistic variant) IS closed. Future hardening: treat an unresolved-but-followed-by-more-tokens leading word as UNPARSEABLE, or extend the wrapper set. Not blocking. |
 | D8 inversion: non-Claude AGENTS.md consumers (Cursor/Copilot/Codex/generic) read only a pointer, losing the rules | AGENTS.md pointer explicitly names CLAUDE.md as canonical; `.cursor/rules/*` + `.github/copilot-instructions.md` updated to point at CLAUDE.md; generic AGENTS.md-only readers seeing just the pointer is an owner-accepted trade-off |
 | Future session reverts AGENTS.md to canon out of habit (the harness/CLAUDE.md long said "treat AGENTS.md as source of truth") | D8 recorded in committed spec + project memory; the inverted CLAUDE.md states it is canonical at the top |
 
