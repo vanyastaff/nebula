@@ -751,6 +751,15 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 ## Self-Review
 
+> **SUPERSEDED (point-in-time, pre-D9 draft).** This Self-Review block reflects
+> the original Node-`.mjs`, fail-closed-A draft. The authoritative current
+> design is the spec's decision rows **D9–D11** + §4 (bash+jq runtime; hook A
+> demoted to a fail-OPEN advisory tripwire; `resolve_cmd`/`normalize_argv0`
+> deleted; the structural no-cheat guarantee is **C-via-git-diff + A2-clean-gate
+> + CI**, with B an early advisory). The Task 1–10 *code* in this plan is
+> D11-correct and was implemented + adversarially reviewed accordingly. Read
+> this block as history, not as the design.
+
 **1. Spec coverage (spec § → task):** §4 runtime/contract (bash+jq, exit2, fail-open-except-A) → Tasks 1,3 ✓; §4.A0 → T2 ✓; §4.A fail-closed deny set → T3 ✓; §4.A2 record (+limitation) → T4 ✓; §4.B cheat/costyl/test-weaken → T5 ✓; §4.C stop + `stop_hook_active` + side-effect-free → T6 ✓; §4.D fmt-only → T7 ✓; §4 settings wiring + `$schema` + permissions → T8 ✓; §8.1 harness + `task hooks:test` → T1–10 ✓; §8.2 CLAUDE.md map → T9 ✓; §11 cheat-denied/clean-allowed → T10 ✓. D9 (bash, fail-closed A, scripts/guard) → whole plan ✓. Out of scope (correct): D8, G/H, lefthook-granularity, `nebula-pitfalls`, full permissions cleanup → Plans 2–4.
 
 **2. Placeholder scan:** No TBD/TODO-as-instruction; every step has complete runnable code/commands with expected output. Literal `TODO`/`HACK` appear only as guard regex content.
