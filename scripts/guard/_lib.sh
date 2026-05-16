@@ -17,10 +17,10 @@ git_common_dir() { # $1=cwd
   fi
 }
 turn_state_path() { printf '%s/.nebula-guard/turn-%s.json' "$(git_common_dir "${2:-$PWD}")" "${1:-unknown}"; }
-load_state() { # $1=path -> always {impl_files_edited:[...],gate_green:[...]}
-  local d='{"impl_files_edited":[],"gate_green":[]}'
+load_state() { # $1=path -> always {impl_files_edited:[...],gate_green:[...],turn_base:".."}
+  local d='{"impl_files_edited":[],"gate_green":[],"turn_base":""}'
   if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then
-    jq -c '{impl_files_edited:(if (.impl_files_edited|type)=="array" then .impl_files_edited else [] end),gate_green:(if (.gate_green|type)=="array" then .gate_green else [] end)}' "$1" 2>/dev/null || printf '%s' "$d"
+    jq -c '{impl_files_edited:(if (.impl_files_edited|type)=="array" then .impl_files_edited else [] end),gate_green:(if (.gate_green|type)=="array" then .gate_green else [] end),turn_base:(if (.turn_base|type)=="string" then .turn_base else "" end)}' "$1" 2>/dev/null || printf '%s' "$d"
   else printf '%s' "$d"; fi
 }
 save_state() { mkdir -p "$(dirname "$1")" 2>/dev/null && printf '%s' "$2" >"$1" 2>/dev/null || true; }

@@ -11,7 +11,7 @@ chk() { # chk "name" expected actual
 
 # --- _lib unit checks ---
 LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
-chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[]}' "$(load_state "$LS_T")"; rm -f "$LS_T"
+chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' "$(load_state "$LS_T")"; rm -f "$LS_T"
 chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
 chk "crate_of windows path" engine "$(crate_of 'crates\\engine\\src\\engine.rs')"
 chk "crate_of none" "" "$(crate_of 'README.md')"
@@ -114,6 +114,16 @@ SP_SID="c-sp"; SP_P="$(turn_state_path "$SP_SID" "$SP_DIR")"; mkdir -p "$(dirnam
 printf '{"impl_files_edited":[],"gate_green":[]}' >"$SP_P"
 chk "C detects space-in-path (C-1)" 2 "$(cstop '{"session_id":"'"$SP_SID"'","cwd":"'"$SP_DIR"'","stop_hook_active":false}')"
 rm -rf "$SP_DIR"
+# Spec §4.C: a crate change COMMITTED mid-turn, B-bypassed, must still DENY
+# via turn_base..HEAD (git status is clean after the commit; B never saw it)
+TB_DIR="$(mktemp -d)"
+( cd "$TB_DIR" && git init -q && mkdir -p crates/tb/src && echo 'fn a(){}' > crates/tb/src/x.rs && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+TB_BASE="$(git -C "$TB_DIR" rev-parse HEAD)"
+( cd "$TB_DIR" && echo 'fn a(){ 1 }' > crates/tb/src/x.rs && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+TB_SID="c-tb"; TB_P="$(turn_state_path "$TB_SID" "$TB_DIR")"; mkdir -p "$(dirname "$TB_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "$TB_BASE" >"$TB_P"
+chk "C catches committed-this-turn (§4.C)" 2 "$(cstop '{"session_id":"'"$TB_SID"'","cwd":"'"$TB_DIR"'","stop_hook_active":false}')"
+rm -rf "$TB_DIR"
 rm -rf "$CG_DIR"
 # D fmt (must always exit 0, never block)
 dfmt() { printf '%s' "$1" | bash "$HERE/fmt.sh" >/dev/null 2>&1; echo $?; }

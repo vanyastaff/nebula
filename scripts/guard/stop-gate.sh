@@ -26,6 +26,13 @@ while IFS= read -r -d '' rec; do
     *)     _consider "$pth" ;;
   esac
 done < <(git -C "$cwd" status --porcelain -z -u 2>/dev/null)
+# Spec §4.C 3rd source: changes COMMITTED this turn (git status goes clean
+# after a commit; turn-state isn't reset by commit). turn_base = HEAD at A0.
+tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
+if [ -n "$tb" ]; then
+  while IFS= read -r -d '' f; do [ -n "$f" ] && _consider "$f"; done \
+    < <(git -C "$cwd" diff --name-only -z "$tb"..HEAD 2>/dev/null)
+fi
 # corroborating B-union (turn-state recording — NEVER git-only; D11/constraint 1)
 while IFS= read -r f; do [ -n "$f" ] && _consider "$f"; done < <(printf '%s' "$st" | jq -r '.impl_files_edited[]?' 2>/dev/null)
 (( ${#touched[@]} == 0 )) && allow
