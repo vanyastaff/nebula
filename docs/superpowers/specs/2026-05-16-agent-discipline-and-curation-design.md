@@ -66,10 +66,12 @@ only where a linter cannot already catch it.
 
 ## 4. Architecture — Enforcement Layers
 
-Hook runtime: **Node.js `.mjs`** (Node 22 present; already proven — BridgeSpace
-hooks use `node`). Cross-platform per current guidance (no bash/PowerShell
+Hook runtime: **Node.js `.mjs`** (Node 22 present and verified on this
+machine). Cross-platform per current guidance (no bash/PowerShell
 syntax in hook bodies; `path.join`, `os.tmpdir`). Hook scripts live in
-`.claude/hooks/`; wiring in **committed `.claude/settings.json`**. Hooks arrays
+`.claude/hooks/`; wiring in **committed `.claude/settings.json`** using the
+**`args: string[]` exec form** (changelog 2.1.121) instead of an inline
+`command` string — avoids shell-quoting footguns, notably on Windows. Hooks arrays
 concatenate across settings scopes, so any personal hooks in
 `settings.local.json` still coexist (the prior BridgeSpace
 UserPromptSubmit/Stop/Notification hooks are being removed — see §7 — so
@@ -85,8 +87,11 @@ stderr. Hooks must complete < 2 s.
 
 ### A. PreToolUse / Bash — `nebula-guard-bash.mjs` (matcher `Bash`)
 
-Hardened parser (strip inline env assignments, `>`/`>>`/`2>&1`/`|` redirects
-before matching — explicit anti-evasion, mirrors Bun). **Deny:**
+Hardened parser (strip inline env assignments, `>`/`>>`/`2>&1`/`|` redirects,
+and unwrap `env`/`sudo`/`watch`-style wrappers before matching — explicit
+anti-evasion, mirrors Bun; the same wrapper-unwrapping direction was since
+adopted by Claude Code's own Bash deny-rule matching, changelog 2.1.113).
+**Deny:**
 
 - `git commit … --no-verify | -n | --no-gpg-sign | -c core.hooksPath=…` —
   bypassing `lefthook` is the top-level cheat; blocked first.
@@ -216,6 +221,10 @@ canonical `Taskfile.yml` / `ci.yml` / `deny.toml` / AGENTS.md layer map;
   green from a deep worktree);
 - branch/worktree via `scripts/worktree.sh`; commit scope = crate name without
   `nebula-` prefix, convco-validated; stage `Cargo.lock` on any dep change.
+
+Optional (changelog 2.1.119): the Rust-ified skills MAY gate extra-strict
+checks behind `${CLAUDE_EFFORT}` (e.g. deeper invariant/perf review only at
+`high`/`xhigh`) so low-effort runs stay fast. Enhancement, not required.
 
 **MERGE (proposals — vetoable individually):** `aif-explore`+`aif-grounded` →
 one investigate skill; `aif-improve` → `aif-plan --refine`; useful part of
@@ -370,4 +379,7 @@ cheating"): hooks rot; bypasses get found. Mitigations, mandatory:
   (`code.claude.com/docs/en/{sub-agents,hooks,skills,settings}`).
 - Community 2026: claudefa.st (cross-platform hooks; subagent best practices),
   pubnub.com, nimbalyst.com (3–7 subagent consensus; skill description budget).
-- Internal audits (2026-05-16): aif-skill audit, subagent audit (this session).
+- Internal audits (2026-05-16): aif-skill audit, subagent audit, Claude Code
+  changelog/blog delta-check vs this spec (this session) — verdict: no blocking
+  revision; `permissionDecision`/`stop_hook_active`/hook-array-concatenation/
+  skill+subagent frontmatter all confirmed current through 2026-05.
