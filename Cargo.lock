@@ -3935,6 +3935,7 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
+ "nebula-storage-port",
  "parking_lot",
  "pretty_assertions",
  "redis",
