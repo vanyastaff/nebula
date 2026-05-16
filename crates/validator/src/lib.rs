@@ -87,9 +87,7 @@ pub use policy::{
     VisibilityPolicy, resolve_field_policies,
 };
 pub use proof::Validated;
-pub use rule::{
-    DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleContext, RuleKind, ValueRule,
-};
+pub use rule::{DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleKind, ValueRule};
 
 // `regex` is re-exported so code emitted by `#[derive(Validator)]` can
 // reference `nebula_validator::__private::regex` without requiring users to
