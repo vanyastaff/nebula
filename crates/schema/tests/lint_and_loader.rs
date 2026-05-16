@@ -958,3 +958,110 @@ fn nested_value_predicate_targeting_secret_is_rejected() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn value_predicate_targeting_list_item_secret_is_rejected() {
+    // List items are anonymous, so an object item's children are addressable
+    // under the list path (`/items/api_key`). A value predicate on a secret
+    // nested in a list item must be flagged just like an object-nested secret.
+    let report = Schema::builder()
+        .add(
+            Field::list(field_key!("items"))
+                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("api_key")))),
+        )
+        .add(
+            Field::string(field_key!("region")).visible_when(nebula_validator::Rule::Predicate(
+                nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("/items/api_key").unwrap(),
+                    json!("x"),
+                ),
+            )),
+        )
+        .build()
+        .expect_err("value predicate on a list-item secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for list-item secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn value_predicate_targeting_mode_variant_secret_is_rejected() {
+    // A mode variant payload is addressable under `mode.variant`. A secret
+    // payload (`/auth/token`) targeted by a value predicate must be flagged.
+    let report =
+        Schema::builder()
+            .add(Field::mode(field_key!("auth")).variant(
+                "token",
+                "Token",
+                Field::secret(field_key!("token")),
+            ))
+            .add(Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("/auth/token").unwrap(),
+                    json!("x"),
+                )),
+            ))
+            .build()
+            .expect_err("value predicate on a mode-variant secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for mode-variant secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn root_value_predicate_targeting_secret_is_rejected() {
+    // Root rules operate on the whole submitted value; the same prohibition
+    // that applies to field-level visibility/required rules applies here.
+    let report = Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Eq(
+                nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+                json!("prod-key"),
+            ),
+        ))
+        .build()
+        .expect_err("root value predicate on a secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for root rule, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn root_presence_predicate_on_secret_is_allowed() {
+    // A presence-only root predicate (`Set`) never reads the secret value,
+    // so it stays legal exactly as at field level.
+    Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Set(
+                nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+            ),
+        ))
+        .build()
+        .expect("presence predicate on secret in a root rule is allowed");
+}

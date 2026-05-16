@@ -1080,31 +1080,64 @@ fn lint_loader_dependency_cycles(
 
 // ── Secret value-predicate lint ───────────────────────────────────────────────
 
-/// Recursively collect the segment vector of every `Field::Secret` in the
-/// tree, descending `Field::Object` so nested secrets (e.g. `auth.api_key`)
-/// are recorded with their full path. Segments come from [`FieldKey::as_str`],
-/// matching the unescaped segments yielded by `FieldPath::segments`, so the
-/// two can be compared segment-wise regardless of JSON-Pointer leading-slash
-/// or escaping differences.
+/// Recursively collect the segment vector of every `Field::Secret` reachable
+/// by a predicate `FieldPath`, mirroring the addressable-path construction in
+/// [`walk_schema_fields`]: descend `Field::Object` fields, a `Field::List`
+/// whose item is an object (children sit under the list path — list items are
+/// anonymous), and each `Field::Mode` variant payload (addressable under
+/// `mode.variant`). Segments come from [`FieldKey::as_str`], matching the
+/// unescaped segments yielded by `FieldPath::segments`, so the two can be
+/// compared segment-wise regardless of JSON-Pointer leading-slash or escaping
+/// differences. Paths that `walk_schema_fields` cannot name (e.g. a list whose
+/// item is a bare scalar) stay non-addressable and are intentionally skipped.
 fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
-    fn walk(fields: &[Field], prefix: &[String], out: &mut HashSet<Vec<String>>) {
+    // Record (and recurse) one field already resolved to `segs`. `segs` is the
+    // field's own addressable path, so children must extend it (Object/List)
+    // or, for mode variants, the payload is visited *at* the variant path.
+    fn walk_field(field: &Field, segs: &[String], out: &mut HashSet<Vec<String>>) {
+        match field {
+            Field::Secret(_) => {
+                out.insert(segs.to_vec());
+            },
+            Field::Object(obj) => {
+                walk_scope(obj.fields.as_slice(), segs, out);
+            },
+            Field::List(list) => {
+                // List items are anonymous: an object item's children sit
+                // directly under the list path, exactly as walk_schema_fields
+                // yields them. Non-object items are not path-addressable.
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    walk_scope(obj.fields.as_slice(), segs, out);
+                }
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    // Skip variant keys that cannot form a path segment, just
+                    // as walk_schema_fields (via mode_variant_path) does.
+                    if crate::key::FieldKey::new(variant.key.as_str()).is_err() {
+                        continue;
+                    }
+                    let mut variant_segs = segs.to_vec();
+                    variant_segs.push(variant.key.clone());
+                    // The payload field is visited *at* the variant path, not
+                    // under its own key (matches walk_field_children's Mode arm).
+                    walk_field(variant.field.as_ref(), &variant_segs, out);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    fn walk_scope(fields: &[Field], prefix: &[String], out: &mut HashSet<Vec<String>>) {
         for field in fields {
             let mut here = prefix.to_vec();
             here.push(field.key().as_str().to_owned());
-            match field {
-                Field::Secret(_) => {
-                    out.insert(here);
-                },
-                Field::Object(obj) => {
-                    walk(obj.fields.as_slice(), &here, out);
-                },
-                _ => {},
-            }
+            walk_field(field, &here, out);
         }
     }
 
     let mut out = HashSet::new();
-    walk(fields, &[], &mut out);
+    walk_scope(fields, &[], &mut out);
     out
 }
 
@@ -1162,9 +1195,10 @@ fn walk_rule_for_secret_value_predicates(
 /// `Field::Secret` path. A secret's plaintext must never be a visibility or
 /// required discriminant. Presence-only predicates (`Set`/`Empty`) stay legal.
 ///
-/// The secret-key collection recurses `Field::Object`, mirroring the
-/// depth-awareness of the runtime predicate-context scrub, so a predicate
-/// targeting a nested secret (e.g. `/auth/api_key`) is also flagged.
+/// The secret-key collection mirrors the addressable-path construction of
+/// `walk_schema_fields` (objects, list-item objects, mode variant payloads),
+/// so a predicate targeting a nested secret (e.g. `/auth/api_key`, a secret
+/// in a list item, or a mode variant payload) is also flagged.
 fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationReport) {
     let secrets = collect_secret_pointer_segments(fields);
     if secrets.is_empty() {

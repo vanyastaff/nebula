@@ -239,7 +239,7 @@ to express "validate field X only when field Y has value Z". Evaluate them with
 ```rust
 use serde_json::json;
 
-let rule = Rule::Logic(Box::new(Logic::Any(vec![
+let rule = Rule::Logic(Box::new(Logic::All(vec![
     Rule::Predicate(Predicate::Eq(
         FieldPath::parse("role").unwrap(),
         json!("admin"),
