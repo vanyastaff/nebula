@@ -26,7 +26,6 @@ use crate::{
         resolve_select_loader_path,
     },
     secret::SecretValue,
-    validator_bridge::schema_path_from_validator_error,
     value::{FieldValue, FieldValues},
 };
 
@@ -361,7 +360,23 @@ impl ValidSchema {
             .collect();
         gate_and_validate_level(&entries, &ctx, &mut report);
 
-        run_root_rules(&self.0.fields, &self.0.root_rules, values, &mut report);
+        // Schema-level rules run against the full submission
+        // (`values.to_json()`), but the predicate context is the
+        // secret-scrubbed `root_predicate_context_for`: a value-comparing root
+        // predicate can never read a `Field::Secret` plaintext, while legal
+        // non-secret nested predicates still resolve (no fail-open).
+        if !self.0.root_rules.is_empty() {
+            let json = values.to_json();
+            let pred_ctx = crate::context::root_predicate_context_for(&self.0.fields, values);
+            if let Err(errs) = nebula_validator::validate_rules_with_ctx(
+                &json,
+                &self.0.root_rules,
+                Some(&pred_ctx),
+                nebula_validator::ExecutionMode::StaticOnly,
+            ) {
+                merge_validator_errors(&errs, &FieldPath::root(), &mut report);
+            }
+        }
 
         if report.has_errors() {
             tracing::warn!(
@@ -1132,11 +1147,11 @@ fn gate_and_validate_level(
     let resolution = resolve_field_policies(decls, ctx);
 
     // `required_failures` are validator errors carrying the field pointer;
-    // translate them into schema errors (code stays `required`, schema path
-    // resolved from the carried pointer). The fallback path is unused because
-    // every decl carries an explicit validator path. The validator is the
-    // SOLE `required` emitter — this runner never synthesizes one.
-    push_validator_rule_errors(&resolution.required_failures, &FieldPath::root(), report);
+    // merge them verbatim (code stays `required`, schema path resolved from
+    // the carried pointer). The fallback path is unused because every decl
+    // carries an explicit validator path. The validator is the SOLE
+    // `required` emitter — this runner never synthesizes one.
+    merge_validator_errors(&resolution.required_failures, &FieldPath::root(), report);
 
     // Dumb dispatcher: act on `plan.directive` only. Each plan carries the
     // `LevelEntry` it was computed for as its payload, so a plan can never be
@@ -1288,7 +1303,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Secret(f) => {
             if let FieldValue::SecretLiteral(sv) = value {
@@ -1326,7 +1341,7 @@ fn validate_literal_value(
                         transformed
                     },
                 };
-                run_rules(field.rules(), &v_for_rules, path, report);
+                run_value_rules(field.rules(), &v_for_rules, path, report);
                 return;
             }
             let FieldValue::Literal(lit) = value else {
@@ -1342,7 +1357,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Code(f) => {
             let FieldValue::Literal(lit) = value else {
@@ -1358,7 +1373,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Number(NumberField {
             integer,
@@ -1388,7 +1403,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(rules, &transformed, path, report);
+            run_value_rules(rules, &transformed, path, report);
         },
         Field::Boolean(_) => {
             let FieldValue::Literal(lit) = value else {
@@ -1442,7 +1457,7 @@ fn validate_literal_value(
                 _ => return,
             };
             let transformed = apply_transformers(transformers, raw_json);
-            run_rules(rules, &transformed, path, report);
+            run_value_rules(rules, &transformed, path, report);
             if !allow_custom && !options.is_empty() {
                 check_select_options(options, *multiple, &transformed, path, report);
             }
@@ -1481,7 +1496,7 @@ fn validate_literal_value(
                 _ => return,
             };
             let transformed_list_json = apply_transformers(transformers, list_json);
-            run_rules(rules, &transformed_list_json, path, report);
+            run_value_rules(rules, &transformed_list_json, path, report);
             if let Some(min) = min_items
                 && item_count < *min as usize
             {
@@ -1570,7 +1585,7 @@ fn validate_literal_value(
                 return;
             };
             let transformed = apply_transformers(transformers, value.to_json());
-            run_rules(rules, &transformed, path, report);
+            run_value_rules(rules, &transformed, path, report);
             // Nested object children are their own field-set level, gated
             // against the shared whole-tree context (a child's `When` may
             // reference a sibling at any depth via an absolute pointer).
@@ -1650,7 +1665,7 @@ fn validate_literal_value(
                     return;
                 },
             };
-            run_rules(rules, &value.to_json(), path, report);
+            run_value_rules(rules, &value.to_json(), path, report);
             let resolved_key = resolved_key.or(default_variant.as_deref());
             let Some(resolved_key) = resolved_key else {
                 report.push(
@@ -1745,10 +1760,10 @@ fn validate_literal_value(
                 return;
             }
 
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {
-            run_rules(field.rules(), &value.to_json(), path, report);
+            run_value_rules(field.rules(), &value.to_json(), path, report);
         },
     }
 }
@@ -1833,105 +1848,59 @@ fn check_select_options(
     }
 }
 
-/// Translate a raw validator error code to the `STANDARD_CODES` vocabulary.
+/// Merge validator errors into the schema [`ValidationReport`] verbatim.
 ///
-/// The nebula-validator crate uses its own code names (e.g. `"min_length"`,
-/// `"invalid_format"`). The schema crate `STANDARD_CODES` use a different
-/// namespace (`"length.min"`, `"pattern"`, etc.). This function performs the
-/// one-way mapping so that callers observe only `STANDARD_CODES` values.
-fn translate_validator_code(
-    raw_code: &str,
-    params: &[(
-        std::borrow::Cow<'static, str>,
-        std::borrow::Cow<'static, str>,
-    )],
-) -> String {
-    match raw_code {
-        "min_length" => "length.min".to_owned(),
-        "max_length" => "length.max".to_owned(),
-        "min" => "range.min".to_owned(),
-        "max" => "range.max".to_owned(),
-        // "invalid_format" is emitted by Pattern, Email, and Url rules.
-        // Pattern rule includes a "pattern" param; Email/Url set "expected" to "email"/"url".
-        "invalid_format" => {
-            let has_pattern_param = params.iter().any(|(k, _)| k.as_ref() == "pattern");
-            if has_pattern_param {
-                return "pattern".to_owned();
-            }
-            let expected = params
-                .iter()
-                .find(|(k, _)| k.as_ref() == "expected")
-                .map(|(_, v)| v.as_ref());
-            match expected {
-                Some("email") => "email".to_owned(),
-                Some("url") => "url".to_owned(),
-                _ => "pattern".to_owned(),
-            }
-        },
-        other => other.to_owned(),
-    }
-}
-
-/// Apply a slice of rules to a JSON literal value, pushing errors into `report`.
-fn run_rules(
-    rules: &[nebula_validator::Rule],
-    value: &serde_json::Value,
-    path: &FieldPath,
-    report: &mut ValidationReport,
-) {
-    use nebula_validator::ExecutionMode;
-    if let Err(errs) = nebula_validator::validate_rules(value, rules, ExecutionMode::StaticOnly) {
-        push_validator_rule_errors(&errs, path, report);
-    }
-}
-
-/// Run schema-level rules against the full submitted JSON object.
-///
-/// The value tree under test is the full submission (`values.to_json()`), but
-/// the predicate **context** is the secret-scrubbed
-/// [`crate::context::root_predicate_context_for`] — a value-comparing root
-/// predicate can never read a `Field::Secret` plaintext, while legal non-secret
-/// nested predicates still resolve (no fail-open).
-fn run_root_rules(
-    fields: &[Field],
-    rules: &[nebula_validator::Rule],
-    values: &FieldValues,
-    report: &mut ValidationReport,
-) {
-    use nebula_validator::ExecutionMode;
-
-    if rules.is_empty() {
-        return;
-    }
-
-    let json = values.to_json();
-    let pred_ctx = crate::context::root_predicate_context_for(fields, values);
-    if let Err(errs) = nebula_validator::validate_rules_with_ctx(
-        &json,
-        rules,
-        Some(&pred_ctx),
-        ExecutionMode::StaticOnly,
-    ) {
-        push_validator_rule_errors(&errs, &FieldPath::root(), report);
-    }
-}
-
-fn push_validator_rule_errors(
+/// The validator is the sole emitter of rule-failure codes: each error's code
+/// flows through unchanged (no schema-side namespace remap), the message is
+/// preserved, and the issue path is the validator error's own RFC-6901 field
+/// pointer parsed back into a schema [`FieldPath`]. When the validator error
+/// carries no parsable pointer the caller-supplied `fallback` path is used.
+fn merge_validator_errors(
     errs: &nebula_validator::foundation::ValidationErrors,
-    path: &FieldPath,
+    fallback: &FieldPath,
     report: &mut ValidationReport,
 ) {
     for e in errs.errors() {
-        let raw_code: &str = e.code.as_ref();
+        let code: String = e.code.as_ref().to_owned();
         let msg: String = e.message.as_ref().to_owned();
-        let code = translate_validator_code(raw_code, e.params());
-        let issue_path = schema_path_from_validator_error(path, e);
+        let issue_path = match e.field_pointer().as_deref() {
+            Some(pointer) => {
+                crate::rule_ref::field_path_from_json_pointer(pointer).unwrap_or_else(|| {
+                    tracing::warn!(
+                        target: "nebula_schema::validate",
+                        pointer,
+                        fallback = %fallback,
+                        "validator error carried unparsable field pointer; falling back"
+                    );
+                    fallback.clone()
+                })
+            },
+            None => fallback.clone(),
+        };
         report.push(
             ValidationError::builder(code)
                 .at(issue_path)
                 .message(msg)
                 .build(),
         );
+    }
+}
+
+/// Apply a slice of rules to a JSON value through the single validator
+/// crossing, merging any failures into `report`.
+fn run_value_rules(
+    rules: &[nebula_validator::Rule],
+    value: &serde_json::Value,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    if let Err(errs) = nebula_validator::validate_rules_with_ctx(
+        value,
+        rules,
+        None,
+        nebula_validator::ExecutionMode::StaticOnly,
+    ) {
+        merge_validator_errors(&errs, path, report);
     }
 }
 

@@ -1,4 +1,11 @@
-//! Internal adapters for `nebula-validator` path and error types.
+//! Pure schema-path/rule-reference parsing for the dependency-graph and
+//! secret lints (no validator coupling).
+//!
+//! These helpers translate the address forms rule references and validator
+//! field pointers use (`$root.foo`, `/foo/bar` JSON Pointers, `items[0].name`)
+//! into the schema's [`FieldPath`] addressing. They carry no error-mapping or
+//! evaluation logic — they are consumed by the build-time dependency-graph and
+//! secret lints and by the single validator-error merge in `validated`.
 
 use nebula_validator::foundation::FieldPath as ValidatorFieldPath;
 
@@ -48,46 +55,11 @@ pub(crate) fn normalize_rule_target_path(path: &FieldPath) -> FieldPath {
     normalized
 }
 
-/// Prefer the path carried by a validator error, falling back to the caller's
-/// schema path when the validator error has no field pointer.
-pub(crate) fn schema_path_from_validator_error(
-    fallback: &FieldPath,
-    err: &nebula_validator::foundation::ValidationError,
-) -> FieldPath {
-    if let Some(pointer) = err.field_pointer().as_deref() {
-        if let Some(path) = field_path_from_json_pointer(pointer) {
-            return path;
-        }
-        tracing::warn!(
-            target: "nebula_schema::validator_bridge",
-            pointer,
-            fallback = %fallback,
-            "validator error carried unparsable field pointer; falling back"
-        );
-    }
-    fallback.clone()
-}
-
-fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
-    let mut out = FieldPath::root();
-    let mut any = false;
-    for seg in vp.segments() {
-        let s = seg.as_ref();
-        if s.is_empty() {
-            return None;
-        }
-        any = true;
-        let segment = if s.chars().all(|c| c.is_ascii_digit()) {
-            PathSegment::Index(s.parse().ok()?)
-        } else {
-            PathSegment::Key(FieldKey::new(s).ok()?)
-        };
-        out = out.join(segment);
-    }
-    if any { Some(out) } else { None }
-}
-
-fn field_path_from_json_pointer(pointer: &str) -> Option<FieldPath> {
+/// Parse a validator RFC-6901 field pointer into a schema [`FieldPath`].
+///
+/// Returns `None` when the pointer is structurally invalid (empty segment,
+/// non-`FieldKey` segment); callers fall back to a known path in that case.
+pub(crate) fn field_path_from_json_pointer(pointer: &str) -> Option<FieldPath> {
     let pointer = pointer.strip_prefix('#').unwrap_or(pointer);
     if pointer.is_empty() || pointer == "/" {
         return Some(FieldPath::root());
@@ -110,6 +82,25 @@ fn field_path_from_json_pointer(pointer: &str) -> Option<FieldPath> {
         out = out.join(segment);
     }
     Some(out)
+}
+
+fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
+    let mut out = FieldPath::root();
+    let mut any = false;
+    for seg in vp.segments() {
+        let s = seg.as_ref();
+        if s.is_empty() {
+            return None;
+        }
+        any = true;
+        let segment = if s.chars().all(|c| c.is_ascii_digit()) {
+            PathSegment::Index(s.parse().ok()?)
+        } else {
+            PathSegment::Key(FieldKey::new(s).ok()?)
+        };
+        out = out.join(segment);
+    }
+    if any { Some(out) } else { None }
 }
 
 fn decode_json_pointer_segment(segment: &str) -> String {

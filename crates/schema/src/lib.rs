@@ -154,6 +154,8 @@ pub mod option;
 pub mod path;
 /// Common imports for schema-definition code.
 pub mod prelude;
+/// Pure schema-path / rule-reference parsing for lints and error merging.
+pub(crate) mod rule_ref;
 /// Top-level schema aggregate.
 pub mod schema;
 /// Secret value types, optional KDF, and `SecretWire`.
@@ -162,8 +164,6 @@ pub mod secret;
 pub mod transformer;
 /// Validated schema proof-tokens.
 pub mod validated;
-/// Internal adapters for validator path and error types.
-pub(crate) mod validator_bridge;
 /// Runtime value wrappers and wire-format helpers.
 pub mod value;
 /// Typed widget hints by field family.

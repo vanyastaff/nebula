@@ -9,7 +9,7 @@ use crate::{
     error::{ValidationError, ValidationReport},
     field_tree::{defined_field_paths, walk_schema_fields},
     path::PathSegment,
-    validator_bridge::{normalize_rule_target_path, referenced_root_key, resolve_rule_dependency},
+    rule_ref::{normalize_rule_target_path, referenced_root_key, resolve_rule_dependency},
 };
 
 fn has_nonempty_loader_key(loader: Option<&str>) -> bool {

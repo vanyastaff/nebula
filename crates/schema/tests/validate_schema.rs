@@ -321,9 +321,12 @@ fn length_max_rule_violated() {
         .unwrap();
     let values = FieldValues::from_json(json!({"name": "toolongvalue"})).unwrap();
     let report = schema.validate(&values).unwrap_err();
+    // Rule-failure codes are surfaced verbatim from nebula-validator (no
+    // schema-side remap); a `max_length` rule reports the native
+    // `max_length` code. See ADR-0052 (P2 amendment).
     assert!(
-        report.errors().any(|e| e.code == "length.max"),
-        "expected length.max error, codes: {:?}",
+        report.errors().any(|e| e.code == "max_length"),
+        "expected max_length error, codes: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
