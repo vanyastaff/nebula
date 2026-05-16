@@ -109,6 +109,11 @@ chk "C allows git+green"   0 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_
 ( cd "$CG_DIR" && git add -A && git -c user.email=t@t -c user.name=t commit -qm x && mkdir -p crates/yyy/src && git mv crates/zzz/src/a.rs crates/yyy/src/b.rs )
 printf '{"impl_files_edited":[],"gate_green":[]}' >"$CG_P"
 chk "C detects renamed src (#2)" 2 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_DIR"'","stop_hook_active":false}')"
+SP_DIR="$(mktemp -d)"; ( cd "$SP_DIR" && git init -q && mkdir -p "crates/sp/src" && echo 'fn f(){}' > "crates/sp/src/a b.rs" )
+SP_SID="c-sp"; SP_P="$(turn_state_path "$SP_SID" "$SP_DIR")"; mkdir -p "$(dirname "$SP_P")"
+printf '{"impl_files_edited":[],"gate_green":[]}' >"$SP_P"
+chk "C detects space-in-path (C-1)" 2 "$(cstop '{"session_id":"'"$SP_SID"'","cwd":"'"$SP_DIR"'","stop_hook_active":false}')"
+rm -rf "$SP_DIR"
 rm -rf "$CG_DIR"
 # Per-hook cases are appended by later tasks below this line. # HOOKMARK
 
