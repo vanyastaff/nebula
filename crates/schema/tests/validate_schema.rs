@@ -655,3 +655,104 @@ fn root_rule_error_path_snapshot() {
     ]
     "###);
 }
+
+#[test]
+fn nested_required_when_is_enforced_not_fail_open() {
+    use nebula_validator::Predicate;
+    use nebula_validator::foundation::FieldPath as ValidatorPath;
+
+    // `secret_token` is required WHEN /auth/mode == "oauth". The old
+    // Rule::evaluate flat-key path silently returned false for the nested
+    // path → field was NOT enforced (fail-open). It must now be enforced.
+    let schema = Schema::builder()
+        .add(Field::object(fk("auth")).add(Field::string(fk("mode"))))
+        .add(
+            Field::string(fk("secret_token")).required_when(Rule::Predicate(Predicate::Eq(
+                ValidatorPath::parse("/auth/mode").unwrap(),
+                json!("oauth"),
+            ))),
+        )
+        .build()
+        .expect("schema builds");
+
+    let values = FieldValues::from_json(json!({
+        "auth": { "mode": "oauth" }
+        // secret_token absent
+    }))
+    .unwrap();
+
+    let report = schema
+        .validate(&values)
+        .expect_err("must reject: required field absent");
+    assert!(
+        report.errors().any(|e| e.code == "required"),
+        "nested required_when must be enforced, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn middle_skipped_field_does_not_shift_plan_to_field_mapping() {
+    // f_first (min_length 5), f_mid (Never-visible), f_last (min_length 5).
+    // Both f_first and f_last get too-short values. If plan<->field shifts by
+    // the skipped middle, the error paths land on the wrong fields.
+    let schema = Schema::builder()
+        .add(Field::string(fk("f_first")).min_length(5))
+        .add(Field::string(fk("f_mid")).visible(VisibilityMode::Never))
+        .add(Field::string(fk("f_last")).min_length(5))
+        .build()
+        .expect("schema builds");
+
+    let values = FieldValues::from_json(json!({"f_first": "ab", "f_last": "cd"})).unwrap();
+    let report = schema
+        .validate(&values)
+        .expect_err("both short fields must fail");
+
+    let codes_paths: Vec<(String, String)> = report
+        .errors()
+        .map(|e| (e.code.to_string(), e.path.to_string()))
+        .collect();
+    assert!(
+        codes_paths.iter().any(|(_, p)| p.contains("f_first")),
+        "f_first must be the error path, not shifted: {codes_paths:?}"
+    );
+    assert!(
+        codes_paths.iter().any(|(_, p)| p.contains("f_last")),
+        "f_last must be the error path, not shifted: {codes_paths:?}"
+    );
+}
+
+#[test]
+fn hidden_present_required_empty_emits_single_required() {
+    // Seam anchor: a field that is hidden (VisibilityMode::Never) AND
+    // required, supplied with a PRESENT-but-empty value. The policy engine
+    // self-reports `required` only for Presence::Active, so the schema gate
+    // emits the single `required` for this Presence != Active corner. Pins
+    // exactly-one `required` on the field path.
+    let schema = Schema::builder()
+        .add(
+            Field::string(fk("secret_slot"))
+                .visible(VisibilityMode::Never)
+                .required(),
+        )
+        .build()
+        .expect("schema builds");
+
+    let values = FieldValues::from_json(json!({"secret_slot": ""})).unwrap();
+    let report = schema
+        .validate(&values)
+        .expect_err("hidden+present+required+empty must reject");
+
+    let errors: Vec<_> = report.errors().collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {:?}",
+        errors
+            .iter()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(errors[0].code, "required");
+    assert_eq!(errors[0].path.to_string(), "secret_slot");
+}

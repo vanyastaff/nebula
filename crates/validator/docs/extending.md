@@ -232,27 +232,24 @@ let loaded: Vec<Rule> = serde_json::from_str(&json_rules)?;
 
 ### Context predicates
 
-Context predicates check sibling fields in a map. They are typically used inside `Rule::All`
-to express "validate field X only when field Y has value Z":
+Context predicates check sibling fields. They are typically combined with `Logic::All`
+to express "validate field X only when field Y has value Z". Evaluate them with
+`Rule::matches`, which resolves nested JSON-Pointer paths via `PredicateContext`:
 
 ```rust
-use std::collections::HashMap;
 use serde_json::json;
 
-let rules = vec![
-    Rule::All {
-        rules: vec![
-            Rule::IsPresent { field: "email".into() },
-            Rule::Eq { field: "role".into(), value: json!("admin") },
-        ],
-    },
-];
+let rule = Rule::Logic(Box::new(Logic::All(vec![
+    Rule::Predicate(Predicate::Eq(
+        FieldPath::parse("role").unwrap(),
+        json!("admin"),
+    )),
+])));
 
-let ctx: HashMap<String, serde_json::Value> =
-    serde_json::from_value(json!({ "email": "a@b.com", "role": "admin" }))?;
+let ctx = PredicateContext::from_json(&json!({ "email": "a@b.com", "role": "admin" }));
 
-// evaluate() returns bool (used in Rule context predicates)
-let passes = rules[0].evaluate(&ctx);
+// matches() returns bool (used for Rule context predicates)
+let passes = rule.matches(&ctx);
 ```
 
 ### Mixing declarative and programmatic

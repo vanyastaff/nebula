@@ -87,7 +87,7 @@ empty_has_schema_for!(
 ///
 /// Emits a [`HasSchema`] implementation that returns an empty [`ValidSchema`].
 /// Suitable for test fixtures / legacy types that don't yet declare a real
-/// schema. In production code, prefer `#[derive(Schema)]` (Phase 2b) so the
+/// schema. In production code, prefer `#[derive(Schema)]` so the
 /// schema matches the actual struct shape.
 #[macro_export]
 macro_rules! impl_empty_has_schema {

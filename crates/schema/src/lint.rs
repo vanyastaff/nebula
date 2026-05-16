@@ -33,6 +33,7 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_visibility_cycles_new(fields, prefix, report);
     lint_required_cycles_new(fields, prefix, report);
     lint_loader_dependency_cycles(fields, prefix, report);
+    lint_secret_predicate_on_value(fields, report);
     if report.has_errors() || report.has_warnings() {
         tracing::debug!(
             target: "nebula_schema::lint",
@@ -51,6 +52,23 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
 pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut ValidationReport) {
     if rules.is_empty() {
         return;
+    }
+
+    // SECURITY (load-bearing, not advisory): the root-rule evaluation path
+    // (`run_root_rules`) builds its `PredicateContext` from the full submitted
+    // JSON with no `Field::Secret`-by-type scrub — unlike the field-level path,
+    // which goes through the scrubbed `predicate_context_for`. A later phase
+    // scrubs the root-rule context too; until then this lint is the only
+    // boundary stopping a value-comparing predicate from reading secret
+    // plaintext via a root rule. Rejecting such a predicate at `build()` is
+    // therefore a security control, so the secret-key collection must mirror
+    // every shape the schema can address (object, list-item object including
+    // indexed instances, mode variant payload).
+    let secrets = collect_secret_pointer_segments(fields);
+    if !secrets.is_empty() {
+        for rule in rules {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &FieldPath::root(), report);
+        }
     }
 
     let defined = defined_field_paths(fields);
@@ -1066,6 +1084,184 @@ fn lint_loader_dependency_cycles(
     if let Some((from, to)) = find_cycle_edge(&adj) {
         emit_loader_dependency_cycle_on_edge(&from, &to, report);
     }
+}
+
+// ── Secret value-predicate lint ───────────────────────────────────────────────
+
+/// Recursively collect the segment vector of every `Field::Secret` reachable
+/// by a predicate `FieldPath`, mirroring the addressable-path construction in
+/// [`walk_schema_fields`]: descend `Field::Object` fields, a `Field::List`
+/// whose item is an object (children sit under the list path — list items are
+/// anonymous), and each `Field::Mode` variant payload (addressable under
+/// `mode.variant`). Segments come from [`FieldKey::as_str`], matching the
+/// unescaped segments yielded by `FieldPath::segments`, so the two can be
+/// compared segment-wise regardless of JSON-Pointer leading-slash or escaping
+/// differences. Paths that `walk_schema_fields` cannot name (e.g. a list whose
+/// item is a bare scalar) stay non-addressable and are intentionally skipped.
+fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
+    // Record (and recurse) one field already resolved to `segs`. `segs` is the
+    // field's own addressable path, so children must extend it (Object/List)
+    // or, for mode variants, the payload is visited *at* the variant path.
+    fn walk_field(field: &Field, segs: &[String], out: &mut HashSet<Vec<String>>) {
+        match field {
+            Field::Secret(_) => {
+                out.insert(segs.to_vec());
+            },
+            Field::Object(obj) => {
+                walk_scope(obj.fields.as_slice(), segs, out);
+            },
+            Field::List(list) => {
+                // List items are anonymous: an object item's children sit
+                // directly under the list path, exactly as walk_schema_fields
+                // yields them. Non-object items are not path-addressable.
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    walk_scope(obj.fields.as_slice(), segs, out);
+                }
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    // Skip variant keys that cannot form a path segment, just
+                    // as walk_schema_fields (via mode_variant_path) does.
+                    if crate::key::FieldKey::new(variant.key.as_str()).is_err() {
+                        continue;
+                    }
+                    let mut variant_segs = segs.to_vec();
+                    variant_segs.push(variant.key.clone());
+                    // The payload field is visited *at* the variant path, not
+                    // under its own key (matches walk_field_children's Mode arm).
+                    walk_field(variant.field.as_ref(), &variant_segs, out);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    fn walk_scope(fields: &[Field], prefix: &[String], out: &mut HashSet<Vec<String>>) {
+        for field in fields {
+            let mut here = prefix.to_vec();
+            here.push(field.key().as_str().to_owned());
+            walk_field(field, &here, out);
+        }
+    }
+
+    let mut out = HashSet::new();
+    walk_scope(fields, &[], &mut out);
+    out
+}
+
+/// A predicate is *value-comparing* when its truth depends on the field's
+/// value. `Set` / `Empty` test presence only and never read the value, so a
+/// secret may legally drive visibility/required through them.
+const fn predicate_reads_value(predicate: &Predicate) -> bool {
+    !matches!(predicate, Predicate::Set(_) | Predicate::Empty(_))
+}
+
+/// Index-normalized key-segment view of a predicate's target pointer.
+///
+/// `collect_secret_pointer_segments` keys secrets by `FieldKey` segments only
+/// (list items are anonymous, so an item-object secret sits at the list path
+/// with no index). A predicate, however, may legally address that same secret
+/// through a concrete list instance — `/items/0/token` — and the codebase
+/// blesses indexed pointers (see the dangling/cycle lints, which run every ref
+/// through [`normalize_rule_target_path`]). Comparing the raw pointer segments
+/// would leave `/items/0/token` unmatched against `["items","token"]`, so a
+/// value-comparing predicate on a list-indexed (or list-indexed-then-mode)
+/// secret would slip the guard and reach the unscrubbed root-rule context.
+/// Drop list indices the same way `normalize_rule_target_path` does, yielding
+/// the key-only segment vector to compare against the secret set.
+fn normalized_predicate_key_segments(predicate: &Predicate) -> Option<Vec<String>> {
+    let resolved = resolve_rule_dependency(predicate.field().as_str())?;
+    let normalized = normalize_rule_target_path(&resolved);
+    let mut keys = Vec::with_capacity(normalized.segments().len());
+    for segment in normalized.segments() {
+        match segment {
+            // After `normalize_rule_target_path`, a leading list index can
+            // still survive (it strips only non-leading indices); a secret can
+            // never be addressed by a *leading* index, so such a path simply
+            // cannot match the key-only secret set — bail rather than coerce.
+            PathSegment::Key(key) => keys.push(key.as_str().to_owned()),
+            PathSegment::Index(_) => return None,
+        }
+    }
+    Some(keys)
+}
+
+/// Walk a rule tree, flagging every value-comparing predicate whose target
+/// path is a `Field::Secret`. Recurses `Logic` children and `Described` inner
+/// rules so a buried predicate is still caught.
+fn walk_rule_for_secret_value_predicates(
+    rule: &Rule,
+    secrets: &HashSet<Vec<String>>,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    match rule {
+        Rule::Predicate(predicate) if predicate_reads_value(predicate) => {
+            // Match either the raw pointer segments or the index-normalized
+            // key segments. The union strictly widens detection: a secret
+            // addressed through a concrete list instance (`/items/0/token`)
+            // normalizes to the same key path the secret set is keyed by, so
+            // it can no longer slip the guard into the unscrubbed root-rule
+            // context. Never narrows — anything the raw check caught before
+            // still matches.
+            let raw: Vec<String> = predicate
+                .field()
+                .segments()
+                .map(std::borrow::Cow::into_owned)
+                .collect();
+            let normalized = normalized_predicate_key_segments(predicate);
+            let hit =
+                secrets.contains(&raw) || normalized.is_some_and(|segs| secrets.contains(&segs));
+            if hit {
+                let pointer = predicate.field().as_str();
+                report.push(
+                    ValidationError::builder("secret.predicate_on_value")
+                        .at(path.clone())
+                        .message(format!(
+                            "predicate targets secret field `{pointer}` by value; only \
+                             Set/Empty (presence) predicates may reference a secret"
+                        ))
+                        .build(),
+                );
+            }
+        },
+        Rule::Predicate(_) => {},
+        Rule::Logic(logic) => {
+            for child in logic.children() {
+                walk_rule_for_secret_value_predicates(child, secrets, path, report);
+            }
+        },
+        Rule::Described(inner, _) => {
+            walk_rule_for_secret_value_predicates(inner, secrets, path, report);
+        },
+        _ => {},
+    }
+}
+
+/// Reject a schema where any value-comparing predicate (`Eq`/`Ne`/`Gt`/`Gte`/
+/// `Lt`/`Lte`/`IsTrue`/`IsFalse`/`Contains`/`Matches`/`In`) targets a
+/// `Field::Secret` path. A secret's plaintext must never be a visibility or
+/// required discriminant. Presence-only predicates (`Set`/`Empty`) stay legal.
+///
+/// The secret-key collection mirrors the addressable-path construction of
+/// `walk_schema_fields` (objects, list-item objects, mode variant payloads),
+/// and the predicate target is also matched after index normalization, so a
+/// secret addressed through a concrete list instance (`/items/0/api_key`) or
+/// a mode variant payload is flagged just like `/auth/api_key`.
+fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationReport) {
+    let secrets = collect_secret_pointer_segments(fields);
+    if secrets.is_empty() {
+        return;
+    }
+
+    walk_schema_fields(fields, |node| {
+        if let Some(rule) = field_visible_rule(node.field) {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+        if let Some(rule) = field_required_rule(node.field) {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+    });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

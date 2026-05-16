@@ -6,7 +6,7 @@
 //! - `ValidSchema::validate` (proof-token pipeline)
 //! - `SchemaBuilder::build` (lint/build time via `lint_tree`)
 //!
-//! As of Phase 1 (Task 26), validator codes are translated in `run_rules` via
+//! Validator codes are translated in `run_rules` via
 //! `translate_validator_code` before being stored in `ValidationReport`.
 //! So `"min_length"` → `"length.min"`, `"max_length"` → `"length.max"`, etc.
 //!

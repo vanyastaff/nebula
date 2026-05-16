@@ -885,3 +885,276 @@ fn select_single_option_complex_type_warns() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn value_predicate_targeting_secret_is_rejected() {
+    // A value-comparing predicate (`Eq`) that reads a secret's plaintext as a
+    // visibility discriminant must be rejected at schema-build time.
+    let report =
+        Schema::builder()
+            .add(Field::secret(field_key!("api_key")))
+            .add(Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+                    json!("prod-key"),
+                )),
+            ))
+            .build()
+            .expect_err("value predicate on a secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn presence_predicate_on_secret_is_allowed() {
+    // A presence-only predicate (`Set`) never reads the secret value, so it
+    // stays legal as a visibility discriminant.
+    Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .add(
+            Field::string(field_key!("region")).visible_when(nebula_validator::Rule::Predicate(
+                nebula_validator::Predicate::Set(
+                    nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+                ),
+            )),
+        )
+        .build()
+        .expect("presence predicate on secret is allowed");
+}
+
+#[test]
+fn nested_value_predicate_targeting_secret_is_rejected() {
+    // The secret-key collection recurses `Field::Object`, so a value predicate
+    // targeting a *nested* secret (`/auth/api_key`) is also flagged.
+    let report =
+        Schema::builder()
+            .add(Field::object(field_key!("auth")).add(Field::secret(field_key!("api_key"))))
+            .add(Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("/auth/api_key").unwrap(),
+                    json!("x"),
+                )),
+            ))
+            .build()
+            .expect_err("value predicate on a nested secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for nested secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn value_predicate_targeting_list_item_secret_is_rejected() {
+    // List items are anonymous, so an object item's children are addressable
+    // under the list path (`/items/api_key`). A value predicate on a secret
+    // nested in a list item must be flagged just like an object-nested secret.
+    let report = Schema::builder()
+        .add(
+            Field::list(field_key!("items"))
+                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("api_key")))),
+        )
+        .add(
+            Field::string(field_key!("region")).visible_when(nebula_validator::Rule::Predicate(
+                nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("/items/api_key").unwrap(),
+                    json!("x"),
+                ),
+            )),
+        )
+        .build()
+        .expect_err("value predicate on a list-item secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for list-item secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn value_predicate_targeting_mode_variant_secret_is_rejected() {
+    // A mode variant payload is addressable under `mode.variant`. A secret
+    // payload (`/auth/token`) targeted by a value predicate must be flagged.
+    let report =
+        Schema::builder()
+            .add(Field::mode(field_key!("auth")).variant(
+                "token",
+                "Token",
+                Field::secret(field_key!("token")),
+            ))
+            .add(Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("/auth/token").unwrap(),
+                    json!("x"),
+                )),
+            ))
+            .build()
+            .expect_err("value predicate on a mode-variant secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for mode-variant secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn root_value_predicate_targeting_secret_is_rejected() {
+    // Root rules operate on the whole submitted value; the same prohibition
+    // that applies to field-level visibility/required rules applies here.
+    let report = Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Eq(
+                nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+                json!("prod-key"),
+            ),
+        ))
+        .build()
+        .expect_err("root value predicate on a secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for root rule, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn root_presence_predicate_on_secret_is_allowed() {
+    // A presence-only root predicate (`Set`) never reads the secret value,
+    // so it stays legal exactly as at field level.
+    Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Set(
+                nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+            ),
+        ))
+        .build()
+        .expect("presence predicate on secret in a root rule is allowed");
+}
+
+#[test]
+fn root_value_predicate_on_list_indexed_secret_is_rejected() {
+    // The exact Codex bypass: a ROOT value-comparing predicate that addresses
+    // a list-item secret through a concrete instance index (`/items/0/token`).
+    // List items are anonymous so the secret set is keyed `["items","token"]`;
+    // without index normalization the indexed pointer would never match and
+    // the predicate would slip into the unscrubbed `run_root_rules`, reading
+    // the secret plaintext. It must be rejected at `build()`.
+    let report = Schema::builder()
+        .add(
+            Field::list(field_key!("items"))
+                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("token")))),
+        )
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Eq(
+                nebula_validator::foundation::FieldPath::parse("/items/0/token").unwrap(),
+                json!("prod-token"),
+            ),
+        ))
+        .build()
+        .expect_err("root value predicate on a list-indexed secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for list-indexed root secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn root_value_predicate_on_mode_secret_under_list_is_rejected() {
+    // The compound Codex shape: a mode-variant payload secret nested inside a
+    // list item, addressed by a ROOT value predicate through a concrete list
+    // instance. A mode-variant payload is addressable *at* the variant path
+    // (`items.auth.token`), not under the payload field's own key, so the
+    // secret set is keyed `["items","auth","token"]`; index normalization must
+    // collapse the `/0/` instance segment so the predicate is rejected before
+    // it can reach the unscrubbed root-rule context.
+    let report = Schema::builder()
+        .add(
+            Field::list(field_key!("items")).item(Field::object(field_key!("row")).add(
+                Field::mode(field_key!("auth")).variant(
+                    "token",
+                    "Token",
+                    Field::secret(field_key!("creds")),
+                ),
+            )),
+        )
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Eq(
+                nebula_validator::foundation::FieldPath::parse("/items/0/auth/token").unwrap(),
+                json!("prod-creds"),
+            ),
+        ))
+        .build()
+        .expect_err("root value predicate on a mode-under-list secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for mode-under-list root secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn root_presence_predicate_on_list_indexed_secret_is_allowed() {
+    // `Predicate::Set` counterpart: presence-only on the same list-indexed
+    // nested-secret path never reads the value, so it stays legal — the guard
+    // widening must not over-reject presence predicates.
+    Schema::builder()
+        .add(
+            Field::list(field_key!("items"))
+                .item(Field::object(field_key!("row")).add(Field::secret(field_key!("token")))),
+        )
+        .root_rule(nebula_validator::Rule::Predicate(
+            nebula_validator::Predicate::Set(
+                nebula_validator::foundation::FieldPath::parse("/items/0/token").unwrap(),
+            ),
+        ))
+        .build()
+        .expect("presence predicate on a list-indexed secret in a root rule is allowed");
+}
