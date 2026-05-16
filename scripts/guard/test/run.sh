@@ -124,6 +124,16 @@ TB_SID="c-tb"; TB_P="$(turn_state_path "$TB_SID" "$TB_DIR")"; mkdir -p "$(dirnam
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "$TB_BASE" >"$TB_P"
 chk "C catches committed-this-turn (§4.C)" 2 "$(cstop '{"session_id":"'"$TB_SID"'","cwd":"'"$TB_DIR"'","stop_hook_active":false}')"
 rm -rf "$TB_DIR"
+# §4.C edge: A0 on an unborn branch (zero commits) must record EMPTY turn_base,
+# not the literal "HEAD". Plain `rev-parse HEAD` echoes "HEAD" to stdout there,
+# making turn_base non-empty so C's [ -n "$tb" ] guard runs a vacuous
+# HEAD..HEAD diff and a first-ever B-bypassed commit escapes. --verify -q must
+# yield "" so C correctly skips the diff arm.
+UB_DIR="$(mktemp -d)"; ( cd "$UB_DIR" && git init -q )
+UB_SID="c-ub"; UB_P="$(turn_state_path "$UB_SID" "$UB_DIR")"; mkdir -p "$(dirname "$UB_P")"
+printf '{"session_id":"%s","cwd":"%s"}' "$UB_SID" "$UB_DIR" | bash "$HERE/turn-reset.sh"
+chk "A0 unborn branch => empty turn_base (§4.C)" '""' "$(jq -c '.turn_base' "$UB_P")"
+rm -rf "$UB_DIR"
 rm -rf "$CG_DIR"
 # D fmt (must always exit 0, never block)
 dfmt() { printf '%s' "$1" | bash "$HERE/fmt.sh" >/dev/null 2>&1; echo $?; }
