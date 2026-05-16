@@ -171,7 +171,7 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
     assert_eq!(
         out,
         RotationOutcome {
-            ok: 2,
+            success: 2,
             failed: 0,
             timed_out: 1,
         },

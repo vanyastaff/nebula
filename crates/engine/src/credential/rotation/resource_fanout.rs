@@ -2,13 +2,14 @@
 //!
 //! Per ADR-0030, `nebula-engine` (exec layer) owns credential rotation
 //! orchestration; `nebula-resource` exposes only the typed
-//! `Manager::{refresh_slot, revoke_slot}` port. When a credential rotates,
-//! the engine must fan that single event out to every resource registry row
-//! whose resolved slot binding consumed it.
+//! `Manager::{refresh_slot_for, revoke_slot_for}` port. When a credential
+//! rotates, the engine must fan that single event out to every resource
+//! registry row whose resolved slot binding consumed it.
 //!
 //! This module is the index half of that fan-out. It maps a rotated
 //! `CredentialId` to the set of resource rows that bound it, so the
-//! orchestrator can drive `Manager::{refresh_slot, revoke_slot}` per row.
+//! orchestrator can drive `Manager::{refresh_slot_for, revoke_slot_for}` per
+//! row.
 //!
 //! # Why the bind struct carries `slot_identity`
 //!
@@ -71,16 +72,16 @@ pub struct Bind {
 /// registry row.
 ///
 /// One [`Bind`] contributes exactly one of the three counts, so
-/// `ok + failed + timed_out == affected_rows`. Per ADR-0036's per-resource
-/// timeout-isolation invariant a slow, failed, or timed-out row never aborts
-/// or fails its siblings — each row's outcome is independent. The struct
-/// carries only counts (no key/slot/credential material) so it is safe to
-/// log or emit as a metrics/dashboard signal; it is **not** a substitute for
-/// an audit write (ADR-0028 §4).
+/// `success + failed + timed_out == affected_rows`. Per ADR-0036's
+/// per-resource timeout-isolation invariant a slow, failed, or timed-out row
+/// never aborts or fails its siblings — each row's outcome is independent. The
+/// struct carries only counts (no key/slot/credential material) so it is safe
+/// to log or emit as a metrics/dashboard signal; it is **not** a substitute
+/// for an audit write (ADR-0028 §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RotationOutcome {
     /// Rows whose `Manager::{refresh,revoke}_slot_for` hook returned `Ok`.
-    pub ok: usize,
+    pub success: usize,
     /// Rows whose hook returned `Err` (resolution miss, hook failure, …).
     pub failed: usize,
     /// Rows whose hook did not complete within the per-resource timeout.
@@ -89,10 +90,10 @@ pub struct RotationOutcome {
 
 impl RotationOutcome {
     /// Total rows the fan-out dispatched to
-    /// (`ok + failed + timed_out`).
+    /// (`success + failed + timed_out`).
     #[must_use]
     pub fn dispatched(&self) -> usize {
-        self.ok + self.failed + self.timed_out
+        self.success + self.failed + self.timed_out
     }
 }
 
@@ -221,7 +222,7 @@ impl ResourceFanoutIndex {
     /// concurrently via [`futures::future::join_all`]. One slow, failed, or
     /// timed-out row therefore **never aborts or fails a sibling** — every
     /// row's outcome is recorded independently and folded into the returned
-    /// [`RotationOutcome`] (`ok + failed + timed_out == affected_rows`).
+    /// [`RotationOutcome`] (`success + failed + timed_out == affected_rows`).
     ///
     /// Identity routing: a multi-tenant `(key, scope)` has more than one
     /// resolved row, so `Manager::refresh_slot` (identity-agnostic) would
@@ -242,7 +243,7 @@ impl ResourceFanoutIndex {
         level = "debug",
         name = "nebula.credential.rotation.fanout_refresh",
         skip(self, mgr),
-        fields(credential_id = %cid, affected, ok, failed, timed_out)
+        fields(credential_id = %cid, affected, success, failed, timed_out)
     )]
     pub async fn dispatch_refresh(
         &self,
@@ -267,7 +268,7 @@ impl ResourceFanoutIndex {
         level = "debug",
         name = "nebula.credential.rotation.fanout_revoke",
         skip(self, mgr),
-        fields(credential_id = %cid, affected, ok, failed, timed_out)
+        fields(credential_id = %cid, affected, success, failed, timed_out)
     )]
     pub async fn dispatch_revoke(
         &self,
@@ -339,7 +340,7 @@ impl ResourceFanoutIndex {
                 }
             };
             match tokio::time::timeout(per_resource_timeout, port).await {
-                Ok(Ok(())) => RowOutcome::Ok,
+                Ok(Ok(())) => RowOutcome::Success,
                 Ok(Err(err)) => {
                     // Resource-crate errors are already credential-free
                     // (key/slot/scope only); safe to log verbatim.
@@ -372,19 +373,19 @@ impl ResourceFanoutIndex {
         let mut outcome = RotationOutcome::default();
         for r in results {
             match r {
-                RowOutcome::Ok => outcome.ok += 1,
+                RowOutcome::Success => outcome.success += 1,
                 RowOutcome::Failed => outcome.failed += 1,
                 RowOutcome::TimedOut => outcome.timed_out += 1,
             }
         }
 
-        tracing::Span::current().record("ok", outcome.ok);
+        tracing::Span::current().record("success", outcome.success);
         tracing::Span::current().record("failed", outcome.failed);
         tracing::Span::current().record("timed_out", outcome.timed_out);
         tracing::debug!(
             credential_id = %cid,
             affected,
-            ok = outcome.ok,
+            success = outcome.success,
             failed = outcome.failed,
             timed_out = outcome.timed_out,
             "rotation fan-out {op_name} complete",
@@ -417,7 +418,7 @@ impl FanoutOp {
 /// Per-row fan-out result (one [`Bind`] → exactly one of these).
 #[derive(Debug, Clone, Copy)]
 enum RowOutcome {
-    Ok,
+    Success,
     Failed,
     TimedOut,
 }
@@ -518,7 +519,7 @@ mod tests {
     #[test]
     fn rotation_outcome_dispatched_is_sum() {
         let o = RotationOutcome {
-            ok: 3,
+            success: 3,
             failed: 1,
             timed_out: 2,
         };
@@ -761,7 +762,7 @@ mod tests {
             (idx, mgr, cid, scope, ledger)
         }
 
-        /// THE Part-1 invariant: one resource that times out must NOT abort
+        /// Isolation invariant: one resource that times out must NOT abort
         /// or fail its siblings — they still refresh. Three tenants under
         /// one `(key, scope)`; the middle one hangs.
         #[tokio::test]
@@ -781,7 +782,7 @@ mod tests {
             assert_eq!(
                 out,
                 RotationOutcome {
-                    ok: 2,
+                    success: 2,
                     failed: 0,
                     timed_out: 1,
                 },
@@ -815,7 +816,7 @@ mod tests {
             assert_eq!(
                 out,
                 RotationOutcome {
-                    ok: 2,
+                    success: 2,
                     failed: 1,
                     timed_out: 1,
                 },
@@ -839,7 +840,7 @@ mod tests {
             assert_eq!(
                 out,
                 RotationOutcome {
-                    ok: 2,
+                    success: 2,
                     failed: 0,
                     timed_out: 1,
                 },
@@ -868,7 +869,7 @@ mod tests {
             assert_eq!(
                 out,
                 RotationOutcome {
-                    ok: 3,
+                    success: 3,
                     failed: 0,
                     timed_out: 0,
                 },
