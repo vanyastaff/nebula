@@ -40,6 +40,21 @@ printf '{"session_id":"%s","cwd":"%s"}' "$TS_SID" "$PWD" | bash "$HERE/turn-rese
 chk "A0 clears impl" "[]" "$(jq -c '.impl_files_edited' "$TS_P")"
 chk "A0 clears gate" "[]" "$(jq -c '.gate_green' "$TS_P")"
 
+# A bash-deny  (run hook, capture exit code)
+adeny() { printf '%s' "$1" | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?; }
+mk() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$PWD"; }
+chk "A denies --no-verify (wrapped)" 2 "$(adeny "$(mk 'env X=1 git commit -m wip --no-verify')")"
+chk "A denies clippy -A"            2 "$(adeny "$(mk 'cargo clippy -p nebula-engine -- -A clippy::all')")"
+chk "A denies cargo fmt --all"      2 "$(adeny "$(mk 'cargo fmt --all')")"
+chk "A denies timeout-wrapped fmt --all" 2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
+chk "A fail-closed on subshell"     2 "$(adeny "$(mk 'cargo \$(echo test)')")"
+chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
+chk "A allows conventional commit"  0 "$(adeny "$(mk 'git commit -m \"feat(x): y\"')")"
+chk "A allows gh pr create quoted"  0 "$(adeny "$(mk 'gh pr create --title \"Add X\"')")"
+chk "A allows grep string literal"  0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
+chk "A denies quoted-token bypass"  2 "$(adeny "$(mk 'cargo \"fmt\" --all')")"
+chk "A denies env -S fmt --all"     2 "$(adeny "$(mk 'env -S cargo fmt --all')")"
+
 # Per-hook cases are appended by later tasks below this line. # HOOKMARK
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
