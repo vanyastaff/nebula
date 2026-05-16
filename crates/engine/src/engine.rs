@@ -146,16 +146,10 @@ pub struct WorkflowEngine {
     /// Legacy Layer-1 handle; see [`Self::execution_repo`].
     workflow_repo: Option<Arc<dyn nebula_storage::WorkflowRepo>>,
     /// Optional spec-16 port bundle (execution-state / lease / journal /
-    /// node-result / idempotency / checkpoint). When set, production
-    /// paths use this instead of [`Self::execution_repo`].
-    ///
-    /// Written by [`Self::with_execution_stores`]; the production readers
-    /// land in the next migration slice. The allow is scoped to this
-    /// expand-phase field and is removed when that slice wires the reads.
-    #[allow(
-        dead_code,
-        reason = "expand-phase field; production readers land in the next slice"
-    )]
+    /// node-result / idempotency / checkpoint). When set, the migrated
+    /// production paths use this instead of [`Self::execution_repo`];
+    /// the remaining paths fall back to the legacy handle until their
+    /// migration slice lands.
     stores: Option<crate::store_seam::ExecutionStores>,
     /// Optional spec-16 workflow-definition port bundle for the resume
     /// path. When set, used instead of [`Self::workflow_repo`].
@@ -2996,102 +2990,132 @@ impl WorkflowEngine {
         required_count: &HashMap<NodeKey, usize>,
         ready_queue: &mut VecDeque<NodeKey>,
     ) -> bool {
-        let Some(repo) = &self.execution_repo else {
+        // Dual-dispatch: prefer the spec-16 port bundle when configured,
+        // else the legacy `ExecutionRepo`. Both resolve to the same
+        // `(output, optional typed result)` so the replay routing logic
+        // below is shared. Replay is detected by a persisted node
+        // *output* — the port's §11.3 guard is check-and-mark with no
+        // read-only probe, so the durable output is the authoritative
+        // "already ran" signal (identical fallback to the legacy
+        // `check_idempotency` + `load_node_output` pair: a present mark
+        // with a missing output is a partial write ⇒ re-execute).
+        let (output_value, stored_result) = if let Some(stores) = &self.stores {
+            let scope = crate::store_seam::engine_scope();
+            let id = execution_id.to_string();
+            let output_value = match stores
+                .node_results
+                .load_node_output(&scope, &id, node_key.as_str())
+                .await
+            {
+                Ok(Some(record)) => record.json,
+                Ok(None) => return false,
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        error = %e,
+                        "failed to load idempotent node output; re-executing"
+                    );
+                    return false;
+                },
+            };
+            let stored_result = match stores
+                .node_results
+                .load_node_result(&scope, &id, node_key.as_str())
+                .await
+            {
+                Ok(Some(record)) => deserialize_stored_result(record.json, execution_id, &node_key),
+                Ok(None) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        "idempotency replay has no persisted ActionResult; \
+                         synthesizing Success — Branch/Route/MultiOutput \
+                         routing will not be preserved"
+                    );
+                    None
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        error = %e,
+                        "failed to load persisted action result; \
+                         falling back to synthesized Success"
+                    );
+                    None
+                },
+            };
+            (output_value, stored_result)
+        } else if let Some(repo) = &self.execution_repo {
+            let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
+            let already_done = match repo.check_idempotency(idem_key.as_str()).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        error = %e,
+                        "idempotency check failed; proceeding with execution"
+                    );
+                    return false;
+                },
+            };
+            if !already_done {
+                return false;
+            }
+            let output_value = match repo.load_node_output(execution_id, node_key.clone()).await {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        "idempotency key present but output missing; re-executing node"
+                    );
+                    return false;
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        error = %e,
+                        "failed to load idempotent node output; re-executing"
+                    );
+                    return false;
+                },
+            };
+            let stored_result = match repo.load_node_result(execution_id, node_key.clone()).await {
+                Ok(Some(record)) => {
+                    deserialize_stored_result(record.result, execution_id, &node_key)
+                },
+                Ok(None) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        "idempotency replay has no persisted ActionResult; \
+                         synthesizing Success — Branch/Route/MultiOutput \
+                         routing will not be preserved"
+                    );
+                    None
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        error = %e,
+                        "failed to load persisted action result; \
+                         falling back to synthesized Success"
+                    );
+                    None
+                },
+            };
+            (output_value, stored_result)
+        } else {
             return false;
-        };
-
-        let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-
-        let already_done = match repo.check_idempotency(idem_key.as_str()).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    error = %e,
-                    "idempotency check failed; proceeding with execution"
-                );
-                return false;
-            },
-        };
-
-        if !already_done {
-            return false;
-        }
-
-        // Node was already executed — load the persisted output.
-        let output_value = match repo.load_node_output(execution_id, node_key.clone()).await {
-            Ok(Some(v)) => v,
-            Ok(None) => {
-                // Idempotency key exists but no output was persisted. This indicates
-                // a partial write (e.g. the process crashed after marking idempotent
-                // but before saving the output). Re-execute to produce a clean result.
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    "idempotency key present but output missing; re-executing node"
-                );
-                return false;
-            },
-            Err(e) => {
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    error = %e,
-                    "failed to load idempotent node output; re-executing"
-                );
-                return false;
-            },
         };
 
         outputs.insert(node_key.clone(), output_value.clone());
         mark_node_completed(exec_state, node_key.clone());
-
-        // Prefer the fully-typed persisted ActionResult when
-        // available. Falling back to a synthesized `Success` loses
-        // Branch/Route/MultiOutput/Skip routing semantics on replay —
-        // every branch edge would fire unconditionally (issue #299).
-        let stored_result = match repo.load_node_result(execution_id, node_key.clone()).await {
-            Ok(Some(record)) => {
-                match serde_json::from_value::<ActionResult<serde_json::Value>>(record.result) {
-                    Ok(result) => Some(result),
-                    Err(e) => {
-                        tracing::warn!(
-                            %execution_id,
-                            %node_key,
-                            error = %e,
-                            "failed to deserialize persisted action result; \
-                             falling back to synthesized Success"
-                        );
-                        None
-                    },
-                }
-            },
-            Ok(None) => {
-                // Backend has no stored result (legacy rows, or a
-                // backend that does not override save_node_result).
-                // Fall back to the old behaviour but log so the
-                // regression is visible.
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    "idempotency replay has no persisted ActionResult; \
-                     synthesizing Success — Branch/Route/MultiOutput \
-                     routing will not be preserved"
-                );
-                None
-            },
-            Err(e) => {
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    error = %e,
-                    "failed to load persisted action result; \
-                     falling back to synthesized Success"
-                );
-                None
-            },
-        };
 
         let effective_result = stored_result.unwrap_or_else(|| ActionResult::success(output_value));
         process_outgoing_edges(
@@ -3124,9 +3148,6 @@ impl WorkflowEngine {
         attempt: u32,
         action_result: &ActionResult<serde_json::Value>,
     ) {
-        let Some(repo) = &self.execution_repo else {
-            return;
-        };
         let value = match serde_json::to_value(action_result) {
             Ok(v) => v,
             Err(e) => {
@@ -3139,22 +3160,45 @@ impl WorkflowEngine {
                 return;
             },
         };
-        let kind = value
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown")
-            .to_owned();
-        let record = nebula_storage::NodeResultRecord::new(kind, value);
-        if let Err(e) = repo
-            .save_node_result(execution_id, node_key.clone(), attempt, record)
-            .await
-        {
-            tracing::warn!(
-                %execution_id,
-                %node_key,
-                error = %e,
-                "failed to persist action result"
-            );
+        // Dual-dispatch: spec-16 port bundle when configured, else the
+        // legacy repo. Both stamp the variant tag identically.
+        if let Some(stores) = &self.stores {
+            let record = crate::store_seam::node_result_record(value);
+            if let Err(e) = stores
+                .node_results
+                .save_node_result(
+                    &crate::store_seam::engine_scope(),
+                    &execution_id.to_string(),
+                    node_key.as_str(),
+                    record,
+                )
+                .await
+            {
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    error = %e,
+                    "failed to persist action result"
+                );
+            }
+        } else if let Some(repo) = &self.execution_repo {
+            let kind = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown")
+                .to_owned();
+            let record = nebula_storage::NodeResultRecord::new(kind, value);
+            if let Err(e) = repo
+                .save_node_result(execution_id, node_key.clone(), attempt, record)
+                .await
+            {
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    error = %e,
+                    "failed to persist action result"
+                );
+            }
         }
     }
 
@@ -3168,20 +3212,46 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         node_key: NodeKey,
     ) {
-        let Some(repo) = &self.execution_repo else {
-            return;
-        };
-        let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-        if let Err(e) = repo
-            .mark_idempotent(idem_key.as_str(), execution_id, node_key.clone())
-            .await
-        {
-            tracing::warn!(
-                %execution_id,
-                %node_key,
-                error = %e,
-                "failed to mark node as idempotent"
-            );
+        // Dual-dispatch. The port guard is check-and-mark on
+        // `{scope}:{exec}:{node}:{attempt}`; the attempt is derived the
+        // same way as `idempotency_key_for_node` (ADR-0042
+        // `attempt_count + 1`) so the guard key stays in lockstep with
+        // the persisted output/result rows.
+        if let Some(stores) = &self.stores {
+            let attempt = exec_state
+                .node_states
+                .get(&node_key)
+                .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
+            if let Err(e) = stores
+                .idempotency
+                .check_and_mark(
+                    &crate::store_seam::engine_scope(),
+                    &execution_id.to_string(),
+                    node_key.as_str(),
+                    attempt,
+                )
+                .await
+            {
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    error = %e,
+                    "failed to mark node as idempotent"
+                );
+            }
+        } else if let Some(repo) = &self.execution_repo {
+            let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
+            if let Err(e) = repo
+                .mark_idempotent(idem_key.as_str(), execution_id, node_key.clone())
+                .await
+            {
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    error = %e,
+                    "failed to mark node as idempotent"
+                );
+            }
         }
     }
 
@@ -4256,6 +4326,32 @@ fn mark_node_skipped(exec_state: &mut ExecutionState, node_key: NodeKey) {
 /// Mark a node as completed in the execution state.
 fn mark_node_completed(exec_state: &mut ExecutionState, node_key: NodeKey) {
     let _ = exec_state.transition_node(node_key, NodeState::Completed);
+}
+
+/// Decode a persisted node-result JSON blob into a typed [`ActionResult`].
+///
+/// Returns `None` (caller synthesizes a flat `Success`) on a decode
+/// failure, logging the regression so a lost Branch/Route/MultiOutput
+/// routing is visible rather than silent (issue #299). Shared by the
+/// port and legacy idempotency-replay paths so both decode identically.
+fn deserialize_stored_result(
+    json: serde_json::Value,
+    execution_id: ExecutionId,
+    node_key: &NodeKey,
+) -> Option<ActionResult<serde_json::Value>> {
+    match serde_json::from_value::<ActionResult<serde_json::Value>>(json) {
+        Ok(result) => Some(result),
+        Err(e) => {
+            tracing::warn!(
+                %execution_id,
+                %node_key,
+                error = %e,
+                "failed to deserialize persisted action result; \
+                 falling back to synthesized Success"
+            );
+            None
+        },
+    }
 }
 
 /// Mark a node as failed in the execution state.
