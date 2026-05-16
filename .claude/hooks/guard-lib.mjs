@@ -15,6 +15,9 @@ export async function readStdin() {
 }
 
 const WRAPPERS = new Set(["env", "sudo", "nice", "timeout", "watch", "xargs", "command", "stdbuf", "nohup"]);
+// Wrapper flags that take a SEPARATE-token value (so the value is not mistaken
+// for the wrapped command). Locked set — changing it affects every guard.
+const VALUE_FLAGS = new Set(["-u", "-g", "-n", "-C", "-k", "-s", "-S", "-h", "-d", "-o", "-e", "--user", "--group", "--signal", "--chdir"]);
 const CUTTERS = new Set(["|", "||", "&&", ";", "&", ">", ">>", "<", "2>", "2>&1", "1>&2", "|&"]);
 
 function tokenize(cmd) {
@@ -48,7 +51,20 @@ export function parseBash(command) {
     const base = toks[i].split("/").pop();
     if (WRAPPERS.has(base)) {
       i++;
-      while (i < toks.length && toks[i].startsWith("-")) i++;
+      // consume the wrapper's argument region: flags (+ their values),
+      // bare numeric/duration values (e.g. `timeout 600`, `nice 10`), and
+      // env-style VAR=val — stop at the first real command token.
+      while (i < toks.length) {
+        const t = toks[i];
+        if (t.startsWith("-")) {
+          i++;
+          if (VALUE_FLAGS.has(t) && i < toks.length && !toks[i].startsWith("-")) i++;
+          continue;
+        }
+        if (/^\d+(?:\.\d+)?[smhdKMG]?$/.test(t)) { i++; continue; }
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) && !t.includes("/")) { i++; continue; }
+        break;
+      }
       continue;
     }
     break;
@@ -94,6 +110,9 @@ export function saveState(p, s) {
   catch { /* fail open */ }
 }
 
+// Process-terminal: emits the deny JSON and never returns (calls
+// process.exit(0)). Hooks are unit-tested as child processes, so the
+// terminal exit is observable via stdout/exit without importing it.
 export function denyPre(reason) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {

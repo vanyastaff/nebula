@@ -25,3 +25,17 @@ test("isLibRust excludes tests/benches/examples", () => {
   assert.equal(isLibRust("crates/engine/tests/retry.rs"), false);
   assert.equal(isLibRust("crates/engine/src/main.rs"), false);
 });
+
+test("parseBash unwraps value-taking wrapper args (anti-evasion)", () => {
+  assert.equal(parseBash("timeout 600 cargo clippy -- -D warnings").argv0, "cargo");
+  assert.equal(parseBash("sudo -u root cargo build").argv0, "cargo");
+  assert.equal(parseBash("nice -n 10 cargo nextest run").argv0, "cargo");
+  assert.equal(parseBash("timeout -s KILL 600 cargo test").argv0, "cargo");
+});
+
+test("crateOf / isLibRust handle Windows + absolute paths", () => {
+  assert.equal(crateOf("crates\\engine\\src\\state.rs"), "engine");
+  assert.equal(isLibRust("crates\\engine\\src\\state.rs"), true);
+  assert.equal(isLibRust("C:\\Users\\v\\nebula\\crates\\engine\\src\\state.rs"), true);
+  assert.equal(isLibRust("C:\\Users\\v\\nebula\\crates\\engine\\tests\\retry.rs"), false);
+});
