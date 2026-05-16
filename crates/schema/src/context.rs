@@ -30,6 +30,10 @@ use crate::{
 ///
 /// Only `FieldValue::Literal` leaves are addressable by predicates;
 /// expression / list / mode / secret-sentinel subtrees are non-addressable.
+///
+/// Reachable across the crate boundary only for seam tests; not a stable
+/// public API (`nebula-schema` is pre-1.0 and this is an internal seam).
+#[doc(hidden)]
 #[must_use]
 pub fn predicate_context_for(fields: &[Field], values: &FieldValues) -> PredicateContext {
     let mut pairs: Vec<(FieldPath, serde_json::Value)> = Vec::new();
@@ -77,6 +81,180 @@ fn collect_non_secret(
             _ => {},
         }
     }
+}
+
+/// Build the predicate context for **root rules**.
+///
+/// Built as the validator's own [`PredicateContext::from_json`] over the
+/// submitted JSON with every `Field::Secret` subtree removed by schema type
+/// (recursively — through objects, list items, and the selected mode-variant
+/// payload). Any field whose schema subtree contains no secret is kept
+/// **verbatim**, so the resulting context is byte-identical to the pre-scrub
+/// `from_json` there: every legal root predicate (scalar leaf, nested object,
+/// whole-object / whole-list presence, array membership, mode envelope)
+/// resolves exactly as before and a legitimate guard cannot silently fail
+/// open. Only secret plaintext is elided — a `Field::Secret` object key is
+/// dropped, a secret list item collapses to `null` (presence/length
+/// preserved), the selected mode-variant payload is stripped, and a
+/// secret-bearing structured field whose value is not the matching shape is
+/// dropped (closes the blob-bypass exfiltration). An undeclared key is kept
+/// verbatim only at the **top-level** scope (where it cannot be a secret and
+/// no legal predicate can target it — exact `from_json` parity); inside a
+/// secret-bearing structured field undeclared keys are attacker-controlled
+/// blob keys and are dropped, so a sibling cannot smuggle secret plaintext
+/// onto the defined container path. The build-time `secret.predicate_on_value`
+/// lint remains the additive outer boundary.
+///
+/// Reachable across the crate boundary only for seam tests; not a stable
+/// public API (`nebula-schema` is pre-1.0 and this is an internal seam).
+#[doc(hidden)]
+#[must_use]
+pub fn root_predicate_context_for(fields: &[Field], values: &FieldValues) -> PredicateContext {
+    root_predicate_context_from_json(fields, &values.to_json())
+}
+
+/// [`root_predicate_context_for`] over an already-materialized JSON value, so a
+/// caller that has built `values.to_json()` does not pay for it twice.
+#[must_use]
+pub(crate) fn root_predicate_context_from_json(
+    fields: &[Field],
+    json: &serde_json::Value,
+) -> PredicateContext {
+    match json.as_object() {
+        Some(map) => PredicateContext::from_json(&serde_json::Value::Object(strip_secrets_scope(
+            fields, map, true,
+        ))),
+        None => PredicateContext::from_json(json),
+    }
+}
+
+/// True when `field`'s schema subtree contains a `Field::Secret` at any depth.
+///
+/// A pure schema property — independent of the value tree and of any
+/// JSON-vs-schema key divergence (mode envelopes use `mode`/`value` JSON keys,
+/// not variant keys), so the secret decision is always sound.
+fn field_subtree_has_secret(field: &Field) -> bool {
+    match field {
+        Field::Secret(_) => true,
+        Field::Object(o) => o.fields.iter().any(field_subtree_has_secret),
+        Field::List(l) => l.item.as_deref().is_some_and(field_subtree_has_secret),
+        Field::Mode(m) => m
+            .variants
+            .iter()
+            .any(|v| field_subtree_has_secret(v.field.as_ref())),
+        _ => false,
+    }
+}
+
+/// Return `value` with every `Field::Secret` subtree removed, guided by
+/// `field`'s schema. `None` means the value must not enter the context at all
+/// (it *is* a secret, or it is a secret-bearing structured field whose value
+/// is the wrong shape — a blob that could smuggle a nested secret's
+/// plaintext). A secret-free subtree is returned verbatim, so the later
+/// `from_json` keys it exactly as the unscrubbed submission did.
+fn strip_secret_value(field: &Field, value: &serde_json::Value) -> Option<serde_json::Value> {
+    if matches!(field, Field::Secret(_)) {
+        return None; // secret plaintext never enters the context
+    }
+    if !field_subtree_has_secret(field) {
+        return Some(value.clone()); // secret-free → verbatim (`from_json` parity)
+    }
+    match (field, value) {
+        (Field::Object(obj), serde_json::Value::Object(map)) => Some(serde_json::Value::Object(
+            // Nested inside a secret-bearing object: drop attacker-controlled
+            // undeclared keys so a `Literal`-blob sibling cannot smuggle secret
+            // plaintext onto the defined container path.
+            strip_secrets_scope(obj.fields.as_slice(), map, false),
+        )),
+        (Field::List(list), serde_json::Value::Array(items)) => {
+            // `from_json` keys the whole array under the list path (it does not
+            // descend it). Preserve that — including length / presence so a
+            // legal `Set`/`Empty` guard still resolves — with each item's
+            // secrets stripped (a secret item collapses to `null`).
+            let item = list.item.as_deref();
+            let stripped = items
+                .iter()
+                .map(|el| {
+                    item.and_then(|it| strip_secret_value(it, el))
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect();
+            Some(serde_json::Value::Array(stripped))
+        },
+        (Field::Mode(mode), serde_json::Value::Object(env)) => {
+            // Keep the `mode` selector (a string, never a secret).
+            let mut out = serde_json::Map::new();
+            if let Some(sel) = env.get("mode") {
+                out.insert("mode".to_owned(), sel.clone());
+            }
+            // Resolve the active variant exactly as `validate_literal_value`
+            // does: an explicit string `mode`, otherwise `default_variant`
+            // when `mode` is omitted (a non-string `mode` is an invalid input
+            // that fails structural validation — no payload selector then).
+            // The payload is stripped against that variant's schema, so a
+            // legal root predicate on a default-variant (mode-omitted)
+            // submission stays consistent while secrets remain scrubbed.
+            let selected: Option<&str> = match env.get("mode") {
+                Some(serde_json::Value::String(mk)) => Some(mk.as_str()),
+                Some(_) => None,
+                None => mode.default_variant.as_deref(),
+            };
+            if let Some(payload) = env.get("value")
+                && let Some(key) = selected
+                && let Some(var) = mode.variants.iter().find(|v| v.key.as_str() == key)
+                && let Some(stripped) = strip_secret_value(var.field.as_ref(), payload)
+            {
+                out.insert("value".to_owned(), stripped);
+            }
+            Some(serde_json::Value::Object(out))
+        },
+        // Secret-bearing structured field whose value is not the matching
+        // shape (e.g. a `Literal` blob handed to an `Object`/`List`/`Mode`
+        // field via the public unvalidated setter): drop it — its serialized
+        // form could carry a nested secret's plaintext.
+        _ => None,
+    }
+}
+
+/// Strip secrets across one field scope, returning the secret-free object map
+/// `from_json` will then key.
+///
+/// `keep_undeclared` controls keys with no matching schema field. At the
+/// **top-level** scope an undeclared key cannot be a `Field::Secret` (secrets
+/// are always declared) and a predicate cannot legally target it (the
+/// dangling-reference lint rejects undefined paths), so it is kept verbatim
+/// for exact `from_json` parity. Inside a **secret-bearing structured field**
+/// the keys come from an attacker-controlled `Literal` blob (the unvalidated
+/// `FieldValues::set` bypass): an undeclared sibling there can carry secret
+/// plaintext that would ride the *defined* container path, so it MUST be
+/// dropped. Secret-free subtrees never recurse here (they return verbatim
+/// before the match in `strip_secret_value`), so dropping nested undeclared
+/// keys never affects the secret-free byte-parity guarantee.
+fn strip_secrets_scope(
+    schema: &[Field],
+    json: &serde_json::Map<String, serde_json::Value>,
+    keep_undeclared: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    // One lookup per scope instead of a linear scan per JSON key
+    // (`strip_secrets_scope` runs at validate-time for every root-rule eval).
+    let by_key: std::collections::HashMap<&str, &Field> =
+        schema.iter().map(|f| (f.key().as_str(), f)).collect();
+    let mut out = serde_json::Map::new();
+    for (key, value) in json {
+        match by_key.get(key.as_str()) {
+            None => {
+                if keep_undeclared {
+                    out.insert(key.clone(), value.clone());
+                }
+            },
+            Some(field) => {
+                if let Some(stripped) = strip_secret_value(field, value) {
+                    out.insert(key.clone(), stripped);
+                }
+            },
+        }
+    }
+    out
 }
 
 #[cfg(test)]

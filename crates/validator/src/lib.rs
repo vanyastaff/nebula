@@ -83,8 +83,8 @@ pub use error::ValidatorError;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;
 pub use policy::{
-    FieldPlan, FieldPolicyDecl, FieldPolicyResolution, Presence, RequiredPolicy, Requiredness,
-    VisibilityPolicy, resolve_field_policies,
+    FieldDirective, FieldPlan, FieldPolicyDecl, FieldPolicyResolution, Presence, RequiredPolicy,
+    Requiredness, VisibilityPolicy, resolve_field_policies,
 };
 pub use proof::Validated;
 pub use rule::{DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleKind, ValueRule};

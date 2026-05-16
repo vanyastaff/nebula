@@ -79,7 +79,8 @@ field — and MUST NOT delete the carve-out. Seam anchor: the
 For the root-rule path specifically, `run_root_rules` evaluates predicates
 against the full submitted JSON with no `Field::Secret`-by-type scrub (the
 field-level path uses the scrubbed `predicate_context_for`; a later phase
-scrubs the root-rule context too). Until then the build-time
+scrubs the root-rule context too — **done in the 2026-05-16 P2 amendment
+below**). Until then the build-time
 `secret.predicate_on_value` lint is the security boundary that stops a
 value-comparing root predicate from reading secret plaintext, so its
 secret-key collection must mirror every addressable shape (object, list-item
@@ -87,3 +88,49 @@ object including indexed instances, mode variant payload) and the predicate
 target must be matched after list-index normalization. Seam anchors: the
 `root_value_predicate_on_list_indexed_secret_is_rejected` and
 `root_value_predicate_on_mode_secret_under_list_is_rejected` regression tests.
+
+## Amendment (2026-05-16) — P2: validator sole emitter, root-rule scrub, single crossing
+
+P2 lands the deferred moves. (1) The hidden+present+required+empty `required`
+emission is **moved** from the `nebula-schema` field gate into
+`resolve_field_policies` (the validator is now the sole `required` emitter for
+both `Presence::Active` and the bounded non-`Active` carve-out); the behaviour
+is preserved exactly (one `required` error for a hidden+present+required+empty
+field) — the carve-out is moved, not deleted. `FieldPolicyDecl` now carries two
+independent bits (`value_present` = not-absent-for-required, and `raw_present`
+= a raw value is syntactically present); `FieldPlan` carries a ternary
+directive so a hidden-but-present field is still structurally validated (a
+smuggled expression in a no-payload mode-variant placeholder cannot escape to
+resolve). (2) The root-rule predicate context is now built by the same
+addressable-path traversal the `secret.predicate_on_value` lint uses, scrubbing
+`Field::Secret` by schema type recursively (objects, list-item objects, mode
+variant payloads); the root-rule path no longer evaluates predicates against
+unscrubbed submitted JSON. The build-time `secret.predicate_on_value` lint is
+retained as defence-in-depth (no longer the sole boundary). (3)
+`run_rules`/`run_root_rules`, `validator_bridge.rs`'s error mapping, and
+`translate_validator_code` are deleted; `nebula-schema` crosses into
+`nebula-validator` only through `validate_rules_with_ctx` and
+`resolve_field_policies`, and merges validator errors verbatim. Consequence:
+the public validation error vocabulary for rule failures changes from the
+schema `STANDARD_CODES` remap (`length.min`, `length.max`, `range.min`,
+`range.max`, `pattern`, `email`, `url`) to the native validator vocabulary
+(`min_length`, `max_length`, `min`, `max`, `invalid_format`).
+`nebula-schema` is `frontier` / pre-1.0 (no UPGRADE_COMPAT contract), so this
+is canon-legal; it ships as a breaking change with the seam test
+`crates/schema/tests/flow/all_error_codes.rs` updated in the same PR.
+Schema-owned structural codes (`type_mismatch`, `items.*`, `option.*`,
+`mode.*`, `expression.*`, `required`) are unchanged. The lint-only path
+helpers (`resolve_rule_dependency`/`referenced_root_key`/
+`normalize_rule_target_path`) relocate to `crates/schema/src/rule_ref.rs`
+(intra-crate; lint behaviour byte-identical). The `ValidSchema::validate` /
+`ValidValues::resolve` signatures and proof-token custody
+(INTEGRATION_MODEL §29/§33) are unchanged.
+
+Seam anchors added/kept green in the P2 PR:
+`hidden_present_required_empty_emits_single_required` (now sourced
+validator-side), a new runtime regression for a hidden+present mode payload
+with a smuggled expression, a new runtime root-rule scrub seam test (legal
+non-secret nested root predicate still fires; secret plaintext unreadable),
+the `root_value_predicate_on_*` lint anchors, `valid_values_only_minted_by_validate`,
+a symbol-level single-crossing assertion, and the rewritten
+`flow/all_error_codes.rs`.
