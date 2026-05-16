@@ -116,41 +116,113 @@ impl Backend for SqliteBackend {
     }
 }
 
-/// Postgres backend — only meaningful when `DATABASE_URL` is set. The
-/// rstest case is `#[ignore]`d when the env var is absent so the suite
-/// stays green on machines without a database.
-pub struct PostgresBackend;
+/// Postgres backend — only exercised when `DATABASE_URL` is set and the
+/// crate is built with `--features postgres`; otherwise `skip_reason`
+/// short-circuits the case so the suite stays green on a machine without
+/// a database. Each `Backend` instance owns one pool created lazily on
+/// first store request; the port schema is installed once.
+#[derive(Default)]
+pub struct PostgresBackend {
+    #[cfg(feature = "postgres")]
+    pool: tokio::sync::OnceCell<sqlx::PgPool>,
+}
+
+#[cfg(feature = "postgres")]
+impl PostgresBackend {
+    async fn pool(&self) -> sqlx::PgPool {
+        self.pool
+            .get_or_init(|| async {
+                let url = std::env::var("DATABASE_URL")
+                    .unwrap_or_else(|e| panic!("DATABASE_URL required for the Postgres case: {e}"));
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(8)
+                    .connect(&url)
+                    .await
+                    .expect("connect Postgres (DATABASE_URL)");
+                nebula_storage::postgres::init_schema(&pool)
+                    .await
+                    .expect("install port schema");
+                pool
+            })
+            .await
+            .clone()
+    }
+}
 
 #[async_trait::async_trait]
 impl Backend for PostgresBackend {
     fn name(&self) -> &'static str {
         "Postgres"
     }
+    #[cfg(feature = "postgres")]
     async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
-        unimplemented!("Postgres ExecutionStore adapter lands in P2 Task 11")
+        Arc::new(nebula_storage::postgres::PgExecutionStore::new(
+            self.pool().await,
+        ))
     }
+    #[cfg(not(feature = "postgres"))]
+    async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
-        unimplemented!("Postgres IdempotencyGuard adapter lands in P2 Task 12-13")
+        Arc::new(nebula_storage::postgres::PgIdempotencyGuard::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
 
 /// True when a Postgres URL is configured. `DATABASE_URL` set-but-invalid
 /// is a hard error elsewhere (pool construction); here we only gate
-/// presence so the case skips cleanly when unset.
+/// presence so the case skips cleanly when unset. Only compiled with the
+/// `postgres` feature (the sole caller is `postgres_skip`).
+#[cfg(feature = "postgres")]
 #[must_use]
-pub fn postgres_available() -> bool {
+fn postgres_available() -> bool {
     std::env::var("DATABASE_URL").is_ok()
 }
 
+/// Postgres skip decision, resolved by feature flag so there is exactly
+/// one match arm for the `"Postgres"` literal (avoids overlapping-pattern
+/// lint when the feature is off).
+#[cfg(feature = "postgres")]
+fn postgres_skip() -> Option<&'static str> {
+    if postgres_available() {
+        None
+    } else {
+        Some("DATABASE_URL unset; skipping Postgres case")
+    }
+}
+
+#[cfg(not(feature = "postgres"))]
+fn postgres_skip() -> Option<&'static str> {
+    Some("built without --features postgres; skipping Postgres case")
+}
+
+/// SQLite skip decision, resolved by feature flag (same single-arm
+/// rationale as [`postgres_skip`]).
+#[cfg(feature = "sqlite")]
+fn sqlite_skip() -> Option<&'static str> {
+    None
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn sqlite_skip() -> Option<&'static str> {
+    Some("built without --features sqlite; skipping SQLite case")
+}
+
 /// Returns a skip reason for a backend whose prerequisites are not met, or
-/// `None` if the case should run. Postgres skips without `DATABASE_URL`;
-/// SQLite skips when the crate was built without the `sqlite` feature.
+/// `None` if the case should run. Postgres skips without `DATABASE_URL` or
+/// the `postgres` feature; SQLite skips without the `sqlite` feature.
 #[must_use]
 pub fn skip_reason(backend: &dyn Backend) -> Option<&'static str> {
     match backend.name() {
-        "Postgres" if !postgres_available() => Some("DATABASE_URL unset; skipping Postgres case"),
-        #[cfg(not(feature = "sqlite"))]
-        "Sqlite(:memory:)" => Some("built without --features sqlite; skipping SQLite case"),
+        "Postgres" => postgres_skip(),
+        "Sqlite(:memory:)" => sqlite_skip(),
         _ => None,
     }
 }

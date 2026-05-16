@@ -64,6 +64,10 @@ pub mod mapping;
 pub mod pg;
 /// Connection pool configuration.
 pub mod pool;
+/// Postgres adapter implementing the `nebula-storage-port` contract
+/// (production multi-process; real tx + `FOR UPDATE SKIP LOCKED`).
+#[cfg(feature = "postgres")]
+pub mod postgres;
 /// Repository trait API (spec-16 architecture) — **planned / experimental**, per canon §11.6.
 ///
 /// Only [`repos::ControlQueueRepo`] has a production-wired consumer today

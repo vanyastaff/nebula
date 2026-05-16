@@ -35,7 +35,7 @@ fn sqlite() -> Box<dyn Backend> {
 }
 
 fn postgres() -> Box<dyn Backend> {
-    Box::new(PostgresBackend)
+    Box::new(PostgresBackend::default())
 }
 
 /// Run `body` against `backend`, skipping cleanly (WARN + pass) when the
