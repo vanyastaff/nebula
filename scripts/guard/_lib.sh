@@ -17,9 +17,11 @@ git_common_dir() { # $1=cwd
   fi
 }
 turn_state_path() { printf '%s/.nebula-guard/turn-%s.json' "$(git_common_dir "${2:-$PWD}")" "${1:-unknown}"; }
-load_state() { # $1=path
-  if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then cat "$1"
-  else printf '{"impl_files_edited":[],"gate_green":[]}'; fi
+load_state() { # $1=path -> always {impl_files_edited:[...],gate_green:[...]}
+  local d='{"impl_files_edited":[],"gate_green":[]}'
+  if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then
+    jq -c '{impl_files_edited:(if (.impl_files_edited|type)=="array" then .impl_files_edited else [] end),gate_green:(if (.gate_green|type)=="array" then .gate_green else [] end)}' "$1" 2>/dev/null || printf '%s' "$d"
+  else printf '%s' "$d"; fi
 }
 save_state() { mkdir -p "$(dirname "$1")" 2>/dev/null && printf '%s' "$2" >"$1" 2>/dev/null || true; }
 
@@ -39,9 +41,10 @@ is_lib_rust() { # $1=path -> return 0 if library rust
 # analyze (caller MUST treat UNPARSEABLE as deny).
 normalize_argv0() { # $1=raw command
   local c="$1"
-  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*) printf 'UNPARSEABLE'; return;; esac
-  local dq="${c//[^\"]/}" sq="${c//[^\']/}"
-  if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
+  # Fail-closed: any shell metachar OR any quote ⇒ un-trustworthy to a
+  # non-shell tokenizer. `ca'rg'o`/`'cargo'`/`g"i"t` resolve to a real command
+  # we would otherwise miss — deny rather than guess (agent reruns it plain).
+  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*|*\"*|*\'*) printf 'UNPARSEABLE'; return;; esac
   local -a t; read -ra t <<< "$c"
   local n=${#t[@]} i=0
   local -A WRAP=([env]=1 [sudo]=1 [nice]=1 [timeout]=1 [watch]=1 [xargs]=1 [command]=1 [stdbuf]=1 [nohup]=1)
@@ -64,5 +67,5 @@ normalize_argv0() { # $1=raw command
     break
   done
   if (( i >= n )); then printf 'UNPARSEABLE'; return; fi
-  local a="${t[$i]}"; printf '%s' "${a##*/}"
+  local a="${t[$i]//\\//}"; a="${a##*/}"; printf '%s' "${a%.exe}"
 }
