@@ -3,7 +3,7 @@
 ## name: nebula-api
 role: API Gateway
 status: frontier
-last-reviewed: 2026-04-23
+last-reviewed: 2026-05-15
 canon-invariants: [L2-§4.5, L2-§12.3, L2-§12.4, L2-§13]
 related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-metrics, nebula-credential, nebula-core]
 
@@ -15,7 +15,7 @@ Provides the HTTP entry point for the Nebula workflow engine. Translates REST
 requests into calls against typed port traits (`WorkflowRepo`, `ExecutionRepo`,
 `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
 `MembershipStore`), then delegates all business logic to the crates below it.
-The crate also hosts the `services::webhook` subsystem, which handles inbound trigger
+The crate also hosts the `transport::webhook` subsystem, which handles inbound trigger
 delivery and per-endpoint lifecycle management.
 
 All routes are tenant-scoped under `/api/v1/orgs/{org}/workspaces/{ws}/…`
@@ -60,35 +60,35 @@ infrastructure (opaque base64-encoded cursors).
 - Port traits: `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
 `MembershipStore` — tenant resolution and session management ports.
 - `AuthContext` — authenticated request context extracted by `middleware::auth`.
-- `services::webhook::WebhookTransport` — activate/activate_slug/deactivate/router
+- `transport::webhook::WebhookTransport` — activate/activate_slug/deactivate/router
 for inbound webhook triggers; mounted on `/webhooks/*` (programmatic) and
 `/api/v1/hooks/*` (slug-routed) when the transport is attached to
 `AppState`.
-- `services::webhook::EndpointProviderImpl` — implements `nebula_action::WebhookEndpointProvider`
+- `transport::webhook::EndpointProviderImpl` — implements `nebula_action::WebhookEndpointProvider`
 so action code can read `ctx.webhook.endpoint_url()` without knowing the HTTP
 layer.
-- `services::webhook::WebhookRateLimiter` / `RateLimitExceeded` — per-key rate
+- `transport::webhook::WebhookRateLimiter` / `RateLimitExceeded` — per-key rate
 limiting for inbound webhook requests.
 
 ## Contract
 
 - **[L2-§12.4]** All error responses use RFC 9457 `application/problem+json`.
 No new ad-hoc 500 for a business-logic failure; map new failure modes into
-a typed `ApiError` variant. Seam: `crates/api/src/errors.rs`.
+a typed `ApiError` variant. Seam: `crates/api/src/error/mod.rs`.
 - **[L2-§13 step 1]** Workflow creation (`POST /api/v1/workflows`) delegates
-to `WorkflowRepo::create`. Seam: `crates/api/src/handlers/workflow.rs` —
+to `WorkflowRepo::create`. Seam: `crates/api/src/domain/workflow/handler.rs` —
 `create_workflow`.
 - **[L2-§13 step 2]** Workflow activation (`POST /api/v1/workflows/:id/activate`)
 runs `nebula_workflow::validate_workflow` and rejects invalid definitions
 with structured RFC 9457 errors — it does not silently flip a flag. Seam:
-`crates/api/src/handlers/workflow.rs` — `activate_workflow`.
+`crates/api/src/domain/workflow/handler.rs` — `activate_workflow`.
 - **[L2-§13 step 3]** Execution start (`POST /api/v1/workflows/:id/executions`)
 returns 202 Accepted and enqueues; it does not block on engine completion.
-Seam: `crates/api/src/handlers/execution.rs` — `start_execution`.
+Seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`.
 - **[L2-§13 step 5]** Cancel (`POST /api/v1/executions/:id/cancel`) writes a
 durable signal to `ControlQueueRepo` in the same logical operation as the
 state transition — not only a DB-row flip. Seam:
-`crates/api/src/handlers/execution.rs` — `cancel_execution`.
+`crates/api/src/domain/execution/handler.rs` — `cancel_execution`.
 - **[L2-§12.3]** Local-first: the server starts with in-memory repos (no
 Docker/Redis required). The `AppState::new` constructor accepts any
 `WorkflowRepo + ExecutionRepo + ControlQueueRepo` impl.
@@ -102,7 +102,7 @@ unreconciled second channels).
 
 ## Webhook subsystem
 
-`crates/api/src/services/webhook/` is the **single converged** HTTP transport
+`crates/api/src/transport/webhook/` is the **single converged** HTTP transport
 for inbound webhook triggers (M3.3 / ADR-0049). Both URL shapes funnel through
 one `dispatch_inner` pipeline:
 
@@ -115,7 +115,7 @@ mutated by `TriggerLifecycleEvent` consumers / the admin reload endpoint.
 
 Responsibility split:
 
-- `transport::WebhookTransport` — activate / deactivate / activate_slug /
+- `transport::webhook::WebhookTransport` — activate / deactivate / activate_slug /
 replace_slug_map / axum router. Owns the routing map, rate limiter, signature
 enforcement, replay-window check, and `pre_handle` short-circuit.
 - `bootstrap` — `bootstrap_webhook_activations` / `collect_webhook_activations`,
@@ -125,12 +125,12 @@ invokes the bootstrap before `build_app`; admin reload uses `collect_*` and
 - `events` — `TriggerLifecycleEvent` { Created / Updated / Deleted } +
 `TriggerLifecycleSubscriber`. M3.3 ships the consumer; producer-side
 wiring is deferred (ADR-0049 § "Out of scope").
-- `provider::EndpointProviderImpl` — implements
+- `transport::webhook::provider::EndpointProviderImpl` — implements
 `nebula_action::WebhookEndpointProvider` so plugins read the public URL
 without knowing the HTTP layer.
-- `key::WebhookKey` — `Programmatic { uuid, nonce }` | `Slug(TriggerCoordinates)`.
-- `routing` — private `RoutingMap` (DashMap) keyed by `WebhookKey`.
-- `ratelimit::WebhookRateLimiter` — per-key sliding-window guard with LRU-capped
+- `transport::webhook::key::WebhookKey` — `Programmatic { uuid, nonce }` | `Slug(TriggerCoordinates)`.
+- `transport::webhook::routing` — private `RoutingMap` (DashMap) keyed by `WebhookKey`.
+- `transport::webhook::ratelimit::WebhookRateLimiter` — per-key sliding-window guard with LRU-capped
 path table (#271 mitigation).
 
 Provider catalog (Slack `url_verification`, Stripe `pending_webhook` ping,
@@ -316,108 +316,183 @@ naming policy, and Prometheus export).
 ```
 src/
 ├── lib.rs              # Crate root, public re-exports
-├── app.rs              # Router assembly + middleware stack
-├── config.rs           # ApiConfig, JwtSecret, TlsConfig, CookieConfig, CorsConfig,
-│                       # VersioningConfig, PaginationConfig
-├── state.rs            # AppState (port traits only — no concrete impls)
-├── errors.rs           # RFC 9457 ProblemDetails + ApiError (§12.4 seam)
-├── pagination.rs       # CursorParams, PaginatedResponse<T>
-├── extractors/         # ValidatedJson and other custom extractors
-├── handlers/
-│   ├── auth.rs         # Login, logout, refresh, MFA
-│   ├── health.rs       # GET /health, GET /ready
-│   ├── me.rs           # Current user profile
-│   ├── org.rs          # Organization CRUD
-│   ├── workflow.rs     # Workflow CRUD + activate (§13 steps 1–2)
-│   ├── execution.rs    # Start / cancel executions (§13 steps 3, 5)
-│   ├── credential.rs   # Credential management + OAuth2 flows
-│   ├── catalog.rs      # Action/resource/credential catalog listing
-│   ├── openapi.rs      # OpenAPI schema endpoint
-│   └── webhook.rs      # Webhook management
+├── app.rs              # build_app: OpenApiRouter merge + split_for_parts + middleware stack + serve()
+├── state.rs            # AppState (builder) + API-tier port traits (OrgResolver/WorkspaceResolver/
+│                       # MembershipStore/SessionStore/AuthBackend etc.)
+├── openapi/
+│   └── mod.rs          # OpenApiDoc + spec assembly
+├── telemetry_init.rs   # init_api_telemetry()
+├── trace_capture.rs
+├── config/             # Was 1123-line config.rs — split into:
+│   ├── mod.rs          # ApiConfig re-exports
+│   ├── jwt.rs          # JwtSecret (32-byte min enforcement)
+│   ├── errors.rs       # ConfigError
+│   ├── sub.rs          # TlsConfig, CookieConfig, CorsConfig, VersioningConfig, PaginationConfig
+│   └── env.rs          # ApiConfig::from_env loader
+├── error/              # Was 759-line errors.rs — split into:
+│   ├── mod.rs          # ApiError (§12.4 seam, #[non_exhaustive])
+│   ├── problem.rs      # ProblemDetails (RFC 9457 envelope)
+│   └── classify.rs     # HTTP-status mapping helpers
+├── extractors/
+│   ├── mod.rs
+│   ├── json_extractor.rs  # ValidatedJson
+│   └── credential.rs
 ├── middleware/
-│   ├── auth.rs         # JWT + API-key auth → AuthContext
-│   ├── tenancy.rs      # Tenant resolution from path (org/workspace)
-│   ├── rbac.rs         # Role-based access control checks
-│   ├── csrf.rs         # CSRF token validation
-│   ├── rate_limit.rs   # Rate limiting
-│   ├── request_id.rs   # Unique request ID propagation
-│   └── security_headers.rs
-├── models/             # Request / Response DTOs
-│   ├── health.rs
-│   ├── workflow.rs
-│   └── execution.rs
-├── routes/             # Domain-scoped route builders
-│   ├── mod.rs          # create_routes()
-│   ├── auth.rs         # /api/v1/auth/*
-│   ├── me.rs           # /api/v1/me
-│   ├── org.rs          # /api/v1/orgs/*
-│   ├── workspace.rs    # /api/v1/orgs/{org}/workspaces/{ws}/*
-│   ├── health.rs
-│   ├── workflow.rs     # Tenant-scoped workflow routes
-│   ├── execution.rs    # Tenant-scoped execution routes
-│   ├── credential.rs   # Tenant-scoped credential routes
-│   ├── catalog.rs
-│   ├── webhook.rs
-│   ├── metrics.rs
-│   └── openapi.rs
-├── services/           # Orchestration layer (currently empty)
-└── webhook/            # Inbound trigger transport (§11.3 / §13.4)
+│   ├── mod.rs
+│   ├── auth.rs            # JWT + API-key auth → AuthContext
+│   ├── tenancy.rs         # Tenant resolution from path (org/workspace)
+│   ├── rbac.rs            # Role-based access control checks
+│   ├── csrf.rs            # CSRF token validation
+│   ├── rate_limit.rs      # Rate limiting
+│   ├── request_id.rs      # Unique request ID propagation
+│   ├── security_headers.rs
+│   ├── trace_w3c.rs       # W3C Trace Context (traceparent/tracestate) — ADR-0050
+│   ├── internal_auth.rs   # X-Internal-Token gate
+│   └── idempotency/       # Was 1224-line idempotency.rs — split into:
+│       ├── mod.rs
+│       ├── layer.rs       # IdempotencyLayer Tower middleware
+│       ├── store.rs       # IdempotencyStore trait
+│       ├── memory.rs      # InMemoryIdempotencyStore
+│       └── key.rs         # IdempotencyKey construction
+├── domain/             # Per-domain handlers + DTOs + routes (§12.7 knife seam)
+│   ├── mod.rs          # create_routes + build_openapi_router assembly
+│   ├── shared.rs       # CursorParams, PaginatedResponse, PaginationParams,
+│   │                   # AckResponse, OrgRoleDto, WorkspaceRoleDto
+│   ├── workspace.rs    # Tenant-prefix nesting: merges workflow/execution/resource/credential routers
+│   ├── internal.rs     # /internal/v1/* ops (plain axum Router; X-Internal-Token)
+│   ├── metrics.rs      # Prometheus scrape endpoint
+│   ├── workflow/
+│   │   ├── mod.rs
+│   │   ├── handler.rs  # §13 seam: create_workflow, activate_workflow, start_execution
+│   │   └── dto.rs
+│   ├── execution/
+│   │   ├── mod.rs
+│   │   ├── handler.rs  # §13 seam: cancel_execution
+│   │   └── dto.rs
+│   ├── credential/
+│   │   ├── mod.rs
+│   │   ├── routes.rs
+│   │   ├── handler.rs
+│   │   ├── dto.rs
+│   │   └── oauth.rs
+│   ├── catalog/
+│   │   ├── mod.rs
+│   │   ├── routes.rs
+│   │   ├── handler.rs
+│   │   └── dto.rs
+│   ├── auth/
+│   │   ├── mod.rs
+│   │   ├── routes.rs
+│   │   ├── handler.rs
+│   │   └── backend/    # AuthBackend impls (in-memory, session, password, MFA, OAuth, PAT)
+│   ├── org/
+│   │   ├── mod.rs
+│   │   ├── routes.rs
+│   │   ├── handler.rs
+│   │   └── dto.rs
+│   ├── me/
+│   │   ├── mod.rs
+│   │   ├── routes.rs
+│   │   ├── handler.rs
+│   │   └── dto.rs
+│   ├── health/
+│   │   ├── mod.rs
+│   │   ├── routes.rs
+│   │   ├── handler.rs
+│   │   └── dto.rs
+│   └── resource/
+│       ├── mod.rs
+│       ├── handler.rs
+│       └── dto.rs
+└── transport/          # Protocol transports (was services/ — NOT business services)
     ├── mod.rs
-    ├── transport.rs    # WebhookTransport — activate/deactivate/router
-    ├── provider.rs     # EndpointProviderImpl
-    ├── routing.rs      # RoutingMap (private)
-    └── ratelimit.rs    # WebhookRateLimiter
+    ├── credential.rs   # Plane-B credential CRUD stubs (Phase 4 will implement)
+    ├── oauth/          # OAuth2 flow transport
+    │   ├── mod.rs
+    │   ├── flow.rs
+    │   ├── http.rs
+    │   └── state.rs
+    └── webhook/        # Inbound trigger transport (§11.3 / §13.4)
+        ├── mod.rs
+        ├── transport.rs  # WebhookTransport — activate/deactivate/router
+        ├── bootstrap.rs  # bootstrap_webhook_activations, WebhookSecretResolver
+        ├── dispatch.rs   # dispatch_inner pipeline
+        ├── events.rs     # TriggerLifecycleEvent + subscriber
+        ├── provider.rs   # EndpointProviderImpl
+        ├── routing.rs    # RoutingMap (private, DashMap)
+        ├── signature.rs  # Signature enforcement (ADR-0022)
+        ├── replay.rs     # Replay-window check
+        ├── ratelimit.rs  # WebhookRateLimiter — per-key sliding-window + LRU cap
+        └── key.rs        # WebhookKey: Programmatic { uuid, nonce } | Slug(TriggerCoordinates)
 ```
 
 ### Startup example
 
+The canonical minimal startup is `examples/examples/api_simple_server.rs`
+(run: `cargo run -p nebula-examples --example api_simple_server`). The shape below
+is faithful to that file:
+
 ```rust
-use nebula_api::{build_app, ApiConfig, AppState};
-use nebula_storage::{InMemoryWorkflowRepo, InMemoryExecutionRepo};
-use nebula_storage::repos::InMemoryControlQueueRepo;
 use std::sync::Arc;
 
+use nebula_api::{ApiConfig, AppState, app, middleware::InMemoryIdempotencyStore};
+use nebula_storage::{
+    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+};
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
+
+    // `from_env` reads `API_JWT_SECRET` (must be 32+ bytes).
+    // Set `NEBULA_ENV=development` to get an ephemeral per-process secret.
+    let api_config = ApiConfig::from_env()?;
 
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let idempotency_store = Arc::new(InMemoryIdempotencyStore::default());
 
-    // `from_env` reads `API_JWT_SECRET` (must be 32+ bytes).
-    // In development set `NEBULA_ENV=development` to get an ephemeral secret.
-    let api_config = ApiConfig::from_env()?;
     let state = AppState::new(
         workflow_repo,
         execution_repo,
         control_queue_repo,
         api_config.jwt_secret.clone(),
-    );
-    let app = build_app(state, &api_config);
+    )
+    .with_api_keys(api_config.api_keys.clone())
+    .with_idempotency_store(idempotency_store);
 
-    let addr = api_config.bind_address;
-    tracing::info!("Starting server on {}", addr);
-    nebula_api::app::serve(app, addr).await?;
+    let bind_address = api_config.bind_address;
+    let app = app::build_app(state, &api_config);
+
+    // `app::serve` installs a built-in Ctrl-C / SIGTERM graceful-shutdown handler.
+    app::serve(app, bind_address).await?;
     Ok(())
 }
 ```
 
 ### Transport binaries
 
-This crate now ships with three binary targets that share a common startup
-foundation (`src/server/mod.rs`) but run different ingress transports:
+`nebula-api` is a **pure library** — it ships no binaries. The composition root
+and the single `nebula-server` binary live in the `apps/server` workspace member.
 
-- `nebula-server` — full REST API (`SERVER_BIND_ADDRESS` override, fallback to `API_BIND_ADDRESS`)
-- `nebula-webhook` — webhook ingress-only (`WEBHOOK_BIND_ADDRESS` override)
-- `nebula-realtime` — realtime scaffold (`REALTIME_BIND_ADDRESS` override, `/ws` currently returns 501)
+`nebula-server` selects the active transport(s) via `--transport` (or `NEBULA_TRANSPORT`
+env var). Valid values: `api`, `webhook`, `realtime`, `all` (default).
 
 Run locally:
 
 ```bash
-cargo run -p nebula-api --bin nebula-server
-cargo run -p nebula-api --bin nebula-webhook
-cargo run -p nebula-api --bin nebula-realtime
+# All transports (default)
+cargo run -p nebula-server
+
+# REST API transport only
+cargo run -p nebula-server -- --transport=api
+
+# Webhook ingress only
+cargo run -p nebula-server -- --transport=webhook
+
+# Realtime scaffold only (/ws currently returns 501 — Phase 5)
+cargo run -p nebula-server -- --transport=realtime
 ```
 
 ### Error format (RFC 9457)
