@@ -151,7 +151,11 @@ resolve_cmd() { # $1=raw -> resolved string OR "UNPARSEABLE"
   local dq="${c//[^\"]/}" sq="${c//[^\']/}"
   if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
   c="${c//\"/}"; c="${c//\'/}"
-  case " $c " in *' env '*' -S '*|*' env '*' -S'*|*' env '*' --split-string'*|*' --split-string='*) printf 'UNPARSEABLE'; return;; esac
+  # `env --split-string`: env's arg is an opaque re-split command string. Two
+  # INDEPENDENT membership tests on the same padded string — a single chained
+  # `case` glob can't bind `' env '` and `' -S '` (they share one space).
+  local h=" $c "
+  if [[ "$h" == *' env '* && ( "$h" == *' -S '* || "$h" == *' -S'* || "$h" == *' --split-string '* || "$h" == *' --split-string='* ) ]]; then printf 'UNPARSEABLE'; return; fi
   printf '%s' "$c"
 }
 # Fail-closed: echoes argv0 basename, or "UNPARSEABLE" (caller MUST deny it).
