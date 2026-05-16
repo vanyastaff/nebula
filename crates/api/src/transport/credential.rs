@@ -35,8 +35,9 @@
 //!
 //! - The credential `data` blob arrives **write-only**: it is wrapped in
 //!   [`nebula_credential::SecretString`] for its in-process lifetime and
-//!   persisted via the `serde_secret` (encrypted-at-rest) path into the
-//!   opaque [`StoredCredential::data`] byte buffer.
+//!   persisted via the `serde_secret` (write-only; encrypted at rest
+//!   **only when an `EncryptionLayer` is composed** — not wired here)
+//!   path into the opaque [`StoredCredential::data`] byte buffer.
 //! - The wire response types ([`CredentialResponse`] /
 //!   [`CredentialSummary`]) are **metadata-only** — they have no `data`
 //!   field, so `get` / `list` cannot structurally echo the secret.
@@ -96,9 +97,11 @@ struct CredentialMeta {
 ///
 /// Wraps the serialized `data` JSON in [`SecretString`] so a stray
 /// `Debug` / default `Serialize` redacts. The on-disk form uses the
-/// `serde_secret` helper (the explicit encrypted-at-rest path) because
-/// the in-memory store keeps the raw bytes; production deployments wrap
-/// the store with `nebula_storage`'s `EncryptionLayer` (ADR-0032).
+/// `serde_secret` helper (write-only; encrypted at rest **only when an
+/// `EncryptionLayer` is composed** — not wired here, so the in-memory
+/// store keeps the raw bytes in plaintext-at-rest; see the operator
+/// warning in `crates/api/README.md`). Production deployments wrap the
+/// store with `nebula_storage`'s `EncryptionLayer` (ADR-0032).
 #[derive(Serialize, Deserialize)]
 struct PersistedSecretData {
     #[serde(with = "nebula_credential::serde_secret")]
@@ -648,9 +651,10 @@ mod tests {
         let data = serde_json::json!({ "api_key": secret });
         let bytes = encode_secret_data(&data).expect("encode");
 
-        // The persisted bytes DO carry the secret (encrypted-at-rest
-        // path) — that is the storage contract. What must never leak is
-        // Debug / default Serialize of the envelope.
+        // The persisted bytes DO carry the secret (write-only; at-rest
+        // encryption requires an `EncryptionLayer`, not wired here —
+        // see the operator warning in README.md). What must never leak
+        // is Debug / default Serialize of the envelope.
         let env: PersistedSecretData = serde_json::from_slice(&bytes).expect("decode");
         assert!(
             !format!("{env:?}").contains(secret),

@@ -423,6 +423,16 @@ git add crates/api/README.md docs/MATURITY.md && git commit -m "docs(api): sync 
 
 ## Phase 3 — `org/*` (9 handlers)
 
+> **STATUS: §4.5-correct honest-501 deferral — zero code change, no commit.**
+> All nine `org/*` handlers remain stubs. Blocked on two issues: (1) no
+> production adapter wires `OrgResolver`/`WorkspaceResolver`/`MembershipStore`
+> end-to-end, and (2) the member wire contract (`invitation_id`/`expires_at`/
+> `MemberSummary.email`/`joined_at`) requires a member-record + invitation
+> MODEL DESIGN decision before any handler can be honestly implemented. See
+> spec §7 Outcome note and spec §14 "Open product decisions" (P1) for full
+> analysis. The `openapi_canon_compliance` test enforces the honest-501 stub
+> policy; tasks below are preserved as-written for when the owner resolves P1.
+
 **Files:** `crates/api/src/domain/org/{handler,routes,dto}.rs`; `crates/api/src/state.rs` (`OrgResolver`/`WorkspaceResolver`/`MembershipStore`); `apps/server/src/compose.rs` (production adapters over `nebula_storage::{OrgRepo, WorkspaceRepo}`); `crates/api/src/middleware/tenancy.rs`/`rbac.rs` now backed by real resolvers; test `crates/api/tests/org_e2e.rs`.
 
 - [ ] **Step 1: Failing tests** — org get, member list/get/add/remove, role get/update, roles list/get — against real `OrgRepo`/`WorkspaceRepo`-backed state; plus a tenancy-resolution test (slug→id no longer test-only).

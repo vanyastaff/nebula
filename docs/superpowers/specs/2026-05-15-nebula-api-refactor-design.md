@@ -227,6 +227,25 @@ Each phase is independently canon-legal and independently shippable.
 - **Phase 3 — `org/*` (9).** `OrgResolver`/`WorkspaceResolver`/`MembershipStore`
   production adapters over `nebula_storage::{OrgRepo, WorkspaceRepo}`; CRUD
   handlers delegate to `OrgRepo`/`WorkspaceRepo`. Drop stubs.
+
+  **Outcome (2026-05-15): §4.5-correct honest-501 deferral — zero code change,
+  no commit.** Phase 3 was executed as a conscious deferral, not an oversight.
+  Two blockers make implementation a §4.5 false-capability risk:
+
+  1. No production adapter wires `OrgResolver`/`WorkspaceResolver`/`MembershipStore`
+     to the storage repos end-to-end (only test impls exist in
+     `tests/common/mod.rs`).
+  2. The member-endpoint wire contract (`POST /orgs/{org}/members` carrying
+     `invitation_id`/`expires_at`; `MemberSummary.email`/`joined_at`) cannot be
+     honored without a **member-record + invitation model design decision** — a
+     product/API question, not a plumbing question. Shipping fabricated fields
+     would be the exact §4.5 false-capability the whole effort rejects.
+
+  This is milestone-gated identically to `execution/restart` + `resource/list`
+  (which the spec already keeps honest-501 in §7 "Stays honest 501"). The API
+  surface is honest: all nine `org/*` handlers carry `#[deprecated]` + 501 +
+  ` (planned)` tag, enforced by `openapi_canon_compliance`. No false capability
+  was shipped.
 - **Phase 4 — credential CRUD (`transport`/credential, ~12 fns).** Wire
   `nebula_credential` store over `nebula_storage::CredentialRepo`; OAuth ceremony
   already partial (MATURITY P10) — finish CRUD/test/refresh/revoke.
@@ -306,3 +325,51 @@ Phases 1–4 only *add* honored endpoints (remove 501s) — forward-compatible.
 
 None blocking. Worktree relocation and per-phase MATURITY updates are handled
 at plan/execution time (writing-plans → using-git-worktrees → executing-plans).
+
+## 14. Open product decisions
+
+### P1 — org/* public-API contract (blocks Phase 3 graduation)
+
+The `org/*` endpoints are milestone-gated on a **public-API contract decision**,
+not just unwired plumbing. A future owner must choose before Phase 3 can be
+§4.5-honestly implemented:
+
+**Option 1 (recommended): redesign the member wire contract**
+
+- `POST /orgs/{org}/members` becomes direct add-by-principal-id: drop
+  `email`, `invitation_id`, `expires_at` from the request and response.
+- `MemberSummary` drops `email` and `joined_at` — these fields require a
+  member-record + invitation model that does not exist and are not needed
+  for the RBAC-coherent CRUD path.
+
+  With this change, `list_members` + `add_member` + `remove_member` +
+  `me/list_my_orgs` + `MeResponse.orgs_count` form a coherent,
+  abuse-safe, RBAC-coherent set that is implementable against the existing
+  `nebula_storage::OrgRepo` without a new invitation model.
+
+**Option 2 (larger scope): implement an invitation model**
+
+Keep the current wire contract; add an `Invitation` record +
+`InvitationRepo` + email delivery. This is a larger design effort that
+requires additional ADRs for invitation lifecycle, expiry, and resend
+semantics before any Phase-3 handler can be un-stubbed without §4.5
+risk.
+
+Until the owner decides, **the conservative §4.5-correct default stands**:
+all nine `org/*` handlers remain honest-501, unchanged from today.
+
+## 15. Delivered-vs-spec deviations (minor, plan-hedged)
+
+These are internally consistent and did not regress any test; listed here
+for complete honesty per canon §14 ("spec theater" prohibition):
+
+- `telemetry_init.rs` retained as-is; spec §6.1 speculated renaming to
+  `telemetry.rs` with an `init_from_env()` export. The actual export is
+  `init_api_telemetry()` in `telemetry_init.rs` — the function is called
+  the same way from the composition root; the file-name rename and the
+  API rename were both hedged in the plan as "if … do not yet exist".
+- No `build_app_for` / `TransportKind` lib seam was added to `nebula-api`.
+  Per-`ServerTransport` routers in `apps/server` route the transport
+  selector instead. The plan explicitly noted "(if … do not yet exist, …
+  use the existing `build_app`)" — the per-transport composition approach
+  is equivalent and passes all tests.

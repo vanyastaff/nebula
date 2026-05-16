@@ -583,31 +583,72 @@ cargo run -p nebula-server -- --transport=realtime
 
 ### Endpoint reference
 
+Every row in this table corresponds to a real mounted route. Rows marked
+`(honest 501)` are mounted, return 501 per ADR-0047 Stub Endpoint Policy,
+and carry `#[deprecated]` + ` (planned)` tag in the OpenAPI spec. Rows
+marked `(honest 503)` are mounted but refuse rather than fake a capability
+that requires an unwired subsystem. See the Stub Endpoint Policy section
+above for the enforcement guarantee.
 
-| Method   | Path                                                        | Description                                                       |
-| -------- | ----------------------------------------------------------- | ----------------------------------------------------------------- |
-| `GET`    | `/health`                                                   | Liveness check (always available)                                 |
-| `GET`    | `/ready`                                                    | Readiness check (verifies dependencies)                           |
-| `POST`   | `/api/v1/auth/login`                                        | Session login                                                     |
-| `POST`   | `/api/v1/auth/logout`                                       | Session logout                                                    |
-| `POST`   | `/api/v1/auth/refresh`                                      | Token refresh                                                     |
-| `GET`    | `/api/v1/me`                                                | Current user profile                                              |
-| `GET`    | `/api/v1/orgs`                                              | List organizations                                                |
-| `POST`   | `/api/v1/orgs`                                              | Create organization                                               |
-| `GET`    | `/api/v1/orgs/:org`                                         | Get organization by slug or ID                                    |
-| `GET`    | `/api/v1/orgs/:org/workspaces`                              | List workspaces                                                   |
-| `POST`   | `/api/v1/orgs/:org/workspaces`                              | Create workspace                                                  |
-| `GET`    | `/api/v1/orgs/:org/workspaces/:ws/workflows`                | List workflows (tenant-scoped)                                    |
-| `POST`   | `/api/v1/orgs/:org/workspaces/:ws/workflows`                | Create workflow (tenant-scoped, §13 step 1)                       |
-| `GET`    | `/api/v1/orgs/:org/workspaces/:ws/workflows/:id`            | Get workflow by ID                                                |
-| `PUT`    | `/api/v1/orgs/:org/workspaces/:ws/workflows/:id`            | Update workflow                                                   |
-| `DELETE` | `/api/v1/orgs/:org/workspaces/:ws/workflows/:id`            | Delete workflow                                                   |
-| `POST`   | `/api/v1/orgs/:org/workspaces/:ws/workflows/:id/activate`   | Activate workflow — runs validation (§13 step 2)                  |
-| `GET`    | `/api/v1/orgs/:org/workspaces/:ws/workflows/:id/executions` | List executions                                                   |
-| `POST`   | `/api/v1/orgs/:org/workspaces/:ws/workflows/:id/executions` | Start execution — 202 Accepted (§13 step 3)                       |
-| `GET`    | `/api/v1/orgs/:org/workspaces/:ws/executions/:id`           | Get execution status                                              |
-| `POST`   | `/api/v1/orgs/:org/workspaces/:ws/executions/:id/cancel`    | Cancel execution — durable signal (§13 step 5)                    |
-| `POST`   | `/webhooks/:trigger_uuid/:nonce`                            | Inbound webhook trigger (mounted when `webhook_transport` is set) |
-| `GET`    | `/api/v1/openapi.json`                                      | OpenAPI schema (planned)                                          |
+| Method   | Path                                                                      | Description                                                                |
+| -------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `GET`    | `/health`                                                                 | Liveness check (always available)                                          |
+| `GET`    | `/ready`                                                                  | Readiness check (verifies dependencies)                                    |
+| `GET`    | `/version`                                                                | Version info                                                               |
+| `POST`   | `/api/v1/auth/signup`                                                     | Account registration                                                       |
+| `POST`   | `/api/v1/auth/login`                                                      | Session login                                                              |
+| `POST`   | `/api/v1/auth/logout`                                                     | Session logout                                                             |
+| `POST`   | `/api/v1/auth/forgot-password`                                            | Initiate password reset                                                    |
+| `POST`   | `/api/v1/auth/reset-password`                                             | Complete password reset                                                    |
+| `POST`   | `/api/v1/auth/verify-email`                                               | Verify email address                                                       |
+| `POST`   | `/api/v1/auth/mfa/enroll`                                                 | Enrol a MFA device                                                         |
+| `POST`   | `/api/v1/auth/mfa/verify`                                                 | Verify a MFA challenge                                                     |
+| `GET`    | `/api/v1/auth/oauth/{provider}`                                           | Start OAuth2 login flow                                                    |
+| `GET`    | `/api/v1/auth/oauth/{provider}/callback`                                  | OAuth2 login callback                                                      |
+| `GET`    | `/api/v1/me`                                                              | Current user profile                                                       |
+| `PUT`    | `/api/v1/me`                                                              | Update current user profile                                                |
+| `GET`    | `/api/v1/me/orgs`                                                         | List orgs the caller belongs to `(honest 501)`                             |
+| `GET`    | `/api/v1/me/tokens`                                                       | List personal access tokens                                                |
+| `POST`   | `/api/v1/me/tokens`                                                       | Create personal access token                                               |
+| `DELETE` | `/api/v1/me/tokens/{token_id}`                                            | Revoke a personal access token                                             |
+| `GET`    | `/api/v1/actions`                                                         | List action catalog                                                        |
+| `GET`    | `/api/v1/plugins`                                                         | List plugin catalog                                                        |
+| `GET`    | `/api/v1/orgs/{org}`                                                      | Get org by slug or ID `(honest 501)`                                       |
+| `PATCH`  | `/api/v1/orgs/{org}`                                                      | Update org settings `(honest 501)`                                         |
+| `DELETE` | `/api/v1/orgs/{org}`                                                      | Delete org `(honest 501)`                                                  |
+| `GET`    | `/api/v1/orgs/{org}/members`                                              | List org members `(honest 501)`                                            |
+| `POST`   | `/api/v1/orgs/{org}/members`                                              | Invite member `(honest 501)` — see spec §14 open product decision P1       |
+| `DELETE` | `/api/v1/orgs/{org}/members/{principal}`                                  | Remove member `(honest 501)`                                               |
+| `GET`    | `/api/v1/orgs/{org}/service-accounts`                                     | List service accounts `(honest 501)`                                       |
+| `POST`   | `/api/v1/orgs/{org}/service-accounts`                                     | Create service account `(honest 501)`                                      |
+| `DELETE` | `/api/v1/orgs/{org}/service-accounts/{sa}`                                | Delete service account `(honest 501)`                                      |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows`                            | List workflows (tenant-scoped)                                             |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows`                            | Create workflow (§13 step 1)                                               |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Get workflow by ID                                                         |
+| `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Update workflow                                                            |
+| `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Delete workflow                                                            |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate`              | Activate workflow — runs validation (§13 step 2)                           |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute`               | Trigger workflow execution — 202 Accepted (§13 step 3)                     |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | List executions for a workflow                                             |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | Start execution — 202 Accepted (§13 step 3)                                |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions`                           | List all executions in workspace                                           |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}`                    | Get execution status                                                       |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/cancel`             | Cancel execution — durable signal (§13 step 5)                             |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate`          | Terminate execution — durable signal (§12.2)                               |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart`            | Restart execution `(honest 501)`                                           |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/resources`                            | List resources `(honest 501)`                                              |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve`                  | Start generic credential resolve `(honest 503)`                            |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve/continue`         | Continue multi-step credential resolve `(honest 503)`                      |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials`                          | List credentials (metadata only)                                           |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials`                          | Create credential (write-only secret)                                      |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Get credential metadata                                                    |
+| `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Update credential                                                          |
+| `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Delete credential                                                          |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test`              | Test credential `(honest 503)`                                             |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token `(honest 503)`                                    |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke`            | Revoke credential `(honest 503)`                                           |
+| `POST`   | `/webhooks/{trigger_uuid}/{nonce}`                                         | Inbound webhook trigger (mounted when `webhook_transport` is set)          |
+| `GET`    | `/api/v1/openapi.json`                                                    | OpenAPI 3.1 specification document                                         |
+| `GET`    | `/api/v1/docs/`                                                           | Swagger UI (self-hosted)                                                   |
 
 
