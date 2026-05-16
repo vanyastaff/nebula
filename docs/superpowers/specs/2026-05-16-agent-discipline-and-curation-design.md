@@ -64,7 +64,8 @@ only where a linter cannot already catch it.
 | D7 | Remove BridgeSpace integration (in-repo only; owner removed the out-of-repo product directly) | Owner |
 | D8 | Invert doc canon: **CLAUDE.md is canonical**, AGENTS.md becomes a thin pointer to it (non-standard; owner chose it over AGENTS.md-as-canon with the trade-off shown) | Owner |
 | D9 | Hook runtime = **bash + jq** under `scripts/guard/*.sh` (supersedes the Node `.mjs` draft — owner rejected a new Node dependency; repo already requires bash). ~~Hook A is fail-closed.~~ **Fail-closed-A clause SUPERSEDED by D10.** Runtime decision (bash+jq) stands. | Owner |
-| D10 | **Security boundary relocated to the oracle.** 5 adversarial rounds proved a hand-rolled bash shell-parser on a security boundary is an un-winnable arms race. The no-cheat guarantee is carried structurally by **B** (edit-guard: no test-weakening) + **A2** (recorder, now self-protecting: refuses to record a green gate if the clippy command suppressed lints via `-A`/`--allow`/`RUSTFLAGS=…-A`) + **C** (Stop-gate: no "done" without a recorded clean gate) + lefthook/CI. `resolve_cmd`/`normalize_argv0` are **deleted**; **hook A is demoted** to a cheap **fail-open** advisory substring tripwire (its parser correctness is no longer security-critical). Guarantee preserved — *relocated*, not weakened. B and C remain hard. | Owner |
+| D10 | **Security boundary relocated to the oracle.** 5 adversarial rounds proved a hand-rolled bash shell-parser on a security boundary is an un-winnable arms race. The no-cheat guarantee is carried structurally by **B** (edit-guard: no test-weakening) + **A2** (recorder, now self-protecting: refuses to record a green gate if the clippy command suppressed lints via `-A`/`--allow`/`RUSTFLAGS=…-A`) + **C** (Stop-gate: no "done" without a recorded clean gate) + lefthook/CI. `resolve_cmd`/`normalize_argv0` are **deleted**; **hook A is demoted** to a cheap **fail-open** advisory substring tripwire (its parser correctness is no longer security-critical). Guarantee preserved — *relocated*, not weakened. B and C remain hard. **(C's crate-set sourcing refined by D11.)** | Owner |
+| D11 | **Governing principle (3rd recurrence — make it canon, stop re-deriving per round): never rest a guarantee on one fragile detector; source it from ground truth.** Adversarial review of B found the no-cheat guarantee resting on B's bash-regex `impl_files_edited` recording, which Rust's idiomatic colocated `#[cfg(test)] mod tests` in `src/*.rs` silently poisons (edit logic next to the test mod ⇒ not recorded ⇒ C blind ⇒ cheat). Fix is structural, not regex-patching: **C (Stop-gate) derives the touched-crate set from `git diff --name-only` ground truth** (modified `crates/*/src/**` ⇒ a clean recorded gate is required for that crate), with B's `impl_files_edited` as *corroborating* belt-and-suspenders only. Test-weakening is then structurally defeated by A2-clean-gate + CI even if B's weaken-deny misses a shape; **B's weaken-deny + costyl checks are demoted to early edit-time advisory** (still fix CRIT-1 recording-by-path, CRIT-2/3 weaken coverage, per-occurrence `// guard-justified:` — but B need not be perfect). Guarantee = C-via-git-diff + A2-clean-gate + CI (three ground-truth layers). | Owner |
 
 ## 4. Architecture — Enforcement Layers
 
@@ -177,6 +178,19 @@ load-bearing no-cheat guarantee.
 
 ### B. PreToolUse / Edit|Write|MultiEdit — `nebula-guard-edit.mjs`
 
+> **D11:** B is **early edit-time advisory**, not the sole guarantee (that is
+> C-via-git-diff + A2-clean-gate + CI). Required corrections: (a) record the
+> impl file into turn-state by **file path** (`is_lib_rust`) *independent of
+> payload `#[cfg(test)]` markers* — the payload-test signal gates only the
+> unwrap/allow/TODO sub-checks (where clippy backstops), **never** the
+> recording (CRIT-1); (b) the test-weaken deny also covers **`Write`** to a
+> test path and **in-`src` `#[cfg(test)]`** edits (CRIT-2/3); (c)
+> `// guard-justified:` is **per-occurrence/adjacent**, not one-unlocks-all
+> (IMPORTANT-2); (d) the unwrap/panic deny honors the same
+> `// guard-justified:` escape so doc-comments/strings aren't hard-wedged
+> (MINOR-1). B may still miss exotic shapes — acceptable, because C+A2+CI is
+> the structural backstop. Behavioral intent (unchanged) below.
+
 Operates on proposed new content / diff. **Deny:**
 
 - New `unwrap() | expect() | panic!()` in library `.rs` (excludes `#[cfg(test)]`,
@@ -202,15 +216,21 @@ Operates on proposed new content / diff. **Deny:**
 
 ### C. Stop — `nebula-guard-stop.mjs` (matcher `""`)
 
-Side-effect-free (reads turn-state only; runs no tools — deadlock-safe).
-Honors `stop_hook_active` from stdin: if already true, `exit 0` (no re-block).
-Otherwise, if since the last user message the agent edited `crates/*/src/**`
-but turn-state has **no** `gate_green` covering every touched crate → `exit 2`
-with stderr: *"You changed <crates> but never showed clippy + nextest green for
-them. Run the gate before claiming done — weakening tests to get there is
-blocked by guard-edit."* This is the structural fix for "claims done without
-verifying / fixes tests to green"; it also forces red-first (landing new public
-behavior with zero test delta cannot be reported done).
+Honors `stop_hook_active` (already true → `exit 0`, no re-block — deadlock-safe).
+**D11: the touched-crate set is derived from git ground truth, not from B's
+recording.** C runs read-only `git -C <repo> diff --name-only` **and**
+`git status --porcelain` (uncommitted) **plus** `git diff --name-only
+<turn-base>..HEAD` (turn-base = HEAD recorded by A0 at turn start) → any
+modified `crates/<x>/src/**.rs` ⇒ crate `<x>` is "touched". (Running `git` is
+read-only and triggers no tools — Stop-hook-safe.) Union with turn-state
+`impl_files_edited` (corroborating belt; never the sole signal). If any touched
+crate lacks `gate_green` coverage (or the `*workspace*` sentinel) → `exit 2`:
+*"You changed <crates> but never showed a clean clippy + nextest green for
+them. Run the gate before claiming done."* This is the structural no-cheat
+anchor: weakening a test cannot help (A2 records green only for a clean
+canonical gate that must genuinely pass; CI re-runs authoritatively), and a
+poisoned/missed B recording can no longer blind C. Forces red-first: new
+behavior with no clean recorded gate cannot be reported done.
 
 ### A0. UserPromptSubmit — `nebula-guard-turn-reset.mjs` (matcher `""`)
 
