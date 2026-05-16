@@ -37,18 +37,33 @@ is_lib_rust() { # $1=path -> return 0 if library rust
   [[ "$p" =~ /(main|build)\.rs$ ]] && return 1
   return 0
 }
-# Fail-closed: echoes argv0, or "UNPARSEABLE" for anything we cannot safely
-# analyze (caller MUST treat UNPARSEABLE as deny).
-normalize_argv0() { # $1=raw command
+# resolve_cmd: returns the command with BALANCED quotes removed (== the shell's
+# own concatenation, so `ca'rg'o`→`cargo`, `-m "fix: x"`→`-m fix: x`), or
+# "UNPARSEABLE" for what a non-shell tokenizer must not guess at: shell
+# substitution/chaining/metachars, UNBALANCED quotes, or `env --split-string`
+# (argument is an opaque re-split command string). Scoped fail-closed: a benign
+# quoted command (git commit -m "msg") resolves and is analyzed normally; only
+# genuinely unanalyzable input denies — so the guard does not cripple workflow.
+resolve_cmd() { # $1=raw -> resolved string OR "UNPARSEABLE"
   local c="$1"
-  # Fail-closed: any shell metachar OR any quote ⇒ un-trustworthy to a
-  # non-shell tokenizer. `ca'rg'o`/`'cargo'`/`g"i"t` resolve to a real command
-  # we would otherwise miss — deny rather than guess (agent reruns it plain).
-  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*|*\"*|*\'*) printf 'UNPARSEABLE'; return;; esac
+  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*) printf 'UNPARSEABLE'; return;; esac
+  local dq="${c//[^\"]/}" sq="${c//[^\']/}"
+  if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
+  c="${c//\"/}"; c="${c//\'/}"
+  local h=" $c "
+  if [[ "$h" == *' env '* && ( "$h" == *' -S '* || "$h" == *' -S'* || "$h" == *' --split-string '* || "$h" == *' --split-string='* ) ]]; then
+    printf 'UNPARSEABLE'; return
+  fi
+  printf '%s' "$c"
+}
+# Fail-closed: echoes argv0 basename, or "UNPARSEABLE" (caller MUST deny it).
+normalize_argv0() { # $1=raw command
+  local c; c="$(resolve_cmd "$1")"
+  [ "$c" = "UNPARSEABLE" ] && { printf 'UNPARSEABLE'; return; }
   local -a t; read -ra t <<< "$c"
   local n=${#t[@]} i=0
   local -A WRAP=([env]=1 [sudo]=1 [nice]=1 [timeout]=1 [watch]=1 [xargs]=1 [command]=1 [stdbuf]=1 [nohup]=1)
-  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-S]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
+  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
   while (( i < n )); do
     local w="${t[$i]}"
     if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$w" != */* ]]; then ((i++)); continue; fi
