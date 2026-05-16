@@ -75,3 +75,15 @@ report assembly validator-side MUST **move** this emission into
 behaviour — exactly one `required` error for a hidden+present+required+empty
 field — and MUST NOT delete the carve-out. Seam anchor: the
 `hidden_present_required_empty_emits_single_required` regression test.
+
+For the root-rule path specifically, `run_root_rules` evaluates predicates
+against the full submitted JSON with no `Field::Secret`-by-type scrub (the
+field-level path uses the scrubbed `predicate_context_for`; a later phase
+scrubs the root-rule context too). Until then the build-time
+`secret.predicate_on_value` lint is the security boundary that stops a
+value-comparing root predicate from reading secret plaintext, so its
+secret-key collection must mirror every addressable shape (object, list-item
+object including indexed instances, mode variant payload) and the predicate
+target must be matched after list-index normalization. Seam anchors: the
+`root_value_predicate_on_list_indexed_secret_is_rejected` and
+`root_value_predicate_on_mode_secret_under_list_is_rejected` regression tests.

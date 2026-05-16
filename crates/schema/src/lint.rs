@@ -54,8 +54,16 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
         return;
     }
 
-    // Root rules may also target a secret by value; the same prohibition that
-    // applies to field-level visibility/required rules applies here.
+    // SECURITY (load-bearing, not advisory): the root-rule evaluation path
+    // (`run_root_rules`) builds its `PredicateContext` from the full submitted
+    // JSON with no `Field::Secret`-by-type scrub — unlike the field-level path,
+    // which goes through the scrubbed `predicate_context_for`. A later phase
+    // scrubs the root-rule context too; until then this lint is the only
+    // boundary stopping a value-comparing predicate from reading secret
+    // plaintext via a root rule. Rejecting such a predicate at `build()` is
+    // therefore a security control, so the secret-key collection must mirror
+    // every shape the schema can address (object, list-item object including
+    // indexed instances, mode variant payload).
     let secrets = collect_secret_pointer_segments(fields);
     if !secrets.is_empty() {
         for rule in rules {
@@ -1148,6 +1156,36 @@ const fn predicate_reads_value(predicate: &Predicate) -> bool {
     !matches!(predicate, Predicate::Set(_) | Predicate::Empty(_))
 }
 
+/// Index-normalized key-segment view of a predicate's target pointer.
+///
+/// `collect_secret_pointer_segments` keys secrets by `FieldKey` segments only
+/// (list items are anonymous, so an item-object secret sits at the list path
+/// with no index). A predicate, however, may legally address that same secret
+/// through a concrete list instance — `/items/0/token` — and the codebase
+/// blesses indexed pointers (see the dangling/cycle lints, which run every ref
+/// through [`normalize_rule_target_path`]). Comparing the raw pointer segments
+/// would leave `/items/0/token` unmatched against `["items","token"]`, so a
+/// value-comparing predicate on a list-indexed (or list-indexed-then-mode)
+/// secret would slip the guard and reach the unscrubbed root-rule context.
+/// Drop list indices the same way `normalize_rule_target_path` does, yielding
+/// the key-only segment vector to compare against the secret set.
+fn normalized_predicate_key_segments(predicate: &Predicate) -> Option<Vec<String>> {
+    let resolved = resolve_rule_dependency(predicate.field().as_str())?;
+    let normalized = normalize_rule_target_path(&resolved);
+    let mut keys = Vec::with_capacity(normalized.segments().len());
+    for segment in normalized.segments() {
+        match segment {
+            // After `normalize_rule_target_path`, a leading list index can
+            // still survive (it strips only non-leading indices); a secret can
+            // never be addressed by a *leading* index, so such a path simply
+            // cannot match the key-only secret set — bail rather than coerce.
+            PathSegment::Key(key) => keys.push(key.as_str().to_owned()),
+            PathSegment::Index(_) => return None,
+        }
+    }
+    Some(keys)
+}
+
 /// Walk a rule tree, flagging every value-comparing predicate whose target
 /// path is a `Field::Secret`. Recurses `Logic` children and `Described` inner
 /// rules so a buried predicate is still caught.
@@ -1159,12 +1197,22 @@ fn walk_rule_for_secret_value_predicates(
 ) {
     match rule {
         Rule::Predicate(predicate) if predicate_reads_value(predicate) => {
-            let target: Vec<String> = predicate
+            // Match either the raw pointer segments or the index-normalized
+            // key segments. The union strictly widens detection: a secret
+            // addressed through a concrete list instance (`/items/0/token`)
+            // normalizes to the same key path the secret set is keyed by, so
+            // it can no longer slip the guard into the unscrubbed root-rule
+            // context. Never narrows — anything the raw check caught before
+            // still matches.
+            let raw: Vec<String> = predicate
                 .field()
                 .segments()
                 .map(std::borrow::Cow::into_owned)
                 .collect();
-            if secrets.contains(&target) {
+            let normalized = normalized_predicate_key_segments(predicate);
+            let hit =
+                secrets.contains(&raw) || normalized.is_some_and(|segs| secrets.contains(&segs));
+            if hit {
                 let pointer = predicate.field().as_str();
                 report.push(
                     ValidationError::builder("secret.predicate_on_value")
@@ -1197,8 +1245,9 @@ fn walk_rule_for_secret_value_predicates(
 ///
 /// The secret-key collection mirrors the addressable-path construction of
 /// `walk_schema_fields` (objects, list-item objects, mode variant payloads),
-/// so a predicate targeting a nested secret (e.g. `/auth/api_key`, a secret
-/// in a list item, or a mode variant payload) is also flagged.
+/// and the predicate target is also matched after index normalization, so a
+/// secret addressed through a concrete list instance (`/items/0/api_key`) or
+/// a mode variant payload is flagged just like `/auth/api_key`.
 fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationReport) {
     let secrets = collect_secret_pointer_segments(fields);
     if secrets.is_empty() {
