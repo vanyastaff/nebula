@@ -794,6 +794,9 @@ impl WorkflowEngine {
                 workflow.id,
                 &input,
                 &mut repo_version,
+                // replay_execution is intentionally lease-less (no
+                // fencing token); checkpoints take the legacy path.
+                None,
                 &budget,
                 &started,
                 error_strategy,
@@ -890,46 +893,81 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         frontier_cancel: CancellationToken,
     ) -> Result<Option<LeaseGuard>, EngineError> {
-        let Some(repo) = self.execution_repo.clone() else {
-            return Ok(None);
-        };
         let holder = self.instance_id.to_string();
         let ttl = self.lease_ttl;
         let heartbeat_interval = self.lease_heartbeat_interval;
 
-        // Try to acquire the lease.
-        let acquired = repo
-            .acquire_lease(execution_id, holder.clone(), ttl)
-            .await
-            .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
-
-        if !acquired {
-            // Someone else holds the lease (or it's our own holder
-            // string from an earlier, still-live attempt — ADR 0008
-            // "same-holder re-acquire" — but for safety we still
-            // report as Leased so the caller can decide). Surface with
-            // the held holder for operator visibility.
-            //
-            // The exact holder string isn't returned by acquire_lease
-            // when it fails, so we surface the contention counter and
-            // the execution id; operators correlate via storage row.
-            let labels = self
-                .metrics
-                .interner()
-                .single("reason", engine_lease_contention_reason::ALREADY_HELD);
-            self.metrics
-                .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)?
-                .inc();
-            tracing::warn!(
-                %execution_id,
-                %holder,
-                "execution lease is held by another runner; refusing to dispatch (§12.2, #325)"
-            );
-            return Err(EngineError::Leased {
-                execution_id,
-                holder,
-            });
-        }
+        // Dual-dispatch lease acquisition: spec-16 port (returns the
+        // fencing token threaded into every commit) when stores are
+        // configured, else the legacy `ExecutionRepo` (holder-string
+        // lease, no fencing). A live lease held by another runner
+        // surfaces as `EngineError::Leased` on both paths.
+        let backend: crate::store_seam::LeaseBackend = if let Some(stores) = self.stores.clone() {
+            let scope = crate::store_seam::engine_scope();
+            let token = stores
+                .execution
+                .acquire_lease(&scope, &execution_id.to_string(), &holder, ttl)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
+            let Some(token) = token else {
+                let labels = self
+                    .metrics
+                    .interner()
+                    .single("reason", engine_lease_contention_reason::ALREADY_HELD);
+                self.metrics
+                    .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)?
+                    .inc();
+                tracing::warn!(
+                    %execution_id,
+                    %holder,
+                    "execution lease is held by another runner; refusing to dispatch (§12.2, #325)"
+                );
+                return Err(EngineError::Leased {
+                    execution_id,
+                    holder,
+                });
+            };
+            crate::store_seam::LeaseBackend::Port {
+                store: stores.execution.clone(),
+                scope,
+                token,
+            }
+        } else if let Some(repo) = self.execution_repo.clone() {
+            let acquired = repo
+                .acquire_lease(execution_id, holder.clone(), ttl)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
+            if !acquired {
+                // Someone else holds the lease (or it's our own holder
+                // string from an earlier, still-live attempt — ADR 0008
+                // "same-holder re-acquire" — but for safety we still
+                // report as Leased so the caller can decide).
+                let labels = self
+                    .metrics
+                    .interner()
+                    .single("reason", engine_lease_contention_reason::ALREADY_HELD);
+                self.metrics
+                    .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)?
+                    .inc();
+                tracing::warn!(
+                    %execution_id,
+                    %holder,
+                    "execution lease is held by another runner; refusing to dispatch (§12.2, #325)"
+                );
+                return Err(EngineError::Leased {
+                    execution_id,
+                    holder,
+                });
+            }
+            crate::store_seam::LeaseBackend::Legacy {
+                repo,
+                holder: holder.clone(),
+            }
+        } else {
+            // No storage seam configured — single-process library mode,
+            // proceed without a lease.
+            return Ok(None);
+        };
 
         tracing::debug!(
             %execution_id,
@@ -940,11 +978,11 @@ impl WorkflowEngine {
         );
 
         // Spawn a heartbeat task. A shared `heartbeat_lost` token
-        // trips when a renew_lease returns `Ok(false)` (stolen or
-        // expired) or errors — the frontier loop observes it via
-        // the caller-provided `frontier_cancel` which we mirror.
+        // trips when a renew returns `Ok(false)` (stolen or expired) or
+        // errors — the frontier loop observes it via the
+        // caller-provided `frontier_cancel` which we mirror.
         let heartbeat_lost = CancellationToken::new();
-        let heartbeat_repo = repo.clone();
+        let heartbeat_backend = backend.clone();
         let heartbeat_holder = holder.clone();
         let heartbeat_shutdown = CancellationToken::new();
         let metrics = self.metrics.clone();
@@ -964,8 +1002,8 @@ impl WorkflowEngine {
                         break;
                     }
                     _ = ticker.tick() => {
-                        match heartbeat_repo
-                            .renew_lease(execution_id, &heartbeat_holder, ttl)
+                        match heartbeat_backend
+                            .renew(execution_id, ttl)
                             .await
                         {
                             Ok(true) => {
@@ -1035,7 +1073,7 @@ impl WorkflowEngine {
         });
 
         Ok(Some(LeaseGuard {
-            repo,
+            backend,
             execution_id,
             holder,
             handle: Some(handle),
@@ -1089,9 +1127,28 @@ impl WorkflowEngine {
         // to `ExecutionBudget::default()` (issue #289).
         exec_state.set_budget(budget.clone());
 
-        // 4b. Persist initial execution state
+        // 4b. Persist initial execution state. Dual-dispatch: the
+        // spec-16 port `create` starts the row at version 0 (the first
+        // `commit` CASes against `expected_version == 0`); the legacy
+        // repo's first `transition` historically started at 1. The
+        // version baseline therefore differs per backend and must match
+        // whichever backend the checkpoints below use.
         let mut repo_version: u64 = 0;
-        if let Some(repo) = &self.execution_repo {
+        if let Some(stores) = &self.stores {
+            let state_json = serde_json::to_value(&exec_state)
+                .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
+            stores
+                .execution
+                .create(
+                    &crate::store_seam::engine_scope(),
+                    &execution_id.to_string(),
+                    &workflow.id.to_string(),
+                    state_json,
+                )
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("persist initial state: {e}")))?;
+            repo_version = 0;
+        } else if let Some(repo) = &self.execution_repo {
             let state_json = serde_json::to_value(&exec_state)
                 .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
             repo.create(execution_id, workflow.id, state_json)
@@ -1117,6 +1174,12 @@ impl WorkflowEngine {
         let lease = self
             .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
             .await?;
+
+        // Fencing token threaded into every checkpoint / final-state
+        // commit. `Some` only on the spec-16 port lease path; `None`
+        // (legacy lease or no lease) routes checkpoints to the legacy
+        // transition path.
+        let fencing = lease.as_ref().and_then(LeaseGuard::fencing_token);
 
         // 5b. Publish the cancel token into the running registry ONLY
         // after the lease is ours. The lease is the authoritative
@@ -1169,6 +1232,7 @@ impl WorkflowEngine {
                 workflow.id,
                 &input,
                 &mut repo_version,
+                fencing,
                 &budget,
                 &started,
                 error_strategy,
@@ -1227,7 +1291,7 @@ impl WorkflowEngine {
                 execution_id,
                 holder: self.instance_id.to_string(),
             });
-        } else if let Some(repo) = &self.execution_repo {
+        } else if self.stores.is_some() || self.execution_repo.is_some() {
             // Persist final execution state with CAS-conflict
             // reconciliation (issue #333). The pre-fix branch was
             // log-and-continue on CAS mismatch, which let the engine
@@ -1236,9 +1300,16 @@ impl WorkflowEngine {
             // now reloads the persisted state on mismatch, honors
             // external terminal transitions, and retries once on
             // non-terminal conflicts before surfacing a typed
-            // `CasConflict` error.
+            // `CasConflict` error. `persist_final_state` itself
+            // dual-dispatches port-vs-legacy on `(stores, fencing)`.
             match self
-                .persist_final_state(repo, execution_id, &mut exec_state, &mut repo_version)
+                .persist_final_state(
+                    self.execution_repo.as_ref(),
+                    execution_id,
+                    &mut exec_state,
+                    &mut repo_version,
+                    fencing,
+                )
                 .await
             {
                 Ok(None) => final_status,
@@ -1629,6 +1700,10 @@ impl WorkflowEngine {
             .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
             .await?;
 
+        // Fencing token threaded into every checkpoint / final-state
+        // commit. `Some` only on the spec-16 port lease path.
+        let fencing = lease.as_ref().and_then(LeaseGuard::fencing_token);
+
         // Publish the cancel token into the running registry ONLY after
         // the lease is ours (ADR-0015 single-runner fence). Symmetric to
         // `execute_workflow` — see its comment for the full rationale
@@ -1678,6 +1753,7 @@ impl WorkflowEngine {
                 workflow_id,
                 &workflow_input,
                 &mut repo_version,
+                fencing,
                 &budget,
                 &started,
                 error_strategy,
@@ -1730,14 +1806,19 @@ impl WorkflowEngine {
                 execution_id,
                 holder: self.instance_id.to_string(),
             });
-        } else if let Some(exec_repo) = self.execution_repo.clone() {
+        } else if self.stores.is_some() || self.execution_repo.is_some() {
             // Persist final state with CAS-conflict reconciliation
             // (issue #333). Mirrors `execute_workflow` — see its comment
-            // for the full contract. Final-state persist is still on the
-            // legacy repo; its port migration lands in the
-            // execution-state/commit slice (the fencing-coupled unit).
+            // for the full contract. `persist_final_state` dual-dispatches
+            // port-vs-legacy on `(stores, fencing)`.
             match self
-                .persist_final_state(&exec_repo, execution_id, &mut exec_state, &mut repo_version)
+                .persist_final_state(
+                    self.execution_repo.as_ref(),
+                    execution_id,
+                    &mut exec_state,
+                    &mut repo_version,
+                    fencing,
+                )
                 .await
             {
                 Ok(None) => final_status,
@@ -1854,6 +1935,7 @@ impl WorkflowEngine {
         workflow_id: WorkflowId,
         input: &serde_json::Value,
         repo_version: &mut u64,
+        fencing: Option<nebula_storage_port::FencingToken>,
         budget: &ExecutionBudget,
         started: &Instant,
         error_strategy: nebula_workflow::ErrorStrategy,
@@ -2142,6 +2224,7 @@ impl WorkflowEngine {
                                 outputs,
                                 exec_state,
                                 repo_version,
+                                fencing,
                             )
                             .await
                         {
@@ -2206,6 +2289,7 @@ impl WorkflowEngine {
                         outputs,
                         exec_state,
                         repo_version,
+                        fencing,
                     )
                     .await
                 {
@@ -2436,6 +2520,7 @@ impl WorkflowEngine {
                             outputs,
                             exec_state,
                             repo_version,
+                            fencing,
                         )
                         .await
                     {
@@ -2716,6 +2801,7 @@ impl WorkflowEngine {
                                         outputs,
                                         exec_state,
                                         repo_version,
+                                        fencing,
                                     )
                                     .await
                                 {
@@ -2791,6 +2877,7 @@ impl WorkflowEngine {
                             outputs,
                             exec_state,
                             repo_version,
+                            fencing,
                         )
                         .await
                     {
@@ -2834,6 +2921,7 @@ impl WorkflowEngine {
                             outputs,
                             exec_state,
                             repo_version,
+                            fencing,
                         )
                         .await;
                         cancel_token.cancel();
@@ -3334,6 +3422,11 @@ impl WorkflowEngine {
     /// error to `run_frontier`'s caller. The real durability gap —
     /// `save_node_output` after panic — is already logged by
     /// `checkpoint_node` itself.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors checkpoint_node's arity; the fencing token is required by the \
+                  dual-dispatch storage seam"
+    )]
     async fn handle_panicked_node(
         &self,
         execution_id: ExecutionId,
@@ -3342,6 +3435,7 @@ impl WorkflowEngine {
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         exec_state: &mut ExecutionState,
         repo_version: &mut u64,
+        fencing: Option<nebula_storage_port::FencingToken>,
     ) {
         let panic_err = EngineError::TaskPanicked(err_msg.to_owned());
         mark_node_failed(exec_state, node_key.clone(), &panic_err);
@@ -3352,6 +3446,7 @@ impl WorkflowEngine {
                 outputs,
                 exec_state,
                 repo_version,
+                fencing,
             )
             .await;
         if let Err(e) = checkpoint_result {
@@ -3376,7 +3471,26 @@ impl WorkflowEngine {
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         exec_state: &ExecutionState,
         repo_version: &mut u64,
+        fencing: Option<nebula_storage_port::FencingToken>,
     ) -> Result<(), EngineError> {
+        // Port path: spec-16 stores + the lease fencing token. State,
+        // output, and (empty) outbox/journal commit through one
+        // `TransitionBatch`; a superseded fencing token is rejected even
+        // on a matching version (closes the zombie-runner hole).
+        if let (Some(stores), Some(token)) = (&self.stores, fencing) {
+            return self
+                .checkpoint_node_port(
+                    stores,
+                    execution_id,
+                    node_key,
+                    outputs,
+                    exec_state,
+                    repo_version,
+                    token,
+                )
+                .await;
+        }
+
         let Some(repo) = &self.execution_repo else {
             return Ok(());
         };
@@ -3484,6 +3598,119 @@ impl WorkflowEngine {
         }
     }
 
+    /// Spec-16 port variant of [`Self::checkpoint_node`]: save the node
+    /// output through [`nebula_storage_port::store::NodeResultStore`] and
+    /// commit the state snapshot through a fencing-gated
+    /// [`nebula_storage_port::TransitionBatch`]. A superseded fencing
+    /// token yields [`EngineError::CasConflict`] (the new holder owns the
+    /// canonical state — ADR 0008, §12.2); a CAS version mismatch follows
+    /// the same #333 refetch-and-abort contract as the legacy path.
+    #[allow(clippy::too_many_arguments)]
+    async fn checkpoint_node_port(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
+        exec_state: &ExecutionState,
+        repo_version: &mut u64,
+        token: nebula_storage_port::FencingToken,
+    ) -> Result<(), EngineError> {
+        let scope = crate::store_seam::engine_scope();
+        let id = execution_id.to_string();
+
+        if let Some(output) = outputs.get(&node_key) {
+            let record = crate::store_seam::node_output_record(output.value().clone());
+            if let Err(e) = stores
+                .node_results
+                .save_node_output(&scope, &id, node_key.as_str(), record)
+                .await
+            {
+                return Err(EngineError::CheckpointFailed {
+                    node_key,
+                    reason: format!("save_node_output: {e}"),
+                });
+            }
+        }
+
+        let state_json =
+            serde_json::to_value(exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: node_key.clone(),
+                reason: format!("serialize state: {e}"),
+            })?;
+
+        let batch = nebula_storage_port::TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(&id)
+            .expected_version(*repo_version)
+            .fencing(token)
+            .new_state(state_json)
+            .build()
+            .map_err(|e| EngineError::CheckpointFailed {
+                node_key: node_key.clone(),
+                reason: format!("build transition batch: {e}"),
+            })?;
+
+        match stores.execution.commit(batch).await {
+            Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                *repo_version = new_version;
+                Ok(())
+            },
+            Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
+                tracing::error!(
+                    %execution_id,
+                    %node_key,
+                    "checkpoint fenced out — lease superseded; aborting node progression \
+                     (ADR 0008, §12.2)"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version: *repo_version,
+                    observed_version: *repo_version,
+                    observed_status: "fenced_out".to_owned(),
+                })
+            },
+            Ok(nebula_storage_port::TransitionOutcome::VersionConflict { actual }) => {
+                let expected_version = *repo_version;
+                *repo_version = actual;
+                let observed_status = match stores.execution.get(&scope, &id).await {
+                    Ok(Some(rec)) => {
+                        *repo_version = rec.version;
+                        parse_observed_status(&rec.state)
+                    },
+                    Ok(None) => "unknown".to_owned(),
+                    Err(e) => {
+                        tracing::warn!(
+                            %execution_id,
+                            %node_key,
+                            error = %e,
+                            "checkpoint CAS mismatch: failed to refetch persisted state"
+                        );
+                        "unknown".to_owned()
+                    },
+                };
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    expected_version,
+                    observed_version = *repo_version,
+                    %observed_status,
+                    "checkpoint CAS mismatch — aborting node progression (§11.1, #333)"
+                );
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version,
+                    observed_version: *repo_version,
+                    observed_status,
+                })
+            },
+            Err(e) => Err(EngineError::CheckpointFailed {
+                node_key,
+                reason: e.to_string(),
+            }),
+        }
+    }
+
     /// Persist the final execution state, reconciling with any
     /// externally-driven concurrent update (issue #333).
     ///
@@ -3521,11 +3748,24 @@ impl WorkflowEngine {
     ///   surfaces a typed failure instead of a silent success.
     async fn persist_final_state(
         &self,
-        repo: &Arc<dyn nebula_storage::ExecutionRepo>,
+        repo: Option<&Arc<dyn nebula_storage::ExecutionRepo>>,
         execution_id: ExecutionId,
         exec_state: &mut ExecutionState,
         repo_version: &mut u64,
+        fencing: Option<nebula_storage_port::FencingToken>,
     ) -> Result<Option<ExecutionStatus>, EngineError> {
+        if let (Some(stores), Some(token)) = (self.stores.clone(), fencing) {
+            return self
+                .persist_final_state_port(&stores, execution_id, exec_state, repo_version, token)
+                .await;
+        }
+        // Legacy path: the caller only routes here with a configured
+        // repo. An absent repo here is a wiring bug, surfaced as a typed
+        // checkpoint failure rather than a panic.
+        let repo = repo.ok_or_else(|| EngineError::CheckpointFailed {
+            node_key: final_state_node_key(),
+            reason: "no execution repo configured for final-state persist".to_owned(),
+        })?;
         let state_json =
             serde_json::to_value(&*exec_state).map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
@@ -3639,6 +3879,166 @@ impl WorkflowEngine {
                 node_key: final_state_node_key(),
                 reason: format!("final state persist: {e}"),
             }),
+        }
+    }
+
+    /// Spec-16 port variant of [`Self::persist_final_state`]: the final
+    /// state snapshot commits through a fencing-gated
+    /// [`nebula_storage_port::TransitionBatch`]. Same #333
+    /// reconcile-and-retry contract as the legacy path; a superseded
+    /// fencing token yields [`EngineError::CasConflict`] (the new lease
+    /// holder owns the canonical state — ADR 0008, §12.2).
+    async fn persist_final_state_port(
+        &self,
+        stores: &crate::store_seam::ExecutionStores,
+        execution_id: ExecutionId,
+        exec_state: &mut ExecutionState,
+        repo_version: &mut u64,
+        token: nebula_storage_port::FencingToken,
+    ) -> Result<Option<ExecutionStatus>, EngineError> {
+        let scope = crate::store_seam::engine_scope();
+        let id = execution_id.to_string();
+
+        let build_batch = |version: u64,
+                           json: serde_json::Value|
+         -> Result<nebula_storage_port::TransitionBatch, EngineError> {
+            nebula_storage_port::TransitionBatch::builder()
+                .scope(scope.clone())
+                .execution_id(&id)
+                .expected_version(version)
+                .fencing(token)
+                .new_state(json)
+                .build()
+                .map_err(|e| EngineError::CheckpointFailed {
+                    node_key: final_state_node_key(),
+                    reason: format!("build final transition batch: {e}"),
+                })
+        };
+
+        let state_json =
+            serde_json::to_value(&*exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("serialize final state: {e}"),
+            })?;
+
+        let outcome = stores
+            .execution
+            .commit(build_batch(*repo_version, state_json)?)
+            .await
+            .map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("final state persist: {e}"),
+            })?;
+
+        match outcome {
+            nebula_storage_port::TransitionOutcome::Applied { new_version } => {
+                *repo_version = new_version;
+                Ok(None)
+            },
+            nebula_storage_port::TransitionOutcome::FencedOut => Err(EngineError::CasConflict {
+                execution_id,
+                expected_version: *repo_version,
+                observed_version: *repo_version,
+                observed_status: "fenced_out".to_owned(),
+            }),
+            nebula_storage_port::TransitionOutcome::VersionConflict { actual } => {
+                let expected_version = *repo_version;
+                let observed = match stores.execution.get(&scope, &id).await {
+                    Ok(Some(rec)) => rec,
+                    Ok(None) => {
+                        *repo_version = actual;
+                        return Err(EngineError::CasConflict {
+                            execution_id,
+                            expected_version,
+                            observed_version: actual,
+                            observed_status: "missing".to_owned(),
+                        });
+                    },
+                    Err(e) => {
+                        return Err(EngineError::CheckpointFailed {
+                            node_key: final_state_node_key(),
+                            reason: format!("final CAS refetch failed: {e}"),
+                        });
+                    },
+                };
+                let observed_version = observed.version;
+                let observed_json = observed.state;
+                *repo_version = observed_version;
+                let observed_status_enum = parse_observed_execution_status(&observed_json);
+                let observed_status_str = parse_observed_status(&observed_json);
+
+                if observed_status_enum
+                    .as_ref()
+                    .is_some_and(ExecutionStatus::is_terminal)
+                {
+                    tracing::warn!(
+                        %execution_id,
+                        expected_version,
+                        observed_version,
+                        %observed_status_str,
+                        "final state CAS mismatch: external transition is terminal — \
+                         honoring external status instead of overwriting (§11.5, #333)"
+                    );
+                    return Ok(observed_status_enum);
+                }
+
+                let retry_json = match serde_json::to_value(&*exec_state) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(EngineError::CheckpointFailed {
+                            node_key: final_state_node_key(),
+                            reason: format!("serialize retry state: {e}"),
+                        });
+                    },
+                };
+                match stores
+                    .execution
+                    .commit(build_batch(*repo_version, retry_json)?)
+                    .await
+                {
+                    Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                        tracing::info!(
+                            %execution_id,
+                            expected_version,
+                            observed_version,
+                            "final state CAS retry succeeded after external bump (§11.5, #333)"
+                        );
+                        *repo_version = new_version;
+                        Ok(None)
+                    },
+                    Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
+                        Err(EngineError::CasConflict {
+                            execution_id,
+                            expected_version,
+                            observed_version: *repo_version,
+                            observed_status: "fenced_out".to_owned(),
+                        })
+                    },
+                    Ok(nebula_storage_port::TransitionOutcome::VersionConflict {
+                        actual: retry_actual,
+                    }) => {
+                        let (latest_version, latest_status) =
+                            match stores.execution.get(&scope, &id).await {
+                                Ok(Some(rec)) => {
+                                    let s = parse_observed_status(&rec.state);
+                                    (rec.version, s)
+                                },
+                                _ => (retry_actual, observed_status_str.clone()),
+                            };
+                        *repo_version = latest_version;
+                        Err(EngineError::CasConflict {
+                            execution_id,
+                            expected_version,
+                            observed_version: latest_version,
+                            observed_status: latest_status,
+                        })
+                    },
+                    Err(e) => Err(EngineError::CheckpointFailed {
+                        node_key: final_state_node_key(),
+                        reason: format!("final CAS retry failed: {e}"),
+                    }),
+                }
+            },
         }
     }
 
@@ -4467,8 +4867,12 @@ struct FinalStatusDecision {
 /// it frees the lease immediately, shortening redelivery latency for
 /// legitimate successor runs.
 struct LeaseGuard {
-    repo: Arc<dyn nebula_storage::ExecutionRepo>,
+    /// Which storage backend owns this lease (legacy repo vs spec-16
+    /// port). Carries the fencing token on the port path.
+    backend: crate::store_seam::LeaseBackend,
     execution_id: ExecutionId,
+    /// Holder string for diagnostics (the legacy backend also uses it
+    /// for renew/release internally).
     holder: String,
     handle: Option<tokio::task::JoinHandle<()>>,
     /// Signalled by `shutdown` to stop the heartbeat loop cleanly.
@@ -4487,6 +4891,13 @@ impl LeaseGuard {
     /// the execution's canonical state.
     fn heartbeat_lost(&self) -> bool {
         self.heartbeat_lost.is_cancelled()
+    }
+
+    /// The fencing token this runner holds, or `None` on the legacy
+    /// lease path. Threaded into every committed transition batch so the
+    /// store rejects a write from a superseded holder.
+    fn fencing_token(&self) -> Option<nebula_storage_port::FencingToken> {
+        self.backend.fencing_token()
     }
 
     /// Stop the heartbeat loop and release the lease.
@@ -4511,11 +4922,7 @@ impl LeaseGuard {
             );
             return;
         }
-        match self
-            .repo
-            .release_lease(self.execution_id, &self.holder)
-            .await
-        {
+        match self.backend.release(self.execution_id).await {
             Ok(true) => {
                 tracing::debug!(
                     execution_id = %self.execution_id,
@@ -8876,10 +9283,11 @@ mod tests {
         let repo: Arc<dyn ExecutionRepo> = inner.clone();
         let outcome = engine
             .persist_final_state(
-                &repo,
+                Some(&repo),
                 execution_id,
                 &mut engine_final_state,
                 &mut repo_version,
+                None,
             )
             .await
             .expect("retry should succeed on non-terminal conflict");
@@ -8970,10 +9378,11 @@ mod tests {
         let repo: Arc<dyn ExecutionRepo> = inner.clone();
         let outcome = engine
             .persist_final_state(
-                &repo,
+                Some(&repo),
                 execution_id,
                 &mut engine_final_state,
                 &mut repo_version,
+                None,
             )
             .await
             .expect("reconciliation must succeed against an external terminal write");

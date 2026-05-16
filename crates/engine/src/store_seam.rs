@@ -29,12 +29,12 @@
 
 use std::sync::Arc;
 
-use nebula_storage_port::Scope;
 use nebula_storage_port::dto::NodeResultRecord;
 use nebula_storage_port::store::{
     CheckpointStore, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, NodeResultStore,
     WorkflowStore, WorkflowVersionStore,
 };
+use nebula_storage_port::{FencingToken, Scope};
 
 /// Wrap a raw node-output payload in the port's [`NodeResultRecord`].
 ///
@@ -128,5 +128,92 @@ pub struct WorkflowStores {
 impl std::fmt::Debug for WorkflowStores {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkflowStores").finish_non_exhaustive()
+    }
+}
+
+/// Which storage backend holds the engine's execution lease.
+///
+/// Transitional dual state during the spec-16 port migration: the legacy
+/// `nebula_storage::ExecutionRepo` path uses a holder string and bool
+/// renew/release; the spec-16 port path uses a [`FencingToken`] threaded
+/// into every committed batch so a superseded holder is rejected even on
+/// a matching CAS version. Removed in the migration's contract phase
+/// once the legacy path is gone.
+#[derive(Clone)]
+pub(crate) enum LeaseBackend {
+    /// Legacy `ExecutionRepo` lease (holder string, no fencing token).
+    Legacy {
+        /// The legacy repo handle used for renew / release.
+        repo: Arc<dyn nebula_storage::ExecutionRepo>,
+        /// Holder string identifying this runner's lease.
+        holder: String,
+    },
+    /// Spec-16 port lease (fencing token gates every commit).
+    Port {
+        /// The scoped execution store used for renew / release.
+        store: Arc<dyn ExecutionStore>,
+        /// Bound scope (the tenancy decorator substitutes its own).
+        scope: Scope,
+        /// Fencing generation proving this runner currently owns the
+        /// lease; threaded into every committed transition batch.
+        token: FencingToken,
+    },
+}
+
+impl LeaseBackend {
+    /// The fencing token, if this is a port-backed lease. `None` on the
+    /// legacy path (the legacy commit does not take a fencing token).
+    #[must_use]
+    pub(crate) fn fencing_token(&self) -> Option<FencingToken> {
+        match self {
+            Self::Legacy { .. } => None,
+            Self::Port { token, .. } => Some(*token),
+        }
+    }
+
+    /// Renew the lease. Returns `Ok(true)` when still held, `Ok(false)`
+    /// when superseded/expired (the caller treats either non-true as
+    /// loss). The error string is for diagnostics only.
+    pub(crate) async fn renew(
+        &self,
+        execution_id: nebula_core::id::ExecutionId,
+        ttl: std::time::Duration,
+    ) -> Result<bool, String> {
+        match self {
+            Self::Legacy { repo, holder } => repo
+                .renew_lease(execution_id, holder, ttl)
+                .await
+                .map_err(|e| format!("{e}")),
+            Self::Port {
+                store,
+                scope,
+                token,
+            } => store
+                .renew_lease(scope, &execution_id.to_string(), *token, ttl)
+                .await
+                .map_err(|e| format!("{e}")),
+        }
+    }
+
+    /// Release the lease (best-effort). Returns `Ok(true)` when released,
+    /// `Ok(false)` when it was no longer owned.
+    pub(crate) async fn release(
+        &self,
+        execution_id: nebula_core::id::ExecutionId,
+    ) -> Result<bool, String> {
+        match self {
+            Self::Legacy { repo, holder } => repo
+                .release_lease(execution_id, holder)
+                .await
+                .map_err(|e| format!("{e}")),
+            Self::Port {
+                store,
+                scope,
+                token,
+            } => store
+                .release_lease(scope, &execution_id.to_string(), *token)
+                .await
+                .map_err(|e| format!("{e}")),
+        }
     }
 }
