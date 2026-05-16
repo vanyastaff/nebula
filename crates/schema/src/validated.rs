@@ -1080,27 +1080,28 @@ struct LevelEntry<'a> {
 }
 
 /// Resolve visibility/required for one field-set level against the shared
-/// whole-tree predicate context, then run the gated per-field validation.
+/// whole-tree predicate context, then dispatch the per-field validation the
+/// validator decided.
 ///
 /// This is the SOLE route into per-field value validation at every nesting
 /// level: a field reaches its value rules only through the `FieldPlan`
-/// produced here. The structural guarantee is data-flow — `FieldPlan` is the
-/// only input to the per-field step — not enum exhaustiveness; carrying the
-/// field reference inside `FieldPlan` is the future hardening.
+/// produced by `resolve_field_policies`. Each plan carries the `LevelEntry` it
+/// was computed for as its opaque payload, so this runner cannot pair a plan
+/// with the wrong field — it is a dumb dispatcher on `plan.directive` with no
+/// policy logic of its own.
 ///
 /// Each decl's `value_present` is computed here as
-/// `!is_absent_for_required(field, raw)`, mirroring the legacy `required`
-/// emptiness semantics: an empty string / empty collection / null counts as
-/// ABSENT for the required check (HTML-form parity), not merely
-/// `Option::is_some`.
+/// `!is_absent_for_required(field, raw)` and `raw_present` as `raw.is_some()`:
+/// the schema owns the emptiness verdict (an empty string / empty collection /
+/// null counts as ABSENT for the required check — HTML-form parity), feeds it
+/// to the validator as data, and the validator decides and emits `required`.
 fn gate_and_validate_level(
     entries: &[LevelEntry<'_>],
     ctx: &nebula_validator::PredicateContext,
     report: &mut ValidationReport,
 ) {
     use nebula_validator::policy::{
-        FieldPolicyDecl, Presence, RequiredPolicy, Requiredness, VisibilityPolicy,
-        resolve_field_policies,
+        FieldDirective, FieldPolicyDecl, RequiredPolicy, VisibilityPolicy, resolve_field_policies,
     };
 
     fn vis_policy(m: &crate::mode::VisibilityMode) -> VisibilityPolicy<'_> {
@@ -1124,6 +1125,8 @@ fn gate_and_validate_level(
             vis_policy(e.field.visible()),
             req_policy(e.field.required()),
             !is_absent_for_required(e.field, e.raw),
+            e.raw.is_some(),
+            e,
         )
     });
     let resolution = resolve_field_policies(decls, ctx);
@@ -1131,91 +1134,64 @@ fn gate_and_validate_level(
     // `required_failures` are validator errors carrying the field pointer;
     // translate them into schema errors (code stays `required`, schema path
     // resolved from the carried pointer). The fallback path is unused because
-    // every decl carries an explicit validator path.
+    // every decl carries an explicit validator path. The validator is the
+    // SOLE `required` emitter — this runner never synthesizes one.
     push_validator_rule_errors(&resolution.required_failures, &FieldPath::root(), report);
 
-    // INVARIANT: one plan per entry, in input order — plan index == entry
-    // index. `resolve_field_policies` documents this 1:1 ordering; any future
-    // filter/reorder of `plans` silently breaks the presence gate. The
-    // correct hardening is to carry the field reference (or an opaque token
-    // minted by `resolve_field_policies`) inside `FieldPlan` so the runner
-    // cannot obtain a field except via the matched plan. Do NOT
-    // retain/sort/filter the plans.
-    debug_assert_eq!(
-        resolution.plans.len(),
-        entries.len(),
-        "policy resolution must be 1:1 with fields"
-    );
-
-    for (plan, entry) in resolution.plans.iter().zip(entries) {
-        // `Presence` is a cross-crate `#[non_exhaustive]` enum; treat any
-        // value other than `Active` as hidden (fail-closed for visibility).
-        // The structural guarantee here is data-flow — `FieldPlan` is the
-        // sole input to field validation — not enum exhaustiveness.
-        let hidden = !matches!(plan.presence, Presence::Active);
-
-        // A hidden field is skipped ONLY when its value is also absent. A
-        // hidden field that nonetheless carries a present value is still
-        // structurally validated (an expression smuggled into e.g. a
-        // no-payload mode variant must still be rejected). This mirrors the
-        // legacy `if !visible && raw.is_none()` skip exactly.
-        if hidden && entry.raw.is_none() {
-            // Decision audit. Only the field PATH and the two resolved
-            // policy enums are recorded — never the value, `entry.raw`, or
-            // the predicate context — so secret-shaped values stay out of
-            // logs.
-            tracing::debug!(
-                target: "nebula_schema::validate",
-                field = %entry.schema_path,
-                presence = ?plan.presence,
-                requiredness = ?plan.requiredness,
-                decision = "skipped",
-                "field-gate decision"
-            );
-            continue;
-        }
-
-        // A required field that is absent (empty string / empty collection /
-        // null all count as absent) gets one `required` error and no value
-        // rules. For a visible field the policy already emitted it above; for
-        // a hidden-but-present required field the policy did not (presence is
-        // not `Active`), so emit it here to preserve the legacy behavior.
-        // Either way the value rules are short-circuited (no double-report).
-        if plan.requiredness == Requiredness::Required
-            && is_absent_for_required(entry.field, entry.raw)
-        {
-            if hidden {
-                report.push(
-                    ValidationError::builder("required")
-                        .at(entry.schema_path.clone())
-                        .message(format!("field `{}` is required", entry.schema_path))
-                        .build(),
+    // Dumb dispatcher: act on `plan.directive` only. Each plan carries the
+    // `LevelEntry` it was computed for as its payload, so a plan can never be
+    // paired with the wrong field; `FieldDirective` being cross-crate
+    // `#[non_exhaustive]` keeps any new variant fail-closed (the wildcard arm
+    // does not validate). Every audit line records only the field PATH and the
+    // resolved policy enums — never the value, `entry.raw`, or the predicate
+    // context — so secret-shaped values stay out of logs.
+    for plan in &resolution.plans {
+        let entry = plan.payload;
+        match plan.directive {
+            FieldDirective::Skip => {
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "skipped",
+                    "field-gate decision"
                 );
-            }
-            // Decision audit. Path + policy enums only; the required failure
-            // is keyed by absence, so no value is read or recorded here.
-            tracing::debug!(
-                target: "nebula_schema::validate",
-                field = %entry.schema_path,
-                presence = ?plan.presence,
-                requiredness = ?plan.requiredness,
-                decision = "required-emitted",
-                "field-gate decision"
-            );
-            continue;
+            },
+            FieldDirective::RequiredAbsent => {
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "required-emitted",
+                    "field-gate decision"
+                );
+            },
+            FieldDirective::Validate => {
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "value-validated",
+                    "field-gate decision"
+                );
+                validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
+            },
+            _ => {
+                // Fail-closed: an unknown future directive validates nothing
+                // and emits nothing. Audited so the gap is observable.
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "unknown-directive",
+                    "field-gate decision"
+                );
+            },
         }
-
-        // Decision audit. Path + policy enums only — the value itself is
-        // validated by `validate_field`, never logged here.
-        tracing::debug!(
-            target: "nebula_schema::validate",
-            field = %entry.schema_path,
-            presence = ?plan.presence,
-            requiredness = ?plan.requiredness,
-            decision = "value-validated",
-            "field-gate decision"
-        );
-        validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
     }
 }
 
