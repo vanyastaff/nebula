@@ -135,9 +135,35 @@ pub struct WorkflowEngine {
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
     /// Optional execution repository for persistent state storage.
+    ///
+    /// Legacy Layer-1 god-trait handle. Retained during the spec-16 port
+    /// migration so not-yet-migrated paths keep working; production paths
+    /// prefer [`Self::stores`] when configured. Removed in the migration's
+    /// contract phase once every consumer is on the port.
     execution_repo: Option<Arc<dyn nebula_storage::ExecutionRepo>>,
     /// Optional workflow repository for loading workflow definitions during resume.
+    ///
+    /// Legacy Layer-1 handle; see [`Self::execution_repo`].
     workflow_repo: Option<Arc<dyn nebula_storage::WorkflowRepo>>,
+    /// Optional spec-16 port bundle (execution-state / lease / journal /
+    /// node-result / idempotency / checkpoint). When set, production
+    /// paths use this instead of [`Self::execution_repo`].
+    ///
+    /// Written by [`Self::with_execution_stores`]; the production readers
+    /// land in the next migration slice. The allow is scoped to this
+    /// expand-phase field and is removed when that slice wires the reads.
+    #[allow(
+        dead_code,
+        reason = "expand-phase field; production readers land in the next slice"
+    )]
+    stores: Option<crate::store_seam::ExecutionStores>,
+    /// Optional spec-16 workflow-definition port bundle for the resume
+    /// path. When set, used instead of [`Self::workflow_repo`].
+    #[allow(
+        dead_code,
+        reason = "expand-phase field; production readers land in the next slice"
+    )]
+    workflow_stores: Option<crate::store_seam::WorkflowStores>,
     /// Optional credential resolver function for providing credentials to actions.
     credential_resolver: Option<CredentialResolveFn>,
     /// Optional proactive credential refresh hook.
@@ -291,6 +317,8 @@ impl WorkflowEngine {
             resource_manager: None,
             execution_repo: None,
             workflow_repo: None,
+            stores: None,
+            workflow_stores: None,
             credential_resolver: None,
             credential_refresh: None,
             action_credentials: HashMap::new(),
@@ -546,6 +574,27 @@ impl WorkflowEngine {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_workflow_repo(mut self, repo: Arc<dyn nebula_storage::WorkflowRepo>) -> Self {
         self.workflow_repo = Some(repo);
+        self
+    }
+
+    /// Set the spec-16 storage-port bundle for persistent execution state.
+    ///
+    /// When set, production paths use these scoped port handles (state
+    /// CAS via [`nebula_storage_port::TransitionBatch`], lease fencing,
+    /// node results, idempotency) instead of the legacy
+    /// [`Self::with_execution_repo`] handle. The engine threads its lease
+    /// [`nebula_storage_port::FencingToken`] into every committed batch.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_execution_stores(mut self, stores: crate::store_seam::ExecutionStores) -> Self {
+        self.stores = Some(stores);
+        self
+    }
+
+    /// Set the spec-16 workflow-definition port bundle for the resume
+    /// path. When set, used instead of [`Self::with_workflow_repo`].
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_workflow_stores(mut self, stores: crate::store_seam::WorkflowStores) -> Self {
+        self.workflow_stores = Some(stores);
         self
     }
 
