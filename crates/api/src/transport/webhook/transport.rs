@@ -133,7 +133,7 @@ impl WebhookTransport {
 
     /// Build a new transport from config with a metrics registry
     /// attached. Signature-failure outcomes increment
-    /// [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`] per ADR-0022.
+    /// `NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL` per ADR-0022.
     ///
     /// Composition roots that already own a `MetricsRegistry` (the
     /// API crate's `AppState` does) should prefer this constructor

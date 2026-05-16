@@ -8,12 +8,12 @@
 //! - [`transport`] — public [`WebhookTransport`] struct with lifecycle API
 //!   ([`activate`](WebhookTransport::activate) /
 //!   [`deactivate`](WebhookTransport::deactivate) /
-//!   [`router`](WebhookTransport::router)) and [`TransportInner`] internals.
-//! - [`dispatch`] — shared `dispatch_inner` pipeline (routing lookup →
+//!   [`router`](WebhookTransport::router)) and `TransportInner` internals.
+//! - `dispatch` — shared `dispatch_inner` pipeline (routing lookup →
 //!   rate-limit → signature → oneshot dispatch) plus the two axum handler fns.
-//! - [`signature`] — ADR-0022 signature-policy enforcement (`enforce_signature`,
+//! - `signature` — ADR-0022 signature-policy enforcement (`enforce_signature`,
 //!   problem+json response builders, metric recording).
-//! - [`replay`] — replay-window rejection reason mapping
+//! - `replay` — replay-window rejection reason mapping
 //!   (`replay_reason_for`): maps signature failure codes to the dedicated
 //!   replay-counter label set.
 //! - [`provider`] — [`EndpointProviderImpl`] implementing `nebula_action::WebhookEndpointProvider`

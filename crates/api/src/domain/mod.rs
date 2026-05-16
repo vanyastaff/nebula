@@ -19,7 +19,7 @@
 //! Each domain's route table is a `utoipa_axum::router::OpenApiRouter<AppState>`
 //! with `#[utoipa::path]`-derived **relative** paths (e.g. `/auth/signup`);
 //! the `/api/v1` prefix is applied via `OpenApiRouter::nest` inside
-//! [`build_openapi_router`] so the published spec and the served route
+//! `build_openapi_router` so the published spec and the served route
 //! table share one source of truth (ADR-0047 drift-detection guarantee).
 
 pub mod auth;

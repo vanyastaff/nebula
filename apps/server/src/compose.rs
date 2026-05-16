@@ -170,7 +170,7 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
 const DEFAULT_BOOTSTRAP_ORG_ID: &str = "org_00000000000000000000000001";
 const DEFAULT_BOOTSTRAP_OWNER_ID: &str = "usr_00000000000000000000000001";
 
-/// Build the seeded in-memory [`MembershipStore`].
+/// Build the seeded in-memory `MembershipStore`.
 ///
 /// The seed grants `OrgOwner` on the bootstrap org to the bootstrap
 /// principal. A malformed env override fails closed

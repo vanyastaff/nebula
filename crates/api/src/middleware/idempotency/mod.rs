@@ -85,7 +85,7 @@
 //! | [`key`] | [`IdempotencyKey`] newtype, validation, cache-key composition, body fingerprint |
 //! | [`store`] | [`IdempotencyStore`] trait, [`IdempotencyStoreError`], [`StorageBackedIdempotencyStore`] |
 //! | [`memory`] | [`InMemoryIdempotencyStore`] (moka cache) |
-//! | [`layer`] | [`IdempotencyLayer`] + tower [`Service`] + metrics + buffering + replay-header logic |
+//! | [`layer`] | [`IdempotencyLayer`] + tower `Service` + metrics + buffering + replay-header logic |
 
 pub mod key;
 pub mod layer;

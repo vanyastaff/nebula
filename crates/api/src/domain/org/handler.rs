@@ -3,7 +3,7 @@
 //! ## §4.5 status (Phase 3, "Option 1" honest contract)
 //!
 //! **Graduated stub→implemented** (real end-to-end against the shared
-//! [`MembershipStore`](crate::state::MembershipStore) — the same store
+//! [`MembershipStore`] — the same store
 //! [`crate::middleware::rbac`] consults, so a write here is immediately
 //! visible to the next RBAC check):
 //!
