@@ -361,7 +361,7 @@ impl ValidSchema {
             .collect();
         gate_and_validate_level(&entries, &ctx, &mut report);
 
-        run_root_rules(&self.0.root_rules, values, &mut report);
+        run_root_rules(&self.0.fields, &self.0.root_rules, values, &mut report);
 
         if report.has_errors() {
             tracing::warn!(
@@ -1886,19 +1886,26 @@ fn run_rules(
 }
 
 /// Run schema-level rules against the full submitted JSON object.
+///
+/// The value tree under test is the full submission (`values.to_json()`), but
+/// the predicate **context** is the secret-scrubbed
+/// [`crate::context::root_predicate_context_for`] — a value-comparing root
+/// predicate can never read a `Field::Secret` plaintext, while legal non-secret
+/// nested predicates still resolve (no fail-open).
 fn run_root_rules(
+    fields: &[Field],
     rules: &[nebula_validator::Rule],
     values: &FieldValues,
     report: &mut ValidationReport,
 ) {
-    use nebula_validator::{ExecutionMode, PredicateContext};
+    use nebula_validator::ExecutionMode;
 
     if rules.is_empty() {
         return;
     }
 
     let json = values.to_json();
-    let pred_ctx = PredicateContext::from_json(&json);
+    let pred_ctx = crate::context::root_predicate_context_for(fields, values);
     if let Err(errs) = nebula_validator::validate_rules_with_ctx(
         &json,
         rules,

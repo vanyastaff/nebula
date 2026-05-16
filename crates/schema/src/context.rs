@@ -22,6 +22,8 @@ use nebula_validator::{PredicateContext, foundation::FieldPath};
 use crate::{
     field::Field,
     key::FieldKey,
+    lint::{AddressableKind, walk_addressable_paths},
+    path::FieldPath as SchemaPath,
     value::{FieldValue, FieldValues},
 };
 
@@ -77,6 +79,60 @@ fn collect_non_secret(
             _ => {},
         }
     }
+}
+
+/// Build the predicate context for **root rules**: every non-secret
+/// addressable leaf (objects, list-item objects, mode-variant payloads — the
+/// *same* traversal as the secret-value-predicate lint, via the single-owner
+/// [`walk_addressable_paths`]), excluding `Field::Secret` by schema type and
+/// any container node that has a secret descendant.
+///
+/// Secret-safe by construction: the shared walker visits only addressable
+/// *leaves*. `Field::Secret` leaves yield [`AddressableKind::Secret`] and are
+/// never pushed; only non-secret scalar `FieldValue::Literal` leaves are
+/// emitted (mirroring [`collect_non_secret`]'s leaf rule). A container
+/// (`Object`/`List`/`Mode`) is never a leaf, so a container node — which would
+/// serialize a secret descendant's plaintext into a `Contains`-reachable blob
+/// — is structurally impossible to emit.
+///
+/// This closes the root-rule secret-plaintext exposure (root rules previously
+/// ran against `PredicateContext::from_json` of the full unscrubbed submission)
+/// **without** making legal non-secret nested root predicates fail open: a
+/// nested-object non-secret value (e.g. `/policy/region`) still resolves, so a
+/// legitimate root guard keyed on it continues to fire. (List-item / mode
+/// payload leaves are keyed by anonymous/variant schema segments that no
+/// concrete value-tree pointer resolves to — identical to the prior `from_json`
+/// behaviour for those shapes, so no new fail-open is introduced; this is the
+/// documented capability boundary, additive to the build-time secret lint.)
+#[must_use]
+pub fn root_predicate_context_for(fields: &[Field], values: &FieldValues) -> PredicateContext {
+    let mut pairs: Vec<(FieldPath, serde_json::Value)> = Vec::new();
+    walk_addressable_paths(fields, &mut |segs, kind| {
+        // Never emit a secret leaf — its plaintext must not enter any context.
+        if kind != AddressableKind::NonSecretLeaf {
+            return;
+        }
+        // Resolve the value at this addressable schema path. Segments are
+        // already valid `FieldKey` strings (the walker derives them from
+        // `field.key()` / validated variant keys); a malformed one cannot name
+        // a legal leaf, so skip it rather than coerce.
+        let mut schema_path = SchemaPath::root();
+        for seg in segs {
+            let Ok(key) = FieldKey::new(seg) else { return };
+            schema_path = schema_path.join(key);
+        }
+        // Mirror `collect_non_secret`'s leaf rule: only `Literal` scalars are
+        // predicate-addressable. A structured value resolved here (never a
+        // secret — secrets are filtered above) is non-addressable.
+        if let Some(FieldValue::Literal(v)) = values.get_path(&schema_path) {
+            // Key by the same RFC-6901 pointer `PredicateContext::from_json`
+            // would have used, so a root predicate written as `/a/b` resolves.
+            if let Some(vp) = FieldPath::from_segments(segs) {
+                pairs.push((vp, v.clone()));
+            }
+        }
+    });
+    PredicateContext::from_fields(pairs)
 }
 
 #[cfg(test)]

@@ -54,16 +54,16 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
         return;
     }
 
-    // SECURITY (load-bearing, not advisory): the root-rule evaluation path
-    // (`run_root_rules`) builds its `PredicateContext` from the full submitted
-    // JSON with no `Field::Secret`-by-type scrub — unlike the field-level path,
-    // which goes through the scrubbed `predicate_context_for`. A later phase
-    // scrubs the root-rule context too; until then this lint is the only
-    // boundary stopping a value-comparing predicate from reading secret
-    // plaintext via a root rule. Rejecting such a predicate at `build()` is
-    // therefore a security control, so the secret-key collection must mirror
-    // every shape the schema can address (object, list-item object including
-    // indexed instances, mode variant payload).
+    // SECURITY (defence-in-depth, not advisory): the root-rule evaluation path
+    // (`run_root_rules`) now builds its `PredicateContext` via the scrubbed
+    // `root_predicate_context_for`, so a value-comparing predicate cannot read
+    // a `Field::Secret` plaintext at runtime. This build-time lint is the
+    // additive outer boundary: it rejects such a predicate at `build()` so the
+    // schema is refused before it can ever be evaluated, independent of the
+    // runtime scrub. Rejecting it here is a security control, so the
+    // secret-key collection must mirror every shape the schema can address
+    // (object, list-item object including indexed instances, mode variant
+    // payload).
     let secrets = collect_secret_pointer_segments(fields);
     if !secrets.is_empty() {
         for rule in rules {
@@ -1086,66 +1086,123 @@ fn lint_loader_dependency_cycles(
     }
 }
 
-// ── Secret value-predicate lint ───────────────────────────────────────────────
+// ── Shared addressable-path traversal ─────────────────────────────────────────
 
-/// Recursively collect the segment vector of every `Field::Secret` reachable
-/// by a predicate `FieldPath`, mirroring the addressable-path construction in
-/// [`walk_schema_fields`]: descend `Field::Object` fields, a `Field::List`
-/// whose item is an object (children sit under the list path — list items are
-/// anonymous), and each `Field::Mode` variant payload (addressable under
-/// `mode.variant`). Segments come from [`FieldKey::as_str`], matching the
-/// unescaped segments yielded by `FieldPath::segments`, so the two can be
-/// compared segment-wise regardless of JSON-Pointer leading-slash or escaping
-/// differences. Paths that `walk_schema_fields` cannot name (e.g. a list whose
-/// item is a bare scalar) stay non-addressable and are intentionally skipped.
-fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
+/// Kind of an addressable leaf yielded by [`walk_addressable_paths`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddressableKind {
+    /// A `Field::Secret` leaf — its plaintext must never enter a predicate
+    /// context (secret-value-predicate lint keys these).
+    Secret,
+    /// A non-secret scalar leaf (String/Number/Bool/Select/… — anything that
+    /// is not Object/List/Mode/Secret). Safe to expose to predicates.
+    NonSecretLeaf,
+}
+
+/// **The single owner** of the addressable-path invariant. Walks the schema
+/// field tree exactly as the field-tree walker names paths, invoking `visit`
+/// once per addressable *leaf* with its key-segment vector and kind:
+///
+/// - `Field::Object` — descended (the object node itself is not a leaf);
+///   children extend the object's path.
+/// - `Field::List` whose `item` is a `Field::Object` — descended with children
+///   sitting **directly under the list path** (list items are anonymous, so no
+///   index segment); other item shapes are not path-addressable and skipped.
+/// - `Field::Mode` — each variant payload is visited **at** the variant path
+///   (`segs + variant.key`), not under the payload field's own key; variant
+///   keys that cannot form a path segment are skipped.
+/// - `Field::Secret` → `AddressableKind::Secret`.
+/// - any other field → a scalar leaf → `AddressableKind::NonSecretLeaf`.
+///
+/// Segments come from [`crate::key::FieldKey::as_str`], matching the unescaped
+/// segments yielded by `FieldPath::segments`, so callers can compare
+/// segment-wise regardless of JSON-Pointer leading-slash or escaping. Both the
+/// secret-value-predicate lint and the scrubbed root-rule predicate context
+/// (`crate::context::root_predicate_context_for`) consume this one traversal —
+/// keeping the addressable-path invariant single-owned (the ADR-0052 root
+/// cause was two owners of one invariant drifting).
+pub(crate) fn walk_addressable_paths(
+    fields: &[Field],
+    visit: &mut dyn FnMut(&[String], AddressableKind),
+) {
     // Record (and recurse) one field already resolved to `segs`. `segs` is the
     // field's own addressable path, so children must extend it (Object/List)
     // or, for mode variants, the payload is visited *at* the variant path.
-    fn walk_field(field: &Field, segs: &[String], out: &mut HashSet<Vec<String>>) {
+    fn walk_field(
+        field: &Field,
+        segs: &[String],
+        visit: &mut dyn FnMut(&[String], AddressableKind),
+    ) {
         match field {
             Field::Secret(_) => {
-                out.insert(segs.to_vec());
+                visit(segs, AddressableKind::Secret);
             },
             Field::Object(obj) => {
-                walk_scope(obj.fields.as_slice(), segs, out);
+                walk_scope(obj.fields.as_slice(), segs, visit);
             },
             Field::List(list) => {
                 // List items are anonymous: an object item's children sit
-                // directly under the list path, exactly as walk_schema_fields
-                // yields them. Non-object items are not path-addressable.
+                // directly under the list path, exactly as the field-tree
+                // walker yields them. Non-object items are not path-addressable.
                 if let Some(Field::Object(obj)) = list.item.as_deref() {
-                    walk_scope(obj.fields.as_slice(), segs, out);
+                    walk_scope(obj.fields.as_slice(), segs, visit);
                 }
             },
             Field::Mode(mode) => {
                 for variant in &mode.variants {
                     // Skip variant keys that cannot form a path segment, just
-                    // as walk_schema_fields (via mode_variant_path) does.
+                    // as the field-tree walker (via mode_variant_path) does.
                     if crate::key::FieldKey::new(variant.key.as_str()).is_err() {
                         continue;
                     }
                     let mut variant_segs = segs.to_vec();
                     variant_segs.push(variant.key.clone());
                     // The payload field is visited *at* the variant path, not
-                    // under its own key (matches walk_field_children's Mode arm).
-                    walk_field(variant.field.as_ref(), &variant_segs, out);
+                    // under its own key (matches the field-tree walker's Mode arm).
+                    walk_field(variant.field.as_ref(), &variant_segs, visit);
                 }
             },
-            _ => {},
+            // Scalar-typed leaves (String/Number/Bool/Select/…): addressable,
+            // non-secret. The List/Mode non-descent above keeps their leaves
+            // unreachable here, exactly as before.
+            _ => {
+                visit(segs, AddressableKind::NonSecretLeaf);
+            },
         }
     }
 
-    fn walk_scope(fields: &[Field], prefix: &[String], out: &mut HashSet<Vec<String>>) {
+    fn walk_scope(
+        fields: &[Field],
+        prefix: &[String],
+        visit: &mut dyn FnMut(&[String], AddressableKind),
+    ) {
         for field in fields {
             let mut here = prefix.to_vec();
             here.push(field.key().as_str().to_owned());
-            walk_field(field, &here, out);
+            walk_field(field, &here, visit);
         }
     }
 
+    walk_scope(fields, &[], visit);
+}
+
+// ── Secret value-predicate lint ───────────────────────────────────────────────
+
+/// Recursively collect the segment vector of every `Field::Secret` reachable
+/// by a predicate `FieldPath`. Thin filter over [`walk_addressable_paths`] (the
+/// single owner of the addressable-path invariant) keeping only the `Secret`
+/// leaves; the traversal — `Field::Object`, a `Field::List` whose item is an
+/// object (children under the list path; list items are anonymous), each
+/// `Field::Mode` variant payload (addressable under `mode.variant`) — is
+/// defined there. Paths the field-tree walker cannot name (e.g. a list whose
+/// item is a bare scalar) stay non-addressable and are intentionally skipped.
+fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
     let mut out = HashSet::new();
-    walk_scope(fields, &[], &mut out);
+    walk_addressable_paths(fields, &mut |segs, kind| {
+        if kind == AddressableKind::Secret {
+            out.insert(segs.to_vec());
+        }
+    });
     out
 }
 

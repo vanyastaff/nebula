@@ -124,7 +124,7 @@ extern crate self as nebula_schema;
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
 /// Builds the validator predicate context (visibility/required) from schema fields + values.
-pub(crate) mod context;
+pub mod context;
 /// Error types for schema operations.
 pub mod error;
 /// Expression wrapper and [`ExpressionContext`] trait.
