@@ -294,30 +294,53 @@ types have no `data` field, so `get` / `list` cannot echo the secret.
 
 The org **member** endpoints (`GET`/`POST`/`DELETE` under
 `…/orgs/{org}/members`) and the membership-backed `me/*` reads
-(`GET /me/orgs`, `MeResponse.orgs_count`) are **implemented and work
-end-to-end** over the wired in-memory `MembershipStore`
-(`nebula_api::domain::org::InMemoryMembershipStore`). This is the
-**single shared store** `rbac_middleware` also consults — an
+(`GET /me/orgs`, `MeResponse.orgs_count`) are **implemented and tested
+end-to-end** (`crates/api/tests/org_e2e.rs`) against the in-memory
+`MembershipStore` (`nebula_api::domain::org::InMemoryMembershipStore`) —
+the **single shared store** `rbac_middleware` also consults, so an
 `add_member` is immediately visible to the next RBAC check (no
-propagation window). There is no storage-backed alternative to wire
+propagation window). There is no storage-backed alternative
 (`nebula_storage` ships no membership repo); the in-memory impl *is*
 the §4.5-honest backing, exactly as `InMemoryAuthBackend` is for
 `me/*` identity and `InMemoryControlQueueRepo` is for the durable
 control plane.
 
+**The default `nebula-server` binary does NOT auto-wire a
+`MembershipStore`.** It is an **explicitly-provisioned** feature — the
+same posture as Postgres-for-durable-idempotency (provision the
+production path; never silently fake it). Rationale: wiring a
+`MembershipStore` activates RBAC enforcement on every org/workspace
+route (`rbac_middleware`'s `is_some()` guard → a caller with no org
+role is 404'd). The default `AuthBackend` is an *empty*
+`InMemoryAuthBackend` (no users; `register_user` mints a **random**
+`UserId`), so **no principal could authenticate as any auto-seeded
+bootstrap owner** — an auto-seeded store would 404-deadlock every
+org/workspace route (a deployment-level §4.5 false capability), and a
+hardcoded auto-seeded admin identity would be a default-credential /
+privileged-by-default surface (canon §12.5). Both are strictly worse
+than honest degradation.
+
 | Aspect | Org membership (in-memory `MembershipStore`) |
 |---|---|
-| Restart-survival | **No** — memberships are lost on restart |
+| Default binary | **Unwired (`None`)** — org member endpoints return an honest **503** (port-absent), RBAC stays inert (no spurious 404 on any route) |
+| Restart-survival | **No** — memberships are lost on restart (once provisioned) |
 | Multi-replica share | **No** — state is process-local |
-| Bootstrap | The composition root seeds a deterministic bootstrap **org owner** (`NEBULA_BOOTSTRAP_ORG_ID` / `NEBULA_BOOTSTRAP_OWNER_ID`, fail-closed on a malformed override) so the RBAC gate is usable rather than dead-locked (no member can be added without a pre-existing admin) |
+| Provisioning | An operator/integrator wires `AppState::with_membership_store(...)` **and** registers the same bootstrap-owner identity in the wired `AuthBackend` so it can authenticate. `nebula_api::domain::org::InMemoryMembershipStore::seeded_bootstrap(org_id, owner_id)` is the documented constructor (fail-closed on a malformed id) |
 
-> **Operator warning:** wiring a `MembershipStore` **activates RBAC
-> enforcement** on every `/orgs/{org}/...` and
-> `/orgs/{org}/workspaces/{ws}/...` route — a caller with no role in the
-> resolved org is `404`'d *before* the handler (enumeration prevention).
-> The seeded bootstrap owner is the only principal with access on a
-> fresh process; grant further access via `POST /orgs/{org}/members`
-> (org-admin only, abuse-safe: role-clamp, last-admin guard,
+> **Operator warning:** in the default binary, `GET`/`POST`/`DELETE
+> `…/orgs/{org}/members` (and `GET /me/orgs` / `orgs_count`) return
+> **503** until you provision a `MembershipStore`. This is honest
+> degradation, **not** a bug — it deliberately avoids both an RBAC
+> deadlock (404 on every org/workspace route) and a default admin
+> credential. To enable: wire `with_membership_store(...)` with a
+> bootstrap owner that is **also** a registered, authenticatable
+> principal in your `AuthBackend`. Once provisioned, wiring a
+> `MembershipStore` **activates RBAC enforcement** on every
+> `/orgs/{org}/...` and `/orgs/{org}/workspaces/{ws}/...` route — a
+> caller with no role in the resolved org is `404`'d *before* the
+> handler (enumeration prevention); the bootstrap owner grants further
+> access via `POST /orgs/{org}/members` (org-admin only, abuse-safe:
+> role-clamp, last-admin/demote lockout guard at the atomic store seam,
 > role-precedence, IDOR-404). Memberships are **process-local** and lost
 > on restart — same local-first caveat as `me/*` and the `memory`
 > idempotency backend. The org-record (`GET`/`PATCH`/`DELETE /orgs/{org}`)

@@ -33,6 +33,7 @@
 //! | remove ≥-privileged → 403 | `admin_cannot_remove_owner` |
 //! | remove IDOR → 404 no-disclosure | `remove_unknown_member_is_404` |
 //! | unauth → 401 | `member_endpoints_require_auth` |
+//! | **un-provisioned default binary → honest 503 (NOT RBAC-404)** | `list_members_without_membership_store_is_503_not_404`, `add_member_without_membership_store_is_503`, `remove_member_without_membership_store_is_503` |
 //!
 //! Atomic store-seam concurrency (TOCTOU) coverage lives as store-level
 //! unit tests in `domain::org::membership::tests` (true concurrent
@@ -48,7 +49,10 @@ use axum::{
 };
 use common::{
     TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TEST_ORG,
-    org_support::{OrgActor, create_org_state, create_org_state_with_role, seed_member},
+    org_support::{
+        OrgActor, create_org_state, create_org_state_with_role, create_org_state_without_store,
+        seed_member,
+    },
 };
 use nebula_api::{ApiConfig, app, state::MembershipStore};
 use nebula_core::{OrgRole, Principal, UserId};
@@ -666,4 +670,83 @@ async fn member_endpoints_require_auth() {
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
     }
+}
+
+// ── un-provisioned default binary: honest 503, NOT an RBAC deadlock ───────────
+//
+// PR #671 P1 regression guard. `apps/server::compose::default_state` no
+// longer auto-seeds a `MembershipStore` (an auto-seeded bootstrap owner
+// could never authenticate against the empty default `AuthBackend`, so a
+// seeded store would 404-deadlock every org/workspace route — a
+// deployment-level §4.5 false capability). `create_org_state_without_store`
+// reproduces that exact shape (`membership_store == None`, auth wired).
+// The contract: RBAC stays inert (request reaches the handler, NOT a 404)
+// and the org member handlers fail closed with an honest **503** — the
+// same port-absent posture `me/*` has when `auth_backend` is absent.
+
+#[tokio::test]
+async fn list_members_without_membership_store_is_503_not_404() {
+    let (state, jwt) = create_org_state_without_store();
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app.oneshot(get(&members_path(), &jwt)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "un-provisioned membership store must be an honest 503 — NOT a 404 \
+         (that would be the RBAC deadlock PR #671 P1 flagged), NOT a fake 200"
+    );
+    assert!(
+        ct_is_problem(&response),
+        "the 503 must come from the handler (RFC 9457 problem+json), proving \
+         RBAC stayed inert and the request reached the handler body"
+    );
+}
+
+#[tokio::test]
+async fn add_member_without_membership_store_is_503() {
+    let (state, jwt) = create_org_state_without_store();
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(mutating(
+            "POST",
+            &members_path(),
+            &jwt,
+            Some(&format!(
+                r#"{{"principal_id":"{}","role":"member"}}"#,
+                UserId::new()
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "add_member on the un-provisioned default binary must be an honest 503"
+    );
+}
+
+#[tokio::test]
+async fn remove_member_without_membership_store_is_503() {
+    let (state, jwt) = create_org_state_without_store();
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(mutating(
+            "DELETE",
+            &member_path(&UserId::new().to_string()),
+            &jwt,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "remove_member on the un-provisioned default binary must be an honest 503"
+    );
 }

@@ -410,6 +410,33 @@ pub(crate) mod org_support {
         let org_id = TEST_ORG.parse().expect("valid test org id");
         store.seed(org_id, principal, role).await;
     }
+
+    /// Build an `AppState` whose `membership_store` is **absent** (`None`)
+    /// — the exact shape `apps/server::compose::default_state` produces
+    /// for org routes in the un-provisioned default binary (PR #671 P1
+    /// fix: no auto-seed → no RBAC deadlock).
+    ///
+    /// With no store wired, `rbac_middleware`'s `is_some()` guard stays
+    /// inert (the request is NOT 404'd — it reaches the handler), and the
+    /// org member handler's port-absent path returns an honest 503
+    /// (mirrors `me_support::create_me_state_without_backend` for the
+    /// `auth_backend`-absent case). Returns the state plus a JWT whose
+    /// `sub` resolves to a `Principal::User` so the request body is
+    /// actually exercised.
+    pub(crate) fn create_org_state_without_store() -> (AppState, String) {
+        let api_config = ApiConfig::for_test();
+        let state = AppState::new(
+            Arc::new(InMemoryWorkflowRepo::new()),
+            Arc::new(InMemoryExecutionRepo::new()),
+            Arc::new(InMemoryControlQueueRepo::new()),
+            api_config.jwt_secret,
+        )
+        .with_org_resolver(Arc::new(TestOrgResolver))
+        .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+        // No `.with_membership_store(...)` — exactly the default binary.
+        let jwt = jwt_for(&UserId::new().to_string());
+        (state, jwt)
+    }
 }
 
 // ── Orchestration-absent control queue (canon §13 step 6) ─────────────────────

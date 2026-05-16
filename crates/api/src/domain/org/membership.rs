@@ -10,12 +10,29 @@
 //!
 //! ## One shared store — RBAC coherence
 //!
-//! The composition root wires **one** `Arc<InMemoryMembershipStore>` into
+//! When provisioned, **one** `Arc<InMemoryMembershipStore>` is wired into
 //! [`crate::AppState::membership_store`]; [`crate::middleware::rbac`] and
 //! the `…/orgs/{org}/members` handlers therefore read and write the *same*
 //! map. A membership added by `POST /members` is visible to the very next
 //! RBAC check (no propagation window) — locked by
 //! `tests/org_e2e.rs::added_member_is_immediately_rbac_authorized`.
+//!
+//! ## Provisioning (canon §4.5 / §12.5 — NOT auto-wired)
+//!
+//! The default `apps/server` binary deliberately leaves
+//! [`crate::AppState::membership_store`] **unwired** (`None`). It is an
+//! explicitly-provisioned feature: the org member endpoints return an
+//! honest **503** (port-absent) in the un-provisioned default binary, and
+//! [`crate::middleware::rbac`] stays inert (no spurious 404 on any
+//! route). Auto-seeding a bootstrap owner was removed (PR #671 P1) —
+//! the default `AuthBackend` is empty, so an auto-seeded owner could
+//! never authenticate and a seeded store would 404-deadlock every
+//! org/workspace route (a deployment-level §4.5 false capability); a
+//! hardcoded auto-seeded admin would also be a default-credential
+//! surface (§12.5). An operator/integrator provisions via
+//! [`InMemoryMembershipStore::seeded_bootstrap`] +
+//! [`crate::AppState::with_membership_store`], registering the same
+//! bootstrap-owner identity in the wired `AuthBackend`.
 //!
 //! ## Durability (canon §11.6 / §11.5 — operator-facing)
 //!
@@ -24,9 +41,6 @@
 //! across replicas. This is the identical local-first caveat the in-memory
 //! `AuthBackend` and the `memory` idempotency backend carry; it closes
 //! when a storage-backed membership adapter lands (none exists today).
-//! The composition root seeds a deterministic bootstrap org owner so the
-//! RBAC gate is usable rather than dead-locked (documented in
-//! `apps/server/src/compose.rs`).
 //!
 //! [`InMemoryControlQueueRepo`]: nebula_storage::repos::InMemoryControlQueueRepo
 //! [`InMemoryAuthBackend`]: crate::domain::auth::backend::InMemoryAuthBackend
@@ -43,13 +57,14 @@ use crate::{
     state::{AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome},
 };
 
-/// Failure parsing the composition-root bootstrap-seed identities.
+/// Failure parsing the bootstrap-seed identities passed to
+/// [`InMemoryMembershipStore::seeded_bootstrap`].
 ///
-/// Surfaced by [`InMemoryMembershipStore::seeded_bootstrap`] so the
-/// composition root can fail closed (never silently fall back to an
-/// unseeded, dead-locked RBAC gate — `feedback_no_shims`). Kept in the
-/// API tier so `apps/server` needs only `nebula_api` (ADR-0047 §3: the
-/// composition root does not import `nebula_core` id types directly).
+/// The constructor fails closed on a malformed id (never silently seeds
+/// nothing, which would leave a wired-but-empty store dead-locking the
+/// RBAC gate — `feedback_no_shims`). String-typed parsing is kept in the
+/// API tier so an integrator crate that does not depend on `nebula_core`
+/// can still provision a store (ADR-0047 §3).
 #[derive(Debug, Error)]
 pub enum BootstrapSeedError {
     /// `org_id` is not a valid `org_<ULID>`.
@@ -167,14 +182,16 @@ impl InMemoryMembershipStore {
 
     /// Construct a store pre-seeded with one membership, synchronously.
     ///
-    /// The composition root (`apps/server/src/compose.rs`) is sync and
-    /// builds the state before the async runtime owns it; this avoids a
-    /// `block_on`/`blocking_write` by populating the map directly at
-    /// construction (no contention possible — nothing else holds a
-    /// reference yet). This seed *is* the root-of-trust bootstrap (the
-    /// first org admin), so it intentionally bypasses the handler authz
-    /// gate — without it the RBAC gate would dead-lock (no member can be
-    /// added because adding requires an existing admin).
+    /// Populates the map directly at construction (no contention — nothing
+    /// else holds a reference yet), so a sync caller can build a
+    /// provisioned store without a `block_on`/`blocking_write`. This seed
+    /// *is* the root-of-trust bootstrap (the first org admin) and
+    /// intentionally bypasses the handler authz gate — it is the
+    /// provisioning entry point, not a request path. The string-id
+    /// wrapper [`Self::seeded_bootstrap`] (the documented
+    /// operator/integrator constructor) and the `tests/common::org_support`
+    /// fixtures build on this; it is **not** auto-called by the default
+    /// `apps/server` binary (see [`Self::seeded_bootstrap`] for why).
     #[must_use]
     pub fn seeded(org_id: OrgId, principal: Principal, role: OrgRole) -> Self {
         let mut orgs = HashMap::new();
@@ -189,11 +206,22 @@ impl InMemoryMembershipStore {
     /// Parse string bootstrap identities and return a seeded store
     /// granting `OrgOwner` on `org_id_str` to `owner_id_str`.
     ///
-    /// The composition root (`apps/server`) calls this so it depends only
-    /// on `nebula_api` — the `nebula_core` id parsing stays in the API
-    /// tier (ADR-0047 §3). A malformed identity is a hard
-    /// [`BootstrapSeedError`] (fail closed — never seed nothing, which
-    /// would dead-lock the RBAC gate).
+    /// This is the **documented operator/integrator provisioning entry
+    /// point** for the org member-management feature: a deployment that
+    /// wants org memberships wires `AppState::with_membership_store(this)`
+    /// **and** registers the same `owner_id_str` in its `AuthBackend` so
+    /// the bootstrap owner can actually authenticate. It is deliberately
+    /// **not** called by the default `apps/server` composition — see
+    /// `apps/server/src/compose.rs::default_state` for why auto-seeding
+    /// would deadlock RBAC (no authenticatable owner) or introduce a
+    /// hardcoded-credential surface (canon §12.5); the default binary
+    /// returns an honest 503 for org member endpoints instead.
+    ///
+    /// String-typed (not `OrgId`/`UserId`) so an integrator in a crate
+    /// that does not depend on `nebula_core` can still call it — the id
+    /// parsing stays in the API tier (ADR-0047 §3). A malformed identity
+    /// is a hard [`BootstrapSeedError`] (fail closed — never seed
+    /// nothing, which would dead-lock the RBAC gate).
     pub fn seeded_bootstrap(
         org_id_str: &str,
         owner_id_str: &str,
@@ -371,6 +399,55 @@ mod tests {
 
     fn user() -> Principal {
         Principal::User(UserId::new())
+    }
+
+    // ── seeded_bootstrap: the operator/integrator provisioning ctor ──────
+
+    #[tokio::test]
+    async fn seeded_bootstrap_grants_owner_and_parses_ids() {
+        let owner = UserId::new();
+        let org = OrgId::new();
+        let store = InMemoryMembershipStore::seeded_bootstrap(&org.to_string(), &owner.to_string())
+            .expect("valid prefixed-ULID identities must parse");
+
+        assert_eq!(
+            store
+                .get_org_role(org, &Principal::User(owner))
+                .await
+                .unwrap(),
+            Some(OrgRole::OrgOwner),
+            "seeded_bootstrap must grant OrgOwner to the bootstrap owner"
+        );
+        // Nobody else, no other org.
+        assert_eq!(
+            store.get_org_role(org, &user()).await.unwrap(),
+            None,
+            "only the bootstrap owner is seeded"
+        );
+    }
+
+    #[test]
+    fn seeded_bootstrap_rejects_malformed_org_id() {
+        let err = InMemoryMembershipStore::seeded_bootstrap(
+            "not-an-org-ulid",
+            &UserId::new().to_string(),
+        )
+        .expect_err("a malformed org id must fail closed, not seed nothing");
+        assert!(
+            matches!(err, BootstrapSeedError::OrgId { .. }),
+            "expected BootstrapSeedError::OrgId, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn seeded_bootstrap_rejects_malformed_owner_id() {
+        let err =
+            InMemoryMembershipStore::seeded_bootstrap(&OrgId::new().to_string(), "not-a-usr-ulid")
+                .expect_err("a malformed owner id must fail closed, not seed nothing");
+        assert!(
+            matches!(err, BootstrapSeedError::OwnerId { .. }),
+            "expected BootstrapSeedError::OwnerId, got {err:?}"
+        );
     }
 
     #[tokio::test]

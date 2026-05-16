@@ -47,14 +47,24 @@
 //! 6. treats an absent target member as a 404 identical to "no such org"
 //!    so membership is never disclosed by an IDOR probe.
 //!
-//! ## Durability (canon §11.6)
+//! ## Provisioning & durability (canon §4.5 / §11.6 / §12.5)
 //!
-//! The only wired `MembershipStore` is the process-local in-memory one
-//! ([`super::membership::InMemoryMembershipStore`]); memberships are lost
-//! on restart and not shared across replicas (documented there + in
-//! `crates/api/README.md`). The capability is real end-to-end; only
-//! persistence is local-first (same posture as `me/*` and the `memory`
-//! idempotency backend).
+//! These endpoints require an explicitly-provisioned `MembershipStore`.
+//! The default `apps/server` binary deliberately leaves it **unwired**
+//! (PR #671 P1: auto-seeding a bootstrap owner the empty default
+//! `AuthBackend` could never authenticate would 404-deadlock every
+//! org/workspace route — a deployment-level §4.5 false capability — and
+//! a hardcoded auto-seed would be a default-credential surface). When
+//! unwired, the `membership_or_503` port guard returns an honest **503**
+//! (port-absent, same posture as `me/*` when `auth_backend` is absent) and
+//! [`crate::middleware::rbac`] stays inert. When provisioned, the only
+//! impl is the process-local in-memory
+//! [`super::membership::InMemoryMembershipStore`] (memberships lost on
+//! restart, not shared across replicas — same local-first caveat as
+//! `me/*` and the `memory` idempotency backend). The capability is real
+//! and tested end-to-end (`tests/org_e2e.rs`); see
+//! `apps/server/src/compose.rs::default_state` and
+//! [`super::membership`] for the provisioning contract.
 
 use std::str::FromStr;
 
