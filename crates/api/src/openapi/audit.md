@@ -154,8 +154,8 @@ The following cross-layer types appear in current handler signatures and MUST be
 
 - `nebula_core::TenantContext` — extension only, not on the wire. No wrapper needed.
 - `nebula_core::Permission` — used in `tenant.require(...)` only, not on the wire. No wrapper needed.
-- `nebula_core::OrgRole` — appears in planned `MyOrgsResponse / OrgSummary` DTOs. **Wrap as `OrgRoleDto(String)`** in `crates/api/src/models/me.rs` (or shared `models/role.rs`).
-- `nebula_core::WorkspaceRole` — appears in planned `MyOrgsResponse` (workspace-level). **Wrap as `WorkspaceRoleDto(String)`**.
+- `nebula_core::OrgRole` — appears in `MyOrgsResponse`/`OrgSummary`/`MemberSummary` DTOs. **Wrapped as `OrgRoleDto(String)`** in `crates/api/src/domain/shared.rs` with the canonical bidirectional wire-token mapping (`member`/`billing`/`admin`/`owner`); the org member endpoints + `me/list_my_orgs` are live (Phase 3). *Done.*
+- `nebula_core::WorkspaceRole` — **Wrapped as `WorkspaceRoleDto(String)`** in `crates/api/src/domain/shared.rs` (no live endpoint emits it yet — kept for the planned workspace-membership DTOs).
 - `nebula_core::OrgId` / `WorkspaceId` — already exposed as `String` (ULID) in shipped DTOs (`WorkflowResponse`, etc.). No new wrapper.
 - `crate::middleware::auth::AuthContext` — extension only. No wrapper.
 - `crate::auth::dto::SecretString` — kept as-is at the request body level; spec annotation `#[schema(value_type = String, format = "password", write_only = true)]` redacts it. **Verify the runtime redaction test in T3 catches accidental serialization.**

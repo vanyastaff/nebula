@@ -224,28 +224,39 @@ Each phase is independently canon-legal and independently shippable.
 - **Phase 2 — `me/*` (6).** API-port `SessionStore`/me adapters over
   `nebula_storage::{UserRepo, SessionRepo}` wired in `apps/server::compose`;
   handlers delegate via ports. Drop stubs.
-- **Phase 3 — `org/*` (9).** `OrgResolver`/`WorkspaceResolver`/`MembershipStore`
-  production adapters over `nebula_storage::{OrgRepo, WorkspaceRepo}`; CRUD
-  handlers delegate to `OrgRepo`/`WorkspaceRepo`. Drop stubs.
+- **Phase 3 — `org/*` (9).** `MembershipStore`-backed member management +
+  `me/list_my_orgs` graduation; org-record + service-account stay honest-501.
 
-  **Outcome (2026-05-15): §4.5-correct honest-501 deferral — zero code change,
-  no commit.** Phase 3 was executed as a conscious deferral, not an oversight.
-  Two blockers make implementation a §4.5 false-capability risk:
+  **Outcome (2026-05-16): §4.5-honest partial graduation via "Option 1"
+  (§14 P1 RESOLVED — Option 1 chosen + implemented).** The owner authorized
+  the member wire-contract redesign (breaking, spec D1). Delivered as one
+  atomic Phase-3 commit:
 
-  1. No production adapter wires `OrgResolver`/`WorkspaceResolver`/`MembershipStore`
-     to the storage repos end-to-end (only test impls exist in
-     `tests/common/mod.rs`).
-  2. The member-endpoint wire contract (`POST /orgs/{org}/members` carrying
-     `invitation_id`/`expires_at`; `MemberSummary.email`/`joined_at`) cannot be
-     honored without a **member-record + invitation model design decision** — a
-     product/API question, not a plumbing question. Shipping fabricated fields
-     would be the exact §4.5 false-capability the whole effort rejects.
-
-  This is milestone-gated identically to `execution/restart` + `resource/list`
-  (which the spec already keeps honest-501 in §7 "Stays honest 501"). The API
-  surface is honest: all nine `org/*` handlers carry `#[deprecated]` + 501 +
-  ` (planned)` tag, enforced by `openapi_canon_compliance`. No false capability
-  was shipped.
+  1. **`MembershipStore` extended** (the SAME trait `rbac_middleware`
+     consults) with `list_members` / `add_member` / `remove_member` /
+     `list_orgs_for_principal`. One canonical production-quality in-memory
+     impl (`nebula_api::domain::org::InMemoryMembershipStore`) wired in
+     `apps/server/src/compose.rs`, seeded with a deterministic bootstrap
+     org owner (process-local, canon §11.6; env-overridable, fail-closed).
+     The org handlers and RBAC share one `Arc` — an `add_member` is
+     immediately visible to the next RBAC check (proven by
+     `org_e2e::added_member_is_immediately_rbac_authorized`).
+  2. **Member contract redesigned (breaking — Option 1):**
+     `POST /orgs/{org}/members` is direct add-by-principal
+     (`AddMemberRequest{principal_id, role}` → `MemberSummary`); the
+     fabricated `email`/`invitation_id`/`expires_at` were dropped.
+     `MemberSummary` is `{principal_id, role}` (no synthesized
+     `email`/`joined_at`); `OrgSummary` is `{id, role}` (no synthesized
+     reverse-slug). `list_members` / `add_member` / `remove_member` +
+     `me/list_my_orgs` + `MeResponse.orgs_count` are now real end-to-end,
+     abuse-safe (admin gate, role-clamp, last-admin guard, role-precedence,
+     IDOR-404), and RBAC-coherent.
+  3. **Stays honest-501:** `get`/`update`/`delete_org` (no org-record
+     store — separate milestone) and the three service-account endpoints
+     (no end-to-end `Principal::ServiceAccount` auth path). Their
+     `#[deprecated]` + 501 + ` (planned)` annotations are unchanged and
+     enforced by `openapi_canon_compliance` (honest-501 inventory
+     decremented 12 → 8).
 - **Phase 4 — credential CRUD (`transport`/credential, ~12 fns).** Wire
   `nebula_credential` store over `nebula_storage::CredentialRepo`; OAuth ceremony
   already partial (MATURITY P10) — finish CRUD/test/refresh/revoke.
@@ -328,35 +339,39 @@ at plan/execution time (writing-plans → using-git-worktrees → executing-plan
 
 ## 14. Open product decisions
 
-### P1 — org/* public-API contract (blocks Phase 3 graduation)
+### P1 — org/* public-API contract — **RESOLVED (2026-05-16): Option 1 chosen + implemented**
 
-The `org/*` endpoints are milestone-gated on a **public-API contract decision**,
-not just unwired plumbing. A future owner must choose before Phase 3 can be
-§4.5-honestly implemented:
+The `org/*` member endpoints were milestone-gated on a **public-API
+contract decision**. The owner chose **Option 1** (redesign the member
+wire contract; breaking changes authorized per spec D1) and it is
+**implemented** (see §7 Phase 3 Outcome). The decision record is retained
+below for provenance.
 
-**Option 1 (recommended): redesign the member wire contract**
+**Option 1 (CHOSEN + IMPLEMENTED): redesign the member wire contract**
 
-- `POST /orgs/{org}/members` becomes direct add-by-principal-id: drop
-  `email`, `invitation_id`, `expires_at` from the request and response.
-- `MemberSummary` drops `email` and `joined_at` — these fields require a
-  member-record + invitation model that does not exist and are not needed
-  for the RBAC-coherent CRUD path.
+- `POST /orgs/{org}/members` is now direct add-by-principal-id: `email`,
+  `invitation_id`, `expires_at` dropped from request and response.
+- `MemberSummary` is now `{principal_id, role}` — `email`/`joined_at`
+  dropped (they require a member-record/identity-join model that does not
+  exist and would be §4.5-fabricated). `OrgSummary` likewise dropped its
+  synthesized reverse-`slug`.
 
-  With this change, `list_members` + `add_member` + `remove_member` +
-  `me/list_my_orgs` + `MeResponse.orgs_count` form a coherent,
-  abuse-safe, RBAC-coherent set that is implementable against the existing
-  `nebula_storage::OrgRepo` without a new invitation model.
+  `list_members` + `add_member` + `remove_member` + `me/list_my_orgs` +
+  `MeResponse.orgs_count` are a coherent, abuse-safe, RBAC-coherent set
+  implemented against an extended **API-tier** `MembershipStore` port +
+  one canonical in-memory impl (no `nebula_storage::OrgRepo` exists; the
+  in-memory impl *is* the §4.5-honest backing, mirroring the Phase-2
+  `AuthBackend` precedent). The org-record + service-account endpoints
+  remain honest-501 (no org-record store; no end-to-end
+  `Principal::ServiceAccount` auth path) — separate milestones.
 
-**Option 2 (larger scope): implement an invitation model**
+**Option 2 (NOT chosen): implement an invitation model**
 
-Keep the current wire contract; add an `Invitation` record +
-`InvitationRepo` + email delivery. This is a larger design effort that
-requires additional ADRs for invitation lifecycle, expiry, and resend
-semantics before any Phase-3 handler can be un-stubbed without §4.5
-risk.
-
-Until the owner decides, **the conservative §4.5-correct default stands**:
-all nine `org/*` handlers remain honest-501, unchanged from today.
+Keep the original wire contract; add an `Invitation` record +
+`InvitationRepo` + email delivery. Rejected as out of scope: a larger
+design effort needing ADRs for invitation lifecycle/expiry/resend. The
+org-record store and service-account identity remain the open milestones
+that gate the *remaining* six honest-501 `org/*` endpoints.
 
 ## 15. Delivered-vs-spec deviations (minor, plan-hedged)
 

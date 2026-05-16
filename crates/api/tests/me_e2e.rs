@@ -1,25 +1,26 @@
-//! `me/*` end-to-end coverage (Phase 2).
+//! `me/*` end-to-end coverage (Phase 2 + Phase 3).
 //!
-//! Five of the six `/api/v1/me/*` endpoints graduated stub→implemented
-//! against the Plane-A `AuthBackend` port. These tests drive the full
-//! middleware → handler → `AuthBackend` path against a **real**
-//! `InMemoryAuthBackend` (Argon2id / RFC 6238 TOTP / SHA-256 PAT lookup —
-//! the §4.5-honest production-quality default; `nebula_storage` ships no
-//! `UserRepo`/`PatRepo`/`SessionRepo` impl, so this in-memory backend *is*
-//! the real backing, exactly as `InMemoryControlQueueRepo` is for the
-//! durable control plane in Phase 1).
+//! All six `/api/v1/me/*` endpoints are graduated stub→implemented. Five
+//! drive the full middleware → handler → `AuthBackend` path against a
+//! **real** `InMemoryAuthBackend` (Argon2id / RFC 6238 TOTP / SHA-256 PAT
+//! lookup — the §4.5-honest production-quality default; `nebula_storage`
+//! ships no `UserRepo`/`PatRepo`/`SessionRepo` impl, so this in-memory
+//! backend *is* the real backing, exactly as `InMemoryControlQueueRepo`
+//! is for the durable control plane in Phase 1).
 //!
-//! `GET /me/orgs` is intentionally **not** covered here: it stays an
-//! honest 501 stub (principal→orgs enumeration is not wired until the
-//! org/membership phase — canon §4.5). Its 501 contract is locked by
-//! `openapi_canon_compliance.rs`.
+//! `GET /me/orgs` graduated in **Phase 3**: it is now real end-to-end
+//! against the shared `InMemoryMembershipStore` (the same store
+//! `rbac_middleware` consults). The harness (`me_support::create_me_state`)
+//! seeds the user as a member of one org, so `list_my_orgs` and
+//! `MeResponse.orgs_count` are exercised against a real count.
 //!
 //! ## Coverage
 //!
 //! | Endpoint | Happy | Typed-error paths |
 //! |----------|-------|-------------------|
-//! | `GET /me` | profile + real `tokens_count`, `orgs_count` absent | 401 (no auth / non-user principal), 503 (port absent) |
+//! | `GET /me` | profile + real `tokens_count` + real `orgs_count` (1) | 401 (no auth / non-user principal), 503 (port absent) |
 //! | `PATCH /me` | display_name + avatar_url applied | 400 (blank name), 401, 404 (user gone), 503 |
+//! | `GET /me/orgs` | lists the caller's seeded org membership | 401 |
 //! | `GET /me/tokens` | lists active PATs, metadata only | 401, 503 |
 //! | `POST /me/tokens` | 201 + plaintext once; redaction | 400 (blank name), 401, 503 |
 //! | `DELETE /me/tokens/{pat}` | revoke (idempotent) | 404 (unknown / cross-user), 401 |
@@ -125,16 +126,40 @@ async fn get_me_returns_profile_with_real_token_count() {
         body["tokens_count"], 2,
         "tokens_count must reflect the two seeded PATs"
     );
-    // `orgs_count` must be ABSENT from the wire (not a synthesized `0`):
-    // principal→orgs enumeration is not wired until the org/membership
-    // phase, and a count the system cannot compute would be a false
-    // value on the JSON contract (canon §4.5 / §12.2). Asserting absence
-    // is stricter than the old `== 0` — it forbids the lying field.
-    assert!(
-        body.get("orgs_count").is_none(),
-        "orgs_count must be omitted (not 0) until membership enumeration \
-         is wired; got: {:?}",
-        body.get("orgs_count")
+    // Phase 3: `orgs_count` is now the **real** principal→orgs count from
+    // the shared `MembershipStore`. The harness seeds the user as a member
+    // of exactly one org, so this is `1` — a concretely computed value,
+    // not the Phase-2 honest-absent placeholder. Asserting the real count
+    // is strictly stronger than the old "field is absent" assertion (it
+    // proves the enumeration is wired end-to-end, not merely that no lie
+    // is emitted). The honest-absent degradation (store unwired → field
+    // omitted, never a synthesized 0) is still covered by
+    // `get_me_orgs_count_absent_when_membership_store_unwired`.
+    assert_eq!(
+        body["orgs_count"], 1,
+        "orgs_count must be the real membership count (seeded: 1 org)"
+    );
+}
+
+#[tokio::test]
+async fn get_me_orgs_count_absent_when_membership_store_unwired() {
+    // §4.5 honest degradation: `create_me_state_without_backend` wires
+    // neither an auth backend nor a membership store. The request reaches
+    // the handler (JWT → Principal::User) but fails closed on the absent
+    // auth backend with 503 *before* it would read org membership — so
+    // the contract that actually runs is "no fabricated body": a 503, not
+    // a synthesized `orgs_count`. (The omission itself — `None` when the
+    // store is unwired, never a synthesized 0 — is unit-covered by
+    // `me::handler::orgs_count_for`.)
+    let (state, jwt) = create_me_state_without_backend();
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app.oneshot(get("/api/v1/me", &jwt)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "unwired auth backend fails closed with 503 (honest degradation)"
     );
 }
 
@@ -308,6 +333,61 @@ async fn patch_me_without_auth_is_401() {
                 .uri("/api/v1/me")
                 .header("content-type", "application/json")
                 .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── GET /me/orgs (Phase 3 — graduated) ───────────────────────────────────────
+
+#[tokio::test]
+async fn list_my_orgs_returns_seeded_membership() {
+    // The harness seeds the user as an OrgMember of exactly one org; the
+    // graduated handler must return that membership end-to-end through the
+    // shared MembershipStore (real, not the former honest-501 stub).
+    let (state, _backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(get("/api/v1/me/orgs", &user.jwt))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "GET /me/orgs graduated stub→implemented; must be 200, not 501"
+    );
+    let body = body_json(response).await;
+    let orgs = body["orgs"].as_array().expect("orgs array");
+    assert_eq!(orgs.len(), 1, "exactly one seeded org membership");
+    assert!(
+        orgs[0]["id"].as_str().unwrap().starts_with("org_"),
+        "org id must be a prefixed ULID"
+    );
+    assert_eq!(orgs[0]["role"], "member", "seeded role is OrgMember");
+    // §4.5: no synthesized reverse-slug field.
+    assert!(
+        orgs[0].get("slug").is_none(),
+        "OrgSummary must not carry a synthesized slug (no OrgId→slug directory)"
+    );
+}
+
+#[tokio::test]
+async fn list_my_orgs_without_auth_is_401() {
+    let (state, _backend, _user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/me/orgs")
+                .body(Body::empty())
                 .unwrap(),
         )
         .await

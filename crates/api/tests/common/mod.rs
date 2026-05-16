@@ -182,19 +182,21 @@ pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryCon
 // end-to-end against a real backend (not a mock).
 
 pub(crate) mod me_support {
-    use std::sync::Arc;
+    use std::{str::FromStr, sync::Arc};
 
     use nebula_api::{
         ApiConfig, AppState,
-        domain::auth::backend::{
-            AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString,
+        domain::{
+            auth::backend::{AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString},
+            org::InMemoryMembershipStore,
         },
     };
+    use nebula_core::{OrgRole, Principal, UserId};
     use nebula_storage::{
         InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
     };
 
-    use super::{TEST_JWT_SECRET, TestOrgResolver, TestWorkspaceResolver};
+    use super::{TEST_JWT_SECRET, TEST_ORG, TestOrgResolver, TestWorkspaceResolver};
 
     /// A registered user plus a JWT that authenticates *as that user*.
     pub(crate) struct MeUser {
@@ -233,10 +235,18 @@ pub(crate) mod me_support {
         .unwrap()
     }
 
-    /// Build an `AppState` wired with a real `InMemoryAuthBackend`, plus a
-    /// registered user and a JWT authenticating as that user. Returns the
-    /// state, the typed backend handle (for white-box assertions), and the
-    /// user.
+    /// Build an `AppState` wired with a real `InMemoryAuthBackend` **and**
+    /// a real shared `InMemoryMembershipStore` seeded so the registered
+    /// user is an `OrgMember` of exactly **one** org (`TEST_ORG`). Returns
+    /// the state, the typed backend handle (for white-box assertions), and
+    /// the user.
+    ///
+    /// The membership store is wired so the Phase-3 `orgs_count` /
+    /// `list_my_orgs` graduations are exercised against a *real* count
+    /// (not the honest-absent degradation). `/me/*` routes are **not**
+    /// behind `rbac_middleware` (only auth + csrf — see `domain/mod.rs`),
+    /// so seeding a membership store does not change any other `me/*`
+    /// behaviour; it only feeds the two membership-backed reads.
     pub(crate) async fn create_me_state() -> (AppState, Arc<InMemoryAuthBackend>, MeUser) {
         let backend = Arc::new(InMemoryAuthBackend::new());
         let email = "me-e2e@nebula.dev".to_owned();
@@ -249,7 +259,19 @@ pub(crate) mod me_support {
             .await
             .expect("register seed user");
 
+        // Seed the registered user as a member of one org so the
+        // membership-backed `me` reads return a real value.
+        let seed_uid = UserId::from_str(&profile.user_id).expect("registered user id parses");
+        let membership = InMemoryMembershipStore::seeded(
+            TEST_ORG.parse().expect("valid test org id"),
+            Principal::User(seed_uid),
+            OrgRole::OrgMember,
+        )
+        .into_arc();
+
         let backend_dyn: Arc<dyn AuthBackend> = Arc::clone(&backend) as _;
+        let membership_dyn: Arc<dyn nebula_api::state::MembershipStore> =
+            Arc::clone(&membership) as _;
         let api_config = ApiConfig::for_test();
         let state = AppState::new(
             Arc::new(InMemoryWorkflowRepo::new()),
@@ -259,7 +281,8 @@ pub(crate) mod me_support {
         )
         .with_org_resolver(Arc::new(TestOrgResolver))
         .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
-        .with_auth_backend(backend_dyn);
+        .with_auth_backend(backend_dyn)
+        .with_membership_store(membership_dyn);
 
         let jwt = jwt_for(&profile.user_id);
         let user = MeUser {
@@ -286,8 +309,106 @@ pub(crate) mod me_support {
         .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
         // A syntactically valid UserId so the JWT path yields
         // `Principal::User` and the request reaches the handler body.
-        let jwt = jwt_for(&nebula_core::UserId::new().to_string());
+        let jwt = jwt_for(&UserId::new().to_string());
         (state, jwt)
+    }
+}
+
+// ── `org/*` member-management end-to-end harness (Phase 3) ───────────────────
+//
+// Builds an `AppState` whose `membership_store` is the real shared
+// `InMemoryMembershipStore` (the SAME `Arc` `rbac_middleware` consults).
+// Wiring a membership store ACTIVATES RBAC enforcement, so this builder is
+// used ONLY by `org_e2e.rs` — it MUST NOT be added to
+// `create_state_with_queue` / `create_me_state` (those power knife / me /
+// idempotency / etc. and would regress to RBAC-404 with no seeded role).
+//
+// The org routes' JWT auth path turns the JWT `sub` into
+// `Principal::User(UserId::from_str(sub))` *without* consulting any auth
+// backend, so this harness needs no `AuthBackend` — only the seeded
+// membership store + the slug resolvers (`TestOrgResolver` maps every
+// slug to `TEST_ORG`).
+
+pub(crate) mod org_support {
+    use std::sync::Arc;
+
+    use nebula_api::{ApiConfig, AppState, domain::org::InMemoryMembershipStore};
+    use nebula_core::{OrgRole, Principal, UserId};
+    use nebula_storage::{
+        InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+    };
+
+    use super::{TEST_ORG, TestOrgResolver, TestWorkspaceResolver, me_support::jwt_for};
+
+    /// A principal with a known org role plus a JWT authenticating as it.
+    pub(crate) struct OrgActor {
+        /// `usr_<ULID>` string form (the JWT `sub`).
+        pub(crate) user_id: String,
+        /// The resolved principal (what RBAC + handlers see).
+        pub(crate) principal: Principal,
+        /// Bearer JWT whose `sub` is [`Self::user_id`].
+        pub(crate) jwt: String,
+    }
+
+    impl OrgActor {
+        /// Mint a fresh user principal (not yet a member of any org).
+        pub(crate) fn new_user() -> Self {
+            let uid = UserId::new();
+            let user_id = uid.to_string();
+            let jwt = jwt_for(&user_id);
+            Self {
+                user_id,
+                principal: Principal::User(uid),
+                jwt,
+            }
+        }
+    }
+
+    /// Build an `AppState` whose shared `InMemoryMembershipStore` is seeded
+    /// with one **org admin** on `TEST_ORG`, plus the typed store handle
+    /// (for white-box assertions) and the seeded-admin actor.
+    ///
+    /// `OrgAdmin` (not `OrgOwner`) is the default seed so the abuse tests
+    /// can exercise both "admin cannot grant owner" (role-clamp) and the
+    /// admin-level happy paths; tests that need an owner seed explicitly
+    /// via [`seed_member`].
+    pub(crate) fn create_org_state() -> (AppState, Arc<InMemoryMembershipStore>, OrgActor) {
+        create_org_state_with_role(OrgRole::OrgAdmin)
+    }
+
+    /// Like [`create_org_state`] but the seeded actor gets `role`.
+    pub(crate) fn create_org_state_with_role(
+        role: OrgRole,
+    ) -> (AppState, Arc<InMemoryMembershipStore>, OrgActor) {
+        let admin = OrgActor::new_user();
+        let org_id = TEST_ORG.parse().expect("valid test org id");
+        let store =
+            InMemoryMembershipStore::seeded(org_id, admin.principal.clone(), role).into_arc();
+        let store_dyn: Arc<dyn nebula_api::state::MembershipStore> = Arc::clone(&store) as _;
+
+        let api_config = ApiConfig::for_test();
+        let state = AppState::new(
+            Arc::new(InMemoryWorkflowRepo::new()),
+            Arc::new(InMemoryExecutionRepo::new()),
+            Arc::new(InMemoryControlQueueRepo::new()),
+            api_config.jwt_secret,
+        )
+        .with_org_resolver(Arc::new(TestOrgResolver))
+        .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+        .with_membership_store(store_dyn);
+
+        (state, store, admin)
+    }
+
+    /// Seed an additional member directly into the shared store (bypasses
+    /// the handler authz gate — fixture setup, not a request path).
+    pub(crate) async fn seed_member(
+        store: &InMemoryMembershipStore,
+        principal: Principal,
+        role: OrgRole,
+    ) {
+        let org_id = TEST_ORG.parse().expect("valid test org id");
+        store.seed(org_id, principal, role).await;
     }
 }
 

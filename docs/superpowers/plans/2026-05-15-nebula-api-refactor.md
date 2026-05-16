@@ -423,29 +423,33 @@ git add crates/api/README.md docs/MATURITY.md && git commit -m "docs(api): sync 
 
 ## Phase 3 — `org/*` (9 handlers)
 
-> **STATUS: §4.5-correct honest-501 deferral — zero code change, no commit.**
-> All nine `org/*` handlers remain stubs. Blocked on two issues: (1) no
-> production adapter wires `OrgResolver`/`WorkspaceResolver`/`MembershipStore`
-> end-to-end, and (2) the member wire contract (`invitation_id`/`expires_at`/
-> `MemberSummary.email`/`joined_at`) requires a member-record + invitation
-> MODEL DESIGN decision before any handler can be honestly implemented. See
-> spec §7 Outcome note and spec §14 "Open product decisions" (P1) for full
-> analysis. The `openapi_canon_compliance` test enforces the honest-501 stub
-> policy; tasks below are preserved as-written for when the owner resolves P1.
+> **STATUS: DONE (2026-05-16) — §4.5-honest partial graduation via
+> "Option 1" (spec §14 P1 RESOLVED).** The owner authorized the breaking
+> member wire-contract redesign. The 3 member endpoints
+> (`list_members`/`add_member`/`remove_member`) + `me/list_my_orgs` +
+> `MeResponse.orgs_count` graduated stub→implemented end-to-end against an
+> extended shared `MembershipStore` (the same store `rbac_middleware`
+> consults) with one canonical in-memory impl seeded with a bootstrap
+> org owner in `apps/server/src/compose.rs`. The 3 org-record
+> (`get`/`update`/`delete_org`) + 3 service-account endpoints stay
+> honest-501 (no org-record store; no end-to-end
+> `Principal::ServiceAccount` auth path) — separate milestones.
+> `openapi_canon_compliance` honest-501 inventory decremented 12 → 8.
+> See spec §7 Phase-3 Outcome + §14 P1 (RESOLVED).
 
-**Files:** `crates/api/src/domain/org/{handler,routes,dto}.rs`; `crates/api/src/state.rs` (`OrgResolver`/`WorkspaceResolver`/`MembershipStore`); `apps/server/src/compose.rs` (production adapters over `nebula_storage::{OrgRepo, WorkspaceRepo}`); `crates/api/src/middleware/tenancy.rs`/`rbac.rs` now backed by real resolvers; test `crates/api/tests/org_e2e.rs`.
+**Files (delivered):** `crates/api/src/domain/org/{handler,routes,dto,membership}.rs` (new `membership.rs` = `InMemoryMembershipStore`); `crates/api/src/state.rs` (`MembershipStore` extended + `OrgMember`); `crates/api/src/domain/shared.rs` (`OrgRoleDto` ↔ wire-token mapping); `crates/api/src/domain/me/{handler,dto,routes}.rs` (`list_my_orgs` + `orgs_count` graduated); `apps/server/src/compose.rs` (seeded bootstrap wiring); `crates/api/tests/{org_e2e.rs (new),me_e2e.rs,common/mod.rs,openapi_canon_compliance.rs}`.
 
-- [ ] **Step 1: Failing tests** — org get, member list/get/add/remove, role get/update, roles list/get — against real `OrgRepo`/`WorkspaceRepo`-backed state; plus a tenancy-resolution test (slug→id no longer test-only).
+- [x] **Step 1: Failing tests** — `org_e2e.rs` (happy + abuse: non-admin 403, role-clamp, last-admin 409, role-precedence 403, cross-org RBAC-404, IDOR-404) + RBAC-coherence (`added_member_is_immediately_rbac_authorized`); `me_e2e` `list_my_orgs` + real `orgs_count`.
 
-- [ ] **Step 2: Run — expect FAIL** (501).
+- [x] **Step 2: Run — expect FAIL** (501 / wrong shape) — confirmed via the stub baseline before graduation.
 
-- [ ] **Step 3: Implement** production `OrgResolver`/`WorkspaceResolver`/`MembershipStore` adapters in `apps/server::compose` over the storage repos; CRUD handlers delegate to `OrgRepo`/`WorkspaceRepo`. Tenancy/RBAC middleware now resolves for real (was stubbed). Drop 501s.
+- [x] **Step 3: Implement** — extended `MembershipStore` + `InMemoryMembershipStore`; member contract redesigned (Option 1, breaking); `compose.rs` seeds bootstrap owner; member handlers + `me/list_my_orgs` delegate; abuse-safe authz. Dropped `#[deprecated]`/501 on the graduated handlers only.
 
-- [ ] **Step 4: Run — expect PASS**; full regression incl. `knife` (tenant-scoped routes) green.
+- [x] **Step 4: Run — expect PASS** — `nebula-api` 270 → **294 passed, 1 skipped**; `knife` ALL green (membership store NOT wired into shared knife/me builders → RBAC stays inert for them); `nebula-server` 3 passed.
 
-- [ ] **Step 5: DoD** — typed errors, spans, MATURITY row, OpenAPI annotations real.
+- [x] **Step 5: DoD** — typed `ApiError` per failure (400/401/403/404/409/503), tracing spans on every member path, §11.6 durability documented (module + README), `openapi_canon` honestly decremented 12 → 8.
 
-- [ ] **Step 6: Commit** `feat(api): org/* end-to-end + production tenancy resolvers`
+- [x] **Step 6: Commit** `feat(api)!: org member-mgmt + me/list_my_orgs via honest add-by-principal contract (§4.5, Option 1); org-record + service-accounts stay honest-501`
 
 ---
 

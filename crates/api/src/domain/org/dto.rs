@@ -1,9 +1,29 @@
 //! Organisation-management DTOs.
 //!
-//! All endpoints under `/api/v1/orgs/{org}/…` currently return 501 (audit
-//! class (c)); the DTOs below describe the **planned** payload shape per
-//! ADR-0047 Stub Endpoint Policy. RBAC `tenant.require(...)` gates ARE real
-//! today — the spec accordingly declares 403 alongside the 501 response.
+//! ## §4.5 status
+//!
+//! The **member** DTOs ([`MemberSummary`], [`MembersResponse`],
+//! [`AddMemberRequest`]) back **live** endpoints (`GET`/`POST`/`DELETE`
+//! under `…/orgs/{org}/members`), served end-to-end through the shared
+//! [`MembershipStore`](crate::state::MembershipStore).
+//!
+//! The **org-record** DTOs ([`OrgResponse`], [`UpdateOrgRequest`]) and the
+//! **service-account** DTOs ([`ServiceAccountSummary`],
+//! [`CreateServiceAccountRequest`], …) still describe the **planned**
+//! payload of honest-501 stubs (no org-record store; no end-to-end
+//! `Principal::ServiceAccount` auth path — canon §4.5). RBAC
+//! `tenant.require(...)` gates on those stubs are real today (403).
+//!
+//! ### Member contract — "Option 1" honest redesign (breaking)
+//!
+//! `POST /orgs/{org}/members` is **direct add-by-principal-id**, not an
+//! email invitation. The fabricated `email` / `invitation_id` /
+//! `expires_at` fields were removed: there is no invitation/email
+//! subsystem and no email→principal directory, so those fields could only
+//! ever be synthesized — exactly the canon §4.5 false capability this
+//! refactor rejects. `MemberSummary` likewise carries only what the RBAC
+//! role index actually knows (`user_id` + `role`); `email`/`joined_at`
+//! would require a member-record/identity-join model that does not exist.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -42,41 +62,43 @@ pub struct UpdateOrgRequest {
 }
 
 /// One member entry inside [`MembersResponse`].
+///
+/// Carries **only** what the RBAC role index knows. `email`/`joined_at`
+/// are intentionally absent (canon §4.5 — see the module docs): the
+/// membership store is not a user-identity directory and synthesizing
+/// those fields would be a false capability.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MemberSummary {
-    /// `user_<ULID>` of the member.
-    pub user_id: String,
-    /// Lowercased email address.
-    pub email: String,
-    /// Member's role within this organisation.
+    /// Stable principal identity of the member — `usr_<ULID>` for a user
+    /// or `svc_<ULID>` for a service account. This is the exact string
+    /// accepted by `DELETE /orgs/{org}/members/{principal}`.
+    pub principal_id: String,
+    /// Member's role within this organisation (canonical wire token:
+    /// `member` / `billing` / `admin` / `owner`).
     pub role: OrgRoleDto,
-    /// ISO 8601 timestamp of when the membership was established.
-    pub joined_at: String,
 }
 
 /// `GET /api/v1/orgs/{org}/members` response.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MembersResponse {
-    /// Member summaries.
+    /// Member summaries. Unordered; not paginated (membership sets are
+    /// bounded per org).
     pub members: Vec<MemberSummary>,
 }
 
-/// `POST /api/v1/orgs/{org}/members` request body — invite a new member.
+/// `POST /api/v1/orgs/{org}/members` request body — **direct
+/// add-by-principal-id** (not an email invitation; see the module docs
+/// for why the invitation contract was removed).
 #[derive(Debug, Clone, Deserialize, ToSchema)]
-pub struct InviteMemberRequest {
-    /// Recipient email address.
-    pub email: String,
-    /// Role to assign on acceptance.
+pub struct AddMemberRequest {
+    /// Principal to add — `usr_<ULID>` (user) or `svc_<ULID>` (service
+    /// account). Must parse to a concrete principal; an unparsable value
+    /// is a 400.
+    pub principal_id: String,
+    /// Role to grant. Canonical wire token (`member` / `billing` /
+    /// `admin` / `owner`). The granted role is clamped to the caller's
+    /// own role — a caller cannot grant a role above their own.
     pub role: OrgRoleDto,
-}
-
-/// `POST /api/v1/orgs/{org}/members` response.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct InviteMemberResponse {
-    /// `inv_<ULID>` invitation identifier.
-    pub invitation_id: String,
-    /// ISO 8601 expiration timestamp for the invitation.
-    pub expires_at: String,
 }
 
 /// One service-account entry in [`ServiceAccountsResponse`] / response of

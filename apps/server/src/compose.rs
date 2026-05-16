@@ -52,15 +52,10 @@ pub enum TransportInitError {
         /// Parse error from `url`.
         source: url::ParseError,
     },
-    /// Failed to construct a transport app context.
+    /// Failed to construct a transport app context — used by the
+    /// bootstrap membership-store seed (always) and the postgres-gated
+    /// idempotency store construction.
     #[error("{0}")]
-    #[cfg_attr(
-        not(feature = "postgres"),
-        expect(
-            dead_code,
-            reason = "constructed only in the postgres-gated build_pg_idempotency_store arm"
-        )
-    )]
     ContextFactory(String),
     /// `API_IDEMPOTENCY_BACKEND` selects a backend that the current build
     /// cannot satisfy.
@@ -141,6 +136,21 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
     // endpoints work end-to-end; without it they fail closed with 503.
     let auth_backend = nebula_api::domain::auth::backend::InMemoryAuthBackend::new().into_arc();
 
+    // Membership store (RBAC role index). Same §4.5-honest posture: the
+    // in-memory impl *is* the real backing (no storage-backed membership
+    // adapter exists). Wiring it ACTIVATES RBAC enforcement on every
+    // org/workspace route, so it MUST be seeded with a bootstrap org
+    // owner — otherwise the gate dead-locks (every member-add requires a
+    // pre-existing admin, the classic chicken-and-egg). The seed is the
+    // root-of-trust first admin; it is process-local and lost on restart
+    // (canon §11.6 — documented in
+    // `nebula_api::domain::org::membership` + `crates/api/README.md`).
+    // Override the seeded identities via `NEBULA_BOOTSTRAP_ORG_ID` /
+    // `NEBULA_BOOTSTRAP_OWNER_ID` so an operator can pin a real admin;
+    // the defaults are deterministic so a fresh dev/test server is
+    // immediately usable.
+    let membership_store = build_bootstrap_membership_store()?;
+
     Ok(AppState::new(
         workflow_repo,
         execution_repo,
@@ -148,7 +158,45 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
         api_config.jwt_secret.clone(),
     )
     .with_api_keys(api_config.api_keys.clone())
-    .with_auth_backend(auth_backend))
+    .with_auth_backend(auth_backend)
+    .with_membership_store(membership_store))
+}
+
+/// Default deterministic bootstrap org / owner identities.
+///
+/// Fixed prefixed-ULIDs so a fresh local-first server has a usable RBAC
+/// gate out of the box. Operators pin a real admin via the
+/// `NEBULA_BOOTSTRAP_ORG_ID` / `NEBULA_BOOTSTRAP_OWNER_ID` env vars.
+const DEFAULT_BOOTSTRAP_ORG_ID: &str = "org_00000000000000000000000001";
+const DEFAULT_BOOTSTRAP_OWNER_ID: &str = "usr_00000000000000000000000001";
+
+/// Build the seeded in-memory [`MembershipStore`].
+///
+/// The seed grants `OrgOwner` on the bootstrap org to the bootstrap
+/// principal. A malformed env override fails closed
+/// ([`TransportInitError::ContextFactory`]) rather than silently falling
+/// back to an unseeded (dead-locked) gate — same fail-closed contract as
+/// the idempotency backend selector (`feedback_no_shims`). The
+/// `nebula_core` id parsing lives in the API tier
+/// (`InMemoryMembershipStore::seeded_bootstrap`) per ADR-0047 §3.
+fn build_bootstrap_membership_store()
+-> Result<Arc<nebula_api::domain::org::InMemoryMembershipStore>, TransportInitError> {
+    let org_raw = std::env::var("NEBULA_BOOTSTRAP_ORG_ID")
+        .unwrap_or_else(|_| DEFAULT_BOOTSTRAP_ORG_ID.to_owned());
+    let owner_raw = std::env::var("NEBULA_BOOTSTRAP_OWNER_ID")
+        .unwrap_or_else(|_| DEFAULT_BOOTSTRAP_OWNER_ID.to_owned());
+
+    let store =
+        nebula_api::domain::org::InMemoryMembershipStore::seeded_bootstrap(&org_raw, &owner_raw)
+            .map_err(|e| TransportInitError::ContextFactory(e.to_string()))?;
+
+    tracing::info!(
+        bootstrap_org = %org_raw,
+        bootstrap_owner = %owner_raw,
+        "membership store seeded with bootstrap org owner (process-local; canon §11.6)"
+    );
+
+    Ok(store.into_arc())
 }
 
 /// Construct the idempotency store from `api_config.idempotency`.

@@ -198,13 +198,18 @@ a review-time catch.
 
 Endpoints whose handler is not yet wired end-to-end return
 `ApiError::NotImplemented` (501) and are documented honestly per
-ADR-0047 §4. The remaining stubs are `me::list_my_orgs`, `org/*`,
-`resource/list`, and `execution/restart` (canon §4.5: a stub stays a 501
-until its downstream genuinely honors it end-to-end — `me::list_my_orgs`
-needs principal→orgs enumeration that lands with the org/membership
-phase). `execution::terminate` and the other five `me/*` endpoints
-(`get_me`, `update_me`, `list_my_tokens`, `create_token`,
-`delete_token`) have **graduated** stub→implemented end-to-end.
+ADR-0047 §4. The remaining stubs are the 3 org-record endpoints
+(`GET`/`PATCH`/`DELETE /orgs/{org}` — no org-record store), the 3
+service-account endpoints (no end-to-end `Principal::ServiceAccount`
+auth path), `resource/list`, and `execution/restart` (canon §4.5: a
+stub stays a 501 until its downstream genuinely honors it end-to-end).
+**Graduated** stub→implemented end-to-end: `execution::terminate`; all
+six `me/*` endpoints (`get_me`, `update_me`, `list_my_tokens`,
+`create_token`, `delete_token`, and — Phase 3 — `list_my_orgs` via the
+shared `MembershipStore`); and the 3 org **member** endpoints
+(`list_members`, `add_member`, `remove_member`) — Phase 3, "Option 1"
+honest contract (direct add-by-principal; the fake email-invitation
+shape was dropped).
 
 For each remaining stub:
 
@@ -284,6 +289,40 @@ types have no `data` field, so `get` / `list` cannot echo the secret.
 > shadowed by the tenancy `{cred}` path matcher (a pre-existing
 > route-ordering condition) and surface as a flat 404 before the
 > handler — still §4.5-honest (no false success).
+
+### Org membership durability (canon §11.6 / §11.5)
+
+The org **member** endpoints (`GET`/`POST`/`DELETE` under
+`…/orgs/{org}/members`) and the membership-backed `me/*` reads
+(`GET /me/orgs`, `MeResponse.orgs_count`) are **implemented and work
+end-to-end** over the wired in-memory `MembershipStore`
+(`nebula_api::domain::org::InMemoryMembershipStore`). This is the
+**single shared store** `rbac_middleware` also consults — an
+`add_member` is immediately visible to the next RBAC check (no
+propagation window). There is no storage-backed alternative to wire
+(`nebula_storage` ships no membership repo); the in-memory impl *is*
+the §4.5-honest backing, exactly as `InMemoryAuthBackend` is for
+`me/*` identity and `InMemoryControlQueueRepo` is for the durable
+control plane.
+
+| Aspect | Org membership (in-memory `MembershipStore`) |
+|---|---|
+| Restart-survival | **No** — memberships are lost on restart |
+| Multi-replica share | **No** — state is process-local |
+| Bootstrap | The composition root seeds a deterministic bootstrap **org owner** (`NEBULA_BOOTSTRAP_ORG_ID` / `NEBULA_BOOTSTRAP_OWNER_ID`, fail-closed on a malformed override) so the RBAC gate is usable rather than dead-locked (no member can be added without a pre-existing admin) |
+
+> **Operator warning:** wiring a `MembershipStore` **activates RBAC
+> enforcement** on every `/orgs/{org}/...` and
+> `/orgs/{org}/workspaces/{ws}/...` route — a caller with no role in the
+> resolved org is `404`'d *before* the handler (enumeration prevention).
+> The seeded bootstrap owner is the only principal with access on a
+> fresh process; grant further access via `POST /orgs/{org}/members`
+> (org-admin only, abuse-safe: role-clamp, last-admin guard,
+> role-precedence, IDOR-404). Memberships are **process-local** and lost
+> on restart — same local-first caveat as `me/*` and the `memory`
+> idempotency backend. The org-record (`GET`/`PATCH`/`DELETE /orgs/{org}`)
+> and service-account endpoints remain **honest 501** (no org-record
+> store; no end-to-end `Principal::ServiceAccount` auth path).
 
 ### Regeneration
 
@@ -607,7 +646,7 @@ above for the enforcement guarantee.
 | `GET`    | `/api/v1/auth/oauth/{provider}/callback`                                  | OAuth2 login callback                                                      |
 | `GET`    | `/api/v1/me`                                                              | Current user profile                                                       |
 | `PUT`    | `/api/v1/me`                                                              | Update current user profile                                                |
-| `GET`    | `/api/v1/me/orgs`                                                         | List orgs the caller belongs to `(honest 501)`                             |
+| `GET`    | `/api/v1/me/orgs`                                                         | List orgs the caller belongs to (real — shared `MembershipStore`)          |
 | `GET`    | `/api/v1/me/tokens`                                                       | List personal access tokens                                                |
 | `POST`   | `/api/v1/me/tokens`                                                       | Create personal access token                                               |
 | `DELETE` | `/api/v1/me/tokens/{token_id}`                                            | Revoke a personal access token                                             |
@@ -616,9 +655,9 @@ above for the enforcement guarantee.
 | `GET`    | `/api/v1/orgs/{org}`                                                      | Get org by slug or ID `(honest 501)`                                       |
 | `PATCH`  | `/api/v1/orgs/{org}`                                                      | Update org settings `(honest 501)`                                         |
 | `DELETE` | `/api/v1/orgs/{org}`                                                      | Delete org `(honest 501)`                                                  |
-| `GET`    | `/api/v1/orgs/{org}/members`                                              | List org members `(honest 501)`                                            |
-| `POST`   | `/api/v1/orgs/{org}/members`                                              | Invite member `(honest 501)` — see spec §14 open product decision P1       |
-| `DELETE` | `/api/v1/orgs/{org}/members/{principal}`                                  | Remove member `(honest 501)`                                               |
+| `GET`    | `/api/v1/orgs/{org}/members`                                              | List org members (real — shared `MembershipStore`)                         |
+| `POST`   | `/api/v1/orgs/{org}/members`                                              | Add member by principal id (real — Option 1 honest contract, org-admin)    |
+| `DELETE` | `/api/v1/orgs/{org}/members/{principal}`                                  | Remove member (real — abuse-safe: last-admin/role-precedence/IDOR guards)  |
 | `GET`    | `/api/v1/orgs/{org}/service-accounts`                                     | List service accounts `(honest 501)`                                       |
 | `POST`   | `/api/v1/orgs/{org}/service-accounts`                                     | Create service account `(honest 501)`                                      |
 | `DELETE` | `/api/v1/orgs/{org}/service-accounts/{sa}`                                | Delete service account `(honest 501)`                                      |

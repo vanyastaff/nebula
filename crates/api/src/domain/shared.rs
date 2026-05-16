@@ -174,6 +174,65 @@ impl AckResponse {
 #[schema(value_type = String, example = "owner")]
 pub struct OrgRoleDto(pub String);
 
+impl OrgRoleDto {
+    /// The canonical lowercase wire token for an [`nebula_core::OrgRole`].
+    ///
+    /// This is the **single** place the `OrgRole` ↔ wire-string mapping
+    /// lives (ADR-0047 §3: the public spec must not embed `nebula_core`
+    /// enum names — `OrgMember`/`OrgOwner` are internal Rust identifiers).
+    /// The tokens (`member`/`billing`/`admin`/`owner`) are stable across
+    /// core role-set evolution.
+    ///
+    /// `OrgRole` is `#[non_exhaustive]`. A future core variant with no
+    /// token here **fails safe to the least-privilege token** (`member`)
+    /// rather than fabricating a name or escalating — and
+    /// `org_role_token_roundtrips_every_variant` (a unit test that
+    /// enumerates the current set) plus this debug assertion make the
+    /// omission loud the moment a variant is added, so the gap is fixed
+    /// at the mapping, not silently shipped (canon §4.5).
+    #[must_use]
+    pub fn token(role: nebula_core::OrgRole) -> &'static str {
+        use nebula_core::OrgRole::{OrgAdmin, OrgBilling, OrgMember, OrgOwner};
+        match role {
+            OrgMember => "member",
+            OrgBilling => "billing",
+            OrgAdmin => "admin",
+            OrgOwner => "owner",
+            unknown => {
+                debug_assert!(
+                    false,
+                    "nebula_core::OrgRole gained a variant {unknown:?} with no \
+                     OrgRoleDto wire token — add it to OrgRoleDto::token/parse"
+                );
+                "member"
+            },
+        }
+    }
+
+    /// Parse a wire token back into an [`nebula_core::OrgRole`].
+    ///
+    /// `None` for any token outside the canonical set — the handler maps
+    /// that to a 400 (RFC 9457) rather than guessing a role (canon §4.5:
+    /// no silent coercion of an unrecognised privilege level).
+    #[must_use]
+    pub fn parse(token: &str) -> Option<nebula_core::OrgRole> {
+        use nebula_core::OrgRole::{OrgAdmin, OrgBilling, OrgMember, OrgOwner};
+        match token {
+            "member" => Some(OrgMember),
+            "billing" => Some(OrgBilling),
+            "admin" => Some(OrgAdmin),
+            "owner" => Some(OrgOwner),
+            _ => None,
+        }
+    }
+}
+
+impl From<nebula_core::OrgRole> for OrgRoleDto {
+    fn from(role: nebula_core::OrgRole) -> Self {
+        Self(Self::token(role).to_owned())
+    }
+}
+
 /// Wrapper around `nebula_core::WorkspaceRole`.
 ///
 /// Same reasoning as [`OrgRoleDto`] — wrap at the API boundary so
@@ -213,5 +272,31 @@ mod tests {
         assert!(!resp.has_more);
         assert!(resp.next_cursor.is_none());
         assert_eq!(resp.items.len(), 0);
+    }
+
+    #[test]
+    fn org_role_token_roundtrips_every_variant() {
+        use nebula_core::OrgRole;
+        for role in [
+            OrgRole::OrgMember,
+            OrgRole::OrgBilling,
+            OrgRole::OrgAdmin,
+            OrgRole::OrgOwner,
+        ] {
+            let token = OrgRoleDto::token(role);
+            assert_eq!(
+                OrgRoleDto::parse(token),
+                Some(role),
+                "token `{token}` must round-trip back to {role:?}"
+            );
+            assert_eq!(OrgRoleDto::from(role).0, token);
+        }
+        assert_eq!(
+            OrgRoleDto::parse("superuser"),
+            None,
+            "unknown role tokens must not silently coerce"
+        );
+        // Internal Rust enum names must NOT be accepted as wire tokens.
+        assert_eq!(OrgRoleDto::parse("OrgOwner"), None);
     }
 }

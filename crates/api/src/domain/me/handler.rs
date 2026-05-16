@@ -1,28 +1,30 @@
 //! User profile endpoint handlers (global, no tenant scope).
 //! Auth required but no org/workspace context needed.
 //!
-//! Five of the six handlers are real end-to-end against the Plane-A
-//! [`AuthBackend`] port (profile read/patch + PAT list/create/revoke). The
-//! sixth — [`list_my_orgs`] — is an honest 501 stub (canon §4.5): listing
-//! the orgs a principal belongs to has **no** end-to-end backing today
-//! (`MembershipStore` exposes only point role lookups, not principal→orgs
-//! enumeration, and no `OrgRepo` impl exists). That capability lands with
-//! the org/membership work (Phase 3); advertising a 200 the stack cannot
-//! honor would be a false capability — worse than the honest stub.
+//! All six handlers are real end-to-end. Profile read/patch + PAT
+//! list/create/revoke delegate to the Plane-A [`AuthBackend`] port;
+//! [`list_my_orgs`] (and the `MeResponse.orgs_count` field) delegate to
+//! the shared [`MembershipStore`](crate::state::MembershipStore)
+//! principal→orgs enumeration (Phase 3 — this resolves the Phase-2
+//! carry-over where `list_my_orgs` was an honest 501 and `orgs_count` was
+//! omitted because no enumeration backing existed).
 //!
 //! ## Durability (canon §11.6 / §11.5 — operator-facing)
 //!
 //! These endpoints are **implemented and work end-to-end**, but the only
-//! wired `AuthBackend` is the in-memory one (`InMemoryAuthBackend`). All
-//! `me/*` profile and PAT state is therefore **process-local: it is lost
-//! on restart and is NOT shared across replicas.** A PAT minted via
-//! `POST /me/tokens` stops authenticating the moment the process exits,
-//! and is invisible to other instances. This is the same local-first
-//! caveat the in-memory idempotency backend carries (see the
-//! `crates/api/README.md` idempotency note) — it persists once a
-//! storage-backed `AuthBackend` lands (no such impl exists today;
-//! `nebula_storage` ships no `UserRepo`/`PatRepo`/`SessionRepo`). The
-//! durability gap is strictly about persistence, not capability.
+//! wired `AuthBackend` is the in-memory one (`InMemoryAuthBackend`) and
+//! the only wired `MembershipStore` is the in-memory one
+//! (`InMemoryMembershipStore`). All `me/*` profile, PAT, **and org
+//! membership** state is therefore **process-local: it is lost on restart
+//! and is NOT shared across replicas.** A PAT minted via `POST /me/tokens`
+//! stops authenticating the moment the process exits; an org membership is
+//! likewise process-local. This is the same local-first caveat the
+//! in-memory idempotency backend carries (see the `crates/api/README.md`
+//! idempotency note) — it persists once storage-backed `AuthBackend` /
+//! `MembershipStore` adapters land (no such impls exist today;
+//! `nebula_storage` ships no `UserRepo`/`PatRepo`/`SessionRepo` and no
+//! membership repo). The durability gap is strictly about persistence,
+//! not capability.
 //!
 //! [`AuthBackend`]: crate::domain::auth::backend::AuthBackend
 
@@ -39,9 +41,9 @@ use crate::{
         auth::backend::{AuthBackend, CreatePatParams, PatRecord, ProfilePatch},
         me::dto::{
             CreateTokenRequest, CreateTokenResponse, MeResponse, MyOrgsResponse, MyTokensResponse,
-            TokenSummary, UpdateMeRequest,
+            OrgSummary, TokenSummary, UpdateMeRequest,
         },
-        shared::AckResponse,
+        shared::{AckResponse, OrgRoleDto},
     },
     error::{ApiError, ApiResult, ProblemDetails},
     middleware::auth::AuthContext,
@@ -91,15 +93,31 @@ fn token_summary(record: &PatRecord) -> TokenSummary {
     }
 }
 
+/// Real org-membership count for `MeResponse.orgs_count`.
+///
+/// `Some(n)` from the shared [`MembershipStore`] when wired;
+/// **`None` (field omitted)** when the store is absent — honest
+/// degradation, never a synthesized `0` (canon §4.5 / §12.2). The
+/// `usize`→`u32` cast saturates (a user with more than `u32::MAX`
+/// memberships is impossible in practice, but the cast is explicit
+/// rather than silently wrapping).
+async fn orgs_count_for(state: &AppState, principal: &Principal) -> Result<Option<u32>, ApiError> {
+    match &state.membership_store {
+        Some(store) => {
+            let n = store.list_orgs_for_principal(principal).await?.len();
+            Ok(Some(u32::try_from(n).unwrap_or(u32::MAX)))
+        },
+        None => Ok(None),
+    }
+}
+
 /// `GET /api/v1/me` — current user's own profile.
 ///
 /// `tokens_count` is the real count of the caller's active PATs.
-/// `orgs_count` is `None` — and therefore **omitted from the JSON** —
-/// because principal→orgs membership enumeration is not wired end-to-end
-/// until the org/membership phase (see [`list_my_orgs`]). The wire field
-/// is absent rather than a synthesized `0`: a count the system cannot
-/// compute would be a false value on the wire (canon §4.5 / §12.2). The
-/// org/membership phase makes it `Some(n)` (additive, non-breaking).
+/// `orgs_count` is the **real** principal→orgs membership count from the
+/// shared [`MembershipStore`](crate::state::MembershipStore) (Phase 3 —
+/// see [`list_my_orgs`]); it degrades to *absent* (never a synthesized
+/// `0`) only if the membership store is unwired — canon §4.5 / §12.2.
 #[utoipa::path(
     get,
     path = "/me",
@@ -123,8 +141,9 @@ pub async fn get_me(
     // Saturating, honest cast: a user with > u32::MAX PATs is impossible
     // in practice, but `as u32` would silently wrap — be explicit.
     let tokens_count = u32::try_from(backend.list_pats(&user_id).await?.len()).unwrap_or(u32::MAX);
+    let orgs_count = orgs_count_for(&state, &auth.principal).await?;
 
-    tracing::info!(user_id = %user_id, "me profile fetched");
+    tracing::info!(user_id = %user_id, orgs_count = ?orgs_count, "me profile fetched");
 
     Ok(Json(MeResponse {
         user_id: profile.user_id,
@@ -132,9 +151,9 @@ pub async fn get_me(
         display_name: profile.display_name,
         email_verified: profile.email_verified,
         mfa_enabled: profile.mfa_enabled,
-        // Omitted from the wire (not a synthesized 0) until principal→orgs
-        // enumeration is wired — canon §4.5 / §12.2. See the struct doc.
-        orgs_count: None,
+        // Real principal→orgs count from the shared MembershipStore;
+        // absent (not 0) only if the store is unwired — canon §4.5.
+        orgs_count,
         tokens_count,
     }))
 }
@@ -181,8 +200,9 @@ pub async fn update_me(
     // Saturating, honest cast: a user with > u32::MAX PATs is impossible
     // in practice, but `as u32` would silently wrap — be explicit.
     let tokens_count = u32::try_from(backend.list_pats(&user_id).await?.len()).unwrap_or(u32::MAX);
+    let orgs_count = orgs_count_for(&state, &auth.principal).await?;
 
-    tracing::info!(user_id = %user_id, "me profile updated");
+    tracing::info!(user_id = %user_id, orgs_count = ?orgs_count, "me profile updated");
 
     Ok(Json(MeResponse {
         user_id: profile.user_id,
@@ -190,43 +210,56 @@ pub async fn update_me(
         display_name: profile.display_name,
         email_verified: profile.email_verified,
         mfa_enabled: profile.mfa_enabled,
-        // Omitted from the wire (not a synthesized 0) until principal→orgs
-        // enumeration is wired — canon §4.5 / §12.2. See the struct doc.
-        orgs_count: None,
+        // Real principal→orgs count from the shared MembershipStore;
+        // absent (not 0) only if the store is unwired — canon §4.5.
+        orgs_count,
         tokens_count,
     }))
 }
 
 /// `GET /api/v1/me/orgs` — organisations the authenticated user belongs to.
 ///
-/// **Honest 501 (canon §4.5).** There is no end-to-end path that
-/// enumerates the orgs a principal belongs to: `MembershipStore` exposes
-/// only point role lookups (`get_org_role(org_id, principal)`), not
-/// principal→orgs enumeration, and `nebula_storage` ships no `OrgRepo`
-/// implementation. This capability lands with the org/membership phase.
-/// Returning a synthetic `{ "orgs": [] }` would advertise a list the
-/// stack structurally cannot produce — a false capability, strictly worse
-/// than this honest stub.
+/// Real end-to-end (Phase 3): delegates to the shared
+/// [`MembershipStore`](crate::state::MembershipStore) principal→orgs
+/// enumeration — the same store [`crate::middleware::rbac`] consults, so
+/// this list is exactly the set of orgs the caller can actually access.
+/// Each entry carries `{ id, role }` only; `slug` is intentionally absent
+/// (no `OrgId`→slug reverse directory exists — canon §4.5, see
+/// [`OrgSummary`]). 503 (honest degradation) if the store is unwired.
 #[utoipa::path(
     get,
     path = "/me/orgs",
-    tag = "me (planned)",
+    tag = "me",
     security(("bearer" = []), ("api_key" = [])),
     responses(
-        (status = 501, description = "Not yet implemented; principal→orgs enumeration lands with the org/membership phase.", body = MyOrgsResponse),
+        (status = 200, description = "Organisations the caller is a member of (unpaginated; bounded per user).", body = MyOrgsResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 503, description = "Membership store not configured.", body = ProblemDetails),
     ),
 )]
-#[deprecated(
-    note = "Stub: principal→orgs enumeration is not wired end-to-end until the org/membership phase (canon §4.5 honest 501)."
-)]
 pub async fn list_my_orgs(
-    State(_state): State<AppState>,
-    Extension(_auth): Extension<AuthContext>,
-) -> ApiResult<Json<serde_json::Value>> {
-    Err(ApiError::NotImplemented(
-        "principal→orgs enumeration is not wired end-to-end yet (org/membership phase)".to_string(),
-    ))
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+) -> ApiResult<Json<MyOrgsResponse>> {
+    let store = state.membership_store.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "membership store is not configured; org enumeration is unavailable".to_owned(),
+        )
+    })?;
+
+    let orgs = store
+        .list_orgs_for_principal(&auth.principal)
+        .await?
+        .into_iter()
+        .map(|(org_id, role)| OrgSummary {
+            id: org_id.to_string(),
+            role: OrgRoleDto::from(role),
+        })
+        .collect::<Vec<_>>();
+
+    tracing::info!(count = orgs.len(), "me orgs listed");
+
+    Ok(Json(MyOrgsResponse { orgs }))
 }
 
 /// `GET /api/v1/me/tokens` — list the caller's personal access tokens

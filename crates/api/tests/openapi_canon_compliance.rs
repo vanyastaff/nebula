@@ -1,34 +1,41 @@
 //! Canon §4.5 stub-honesty gate (M3.2 Task 6.5).
 //!
 //! Locks the OpenAPI document against the failure mode where a stub
-//! handler is silently advertised as a fully-shipped endpoint:
+//! handler is silently advertised as a fully-shipped endpoint.
 //!
-//! - **Static check** — every operation flagged `deprecated = true` MUST
-//!   declare a `501` response. ADR-0047 Stub Endpoint Policy.
-//! - **Runtime check** — every stub endpoint registered under
-//!   `me::list_my_orgs`, `org/*`, `resource::list_resources`,
-//!   `execution::restart` is probed against a booted
-//!   in-memory app. (`execution::terminate` graduated stub→implemented
-//!   end-to-end via the durable control queue — ADR-0008 A3 / ADR-0016 —
-//!   so it is no longer in this inventory; it now has full §13-step-5
-//!   parity coverage in `execution_terminate_e2e.rs`. The five other
-//!   `me/*` endpoints — `get_me`, `update_me`, `list_my_tokens`,
-//!   `create_token`, `delete_token` — likewise graduated
-//!   stub→implemented end-to-end via the Plane-A `AuthBackend` port and
-//!   are covered by `me_e2e.rs`; only `me::list_my_orgs` remains an
-//!   honest 501 here because principal→orgs enumeration is not wired
-//!   until the org/membership phase — canon §4.5.) The accepted
-//!   outcomes are **501** (the
-//!   `ApiError::NotImplemented` variant) for stubs that reach the
-//!   handler body and **403** (`ApiError::InsufficientRole` /
-//!   `Forbidden`) for stubs whose RBAC gate (`tenant.require(...)`)
-//!   runs before the handler — both 403 and 501 are explicitly
-//!   advertised in the spec for RBAC-gated stubs (see ADR-0047
-//!   §4 Stub Endpoint Policy + the per-handler `responses(...)`
-//!   blocks). The legacy 500 outcome (when the stub returned
-//!   `ApiError::Internal("not implemented")`) is no longer accepted —
-//!   that deviation closed when stubs migrated to
-//!   `ApiError::NotImplemented`.
+//! **Static check** — every operation flagged `deprecated = true` MUST
+//! declare a `501` response (ADR-0047 Stub Endpoint Policy).
+//!
+//! **Runtime check** — every honest-501 stub endpoint is probed against a
+//! booted in-memory app. The remaining inventory is the org-record
+//! (`get`/`update`/`delete_org`), service-account
+//! (`list`/`create`/`delete_service_account`), `resource::list_resources`,
+//! and `execution::restart` handlers.
+//!
+//! Graduated stub→implemented (removed from this inventory):
+//! `execution::terminate` via the durable control queue (ADR-0008 A3 /
+//! ADR-0016, covered by `execution_terminate_e2e.rs`); the five `me/*`
+//! profile/PAT endpoints (`get_me`, `update_me`, `list_my_tokens`,
+//! `create_token`, `delete_token`) via the Plane-A `AuthBackend` port
+//! (covered by `me_e2e.rs`); and — Phase 3 — `me::list_my_orgs` plus the
+//! three org member endpoints (`org::list_members`, `org::add_member`,
+//! `org::remove_member`) via the shared `MembershipStore` (canon §4.5
+//! "Option 1" honest contract — the fake email-invitation shape was
+//! dropped for direct add-by-principal; covered, incl. abuse cases, by
+//! `org_e2e.rs`). The org-record + service-account endpoints stay
+//! honest-501 (no org-record store; no end-to-end
+//! `Principal::ServiceAccount` auth path).
+//!
+//! The accepted runtime outcomes are **501** (the
+//! `ApiError::NotImplemented` variant) for stubs that reach the handler
+//! body and **403** (`ApiError::InsufficientRole` / `Forbidden`) for
+//! stubs whose RBAC gate (`tenant.require(...)`) runs before the handler.
+//! Both 403 and 501 are explicitly advertised in the spec for RBAC-gated
+//! stubs (see ADR-0047 §4 Stub Endpoint Policy + the per-handler
+//! `responses(...)` blocks). The legacy 500 outcome (when the stub
+//! returned `ApiError::Internal("not implemented")`) is no longer
+//! accepted — that deviation closed when stubs migrated to
+//! `ApiError::NotImplemented`.
 
 mod common;
 
@@ -127,32 +134,23 @@ async fn deprecated_operations_must_advertise_501_response() {
 /// `Json<serde_json::Value>`, so an empty object satisfies extraction
 /// without tripping into 400 Bad Request before the handler runs.
 fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
-    let principal = "user_00000000000000000000000000";
-    let pat_id = "pat_00000000000000000000000001";
     let sa_id = "sa_00000000000000000000000001";
     let _exec_id = "exe_00000000000000000000000001";
-    let _ = pat_id;
     vec![
-        // me/* — 1 stub remaining (the other 5 graduated stub→implemented
-        // end-to-end via the Plane-A `AuthBackend` port, covered by
-        // `me_e2e.rs`). `list_my_orgs` stays an honest 501: principal→orgs
-        // enumeration is not wired until the org/membership phase — canon §4.5.
-        ("GET", "/api/v1/me/orgs".to_owned(), None),
-        // orgs/* — 9 stubs
+        // me/* — all six graduated (5 via the Plane-A `AuthBackend` port;
+        // `list_my_orgs` via the shared `MembershipStore` in Phase 3).
+        // None remain in this inventory.
+        //
+        // orgs/* — 6 honest-501 stubs remain. The 3 member endpoints
+        // (`list_members`/`add_member`/`remove_member`) graduated
+        // stub→implemented in Phase 3 against the shared `MembershipStore`
+        // ("Option 1" honest contract — covered, incl. abuse cases, by
+        // `org_e2e.rs`). The org-record + service-account endpoints stay
+        // honest-501 (no org-record store; no end-to-end
+        // `Principal::ServiceAccount` auth path).
         ("GET", format!("/api/v1/orgs/{TEST_ORG}"), None),
         ("PATCH", format!("/api/v1/orgs/{TEST_ORG}"), Some("{}")),
         ("DELETE", format!("/api/v1/orgs/{TEST_ORG}"), None),
-        ("GET", format!("/api/v1/orgs/{TEST_ORG}/members"), None),
-        (
-            "POST",
-            format!("/api/v1/orgs/{TEST_ORG}/members"),
-            Some("{}"),
-        ),
-        (
-            "DELETE",
-            format!("/api/v1/orgs/{TEST_ORG}/members/{principal}"),
-            None,
-        ),
         (
             "GET",
             format!("/api/v1/orgs/{TEST_ORG}/service-accounts"),
@@ -195,16 +193,18 @@ async fn stub_endpoints_return_501_at_runtime() {
     let stubs = stub_endpoints();
     assert_eq!(
         stubs.len(),
-        12,
+        8,
         "stub coverage list must enumerate all remaining audit class-(c) \
-         endpoints. The M3.2 audit identified 18; `execution::terminate` \
-         graduated stub→implemented end-to-end (ADR-0008 A3 / ADR-0016 — \
-         covered by execution_terminate_e2e.rs), and the five implementable \
-         `me/*` endpoints (`get_me`, `update_me`, `list_my_tokens`, \
-         `create_token`, `delete_token`) graduated stub→implemented via the \
-         Plane-A `AuthBackend` port (covered by me_e2e.rs), leaving 12 \
-         (`me::list_my_orgs` + 9 org/* + resource list + execution restart); \
-         got {}",
+         endpoints. The M3.2 audit identified 18. Graduated \
+         stub→implemented (removed from this inventory): \
+         `execution::terminate` (ADR-0008 A3 / ADR-0016 — \
+         execution_terminate_e2e.rs); the five `me/*` profile/PAT \
+         endpoints (Plane-A `AuthBackend` port — me_e2e.rs); and **Phase \
+         3** `me::list_my_orgs` + the three org member endpoints \
+         (`list_members`/`add_member`/`remove_member`) via the shared \
+         `MembershipStore` (org_e2e.rs). That leaves 8 honest-501: 3 \
+         org-record (`get`/`update`/`delete_org`) + 3 service-account + \
+         resource list + execution restart; got {}",
         stubs.len()
     );
 

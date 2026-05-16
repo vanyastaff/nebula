@@ -2,11 +2,12 @@
 //!
 //! The profile + PAT DTOs back **live** endpoints (`GET`/`PATCH /me`,
 //! `GET`/`POST /me/tokens`, `DELETE /me/tokens/{pat}`) served end-to-end
-//! through the Plane-A `AuthBackend` port. [`MyOrgsResponse`] still backs a
-//! single honest 501 stub (`GET /me/orgs`): principal→orgs enumeration is
-//! not wired end-to-end until the org/membership phase (canon §4.5).
-//! Consequently [`MeResponse::orgs_count`] is `Option<u32>` and omitted
-//! from the wire (never a synthesized `0`) until that enumeration lands.
+//! through the Plane-A `AuthBackend` port. [`MyOrgsResponse`] now also
+//! backs a **live** endpoint (`GET /me/orgs`): principal→orgs enumeration
+//! is wired end-to-end via the shared
+//! [`MembershipStore`](crate::state::MembershipStore) (Phase 3). The
+//! Phase-2 carry-over is resolved: [`MeResponse::orgs_count`] is now the
+//! **real** member count (`Some(n)`), no longer omitted.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -32,13 +33,12 @@ pub struct MeResponse {
     pub mfa_enabled: bool,
     /// Number of organisations this user belongs to.
     ///
-    /// **Absent** until principal→orgs membership enumeration is wired
-    /// end-to-end (lands with the org/membership phase — see
-    /// `GET /api/v1/me/orgs`). The field is omitted from the JSON rather
-    /// than reported as a synthesized `0`, because a count the system
-    /// cannot actually compute would be a false value on the wire
-    /// (canon §4.5 / §12.2). When the enumeration lands it starts
-    /// appearing as `Some(n)` — additive and non-breaking.
+    /// The **real** member count, derived from the shared
+    /// [`MembershipStore`](crate::state::MembershipStore) principal→orgs
+    /// enumeration (Phase 3 — resolves the Phase-2 carry-over where this
+    /// was omitted because no enumeration existed). Still `Option<u32>`
+    /// for forward-compatibility and so it degrades to *absent* (never a
+    /// synthesized `0`) if the membership store is unwired — canon §4.5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orgs_count: Option<u32>,
     /// Number of personal access tokens issued to this user.
@@ -57,13 +57,17 @@ pub struct UpdateMeRequest {
 }
 
 /// Lightweight org membership summary nested in [`MyOrgsResponse`].
+///
+/// `slug` is intentionally absent: the membership store keys by `OrgId`
+/// and there is no `OrgId`→slug reverse directory (the `OrgResolver` port
+/// is one-way slug→id). Echoing a synthesized slug would be a canon §4.5
+/// false field — same reasoning as the dropped `MemberSummary.email`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct OrgSummary {
     /// `org_<ULID>` identifier.
     pub id: String,
-    /// URL-safe slug.
-    pub slug: String,
-    /// Caller's role within this organisation.
+    /// Caller's role within this organisation (canonical wire token:
+    /// `member` / `billing` / `admin` / `owner`).
     pub role: OrgRoleDto,
 }
 
