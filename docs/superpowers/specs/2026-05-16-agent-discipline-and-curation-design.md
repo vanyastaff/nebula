@@ -145,6 +145,24 @@ Obfuscation (`ca'rg'o`, wrappers, quotes) is **not** A's problem anymore: the
 *outcome* of any cheat is caught structurally by B (can't weaken tests) + A2/C
 (can't record/claim a green that wasn't a clean gate).
 
+> **Verified harness facts (2026-05, code.claude.com/docs/en/hooks + issue #6371) — load-bearing for D10:**
+> (1) `PostToolUse` stdin `tool_response` for Bash is a **structured object**
+> (`stdout`/`stderr`/`exit_code`/`success`), not a flat string — A2 reads the
+> authenticated `exit_code`/`success`. (2) `PostToolUse` **does not fire for
+> exit≠0 Bash commands** (documented, "not planned") — so a failing gate
+> *never reaches* A2 → never recorded → C blocks: fail-safe by construction.
+> (3) The `Stop` hook has **no access to tool results / transcript** — so C
+> (Stop-gate) must and does read only the turn-state file. This validates C's
+> mechanism as the single viable one.
+>
+> Consequence: A2 records green via an **allowlist of the canonical *clean*
+> gate invocation** (not a blocklist of evasions). Anything with
+> chaining/masking/redirection/comment (`|| && ; | $( \` > < #`), lint
+> suppression (`-A`/`--allow`/`--cap-lints`/`RUSTFLAGS=…`), or a non-`cargo`/
+> `task` argv0 (`echo …`, `grep …`) is simply **not recognized** ⇒ not
+> recorded ⇒ C blocks. Over-strictness only forces the agent to run the gate
+> plainly — the safe direction, and finite (no arms race).
+
 ### A2. PostToolUse / Bash — `scripts/guard/record.sh` (matcher `Bash`) — the oracle's integrity gate (D10)
 
 Reads the tool result/exit code (PreToolUse cannot). Records
