@@ -63,27 +63,44 @@ only where a linter cannot already catch it.
 | D6 | Subagent curation: delete 9 orphan `loop-*`, merge 5 sidecars → 1, keep 4 load-bearing, trim dead MCP grants | Owner + audit |
 | D7 | Remove BridgeSpace integration (in-repo only; owner removed the out-of-repo product directly) | Owner |
 | D8 | Invert doc canon: **CLAUDE.md is canonical**, AGENTS.md becomes a thin pointer to it (non-standard; owner chose it over AGENTS.md-as-canon with the trade-off shown) | Owner |
+| D9 | Hook runtime = **bash + jq** under `scripts/guard/*.sh` (supersedes the Node `.mjs` draft — owner rejected a new Node dependency; repo already requires bash). Hook A is fail-closed. | Owner |
 
 ## 4. Architecture — Enforcement Layers
 
-Hook runtime: **Node.js `.mjs`** (Node 22 present and verified on this
-machine). Cross-platform per current guidance (no bash/PowerShell
-syntax in hook bodies; `path.join`, `os.tmpdir`). Hook scripts live in
-`.claude/hooks/`; wiring in **committed `.claude/settings.json`** using the
-**`args: string[]` exec form** (changelog 2.1.121) instead of an inline
-`command` string — avoids shell-quoting footguns, notably on Windows. Hooks arrays
-concatenate across settings scopes, so any personal hooks in
-`settings.local.json` still coexist (the prior BridgeSpace
-UserPromptSubmit/Stop/Notification hooks are being removed — see §7 — so
-`settings.local.json` carries no hooks after this work). Add
-`"$schema": "https://json.schemastore.org/claude-code-settings.json"`.
+Hook runtime: **POSIX `bash` + `jq`** (D9). Rationale: the repo **already
+requires bash** (lefthook runs `bash scripts/pre-commit-fmt-check.sh`; the
+worktree flow uses `bash scripts/worktree.sh`), so bash hooks add **zero new
+toolchain**, whereas a Node runtime would be a new project-level dependency the
+owner explicitly rejected. `bash 5.2` (git-bash) and `jq 1.8` are present and
+verified on the dev machine; git-bash is proven to work here (lefthook). Hook
+scripts live in **`scripts/guard/*.sh`** (consistent with the existing
+`scripts/` + lefthook convention); wiring in **committed `.claude/settings.json`**
+(`command`-type, invoking `bash "$CLAUDE_PROJECT_DIR/scripts/guard/<x>.sh"`).
+Hook arrays concatenate across settings scopes; `settings.local.json` carries
+no hooks after §7. Add
+`"$schema": "https://json.schemastore.org/claude-code-settings.json"`. `jq` is
+the only new (tiny, ubiquitous, already-installed) dependency; if `jq` is
+absent a hook degrades **fail-closed for A** / fail-open elsewhere (see below).
 
-Hook contract (official): PreToolUse returns
-`hookSpecificOutput.permissionDecision: "deny"` + reason, `exit 0`. Blocking
-Stop returns `exit 2` + stderr. Non-blocking notes `exit 1`. Every hook
-validates stdin JSON strictly and **fails open with `exit 0` on its own
-internal error** (a broken guard must never wedge the session) while logging to
-stderr. Hooks must complete < 2 s.
+Hook contract: blocking via **`exit 2` + stderr reason** (uniform across
+PreToolUse/Stop — no JSON emission needed; simpler and robust in bash). `jq`
+parses stdin (`tool_input.command`, `file_path`, `session_id`,
+`stop_hook_active`, …). **Failure-mode split (the load-bearing design choice):**
+a hook that hits its *own internal error* fails **open** (`exit 0`) so a broken
+guard never wedges the session — EXCEPT hook **A**, which treats a command it
+**cannot confidently normalize** (nested quotes, `$(...)`, backticks, unknown
+wrapper) as **deny** (fail-**closed**): an over-block is a safe annoyance, an
+under-block is a security hole. This makes a deliberately *simple, conservative*
+bash matcher strictly safer than a clever tokenizer that can be evaded (the
+Node draft had exactly such a bypass, caught in review). Hooks complete < 2 s.
+
+> **D9 supersession note:** the subsection headers below retain the original
+> `nebula-guard-*.mjs` names and Node phrasing for design continuity, but per
+> D9 every hook is a `scripts/guard/<role>.sh` bash script (jq for JSON, `exit
+> 2`+stderr to block, fail-open on internal error except A=fail-closed). The
+> *behavioral* spec in each subsection (what to deny/record/reset) is
+> unchanged; only the runtime is bash. The implementation **plan** carries the
+> exact bash filenames and code.
 
 ### A. PreToolUse / Bash — `nebula-guard-bash.mjs` (matcher `Bash`)
 
@@ -323,7 +340,9 @@ cheating"): hooks rot; bypasses get found. Mitigations, mandatory:
 | Skill rename breaks sidecar/`plan-polisher` `skills:` injection | G+H executed jointly; ordered plan; post-change `task` smoke that every referenced skill resolves |
 | Sidecar 5→1 merge breaks `implement-coordinator` | Sequenced last in H; coordinator spawn-path updated and exercised before deleting old sidecars |
 | Rust-ification wiped by AI-Factory update | All overrides in `.ai-factory/skill-context/`; deletions in config + dir; never base files (Rule 7) |
-| Hook latency hurts UX | Node, < 2 s budget, fmt-only post-edit, clippy stays at gate not per-edit |
+| Hook latency hurts UX | bash+jq, < 2 s budget, fmt-only post-edit, clippy stays at gate not per-edit |
+| D9: bash command-parsing for hook A is harder/bug-prone than a real tokenizer (a Node-draft bypass was caught in review) | Hook A is **fail-closed**: un-normalizable command ⇒ deny, so parser gaps over-block (safe) not under-block (bypass); conservative matcher + shell test suite (`task hooks:test`) |
+| D9: `jq` not installed on some machine | Present+verified here; declared a prerequisite alongside bash; hook A degrades fail-closed (deny) without jq, others fail-open |
 | D8 inversion: non-Claude AGENTS.md consumers (Cursor/Copilot/Codex/generic) read only a pointer, losing the rules | AGENTS.md pointer explicitly names CLAUDE.md as canonical; `.cursor/rules/*` + `.github/copilot-instructions.md` updated to point at CLAUDE.md; generic AGENTS.md-only readers seeing just the pointer is an owner-accepted trade-off |
 | Future session reverts AGENTS.md to canon out of habit (the harness/CLAUDE.md long said "treat AGENTS.md as source of truth") | D8 recorded in committed spec + project memory; the inverted CLAUDE.md states it is canonical at the top |
 
