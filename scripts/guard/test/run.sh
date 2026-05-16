@@ -62,6 +62,8 @@ rr 'cargo clippy -p nebula-aaa -p nebula-bbb -- -D warnings'
 chk "A2 multi-p takes first (I-2)" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
 rr 'cargo clippy -p nebula-core -- -D warnings' 1 false
 chk "A2 rejects exit!=0" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-zzz -- -D warnings\ntrue'
+chk "A2 rejects newline-joined (C-NL)" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
 rr 'cargo clippy -p nebula-core -- -D warnings'
 chk "A2 records clean clippy" '["aaa","core","engine"]' "$(jq -c '.gate_green' "$R_P")"
 
