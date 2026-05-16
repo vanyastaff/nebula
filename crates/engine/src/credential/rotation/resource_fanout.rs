@@ -39,16 +39,31 @@ use nebula_credential::CredentialId;
 
 /// One resource registry row affected by a credential rotation.
 ///
-/// `(resource_key, scope, slot_name, slot_identity)`. The trailing
-/// `slot_identity` is the resolved structural identity from
-/// [`nebula_resource::dedup::slot_identity`]; it disambiguates multi-tenant
-/// rows that share `(resource_key, scope)` so a rotation routes to exactly
-/// the row whose slot resolved to the rotated credential.
+/// - `resource_key` / `scope`: the structural address of the registry row.
+/// - `slot_name`: the credential slot on that row that resolved the rotated
+///   credential.
+/// - `slot_identity`: the resolved structural identity from
+///   [`nebula_resource::dedup::slot_identity`]; it disambiguates multi-tenant
+///   rows that share `(resource_key, scope)` so a rotation routes to exactly
+///   the row whose slot resolved to the rotated credential.
 ///
-/// [`nebula_resource::SLOT_IDENTITY_UNBOUND`] is the identity for a row that
-/// resolved no credential slots (single-row-per-`(key, scope)` legacy
+/// [`nebula_resource::SLOT_IDENTITY_UNBOUND`] is the `slot_identity` for a row
+/// that resolved no credential slots (single-row-per-`(key, scope)` legacy
 /// behaviour); such rows still appear here verbatim.
-pub type Bind = (ResourceKey, ScopeLevel, String, u64);
+///
+/// Fields are named (rather than a positional tuple) so call sites that
+/// destructure a bind cannot transpose `resource_key`/`scope`/`slot_name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind {
+    /// Structural key of the affected resource registry row.
+    pub resource_key: ResourceKey,
+    /// Lifecycle scope of the affected resource registry row.
+    pub scope: ScopeLevel,
+    /// Credential slot on the row that resolved the rotated credential.
+    pub slot_name: String,
+    /// Resolved structural slot identity disambiguating multi-tenant rows.
+    pub slot_identity: u64,
+}
 
 /// Engine-owned reverse index from a rotated `CredentialId` to the resource
 /// registry rows that resolved it.
@@ -92,7 +107,12 @@ impl ResourceFanoutIndex {
         slot_name: impl Into<String>,
         slot_identity: u64,
     ) {
-        let entry: Bind = (resource_key, scope, slot_name.into(), slot_identity);
+        let entry = Bind {
+            resource_key,
+            scope,
+            slot_name: slot_name.into(),
+            slot_identity,
+        };
         let mut rows = self.by_credential.entry(cid).or_default();
         if !rows.contains(&entry) {
             rows.push(entry);
@@ -111,17 +131,16 @@ impl ResourceFanoutIndex {
             .unwrap_or_default()
     }
 
-    /// Drops every binding for the resource row identified by
-    /// `(resource_key, scope)` across all credentials.
+    /// Removes every binding under `(resource_key, scope)` across all
+    /// `slot_identity` values and all credentials.
     ///
-    /// Used when a resource registry row is removed and its scope had no
-    /// multi-tenant siblings — every slot identity under that
-    /// `(key, scope)` goes away. For removing one specific resolved row out
-    /// of a multi-tenant `(key, scope)` family, use
-    /// [`unbind_resource_identity`](Self::unbind_resource_identity).
+    /// This is unconditional: it does not preserve multi-tenant siblings that
+    /// share `(resource_key, scope)` but differ in `slot_identity`. For
+    /// row-granular removal that keeps such siblings intact, use
+    /// `unbind_resource_identity`.
     pub fn unbind_resource(&self, resource_key: &ResourceKey, scope: &ScopeLevel) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|(rk, sc, _, _)| rk != resource_key || sc != scope);
+            rows.retain(|b| b.resource_key != *resource_key || b.scope != *scope);
             !rows.is_empty()
         });
     }
@@ -145,8 +164,10 @@ impl ResourceFanoutIndex {
         slot_identity: u64,
     ) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|(rk, sc, _, sid)| {
-                rk != resource_key || sc != scope || *sid != slot_identity
+            rows.retain(|b| {
+                b.resource_key != *resource_key
+                    || b.scope != *scope
+                    || b.slot_identity != slot_identity
             });
             !rows.is_empty()
         });
@@ -171,6 +192,15 @@ mod tests {
         ScopeLevel::Workflow(WorkflowId::new())
     }
 
+    fn bound(key: &ResourceKey, scope: &ScopeLevel, slot: &str, identity: u64) -> Bind {
+        Bind {
+            resource_key: key.clone(),
+            scope: scope.clone(),
+            slot_name: slot.to_string(),
+            slot_identity: identity,
+        }
+    }
+
     #[test]
     fn index_bind_lookup_unbind_with_identity() {
         let idx = ResourceFanoutIndex::new();
@@ -178,10 +208,7 @@ mod tests {
         let key = rk("pg");
         let scope = wf_scope();
         idx.bind(cid, key.clone(), scope.clone(), "db", 0x1234);
-        assert_eq!(
-            idx.affected(&cid),
-            vec![(key.clone(), scope.clone(), "db".to_string(), 0x1234)]
-        );
+        assert_eq!(idx.affected(&cid), vec![bound(&key, &scope, "db", 0x1234)]);
         idx.unbind_resource(&key, &scope);
         assert!(idx.affected(&cid).is_empty());
     }
@@ -199,11 +226,8 @@ mod tests {
         let c2 = cred();
         idx.bind(c1, key.clone(), scope.clone(), "db", 0xAAAA);
         idx.bind(c2, key.clone(), scope.clone(), "db", 0xBBBB);
-        assert_eq!(
-            idx.affected(&c1),
-            vec![(key.clone(), scope.clone(), "db".into(), 0xAAAA)]
-        );
-        assert_eq!(idx.affected(&c2), vec![(key, scope, "db".into(), 0xBBBB)]);
+        assert_eq!(idx.affected(&c1), vec![bound(&key, &scope, "db", 0xAAAA)]);
+        assert_eq!(idx.affected(&c2), vec![bound(&key, &scope, "db", 0xBBBB)]);
     }
 
     #[test]
@@ -238,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             idx.affected(&c2),
-            vec![(key, scope, "db".into(), 0xBBBB)],
+            vec![bound(&key, &scope, "db", 0xBBBB)],
             "sibling sharing (key, scope) but a different identity must survive"
         );
     }
