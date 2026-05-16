@@ -41,15 +41,29 @@ chk "A allows push no force"        0 "$(adeny "$(mk 'git push origin main')")"
 chk "A fail-open on subshell"       0 "$(adeny "$(mk 'cargo \$(echo test)')")"
 chk "A fail-open on non-Bash"       0 "$(printf '{"tool_name":"Edit"}' | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?)"
 
-# A2 record
+# A2 record (D10: canonical-clean-form allowlist; structured tool_response;
+# gate_green is jq `unique` => sorted)
 R_SID="t-a2"; R_P="$(turn_state_path "$R_SID" "$PWD")"
 mkdir -p "$(dirname "$R_P")"; printf '{"impl_files_edited":[],"gate_green":[]}' >"$R_P"
-printf '{"tool_name":"Bash","tool_input":{"command":"cargo nextest run -p nebula-engine"},"tool_response":"12 passed","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
-chk "A2 records green" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
-printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings"},"tool_response":"error: aborting","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
-chk "A2 ignores failed" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
-printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings -A clippy::all"},"tool_response":"ok","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
-chk "A2 refuses suppressed clippy (D10)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"tool_response":{"exit_code":%s,"success":%s,"stdout":"ok","stderr":""},"session_id":"%s","cwd":"%s"}' "$1" "${2:-0}" "${3:-true}" "$R_SID" "$PWD" | bash "$HERE/record.sh"; }
+rr 'cargo nextest run -p nebula-engine'
+chk "A2 records clean nextest" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'echo cargo clippy -p nebula-core -- -D warnings'
+chk "A2 rejects echo (C-1/M-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings || true'
+chk "A2 rejects ||true (C-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings 2>/dev/null'
+chk "A2 rejects redirect (C-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core --cap-lints allow -- -D warnings'
+chk "A2 rejects --cap-lints (I-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings -A clippy::all'
+chk "A2 rejects -A suppression" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-aaa -p nebula-bbb -- -D warnings'
+chk "A2 multi-p takes first (I-2)" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings' 1 false
+chk "A2 rejects exit!=0" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings'
+chk "A2 records clean clippy" '["aaa","core","engine"]' "$(jq -c '.gate_green' "$R_P")"
 
 # Per-hook cases are appended by later tasks below this line. # HOOKMARK
 
