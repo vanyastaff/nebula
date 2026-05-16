@@ -175,8 +175,12 @@ read_input
 sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 p="$(turn_state_path "$sid" "$cwd")"
 # Spec §4.C: record base HEAD so C can catch crate changes COMMITTED mid-turn
-# (git status alone goes clean after a commit). Empty if no commits / no git.
-tb="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || true)"
+# (git status alone goes clean after a commit). --verify -q stays SILENT and
+# exits non-zero on an unborn branch (zero commits): plain `rev-parse HEAD`
+# would print the literal "HEAD" to stdout there, making turn_base non-empty so
+# C runs a vacuous HEAD..HEAD diff. Empty turn_base => C skips the diff arm and
+# degrades to git-status + B-union (the intended no-commits behavior).
+tb="$(git -C "$cwd" rev-parse --verify -q HEAD 2>/dev/null || true)"
 save_state "$p" "$(printf '{"session":"%s","started_at":"%s","impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "${sid:-unknown}" "$(date -u +%FT%TZ)" "$tb")"
 allow
 ```
@@ -527,6 +531,16 @@ TB_SID="c-tb"; TB_P="$(turn_state_path "$TB_SID" "$TB_DIR")"; mkdir -p "$(dirnam
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "$TB_BASE" >"$TB_P"
 chk "C catches committed-this-turn (§4.C)" 2 "$(cstop '{"session_id":"'"$TB_SID"'","cwd":"'"$TB_DIR"'","stop_hook_active":false}')"
 rm -rf "$TB_DIR"
+# §4.C edge: A0 on an unborn branch (zero commits) must record EMPTY turn_base,
+# not the literal "HEAD". Plain `rev-parse HEAD` echoes "HEAD" to stdout there,
+# making turn_base non-empty so C's [ -n "$tb" ] guard runs a vacuous
+# HEAD..HEAD diff and a first-ever B-bypassed commit escapes. --verify -q must
+# yield "" so C correctly skips the diff arm.
+UB_DIR="$(mktemp -d)"; ( cd "$UB_DIR" && git init -q )
+UB_SID="c-ub"; UB_P="$(turn_state_path "$UB_SID" "$UB_DIR")"; mkdir -p "$(dirname "$UB_P")"
+printf '{"session_id":"%s","cwd":"%s"}' "$UB_SID" "$UB_DIR" | bash "$HERE/turn-reset.sh"
+chk "A0 unborn branch => empty turn_base (§4.C)" '""' "$(jq -c '.turn_base' "$UB_P")"
+rm -rf "$UB_DIR"
 rm -rf "$CG_DIR"
 ```
 

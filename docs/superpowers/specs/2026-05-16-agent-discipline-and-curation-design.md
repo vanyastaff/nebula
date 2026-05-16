@@ -220,8 +220,11 @@ Honors `stop_hook_active` (already true → `exit 0`, no re-block — deadlock-s
 **D11: the touched-crate set is derived from git ground truth, not from B's
 recording.** C runs read-only `git -C <repo> diff --name-only` **and**
 `git status --porcelain` (uncommitted) **plus** `git diff --name-only
-<turn-base>..HEAD` (turn-base = HEAD recorded by A0 at turn start) → any
-modified `crates/<x>/src/**.rs` ⇒ crate `<x>` is "touched". (Running `git` is
+<turn-base>..HEAD` (turn-base = HEAD recorded by A0 at turn start via
+`rev-parse --verify -q` — on an unborn branch this yields an *empty* turn-base,
+not the literal `HEAD`, so C skips the diff arm and degrades to
+git-status + B-union + the lefthook/CI commit-leg, the intended zero-commit
+behavior) → any modified `crates/<x>/src/**.rs` ⇒ crate `<x>` is "touched". (Running `git` is
 read-only and triggers no tools — Stop-hook-safe.) Union with turn-state
 `impl_files_edited` (corroborating belt; never the sole signal). If any touched
 crate lacks `gate_green` coverage (or the `*workspace*` sentinel) → `exit 2`:
