@@ -285,24 +285,46 @@ struct DrainedEvents {
 impl EventSink {
     fn drain(mut self, want_revoke: bool) -> DrainedEvents {
         let mut d = DrainedEvents::default();
-        while let Ok(evt) = self.rx.try_recv() {
-            // `ResourceEvent` derives `Debug` (no `Display`); the Debug
-            // rendering expands every struct field name + value, so a
-            // credential in any field — including the `error: String`
-            // on the `*Failed` variants — would surface here verbatim.
-            d.rendered.push_str(&format!("{evt:?}\n"));
-            match (&evt, want_revoke) {
-                (ResourceEvent::SlotRefreshed { .. }, false)
-                | (ResourceEvent::SlotRevoked { .. }, true) => {
-                    d.saw_success_variant = true;
+        // The drain MUST be loud on a dropped event: a silent stop on
+        // `Lagged` would skip an event that may have carried credential
+        // material, yielding a false-clean from this security gate. The
+        // broadcast channel is a fixed 256-slot buffer (constructed
+        // internally by `Manager`; capacity is not caller-controllable
+        // here) and this gate emits ≤2 events per direction, so `Lagged`
+        // cannot trigger under load — the panic below is a guard that
+        // converts the impossible-by-construction case into a hard fail
+        // rather than a worthless pass.
+        loop {
+            match self.rx.try_recv() {
+                Ok(evt) => {
+                    // `ResourceEvent` derives `Debug` (no `Display`); the
+                    // Debug rendering expands every struct field name +
+                    // value, so a credential in any field — including the
+                    // `error: String` on the `*Failed` variants — would
+                    // surface here verbatim.
+                    d.rendered.push_str(&format!("{evt:?}\n"));
+                    match (&evt, want_revoke) {
+                        (ResourceEvent::SlotRefreshed { .. }, false)
+                        | (ResourceEvent::SlotRevoked { .. }, true) => {
+                            d.saw_success_variant = true;
+                        },
+                        (ResourceEvent::SlotRefreshFailed { .. }, false)
+                        | (ResourceEvent::SlotRevokeFailed { .. }, true) => {
+                            d.saw_failed_variant = true;
+                        },
+                        _ => {},
+                    }
+                    d.count += 1;
                 },
-                (ResourceEvent::SlotRefreshFailed { .. }, false)
-                | (ResourceEvent::SlotRevokeFailed { .. }, true) => {
-                    d.saw_failed_variant = true;
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    panic!(
+                        "EventSink lagged by {n}: events were dropped — \
+                         redaction gate would be incomplete (false-clean risk)"
+                    );
                 },
-                _ => {},
             }
-            d.count += 1;
         }
         d
     }
@@ -457,12 +479,18 @@ async fn run_redaction_gate(want_revoke: bool) {
     // A redaction test that captures nothing passes trivially and is
     // worthless. Prove every inspected surface is genuinely non-empty
     // and carries the rotation signal before asserting absence.
-    let span_marker_present = logs.contains("nebula.resource.slot_refresh")
-        || logs.contains("nebula.credential.rotation.fanout_refresh")
-        || logs.contains("nebula.credential.rotation.fanout_revoke");
+    // Assert the EXACT fan-out span for the direction under test (or the
+    // resource-side slot_refresh span), so a one-sided rename of either
+    // fan-out span is caught instead of being masked by the other.
+    let expected_fanout_span = if want_revoke {
+        "nebula.credential.rotation.fanout_revoke"
+    } else {
+        "nebula.credential.rotation.fanout_refresh"
+    };
     assert!(
-        span_marker_present,
-        "capture guard: expected ≥1 rotation span in the log buffer, got:\n{logs}"
+        logs.contains(expected_fanout_span) || logs.contains("nebula.resource.slot_refresh"),
+        "expected rotation span `{expected_fanout_span}` (or the resource-side \
+         slot_refresh span) in captured logs — capture-is-real guard, got:\n{logs}"
     );
     assert!(
         events.count >= 1,
@@ -508,6 +536,8 @@ async fn run_redaction_gate(want_revoke: bool) {
 /// `ResourceEvent`, metric label, or error string.
 #[tokio::test]
 async fn refresh_fanout_observability_is_redaction_clean() {
+    // Capture is installed inside run_redaction_gate via set_default (NOT
+    // with_default) — see the comment there before changing.
     run_redaction_gate(false).await;
 }
 
@@ -516,6 +546,8 @@ async fn refresh_fanout_observability_is_redaction_clean() {
 /// taint→drain→hook path's spans).
 #[tokio::test]
 async fn revoke_fanout_observability_is_redaction_clean() {
+    // Capture is installed inside run_redaction_gate via set_default (NOT
+    // with_default) — see the comment there before changing.
     run_redaction_gate(true).await;
 }
 
