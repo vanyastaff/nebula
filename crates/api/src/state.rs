@@ -19,8 +19,8 @@ use nebula_storage::{
 use tokio::sync::RwLock;
 
 use crate::{
-    auth::AuthBackend, config::JwtSecret, error::ApiError, middleware::IdempotencyStore,
-    transport::webhook::WebhookTransport,
+    config::JwtSecret, domain::auth::backend::AuthBackend, error::ApiError,
+    middleware::IdempotencyStore, transport::webhook::WebhookTransport,
 };
 
 // ── Port traits ──────────────────────────────────────────────────────────────
@@ -126,8 +126,9 @@ pub struct AppState {
     /// through this single contract. When `None`, only JWT and `X-API-Key`
     /// authentication paths are available.
     ///
-    /// See [`crate::auth::AuthBackend`] for the trait surface and
-    /// [`crate::auth::InMemoryAuthBackend`] for the default impl.
+    /// See [`crate::domain::auth::backend::AuthBackend`] for the trait
+    /// surface and [`crate::domain::auth::backend::InMemoryAuthBackend`] for
+    /// the default impl.
     pub auth_backend: Option<Arc<dyn AuthBackend>>,
 
     /// Optional membership store for RBAC role lookups.
@@ -275,7 +276,7 @@ impl AppState {
     ///
     /// Replaces the older `with_session_store` builder; the same slot now
     /// drives session resolution, password login, MFA, PATs, and Plane-A
-    /// OAuth via [`crate::auth::AuthBackend`].
+    /// OAuth via [`crate::domain::auth::backend::AuthBackend`].
     #[must_use = "builder methods must be chained or built"]
     pub fn with_auth_backend(mut self, backend: Arc<dyn AuthBackend>) -> Self {
         self.auth_backend = Some(backend);

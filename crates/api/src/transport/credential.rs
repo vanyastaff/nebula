@@ -6,14 +6,14 @@
 //! credential storage ports are wired into `AppState`.
 
 use crate::{
-    error::{ApiError, ApiResult},
-    models::credential::{
+    domain::credential::dto::{
         ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
         CredentialResponse, CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,
         ListCredentialsResponse, RefreshCredentialResponse, ResolveCredentialRequest,
         ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
         UpdateCredentialRequest,
     },
+    error::{ApiError, ApiResult},
     state::AppState,
 };
 

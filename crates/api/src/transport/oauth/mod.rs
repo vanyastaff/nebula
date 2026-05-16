@@ -3,8 +3,8 @@
 //! This module provides the infrastructure for OAuth2 credential acquisition:
 //! PKCE flow helpers, signed state management, HTTP token exchange, and input
 //! validation. It does **not** contain HTTP route handlers (those live in
-//! [`crate::handlers::credential`]) or route definitions (see
-//! [`crate::routes::workspace`] and [`crate::routes::credential`]).
+//! [`crate::domain::credential::handler`]) or route definitions (see
+//! [`crate::domain::workspace`] and [`crate::domain::credential::routes`]).
 //!
 //! # Sub-modules
 //!
