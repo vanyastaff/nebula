@@ -92,6 +92,16 @@ pub struct ResourceHealthSnapshot {
 ///
 /// Thread-safe: all internal state is behind concurrent data structures.
 /// Share via `Arc<Manager>` across tasks.
+///
+/// Slot-identity-pinned acquire (the `*_for` entry points, e.g.
+/// `acquire_resident_for`) currently exists only for the resident
+/// topology. The other topologies' acquire methods are identity-agnostic:
+/// under a multi-tenant `(key, scope)` (more than one resolved-credential
+/// registration) they fail closed with
+/// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) rather
+/// than aliasing one tenant's runtime to another. Register such resources
+/// single-tenant per `(key, scope)` until a pinned path exists for their
+/// topology.
 pub struct Manager {
     pub(super) registry: Registry,
     pub(super) recovery_groups: RecoveryGroupRegistry,
@@ -816,7 +826,9 @@ impl Manager {
 
     /// Maps a [`LookupOutcome`](crate::registry::LookupOutcome) onto the
     /// typed result, downcasting and applying the **fail-closed** rule:
-    /// `Ambiguous` becomes a permanent (never-retry) deny rather than a
+    /// `Ambiguous` becomes a permanent (never-retry)
+    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) deny —
+    /// a caller conflict, not a server error — rather than a
     /// silently-picked row, so two resolved credentials sharing one
     /// `(key, scope)` can never bleed into each other.
     fn resolve_typed<R: Resource>(
@@ -829,7 +841,7 @@ impl Manager {
                 .downcast::<ManagedResource<R>>()
                 .map_err(|_| Error::not_found(&R::key())),
             LookupOutcome::NotFound => Err(Error::not_found(&R::key())),
-            LookupOutcome::Ambiguous { rows } => Err(Error::permanent(format!(
+            LookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
                 "{}: {rows} resolved-credential registrations exist at this scope; \
                  acquire without a resolved slot identity is refused to prevent \
                  cross-tenant runtime bleed — acquire via the resolved-slot-identity \
@@ -1082,7 +1094,7 @@ impl Manager {
             // arbitrarily-chosen tenant's row when several resolved-
             // credential rows share this `(key, scope)`. The engine's
             // per-slot fan-out targets the specific resolved row.
-            LookupOutcome::Ambiguous { rows } => Err(Error::permanent(format!(
+            LookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
                 "{key}: {rows} resolved-credential registrations exist at this scope; \
                  slot rotation/revoke must target a resolved row, not an ambiguous \
                  (key, scope)"
@@ -1103,6 +1115,12 @@ impl Manager {
     ///   down.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   pool topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). This identity-agnostic acquire path has no
+    ///   slot-identity-pinned counterpart yet, so register such a resource
+    ///   single-tenant per `(key, scope)` until one exists.
     /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
@@ -1277,6 +1295,12 @@ impl Manager {
     ///   registered.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   service topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). This identity-agnostic acquire path has no
+    ///   slot-identity-pinned counterpart yet, so register such a resource
+    ///   single-tenant per `(key, scope)` until one exists.
     /// - Propagates service-specific acquire errors.
     pub async fn acquire_service<R>(
         &self,
@@ -1337,6 +1361,12 @@ impl Manager {
     ///   registered.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   transport topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). This identity-agnostic acquire path has no
+    ///   slot-identity-pinned counterpart yet, so register such a resource
+    ///   single-tenant per `(key, scope)` until one exists.
     /// - Propagates transport-specific acquire errors.
     pub async fn acquire_transport<R>(
         &self,
@@ -1397,6 +1427,12 @@ impl Manager {
     ///   registered.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   exclusive topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). This identity-agnostic acquire path has no
+    ///   slot-identity-pinned counterpart yet, so register such a resource
+    ///   single-tenant per `(key, scope)` until one exists.
     /// - Propagates exclusive-specific acquire errors.
     pub async fn acquire_exclusive<R>(
         &self,
@@ -1464,6 +1500,12 @@ impl Manager {
     ///   down.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   pool topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). This identity-agnostic acquire path has no
+    ///   slot-identity-pinned counterpart yet, so register such a resource
+    ///   single-tenant per `(key, scope)` until one exists.
     pub async fn try_acquire_pooled<R>(
         &self,
         ctx: &ResourceContext,
@@ -1543,6 +1585,12 @@ impl Manager {
     ///   registered.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   pool topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
+    ///   permanent (non-retryable) caller-conflict deny — if more than one
+    ///   resolved-credential registration exists for `(R, scope)`
+    ///   (multi-tenant). This identity-agnostic path has no
+    ///   slot-identity-pinned counterpart yet, so register such a resource
+    ///   single-tenant per `(key, scope)` until one exists.
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,

@@ -35,6 +35,17 @@ pub enum ErrorKind {
     /// transient/unavailable condition (retry after a short backoff),
     /// **not** a cancellation.
     Revoked,
+    /// More than one resolved-credential registration exists for the
+    /// requested `(key, scope)` and the caller supplied no slot identity
+    /// to disambiguate — a fail-closed deny.
+    ///
+    /// This is a caller/wiring fault, not an internal invariant breach:
+    /// either register the resource single-tenant per `(key, scope)`, or
+    /// acquire through a slot-identity-pinned path. It is a permanent
+    /// caller error (never auto-retried — the caller must change how it
+    /// resolves the resource), classified as a client conflict, **not** a
+    /// server (5xx) failure.
+    Ambiguous,
 }
 
 /// Whether the error is resource-wide or target-specific.
@@ -177,6 +188,17 @@ impl Error {
         Self::new(ErrorKind::Revoked, message)
     }
 
+    /// Creates an ambiguous-resolution error (more than one resolved-
+    /// credential registration matched `(key, scope)` and no slot identity
+    /// was supplied to disambiguate).
+    ///
+    /// Permanent caller error — never retried (the caller must supply a
+    /// resolved slot identity or register single-tenant); classified as a
+    /// client conflict, not a server failure.
+    pub fn ambiguous(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Ambiguous, message)
+    }
+
     /// Creates a backpressure error.
     pub fn backpressure(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Backpressure, message)
@@ -230,6 +252,14 @@ impl nebula_error::Classify for Error {
             // uses for "temporarily down, try again" (see
             // `ErrorCategory::is_default_retryable`).
             ErrorKind::Revoked => nebula_error::ErrorCategory::Unavailable,
+            // Caller/wiring fault, not an internal breach: the caller asked
+            // for a `(key, scope)` that resolves to more than one tenant's
+            // registration without pinning a slot identity. `Conflict` is
+            // the client-error, non-retryable family (it is NOT a server
+            // 5xx — see `ErrorCategory::is_client_error` /
+            // `is_server_error`), so the deny surfaces as a caller conflict
+            // rather than `Internal`.
+            ErrorKind::Ambiguous => nebula_error::ErrorCategory::Conflict,
         }
     }
 
@@ -242,6 +272,7 @@ impl nebula_error::Classify for Error {
             ErrorKind::NotFound => "RESOURCE:NOT_FOUND",
             ErrorKind::Cancelled => "RESOURCE:CANCELLED",
             ErrorKind::Revoked => "RESOURCE:REVOKED",
+            ErrorKind::Ambiguous => "RESOURCE:AMBIGUOUS",
         })
     }
 
@@ -338,6 +369,54 @@ mod tests {
         );
         let hint = Classify::retry_hint(&err).expect("Revoked has a retry hint");
         assert_eq!(hint.after, Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn ambiguous_is_caller_conflict_not_internal() {
+        use nebula_error::{Classify, ErrorCategory};
+
+        let err = Error::ambiguous("two resolved-credential rows; supply slot identity");
+        // An ambiguous resolution is a caller/wiring fault (the caller did
+        // not pin a slot identity), NOT an internal invariant breach.
+        assert_eq!(*err.kind(), ErrorKind::Ambiguous);
+        assert_eq!(
+            Classify::category(&err),
+            ErrorCategory::Conflict,
+            "Ambiguous must classify as a client conflict"
+        );
+        assert_ne!(
+            Classify::category(&err),
+            ErrorCategory::Internal,
+            "Ambiguous must not surface as a 5xx server error"
+        );
+        assert!(
+            ErrorCategory::Conflict.is_client_error(),
+            "Conflict must be a client error"
+        );
+        assert!(
+            !ErrorCategory::Conflict.is_server_error(),
+            "Conflict must not be a server error"
+        );
+        // Permanent caller error — the caller must change how it resolves
+        // the resource; never auto-retried.
+        assert!(
+            !err.is_retryable(),
+            "Ambiguous is a permanent caller error, not retryable"
+        );
+        assert!(
+            !Classify::category(&err).is_default_retryable(),
+            "Conflict must not be default-retryable"
+        );
+        assert_eq!(Classify::code(&err).as_str(), "RESOURCE:AMBIGUOUS");
+        assert_eq!(
+            err.retry_after(),
+            None,
+            "Ambiguous carries no retry hint (permanent caller error)"
+        );
+        assert!(
+            Classify::retry_hint(&err).is_none(),
+            "Ambiguous exposes no retry hint"
+        );
     }
 
     #[test]

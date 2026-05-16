@@ -402,8 +402,10 @@ impl Registry {
     /// With `want_identity = None` (caller does not know the resolved
     /// identity): returns [`LookupOutcome::Found`] iff exactly one row
     /// exists at the effective scope, and [`LookupOutcome::Ambiguous`] if
-    /// two or more distinct credential rows compete — the registry refuses
-    /// to silently alias one tenant's runtime to another.
+    /// two or more rows exist at the effective scope — the registry refuses
+    /// to silently alias one tenant's runtime to another. (`rows` is the
+    /// count of entries at that scope, not of distinct `slot_identity`
+    /// values.)
     fn find_by_scope(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,
