@@ -37,6 +37,7 @@
 
 pub mod cell;
 pub mod context;
+pub mod dedup;
 pub mod error;
 pub mod events;
 pub mod ext;
@@ -59,6 +60,7 @@ pub mod topology_tag;
 
 pub use cell::Cell;
 pub use context::ResourceContext;
+pub use dedup::{DedupKey, SLOT_IDENTITY_UNBOUND, slot_identity};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
@@ -95,7 +97,7 @@ pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
     RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
 };
-pub use registry::{AnyManagedResource, Registry};
+pub use registry::{AnyManagedResource, LookupOutcome, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
