@@ -93,15 +93,17 @@ pub struct ResourceHealthSnapshot {
 /// Thread-safe: all internal state is behind concurrent data structures.
 /// Share via `Arc<Manager>` across tasks.
 ///
-/// Slot-identity-pinned acquire (the `*_for` entry points, e.g.
-/// `acquire_resident_for`) currently exists only for the resident
-/// topology. The other topologies' acquire methods are identity-agnostic:
-/// under a multi-tenant `(key, scope)` (more than one resolved-credential
-/// registration) they fail closed with
-/// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) rather
-/// than aliasing one tenant's runtime to another. Register such resources
-/// single-tenant per `(key, scope)` until a pinned path exists for their
-/// topology.
+/// Slot-identity-pinned acquire (the `*_for` entry points —
+/// `acquire_{pooled,resident,service,transport,exclusive}_for`) exists for
+/// every topology: it resolves the registry row whose resolved
+/// `slot_identity` matches, so a caller that resolved tenant A's credential
+/// reaches tenant A's runtime and never tenant B's. The identity-agnostic
+/// `acquire_*` methods stay fail-closed for the no-identity caller: under a
+/// multi-tenant `(key, scope)` (more than one resolved-credential
+/// registration) they return
+/// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) rather than
+/// aliasing one tenant's runtime to another. Use the `*_for` variant
+/// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
     pub(super) recovery_groups: RecoveryGroupRegistry,
@@ -938,8 +940,62 @@ impl Manager {
         scope: ScopeLevel,
         slot: &str,
     ) -> Result<(), Error> {
-        let started = Instant::now();
         let managed = self.lookup_any_for_slot(key, &scope)?;
+        self.refresh_resolved(key, slot, managed).await
+    }
+
+    /// [`refresh_slot`](Self::refresh_slot) pinned to a resolved per-slot
+    /// credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches (via the same
+    /// unambiguous-by-construction path [`get_for`](crate::registry::Registry::get_for)
+    /// backs), so a multi-tenant `(key, scope)` routes the rotation to the
+    /// *specific* resolved row instead of failing closed with
+    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous). This is
+    /// the entry point the engine per-slot rotation fan-out drives once it
+    /// has resolved a node's slot bindings; identity-agnostic
+    /// [`refresh_slot`](Self::refresh_slot) stays fail-closed for the
+    /// no-identity caller.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of `key` at `scope`
+    ///   matches `slot_identity`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - Whatever the resource's `on_credential_refresh` hook maps into [`Error`].
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_refresh",
+        skip(self),
+        fields(key = %key, slot = %slot, slot_identity, topology, duration_ms)
+    )]
+    pub async fn refresh_slot_for(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: u64,
+    ) -> Result<(), Error> {
+        tracing::Span::current().record("slot_identity", slot_identity);
+        let managed = self.lookup_any_for_slot_identity(key, &scope, slot_identity)?;
+        self.refresh_resolved(key, slot, managed).await
+    }
+
+    /// Post-resolution refresh dispatch shared by
+    /// [`refresh_slot`](Self::refresh_slot) (identity-agnostic) and
+    /// [`refresh_slot_for`](Self::refresh_slot_for) (slot-identity-pinned).
+    ///
+    /// The two public entry points differ only in how they resolve the row;
+    /// the hook dispatch, metric (exactly one outcome per dispatch), and
+    /// event emission are identical and live here.
+    async fn refresh_resolved(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::AnyManagedResource>,
+    ) -> Result<(), Error> {
+        let started = Instant::now();
         tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
 
         let result = managed.dispatch_on_refresh_erased(slot).await;
@@ -1009,8 +1065,63 @@ impl Manager {
         scope: ScopeLevel,
         slot: &str,
     ) -> Result<(), Error> {
-        let started = Instant::now();
         let managed = self.lookup_any_for_slot(key, &scope)?;
+        self.revoke_resolved(key, slot, managed).await
+    }
+
+    /// [`revoke_slot`](Self::revoke_slot) pinned to a resolved per-slot
+    /// credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches (the same
+    /// unambiguous-by-construction path
+    /// [`get_for`](crate::registry::Registry::get_for) backs), so a
+    /// multi-tenant `(key, scope)` taints/drains/revokes the *specific*
+    /// resolved row instead of failing closed with
+    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous). This is
+    /// the entry point the engine per-slot rotation fan-out drives on a
+    /// lease revoke; identity-agnostic [`revoke_slot`](Self::revoke_slot)
+    /// stays fail-closed for the no-identity caller.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of `key` at `scope`
+    ///   matches `slot_identity`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_refresh",
+        skip(self),
+        fields(key = %key, slot = %slot, slot_identity, topology, duration_ms, op = "revoke")
+    )]
+    pub async fn revoke_slot_for(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: u64,
+    ) -> Result<(), Error> {
+        tracing::Span::current().record("slot_identity", slot_identity);
+        let managed = self.lookup_any_for_slot_identity(key, &scope, slot_identity)?;
+        self.revoke_resolved(key, slot, managed).await
+    }
+
+    /// Post-resolution revoke sequence (taint → bounded drain → hook → event)
+    /// shared by [`revoke_slot`](Self::revoke_slot) (identity-agnostic) and
+    /// [`revoke_slot_for`](Self::revoke_slot_for) (slot-identity-pinned).
+    ///
+    /// The two public entry points differ only in how they resolve the row;
+    /// the safety-critical taint-before-drain-before-hook ordering and the
+    /// one-outcome-per-dispatch metric (a drain timeout being terminal) are
+    /// identical and live here.
+    async fn revoke_resolved(
+        &self,
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::AnyManagedResource>,
+    ) -> Result<(), Error> {
+        let started = Instant::now();
         tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
 
         // 1. Taint first — rejects new acquires before we drain/dispatch.
@@ -1103,6 +1214,43 @@ impl Manager {
         }
     }
 
+    /// [`lookup_any_for_slot`](Self::lookup_any_for_slot) pinned to a
+    /// resolved per-slot credential identity.
+    ///
+    /// Resolves through [`Registry::get_for`](crate::registry::Registry::get_for),
+    /// which selects the single row whose `(scope, slot_identity)` matches
+    /// and is therefore **unambiguous by construction** — a resolved
+    /// credential pins exactly one row, so the
+    /// [`LookupOutcome::Ambiguous`](crate::registry::LookupOutcome) arm
+    /// cannot occur here (no fail-closed path is bypassed: the engine
+    /// fan-out supplies the resolved identity it recorded at register time).
+    /// A `slot_identity` that was never registered is
+    /// [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound), never an
+    /// accidental alias to another tenant's row.
+    fn lookup_any_for_slot_identity(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: u64,
+    ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
+        use crate::registry::LookupOutcome;
+        self.shutdown_guard()?;
+        match self.registry.get_for(key, scope, slot_identity) {
+            LookupOutcome::Found(any) => Ok(any),
+            LookupOutcome::NotFound => Err(Error::not_found(key)),
+            // Unreachable: `get_for` pins a single `(scope, slot_identity)`
+            // row, so it never returns `Ambiguous`. Mapped to the same
+            // fail-closed deny `lookup_any_for_slot` uses rather than a
+            // panic, so a future registry change cannot turn an invariant
+            // breach into a process abort.
+            LookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
+                "{key}: {rows} rows matched a slot-identity-pinned lookup; \
+                 expected exactly one (registry invariant breach)"
+            ))
+            .with_resource_key(key.clone())),
+        }
+    }
+
     /// Acquires a handle to a pooled resource.
     ///
     /// Performs typed lookup, then dispatches to the pool runtime's acquire.
@@ -1118,9 +1266,10 @@ impl Manager {
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
     ///   permanent (non-retryable) caller-conflict deny — if more than one
     ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). This identity-agnostic acquire path has no
-    ///   slot-identity-pinned counterpart yet, so register such a resource
-    ///   single-tenant per `(key, scope)` until one exists.
+    ///   (multi-tenant). Acquire through the slot-identity-pinned
+    ///   [`acquire_pooled_for`](Self::acquire_pooled_for) when the resolved
+    ///   slot identity is known; this identity-agnostic path stays
+    ///   fail-closed for the no-identity caller.
     /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
@@ -1132,8 +1281,59 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        let started = Instant::now();
         let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        self.run_pooled_acquire(managed, ctx, options).await
+    }
+
+    /// [`acquire_pooled`](Self::acquire_pooled) pinned to a resolved per-slot
+    /// credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches, so a caller
+    /// that resolved tenant A's credential reaches tenant A's runtime and
+    /// never tenant B's. This is the unambiguous acquire path the engine
+    /// resolution layer uses once it has resolved a node's slot bindings;
+    /// it is also how callers reach a resource registered with a non-default
+    /// [`RegisterOptions::with_slot_identity`].
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   pool topology.
+    /// - Propagates pool-specific acquire errors.
+    pub async fn acquire_pooled_for<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        self.run_pooled_acquire(managed, ctx, options).await
+    }
+
+    /// Shared pooled acquire pipeline (resilience + gate + drain
+    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
+    /// public pooled-acquire entry points differ only in how they resolve
+    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
+    /// dispatch itself is identical.
+    async fn run_pooled_acquire<R>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let started = Instant::now();
         // Defense B against the `graceful_shutdown` race: pre-count this
         // acquire from the moment `lookup()` succeeds. RAII decrements + notifies
         // on every failure / cancel / panic path; on success the slot is handed
@@ -1298,9 +1498,10 @@ impl Manager {
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
     ///   permanent (non-retryable) caller-conflict deny — if more than one
     ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). This identity-agnostic acquire path has no
-    ///   slot-identity-pinned counterpart yet, so register such a resource
-    ///   single-tenant per `(key, scope)` until one exists.
+    ///   (multi-tenant). Acquire through the slot-identity-pinned
+    ///   [`acquire_service_for`](Self::acquire_service_for) when the resolved
+    ///   slot identity is known; this identity-agnostic path stays
+    ///   fail-closed for the no-identity caller.
     /// - Propagates service-specific acquire errors.
     pub async fn acquire_service<R>(
         &self,
@@ -1312,8 +1513,59 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let started = Instant::now();
         let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        self.run_service_acquire(managed, ctx, options).await
+    }
+
+    /// [`acquire_service`](Self::acquire_service) pinned to a resolved
+    /// per-slot credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches, so a caller
+    /// that resolved tenant A's credential reaches tenant A's runtime and
+    /// never tenant B's. This is the unambiguous acquire path the engine
+    /// resolution layer uses once it has resolved a node's slot bindings;
+    /// it is also how callers reach a resource registered with a non-default
+    /// [`RegisterOptions::with_slot_identity`].
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   service topology.
+    /// - Propagates service-specific acquire errors.
+    pub async fn acquire_service_for<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::service::Service + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        self.run_service_acquire(managed, ctx, options).await
+    }
+
+    /// Shared service acquire pipeline (resilience + gate + drain
+    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
+    /// public service-acquire entry points differ only in how they resolve
+    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
+    /// dispatch itself is identical.
+    async fn run_service_acquire<R>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::service::Service + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -1364,9 +1616,10 @@ impl Manager {
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
     ///   permanent (non-retryable) caller-conflict deny — if more than one
     ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). This identity-agnostic acquire path has no
-    ///   slot-identity-pinned counterpart yet, so register such a resource
-    ///   single-tenant per `(key, scope)` until one exists.
+    ///   (multi-tenant). Acquire through the slot-identity-pinned
+    ///   [`acquire_transport_for`](Self::acquire_transport_for) when the
+    ///   resolved slot identity is known; this identity-agnostic path stays
+    ///   fail-closed for the no-identity caller.
     /// - Propagates transport-specific acquire errors.
     pub async fn acquire_transport<R>(
         &self,
@@ -1378,8 +1631,59 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let started = Instant::now();
         let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        self.run_transport_acquire(managed, ctx, options).await
+    }
+
+    /// [`acquire_transport`](Self::acquire_transport) pinned to a resolved
+    /// per-slot credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches, so a caller
+    /// that resolved tenant A's credential reaches tenant A's runtime and
+    /// never tenant B's. This is the unambiguous acquire path the engine
+    /// resolution layer uses once it has resolved a node's slot bindings;
+    /// it is also how callers reach a resource registered with a non-default
+    /// [`RegisterOptions::with_slot_identity`].
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   transport topology.
+    /// - Propagates transport-specific acquire errors.
+    pub async fn acquire_transport_for<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        self.run_transport_acquire(managed, ctx, options).await
+    }
+
+    /// Shared transport acquire pipeline (resilience + gate + drain
+    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
+    /// public transport-acquire entry points differ only in how they resolve
+    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
+    /// dispatch itself is identical.
+    async fn run_transport_acquire<R>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -1430,9 +1734,10 @@ impl Manager {
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
     ///   permanent (non-retryable) caller-conflict deny — if more than one
     ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). This identity-agnostic acquire path has no
-    ///   slot-identity-pinned counterpart yet, so register such a resource
-    ///   single-tenant per `(key, scope)` until one exists.
+    ///   (multi-tenant). Acquire through the slot-identity-pinned
+    ///   [`acquire_exclusive_for`](Self::acquire_exclusive_for) when the
+    ///   resolved slot identity is known; this identity-agnostic path stays
+    ///   fail-closed for the no-identity caller.
     /// - Propagates exclusive-specific acquire errors.
     pub async fn acquire_exclusive<R>(
         &self,
@@ -1444,8 +1749,63 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let started = Instant::now();
         let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        self.run_exclusive_acquire(managed, options).await
+    }
+
+    /// [`acquire_exclusive`](Self::acquire_exclusive) pinned to a resolved
+    /// per-slot credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches, so a caller
+    /// that resolved tenant A's credential reaches tenant A's runtime and
+    /// never tenant B's. This is the unambiguous acquire path the engine
+    /// resolution layer uses once it has resolved a node's slot bindings;
+    /// it is also how callers reach a resource registered with a non-default
+    /// [`RegisterOptions::with_slot_identity`].
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   exclusive topology.
+    /// - Propagates exclusive-specific acquire errors.
+    pub async fn acquire_exclusive_for<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        self.run_exclusive_acquire(managed, options).await
+    }
+
+    /// Shared exclusive acquire pipeline (resilience + gate + drain
+    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
+    /// public exclusive-acquire entry points differ only in how they resolve
+    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
+    /// dispatch itself is identical.
+    ///
+    /// Unlike the other topologies' shared pipelines this takes no
+    /// `ResourceContext`: exclusive `rt.acquire` is context-free, and the
+    /// only `ctx` use (scope resolution) already happened in the two public
+    /// entry points before the row was resolved.
+    async fn run_exclusive_acquire<R>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight = InFlightCounter::new(self.drain_tracker.clone());
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
@@ -1503,9 +1863,10 @@ impl Manager {
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
     ///   permanent (non-retryable) caller-conflict deny — if more than one
     ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). This identity-agnostic acquire path has no
-    ///   slot-identity-pinned counterpart yet, so register such a resource
-    ///   single-tenant per `(key, scope)` until one exists.
+    ///   (multi-tenant). This non-blocking try-path is identity-agnostic and
+    ///   stays fail-closed; use the slot-identity-pinned
+    ///   [`acquire_pooled_for`](Self::acquire_pooled_for) when the resolved
+    ///   slot identity is known and a blocking acquire is acceptable.
     pub async fn try_acquire_pooled<R>(
         &self,
         ctx: &ResourceContext,
@@ -1588,9 +1949,10 @@ impl Manager {
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
     ///   permanent (non-retryable) caller-conflict deny — if more than one
     ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). This identity-agnostic path has no
-    ///   slot-identity-pinned counterpart yet, so register such a resource
-    ///   single-tenant per `(key, scope)` until one exists.
+    ///   (multi-tenant). Warmup is identity-agnostic and stays fail-closed;
+    ///   a multi-tenant pool is warmed per resolved row through the
+    ///   slot-identity-pinned acquire path
+    ///   ([`acquire_pooled_for`](Self::acquire_pooled_for)).
     pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,

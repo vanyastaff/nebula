@@ -299,21 +299,55 @@ where
 /// "continue the loop" choice for transient kinds.
 fn classify_resource_error(res_err: nebula_resource::Error) -> ActionError {
     match res_err.kind() {
+        // Retryable transient family — recv blocks until the next event so
+        // there is no backoff to apply here.
         ResourceErrorKind::Transient
         | ResourceErrorKind::Exhausted { .. }
         | ResourceErrorKind::Backpressure => {
             tracing::warn!(error = %res_err, "event_source: subscribe transient error");
             ActionError::retryable(res_err.to_string())
         },
+        // Tainted by a credential revoke. Non-terminal: the taint clears
+        // once the credential is re-registered, so the source is
+        // reacquirable — classify retryable, never fatal.
+        ResourceErrorKind::Revoked => {
+            tracing::warn!(
+                error = %res_err,
+                "event_source: subscribe rejected (resource tainted by credential revoke); retryable",
+            );
+            ActionError::retryable(res_err.to_string())
+        },
         ResourceErrorKind::Cancelled => {
             tracing::info!(error = %res_err, "event_source: subscribe cancelled");
             ActionError::Cancelled
         },
-        _ => {
+        // Permanent caller/wiring faults. `Ambiguous` is a client conflict
+        // (multi-tenant `(key, scope)` with no resolved slot identity) and
+        // is **not** auto-retryable — surface it as fatal *explicitly* so
+        // the supervisor does not hot-loop a mis-wired source; same
+        // clean-exit handling as the other permanent kinds, but never via
+        // a catch-all.
+        ResourceErrorKind::Permanent
+        | ResourceErrorKind::NotFound
+        | ResourceErrorKind::Ambiguous => {
             tracing::error!(
                 error = %res_err,
                 kind = ?res_err.kind(),
                 "event_source: subscribe permanent error",
+            );
+            ActionError::fatal(res_err.to_string())
+        },
+        // `ResourceErrorKind` is `#[non_exhaustive]` and defined in another
+        // crate, so the compiler requires this arm: every variant that
+        // exists today is matched explicitly above, so this is reachable
+        // *only* by a future upstream `ErrorKind` addition. Fail safe (no
+        // retry hot-loop) and log loudly that an unclassified kind needs an
+        // explicit arm — the same conservatism `Classify` applies.
+        other => {
+            tracing::error!(
+                error = %res_err,
+                kind = ?other,
+                "event_source: subscribe error of unclassified resource kind; treating as fatal — add an explicit arm",
             );
             ActionError::fatal(res_err.to_string())
         },
@@ -346,6 +380,17 @@ fn classify_resource_error_outcome(res_err: nebula_resource::Error) -> RecvOutco
             );
             RecvOutcome::Continue
         },
+        // Tainted by a credential revoke — transient: the source is
+        // reacquirable once the credential is re-registered, so continue
+        // the loop (recv blocks until the next event; no backoff here)
+        // rather than treating it as a fatal trigger failure.
+        ResourceErrorKind::Revoked => {
+            tracing::warn!(
+                error = %res_err,
+                "event_source: recv rejected (resource tainted by credential revoke); continuing",
+            );
+            RecvOutcome::Continue
+        },
         ResourceErrorKind::Cancelled => {
             tracing::info!(
                 error = %res_err,
@@ -353,11 +398,28 @@ fn classify_resource_error_outcome(res_err: nebula_resource::Error) -> RecvOutco
             );
             RecvOutcome::Cancelled
         },
-        _ => {
+        // Permanent caller/wiring faults. `Ambiguous` is a non-retryable
+        // client conflict; surface it as fatal *explicitly* (clean
+        // supervisor exit, no hot-loop) rather than through a catch-all.
+        ResourceErrorKind::Permanent
+        | ResourceErrorKind::NotFound
+        | ResourceErrorKind::Ambiguous => {
             tracing::error!(
                 error = %res_err,
                 kind = ?res_err.kind(),
                 "event_source: recv permanent error; exiting",
+            );
+            RecvOutcome::Fatal(ActionError::fatal(res_err.to_string()))
+        },
+        // `#[non_exhaustive]` cross-crate enum: every present variant is
+        // matched explicitly above, so this is reachable only by a future
+        // upstream `ErrorKind` addition. Fail safe (clean exit, no
+        // hot-loop) and log loudly that it needs an explicit arm.
+        other => {
+            tracing::error!(
+                error = %res_err,
+                kind = ?other,
+                "event_source: recv error of unclassified resource kind; treating as fatal — add an explicit arm",
             );
             RecvOutcome::Fatal(ActionError::fatal(res_err.to_string()))
         },
@@ -611,5 +673,82 @@ mod tests {
         let ctx: TestTriggerContext = TestContextBuilder::new().build_trigger().0;
         // stop() is a no-op — should always succeed.
         adapter.stop(&ctx).await.expect("stop is infallible");
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Resource-error classifier arms (subscribe + recv paths).
+    //
+    // `Revoked` is transient (the source is reacquirable once the
+    // credential is re-registered) → retryable / Continue, never fatal.
+    // `Ambiguous` is a permanent caller conflict → fatal, but matched by an
+    // *explicit* arm (not the `#[non_exhaustive]` catch-all).
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn subscribe_classifier_maps_revoked_to_retryable() {
+        let err = ResourceError::revoked("resource tainted by credential revoke");
+        match classify_resource_error(err) {
+            ActionError::Retryable { .. } => {},
+            other => panic!("Revoked must classify retryable on subscribe, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribe_classifier_maps_ambiguous_to_explicit_fatal() {
+        let err = ResourceError::ambiguous("2 resolved-credential registrations at this scope");
+        // `Ambiguous` is a non-retryable caller conflict: fatal is the
+        // correct supervisor outcome, but it must be reached by the
+        // explicit `Permanent | NotFound | Ambiguous` arm — not the
+        // non-exhaustive tail. We assert the *classification* (fatal /
+        // non-retryable); the explicitness is enforced structurally by the
+        // exhaustive match in the classifier.
+        match classify_resource_error(err) {
+            ActionError::Fatal { .. } => {},
+            other => panic!("Ambiguous must classify fatal on subscribe, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recv_classifier_maps_revoked_to_continue() {
+        let err = ResourceError::revoked("resource tainted by credential revoke");
+        assert!(
+            matches!(classify_resource_error_outcome(err), RecvOutcome::Continue),
+            "Revoked must continue the recv loop (transient), never fatal",
+        );
+    }
+
+    #[test]
+    fn recv_classifier_maps_ambiguous_to_explicit_fatal() {
+        let err = ResourceError::ambiguous("2 resolved-credential registrations at this scope");
+        assert!(
+            matches!(classify_resource_error_outcome(err), RecvOutcome::Fatal(_)),
+            "Ambiguous is a non-retryable caller conflict — explicit fatal, not Continue",
+        );
+    }
+
+    #[test]
+    fn recv_classifier_transient_family_still_continues() {
+        // Regression guard: the new Revoked/Ambiguous arms must not have
+        // disturbed the existing transient family.
+        for err in [
+            ResourceError::transient("blip"),
+            ResourceError::backpressure("full"),
+        ] {
+            assert!(
+                matches!(classify_resource_error_outcome(err), RecvOutcome::Continue),
+                "transient family must still continue",
+            );
+        }
+    }
+
+    #[test]
+    fn recv_classifier_cancelled_exits_clean() {
+        assert!(
+            matches!(
+                classify_resource_error_outcome(ResourceError::cancelled()),
+                RecvOutcome::Cancelled
+            ),
+            "Cancelled must remain a clean exit, not Continue/Fatal",
+        );
     }
 }

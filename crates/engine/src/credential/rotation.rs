@@ -35,7 +35,7 @@ pub use nebula_credential::rotation::{
     policy::{BeforeExpiryConfig, ManualConfig, PeriodicConfig, RotationPolicy, ScheduledConfig},
     state::RotationState,
 };
-pub use resource_fanout::{Bind, ResourceFanoutIndex};
+pub use resource_fanout::{Bind, ResourceFanoutIndex, RotationOutcome};
 pub use scheduler::{ExpiryMonitor, PeriodicScheduler, ScheduledRotation};
 pub use token_refresh::{TokenRefreshError, refresh_oauth2_state};
 pub use transaction::{
