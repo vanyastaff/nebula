@@ -1180,16 +1180,21 @@ fn gate_and_validate_level(
                 validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
             },
             _ => {
-                // Fail-closed: an unknown future directive validates nothing
-                // and emits nothing. Audited so the gap is observable.
+                // Conservative fallback for an unknown future directive: still
+                // run structural validation. For a validation seam the safe
+                // direction is to validate more, not less — silently skipping
+                // would let a present value (e.g. a smuggled expression) reach
+                // resolve unchecked. The validator remains the sole `required`
+                // emitter, so this never synthesizes a `required`.
                 tracing::debug!(
                     target: "nebula_schema::validate",
                     field = %entry.schema_path,
                     presence = ?plan.presence,
                     requiredness = ?plan.requiredness,
-                    decision = "unknown-directive",
+                    decision = "unknown-directive-validated",
                     "field-gate decision"
                 );
+                validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
             },
         }
     }
