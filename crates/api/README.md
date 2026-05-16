@@ -238,6 +238,53 @@ impl, and (unlike idempotency) no feature-gated PG path, because
 > tradeoffs* below) — the gap is strictly persistence, not capability.
 > It closes when a storage-backed `AuthBackend` lands.
 
+### Credential CRUD durability (canon §11.6 / §12.5)
+
+The credential CRUD endpoints (`create` / `get` / `update` / `delete`
+/ `list` under `…/workspaces/{ws}/credentials`) are **implemented and
+work end-to-end** over the wired in-memory credential store
+(`AppState::oauth_credential_store` —
+`nebula_storage::credential::InMemoryStore`, the same real
+`nebula_credential::CredentialStore` impl the OAuth2 callback writes
+through). The type-specific `data` is persisted **write-only**: it is
+wrapped in `nebula_credential::SecretString` for its in-process
+lifetime and stored as an opaque blob; the metadata-only response
+types have no `data` field, so `get` / `list` cannot echo the secret.
+
+| Aspect | Credential CRUD (in-memory store) |
+|---|---|
+| Restart-survival | **No** — credentials are lost on restart |
+| Multi-replica share | **No** — state is process-local |
+| Encryption at rest | **No `EncryptionLayer` wired** — the blob is plaintext-at-rest in the in-memory store |
+| Cross-workspace isolation | **None today** — the in-memory credential store is global and the `{org}`/`{ws}` path segments are not bound to credential ownership; any authenticated caller with a valid `cred_<ULID>` resolves/mutates it regardless of workspace. Pre-existing crate-wide local-first gap (same as `workflow`/`execution`); closes when the owner-scoped `nebula_storage::credential::ScopeLayer` is composed in the composition root. |
+
+> **Operator warning:** a credential created via
+> `POST …/credentials` stops resolving the moment the process exits and
+> is not shared across replicas, its secret blob is **not encrypted
+> at rest** in this build (the production `EncryptionLayer` from
+> `nebula_storage`, ADR-0032, is not composed here), and there is **no
+> cross-workspace isolation** — any authenticated caller holding a valid
+> `cred_<ULID>` can resolve or mutate it regardless of the `{org}`/`{ws}`
+> in the path, because no owner-scoped `ScopeLayer` / credential→workspace
+> ownership binding is wired (the same crate-wide local-first gap that
+> `workflow`/`execution` carry). Same local-first caveat as `me/*` and
+> the `memory` idempotency backend — the gap is persistence + at-rest
+> encryption + tenant-isolation *wiring* (un-composed cross-cutting
+> layers), not the CRUD capability itself. It closes when a
+> storage-backed, `EncryptionLayer`- and `ScopeLayer`-wrapped credential
+> store is composed in the composition root.
+>
+> `test` / `refresh` / `revoke` / generic `resolve` /
+> `resolve/continue` / credential-type discovery remain **honest 503**
+> (canon §4.5): they require engine-owned dispatch
+> (`nebula-engine::credential`, ADR-0030/ADR-0041) and/or a
+> `CredentialRegistry` that is not wired into this build, so they
+> deliberately refuse rather than fake a credential capability. The
+> generic `resolve` / `resolve/continue` routes are additionally
+> shadowed by the tenancy `{cred}` path matcher (a pre-existing
+> route-ordering condition) and surface as a flat 404 before the
+> handler — still §4.5-honest (no false success).
+
 ### Regeneration
 
 The spec is materialised inside `build_app` via
