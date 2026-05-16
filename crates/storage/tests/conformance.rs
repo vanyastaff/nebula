@@ -18,7 +18,7 @@
 mod harness;
 
 use harness::{
-    Backend, InMemoryBackend, PostgresBackend, SqliteBackend, assert_atomic_triple,
+    Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
     assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_idempotency_first_writer_wins, assert_idempotency_store_first_writer_and_scope,
@@ -98,4 +98,62 @@ matrix!(
 matrix!(
     webhook_activation_and_scope,
     assert_webhook_activation_and_scope
+);
+
+// ── Scoped variant ────────────────────────────────────────────────────────
+// The same contract suite, but every store is wrapped in the
+// `nebula-tenancy` decorators (bound to one tenant). This proves the
+// decorator is *transparent* for same-tenant operations: an assertion
+// that runs purely within `scope_a` must stay green when every call is
+// forced through the decorator. Cross-tenant *denial* (the security
+// property the decorator adds) is proven in `cross_tenant_denial.rs`.
+//
+// Only the purely-`scope_a` assertions are included. The `cross_scope_*`
+// / journal / webhook assertions pass an explicit foreign scope to probe
+// the adapter's raw `WHERE` filtering — the decorator substitutes that
+// away, so they are exercised in the dedicated denial suite instead.
+
+fn scoped_in_memory() -> Box<dyn Backend> {
+    Box::new(ScopedBackend::<InMemoryBackend>::default())
+}
+
+fn scoped_sqlite() -> Box<dyn Backend> {
+    Box::new(ScopedBackend::<SqliteBackend>::default())
+}
+
+fn scoped_postgres() -> Box<dyn Backend> {
+    Box::new(ScopedBackend::<PostgresBackend>::default())
+}
+
+macro_rules! scoped_matrix {
+    ($name:ident, $assertion:path) => {
+        #[rstest]
+        #[case::in_memory(scoped_in_memory())]
+        #[case::sqlite(scoped_sqlite())]
+        #[case::postgres(scoped_postgres())]
+        #[tokio::test]
+        async fn $name(#[case] backend: Box<dyn Backend>) {
+            run(backend, |b| async move { $assertion(b.as_ref()).await }).await;
+        }
+    };
+}
+
+scoped_matrix!(scoped_create_get_roundtrip, assert_create_get_roundtrip);
+scoped_matrix!(scoped_cas_conflict_returns_actual, assert_cas_conflict);
+scoped_matrix!(
+    scoped_stale_fencing_is_fenced_out,
+    assert_stale_fencing_is_fenced_out
+);
+scoped_matrix!(scoped_atomic_triple_all_or_nothing, assert_atomic_triple);
+scoped_matrix!(
+    scoped_idempotency_first_writer_wins,
+    assert_idempotency_first_writer_wins
+);
+scoped_matrix!(
+    scoped_control_queue_outbox_and_fencing,
+    assert_control_queue_outbox_and_fencing
+);
+scoped_matrix!(
+    scoped_idempotency_store_first_writer_and_scope,
+    assert_idempotency_store_first_writer_and_scope
 );

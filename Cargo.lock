@@ -3936,6 +3936,7 @@ dependencies = [
  "nebula-core",
  "nebula-credential",
  "nebula-storage-port",
+ "nebula-tenancy",
  "parking_lot",
  "pretty_assertions",
  "redis",

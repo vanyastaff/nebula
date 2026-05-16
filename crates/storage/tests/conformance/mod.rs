@@ -842,3 +842,83 @@ pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
         backend.name()
     );
 }
+
+/// A [`Backend`] whose stores are wrapped in the `nebula-tenancy`
+/// scope-enforcing decorators, all bound to one tenant ([`scope_a`]).
+///
+/// Run against the **same-tenant** subset of the contract suite this
+/// proves the decorator is *transparent* for in-tenant operations: every
+/// assertion that operates purely within `scope_a` must stay green when
+/// every call goes through the decorator (the substituted bound scope
+/// equals the scope the assertion already uses, so it is a no-op there).
+///
+/// Cross-tenant *denial* — the part the decorator actually adds — is the
+/// security property and is proven directly in
+/// `tests/cross_tenant_denial.rs` (two decorators, tenants A and B, over
+/// one shared adapter). It is intentionally **not** asserted here: the
+/// raw `cross_scope_*` / journal / webhook assertions probe the adapter's
+/// own `WHERE` filtering with an explicit foreign-scope argument, which
+/// the decorator *substitutes away* — a different mechanism, tested in
+/// its own suite.
+pub struct ScopedBackend<B: Backend> {
+    inner: B,
+}
+
+impl<B: Backend + Default> Default for ScopedBackend<B> {
+    fn default() -> Self {
+        Self {
+            inner: B::default(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<B: Backend> Backend for ScopedBackend<B> {
+    fn name(&self) -> &'static str {
+        // Verbatim inner name so `skip_reason` keeps gating the scoped
+        // SQLite/Postgres cases by feature/DATABASE_URL.
+        self.inner.name()
+    }
+
+    async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
+        Arc::new(nebula_tenancy::ScopedExecutionStore::new(
+            self.inner.execution_store().await,
+            scope_a(),
+        ))
+    }
+
+    async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
+        Arc::new(nebula_tenancy::ScopedIdempotencyGuard::new(
+            self.inner.idempotency_guard().await,
+            scope_a(),
+        ))
+    }
+
+    async fn control_queue(&self) -> Arc<dyn ControlQueue> {
+        Arc::new(nebula_tenancy::ScopedControlQueue::new(
+            self.inner.control_queue().await,
+            scope_a(),
+        ))
+    }
+
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
+        Arc::new(nebula_tenancy::ScopedExecutionJournalReader::new(
+            self.inner.journal_reader().await,
+            scope_a(),
+        ))
+    }
+
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
+        Arc::new(nebula_tenancy::ScopedIdempotencyStore::new(
+            self.inner.idempotency_store().await,
+            scope_a(),
+        ))
+    }
+
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
+        Arc::new(nebula_tenancy::ScopedWebhookActivationStore::new(
+            self.inner.webhook_store().await,
+            scope_a(),
+        ))
+    }
+}

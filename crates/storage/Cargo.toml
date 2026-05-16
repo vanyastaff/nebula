@@ -114,6 +114,10 @@ assert_fs = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+# Scoped variant of the conformance matrix: wraps the adapters in the
+# tenancy decorators to prove cross-tenant denial uniformly across
+# {InMemory, SQLite, Postgres} behind the decorator (spec §6.1).
+nebula-tenancy = { path = "../tenancy" }
 # Loom CAS-atomicity probe lives in the sibling crate
 # `nebula-storage-loom-probe` to avoid `--cfg loom` polluting transitive
 # deps (concurrent-queue, etc.) — see that crate's lib doc.
