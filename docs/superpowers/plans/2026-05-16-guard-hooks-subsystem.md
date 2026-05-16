@@ -62,20 +62,8 @@ chk() { # chk "name" expected actual
 }
 
 # --- _lib unit checks ---
-chk "normalize_argv0 strips env+wrappers" cargo "$(normalize_argv0 'FOO=1 env BAR=2 sudo cargo clippy -- -D warnings')"
-chk "normalize_argv0 unwraps timeout value" cargo "$(normalize_argv0 'timeout 600 cargo clippy -- -D warnings')"
-chk "normalize_argv0 unwraps sudo -u value" cargo "$(normalize_argv0 'sudo -u root cargo build')"
-chk "normalize_argv0 nice -n value" cargo "$(normalize_argv0 'nice -n 10 cargo nextest run')"
-chk "normalize_argv0 fail-closed on subshell" UNPARSEABLE "$(normalize_argv0 'cargo $(echo test)')"
-chk "normalize_argv0 fail-closed on chaining" UNPARSEABLE "$(normalize_argv0 'cargo test; rm -rf x')"
-chk "normalize_argv0 resolves quoted argv0" cargo "$(normalize_argv0 "ca'rg'o fmt --all")"
-chk "normalize_argv0 resolves dquote argv0" git "$(normalize_argv0 'g"i"t push --force')"
-chk "normalize_argv0 keeps quoted arg value" git "$(normalize_argv0 'git commit -m "fix: bug"')"
-chk "normalize_argv0 unrelated quoted ok" gh "$(normalize_argv0 'gh pr create --title "X Y"')"
-chk "normalize_argv0 wrapper-only UNPARSEABLE" UNPARSEABLE "$(normalize_argv0 'sudo')"
-chk "normalize_argv0 fail-closed unbalanced quote" UNPARSEABLE "$(normalize_argv0 'echo "oops')"
-chk "normalize_argv0 fail-closed env -S" UNPARSEABLE "$(normalize_argv0 'env -S cargo fmt --all')"
-chk "normalize_argv0 strips windows path and exe suffix" cargo "$(normalize_argv0 'C:\tools\cargo.exe fmt --all')"
+# (D10: normalize_argv0/resolve_cmd deleted — hook A is now a fail-open
+# substring tripwire that needs no shell parser; nothing else uses them.)
 LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
 chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[]}' "$(load_state "$LS_T")"; rm -f "$LS_T"
 chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
@@ -138,54 +126,11 @@ is_lib_rust() { # $1=path -> return 0 if library rust
   [[ "$p" =~ /(main|build)\.rs$ ]] && return 1
   return 0
 }
-# resolve_cmd: returns the command with BALANCED quotes removed (== the shell's
-# own concatenation, so `ca'rg'o`→`cargo`, `-m "fix: x"`→`-m fix: x`), or
-# "UNPARSEABLE" for what a non-shell tokenizer must not guess at: shell
-# substitution/chaining/metachars, UNBALANCED quotes, or `env --split-string`
-# (argument is an opaque re-split command string). Scoped fail-closed: a benign
-# quoted command (git commit -m "msg") resolves and is analyzed normally; only
-# genuinely unanalyzable input denies — so the guard does not cripple workflow.
-resolve_cmd() { # $1=raw -> resolved string OR "UNPARSEABLE"
-  local c="$1"
-  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*) printf 'UNPARSEABLE'; return;; esac
-  local dq="${c//[^\"]/}" sq="${c//[^\']/}"
-  if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
-  c="${c//\"/}"; c="${c//\'/}"
-  # `env --split-string`: env's arg is an opaque re-split command string. Two
-  # INDEPENDENT membership tests on the same padded string — a single chained
-  # `case` glob can't bind `' env '` and `' -S '` (they share one space).
-  local h=" $c "
-  if [[ "$h" == *' env '* && ( "$h" == *' -S '* || "$h" == *' -S'* || "$h" == *' --split-string '* || "$h" == *' --split-string='* ) ]]; then printf 'UNPARSEABLE'; return; fi
-  printf '%s' "$c"
-}
-# Fail-closed: echoes argv0 basename, or "UNPARSEABLE" (caller MUST deny it).
-normalize_argv0() { # $1=raw command
-  local c; c="$(resolve_cmd "$1")"
-  [ "$c" = "UNPARSEABLE" ] && { printf 'UNPARSEABLE'; return; }
-  local -a t; read -ra t <<< "$c"
-  local n=${#t[@]} i=0
-  local -A WRAP=([env]=1 [sudo]=1 [nice]=1 [timeout]=1 [watch]=1 [xargs]=1 [command]=1 [stdbuf]=1 [nohup]=1)
-  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
-  while (( i < n )); do
-    local w="${t[$i]}"
-    if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$w" != */* ]]; then ((i++)); continue; fi
-    local base="${w##*/}"
-    if [[ -n "${WRAP[$base]:-}" ]]; then
-      ((i++))
-      while (( i < n )); do
-        local x="${t[$i]}"
-        if [[ "$x" == -* ]]; then ((i++)); if [[ -n "${VF[$x]:-}" && $i -lt $n && "${t[$i]}" != -* ]]; then ((i++)); fi; continue; fi
-        if [[ "$x" =~ ^[0-9]+(\.[0-9]+)?[smhdKMG]?$ ]]; then ((i++)); continue; fi
-        if [[ "$x" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$x" != */* ]]; then ((i++)); continue; fi
-        break
-      done
-      continue
-    fi
-    break
-  done
-  if (( i >= n )); then printf 'UNPARSEABLE'; return; fi
-  local a="${t[$i]//\\//}"; a="${a##*/}"; printf '%s' "${a%.exe}"
-}
+# (D10) resolve_cmd / normalize_argv0 intentionally REMOVED. Five adversarial
+# rounds proved a hand-rolled bash shell-parser on a security boundary is an
+# un-winnable arms race. Hook A no longer parses argv; it is a fail-open
+# substring tripwire (Task 3). The no-cheat guarantee is structural:
+# B (edit-guard) + A2 (lint-suppression-aware recorder) + C (Stop-gate) + CI.
 ```
 
 - [ ] **Step 5: Run to verify pass**
@@ -244,27 +189,30 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 ---
 
-### Task 3: A — `scripts/guard/bash-deny.sh` (`PreToolUse/Bash`, fail-closed)
+### Task 3: A — `scripts/guard/bash-deny.sh` (`PreToolUse/Bash`, fail-OPEN advisory tripwire — D10)
 
 **Files:** Create `scripts/guard/bash-deny.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
 ```bash
-# A bash-deny  (run hook, capture exit code)
+# A bash-deny  (D10: fail-OPEN advisory tripwire — NOT a security boundary)
 adeny() { printf '%s' "$1" | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?; }
 mk() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$PWD"; }
-chk "A denies --no-verify (wrapped)" 2 "$(adeny "$(mk 'env X=1 git commit -m wip --no-verify')")"
-chk "A denies clippy -A"            2 "$(adeny "$(mk 'cargo clippy -p nebula-engine -- -A clippy::all')")"
+# blatant literal violations -> deny (helpful nudge; substring catches wrappers)
+chk "A denies --no-verify"          2 "$(adeny "$(mk 'git commit -m wip --no-verify')")"
 chk "A denies cargo fmt --all"      2 "$(adeny "$(mk 'cargo fmt --all')")"
-chk "A denies timeout-wrapped fmt --all" 2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
-chk "A fail-closed on subshell"     2 "$(adeny "$(mk 'cargo \$(echo test)')")"
-chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
+chk "A denies wrapped fmt --all"    2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
+chk "A denies git push --force"     2 "$(adeny "$(mk 'git push --force origin main')")"
+# benign -> allow
 chk "A allows conventional commit"  0 "$(adeny "$(mk 'git commit -m \"feat(x): y\"')")"
-chk "A allows gh pr create quoted"  0 "$(adeny "$(mk 'gh pr create --title \"Add X\"')")"
-chk "A allows grep string literal"  0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
-chk "A denies quoted-token bypass"  2 "$(adeny "$(mk 'cargo \"fmt\" --all')")"
-chk "A denies env -S fmt --all"     2 "$(adeny "$(mk 'env -S cargo fmt --all')")"
+chk "A allows gh pr create"         0 "$(adeny "$(mk 'gh pr create --title \"Add X\"')")"
+chk "A allows grep literal"         0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
+chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
+chk "A allows push no force"        0 "$(adeny "$(mk 'git push origin main')")"
+# fail-OPEN by design (obfuscation/ambiguity is B/A2/C's job, not A's)
+chk "A fail-open on subshell"       0 "$(adeny "$(mk 'cargo \$(echo test)')")"
+chk "A fail-open on non-Bash"       0 "$(printf '{"tool_name":"Edit"}' | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?)"
 ```
 
 - [ ] **Step 2: Run** → FAIL (`bash-deny.sh` missing).
@@ -273,39 +221,28 @@ chk "A denies env -S fmt --all"     2 "$(adeny "$(mk 'env -S cargo fmt --all')")
 
 ```bash
 #!/usr/bin/env bash
+# D10: NOT a security boundary — a cheap fail-OPEN advisory tripwire. The real
+# no-cheat guarantee is B (edit-guard) + A2 (lint-suppression-aware recorder)
+# + C (Stop-gate) + lefthook/CI. Any doubt (no jq / non-Bash / unreadable /
+# obfuscated / ambiguous) => allow. No shell parser; substring only.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
-have_jq || deny "jq is required by the bash guard and is missing (fail-closed). Install jq."
-# Fail-closed on un-parseable stdin: jqg() swallows jq errors (|| true) and
-# returns "", so malformed/truncated JSON would make tool_name != Bash and
-# silently ALLOW. A PreToolUse security hook that cannot read its input DENIES.
-printf '%s' "$guard_input" | jq -e . >/dev/null 2>&1 || deny "Tool-call input is not valid JSON (fail-closed). Cannot verify the command."
+have_jq || allow
 [ "$(jqg '.tool_name')" = "Bash" ] || allow
-cmd="$(jqg '.tool_input.command')"; [ -n "$cmd" ] || allow
-# Match deny rules against the RESOLVED command (balanced quotes removed like
-# the shell) so `--"no-verify"` / `ca"rg"o` cannot hide a violation, while
-# benign quoted commands still resolve and pass.
-raw="$(resolve_cmd "$cmd")"
-[ "$raw" = "UNPARSEABLE" ] && deny "Command not safely verifiable (shell substitution/chaining, unbalanced quotes, or env --split-string). Run it as a single plain command."
-argv0="$(normalize_argv0 "$cmd")"
-[ "$argv0" = "UNPARSEABLE" ] && deny "Command not safely verifiable. Run it as a single plain command."
-if [ "$argv0" = git ] && [[ "$raw" =~ (^|[[:space:]])commit([[:space:]]|$) ]] \
-   && [[ "$raw" =~ (--no-verify|(^|[[:space:]])-n([[:space:]]|$)|--no-gpg-sign|core\.hooksPath=) ]]; then
-  deny "Bypassing lefthook is the top-level cheat. Commit without --no-verify/-n/--no-gpg-sign; fix what the hook flags."
+c="$(jqg '.tool_input.command')"; [ -n "$c" ] || allow
+g() { printf '%s' "$c" | grep -Eq "$1"; }
+# Blatant literal violations only. A rare false-deny on doc/message text is
+# acceptable (advisory; the agent rewords). Obfuscation is intentionally NOT
+# handled — its *outcome* is caught by B/A2/C.
+if g 'git[[:space:]]+commit' && g '(--no-verify|--no-gpg-sign|core\.hooksPath=)'; then
+  deny "Don't bypass lefthook (--no-verify/--no-gpg-sign/core.hooksPath). Fix what it flags."
 fi
-if [ "$argv0" = cargo ] && [[ "$raw" =~ (^|[[:space:]])clippy([[:space:]]|$) ]] \
-   && [[ "$raw" =~ ([[:space:]]-A[[:space:]]|--allow[[:space:]]|RUSTFLAGS=[^\&]*-A) ]]; then
-  deny "Silencing clippy to reach green is cheating the oracle. Fix the lint or add a justified #[allow] in code."
+if g '(^|[[:space:]])cargo([[:space:]]|$)' && g '(^|[[:space:]])fmt([[:space:]]|$)' && g '(^|[[:space:]])--all([[:space:]]|$)'; then
+  deny "cargo fmt --all trips Windows os-error-206 / false green. Use bash scripts/pre-commit-fmt-check.sh or cargo fmt -p <crate>."
 fi
-if [ "$argv0" = cargo ] && [[ "$raw" =~ (^|[[:space:]])fmt([[:space:]]|$) ]] \
-   && [[ "$raw" =~ ([[:space:]]|^)--all([[:space:]]|$) ]]; then
-  deny "cargo fmt --all trips Windows os-error-206 and false green. Use bash scripts/pre-commit-fmt-check.sh or cargo fmt -p <crate>."
-fi
-if [ "$argv0" = git ] && [[ "$raw" =~ (^|[[:space:]])push([[:space:]]|$) ]] \
-   && [[ "$raw" =~ (--force([[:space:]]|=|$)|--force-with-lease|(^|[[:space:]])-f([[:space:]]|$)) ]] \
-   && [ "${NEBULA_ALLOW_FORCE:-}" != "1" ]; then
-  deny "Force-push to shared history is blocked (AGENTS.md). Set NEBULA_ALLOW_FORCE=1 only if you truly mean it."
+if g 'git[[:space:]]+push' && g '(--force([[:space:]]|=|$)|--force-with-lease|(^|[[:space:]])-f([[:space:]]|$))' && [ "${NEBULA_ALLOW_FORCE:-}" != "1" ]; then
+  deny "Force-push to shared history blocked (AGENTS.md). Set NEBULA_ALLOW_FORCE=1 to override."
 fi
 allow
 ```
@@ -316,7 +253,7 @@ allow
 
 ```bash
 git add scripts/guard/bash-deny.sh scripts/guard/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A fail-closed PreToolUse Bash deny guard"
+git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A fail-open PreToolUse advisory tripwire (D10)"
 ```
 
 ---
@@ -337,6 +274,8 @@ printf '{"tool_name":"Bash","tool_input":{"command":"cargo nextest run -p nebula
 chk "A2 records green" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
 printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings"},"tool_response":"error: aborting","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
 chk "A2 ignores failed" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings -A clippy::all"},"tool_response":"ok","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
+chk "A2 refuses suppressed clippy (D10)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
 ```
 
 - [ ] **Step 2: Run** → FAIL.
@@ -352,6 +291,14 @@ read_input
 have_jq || allow
 cmd="$(jqg '.tool_input.command')"; resp="$(jqg '.tool_response')"
 case "$resp" in *error*|*FAILED*|*"warning:"*|*"test result: FAILED"*) allow;; esac
+# D10: a clippy run that SUPPRESSED lints is not a clean gate — refuse to
+# record green (structural home of the old hook-A clippy rule). Substring is
+# safe here: imperfect detection only ever fails toward "not recorded" (C then
+# blocks), never toward a false green.
+if printf '%s' "$cmd" | grep -Eq 'cargo[[:space:]].*clippy' \
+   && printf '%s' "$cmd" | grep -Eq '([[:space:]]-A([[:space:]]|=|[A-Za-z])|--allow([[:space:]]|=)|RUSTFLAGS=[^&]*-A)'; then
+  allow
+fi
 is_gate=0
 [[ "$cmd" =~ cargo[[:space:]]+clippy.*-D ]] && is_gate=1
 [[ "$cmd" =~ cargo[[:space:]]+nextest[[:space:]]+run ]] && is_gate=1
