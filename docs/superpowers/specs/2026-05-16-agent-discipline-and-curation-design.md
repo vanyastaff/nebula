@@ -61,15 +61,20 @@ only where a linter cannot already catch it.
 | D4 | Replace ad-hoc `permissions.allow` with a curated, committed `.claude/settings.json` | Owner |
 | D5 | aif-skill curation: Rust-ify + tighten + delete dead weight; edits land in `.ai-factory/skill-context/` (Rule 7 — base files are overwritten on update) | Owner + audit |
 | D6 | Subagent curation: delete 9 orphan `loop-*`, merge 5 sidecars → 1, keep 4 load-bearing, trim dead MCP grants | Owner + audit |
+| D7 | Remove BridgeSpace integration (in-repo only; owner removed the out-of-repo product directly) | Owner |
+| D8 | Invert doc canon: **CLAUDE.md is canonical**, AGENTS.md becomes a thin pointer to it (non-standard; owner chose it over AGENTS.md-as-canon with the trade-off shown) | Owner |
 
 ## 4. Architecture — Enforcement Layers
 
 Hook runtime: **Node.js `.mjs`** (Node 22 present; already proven — BridgeSpace
 hooks use `node`). Cross-platform per current guidance (no bash/PowerShell
 syntax in hook bodies; `path.join`, `os.tmpdir`). Hook scripts live in
-`.claude/hooks/`; wiring in **committed `.claude/settings.json`** (hooks arrays
-concatenate with `settings.local.json`, so BridgeSpace hooks are unaffected).
-Add `"$schema": "https://json.schemastore.org/claude-code-settings.json"`.
+`.claude/hooks/`; wiring in **committed `.claude/settings.json`**. Hooks arrays
+concatenate across settings scopes, so any personal hooks in
+`settings.local.json` still coexist (the prior BridgeSpace
+UserPromptSubmit/Stop/Notification hooks are being removed — see §7 — so
+`settings.local.json` carries no hooks after this work). Add
+`"$schema": "https://json.schemastore.org/claude-code-settings.json"`.
 
 Hook contract (official): PreToolUse returns
 `hookSpecificOutput.permissionDecision: "deny"` + reason, `exit 0`. Blocking
@@ -144,8 +149,8 @@ behavior with zero test delta cannot be reported done).
 
 Rotates/initializes the turn-state file for `session_id` at the start of each
 user turn (resets `impl_files_edited` and `gate_green`). This is the concrete,
-non-hand-wavy reset mechanism C and A2 depend on. Concatenates with the
-existing BridgeSpace `UserPromptSubmit` hook (arrays merge); injects no context.
+non-hand-wavy reset mechanism C and A2 depend on. Injects no context; the only
+`UserPromptSubmit` hook once BridgeSpace is removed.
 
 ### D. PostToolUse / Edit|Write|MultiEdit — `nebula-guard-fmt.mjs`
 
@@ -267,8 +272,18 @@ Anthropic's own note that Opus over-delegates.
   `Bash(cargo *)`, `Bash(cargo nextest *)`, `Bash(task *)`, `Bash(git *)`,
   `Bash(gh *)`, `Bash(bash scripts/*)`, plus the default-allowed Read/Glob/Grep.
   Key synergy: permissions can be broadened safely **because the Bash deny-hook
-  (A) is now the real guard**, not the allowlist. Personal/BridgeSpace entries
-  remain in `settings.local.json`.
+  (A) is now the real guard**, not the allowlist. Only genuinely personal,
+  machine-specific entries remain in `settings.local.json`.
+- **BridgeSpace removal (done this session):** the integration is dropped
+  (owner evaluated the product, rejected it). In-repo footprint removed: the
+  three `settings.local.json` hooks (UserPromptSubmit/Stop/Notification →
+  `bs-claude-hook.cjs`) and the `bs-mail` / `mcp__bridgemind__*` /
+  `.bridgespace/...` `permissions.allow` entries (settings.local.json now valid
+  JSON, no `hooks` key, zero bridge residue). The agent's first whole-file
+  rewrite was correctly blocked by the harness as permission-file
+  self-modification; removal was completed via targeted Edits after the owner
+  granted permission. Out-of-repo (`~/.bridgespace/`) was removed by the owner
+  directly. Stale memory `reference_bridgemind_nebula` was deleted + de-indexed.
 - **lefthook.yml:** pre-commit `clippy` → changed-crate scoped; add
   full-workspace `clippy -D warnings` to pre-push (CI parity preserved —
   pre-push must mirror CI required jobs; removes the coarse-commit pain).
@@ -282,10 +297,11 @@ cheating"): hooks rot; bypasses get found. Mitigations, mandatory:
    **denies the bad case and allows the good case** (the Bun "test is NOT
    VALID" analog applied to the guards themselves). Wired into `task` (e.g.
    `task hooks:test`) and runnable locally.
-2. **AGENTS.md ⇄ hooks sync** — a short "Enforced Discipline" section in
-   AGENTS.md enumerates each hard rule and names the guard that enforces it; a
-   pre-push check (or `task` target) fails if a guard file referenced there is
-   missing. Same philosophy as `lefthook` mirroring CI.
+2. **Canon ⇄ hooks sync** — per D8, **CLAUDE.md is canonical**; it carries a
+   short "Enforced Discipline" section enumerating each hard rule and naming
+   the guard that enforces it. AGENTS.md is a thin pointer to CLAUDE.md. A
+   pre-push check (or `task` target) fails if a guard file referenced in
+   CLAUDE.md is missing. Same philosophy as `lefthook` mirroring CI.
 3. Hooks log denials to `.git/.nebula-guard/denials.log` (local, uncommitted)
    for periodic review of false-positive rate.
 
@@ -299,21 +315,30 @@ cheating"): hooks rot; bypasses get found. Mitigations, mandatory:
 | Sidecar 5→1 merge breaks `implement-coordinator` | Sequenced last in H; coordinator spawn-path updated and exercised before deleting old sidecars |
 | Rust-ification wiped by AI-Factory update | All overrides in `.ai-factory/skill-context/`; deletions in config + dir; never base files (Rule 7) |
 | Hook latency hurts UX | Node, < 2 s budget, fmt-only post-edit, clippy stays at gate not per-edit |
+| D8 inversion: non-Claude AGENTS.md consumers (Cursor/Copilot/Codex/generic) read only a pointer, losing the rules | AGENTS.md pointer explicitly names CLAUDE.md as canonical; `.cursor/rules/*` + `.github/copilot-instructions.md` updated to point at CLAUDE.md; generic AGENTS.md-only readers seeing just the pointer is an owner-accepted trade-off |
+| Future session reverts AGENTS.md to canon out of habit (the harness/CLAUDE.md long said "treat AGENTS.md as source of truth") | D8 recorded in committed spec + project memory; the inverted CLAUDE.md states it is canonical at the top |
 
 ## 10. Implementation Ordering (constraints for the plan)
 
-1. Curated `.claude/settings.json` (permissions + `$schema`); verify
-   BridgeSpace hooks in `settings.local.json` still run (concatenation).
-2. Hook scripts A0, A, A2, B, C, D + their `__tests__`; wire into settings;
-   AGENTS.md "Enforced Discipline" section.
-3. Skill deletes (G) + subagent `loop-*` deletes (H) — independent, parallel.
-4. Skill Rust-ification via `.ai-factory/skill-context/` (G) **jointly** with
+1. Curated `.claude/settings.json` (permissions + `$schema`); confirm
+   `settings.local.json` (personal, now BridgeSpace-free) still loads and
+   hook arrays concatenate as expected.
+2. **D8 doc-canon inversion**: CLAUDE.md absorbs the canonical content
+   (project map + rules) and gains the "Enforced Discipline" section;
+   AGENTS.md → thin pointer naming CLAUDE.md canonical; update
+   `.cursor/rules/*` and `.github/copilot-instructions.md` to point at
+   CLAUDE.md; drop the old "treat AGENTS.md as source of truth" line.
+3. Hook scripts A0, A, A2, B, C, D + their `__tests__`; wire into
+   `.claude/settings.json`; cross-link from CLAUDE.md "Enforced Discipline".
+4. Skill deletes (G) + subagent `loop-*` deletes (H) — independent, parallel.
+5. Skill Rust-ification via `.ai-factory/skill-context/` (G) **jointly** with
    sidecar 5→1 merge + coordinator rewiring + dead-MCP trim (H).
-5. `nebula-pitfalls` symptom skill (E).
-6. `lefthook.yml` commit-granularity change (F) + pre-push full clippy.
-7. Post-change smoke: every `skills:`/`Agent(...)` reference resolves;
+6. `nebula-pitfalls` symptom skill (E).
+7. `lefthook.yml` commit-granularity change (F) + pre-push full clippy.
+8. Post-change smoke: every `skills:`/`Agent(...)` reference resolves;
    `task hooks:test` green; a deliberate cheat attempt (weaken a test +
-   edit impl) is denied; a clean change is not.
+   edit impl) is denied; a clean change is not; AGENTS.md pointer + updated
+   cross-ref files resolve to CLAUDE.md.
 
 ## 11. Acceptance Criteria
 
@@ -328,8 +353,14 @@ cheating"): hooks rot; bypasses get found. Mitigations, mandatory:
   resolves.
 - aif Rust-ification survives a simulated AI-Factory update (lives in
   skill-context).
-- `.claude/settings.json` validates against its `$schema`; BridgeSpace
-  notifications still fire.
+- `.claude/settings.json` validates against its `$schema`.
+- No BridgeSpace residue in repo config: zero `bs-mail` / `mcp__bridgemind__*`
+  / `bs-claude-hook` references under `.claude/`. (In-repo removal already
+  done this session; verified valid JSON, no `hooks`, zero residue.)
+- D8: CLAUDE.md opens by declaring itself canonical and carries the Enforced
+  Discipline section; AGENTS.md is a pointer naming CLAUDE.md; `.cursor/rules/*`
+  and `.github/copilot-instructions.md` resolve to CLAUDE.md; no remaining
+  "treat AGENTS.md as source of truth" wording.
 
 ## 12. Sources
 
