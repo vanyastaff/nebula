@@ -1036,8 +1036,8 @@ impl Manager {
     ///
     /// 1. **Taint** the [`ManagedResource`] so the `acquire_*` funnel rejects new leases on the
     ///    revoked credential *immediately* (same flag-gated rejection as `shutting_down`).
-    /// 2. **Drain** in-flight handles via the manager's shared `drain_tracker` ([`wait_for_drain`],
-    ///    the exact primitive `graceful_shutdown` uses).
+    /// 2. **Drain** in-flight handles via the manager's shared `drain_tracker`
+    ///    (`wait_for_drain`, the exact primitive `graceful_shutdown` uses).
     /// 3. **Dispatch** [`Resource::on_credential_revoke`] against the live runtime per topology.
     /// 4. Emit [`ResourceEvent::SlotRevoked`].
     ///
