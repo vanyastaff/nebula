@@ -55,6 +55,8 @@ mod error;
 mod execution_repo;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;
+/// In-memory adapter implementing the `nebula-storage-port` contract.
+pub mod inmem;
 /// Row-to-domain type conversion utilities.
 pub mod mapping;
 /// Postgres implementations of [`repos`] traits.

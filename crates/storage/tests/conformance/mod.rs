@@ -44,10 +44,10 @@ impl Backend for InMemoryBackend {
         "InMemory"
     }
     async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
-        unimplemented!("InMemory ExecutionStore adapter lands in P2 Task 9")
+        Arc::new(nebula_storage::inmem::InMemoryExecutionStore::new())
     }
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
-        unimplemented!("InMemory IdempotencyGuard adapter lands in P2 Task 12-13")
+        Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new())
     }
 }
 
