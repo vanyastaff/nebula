@@ -65,7 +65,7 @@ chk() { # chk "name" expected actual
 # (D10: normalize_argv0/resolve_cmd deleted — hook A is now a fail-open
 # substring tripwire that needs no shell parser; nothing else uses them.)
 LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
-chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[]}' "$(load_state "$LS_T")"; rm -f "$LS_T"
+chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' "$(load_state "$LS_T")"; rm -f "$LS_T"
 chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
 chk "crate_of windows path" engine "$(crate_of 'crates\\engine\\src\\engine.rs')"
 chk "crate_of none" "" "$(crate_of 'README.md')"
