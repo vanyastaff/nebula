@@ -51,19 +51,68 @@ impl Backend for InMemoryBackend {
     }
 }
 
-/// SQLite `:memory:` backend (always available).
-pub struct SqliteBackend;
+/// SQLite `:memory:` backend.
+///
+/// Each `Backend` instance owns one shared-cache in-memory database (so a
+/// `create` and a later `commit`/`get` observe the same rows) created
+/// lazily on first store request. Only built when the `sqlite` feature is
+/// on; without it the case skips like Postgres.
+#[derive(Default)]
+pub struct SqliteBackend {
+    #[cfg(feature = "sqlite")]
+    pool: tokio::sync::OnceCell<sqlx::SqlitePool>,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteBackend {
+    async fn pool(&self) -> sqlx::SqlitePool {
+        use std::str::FromStr;
+        self.pool
+            .get_or_init(|| async {
+                let db_name = format!("nebula-conformance-{}", uuid::Uuid::new_v4());
+                let url = format!("sqlite:file:{db_name}?mode=memory&cache=shared");
+                let opts = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+                    .expect("parse sqlite memory url")
+                    .create_if_missing(true);
+                let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(4)
+                    .connect_with(opts)
+                    .await
+                    .expect("connect sqlite memory");
+                nebula_storage::sqlite::init_schema(&pool)
+                    .await
+                    .expect("install port schema");
+                pool
+            })
+            .await
+            .clone()
+    }
+}
 
 #[async_trait::async_trait]
 impl Backend for SqliteBackend {
     fn name(&self) -> &'static str {
         "Sqlite(:memory:)"
     }
+    #[cfg(feature = "sqlite")]
     async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
-        unimplemented!("SQLite ExecutionStore adapter lands in P2 Task 10")
+        Arc::new(nebula_storage::sqlite::SqliteExecutionStore::new(
+            self.pool().await,
+        ))
     }
+    #[cfg(not(feature = "sqlite"))]
+    async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
-        unimplemented!("SQLite IdempotencyGuard adapter lands in P2 Task 12-13")
+        Arc::new(nebula_storage::sqlite::SqliteIdempotencyGuard::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
 }
 
@@ -91,6 +140,19 @@ impl Backend for PostgresBackend {
 #[must_use]
 pub fn postgres_available() -> bool {
     std::env::var("DATABASE_URL").is_ok()
+}
+
+/// Returns a skip reason for a backend whose prerequisites are not met, or
+/// `None` if the case should run. Postgres skips without `DATABASE_URL`;
+/// SQLite skips when the crate was built without the `sqlite` feature.
+#[must_use]
+pub fn skip_reason(backend: &dyn Backend) -> Option<&'static str> {
+    match backend.name() {
+        "Postgres" if !postgres_available() => Some("DATABASE_URL unset; skipping Postgres case"),
+        #[cfg(not(feature = "sqlite"))]
+        "Sqlite(:memory:)" => Some("built without --features sqlite; skipping SQLite case"),
+        _ => None,
+    }
 }
 
 fn scope_a() -> Scope {

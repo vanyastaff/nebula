@@ -90,6 +90,10 @@ pub mod pool;
 pub mod repos;
 /// Database row types.
 pub mod rows;
+/// SQLite adapter implementing the `nebula-storage-port` contract
+/// (dev / edge single-writer; spec §5 SQLite parity boundary).
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 mod workflow_repo;
 
 #[cfg(test)]
