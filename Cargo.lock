@@ -3524,6 +3524,7 @@ dependencies = [
  "nebula-sandbox",
  "nebula-schema",
  "nebula-storage",
+ "nebula-storage-port",
  "nebula-workflow",
  "opentelemetry",
  "opentelemetry_sdk",

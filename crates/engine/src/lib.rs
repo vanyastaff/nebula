@@ -77,6 +77,7 @@ pub mod resource_accessor;
 pub mod result;
 pub mod runtime;
 pub mod scoped_resources;
+pub mod store_seam;
 
 // Re-export the absorbed `nebula-engine` public surface at the crate root so
 // every downstream caller can migrate `use crate::runtime::X` → `use
@@ -116,3 +117,4 @@ pub use scoped_resources::{
     EmptyScopedResourceMap, LayeredResourceAccessor, MAX_ANCESTOR_DEPTH, PoppedEntry, ScopedLookup,
     ScopedResourceGuard, ScopedResourceMap, run_cleanup, run_cleanup_with_timeout,
 };
+pub use store_seam::{ExecutionStores, WorkflowStores};

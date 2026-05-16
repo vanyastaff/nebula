@@ -46,6 +46,7 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
 nebula-sandbox = { path = "../sandbox" }
 nebula-resilience = { path = "../resilience" }
+nebula-storage-port = { path = "../storage-port" }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
 
