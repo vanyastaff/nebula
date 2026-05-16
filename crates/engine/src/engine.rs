@@ -152,11 +152,8 @@ pub struct WorkflowEngine {
     /// migration slice lands.
     stores: Option<crate::store_seam::ExecutionStores>,
     /// Optional spec-16 workflow-definition port bundle for the resume
-    /// path. When set, used instead of [`Self::workflow_repo`].
-    #[allow(
-        dead_code,
-        reason = "expand-phase field; production readers land in the next slice"
-    )]
+    /// path. When set, the resume load path uses this instead of
+    /// [`Self::workflow_repo`].
     workflow_stores: Option<crate::store_seam::WorkflowStores>,
     /// Optional credential resolver function for providing credentials to actions.
     credential_resolver: Option<CredentialResolveFn>,
@@ -1354,24 +1351,96 @@ impl WorkflowEngine {
     ) -> Result<ExecutionResult, EngineError> {
         let started = Instant::now();
 
-        // 1. Require both repos.
-        let exec_repo = self
-            .execution_repo
-            .as_ref()
-            .ok_or_else(|| EngineError::PlanningFailed("no execution_repo configured".into()))?;
-        let workflow_repo = self
-            .workflow_repo
-            .as_ref()
-            .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
-
-        // 2. Load persisted execution state.
-        let (repo_version_loaded, state_json) = exec_repo
-            .get_state(execution_id)
-            .await
-            .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
-            .ok_or_else(|| {
-                EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+        // 1-5. Load persisted state + workflow definition + node
+        // outputs. Dual-dispatch: spec-16 port bundles when configured,
+        // else the legacy repos. Both yield `(repo_version, state_json,
+        // workflow_json, Vec<(NodeKey, output)>)` so the reconstruction
+        // below is shared. In the spec-16 split the workflow definition
+        // lives on the published *version* record, not the workflow row.
+        let (repo_version_loaded, state_json, workflow_json, persisted_outputs): (
+            u64,
+            serde_json::Value,
+            serde_json::Value,
+            Vec<(NodeKey, serde_json::Value)>,
+        ) = if let (Some(stores), Some(workflow_stores)) =
+            (self.stores.as_ref(), self.workflow_stores.as_ref())
+        {
+            let scope = crate::store_seam::engine_scope();
+            let id = execution_id.to_string();
+            let record = stores
+                .execution
+                .get(&scope, &id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+                })?;
+            let workflow_id = record.workflow_id.clone();
+            let workflow_json = workflow_stores
+                .versions
+                .get_published(&scope, &workflow_id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                })?
+                .definition;
+            let outputs = stores
+                .node_results
+                .load_all_results(&scope, &id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
+                .into_iter()
+                .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
+                .collect();
+            (record.version, record.state, workflow_json, outputs)
+        } else {
+            // Legacy path: preserve the original per-repo requirement
+            // errors verbatim (callers and tests assert on the
+            // `execution_repo` / `workflow_repo` wording).
+            let exec_repo = self.execution_repo.as_ref().ok_or_else(|| {
+                EngineError::PlanningFailed("no execution_repo configured".into())
             })?;
+            let workflow_repo = self
+                .workflow_repo
+                .as_ref()
+                .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
+            let (version, state_json) = exec_repo
+                .get_state(execution_id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+                })?;
+            // The legacy workflow lookup needs the workflow id, which is
+            // only known after the state deserializes; peek it from the
+            // raw JSON so the load order matches the port path.
+            let workflow_id_str = state_json
+                .get("workflow_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(
+                        "persisted state has no `workflow_id` field".to_owned(),
+                    )
+                })?;
+            let workflow_id = WorkflowId::parse(workflow_id_str).map_err(|e| {
+                EngineError::PlanningFailed(format!("invalid persisted workflow_id: {e}"))
+            })?;
+            let workflow_json = workflow_repo
+                .get(workflow_id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                })?;
+            let outputs = exec_repo
+                .load_all_outputs(execution_id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
+                .into_iter()
+                .collect();
+            (version, state_json, workflow_json, outputs)
+        };
 
         // Deserialize via JSON string to avoid `serde_json::from_value` issues
         // with Key<D> types that expect borrowed strings (domain-key serde impl).
@@ -1388,17 +1457,6 @@ impl WorkflowEngine {
             )));
         }
 
-        let workflow_id = exec_state.workflow_id;
-
-        // 4. Load workflow definition.
-        let workflow_json = workflow_repo
-            .get(workflow_id)
-            .await
-            .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-            .ok_or_else(|| {
-                EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
-            })?;
-
         // Deserialize via JSON string to avoid `serde_json::from_value` issues
         // with borrowed key types (e.g. `ActionKey` uses `#[serde(borrow)]`).
         let workflow_str = serde_json::to_string(&workflow_json)
@@ -1406,11 +1464,7 @@ impl WorkflowEngine {
         let workflow: WorkflowDefinition = serde_json::from_str(&workflow_str)
             .map_err(|e| EngineError::PlanningFailed(format!("deserialize workflow: {e}")))?;
 
-        // 5. Load persisted node outputs.
-        let persisted_outputs = exec_repo
-            .load_all_outputs(execution_id)
-            .await
-            .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?;
+        let workflow_id = exec_state.workflow_id;
 
         // 6. Build dependency graph.
         let graph = DependencyGraph::from_definition(&workflow)
@@ -1676,12 +1730,14 @@ impl WorkflowEngine {
                 execution_id,
                 holder: self.instance_id.to_string(),
             });
-        } else {
+        } else if let Some(exec_repo) = self.execution_repo.clone() {
             // Persist final state with CAS-conflict reconciliation
             // (issue #333). Mirrors `execute_workflow` — see its comment
-            // for the full contract.
+            // for the full contract. Final-state persist is still on the
+            // legacy repo; its port migration lands in the
+            // execution-state/commit slice (the fencing-coupled unit).
             match self
-                .persist_final_state(exec_repo, execution_id, &mut exec_state, &mut repo_version)
+                .persist_final_state(&exec_repo, execution_id, &mut exec_state, &mut repo_version)
                 .await
             {
                 Ok(None) => final_status,
@@ -1712,6 +1768,14 @@ impl WorkflowEngine {
                     ExecutionStatus::Failed
                 },
             }
+        } else {
+            // Resume requires a configured legacy execution repo for the
+            // not-yet-migrated final-state persist (the load path above
+            // already errors when no stores are configured at all), so
+            // this branch is unreachable in practice; report the
+            // engine-local status rather than panicking to keep the
+            // expression total.
+            final_status
         };
 
         // Release the lease after the final persist completes.
