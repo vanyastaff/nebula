@@ -245,7 +245,7 @@ pub use widget::{
     StringWidget,
 };
 
-/// Schema wire-format version emitted in serialized output (Phase 2+ plugins read this).
+/// Schema wire-format version emitted in serialized output (plugins read this).
 pub const SCHEMA_WIRE_VERSION: u16 = 1;
 
 #[doc(hidden)]
