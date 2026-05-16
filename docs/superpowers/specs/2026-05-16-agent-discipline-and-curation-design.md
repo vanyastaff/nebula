@@ -82,6 +82,17 @@ no hooks after §7. Add
 the only new (tiny, ubiquitous, already-installed) dependency; if `jq` is
 absent a hook degrades **fail-closed for A** / fail-open elsewhere (see below).
 
+**Prerequisite toolbelt (declared, not implicit):** `bash ≥ 4` (associative
+arrays / `[[ =~ ]]` — `sh`/dash is intentionally NOT targeted: the fail-closed
+`normalize_argv0` tokenizer needs arrays and would be far more bypass-prone in
+POSIX sh, and the repo already mandates bash via lefthook), `jq`, `git`,
+coreutils. Allowed additions must be small single-purpose binaries of this
+class (e.g. `rg`), declared here, and degrade safely if absent — **never** a
+runtime/ecosystem (Node/Python). **Relocation-safe by construction:** no
+absolute paths in committed hooks/settings — wiring uses `$CLAUDE_PROJECT_DIR`,
+each hook self-locates via `$(dirname "${BASH_SOURCE[0]}")`, turn-state via
+`git rev-parse --git-common-dir`; cloning/moving the repo needs no edits.
+
 Hook contract: blocking via **`exit 2` + stderr reason** (uniform across
 PreToolUse/Stop — no JSON emission needed; simpler and robust in bash). `jq`
 parses stdin (`tool_input.command`, `file_path`, `session_id`,
