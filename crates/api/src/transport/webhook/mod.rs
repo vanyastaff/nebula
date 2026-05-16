@@ -5,9 +5,17 @@
 //!
 //! ## Module layout
 //!
-//! - [`transport`] — public [`WebhookTransport`] struct with
-//!   [`activate`](WebhookTransport::activate) / [`deactivate`](WebhookTransport::deactivate) /
-//!   [`router`](WebhookTransport::router) and the axum handler function.
+//! - [`transport`] — public [`WebhookTransport`] struct with lifecycle API
+//!   ([`activate`](WebhookTransport::activate) /
+//!   [`deactivate`](WebhookTransport::deactivate) /
+//!   [`router`](WebhookTransport::router)) and [`TransportInner`] internals.
+//! - [`dispatch`] — shared `dispatch_inner` pipeline (routing lookup →
+//!   rate-limit → signature → oneshot dispatch) plus the two axum handler fns.
+//! - [`signature`] — ADR-0022 signature-policy enforcement (`enforce_signature`,
+//!   problem+json response builders, metric recording).
+//! - [`replay`] — replay-window rejection reason mapping
+//!   (`replay_reason_for`): maps signature failure codes to the dedicated
+//!   replay-counter label set.
 //! - [`provider`] — [`EndpointProviderImpl`] implementing `nebula_action::WebhookEndpointProvider`
 //!   so action code can read `ctx.webhook.endpoint_url()`.
 //! - `routing` — private `RoutingMap` (DashMap under the hood) keyed by `(trigger_uuid, nonce)`.
@@ -18,11 +26,14 @@
 //!   transport).
 
 pub mod bootstrap;
+pub(super) mod dispatch;
 pub mod events;
 pub mod key;
 pub mod provider;
 pub mod ratelimit;
+pub(super) mod replay;
 pub(crate) mod routing;
+pub(super) mod signature;
 pub mod transport;
 
 pub use bootstrap::{
