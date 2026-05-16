@@ -106,10 +106,10 @@ git_common_dir() { # $1=cwd
   fi
 }
 turn_state_path() { printf '%s/.nebula-guard/turn-%s.json' "$(git_common_dir "${2:-$PWD}")" "${1:-unknown}"; }
-load_state() { # $1=path -> always {impl_files_edited:[...],gate_green:[...]}
-  local d='{"impl_files_edited":[],"gate_green":[]}'
+load_state() { # $1=path -> always {impl_files_edited:[...],gate_green:[...],turn_base:".."}
+  local d='{"impl_files_edited":[],"gate_green":[],"turn_base":""}'
   if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then
-    jq -c '{impl_files_edited:(if (.impl_files_edited|type)=="array" then .impl_files_edited else [] end),gate_green:(if (.gate_green|type)=="array" then .gate_green else [] end)}' "$1" 2>/dev/null || printf '%s' "$d"
+    jq -c '{impl_files_edited:(if (.impl_files_edited|type)=="array" then .impl_files_edited else [] end),gate_green:(if (.gate_green|type)=="array" then .gate_green else [] end),turn_base:(if (.turn_base|type)=="string" then .turn_base else "" end)}' "$1" 2>/dev/null || printf '%s' "$d"
   else printf '%s' "$d"; fi
 }
 save_state() { mkdir -p "$(dirname "$1")" 2>/dev/null && printf '%s' "$2" >"$1" 2>/dev/null || true; }
@@ -174,7 +174,10 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
 sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 p="$(turn_state_path "$sid" "$cwd")"
-save_state "$p" "$(printf '{"session":"%s","started_at":"%s","impl_files_edited":[],"gate_green":[]}' "${sid:-unknown}" "$(date -u +%FT%TZ)")"
+# Spec §4.C: record base HEAD so C can catch crate changes COMMITTED mid-turn
+# (git status alone goes clean after a commit). Empty if no commits / no git.
+tb="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || true)"
+save_state "$p" "$(printf '{"session":"%s","started_at":"%s","impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "${sid:-unknown}" "$(date -u +%FT%TZ)" "$tb")"
 allow
 ```
 
@@ -514,6 +517,16 @@ SP_SID="c-sp"; SP_P="$(turn_state_path "$SP_SID" "$SP_DIR")"; mkdir -p "$(dirnam
 printf '{"impl_files_edited":[],"gate_green":[]}' >"$SP_P"
 chk "C detects space-in-path (C-1)" 2 "$(cstop '{"session_id":"'"$SP_SID"'","cwd":"'"$SP_DIR"'","stop_hook_active":false}')"
 rm -rf "$SP_DIR"
+# Spec §4.C: a crate change COMMITTED mid-turn, B-bypassed, must still DENY
+# via turn_base..HEAD (git status is clean after the commit; B never saw it)
+TB_DIR="$(mktemp -d)"
+( cd "$TB_DIR" && git init -q && mkdir -p crates/tb/src && echo 'fn a(){}' > crates/tb/src/x.rs && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+TB_BASE="$(git -C "$TB_DIR" rev-parse HEAD)"
+( cd "$TB_DIR" && echo 'fn a(){ 1 }' > crates/tb/src/x.rs && git add -A && git -c user.email=t@t -c user.name=t commit -qm change )
+TB_SID="c-tb"; TB_P="$(turn_state_path "$TB_SID" "$TB_DIR")"; mkdir -p "$(dirname "$TB_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "$TB_BASE" >"$TB_P"
+chk "C catches committed-this-turn (§4.C)" 2 "$(cstop '{"session_id":"'"$TB_SID"'","cwd":"'"$TB_DIR"'","stop_hook_active":false}')"
+rm -rf "$TB_DIR"
 rm -rf "$CG_DIR"
 ```
 
@@ -550,6 +563,13 @@ while IFS= read -r -d '' rec; do
     *)     _consider "$pth" ;;
   esac
 done < <(git -C "$cwd" status --porcelain -z -u 2>/dev/null)
+# Spec §4.C 3rd source: changes COMMITTED this turn (git status goes clean
+# after a commit; turn-state isn't reset by commit). turn_base = HEAD at A0.
+tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
+if [ -n "$tb" ]; then
+  while IFS= read -r -d '' f; do [ -n "$f" ] && _consider "$f"; done \
+    < <(git -C "$cwd" diff --name-only -z "$tb"..HEAD 2>/dev/null)
+fi
 # corroborating B-union (turn-state recording — NEVER git-only; D11/constraint 1)
 while IFS= read -r f; do [ -n "$f" ] && _consider "$f"; done < <(printf '%s' "$st" | jq -r '.impl_files_edited[]?' 2>/dev/null)
 (( ${#touched[@]} == 0 )) && allow
