@@ -1160,6 +1160,18 @@ fn gate_and_validate_level(
         // no-payload mode variant must still be rejected). This mirrors the
         // legacy `if !visible && raw.is_none()` skip exactly.
         if hidden && entry.raw.is_none() {
+            // Decision audit. Only the field PATH and the two resolved
+            // policy enums are recorded — never the value, `entry.raw`, or
+            // the predicate context — so secret-shaped values stay out of
+            // logs.
+            tracing::debug!(
+                target: "nebula_schema::validate",
+                field = %entry.schema_path,
+                presence = ?plan.presence,
+                requiredness = ?plan.requiredness,
+                decision = "skipped",
+                "field-gate decision"
+            );
             continue;
         }
 
@@ -1180,9 +1192,29 @@ fn gate_and_validate_level(
                         .build(),
                 );
             }
+            // Decision audit. Path + policy enums only; the required failure
+            // is keyed by absence, so no value is read or recorded here.
+            tracing::debug!(
+                target: "nebula_schema::validate",
+                field = %entry.schema_path,
+                presence = ?plan.presence,
+                requiredness = ?plan.requiredness,
+                decision = "required-emitted",
+                "field-gate decision"
+            );
             continue;
         }
 
+        // Decision audit. Path + policy enums only — the value itself is
+        // validated by `validate_field`, never logged here.
+        tracing::debug!(
+            target: "nebula_schema::validate",
+            field = %entry.schema_path,
+            presence = ?plan.presence,
+            requiredness = ?plan.requiredness,
+            decision = "value-validated",
+            "field-gate decision"
+        );
         validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
     }
 }
