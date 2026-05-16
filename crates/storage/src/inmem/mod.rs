@@ -10,8 +10,10 @@
 
 mod control_queue;
 mod execution;
+mod idempotency_store;
 mod journal;
 
 pub use control_queue::InMemoryControlQueue;
 pub use execution::{InMemoryExecutionStore, InMemoryIdempotencyGuard};
+pub use idempotency_store::{InMemoryIdempotencyStore, InMemoryWebhookActivationStore};
 pub use journal::InMemoryJournalReader;

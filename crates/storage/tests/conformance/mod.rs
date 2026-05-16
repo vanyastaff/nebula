@@ -19,9 +19,12 @@
 
 use std::sync::Arc;
 
-use nebula_storage_port::dto::{ControlCommand, ControlMsg, JournalEntry};
+use nebula_storage_port::dto::{
+    CachedRecord, ControlCommand, ControlMsg, JournalEntry, WebhookActivationRecord,
+};
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard,
+    ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
+    WebhookActivationStore,
 };
 use nebula_storage_port::{FencingToken, Scope, TransitionBatch, TransitionOutcome};
 
@@ -43,6 +46,10 @@ pub trait Backend: Send + Sync {
     /// [`Backend::execution_store`] so a `commit`'s journal entries are
     /// observable.
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader>;
+    /// A durable idempotent-replay cache backed by this backend.
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore>;
+    /// A webhook-activation store backed by this backend.
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore>;
 }
 
 /// InMemory backend (always available).
@@ -53,6 +60,8 @@ pub trait Backend: Send + Sync {
 pub struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
+    idem_store: nebula_storage::inmem::InMemoryIdempotencyStore,
+    webhook: nebula_storage::inmem::InMemoryWebhookActivationStore,
 }
 
 impl Default for InMemoryBackend {
@@ -60,6 +69,8 @@ impl Default for InMemoryBackend {
         Self {
             store: nebula_storage::inmem::InMemoryExecutionStore::new(),
             guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
+            idem_store: nebula_storage::inmem::InMemoryIdempotencyStore::new(),
+            webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
         }
     }
 }
@@ -84,6 +95,12 @@ impl Backend for InMemoryBackend {
         Arc::new(nebula_storage::inmem::InMemoryJournalReader::new(
             &self.store,
         ))
+    }
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
+        Arc::new(self.idem_store.clone())
+    }
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
+        Arc::new(self.webhook.clone())
     }
 }
 
@@ -170,6 +187,26 @@ impl Backend for SqliteBackend {
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
+    #[cfg(feature = "sqlite")]
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
+        Arc::new(nebula_storage::sqlite::SqliteIdempotencyStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
+        Arc::new(nebula_storage::sqlite::SqliteWebhookActivationStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
 }
 
 /// Postgres backend — only exercised when `DATABASE_URL` is set and the
@@ -248,6 +285,26 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
+        Arc::new(nebula_storage::postgres::PgIdempotencyStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
+        Arc::new(nebula_storage::postgres::PgWebhookActivationStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
@@ -662,6 +719,126 @@ pub async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     assert!(
         cross.is_empty(),
         "[{}] a cross-tenant journal read must be empty",
+        backend.name()
+    );
+}
+
+/// The durable idempotent-replay cache is first-writer-wins (a second
+/// `put` on the same key keeps the original record + fingerprint) and
+/// tenant-isolated: a probe under a different scope-namespaced key is a
+/// miss, so tenant A can neither read nor poison tenant B's entry.
+pub async fn assert_idempotency_store_first_writer_and_scope(backend: &dyn Backend) {
+    let store = backend.idempotency_store().await;
+    // The caller scope-namespaces the key (`{ws}:{org}:{key}`); the
+    // store treats it opaquely.
+    let key_a = "ws_a:org_a:POST /x:idem-1".to_string();
+    let key_b = "ws_b:org_b:POST /x:idem-1".to_string();
+    let first = CachedRecord {
+        status: 200,
+        headers: b"h1".to_vec(),
+        body: b"first".to_vec(),
+        fingerprint: b"fp-first".to_vec(),
+        expires_at: "2999-01-01T00:00:00Z".into(),
+    };
+    let second = CachedRecord {
+        status: 500,
+        headers: b"h2".to_vec(),
+        body: b"second".to_vec(),
+        fingerprint: b"fp-second".to_vec(),
+        expires_at: "2999-01-01T00:00:00Z".into(),
+    };
+    store
+        .put(
+            key_a.clone(),
+            first.clone(),
+            std::time::Duration::from_mins(1),
+        )
+        .await
+        .expect("put #1");
+    store
+        .put(key_a.clone(), second, std::time::Duration::from_mins(1))
+        .await
+        .expect("put #2 (must be a no-op)");
+    let got = store
+        .get(&key_a)
+        .await
+        .expect("get")
+        .unwrap_or_else(|| panic!("[{}] cached record must be present", backend.name()));
+    assert_eq!(
+        got.body,
+        b"first",
+        "[{}] first-writer-wins: the original body must survive a replay race",
+        backend.name()
+    );
+    assert_eq!(
+        got.fingerprint,
+        b"fp-first",
+        "[{}] the original fingerprint must survive (replay-mismatch detection)",
+        backend.name()
+    );
+
+    // A different tenant's scope-namespaced key is a clean miss — never
+    // tenant A's record (replay-oracle mitigation, §6.1).
+    let cross = store.get(&key_b).await.expect("get cross-scope key");
+    assert!(
+        cross.is_none(),
+        "[{}] a cross-tenant cache key must not resolve to another tenant's record",
+        backend.name()
+    );
+}
+
+/// Webhook activation upsert → resolve → deactivate, with tenant
+/// isolation: the same slug in a different tenant does not resolve, and a
+/// deactivated activation stops routing.
+pub async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
+    let store = backend.webhook_store().await;
+    let s = scope_a();
+    store
+        .upsert(
+            &s,
+            WebhookActivationRecord {
+                trigger_id: "trg_1".into(),
+                scope: s.clone(),
+                slug: "deploy-hook".into(),
+                active: true,
+            },
+        )
+        .await
+        .expect("upsert");
+
+    let resolved = store
+        .resolve(&s, "deploy-hook")
+        .await
+        .expect("resolve")
+        .unwrap_or_else(|| panic!("[{}] active activation must resolve", backend.name()));
+    assert_eq!(
+        resolved.trigger_id,
+        "trg_1",
+        "[{}] resolve returns the owning trigger",
+        backend.name()
+    );
+
+    // Same slug, different tenant → miss (slug is unique per tenant; a
+    // webhook never crosses a tenant boundary).
+    let cross = store
+        .resolve(&scope_b(), "deploy-hook")
+        .await
+        .expect("resolve cross-scope");
+    assert!(
+        cross.is_none(),
+        "[{}] a slug must not resolve across a tenant boundary",
+        backend.name()
+    );
+
+    // Deactivation stops routing (never dispatch a paused webhook).
+    store.deactivate(&s, "trg_1").await.expect("deactivate");
+    let after = store
+        .resolve(&s, "deploy-hook")
+        .await
+        .expect("resolve after deactivate");
+    assert!(
+        after.is_none(),
+        "[{}] a deactivated activation must not resolve",
         backend.name()
     );
 }

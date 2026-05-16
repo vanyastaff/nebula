@@ -64,3 +64,34 @@ CREATE INDEX IF NOT EXISTS idx_port_control_queue_pending
 CREATE TABLE IF NOT EXISTS port_idempotency_marks (
     mark_key TEXT PRIMARY KEY
 );
+
+-- Durable idempotent-replay response cache (ADR-0048). `cache_key` is
+-- already tenant-namespaced by the caller (`{scope}:{key}`); first writer
+-- wins via INSERT OR IGNORE. `expires_at_ms` drives the eviction sweep.
+CREATE TABLE IF NOT EXISTS port_idempotency_cache (
+    cache_key     TEXT PRIMARY KEY,
+    status        INTEGER NOT NULL,
+    headers       BLOB NOT NULL,
+    body          BLOB NOT NULL,
+    fingerprint   BLOB NOT NULL,
+    expires_at    TEXT NOT NULL,            -- RFC 3339, returned verbatim
+    expires_at_ms INTEGER NOT NULL          -- ms since epoch, sweep predicate
+);
+
+CREATE INDEX IF NOT EXISTS idx_port_idempotency_cache_expiry
+    ON port_idempotency_cache (expires_at_ms);
+
+-- Webhook activation lookup (ADR-0049): incoming POST /hooks/{slug} →
+-- owning trigger, without scanning trigger configs. Scoped: a slug is
+-- unique per tenant, so resolution never crosses a tenant boundary.
+CREATE TABLE IF NOT EXISTS port_webhook_activations (
+    workspace_id TEXT NOT NULL,
+    org_id       TEXT NOT NULL,
+    slug         TEXT NOT NULL,
+    trigger_id   TEXT NOT NULL,
+    active       INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (workspace_id, org_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_port_webhook_activations_trigger
+    ON port_webhook_activations (workspace_id, org_id, trigger_id);
