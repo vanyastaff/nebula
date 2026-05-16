@@ -64,8 +64,7 @@ pub type Bind = (ResourceKey, ScopeLevel, String, u64);
 pub struct ResourceFanoutIndex {
     /// `CredentialId` -> rows whose resolved slot bound that credential.
     ///
-    /// `smallvec` is a workspace dependency but not (yet) a direct dependency
-    /// of `nebula-engine`; A9 is scoped not to add a workspace dep, so the
+    /// `nebula-engine` has no direct `smallvec` dependency, so the
     /// per-credential row list is a plain `Vec`. Promoting this to a small
     /// inline buffer is a deferred, dependency-gated optimisation.
     by_credential: DashMap<CredentialId, Vec<Bind>>,
