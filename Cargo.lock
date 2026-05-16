@@ -3981,6 +3981,7 @@ dependencies = [
  "async-trait",
  "nebula-core",
  "nebula-storage-port",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",

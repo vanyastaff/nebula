@@ -18,8 +18,13 @@
 //!
 //! [`Scope`]: nebula_storage_port::Scope
 
+mod decorator;
 mod error;
 mod resolver;
 
+pub use decorator::{
+    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
+    ScopedIdempotencyStore, ScopedWebhookActivationStore,
+};
 pub use error::TenancyError;
 pub use resolver::{BindingScopeResolver, Principal, ScopeResolver};

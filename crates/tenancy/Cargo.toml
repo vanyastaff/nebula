@@ -17,6 +17,9 @@ nebula-storage-port = { path = "../storage-port" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Needed only to spell `serde_json::Value` in the ExecutionStore trait
+# signature the decorator re-implements; no (de)serialization here.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync"] }
