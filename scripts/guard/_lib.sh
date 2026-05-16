@@ -37,50 +37,7 @@ is_lib_rust() { # $1=path -> return 0 if library rust
   [[ "$p" =~ /(main|build)\.rs$ ]] && return 1
   return 0
 }
-# resolve_cmd: returns the command with BALANCED quotes removed (== the shell's
-# own concatenation, so `ca'rg'o`→`cargo`, `-m "fix: x"`→`-m fix: x`), or
-# "UNPARSEABLE" for what a non-shell tokenizer must not guess at: shell
-# substitution/chaining/metachars, UNBALANCED quotes, or `env --split-string`
-# (argument is an opaque re-split command string). Scoped fail-closed: a benign
-# quoted command (git commit -m "msg") resolves and is analyzed normally; only
-# genuinely unanalyzable input denies — so the guard does not cripple workflow.
-resolve_cmd() { # $1=raw -> resolved string OR "UNPARSEABLE"
-  local c="$1"
-  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*) printf 'UNPARSEABLE'; return;; esac
-  local dq="${c//[^\"]/}" sq="${c//[^\']/}"
-  if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
-  c="${c//\"/}"; c="${c//\'/}"
-  local h=" $c "
-  if [[ "$h" == *' env '* && ( "$h" == *' -S '* || "$h" == *' -S'* || "$h" == *' --split-string '* || "$h" == *' --split-string='* ) ]]; then
-    printf 'UNPARSEABLE'; return
-  fi
-  printf '%s' "$c"
-}
-# Fail-closed: echoes argv0 basename, or "UNPARSEABLE" (caller MUST deny it).
-normalize_argv0() { # $1=raw command
-  local c; c="$(resolve_cmd "$1")"
-  [ "$c" = "UNPARSEABLE" ] && { printf 'UNPARSEABLE'; return; }
-  local -a t; read -ra t <<< "$c"
-  local n=${#t[@]} i=0
-  local -A WRAP=([env]=1 [sudo]=1 [nice]=1 [timeout]=1 [watch]=1 [xargs]=1 [command]=1 [stdbuf]=1 [nohup]=1)
-  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
-  while (( i < n )); do
-    local w="${t[$i]}"
-    if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$w" != */* ]]; then ((i++)); continue; fi
-    local base="${w##*/}"
-    if [[ -n "${WRAP[$base]:-}" ]]; then
-      ((i++))
-      while (( i < n )); do
-        local x="${t[$i]}"
-        if [[ "$x" == -* ]]; then ((i++)); if [[ -n "${VF[$x]:-}" && $i -lt $n && "${t[$i]}" != -* ]]; then ((i++)); fi; continue; fi
-        if [[ "$x" =~ ^[0-9]+(\.[0-9]+)?[smhdKMG]?$ ]]; then ((i++)); continue; fi
-        if [[ "$x" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$x" != */* ]]; then ((i++)); continue; fi
-        break
-      done
-      continue
-    fi
-    break
-  done
-  if (( i >= n )); then printf 'UNPARSEABLE'; return; fi
-  local a="${t[$i]//\\//}"; a="${a##*/}"; printf '%s' "${a%.exe}"
-}
+# (D10) resolve_cmd / normalize_argv0 intentionally REMOVED. Five adversarial
+# rounds proved a hand-rolled bash shell-parser on a security boundary is an
+# un-winnable arms race. Hook A no longer parses argv; it is a fail-open
+# substring tripwire. Guarantee is structural: B + A2 + C + CI.

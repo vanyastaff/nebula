@@ -10,20 +10,6 @@ chk() { # chk "name" expected actual
 }
 
 # --- _lib unit checks ---
-chk "normalize_argv0 strips env+wrappers" cargo "$(normalize_argv0 'FOO=1 env BAR=2 sudo cargo clippy -- -D warnings')"
-chk "normalize_argv0 unwraps timeout value" cargo "$(normalize_argv0 'timeout 600 cargo clippy -- -D warnings')"
-chk "normalize_argv0 unwraps sudo -u value" cargo "$(normalize_argv0 'sudo -u root cargo build')"
-chk "normalize_argv0 nice -n value" cargo "$(normalize_argv0 'nice -n 10 cargo nextest run')"
-chk "normalize_argv0 fail-closed on subshell" UNPARSEABLE "$(normalize_argv0 'cargo $(echo test)')"
-chk "normalize_argv0 fail-closed on chaining" UNPARSEABLE "$(normalize_argv0 'cargo test; rm -rf x')"
-chk "normalize_argv0 resolves quoted argv0" cargo "$(normalize_argv0 "ca'rg'o fmt --all")"
-chk "normalize_argv0 resolves dquote argv0" git "$(normalize_argv0 'g"i"t push --force')"
-chk "normalize_argv0 keeps quoted arg value" git "$(normalize_argv0 'git commit -m "fix: bug"')"
-chk "normalize_argv0 unrelated quoted ok" gh "$(normalize_argv0 'gh pr create --title "X Y"')"
-chk "normalize_argv0 wrapper-only UNPARSEABLE" UNPARSEABLE "$(normalize_argv0 'sudo')"
-chk "normalize_argv0 fail-closed unbalanced quote" UNPARSEABLE "$(normalize_argv0 'echo "oops')"
-chk "normalize_argv0 fail-closed env -S" UNPARSEABLE "$(normalize_argv0 'env -S cargo fmt --all')"
-chk "normalize_argv0 strips windows path and exe suffix" cargo "$(normalize_argv0 'C:\tools\cargo.exe fmt --all')"
 LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
 chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[]}' "$(load_state "$LS_T")"; rm -f "$LS_T"
 chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
@@ -40,20 +26,30 @@ printf '{"session_id":"%s","cwd":"%s"}' "$TS_SID" "$PWD" | bash "$HERE/turn-rese
 chk "A0 clears impl" "[]" "$(jq -c '.impl_files_edited' "$TS_P")"
 chk "A0 clears gate" "[]" "$(jq -c '.gate_green' "$TS_P")"
 
-# A bash-deny  (run hook, capture exit code)
+# A bash-deny  (D10: fail-OPEN advisory tripwire — NOT a security boundary)
 adeny() { printf '%s' "$1" | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?; }
 mk() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$PWD"; }
-chk "A denies --no-verify (wrapped)" 2 "$(adeny "$(mk 'env X=1 git commit -m wip --no-verify')")"
-chk "A denies clippy -A"            2 "$(adeny "$(mk 'cargo clippy -p nebula-engine -- -A clippy::all')")"
+chk "A denies --no-verify"          2 "$(adeny "$(mk 'git commit -m wip --no-verify')")"
 chk "A denies cargo fmt --all"      2 "$(adeny "$(mk 'cargo fmt --all')")"
-chk "A denies timeout-wrapped fmt --all" 2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
-chk "A fail-closed on subshell"     2 "$(adeny "$(mk 'cargo \$(echo test)')")"
-chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
+chk "A denies wrapped fmt --all"    2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
+chk "A denies git push --force"     2 "$(adeny "$(mk 'git push --force origin main')")"
 chk "A allows conventional commit"  0 "$(adeny "$(mk 'git commit -m \"feat(x): y\"')")"
-chk "A allows gh pr create quoted"  0 "$(adeny "$(mk 'gh pr create --title \"Add X\"')")"
-chk "A allows grep string literal"  0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
-chk "A denies quoted-token bypass"  2 "$(adeny "$(mk 'cargo \"fmt\" --all')")"
-chk "A denies env -S fmt --all"     2 "$(adeny "$(mk 'env -S cargo fmt --all')")"
+chk "A allows gh pr create"         0 "$(adeny "$(mk 'gh pr create --title \"Add X\"')")"
+chk "A allows grep literal"         0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
+chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
+chk "A allows push no force"        0 "$(adeny "$(mk 'git push origin main')")"
+chk "A fail-open on subshell"       0 "$(adeny "$(mk 'cargo \$(echo test)')")"
+chk "A fail-open on non-Bash"       0 "$(printf '{"tool_name":"Edit"}' | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?)"
+
+# A2 record
+R_SID="t-a2"; R_P="$(turn_state_path "$R_SID" "$PWD")"
+mkdir -p "$(dirname "$R_P")"; printf '{"impl_files_edited":[],"gate_green":[]}' >"$R_P"
+printf '{"tool_name":"Bash","tool_input":{"command":"cargo nextest run -p nebula-engine"},"tool_response":"12 passed","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
+chk "A2 records green" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings"},"tool_response":"error: aborting","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
+chk "A2 ignores failed" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings -A clippy::all"},"tool_response":"ok","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
+chk "A2 refuses suppressed clippy (D10)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
 
 # Per-hook cases are appended by later tasks below this line. # HOOKMARK
 
