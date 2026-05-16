@@ -22,7 +22,7 @@ is_test=0
 [[ "$nf" =~ /(tests|benches)/ ]] && is_test=1
 printf '%s' "$added" | grep -qE '#\[(cfg\(test\)|test)\]' && is_test=1
 jcount=$(printf '%s' "$added" | grep -cE '//[[:space:]]*guard-justified:' || true)
-ecount=$(printf '%s' "$added" | grep -oE '#\[allow\(|(^|[^A-Za-z_])(todo!|unimplemented!|unreachable!)\(' | wc -l | tr -d ' ')
+ecount=$(printf '%s' "$added" | grep -oE '#\[[[:space:]]*allow[[:space:]]*\(|(^|[^A-Za-z_])(todo!|unimplemented!|unreachable!)[[:space:]]*\(' | wc -l | tr -d ' ')
 
 if is_lib_rust "$file" && [ "$is_test" -eq 0 ]; then
   if printf '%s' "$added" | grep -qE '\.[[:space:]]*unwrap[[:space:]]*(::<[^>]*>)?[[:space:]]*\(\)|\.[[:space:]]*expect[[:space:]]*\(|(^|[^A-Za-z_])panic![[:space:]]*\(|(Option|Result)[[:space:]]*::[[:space:]]*(unwrap|expect)[[:space:]]*\('; then
@@ -46,7 +46,7 @@ if [ "${impl_n:-0}" -gt 0 ]; then
     case "$tool" in
       Edit) o="$(jqg '.tool_input.old_string')"; n="$(jqg '.tool_input.new_string')";;
       MultiEdit) o="$(jqg '.tool_input.edits[].old_string')"; n="$(jqg '.tool_input.edits[].new_string')";;
-      Write) o="$( [ -f "$file" ] && cat -- "$file" || printf '' )"; n="$added";;
+      Write) o="$( __f="${file//\\//}"; [ -f "$__f" ] && cat -- "$__f" || printf '' )"; n="$added";;
     esac
     weak=0
     [ "$(assert_count "$o")" -gt "$(assert_count "$n")" ] && weak=1
