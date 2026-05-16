@@ -88,6 +88,11 @@ pub enum ClaimAttempt {
 }
 
 /// Errors from `RefreshClaimStore::heartbeat`.
+///
+/// Variant names are preserved verbatim from the loom-verified
+/// `RefreshClaimRepo` this trait re-homes (spec §4.2: shape unchanged) —
+/// `Repo` (not `Store`) so existing `match HeartbeatError::Repo(_)` arms
+/// in consumers remain valid across the move.
 #[derive(Debug, thiserror::Error)]
 pub enum HeartbeatError {
     /// Our claim expired and another replica took it.
@@ -95,7 +100,7 @@ pub enum HeartbeatError {
     ClaimLost,
     /// Underlying store error.
     #[error("store error: {0}")]
-    Store(#[from] RefreshClaimError),
+    Repo(#[from] RefreshClaimError),
 }
 
 /// Errors from `try_claim` / `release` / `reclaim_stuck` / sentinel ops.
