@@ -533,7 +533,7 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   c="$(crate_of "$f")"; [ -n "$c" ] && touched[$c]=1
 done < <(
-  { git -C "$cwd" status --porcelain 2>/dev/null | sed -E 's/^.{3}//; s/^.* -> //'
+  { git -C "$cwd" status --porcelain -u 2>/dev/null | sed -E 's/^.{3}//; s/^.* -> //'
     printf '%s' "$st" | jq -r '.impl_files_edited[]?'
   } | tr '\\' '/' | grep -E '(^|/)crates/[^/]+/src/[^[:space:]]*\.rs$' )
 [ "${#touched[@]}" -eq 0 ] && allow
