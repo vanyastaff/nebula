@@ -63,7 +63,8 @@ only where a linter cannot already catch it.
 | D6 | Subagent curation: delete 9 orphan `loop-*`, merge 5 sidecars → 1, keep 4 load-bearing, trim dead MCP grants | Owner + audit |
 | D7 | Remove BridgeSpace integration (in-repo only; owner removed the out-of-repo product directly) | Owner |
 | D8 | Invert doc canon: **CLAUDE.md is canonical**, AGENTS.md becomes a thin pointer to it (non-standard; owner chose it over AGENTS.md-as-canon with the trade-off shown) | Owner |
-| D9 | Hook runtime = **bash + jq** under `scripts/guard/*.sh` (supersedes the Node `.mjs` draft — owner rejected a new Node dependency; repo already requires bash). Hook A is fail-closed. | Owner |
+| D9 | Hook runtime = **bash + jq** under `scripts/guard/*.sh` (supersedes the Node `.mjs` draft — owner rejected a new Node dependency; repo already requires bash). ~~Hook A is fail-closed.~~ **Fail-closed-A clause SUPERSEDED by D10.** Runtime decision (bash+jq) stands. | Owner |
+| D10 | **Security boundary relocated to the oracle.** 5 adversarial rounds proved a hand-rolled bash shell-parser on a security boundary is an un-winnable arms race. The no-cheat guarantee is carried structurally by **B** (edit-guard: no test-weakening) + **A2** (recorder, now self-protecting: refuses to record a green gate if the clippy command suppressed lints via `-A`/`--allow`/`RUSTFLAGS=…-A`) + **C** (Stop-gate: no "done" without a recorded clean gate) + lefthook/CI. `resolve_cmd`/`normalize_argv0` are **deleted**; **hook A is demoted** to a cheap **fail-open** advisory substring tripwire (its parser correctness is no longer security-critical). Guarantee preserved — *relocated*, not weakened. B and C remain hard. | Owner |
 
 ## 4. Architecture — Enforcement Layers
 
@@ -112,41 +113,49 @@ deliberately *simple, conservative* bash matcher strictly safer than a clever
 tokenizer that can be evaded (the
 Node draft had exactly such a bypass, caught in review). Hooks complete < 2 s.
 
-> **D9 supersession note:** the subsection headers below retain the original
-> `nebula-guard-*.mjs` names and Node phrasing for design continuity, but per
-> D9 every hook is a `scripts/guard/<role>.sh` bash script (jq for JSON, `exit
-> 2`+stderr to block, fail-open on internal error except A=fail-closed). The
-> *behavioral* spec in each subsection (what to deny/record/reset) is
-> unchanged; only the runtime is bash. The implementation **plan** carries the
-> exact bash filenames and code.
+> **D9/D10 supersession note (read this before §4.A above's preamble):** the
+> preceding paragraph's `resolve_cmd`/fail-closed-A/"scoped fail-closed"
+> narrative is **SUPERSEDED by D10** and retained only as design history. Per
+> D10: `resolve_cmd`/`normalize_argv0` are **deleted**; **hook A is fail-open**
+> (advisory tripwire, not a security boundary); the no-cheat guarantee is B +
+> A2 (lint-suppression-aware recorder) + C + lefthook/CI. Every hook is a
+> `scripts/guard/<role>.sh` bash script (jq for JSON, `exit 2`+stderr to block;
+> fail-**open** on internal error for *all* hooks including A — only B and C
+> are hard-deny on their conditions). The authoritative A/A2 behavior is the
+> two subsections immediately below (already D10-correct); the implementation
+> **plan** carries the exact bash code.
 
-### A. PreToolUse / Bash — `nebula-guard-bash.mjs` (matcher `Bash`)
+### A. PreToolUse / Bash — `scripts/guard/bash-deny.sh` (matcher `Bash`) — D10: demoted to a fail-open advisory tripwire
 
-Hardened parser (strip inline env assignments, `>`/`>>`/`2>&1`/`|` redirects,
-and unwrap `env`/`sudo`/`watch`-style wrappers before matching — explicit
-anti-evasion, mirrors Bun; the same wrapper-unwrapping direction was since
-adopted by Claude Code's own Bash deny-rule matching, changelog 2.1.113).
-**Deny:**
+**Not a security boundary** (D10 — that role moved to B+A2+C). No shell parser,
+no `resolve_cmd`/`normalize_argv0` (deleted). A cheap best-effort substring
+check that **fails open** (any doubt / no jq / non-Bash / unreadable → `allow`;
+C is the real guard). It still denies the *blatant literal* cases as a helpful
+early nudge (a rare false-deny on e.g. a doc commit message is acceptable —
+it's advisory, the agent rewords; it is no longer the guarantee):
 
-- `git commit … --no-verify | -n | --no-gpg-sign | -c core.hooksPath=…` —
-  bypassing `lefthook` is the top-level cheat; blocked first.
-- `cargo clippy … -A… | --allow … | RUSTFLAGS=…-A…` — silencing the linter to
-  reach green is cheating the oracle.
-- `cargo fmt --all` / `cargo +nightly fmt --all` — **unconditional** deny with
-  redirect to `bash scripts/pre-commit-fmt-check.sh` (or `cargo fmt -p <crate>`).
-  The `--all` form is never needed once D formats per-file, and it is the exact
-  shape that trips the silent Windows os-error-206 and produces the false
-  "dev:check green from a worktree" report. No path-length heuristic →
-  unambiguous. Discipline **and** friction removal in one rule.
-- `git push --force | --force-with-lease` targeting shared history without an
-  explicit `NEBULA_ALLOW_FORCE=1` override (AGENTS.md).
+- raw command literally contains `git commit` **and** `--no-verify` /
+  `--no-gpg-sign` / `core.hooksPath=` (unambiguous long forms only — `-n`
+  dropped: too noisy against message text).
+- raw literally contains `cargo`…`fmt` **and** a standalone `--all`.
+- raw literally contains `git push` **and** `--force`/`--force-with-lease`/
+  standalone `-f`, no `NEBULA_ALLOW_FORCE=1`.
 
-### A2. PostToolUse / Bash — `nebula-guard-record.mjs` (matcher `Bash`)
+Obfuscation (`ca'rg'o`, wrappers, quotes) is **not** A's problem anymore: the
+*outcome* of any cheat is caught structurally by B (can't weaken tests) + A2/C
+(can't record/claim a green that wasn't a clean gate).
 
-Reads the tool result/exit code (PreToolUse cannot). When
-`cargo clippy -p <crate> -- -D warnings` **and** `cargo nextest run -p <crate>`
-(or `task dev:check`) exit `0`, record `gate_green: [<crate>…]` into the
-turn-state file. This is the falsifiable anchor consumed by C.
+### A2. PostToolUse / Bash — `scripts/guard/record.sh` (matcher `Bash`) — the oracle's integrity gate (D10)
+
+Reads the tool result/exit code (PreToolUse cannot). Records
+`gate_green: [<crate>…]` **only when** `cargo clippy -p <crate> -- -D warnings`
+**and** `cargo nextest run -p <crate>` (or `task dev:check`) exit `0` **and**
+the clippy command did **not** suppress lints — i.e. it must **refuse to record
+green** if the recognized gate command contains `-A`/`--allow`/
+`RUSTFLAGS=…-A…`. This self-protecting check is the *structural* home of the
+old hook-A clippy rule (D10): a suppressed clippy is not a clean gate, so C
+will still block "done". This is the falsifiable anchor consumed by C and the
+load-bearing no-cheat guarantee.
 
 ### B. PreToolUse / Edit|Write|MultiEdit — `nebula-guard-edit.mjs`
 
