@@ -1,4 +1,4 @@
-//! Integration tests for `ValidValues::resolve` (Task 23).
+//! Integration tests for `ValidValues::resolve`.
 //!
 //! Covers: fast path, expression evaluation, evaluation failure,
 //! nested structures, and post-resolve literal passthrough.

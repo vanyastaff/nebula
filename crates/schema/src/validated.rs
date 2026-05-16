@@ -387,7 +387,7 @@ impl ValidSchema {
 
 /// Validated values — tied to a specific `ValidSchema`.
 ///
-/// Produced by `ValidSchema::validate()` (Task 21). Proof-token that values
+/// Produced by `ValidSchema::validate()`. Proof-token that values
 /// have been checked against the schema at least once.
 ///
 /// Owns an `Arc`-backed clone of the schema so the token can cross `.await`
@@ -573,7 +573,7 @@ impl ValidValues {
 
 /// Resolved values — all `FieldValue::Expression` entries have been evaluated.
 ///
-/// Produced by `ValidValues::resolve()` (Task 23). Proof-token that no
+/// Produced by `ValidValues::resolve()`. Proof-token that no
 /// expression placeholders remain in the value tree.
 ///
 /// Owns an `Arc`-backed clone of the schema so it is freely `Send + 'static`
