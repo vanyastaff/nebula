@@ -383,6 +383,20 @@ BW_SID="b-weaken"; BW_P="$(turn_state_path "$BW_SID" "$PWD")"
 mkdir -p "$(dirname "$BW_P")"; printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":[]}' >"$BW_P"
 EW='{"tool_name":"Edit","tool_input":{"file_path":"crates/engine/tests/retry.rs","old_string":"assert_eq!(got, want);","new_string":"assert!(true);"},"cwd":"'"$PWD"'","session_id":"'"$BW_SID"'"}'
 chk "B denies test-weaken+impl" 2 "$(bdeny "$EW")"
+# D11/CRIT-1: src file whose payload has inline #[cfg(test)] is STILL recorded
+C1_SID="b-crit1"; C1_P="$(turn_state_path "$C1_SID" "$PWD")"
+mkdir -p "$(dirname "$C1_P")"; printf '{"impl_files_edited":[],"gate_green":[]}' >"$C1_P"
+bdeny "$(W 'crates/zzz/src/m.rs' 'pub fn f()->u8{0}\n#[cfg(test)]\nmod t{}' "$C1_SID")" >/dev/null
+chk "B records src w/ inline test (C-1)" 'true' "$(jq -e '.impl_files_edited|index("crates/zzz/src/m.rs")|type=="number"' "$C1_P" 2>/dev/null && echo true || echo false)"
+# D11/IMPORTANT-2: two escapes, one justification -> deny
+chk "B per-occurrence justified (I-2)" 2 "$(bdeny "$(W 'crates/engine/src/q.rs' '// guard-justified: a\n#[allow(x)]\n#[allow(y)]\nfn f(){}')")"
+# D11/CRIT-2: Write overwrite of an EXISTING test file dropping asserts + impl edited -> deny
+CW_SID="b-write"; CW_P="$(turn_state_path "$CW_SID" "$PWD")"
+mkdir -p "$(dirname "$CW_P")"; printf '{"impl_files_edited":["crates/engine/src/x.rs"],"gate_green":[]}' >"$CW_P"
+CW_F="$(mktemp -d)/zt.rs"; printf '#[test]\nfn t(){ assert_eq!(run(),1); assert!(ok()); }\n' >"$CW_F"
+CW_J="$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"#[test]\\nfn t(){ let _=run(); }"},"cwd":"%s","session_id":"%s"}' "$CW_F" "$PWD" "$CW_SID")"
+chk "B denies Write-weaken test (C-2)" 2 "$(printf '%s' "$CW_J" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1; echo $?)"
+rm -rf "$(dirname "$CW_F")"
 ```
 
 - [ ] **Step 2: Run** → FAIL.
@@ -406,38 +420,51 @@ esac
 sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 p="$(turn_state_path "$sid" "$cwd")"; st="$(load_state "$p")"
 nf="${file//\\//}"
+# D11/CRIT-1: record the impl edit by FILE PATH (is_lib_rust) UNCONDITIONALLY —
+# never gated by payload #[cfg(test)] markers (C corroborates from git ground
+# truth; this is the belt). The payload-test signal below gates ONLY the
+# sub-checks where clippy genuinely backstops.
+if is_lib_rust "$file"; then
+  st="$(printf '%s' "$st" | jq -c --arg f "$nf" '.impl_files_edited = (.impl_files_edited + [$f] | unique)')"
+  save_state "$p" "$st"
+fi
 is_test=0
 [[ "$nf" =~ /(tests|benches)/ ]] && is_test=1
 printf '%s' "$added" | grep -qE '#\[(cfg\(test\)|test)\]' && is_test=1
+jcount=$(printf '%s' "$added" | grep -cE '//[[:space:]]*guard-justified:' || true)
+ecount=$(printf '%s' "$added" | grep -oE '#\[allow\(|(^|[^A-Za-z_])(todo!|unimplemented!|unreachable!)\(' | wc -l | tr -d ' ')
 
 if is_lib_rust "$file" && [ "$is_test" -eq 0 ]; then
-  st="$(printf '%s' "$st" | jq -c --arg f "$nf" '.impl_files_edited = (.impl_files_edited + [$f] | unique)')"
-  save_state "$p" "$st"
-  printf '%s' "$added" | grep -qE '\.unwrap\(\)|\.expect\(|(^|[^A-Za-z_])panic!\(' \
-    && deny "New unwrap()/expect()/panic!() in library code is forbidden (AGENTS.md). Use a typed thiserror variant."
-  if printf '%s' "$added" | grep -qE '#\[allow\(|(^|[^A-Za-z_])(todo!|unimplemented!|unreachable!)\('; then
-    printf '%s' "$added" | grep -qE '//[[:space:]]*guard-justified:' \
-      || deny "allow/todo!/unimplemented!/unreachable! is a path-of-least-work escape. Fix it, or add a '// guard-justified: <reason>' line above."
+  if printf '%s' "$added" | grep -qE '\.[[:space:]]*unwrap[[:space:]]*(::<[^>]*>)?[[:space:]]*\(\)|\.[[:space:]]*expect[[:space:]]*\(|(^|[^A-Za-z_])panic![[:space:]]*\(|(Option|Result)[[:space:]]*::[[:space:]]*(unwrap|expect)[[:space:]]*\('; then
+    [ "${jcount:-0}" -ge 1 ] || deny "New unwrap()/expect()/panic!() in library code is forbidden (AGENTS.md). Use a typed thiserror variant, or justify with '// guard-justified: <reason>'."
   fi
+  # D11/IMPORTANT-2: per-occurrence — N escapes need >= N justifications.
+  [ "${ecount:-0}" -gt "${jcount:-0}" ] \
+    && deny "allow/todo!/unimplemented!/unreachable! is a path-of-least-work escape — each needs its own '// guard-justified: <reason>' ($ecount escape(s), $jcount justification(s))."
   printf '%s' "$added" | grep -qE '//[[:space:]]*(TODO|FIXME|HACK|XXX)\b|TODO\([A-Z]+-?[0-9]|(^|[^A-Za-z])Phase[[:space:]][A-Z]\b' \
     && deny "TODO/FIXME/HACK/plan-id comments must not land in committed code."
-  printf '%s' "$added" | grep -qE 'let[[:space:]]+_[[:space:]]*=[[:space:]]*[A-Za-z0-9_.]*(transition|send|write|commit|flush|lock|spawn)[A-Za-z0-9_]*\(' \
+  printf '%s' "$added" | grep -qE 'let[[:space:]]+_[[:space:]]*=[[:space:]]*([A-Za-z0-9_.]*[._])?(transition|send|write|commit|flush|lock|spawn)[A-Za-z0-9_]*[[:space:]]*\(' \
     && deny "let _ = <call> silently swallows a Result/must-use. Handle the error explicitly."
 fi
 
-if { [ "$tool" = Edit ] || [ "$tool" = MultiEdit ]; } && [[ "$nf" =~ /(tests|benches)/ ]]; then
-  impl_n="$(printf '%s' "$st" | jq -r '.impl_files_edited | length')"
-  if [ "${impl_n:-0}" -gt 0 ]; then
+# D11/CRIT-2,3: test-weaken covers Edit/MultiEdit AND Write, on a /tests|benches/
+# path OR a lib file with inline #[cfg(test)]. Only when impl changed this turn.
+impl_n="$(printf '%s' "$st" | jq -r '.impl_files_edited | length')"
+if [ "${impl_n:-0}" -gt 0 ]; then
+  acount() { printf '%s' "$1" | grep -oE '\bassert[A-Za-z_]*!|#\[(test|should_panic)\]' | wc -l | tr -d ' '; }
+  is_testish=0
+  [[ "$nf" =~ /(tests|benches)/ ]] && is_testish=1
+  printf '%s' "$added" | grep -qE '#\[(cfg\(test\)|test)\]' && is_testish=1
+  if [ "$is_testish" -eq 1 ]; then
     case "$tool" in
-      Edit) olds="$(jqg '.tool_input.old_string')"; news="$(jqg '.tool_input.new_string')";;
-      MultiEdit) olds="$(jqg '.tool_input.edits[].old_string')"; news="$(jqg '.tool_input.edits[].new_string')";;
+      Edit) o="$(jqg '.tool_input.old_string')"; n="$(jqg '.tool_input.new_string')";;
+      MultiEdit) o="$(jqg '.tool_input.edits[].old_string')"; n="$(jqg '.tool_input.edits[].new_string')";;
+      Write) o="$( [ -f "$file" ] && cat -- "$file" || printf '' )"; n="$added";;
     esac
-    oc="$(printf '%s' "$olds" | grep -oE '\bassert[A-Za-z_]*!' | wc -l | tr -d ' ')"
-    nc="$(printf '%s' "$news" | grep -oE '\bassert[A-Za-z_]*!' | wc -l | tr -d ' ')"
     weak=0
-    [ "${oc:-0}" -gt "${nc:-0}" ] && weak=1
-    printf '%s' "$news" | grep -qE 'assert!\([[:space:]]*true[[:space:]]*\)|#\[ignore\]' && weak=1
-    [ "$weak" -eq 1 ] && deny "Weakening a test (removed assert / assert!(true) / #[ignore]) while impl changed this turn is blocked. Fix the logic, not the test."
+    [ "$(acount "$o")" -gt "$(acount "$n")" ] && weak=1
+    printf '%s' "$n" | grep -qE 'assert!\([[:space:]]*(true|1[[:space:]]*==[[:space:]]*1)[[:space:]]*\)|#\[ignore\]' && weak=1
+    [ "$weak" -eq 1 ] && deny "Weakening a test (fewer asserts/#[test], assert!(true)/tautology/#[ignore]) while impl changed this turn is blocked. Fix the logic, not the test."
   fi
 fi
 allow
@@ -470,6 +497,14 @@ printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":["engin
 chk "C allows green"     0 "$(cstop '{"session_id":"'"$C_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
 printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":[]}' >"$C_P"
 chk "C no reblock loop"  0 "$(cstop '{"session_id":"'"$C_SID"'","cwd":"'"$PWD"'","stop_hook_active":true}')"
+# D11: git ground-truth derivation (independent of turn-state recording)
+CG_DIR="$(mktemp -d)"; ( cd "$CG_DIR" && git init -q && mkdir -p crates/zzz/src && echo 'fn f(){}' > crates/zzz/src/a.rs )
+CG_SID="c-git"; CG_P="$(turn_state_path "$CG_SID" "$CG_DIR")"; mkdir -p "$(dirname "$CG_P")"
+printf '{"impl_files_edited":[],"gate_green":[]}' >"$CG_P"
+chk "C blocks via git diff" 2 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_DIR"'","stop_hook_active":false}')"
+printf '{"impl_files_edited":[],"gate_green":["zzz"]}' >"$CG_P"
+chk "C allows git+green"   0 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_DIR"'","stop_hook_active":false}')"
+rm -rf "$CG_DIR"
 ```
 
 - [ ] **Step 2: Run** → FAIL.
@@ -478,27 +513,32 @@ chk "C no reblock loop"  0 "$(cstop '{"session_id":"'"$C_SID"'","cwd":"'"$PWD"'"
 
 ```bash
 #!/usr/bin/env bash
-# Side-effect-free: reads turn-state only; runs no tools (deadlock-safe).
+# D11: touched-crate set from git GROUND TRUTH (not solely B's recording).
+# `git` here is read-only and triggers no tools — Stop-hook-safe. Over-
+# detection is the safe direction (more crates must be green, never fewer).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
-[ "$(jqg '.stop_hook_active')" = "true" ] && allow   # loop guard
+[ "$(jqg '.stop_hook_active')" = "true" ] && allow   # loop guard (deadlock-safe)
 have_jq || allow
 sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 st="$(load_state "$(turn_state_path "$sid" "$cwd")")"
-mapfile -t files < <(printf '%s' "$st" | jq -r '.impl_files_edited[]?' )
-[ "${#files[@]}" -eq 0 ] && allow
 printf '%s' "$st" | jq -e '.gate_green | index("*workspace*")' >/dev/null 2>&1 && allow
-declare -A seen; missing=""
-for f in "${files[@]}"; do
-  c="$(crate_of "$f")"; [ -n "$c" ] || continue
-  [ -n "${seen[$c]:-}" ] && continue; seen[$c]=1
-  if ! printf '%s' "$st" | jq -e --arg c "$c" '.gate_green | index($c)' >/dev/null 2>&1; then
-    missing="$missing $c"
-  fi
+declare -A touched
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  c="$(crate_of "$f")"; [ -n "$c" ] && touched[$c]=1
+done < <(
+  { git -C "$cwd" status --porcelain 2>/dev/null | sed -E 's/^.{3}//; s/^.* -> //'
+    printf '%s' "$st" | jq -r '.impl_files_edited[]?'
+  } | tr '\\' '/' | grep -E '(^|/)crates/[^/]+/src/[^[:space:]]*\.rs$' )
+[ "${#touched[@]}" -eq 0 ] && allow
+missing=""
+for c in "${!touched[@]}"; do
+  printf '%s' "$st" | jq -e --arg c "$c" '.gate_green | index($c)' >/dev/null 2>&1 || missing="$missing $c"
 done
 [ -z "$missing" ] && allow
-deny "You changed crate(s)$missing but never showed clippy + nextest green for them this turn. Run \`cargo clippy -p nebula-<crate> -- -D warnings\` and \`cargo nextest run -p nebula-<crate>\` (or \`task dev:check\`) before claiming done. Weakening tests to get there is blocked by the edit guard."
+deny "You changed crate(s)$missing but never showed a clean clippy + nextest green for them. Run \`cargo clippy -p nebula-<crate> -- -D warnings\` and \`cargo nextest run -p nebula-<crate>\` (or \`task dev:check\`) before claiming done. (Touched set = git diff ground truth; weakening tests cannot help — A2 records green only for a clean gate, CI re-runs.)"
 ```
 
 - [ ] **Step 4: Run** → PASS.
