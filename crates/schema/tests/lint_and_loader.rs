@@ -885,3 +885,76 @@ fn select_single_option_complex_type_warns() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn value_predicate_targeting_secret_is_rejected() {
+    // A value-comparing predicate (`Eq`) that reads a secret's plaintext as a
+    // visibility discriminant must be rejected at schema-build time.
+    let report =
+        Schema::builder()
+            .add(Field::secret(field_key!("api_key")))
+            .add(Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+                    json!("prod-key"),
+                )),
+            ))
+            .build()
+            .expect_err("value predicate on a secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn presence_predicate_on_secret_is_allowed() {
+    // A presence-only predicate (`Set`) never reads the secret value, so it
+    // stays legal as a visibility discriminant.
+    Schema::builder()
+        .add(Field::secret(field_key!("api_key")))
+        .add(
+            Field::string(field_key!("region")).visible_when(nebula_validator::Rule::Predicate(
+                nebula_validator::Predicate::Set(
+                    nebula_validator::foundation::FieldPath::parse("api_key").unwrap(),
+                ),
+            )),
+        )
+        .build()
+        .expect("presence predicate on secret is allowed");
+}
+
+#[test]
+fn nested_value_predicate_targeting_secret_is_rejected() {
+    // H6: the secret-key collection must recurse `Field::Object`, so a value
+    // predicate targeting a *nested* secret (`/auth/api_key`) is also flagged.
+    let report =
+        Schema::builder()
+            .add(Field::object(field_key!("auth")).add(Field::secret(field_key!("api_key"))))
+            .add(Field::string(field_key!("region")).visible_when(
+                nebula_validator::Rule::Predicate(nebula_validator::Predicate::Eq(
+                    nebula_validator::foundation::FieldPath::parse("/auth/api_key").unwrap(),
+                    json!("x"),
+                )),
+            ))
+            .build()
+            .expect_err("value predicate on a nested secret must fail the build");
+
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "secret.predicate_on_value"),
+        "expected secret.predicate_on_value for nested secret, got {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}

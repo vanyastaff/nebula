@@ -33,6 +33,7 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_visibility_cycles_new(fields, prefix, report);
     lint_required_cycles_new(fields, prefix, report);
     lint_loader_dependency_cycles(fields, prefix, report);
+    lint_secret_predicate_on_value(fields, report);
     if report.has_errors() || report.has_warnings() {
         tracing::debug!(
             target: "nebula_schema::lint",
@@ -51,6 +52,15 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
 pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut ValidationReport) {
     if rules.is_empty() {
         return;
+    }
+
+    // Root rules may also target a secret by value; the same prohibition that
+    // applies to field-level visibility/required rules applies here.
+    let secrets = collect_secret_pointer_segments(fields);
+    if !secrets.is_empty() {
+        for rule in rules {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &FieldPath::root(), report);
+        }
     }
 
     let defined = defined_field_paths(fields);
@@ -1066,6 +1076,109 @@ fn lint_loader_dependency_cycles(
     if let Some((from, to)) = find_cycle_edge(&adj) {
         emit_loader_dependency_cycle_on_edge(&from, &to, report);
     }
+}
+
+// ── Secret value-predicate lint ───────────────────────────────────────────────
+
+/// Recursively collect the segment vector of every `Field::Secret` in the
+/// tree, descending `Field::Object` so nested secrets (e.g. `auth.api_key`)
+/// are recorded with their full path. Segments come from [`FieldKey::as_str`],
+/// matching the unescaped segments yielded by `FieldPath::segments`, so the
+/// two can be compared segment-wise regardless of JSON-Pointer leading-slash
+/// or escaping differences.
+fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
+    fn walk(fields: &[Field], prefix: &[String], out: &mut HashSet<Vec<String>>) {
+        for field in fields {
+            let mut here = prefix.to_vec();
+            here.push(field.key().as_str().to_owned());
+            match field {
+                Field::Secret(_) => {
+                    out.insert(here);
+                },
+                Field::Object(obj) => {
+                    walk(obj.fields.as_slice(), &here, out);
+                },
+                _ => {},
+            }
+        }
+    }
+
+    let mut out = HashSet::new();
+    walk(fields, &[], &mut out);
+    out
+}
+
+/// A predicate is *value-comparing* when its truth depends on the field's
+/// value. `Set` / `Empty` test presence only and never read the value, so a
+/// secret may legally drive visibility/required through them.
+const fn predicate_reads_value(predicate: &Predicate) -> bool {
+    !matches!(predicate, Predicate::Set(_) | Predicate::Empty(_))
+}
+
+/// Walk a rule tree, flagging every value-comparing predicate whose target
+/// path is a `Field::Secret`. Recurses `Logic` children and `Described` inner
+/// rules so a buried predicate is still caught.
+fn walk_rule_for_secret_value_predicates(
+    rule: &Rule,
+    secrets: &HashSet<Vec<String>>,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    match rule {
+        Rule::Predicate(predicate) if predicate_reads_value(predicate) => {
+            let target: Vec<String> = predicate
+                .field()
+                .segments()
+                .map(std::borrow::Cow::into_owned)
+                .collect();
+            if secrets.contains(&target) {
+                let pointer = predicate.field().as_str();
+                report.push(
+                    ValidationError::builder("secret.predicate_on_value")
+                        .at(path.clone())
+                        .message(format!(
+                            "predicate targets secret field `{pointer}` by value; only \
+                             Set/Empty (presence) predicates may reference a secret"
+                        ))
+                        .build(),
+                );
+            }
+        },
+        Rule::Predicate(_) => {},
+        Rule::Logic(logic) => {
+            for child in logic.children() {
+                walk_rule_for_secret_value_predicates(child, secrets, path, report);
+            }
+        },
+        Rule::Described(inner, _) => {
+            walk_rule_for_secret_value_predicates(inner, secrets, path, report);
+        },
+        _ => {},
+    }
+}
+
+/// Reject a schema where any value-comparing predicate (`Eq`/`Ne`/`Gt`/`Gte`/
+/// `Lt`/`Lte`/`IsTrue`/`IsFalse`/`Contains`/`Matches`/`In`) targets a
+/// `Field::Secret` path. A secret's plaintext must never be a visibility or
+/// required discriminant. Presence-only predicates (`Set`/`Empty`) stay legal.
+///
+/// The secret-key collection recurses `Field::Object`, mirroring the
+/// depth-awareness of the runtime predicate-context scrub, so a predicate
+/// targeting a nested secret (e.g. `/auth/api_key`) is also flagged.
+fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationReport) {
+    let secrets = collect_secret_pointer_segments(fields);
+    if secrets.is_empty() {
+        return;
+    }
+
+    walk_schema_fields(fields, |node| {
+        if let Some(rule) = field_visible_rule(node.field) {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+        if let Some(rule) = field_required_rule(node.field) {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+    });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
