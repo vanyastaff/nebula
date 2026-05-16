@@ -8,6 +8,10 @@
 //! SQL backends enforce `WHERE workspace_id = ? AND org_id = ?`, so
 //! cross-tenant denial is proven uniformly across backends.
 
+mod control_queue;
 mod execution;
+mod journal;
 
+pub use control_queue::InMemoryControlQueue;
 pub use execution::{InMemoryExecutionStore, InMemoryIdempotencyGuard};
+pub use journal::InMemoryJournalReader;

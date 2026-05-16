@@ -20,7 +20,9 @@
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, JournalEntry};
-use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
+use nebula_storage_port::store::{
+    ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard,
+};
 use nebula_storage_port::{FencingToken, Scope, TransitionBatch, TransitionOutcome};
 
 /// A storage backend under conformance test. Returns port handles built on
@@ -33,10 +35,34 @@ pub trait Backend: Send + Sync {
     async fn execution_store(&self) -> Arc<dyn ExecutionStore>;
     /// An idempotency guard backed by this backend.
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard>;
+    /// A control-queue (durable outbox) backed by this backend, sharing
+    /// the same store as [`Backend::execution_store`] so a `commit`'s
+    /// outbox rows are observable through `claim_pending`.
+    async fn control_queue(&self) -> Arc<dyn ControlQueue>;
+    /// A journal reader backed by this backend, sharing the same store as
+    /// [`Backend::execution_store`] so a `commit`'s journal entries are
+    /// observable.
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader>;
 }
 
 /// InMemory backend (always available).
-pub struct InMemoryBackend;
+///
+/// Holds one execution store whose core is shared (it is `Clone` over an
+/// `Arc<Mutex<…>>`), so the control queue and journal reader observe the
+/// outbox + journal rows a `commit` wrote.
+pub struct InMemoryBackend {
+    store: nebula_storage::inmem::InMemoryExecutionStore,
+    guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
+}
+
+impl Default for InMemoryBackend {
+    fn default() -> Self {
+        Self {
+            store: nebula_storage::inmem::InMemoryExecutionStore::new(),
+            guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl Backend for InMemoryBackend {
@@ -44,10 +70,20 @@ impl Backend for InMemoryBackend {
         "InMemory"
     }
     async fn execution_store(&self) -> Arc<dyn ExecutionStore> {
-        Arc::new(nebula_storage::inmem::InMemoryExecutionStore::new())
+        Arc::new(self.store.clone())
     }
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
-        Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new())
+        Arc::new(self.guard.clone())
+    }
+    async fn control_queue(&self) -> Arc<dyn ControlQueue> {
+        Arc::new(nebula_storage::inmem::InMemoryControlQueue::new(
+            &self.store,
+        ))
+    }
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
+        Arc::new(nebula_storage::inmem::InMemoryJournalReader::new(
+            &self.store,
+        ))
     }
 }
 
@@ -114,6 +150,26 @@ impl Backend for SqliteBackend {
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
+    #[cfg(feature = "sqlite")]
+    async fn control_queue(&self) -> Arc<dyn ControlQueue> {
+        Arc::new(nebula_storage::sqlite::SqliteControlQueue::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn control_queue(&self) -> Arc<dyn ControlQueue> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
+        Arc::new(nebula_storage::sqlite::SqliteJournalReader::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
 }
 
 /// Postgres backend — only exercised when `DATABASE_URL` is set and the
@@ -172,6 +228,26 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn idempotency_guard(&self) -> Arc<dyn IdempotencyGuard> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn control_queue(&self) -> Arc<dyn ControlQueue> {
+        Arc::new(nebula_storage::postgres::PgControlQueue::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn control_queue(&self) -> Arc<dyn ControlQueue> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
+        Arc::new(nebula_storage::postgres::PgJournalReader::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
@@ -441,6 +517,151 @@ pub async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
     assert!(
         !applied,
         "[{}] cross-tenant commit must NEVER Apply",
+        backend.name()
+    );
+}
+
+/// A `commit`'s outbox rows are claimable through the control queue, and
+/// the claiming processor fences `mark_completed` (a stale runner whose
+/// row was reclaimed cannot flip a newer claim). Also exercises the
+/// typed-16-byte-id contract end to end.
+pub async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let queue = backend.control_queue().await;
+    let s = scope_a();
+    store
+        .create(&s, "exe_cq", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create");
+    let token = store
+        .acquire_lease(&s, "exe_cq", "holder", std::time::Duration::from_secs(30))
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
+    let msg = ControlMsg {
+        id: [42u8; 16],
+        execution_id: "exe_cq".into(),
+        command: ControlCommand::Cancel,
+        scope: s.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+    };
+    let batch = TransitionBatch::builder()
+        .scope(s.clone())
+        .execution_id("exe_cq")
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"s": "cancelling"}))
+        .outbox(vec![msg])
+        .build()
+        .expect("batch");
+    let outcome = store.commit(batch).await.expect("commit");
+    assert!(
+        matches!(outcome, TransitionOutcome::Applied { .. }),
+        "[{}] expected Applied, got {outcome:?}",
+        backend.name()
+    );
+
+    let runner_a = [1u8; 16];
+    let runner_b = [2u8; 16];
+    let claimed = queue
+        .claim_pending(&runner_a, 16)
+        .await
+        .expect("claim_pending");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "[{}] the commit's outbox row must be claimable",
+        backend.name()
+    );
+    assert_eq!(
+        claimed[0].id,
+        [42u8; 16],
+        "[{}] typed 16-byte id round-trips through the queue",
+        backend.name()
+    );
+
+    // A stale runner (did not claim this row) must NOT flip it.
+    queue
+        .mark_completed(&[42u8; 16], &runner_b)
+        .await
+        .expect("mark_completed (stale)");
+    let reclaimed = queue
+        .claim_pending(&runner_a, 16)
+        .await
+        .expect("claim_pending after stale ack");
+    assert!(
+        reclaimed.is_empty(),
+        "[{}] a stale processor's ack must be a no-op (row stays Processing, \
+         not re-Pending and not Completed)",
+        backend.name()
+    );
+
+    // The actual claimant can complete it.
+    queue
+        .mark_completed(&[42u8; 16], &runner_a)
+        .await
+        .expect("mark_completed (claimant)");
+}
+
+/// Journal entries appended by a `commit` are readable in order, and a
+/// cross-tenant read yields an empty journal (never another tenant's
+/// entries).
+pub async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let reader = backend.journal_reader().await;
+    let s = scope_a();
+    store
+        .create(&s, "exe_j", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create");
+    let token = store
+        .acquire_lease(&s, "exe_j", "holder", std::time::Duration::from_secs(30))
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
+    let batch = TransitionBatch::builder()
+        .scope(s.clone())
+        .execution_id("exe_j")
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"s": "running"}))
+        .journal(vec![
+            JournalEntry {
+                seq: None,
+                payload: serde_json::json!({"e": "a"}),
+            },
+            JournalEntry {
+                seq: None,
+                payload: serde_json::json!({"e": "b"}),
+            },
+        ])
+        .build()
+        .expect("batch");
+    store.commit(batch).await.expect("commit");
+
+    let entries = reader.get_journal(&s, "exe_j").await.expect("get_journal");
+    assert_eq!(
+        entries.len(),
+        2,
+        "[{}] both journal entries must be readable",
+        backend.name()
+    );
+    assert_eq!(
+        entries[0].payload,
+        serde_json::json!({"e": "a"}),
+        "[{}] journal entries must be ordered oldest-first",
+        backend.name()
+    );
+
+    // Cross-tenant read: never another tenant's journal.
+    let cross = reader
+        .get_journal(&scope_b(), "exe_j")
+        .await
+        .expect("get_journal cross-scope");
+    assert!(
+        cross.is_empty(),
+        "[{}] a cross-tenant journal read must be empty",
         backend.name()
     );
 }

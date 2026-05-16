@@ -11,8 +11,10 @@
 //! that does not FK into the identity zoo, so the execution core works on
 //! a bare database with no identity seeding.
 
+mod control_queue;
 mod execution;
 
+pub use control_queue::{PgControlQueue, PgJournalReader};
 pub use execution::{PgExecutionStore, PgIdempotencyGuard};
 
 /// Embedded port-scoped DDL applied by [`init_schema`].

@@ -1,43 +1,67 @@
-//! In-memory `ExecutionStore` + `IdempotencyGuard`.
+//! In-memory `ExecutionStore` + `IdempotencyGuard` over a shared core.
+//!
+//! The execution store, control queue, and journal reader all wrap the
+//! same [`SharedState`] so a `commit`'s outbox + journal rows are
+//! observable through the queue / reader (the conformance suite asserts
+//! this atomic-triple visibility).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nebula_storage_port::dto::ExecutionRecord;
+use nebula_storage_port::dto::{ControlMsg, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
 use parking_lot::Mutex;
 
 /// One persisted execution row plus its lease bookkeeping.
 #[derive(Debug, Clone)]
-struct Row {
-    scope: Scope,
-    workflow_id: String,
-    version: u64,
-    status: String,
-    state: serde_json::Value,
+pub(super) struct Row {
+    pub(super) scope: Scope,
+    pub(super) workflow_id: String,
+    pub(super) version: u64,
+    pub(super) status: String,
+    pub(super) state: serde_json::Value,
     /// Current lease holder, if any (alive only until `lease_expires_at`).
-    lease_holder: Option<String>,
-    lease_expires_at: Option<Instant>,
+    pub(super) lease_holder: Option<String>,
+    pub(super) lease_expires_at: Option<Instant>,
     /// Monotone fencing generation. Bumped every time the lease is
-    /// (re)acquired by a different/expired holder, so a superseded holder's
-    /// token no longer matches.
-    fencing_generation: u64,
-    journal: Vec<serde_json::Value>,
+    /// (re)acquired by a different/expired holder, so a superseded
+    /// holder's token no longer matches.
+    pub(super) fencing_generation: u64,
+    /// Append-only journal: `(seq, payload)` oldest first.
+    pub(super) journal: Vec<(u64, serde_json::Value)>,
+}
+
+/// One queued control message plus its processing bookkeeping.
+#[derive(Debug, Clone)]
+pub(super) struct QueuedMsg {
+    pub(super) msg: ControlMsg,
+    pub(super) status: String,
+    pub(super) processed_by: Option<[u8; 16]>,
+    pub(super) processed_at: Option<Instant>,
+    pub(super) reclaim_count: u32,
+    pub(super) error_message: Option<String>,
 }
 
 #[derive(Debug, Default)]
-struct State {
-    rows: HashMap<String, Row>,
-    /// Appended outbox messages (control-queue rows) keyed by execution id.
-    outbox: HashMap<String, Vec<nebula_storage_port::dto::ControlMsg>>,
+pub(super) struct State {
+    pub(super) rows: HashMap<String, Row>,
+    /// Control-queue rows keyed by the message's 16-byte id.
+    pub(super) queue: HashMap<[u8; 16], QueuedMsg>,
+    /// Per-execution next journal sequence number.
+    pub(super) next_seq: HashMap<String, u64>,
 }
 
-/// In-memory execution aggregate. One mutex guards the whole store so a
-/// `commit` applies its triple atomically.
-#[derive(Debug, Default)]
+/// Shared mutable core. One mutex guards the whole store so a `commit`
+/// applies its triple atomically and the queue/reader observe a
+/// consistent snapshot.
+pub(super) type SharedState = Arc<Mutex<State>>;
+
+/// In-memory execution aggregate.
+#[derive(Debug, Default, Clone)]
 pub struct InMemoryExecutionStore {
-    inner: Mutex<State>,
+    pub(super) inner: SharedState,
 }
 
 impl InMemoryExecutionStore {
@@ -45,6 +69,13 @@ impl InMemoryExecutionStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Borrow the shared core so sibling stores (control queue, journal
+    /// reader) can be built over the same data.
+    #[must_use]
+    pub(super) fn shared(&self) -> SharedState {
+        Arc::clone(&self.inner)
     }
 }
 
@@ -147,20 +178,40 @@ impl ExecutionStore for InMemoryExecutionStore {
                 actual: row.version,
             });
         }
-        // CAS + fencing held — apply state, outbox, journal atomically.
+        // CAS + fencing held — apply state, outbox, journal atomically
+        // under the single lock.
         let new_version = row.version + 1;
         let new_state = batch.new_state().clone();
-        let outbox: Vec<_> = batch.outbox().to_vec();
-        let journal: Vec<_> = batch.journal().iter().map(|j| j.payload.clone()).collect();
-        let row = st
-            .rows
-            .get_mut(&id)
-            .unwrap_or_else(|| unreachable!("row presence checked under the same lock"));
-        row.version = new_version;
-        row.state = new_state;
-        row.journal.extend(journal);
-        if !outbox.is_empty() {
-            st.outbox.entry(id.clone()).or_default().extend(outbox);
+        let outbox: Vec<ControlMsg> = batch.outbox().to_vec();
+        let journal_payloads: Vec<serde_json::Value> =
+            batch.journal().iter().map(|j| j.payload.clone()).collect();
+
+        let mut seq = st.next_seq.get(&id).copied().unwrap_or(1);
+        {
+            let row = st
+                .rows
+                .get_mut(&id)
+                .unwrap_or_else(|| unreachable!("row presence checked under the same lock"));
+            row.version = new_version;
+            row.state = new_state;
+            for payload in journal_payloads {
+                row.journal.push((seq, payload));
+                seq += 1;
+            }
+        }
+        st.next_seq.insert(id.clone(), seq);
+        for msg in outbox {
+            st.queue.insert(
+                msg.id,
+                QueuedMsg {
+                    msg,
+                    status: "Pending".to_string(),
+                    processed_by: None,
+                    processed_at: None,
+                    reclaim_count: 0,
+                    error_message: None,
+                },
+            );
         }
         tracing::debug!(
             target: "nebula_storage::inmem",
@@ -289,9 +340,11 @@ impl ExecutionStore for InMemoryExecutionStore {
 /// {attempt}` so a cross-tenant probe cannot collide with another tenant's
 /// dedup entry (the decorator namespaces by scope; we fold scope into the
 /// key directly here for the raw-adapter conformance case).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct InMemoryIdempotencyGuard {
-    marked: Mutex<HashSet<String>>,
+    // `Arc` so clones share the mark set — repeated guard handles for the
+    // same store observe each other's marks (first-writer-wins is global).
+    marked: Arc<Mutex<HashSet<String>>>,
 }
 
 impl InMemoryIdempotencyGuard {

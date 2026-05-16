@@ -12,8 +12,10 @@
 //! into the identity zoo, so the execution core works on a bare `:memory:`
 //! database with no identity seeding.
 
+mod control_queue;
 mod execution;
 
+pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
 pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
 
 /// Embedded port-scoped DDL applied by [`init_schema`].

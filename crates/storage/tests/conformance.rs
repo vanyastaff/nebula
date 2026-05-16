@@ -19,15 +19,16 @@ mod harness;
 
 use harness::{
     Backend, InMemoryBackend, PostgresBackend, SqliteBackend, assert_atomic_triple,
-    assert_cas_conflict, assert_create_get_roundtrip, assert_cross_scope_commit_is_rejected,
-    assert_cross_scope_get_is_none, assert_idempotency_first_writer_wins,
+    assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
+    assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
+    assert_idempotency_first_writer_wins, assert_journal_visibility_and_scope,
     assert_stale_fencing_is_fenced_out, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
 
 fn in_memory() -> Box<dyn Backend> {
-    Box::new(InMemoryBackend)
+    Box::new(InMemoryBackend::default())
 }
 
 fn sqlite() -> Box<dyn Backend> {
@@ -80,4 +81,12 @@ matrix!(cross_scope_get_is_none, assert_cross_scope_get_is_none);
 matrix!(
     cross_scope_commit_is_rejected,
     assert_cross_scope_commit_is_rejected
+);
+matrix!(
+    control_queue_outbox_and_fencing,
+    assert_control_queue_outbox_and_fencing
+);
+matrix!(
+    journal_visibility_and_scope,
+    assert_journal_visibility_and_scope
 );

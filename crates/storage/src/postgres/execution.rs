@@ -31,7 +31,7 @@ impl PgExecutionStore {
     }
 }
 
-fn conn_err(e: sqlx::Error) -> StorageError {
+pub(super) fn conn_err(e: sqlx::Error) -> StorageError {
     StorageError::Connection(e.to_string())
 }
 
