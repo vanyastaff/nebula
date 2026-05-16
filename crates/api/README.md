@@ -196,10 +196,17 @@ a review-time catch.
 
 ### Stub Endpoint Policy
 
-Endpoints whose handler currently returns `ApiError::Internal("not
-implemented")` (e.g. `me/*`, `org/*`, `resource/list`,
-`execution/{terminate,restart}`) are documented honestly per
-ADR-0047 §4:
+Endpoints whose handler is not yet wired end-to-end return
+`ApiError::NotImplemented` (501) and are documented honestly per
+ADR-0047 §4. The remaining stubs are `me::list_my_orgs`, `org/*`,
+`resource/list`, and `execution/restart` (canon §4.5: a stub stays a 501
+until its downstream genuinely honors it end-to-end — `me::list_my_orgs`
+needs principal→orgs enumeration that lands with the org/membership
+phase). `execution::terminate` and the other five `me/*` endpoints
+(`get_me`, `update_me`, `list_my_tokens`, `create_token`,
+`delete_token`) have **graduated** stub→implemented end-to-end.
+
+For each remaining stub:
 
 - `#[deprecated]` on the handler so utoipa flags the operation in spec.
 - `responses((status = 501, …))` carries the **planned** payload shape.
@@ -209,6 +216,27 @@ ADR-0047 §4:
 both directions (every deprecated operation has a 501 response; every
 stub module reaches the handler at runtime returning 500/501) so a
 silently-shipped endpoint cannot pass review.
+
+### `me/*` durability (canon §11.6 / §11.5)
+
+The `me/*` profile + PAT endpoints (`get_me`, `update_me`,
+`list_my_tokens`, `create_token`, `delete_token`) are **implemented and
+work end-to-end**, but the only wired `AuthBackend` is the in-memory
+one (`InMemoryAuthBackend`) — there is no storage-backed `AuthBackend`
+impl, and (unlike idempotency) no feature-gated PG path, because
+`nebula_storage` ships no `UserRepo` / `PatRepo` / `SessionRepo`.
+
+| Aspect | `me/*` (in-memory `AuthBackend`) |
+|---|---|
+| Restart-survival | **No** — profiles, PATs, sessions are lost on restart |
+| Multi-replica share | **No** — state is process-local; a PAT minted on one instance is invisible to others |
+
+> **Operator warning:** a personal access token created via
+> `POST /api/v1/me/tokens` stops authenticating the moment the process
+> exits and is not shared across replicas. This is the same local-first
+> caveat the `memory` idempotency backend carries (see *Store-backend
+> tradeoffs* below) — the gap is strictly persistence, not capability.
+> It closes when a storage-backed `AuthBackend` lands.
 
 ### Regeneration
 

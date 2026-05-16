@@ -24,8 +24,11 @@ use super::{
     mfa,
     oauth::{OAUTH_STATE_TTL, OAuthProvider, OAuthStateEntry, expiry_unix, mint_pkce},
     password,
-    pat::{self, PatRecord},
-    provider::{AuthBackend, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome},
+    pat::{self, MintedPat, PatRecord},
+    provider::{
+        AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
+        ProfilePatch,
+    },
     session::{self, SESSION_TTL, SessionRecord, expires_at},
 };
 
@@ -46,6 +49,7 @@ struct UserRecord {
     id: UserId,
     email: String,
     display_name: String,
+    avatar_url: Option<String>,
     password_hash: Option<String>,
     email_verified: bool,
     failed_login_count: i32,
@@ -60,6 +64,7 @@ impl UserRecord {
             user_id: self.id.to_string(),
             email: self.email.clone(),
             display_name: self.display_name.clone(),
+            avatar_url: self.avatar_url.clone(),
             email_verified: self.email_verified,
             mfa_enabled: self.mfa_enabled,
         }
@@ -217,6 +222,7 @@ impl AuthBackend for InMemoryAuthBackend {
             id,
             email: email.clone(),
             display_name: display_name.to_owned(),
+            avatar_url: None,
             password_hash: Some(hash),
             email_verified: false,
             failed_login_count: 0,
@@ -368,6 +374,123 @@ impl AuthBackend for InMemoryAuthBackend {
             return Ok(Some(record));
         }
         Ok(None)
+    }
+
+    async fn get_user_profile(&self, user_id: &str) -> Result<UserProfile, AuthError> {
+        let parsed: UserId = user_id.parse().map_err(|_| AuthError::UserNotFound)?;
+        let profile = self
+            .users
+            .get(&parsed)
+            .ok_or(AuthError::UserNotFound)?
+            .profile();
+        Ok(profile)
+    }
+
+    async fn update_user_profile(
+        &self,
+        user_id: &str,
+        patch: ProfilePatch,
+    ) -> Result<UserProfile, AuthError> {
+        let parsed: UserId = user_id.parse().map_err(|_| AuthError::UserNotFound)?;
+        if !self.users.contains_key(&parsed) {
+            return Err(AuthError::UserNotFound);
+        }
+        // Validate before mutating so a rejected patch leaves state intact.
+        if let Some(name) = patch.display_name.as_deref() {
+            let trimmed = name.trim();
+            if trimmed.is_empty() || trimmed.len() > 128 {
+                return Err(AuthError::InvalidInput(
+                    "display_name must be 1..=128 non-blank characters",
+                ));
+            }
+        }
+        self.users.alter(&parsed, |_, mut u| {
+            if let Some(name) = patch.display_name.as_deref() {
+                u.display_name = name.trim().to_owned();
+            }
+            if let Some(avatar) = patch.avatar_url.as_deref() {
+                let trimmed = avatar.trim();
+                u.avatar_url = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                };
+            }
+            u
+        });
+        let profile = self
+            .users
+            .get(&parsed)
+            .ok_or(AuthError::UserNotFound)?
+            .profile();
+        tracing::info!(user_id = %parsed, "user profile updated");
+        Ok(profile)
+    }
+
+    async fn list_pats(&self, user_id: &str) -> Result<Vec<PatRecord>, AuthError> {
+        let parsed: UserId = user_id.parse().map_err(|_| AuthError::UserNotFound)?;
+        if !self.users.contains_key(&parsed) {
+            return Err(AuthError::UserNotFound);
+        }
+        let now = Utc::now();
+        let mut out: Vec<PatRecord> = self
+            .pats
+            .iter()
+            .filter(|e| e.user_id == parsed && e.is_active(now))
+            .map(|e| e.clone())
+            .collect();
+        // Stable, deterministic order (newest first) so list responses and
+        // the e2e assertions don't depend on DashMap shard iteration order.
+        out.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
+    async fn create_pat(
+        &self,
+        user_id: &str,
+        params: CreatePatParams,
+    ) -> Result<MintedPat, AuthError> {
+        let parsed: UserId = user_id.parse().map_err(|_| AuthError::UserNotFound)?;
+        if !self.users.contains_key(&parsed) {
+            return Err(AuthError::UserNotFound);
+        }
+        let name = params.name.trim();
+        if name.is_empty() || name.len() > 128 {
+            return Err(AuthError::InvalidInput(
+                "token name must be 1..=128 non-blank characters",
+            ));
+        }
+        let expires_at = params
+            .ttl_seconds
+            .filter(|s| *s > 0)
+            .and_then(|s| i64::try_from(s).ok())
+            .map(|s| Utc::now() + chrono::Duration::seconds(s));
+        let minted = pat::mint_pat(parsed, name.to_owned(), params.scopes, expires_at)?;
+        self.pats.insert(minted.record.hash, minted.record.clone());
+        tracing::info!(user_id = %parsed, pat_id = %minted.record.id, "personal access token created");
+        Ok(minted)
+    }
+
+    async fn revoke_pat(&self, user_id: &str, pat_id: &str) -> Result<(), AuthError> {
+        let parsed: UserId = user_id.parse().map_err(|_| AuthError::UserNotFound)?;
+        // Find the hash key whose record id matches AND is owned by the
+        // caller. A token owned by a different principal is reported as
+        // not-found (no cross-user existence disclosure).
+        let key = self
+            .pats
+            .iter()
+            .find(|e| e.id == pat_id && e.user_id == parsed)
+            .map(|e| *e.key());
+        let Some(key) = key else {
+            return Err(AuthError::UserNotFound);
+        };
+        let mut entry = self.pats.get_mut(&key).ok_or(AuthError::UserNotFound)?;
+        if entry.revoked_at.is_none() {
+            entry.revoked_at = Some(Utc::now());
+        }
+        drop(entry);
+        tracing::info!(user_id = %parsed, pat_id = %pat_id, "personal access token revoked");
+        Ok(())
     }
 
     async fn request_password_reset(&self, email: &str) -> Result<(), AuthError> {

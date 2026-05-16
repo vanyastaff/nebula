@@ -1,10 +1,12 @@
 //! "Me" endpoint DTOs — user profile, organisations, personal access tokens.
 //!
-//! All endpoints under `/api/v1/me/*` currently return 501 (see audit, class
-//! (c)); the DTOs below describe the **planned** payload shape per ADR-0047
-//! Stub Endpoint Policy. Once the underlying milestone closes, the only diff
-//! is removing `deprecated = true` and the 501 response from each
-//! `#[utoipa::path]` annotation.
+//! The profile + PAT DTOs back **live** endpoints (`GET`/`PATCH /me`,
+//! `GET`/`POST /me/tokens`, `DELETE /me/tokens/{pat}`) served end-to-end
+//! through the Plane-A `AuthBackend` port. [`MyOrgsResponse`] still backs a
+//! single honest 501 stub (`GET /me/orgs`): principal→orgs enumeration is
+//! not wired end-to-end until the org/membership phase (canon §4.5).
+//! Consequently [`MeResponse::orgs_count`] is `Option<u32>` and omitted
+//! from the wire (never a synthesized `0`) until that enumeration lands.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -29,7 +31,16 @@ pub struct MeResponse {
     /// `true` when TOTP is enrolled.
     pub mfa_enabled: bool,
     /// Number of organisations this user belongs to.
-    pub orgs_count: u32,
+    ///
+    /// **Absent** until principal→orgs membership enumeration is wired
+    /// end-to-end (lands with the org/membership phase — see
+    /// `GET /api/v1/me/orgs`). The field is omitted from the JSON rather
+    /// than reported as a synthesized `0`, because a count the system
+    /// cannot actually compute would be a false value on the wire
+    /// (canon §4.5 / §12.2). When the enumeration lands it starts
+    /// appearing as `Some(n)` — additive and non-breaking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orgs_count: Option<u32>,
     /// Number of personal access tokens issued to this user.
     pub tokens_count: u32,
 }
@@ -112,8 +123,9 @@ pub struct CreateTokenRequest {
 /// creation response carries it.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CreateTokenResponse {
-    /// Plaintext token, prefixed `nbl_pat_…`. Shown once; cannot be retrieved
-    /// later. Treat as a secret credential.
+    /// Plaintext token, prefixed `pat_…` (the `PAT_PREFIX` minted by the
+    /// auth backend). Shown once; cannot be retrieved later. Treat as a
+    /// secret credential.
     #[schema(format = "password", write_only = true)]
     pub token: String,
     /// Metadata for the newly created token.

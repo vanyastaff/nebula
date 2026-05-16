@@ -171,6 +171,126 @@ pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryCon
     create_state_with_queue().await
 }
 
+// ── `me/*` end-to-end harness (Phase 2) ──────────────────────────────────────
+//
+// Builds an `AppState` wired with a real `InMemoryAuthBackend` (the
+// §4.5-honest production-quality Plane-A backend — Argon2id / RFC 6238
+// TOTP / SHA-256 PAT lookup), registers one user, and hands back a JWT
+// whose `sub` is that user's real `UserId`. The auth middleware's JWT
+// path parses `sub` via `UserId::from_str` → `Principal::User`, so the
+// full middleware → handler → `AuthBackend` port path is exercised
+// end-to-end against a real backend (not a mock).
+
+pub(crate) mod me_support {
+    use std::sync::Arc;
+
+    use nebula_api::{
+        ApiConfig, AppState,
+        domain::auth::backend::{
+            AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString,
+        },
+    };
+    use nebula_storage::{
+        InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+    };
+
+    use super::{TEST_JWT_SECRET, TestOrgResolver, TestWorkspaceResolver};
+
+    /// A registered user plus a JWT that authenticates *as that user*.
+    pub(crate) struct MeUser {
+        /// `user_<ULID>` string form (the JWT `sub`).
+        pub(crate) user_id: String,
+        /// Lowercased email used at registration.
+        pub(crate) email: String,
+        /// Bearer JWT whose `sub` is [`Self::user_id`].
+        pub(crate) jwt: String,
+    }
+
+    /// Mint a JWT signed with [`TEST_JWT_SECRET`] for an explicit subject.
+    pub(crate) fn jwt_for(subject: &str) -> String {
+        use jsonwebtoken::{EncodingKey, Header, encode};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Claims {
+            sub: String,
+            exp: u64,
+            iat: u64,
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        encode(
+            &Header::default(),
+            &Claims {
+                sub: subject.to_owned(),
+                exp: now + 3600,
+                iat: now,
+            },
+            &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    /// Build an `AppState` wired with a real `InMemoryAuthBackend`, plus a
+    /// registered user and a JWT authenticating as that user. Returns the
+    /// state, the typed backend handle (for white-box assertions), and the
+    /// user.
+    pub(crate) async fn create_me_state() -> (AppState, Arc<InMemoryAuthBackend>, MeUser) {
+        let backend = Arc::new(InMemoryAuthBackend::new());
+        let email = "me-e2e@nebula.dev".to_owned();
+        let profile = backend
+            .register_user(SignupRequest {
+                email: email.clone(),
+                password: SecretString::new("hunter22".to_owned()),
+                display_name: "Me E2E".to_owned(),
+            })
+            .await
+            .expect("register seed user");
+
+        let backend_dyn: Arc<dyn AuthBackend> = Arc::clone(&backend) as _;
+        let api_config = ApiConfig::for_test();
+        let state = AppState::new(
+            Arc::new(InMemoryWorkflowRepo::new()),
+            Arc::new(InMemoryExecutionRepo::new()),
+            Arc::new(InMemoryControlQueueRepo::new()),
+            api_config.jwt_secret,
+        )
+        .with_org_resolver(Arc::new(TestOrgResolver))
+        .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+        .with_auth_backend(backend_dyn);
+
+        let jwt = jwt_for(&profile.user_id);
+        let user = MeUser {
+            user_id: profile.user_id,
+            email,
+            jwt,
+        };
+        (state, backend, user)
+    }
+
+    /// Build an `AppState` whose `auth_backend` port is **absent** (for the
+    /// honest 503 port-absent path). The JWT still parses to a `User`
+    /// principal so the request reaches the handler, where the missing
+    /// port is detected.
+    pub(crate) fn create_me_state_without_backend() -> (AppState, String) {
+        let api_config = ApiConfig::for_test();
+        let state = AppState::new(
+            Arc::new(InMemoryWorkflowRepo::new()),
+            Arc::new(InMemoryExecutionRepo::new()),
+            Arc::new(InMemoryControlQueueRepo::new()),
+            api_config.jwt_secret,
+        )
+        .with_org_resolver(Arc::new(TestOrgResolver))
+        .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+        // A syntactically valid UserId so the JWT path yields
+        // `Principal::User` and the request reaches the handler body.
+        let jwt = jwt_for(&nebula_core::UserId::new().to_string());
+        (state, jwt)
+    }
+}
+
 // ── Orchestration-absent control queue (canon §13 step 6) ─────────────────────
 
 /// A control-queue repo that always fails on `enqueue` — used to simulate

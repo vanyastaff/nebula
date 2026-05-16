@@ -159,6 +159,9 @@ pub struct UserProfile {
     pub email: String,
     /// Caller-chosen display name.
     pub display_name: String,
+    /// Avatar URL, if the user has set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     /// `true` once the user has verified their email.
     pub email_verified: bool,
     /// `true` when the account has TOTP enrolled.

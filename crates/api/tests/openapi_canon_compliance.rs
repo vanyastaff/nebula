@@ -6,12 +6,18 @@
 //! - **Static check** — every operation flagged `deprecated = true` MUST
 //!   declare a `501` response. ADR-0047 Stub Endpoint Policy.
 //! - **Runtime check** — every stub endpoint registered under
-//!   `me/*`, `org/*`, `resource::list_resources`,
+//!   `me::list_my_orgs`, `org/*`, `resource::list_resources`,
 //!   `execution::restart` is probed against a booted
 //!   in-memory app. (`execution::terminate` graduated stub→implemented
 //!   end-to-end via the durable control queue — ADR-0008 A3 / ADR-0016 —
 //!   so it is no longer in this inventory; it now has full §13-step-5
-//!   parity coverage in `execution_terminate_e2e.rs`.) The accepted
+//!   parity coverage in `execution_terminate_e2e.rs`. The five other
+//!   `me/*` endpoints — `get_me`, `update_me`, `list_my_tokens`,
+//!   `create_token`, `delete_token` — likewise graduated
+//!   stub→implemented end-to-end via the Plane-A `AuthBackend` port and
+//!   are covered by `me_e2e.rs`; only `me::list_my_orgs` remains an
+//!   honest 501 here because principal→orgs enumeration is not wired
+//!   until the org/membership phase — canon §4.5.) The accepted
 //!   outcomes are **501** (the
 //!   `ApiError::NotImplemented` variant) for stubs that reach the
 //!   handler body and **403** (`ApiError::InsufficientRole` /
@@ -125,14 +131,13 @@ fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
     let pat_id = "pat_00000000000000000000000001";
     let sa_id = "sa_00000000000000000000000001";
     let _exec_id = "exe_00000000000000000000000001";
+    let _ = pat_id;
     vec![
-        // me/* — 6 stubs
-        ("GET", "/api/v1/me".to_owned(), None),
-        ("PATCH", "/api/v1/me".to_owned(), Some("{}")),
+        // me/* — 1 stub remaining (the other 5 graduated stub→implemented
+        // end-to-end via the Plane-A `AuthBackend` port, covered by
+        // `me_e2e.rs`). `list_my_orgs` stays an honest 501: principal→orgs
+        // enumeration is not wired until the org/membership phase — canon §4.5.
         ("GET", "/api/v1/me/orgs".to_owned(), None),
-        ("GET", "/api/v1/me/tokens".to_owned(), None),
-        ("POST", "/api/v1/me/tokens".to_owned(), Some("{}")),
-        ("DELETE", format!("/api/v1/me/tokens/{pat_id}"), None),
         // orgs/* — 9 stubs
         ("GET", format!("/api/v1/orgs/{TEST_ORG}"), None),
         ("PATCH", format!("/api/v1/orgs/{TEST_ORG}"), Some("{}")),
@@ -190,11 +195,16 @@ async fn stub_endpoints_return_501_at_runtime() {
     let stubs = stub_endpoints();
     assert_eq!(
         stubs.len(),
-        17,
+        12,
         "stub coverage list must enumerate all remaining audit class-(c) \
-         endpoints; the M3.2 audit identified 18, and `execution::terminate` \
-         graduated stub→implemented end-to-end (ADR-0008 A3 / ADR-0016 — now \
-         covered by execution_terminate_e2e.rs), leaving 17; got {}",
+         endpoints. The M3.2 audit identified 18; `execution::terminate` \
+         graduated stub→implemented end-to-end (ADR-0008 A3 / ADR-0016 — \
+         covered by execution_terminate_e2e.rs), and the five implementable \
+         `me/*` endpoints (`get_me`, `update_me`, `list_my_tokens`, \
+         `create_token`, `delete_token`) graduated stub→implemented via the \
+         Plane-A `AuthBackend` port (covered by me_e2e.rs), leaving 12 \
+         (`me::list_my_orgs` + 9 org/* + resource list + execution restart); \
+         got {}",
         stubs.len()
     );
 

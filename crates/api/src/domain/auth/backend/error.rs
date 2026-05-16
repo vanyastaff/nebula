@@ -25,6 +25,13 @@ pub enum AuthError {
     #[error("invalid credentials")]
     InvalidCredentials,
 
+    /// A caller-supplied input field failed validation (blank / oversized
+    /// / malformed) — a 400-class fault, **not** an auth failure. Distinct
+    /// from [`Self::InvalidCredentials`] so the port enforces the correct
+    /// status itself rather than relying on every caller to pre-validate.
+    #[error("invalid input: {0}")]
+    InvalidInput(&'static str),
+
     /// Account is locked (too many failed attempts) until the moment in error.
     #[error("account locked")]
     AccountLocked,
@@ -76,6 +83,7 @@ impl From<AuthError> for ApiError {
             AuthError::InvalidCredentials => {
                 ApiError::Unauthorized("invalid credentials".to_owned())
             },
+            AuthError::InvalidInput(what) => ApiError::validation_message(what),
             AuthError::AccountLocked => {
                 ApiError::AccountLocked("too many failed attempts; try again later".to_owned())
             },

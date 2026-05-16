@@ -46,7 +46,10 @@ pub use error::AuthError;
 pub use in_memory::InMemoryAuthBackend;
 pub use oauth::OAuthProvider;
 pub use pat::{MintedPat, PAT_PREFIX, PatRecord, hash_for_lookup, hashes_equal, mint_pat};
-pub use provider::{AuthBackend, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome};
+pub use provider::{
+    AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
+    ProfilePatch,
+};
 pub use session::{
     CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL, SessionRecord, cleared_cookie, csrf_cookie,
     random_token, session_cookie,

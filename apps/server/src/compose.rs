@@ -129,13 +129,26 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
     let execution_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
 
+    // Plane-A identity backend. `InMemoryAuthBackend` is the
+    // production-quality default (Argon2id passwords, RFC 6238 TOTP,
+    // SHA-256 PAT lookup) — the same §4.5-honest "the real impl is the
+    // in-memory one" posture the control queue uses
+    // (`InMemoryControlQueueRepo`). There is no storage-backed
+    // alternative to wire: `nebula_storage` ships no implementation of
+    // `UserRepo` / `PatRepo` / `SessionRepo` (see
+    // `nebula_storage::repos` module docs — those traits are
+    // definition-only). Wiring this makes the `me/*` profile + PAT
+    // endpoints work end-to-end; without it they fail closed with 503.
+    let auth_backend = nebula_api::domain::auth::backend::InMemoryAuthBackend::new().into_arc();
+
     Ok(AppState::new(
         workflow_repo,
         execution_repo,
         control_queue_repo,
         api_config.jwt_secret.clone(),
     )
-    .with_api_keys(api_config.api_keys.clone()))
+    .with_api_keys(api_config.api_keys.clone())
+    .with_auth_backend(auth_backend))
 }
 
 /// Construct the idempotency store from `api_config.idempotency`.
