@@ -110,6 +110,16 @@ pub enum ResourceEvent {
         /// Already-redacted error description.
         error: String,
     },
+    /// The per-resource revoke hook failed. `error` is an already-redacted
+    /// string (NEVER credential material).
+    SlotRevokeFailed {
+        /// The key of the resource whose slot revoke failed.
+        key: ResourceKey,
+        /// The slot name whose revoke failed.
+        slot: String,
+        /// Already-redacted error description.
+        error: String,
+    },
 }
 
 impl ResourceEvent {
@@ -128,7 +138,8 @@ impl ResourceEvent {
             | Self::RecoveryGateChanged { key, .. }
             | Self::SlotRefreshed { key, .. }
             | Self::SlotRevoked { key, .. }
-            | Self::SlotRefreshFailed { key, .. } => Some(key),
+            | Self::SlotRefreshFailed { key, .. }
+            | Self::SlotRevokeFailed { key, .. } => Some(key),
         }
     }
 }
@@ -154,12 +165,23 @@ mod tests {
         assert_eq!(revoked.key().map(ResourceKey::as_str), Some("k"));
 
         let failed = ResourceEvent::SlotRefreshFailed {
-            key: k,
+            key: k.clone(),
             slot: "db".into(),
             error: "transient: upstream 503".into(),
         };
         assert_eq!(failed.key().map(ResourceKey::as_str), Some("k"));
         let ResourceEvent::SlotRefreshFailed { error, .. } = &failed else {
+            unreachable!()
+        };
+        assert!(!error.contains("secret"), "error must be redacted");
+
+        let revoke_failed = ResourceEvent::SlotRevokeFailed {
+            key: k,
+            slot: "db".into(),
+            error: "transient: upstream 503".into(),
+        };
+        assert_eq!(revoke_failed.key().map(ResourceKey::as_str), Some("k"));
+        let ResourceEvent::SlotRevokeFailed { error, .. } = &revoke_failed else {
             unreachable!()
         };
         assert!(!error.contains("secret"), "error must be redacted");

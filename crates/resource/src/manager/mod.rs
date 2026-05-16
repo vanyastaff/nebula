@@ -787,15 +787,11 @@ impl Manager {
         let managed = self.lookup_any_for_slot(key, &scope)?;
         tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
 
-        // Attempt counter — incremented once per dispatch regardless of
-        // outcome (the constant is documented as an *attempts* counter).
-        if let Some(m) = &self.metrics {
-            m.record_slot_refresh();
-        }
-
         let result = managed.dispatch_on_refresh_erased(slot).await;
         tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
 
+        // Exactly one outcome per dispatch; the attempts total is the sum
+        // across `outcome` labels (success + failed + timed_out).
         match &result {
             Ok(()) => {
                 if let Some(m) = &self.metrics {
@@ -868,10 +864,17 @@ impl Manager {
         // 2. Drain in-flight handles via the shared drain tracker (the same
         //    primitive graceful_shutdown uses). Bounded so a stuck handle
         //    cannot wedge revoke; the taint already stops new leases.
-        if let Err(err) = self
+        //
+        //    A drain timeout is *terminal* for this dispatch's outcome
+        //    metric: it records `TimedOut` and the subsequent hook
+        //    success/failure does NOT record a second outcome (one dispatch
+        //    = exactly one outcome). The hook still runs and its event /
+        //    returned `Result` are unaffected.
+        let drain_result = self
             .wait_for_drain(std::time::Duration::from_secs(30))
-            .await
-        {
+            .await;
+        let drain_timed_out = drain_result.is_err();
+        if let Err(err) = &drain_result {
             if let Some(m) = &self.metrics {
                 m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::TimedOut);
             }
@@ -882,18 +885,15 @@ impl Manager {
             );
         }
 
-        // Attempt counter — once per dispatch regardless of outcome.
-        if let Some(m) = &self.metrics {
-            m.record_slot_revoke();
-        }
-
         // 3. Dispatch the revoke hook against the live runtime.
         let result = managed.dispatch_on_revoke_erased(slot).await;
         tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
 
         match &result {
             Ok(()) => {
-                if let Some(m) = &self.metrics {
+                // Only record Success when the drain did not already record
+                // the terminal TimedOut outcome for this dispatch.
+                if !drain_timed_out && let Some(m) = &self.metrics {
                     m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Success);
                 }
                 let _ = self.event_tx.send(ResourceEvent::SlotRevoked {
@@ -903,10 +903,10 @@ impl Manager {
                 tracing::debug!("slot revoke hook completed");
             },
             Err(e) => {
-                if let Some(m) = &self.metrics {
+                if !drain_timed_out && let Some(m) = &self.metrics {
                     m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
                 }
-                let _ = self.event_tx.send(ResourceEvent::SlotRefreshFailed {
+                let _ = self.event_tx.send(ResourceEvent::SlotRevokeFailed {
                     key: key.clone(),
                     slot: slot.to_owned(),
                     error: e.to_string(),

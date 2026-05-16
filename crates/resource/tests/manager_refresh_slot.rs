@@ -12,14 +12,14 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_credential::CredentialGuard;
 use nebula_resource::{
-    Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell, error::Error,
-    resource::ResourceMetadata, topology::resident::Resident,
+    Manager, ManagerConfig, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell,
+    error::Error, resource::ResourceMetadata, topology::resident::Resident,
 };
 use zeroize::Zeroize;
 
@@ -52,6 +52,9 @@ mod counting {
         pub revoke_calls: Arc<AtomicUsize>,
         /// Records which `&Runtime` the refresh hook saw (its tag).
         pub refresh_saw_runtime_tag: Arc<AtomicUsize>,
+        /// When set, `on_credential_revoke` returns `Err` (drives the
+        /// failure-event arm of `revoke_slot`).
+        pub revoke_should_fail: Arc<AtomicBool>,
     }
 
     /// The live runtime handle. Carries the ledger + a tag so the hook can
@@ -148,6 +151,9 @@ mod counting {
             runtime: &CountingRuntime,
         ) -> Result<(), CountingError> {
             runtime.ledger.revoke_calls.fetch_add(1, Ordering::SeqCst);
+            if runtime.ledger.revoke_should_fail.load(Ordering::SeqCst) {
+                return Err(CountingError("revoke hook boom".to_owned()));
+            }
             Ok(())
         }
 
@@ -180,9 +186,37 @@ mod counting {
 
         (mgr, CountingResource::key(), ledger)
     }
+
+    /// Same as [`registered`], but the manager is wired with a real
+    /// `MetricsRegistry` so `manager.snapshot()` reflects the rotation
+    /// outcome counters.
+    pub async fn registered_with_metrics() -> (
+        Manager,
+        ResourceKey,
+        Ledger,
+        Arc<nebula_metrics::MetricsRegistry>,
+    ) {
+        let ledger = Ledger::default();
+        let slot: SlotCell<CredentialGuard<FakeCred>> = SlotCell::empty();
+        slot.store(Arc::new(CredentialGuard::new(FakeCred(7))));
+        let resource = CountingResource {
+            ledger: ledger.clone(),
+            db: Arc::new(slot),
+        };
+
+        let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
+        let mgr = Manager::with_config(ManagerConfig {
+            metrics_registry: Some(Arc::clone(&registry)),
+            ..ManagerConfig::default()
+        });
+        mgr.register_resident(resource, CountingConfig, ResidentConfig::default())
+            .expect("register_resident must succeed");
+
+        (mgr, CountingResource::key(), ledger, registry)
+    }
 }
 
-use counting::registered;
+use counting::{registered, registered_with_metrics};
 
 #[tokio::test]
 async fn refresh_slot_invokes_hook_with_runtime() {
@@ -350,5 +384,143 @@ async fn refresh_slot_unknown_key_is_typed_not_found() {
         err.category(),
         nebula_error::ErrorCategory::NotFound,
         "unknown key must classify as not_found, got: {err}"
+    );
+}
+
+/// A drain timeout must be **terminal** for the dispatch's outcome metric:
+/// exactly one outcome moves (`timed_out == 1`), and the subsequent
+/// successful hook does NOT also record `Success`. The invariant
+/// `attempts == success + failed + timed_out` therefore holds with a single
+/// recorded outcome per dispatch.
+///
+/// Time is paused so the 30 s `wait_for_drain` budget elapses in virtual
+/// time while a real in-flight guard is still held (drain genuinely times
+/// out); the held guard is dropped only after the revoke completes.
+#[tokio::test(start_paused = true)]
+async fn revoke_drain_timeout_records_exactly_one_outcome() {
+    use std::sync::Arc;
+
+    use nebula_core::scope::Scope;
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger, _registry) = registered_with_metrics().await;
+    let mgr = Arc::new(mgr);
+
+    // Hold a real in-flight guard so `wait_for_drain` cannot early-return
+    // (drain counter stays at 1) and the 30 s bounded wait actually expires.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let in_flight_guard = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    let revoke_handle = {
+        let mgr = Arc::clone(&mgr);
+        let key = key.clone();
+        tokio::spawn(async move { mgr.revoke_slot(&key, ScopeLevel::Global, "db").await })
+    };
+
+    // Let the spawned revoke reach the `wait_for_drain` park point, then let
+    // paused time auto-advance past the 30 s drain budget. The revoke then
+    // proceeds to the (successful) hook while the guard is still held.
+    revoke_handle
+        .await
+        .expect("revoke task must not panic")
+        .expect("revoke_slot must still succeed after a drain timeout");
+
+    // Hook ran exactly once and succeeded, but because the drain timed out
+    // first, only the terminal `timed_out` outcome was recorded.
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        1,
+        "revoke hook must still run after the drain timeout"
+    );
+
+    let snap = mgr
+        .metrics()
+        .expect("manager wired with a registry must expose metrics")
+        .snapshot()
+        .slot_revoke_outcomes;
+    assert_eq!(
+        snap.timed_out, 1,
+        "drain timeout must record exactly one timed_out"
+    );
+    assert_eq!(
+        snap.success, 0,
+        "timed-out dispatch must NOT also record success"
+    );
+    assert_eq!(
+        snap.failed, 0,
+        "timed-out dispatch must NOT also record failed"
+    );
+    assert_eq!(
+        snap.success + snap.failed + snap.timed_out,
+        1,
+        "exactly one outcome per dispatch — attempts == success + failed + timed_out"
+    );
+
+    drop(in_flight_guard);
+}
+
+/// A revoke-hook failure must emit `SlotRevokeFailed` — never the refresh
+/// event. (Regression: the error arm previously sent
+/// `ResourceEvent::SlotRefreshFailed` for a *revoke* failure.)
+#[tokio::test]
+async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
+    use nebula_core::scope::Scope;
+    use nebula_resource::{AcquireOptions, events::ResourceEvent};
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime so the revoke hook has a live `&Runtime`.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let _g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire must succeed");
+    }
+
+    ledger.revoke_should_fail.store(true, Ordering::SeqCst);
+    let mut events = mgr.subscribe_events();
+
+    let err = mgr
+        .revoke_slot(&key, ScopeLevel::Global, "db")
+        .await
+        .expect_err("revoke must fail when the hook returns Err");
+    assert!(
+        err.to_string().contains("revoke hook boom"),
+        "revoke_slot must surface the hook error, got: {err}"
+    );
+
+    // Drain the broadcast channel and assert the failure event is the
+    // revoke variant, never the refresh one.
+    let mut saw_revoke_failed = false;
+    while let Ok(evt) = events.try_recv() {
+        match evt {
+            ResourceEvent::SlotRevokeFailed {
+                key: k,
+                slot,
+                error,
+            } => {
+                saw_revoke_failed = true;
+                assert_eq!(k.as_str(), key.as_str());
+                assert_eq!(slot, "db");
+                assert!(
+                    error.contains("revoke hook boom"),
+                    "event error must carry the (redacted) hook message"
+                );
+            },
+            ResourceEvent::SlotRefreshFailed { .. } => {
+                panic!("revoke failure must NOT emit SlotRefreshFailed");
+            },
+            _ => {},
+        }
+    }
+    assert!(
+        saw_revoke_failed,
+        "a failed revoke must emit ResourceEvent::SlotRevokeFailed"
     );
 }
