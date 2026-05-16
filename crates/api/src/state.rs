@@ -19,8 +19,8 @@ use nebula_storage::{
 use tokio::sync::RwLock;
 
 use crate::{
-    auth::AuthBackend, config::JwtSecret, errors::ApiError, middleware::IdempotencyStore,
-    services::webhook::WebhookTransport,
+    config::JwtSecret, domain::auth::backend::AuthBackend, error::ApiError,
+    middleware::IdempotencyStore, transport::webhook::WebhookTransport,
 };
 
 // ── Port traits ──────────────────────────────────────────────────────────────
@@ -39,7 +39,72 @@ pub trait WorkspaceResolver: Send + Sync {
     async fn resolve_by_slug(&self, org_id: OrgId, slug: &str) -> Result<WorkspaceId, ApiError>;
 }
 
-/// Loads membership roles for RBAC middleware.
+/// One organisation membership row, as seen by the org/* handlers.
+///
+/// **Port-level type — deliberately decoupled from the wire DTO**
+/// ([`crate::domain::org::dto::MemberSummary`]) per ADR-0047 §3. It carries
+/// only what the RBAC store actually knows: *who* (the resolved
+/// [`Principal`]) and *what role*. There is intentionally **no** `email`
+/// or `joined_at` — the membership store is the RBAC role index, not a
+/// user-identity directory, so synthesizing those fields would be a
+/// canon §4.5 false capability (the Phase-3 "Option 1" honest contract:
+/// see the module docs of [`crate::domain::org::handler`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrgMember {
+    /// The member's resolved principal identity.
+    pub principal: Principal,
+    /// The member's org-level role.
+    pub role: OrgRole,
+}
+
+/// Outcome of [`MembershipStore::add_member_guarded`].
+///
+/// The membership store enforces the **org-lockout invariant** ("an org
+/// always retains ≥ 1 `OrgOwner`/`OrgAdmin`") atomically under its own
+/// write lock, so a privilege-*reducing* upsert that would zero the
+/// privileged set is refused at the seam — there is no check-then-act
+/// window the handler could lose a race on. The handler maps each variant
+/// to an HTTP status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddMemberOutcome {
+    /// The member was added or their role upserted.
+    Added,
+    /// Refused: the write would have dropped the org's privileged
+    /// (`OrgOwner | OrgAdmin`) set below one — permanent-lockout
+    /// prevention. Maps to HTTP 409.
+    WouldLockOut,
+}
+
+/// Outcome of [`MembershipStore::remove_member_guarded`].
+///
+/// Same atomic-seam contract as [`AddMemberOutcome`]: membership check,
+/// lockout check, and the delete all happen under one write lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveMemberOutcome {
+    /// The member row was removed.
+    Removed,
+    /// The principal was not a member of the org (handler maps to 404 —
+    /// member existence is never disclosed cross-tenant).
+    NotFound,
+    /// Refused: removing this member would have dropped the org's
+    /// privileged set below one. Maps to HTTP 409.
+    WouldLockOut,
+}
+
+/// Membership role index for RBAC middleware **and** the org member-management
+/// handlers.
+///
+/// This is the single contract that [`crate::middleware::rbac`] consults to
+/// authorize every org/workspace request *and* that the
+/// `GET/POST/DELETE /orgs/{org}/members` handlers read/write. A production
+/// composition wires exactly one shared `Arc<dyn MembershipStore>` so a
+/// membership added via [`Self::add_member_guarded`] is immediately visible
+/// to the next RBAC check on the same process (no eventual-consistency
+/// window — proven by
+/// `tests/org_e2e.rs::added_member_is_immediately_rbac_authorized`).
+///
+/// Point lookups (`get_org_role` / `get_workspace_role`) stay on the hot
+/// auth path; the enumeration/mutation methods back the member endpoints.
 #[async_trait]
 pub trait MembershipStore: Send + Sync {
     /// Return the caller's org-level role, if they are an org member.
@@ -55,6 +120,84 @@ pub trait MembershipStore: Send + Sync {
         workspace_id: WorkspaceId,
         principal: &Principal,
     ) -> Result<Option<WorkspaceRole>, ApiError>;
+
+    /// List every member of an org (`GET /orgs/{org}/members`).
+    ///
+    /// Returns role-index rows only — no user-directory fields (see
+    /// [`OrgMember`]). Order is unspecified; the handler does not paginate
+    /// (membership sets are bounded per org).
+    async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError>;
+
+    /// Low-level upsert primitive — **not** for request paths.
+    ///
+    /// Idempotent on `(org_id, principal)`. This performs **no**
+    /// org-lockout check, so a request handler MUST use
+    /// [`Self::add_member_guarded`] instead (the unguarded path could
+    /// demote the last `OrgOwner`/`OrgAdmin` and permanently lock the org
+    /// out). Retained only as a building block for seeding/tests and as
+    /// the primitive `add_member_guarded` is implemented on top of.
+    async fn add_member(
+        &self,
+        org_id: OrgId,
+        principal: &Principal,
+        role: OrgRole,
+    ) -> Result<(), ApiError>;
+
+    /// Low-level removal primitive — **not** for request paths.
+    ///
+    /// `Ok(true)` when a row was removed, `Ok(false)` when absent. This
+    /// performs **no** org-lockout check; a request handler MUST use
+    /// [`Self::remove_member_guarded`]. Retained as a seeding/test
+    /// building block and the primitive the guarded variant builds on.
+    async fn remove_member(&self, org_id: OrgId, principal: &Principal) -> Result<bool, ApiError>;
+
+    /// Upsert a member **with the org-lockout invariant enforced
+    /// atomically** (`POST /orgs/{org}/members`).
+    ///
+    /// The implementation MUST, under a single exclusive critical section
+    /// (the in-memory impl: one write-guard; a future storage impl: one
+    /// transaction), compute the post-write privileged
+    /// (`OrgOwner | OrgAdmin`) count and refuse with
+    /// [`AddMemberOutcome::WouldLockOut`] if the upsert would drop it
+    /// below one — covering a privilege-*reducing* upsert of the **last**
+    /// privileged principal whether that is the caller themselves or a
+    /// cross-target. Otherwise it upserts and returns
+    /// [`AddMemberOutcome::Added`]. All *policy* checks (admin gate,
+    /// role-clamp, role-precedence) remain the handler's job; only the
+    /// **lockout invariant** lives here, at the lock, so no check-then-act
+    /// race can bypass it.
+    async fn add_member_guarded(
+        &self,
+        org_id: OrgId,
+        principal: &Principal,
+        role: OrgRole,
+    ) -> Result<AddMemberOutcome, ApiError>;
+
+    /// Remove a member **with the org-lockout invariant enforced
+    /// atomically** (`DELETE /orgs/{org}/members/{principal}`).
+    ///
+    /// Under one exclusive critical section: if the principal is not a
+    /// member → [`RemoveMemberOutcome::NotFound`]; if removing them would
+    /// drop the org's privileged set below one →
+    /// [`RemoveMemberOutcome::WouldLockOut`]; otherwise remove and return
+    /// [`RemoveMemberOutcome::Removed`]. The membership re-check inside
+    /// the critical section collapses an existence TOCTOU to a clean
+    /// `NotFound`; the lockout count is consistent with the delete because
+    /// both happen under the same lock.
+    async fn remove_member_guarded(
+        &self,
+        org_id: OrgId,
+        principal: &Principal,
+    ) -> Result<RemoveMemberOutcome, ApiError>;
+
+    /// Enumerate every `(org, role)` the principal is a member of
+    /// (`GET /me/orgs`, and the `MeResponse.orgs_count` source). Backs the
+    /// Phase-2 carry-over: this is the principal→orgs enumeration that was
+    /// structurally absent when `me/list_my_orgs` was first stubbed.
+    async fn list_orgs_for_principal(
+        &self,
+        principal: &Principal,
+    ) -> Result<Vec<(OrgId, OrgRole)>, ApiError>;
 }
 
 /// Application state passed through `Router::with_state`.
@@ -126,8 +269,9 @@ pub struct AppState {
     /// through this single contract. When `None`, only JWT and `X-API-Key`
     /// authentication paths are available.
     ///
-    /// See [`crate::auth::AuthBackend`] for the trait surface and
-    /// [`crate::auth::InMemoryAuthBackend`] for the default impl.
+    /// See [`crate::domain::auth::backend::AuthBackend`] for the trait
+    /// surface and [`crate::domain::auth::backend::InMemoryAuthBackend`] for
+    /// the default impl.
     pub auth_backend: Option<Arc<dyn AuthBackend>>,
 
     /// Optional membership store for RBAC role lookups.
@@ -150,7 +294,7 @@ pub struct AppState {
     /// Optional webhook-activation repository (M3.3 / ADR-0049).
     ///
     /// When `Some`, the composition root invokes
-    /// [`crate::services::webhook::bootstrap_webhook_activations`] before
+    /// [`crate::transport::webhook::bootstrap_webhook_activations`] before
     /// `build_app` to populate the transport's slug map. The same repo
     /// is consulted by the admin reload endpoint
     /// (`POST /internal/v1/webhooks/reload`).
@@ -159,19 +303,19 @@ pub struct AppState {
     /// Optional lifecycle event bus (M3.3 / ADR-0049 — E2).
     ///
     /// Producers (storage CRUD callsites) emit
-    /// [`crate::services::webhook::TriggerLifecycleEvent`] on this
+    /// [`crate::transport::webhook::TriggerLifecycleEvent`] on this
     /// bus; the transport-side subscriber reapplies the change
     /// without a full reload. M3.3 ships the consumer; producer
     /// wiring is deferred to a follow-up.
-    pub trigger_lifecycle_bus: Option<crate::services::webhook::TriggerLifecycleBus>,
+    pub trigger_lifecycle_bus: Option<crate::transport::webhook::TriggerLifecycleBus>,
 
     /// Webhook credential resolver (M3.3 / ADR-0049 — E1+E3).
     ///
     /// Required for storage-driven slug bootstrap and admin reload.
-    pub webhook_secret_resolver: Option<Arc<dyn crate::services::webhook::WebhookSecretResolver>>,
+    pub webhook_secret_resolver: Option<Arc<dyn crate::transport::webhook::WebhookSecretResolver>>,
 
     /// Webhook ctx-template factory (M3.3 / ADR-0049 — E1+E3).
-    pub webhook_ctx_factory: Option<Arc<dyn crate::services::webhook::WebhookContextFactory>>,
+    pub webhook_ctx_factory: Option<Arc<dyn crate::transport::webhook::WebhookContextFactory>>,
 
     /// Internal-routes shared token (M3.3 / ADR-0049 — E3).
     ///
@@ -275,7 +419,7 @@ impl AppState {
     ///
     /// Replaces the older `with_session_store` builder; the same slot now
     /// drives session resolution, password login, MFA, PATs, and Plane-A
-    /// OAuth via [`crate::auth::AuthBackend`].
+    /// OAuth via [`crate::domain::auth::backend::AuthBackend`].
     #[must_use = "builder methods must be chained or built"]
     pub fn with_auth_backend(mut self, backend: Arc<dyn AuthBackend>) -> Self {
         self.auth_backend = Some(backend);
@@ -312,12 +456,12 @@ impl AppState {
         self
     }
 
-    /// Attach a [`crate::services::webhook::TriggerLifecycleBus`]
+    /// Attach a [`crate::transport::webhook::TriggerLifecycleBus`]
     /// for slug-routed activation lifecycle events (M3.3 / ADR-0049).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_trigger_lifecycle_bus(
         mut self,
-        bus: crate::services::webhook::TriggerLifecycleBus,
+        bus: crate::transport::webhook::TriggerLifecycleBus,
     ) -> Self {
         self.trigger_lifecycle_bus = Some(bus);
         self
@@ -327,7 +471,7 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_secret_resolver(
         mut self,
-        resolver: Arc<dyn crate::services::webhook::WebhookSecretResolver>,
+        resolver: Arc<dyn crate::transport::webhook::WebhookSecretResolver>,
     ) -> Self {
         self.webhook_secret_resolver = Some(resolver);
         self
@@ -337,7 +481,7 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_ctx_factory(
         mut self,
-        factory: Arc<dyn crate::services::webhook::WebhookContextFactory>,
+        factory: Arc<dyn crate::transport::webhook::WebhookContextFactory>,
     ) -> Self {
         self.webhook_ctx_factory = Some(factory);
         self

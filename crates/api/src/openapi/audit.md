@@ -48,18 +48,23 @@ publishes the new shape as authoritative. If a versioned/compat
 transition becomes necessary, return a tagged enum that carries both
 the new `ok` field and the legacy verb-specific key.
 
-### `crates/api/src/handlers/me.rs`
+### `crates/api/src/domain/me/handler.rs`
 
-| Line | Handler | Class | Notes |
-|------|---------|-------|-------|
-| 19 | `get_me` | **(c)** | Stub. Planned shape: `MeResponse { user: UserProfile, orgs_count: u32, tokens_count: u32 }`. Underlying milestone: Plane-A "me" endpoint extension. |
-| 29 | `update_me` | **(c)** | Stub. Request body also `Json<Value>` — planned shape `UpdateMeRequest { display_name: Option<String>, avatar_url: Option<String> }`. |
-| 38 | `list_my_orgs` | **(c)** | Stub. Planned shape: `MyOrgsResponse { orgs: Vec<OrgSummary> }` where `OrgSummary { id: String, slug: String, role: OrgRoleDto }` (per ADR-0047 cross-layer rule). |
-| 47 | `list_my_tokens` | **(c)** | Stub. Planned shape: `MyTokensResponse { tokens: Vec<TokenSummary> }` where `TokenSummary { id, name, scopes, created_at, last_used_at, expires_at }`. **Never** the secret value. |
-| 57 | `create_token` | **(c)** | Stub. Request: `CreateTokenRequest { name, scopes, ttl_seconds }`. Response: `CreateTokenResponse { token: String, summary: TokenSummary }` — token shown ONCE; flagged `write_only` in spec. |
-| 67 | `delete_token` | **(c)** | Stub. Response: `AckResponse`. |
+| Handler | Class | Notes |
+|---------|-------|-------|
+| `get_me` | **shipped** | Implemented end-to-end via the Plane-A `AuthBackend` port. Returns `MeResponse` 200 + 401/404/503. `tokens_count` is the real count of the caller's active PATs; `orgs_count` is `Option<u32>` and **omitted from the wire** (never a synthesized `0`) until principal→orgs enumeration is wired with the org/membership phase — see `list_my_orgs` (canon §4.5 / §12.2). No longer `#[deprecated]`. Coverage in `tests/me_e2e.rs`. |
+| `update_me` | **shipped** | Implemented end-to-end. Request `UpdateMeRequest { display_name?, avatar_url? }` → `AuthBackend::update_user_profile`. Returns `MeResponse` 200 + 400/401/404/503. `UserProfile` gained an `avatar_url` field so the patch is genuinely persisted. No longer `#[deprecated]`. |
+| `list_my_orgs` | **(c)** | **Honest 501 (canon §4.5).** Principal→orgs enumeration has no end-to-end backing: `MembershipStore` exposes only point role lookups (`get_org_role(org_id, principal)`), not principal→orgs enumeration, and `nebula_storage` ships no `OrgRepo` impl. Closes with the org/membership phase. Still `#[deprecated]` + 501; tag `me (planned)`. |
+| `list_my_tokens` | **shipped** | Implemented end-to-end via `AuthBackend::list_pats`. Returns `MyTokensResponse` 200 + 401/404/503. Metadata only — the secret is never recoverable (only its SHA-256 is stored). No longer `#[deprecated]`. |
+| `create_token` | **shipped** | Implemented end-to-end via `AuthBackend::create_pat`. Request `CreateTokenRequest { name, scopes, ttl_seconds }` → `CreateTokenResponse { token, summary }` 201 + 400/401/404/503. The plaintext is exposed exactly once (still `write_only` in the spec) and zeroized from handler memory after the response is built; no secret in logs/errors (asserted by `create_token_plaintext_never_leaks_to_logs`). |
+| `delete_token` | **shipped** | Implemented end-to-end via `AuthBackend::revoke_pat`. Returns `AckResponse` 200 + 401/404/503. Owner-scoped: a PAT owned by a different principal is reported as 404 (no cross-user existence disclosure). No longer `#[deprecated]`. |
 
-All 6 are class **(c)**. Tag in spec: `me (planned)`. Group all under `deprecated: true` until the underlying milestone closes.
+5 of 6 graduated stub→implemented end-to-end via the Plane-A `AuthBackend`
+port (the `deprecated`+501 → 200/201 spec graduation landed with the
+handlers, mirroring `terminate_execution`). `list_my_orgs` also
+graduated stub→implemented in Phase 3 "Option 1" — real end-to-end via
+`MembershipStore::list_orgs_for_principal`; **no `me` class-(c) stub
+remains** (canon §4.5).
 
 ### `crates/api/src/handlers/org.rs`
 
@@ -89,10 +94,10 @@ Class **(c)**. Tag: `workspaces.resources (planned)`.
 
 | Line | Handler | Class | Notes |
 |------|---------|-------|-------|
-| 582 | `terminate_execution` | **(c)** | Stub. Planned: `AckResponse` plus 404 on missing exec, 409 on already-terminal. Underlying milestone: terminate-action wiring (ROADMAP §M2 follow-up if not already shipped). |
+| — | `terminate_execution` | **shipped** | Implemented end-to-end via the durable control queue (canon §12.2): CAS-transition to `Cancelled` + enqueue `ControlCommand::Terminate`, consumed by `EngineControlDispatch::dispatch_terminate` (ADR-0008 A3 / ADR-0016). Returns `ExecutionResponse` 200 + 400/401/403/404/409/503. Mirrors `cancel_execution`; no longer `#[deprecated]`. Parity coverage in `tests/execution_terminate_e2e.rs`. |
 | 593 | `restart_execution` | **(c)** | Stub. Planned: `RestartExecutionResponse { new_execution_id }`. Underlying milestone: execution restart semantics. |
 
-Both are class **(c)**. Tag: `workspaces.executions` (no `(planned)` suffix because most executions handlers are shipped — only these two are deprecated).
+`restart_execution` is class **(c)**; `terminate_execution` graduated to shipped. Tag: `workspaces.executions` (no `(planned)` suffix because most executions handlers are shipped — only `restart_execution` is deprecated).
 
 ### `crates/api/src/handlers/credential.rs`
 
@@ -122,9 +127,9 @@ Both are class **(c)**. Tag: `workspaces.executions` (no `(planned)` suffix beca
 
 | Class | Count | Treatment |
 |-------|-------|-----------|
-| (a) Typed-able shipped | 6 (auth ×3 + credential ×1 + health ×1 + openapi ×1) | New DTOs added in T3: `AckResponse`, `VersionInfo`. Existing handlers migrated to typed return. |
+| (a) Typed-able shipped | 16 | Base typed-shipped (auth ×3 + credential ×1 + health ×1 + openapi ×1) + the Phase 1/2/4 + Phase-3 "Option 1" graduations: `execution::terminate`; 5 `me/*` (`get_me`/`update_me`/`list_my_tokens`/`create_token`/`delete_token`); `me::list_my_orgs`; the 3 org member endpoints (`list_members`/`add_member`/`remove_member`); 5 credential CRUD. New DTOs added in T3: `AckResponse`, `VersionInfo`. |
 | (b) Opaque-shipped | 0 | None observed in the current codebase. |
-| (c) Stub (501-equivalent) | 18 (me ×6 + org ×9 + resource ×1 + execution ×2) | Stub Endpoint Policy: `deprecated = true`, 501 response, planned-shape DTOs declared in `models/me.rs` / `models/org.rs` / `models/resource.rs`. |
+| (c) Stub (501-equivalent) | 8 (org ×6 + resource ×1 + execution ×1) | Originally 18. Graduated end-to-end and removed from the inventory: `execution::terminate` (Phase 1, ADR-0008 A3 / ADR-0016); 5 `me/*` (`get_me`/`update_me`/`list_my_tokens`/`create_token`/`delete_token`, Phase 2, Plane-A `AuthBackend`); `me::list_my_orgs` + 3 org member endpoints (`list_members`/`add_member`/`remove_member`, Phase 3 "Option 1", `MembershipStore`). Remaining stubs apply Stub Endpoint Policy (`deprecated = true`, 501 response, planned-shape DTOs): org-record `get`/`update`/`delete_org` ×3, service-account `list`/`create`/`delete` ×3, `resource::list_resources` ×1, `execution::restart` ×1. The runtime inventory in `tests/openapi_canon_compliance.rs` enumerates exactly these 8. |
 | (d) Out of scope | 1 (websocket) | Not in spec. |
 | **Total** | **25** | |
 
@@ -149,14 +154,15 @@ The following cross-layer types appear in current handler signatures and MUST be
 
 - `nebula_core::TenantContext` — extension only, not on the wire. No wrapper needed.
 - `nebula_core::Permission` — used in `tenant.require(...)` only, not on the wire. No wrapper needed.
-- `nebula_core::OrgRole` — appears in planned `MyOrgsResponse / OrgSummary` DTOs. **Wrap as `OrgRoleDto(String)`** in `crates/api/src/models/me.rs` (or shared `models/role.rs`).
-- `nebula_core::WorkspaceRole` — appears in planned `MyOrgsResponse` (workspace-level). **Wrap as `WorkspaceRoleDto(String)`**.
+- `nebula_core::OrgRole` — appears in `MyOrgsResponse`/`OrgSummary`/`MemberSummary` DTOs. **Wrapped as `OrgRoleDto(String)`** in `crates/api/src/domain/shared.rs` with the canonical bidirectional wire-token mapping (`member`/`billing`/`admin`/`owner`); the org member endpoints + `me/list_my_orgs` are live (Phase 3). *Done.*
+- `nebula_core::WorkspaceRole` — **Wrapped as `WorkspaceRoleDto(String)`** in `crates/api/src/domain/shared.rs` (no live endpoint emits it yet — kept for the planned workspace-membership DTOs).
 - `nebula_core::OrgId` / `WorkspaceId` — already exposed as `String` (ULID) in shipped DTOs (`WorkflowResponse`, etc.). No new wrapper.
 - `crate::middleware::auth::AuthContext` — extension only. No wrapper.
 - `crate::auth::dto::SecretString` — kept as-is at the request body level; spec annotation `#[schema(value_type = String, format = "password", write_only = true)]` redacts it. **Verify the runtime redaction test in T3 catches accidental serialization.**
 
 ## Open follow-ups (not blocking M3.2)
 
-- `me`, `org`, `resource` business-logic implementation. Each closes one or more class-(c) entries above. When that PR lands, removing `deprecated` + 501 from the spec is a one-line diff per handler.
-- `execution::terminate` / `execution::restart` semantics — defer to engine team; spec is ready when handlers are.
+- `me` — **done** (5 of 6): `get_me`, `update_me`, `list_my_tokens`, `create_token`, `delete_token` implemented end-to-end via the Plane-A `AuthBackend` port; the `deprecated`+501 → 200/201 spec graduation landed with the handlers. Only `list_my_orgs` remains an honest 501 (canon §4.5: principal→orgs enumeration has no wired backing until the org/membership phase — it closes there, not here).
+- `org`, `resource` business-logic implementation. Each closes one or more class-(c) entries above. When that PR lands, removing `deprecated` + 501 from the spec is a one-line diff per handler.
+- `execution::terminate` — **done**: implemented end-to-end via the durable control queue (ADR-0008 A3 / ADR-0016); the `deprecated`+501 → 200 one-line spec graduation landed with the handler. `execution::restart` semantics — defer to engine team; spec is ready when the handler is.
 - `WebSocket` real-time transport — deferred to ROADMAP 1.1 per RESEARCH.md.

@@ -15,7 +15,7 @@ use nebula_core::{
     CredentialId, ExecutionId, OrgId, ResolvedIds, WorkflowId, WorkspaceId, slug::is_prefixed_ulid,
 };
 
-use crate::{errors::ApiError, state::AppState};
+use crate::{error::ApiError, state::AppState};
 
 /// Middleware that resolves org and workspace identifiers from the URL path.
 ///
