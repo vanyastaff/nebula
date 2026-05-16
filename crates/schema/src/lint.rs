@@ -34,6 +34,7 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_required_cycles_new(fields, prefix, report);
     lint_loader_dependency_cycles(fields, prefix, report);
     lint_secret_predicate_on_value(fields, report);
+    lint_mode_no_payload_variant_must_forbid_expression(fields, report);
     if report.has_errors() || report.has_warnings() {
         tracing::debug!(
             target: "nebula_schema::lint",
@@ -1317,6 +1318,55 @@ fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationRepor
         }
         if let Some(rule) = field_required_rule(node.field) {
             walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+    });
+}
+
+// ── No-payload mode-variant expression lint ───────────────────────────────────
+
+/// Reject a schema where a *no-payload* mode variant's placeholder field does
+/// not pin [`ExpressionMode::Forbidden`](crate::mode::ExpressionMode::Forbidden).
+///
+/// A no-payload variant (the canonical constructor is
+/// [`ModeField::variant_empty`](crate::field::ModeField::variant_empty)) carries
+/// a hidden placeholder field keyed
+/// [`ModeField::EMPTY_PLACEHOLDER_KEY`](crate::field::ModeField::EMPTY_PLACEHOLDER_KEY)
+/// purely so the schema has a child to address; the field is never shown and is
+/// not meant to hold a value. `variant_empty` therefore pins
+/// `ExpressionMode::Forbidden` on it. If a hand-built variant uses that same key
+/// but leaves the placeholder at the default `ExpressionMode::Allowed` (or
+/// `Required`), an attacker can submit `{"mode":"<variant>","value":{"$expr":…}}`:
+/// `FieldValue::from_json` turns `{"$expr":…}` into `FieldValue::Expression`,
+/// which under a non-`Forbidden` placeholder is accepted by `validate` and is
+/// evaluated at `resolve`. Refusing such a schema at `build()` is the fail-closed
+/// boundary (a `ValidSchema` can only be minted through the builder), mirroring
+/// the runtime guard in the validation path. The traversal uses the same
+/// whole-tree walker as the other structural lints, so a no-payload variant
+/// nested inside an object, list-item object, or another mode variant is covered
+/// at any depth.
+fn lint_mode_no_payload_variant_must_forbid_expression(
+    fields: &[Field],
+    report: &mut ValidationReport,
+) {
+    walk_schema_fields(fields, |node| {
+        let Field::Mode(mode) = node.field else {
+            return;
+        };
+        for variant in &mode.variants {
+            if variant.field.key().as_str() == ModeField::EMPTY_PLACEHOLDER_KEY
+                && *variant.field.expression() != crate::mode::ExpressionMode::Forbidden
+            {
+                report.push(
+                    ValidationError::builder("mode.no_payload_variant_must_forbid_expression")
+                        .at(node.path.clone())
+                        .param("variant", variant.key.clone())
+                        .message(format!(
+                            "no-payload mode variant `{}` placeholder must forbid expressions",
+                            variant.key
+                        ))
+                        .build(),
+                );
+            }
         }
     });
 }

@@ -1158,3 +1158,46 @@ fn root_presence_predicate_on_list_indexed_secret_is_allowed() {
         .build()
         .expect("presence predicate on a list-indexed secret in a root rule is allowed");
 }
+
+#[test]
+fn no_payload_mode_variant_without_forbidden_expression_is_rejected() {
+    use nebula_schema::field::ModeField;
+
+    // A variant placeholder keyed EMPTY_PLACEHOLDER_KEY (the no-payload shape)
+    // built via `.variant()` — which does NOT pin `.no_expression()`, so the
+    // placeholder's ExpressionMode defaults to Allowed. An attacker can then
+    // smuggle `{"mode":"flag","value":{"$expr":"…"}}` through the hidden
+    // placeholder; the build MUST refuse such a schema.
+    let placeholder =
+        Field::string(nebula_schema::FieldKey::new(ModeField::EMPTY_PLACEHOLDER_KEY).unwrap())
+            .visible(nebula_schema::VisibilityMode::Never);
+
+    let err = Schema::builder()
+        .add(Field::mode(field_key!("auth")).variant("flag", "Flag", placeholder))
+        .build()
+        .expect_err("no-payload variant placeholder that allows expressions must be rejected");
+
+    assert!(
+        err.errors()
+            .any(|e| e.code == "mode.no_payload_variant_must_forbid_expression"),
+        "got: {:?}",
+        err.errors().map(|e| e.code.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn variant_empty_builds_clean() {
+    // The canonical no-payload constructor pins `.no_expression()`
+    // (ExpressionMode::Forbidden), so the lint finds nothing.
+    let schema = Schema::builder()
+        .add(Field::mode(field_key!("auth")).variant_empty("none", "None"))
+        .build();
+    assert!(
+        schema.is_ok(),
+        "variant_empty must satisfy the lint, got: {:?}",
+        schema
+            .as_ref()
+            .err()
+            .map(|r| r.errors().map(|e| e.code.to_string()).collect::<Vec<_>>())
+    );
+}
