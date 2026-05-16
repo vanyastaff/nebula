@@ -33,6 +33,13 @@ is_lib_rust 'crates/engine/src/state.rs'        && chk "is_lib_rust src" 0 0 || 
 is_lib_rust 'crates/engine/tests/retry.rs'      && chk "is_lib_rust tests" 1 0 || chk "is_lib_rust tests" 1 1
 is_lib_rust 'crates\\engine\\src\\state.rs'     && chk "is_lib_rust win" 0 0 || chk "is_lib_rust win" 0 1
 
+# A0 turn-reset
+TS_SID="t-a0"; TS_P="$(turn_state_path "$TS_SID" "$PWD")"
+mkdir -p "$(dirname "$TS_P")"; printf '{"impl_files_edited":["x.rs"],"gate_green":["engine"]}' >"$TS_P"
+printf '{"session_id":"%s","cwd":"%s"}' "$TS_SID" "$PWD" | bash "$HERE/turn-reset.sh"
+chk "A0 clears impl" "[]" "$(jq -c '.impl_files_edited' "$TS_P")"
+chk "A0 clears gate" "[]" "$(jq -c '.gate_green' "$TS_P")"
+
 # Per-hook cases are appended by later tasks below this line. # HOOKMARK
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
