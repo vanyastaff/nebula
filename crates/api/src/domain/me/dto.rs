@@ -85,7 +85,7 @@ pub struct MyOrgsResponse {
 /// at creation time, via [`CreateTokenResponse::token`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TokenSummary {
-    /// `pat_<ULID>` identifier.
+    /// `pat_<token>` identifier (the `pat_`-prefixed URL-safe base64 secret form — not a ULID).
     pub id: String,
     /// Caller-chosen friendly name.
     pub name: String,

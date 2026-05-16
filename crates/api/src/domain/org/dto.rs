@@ -105,7 +105,7 @@ pub struct AddMemberRequest {
 /// [`CreateServiceAccountResponse`].
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ServiceAccountSummary {
-    /// `sa_<ULID>` identifier.
+    /// `svc_<ULID>` identifier (matches `nebula_core::ServiceAccountId`, prefix `svc_`).
     pub id: String,
     /// Caller-chosen friendly name.
     pub name: String,

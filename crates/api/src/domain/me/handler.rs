@@ -368,7 +368,7 @@ pub async fn create_token(
     tag = "me",
     security(("bearer" = []), ("api_key" = [])),
     params(
-        ("pat" = String, Path, description = "Personal access token identifier (`pat_<ULID>`)."),
+        ("pat" = String, Path, description = "Personal access token identifier (`pat_<token>` — the `pat_`-prefixed URL-safe base64 form, not a ULID)."),
     ),
     responses(
         (status = 200, description = "Token revoked (idempotent).", body = AckResponse),

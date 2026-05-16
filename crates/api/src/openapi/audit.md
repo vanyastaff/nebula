@@ -61,10 +61,10 @@ the new `ok` field and the legacy verb-specific key.
 
 5 of 6 graduated stub→implemented end-to-end via the Plane-A `AuthBackend`
 port (the `deprecated`+501 → 200/201 spec graduation landed with the
-handlers, mirroring `terminate_execution`). `list_my_orgs` remains the
-single class-(c) stub under tag `me (planned)` (canon §4.5: no false
-capability — principal→orgs enumeration genuinely has no wired backing
-until the org/membership phase).
+handlers, mirroring `terminate_execution`). `list_my_orgs` also
+graduated stub→implemented in Phase 3 "Option 1" — real end-to-end via
+`MembershipStore::list_orgs_for_principal`; **no `me` class-(c) stub
+remains** (canon §4.5).
 
 ### `crates/api/src/handlers/org.rs`
 
@@ -127,9 +127,9 @@ Class **(c)**. Tag: `workspaces.resources (planned)`.
 
 | Class | Count | Treatment |
 |-------|-------|-----------|
-| (a) Typed-able shipped | 6 (auth ×3 + credential ×1 + health ×1 + openapi ×1) | New DTOs added in T3: `AckResponse`, `VersionInfo`. Existing handlers migrated to typed return. |
+| (a) Typed-able shipped | 16 | Base typed-shipped (auth ×3 + credential ×1 + health ×1 + openapi ×1) + the Phase 1/2/4 + Phase-3 "Option 1" graduations: `execution::terminate`; 5 `me/*` (`get_me`/`update_me`/`list_my_tokens`/`create_token`/`delete_token`); `me::list_my_orgs`; the 3 org member endpoints (`list_members`/`add_member`/`remove_member`); 5 credential CRUD. New DTOs added in T3: `AckResponse`, `VersionInfo`. |
 | (b) Opaque-shipped | 0 | None observed in the current codebase. |
-| (c) Stub (501-equivalent) | 12 (me ×1 + org ×9 + resource ×1 + execution ×1) | Originally 18. `execution::terminate` graduated end-to-end (Phase 1, ADR-0008 A3 / ADR-0016) and the 5 implementable `me/*` endpoints (`get_me`, `update_me`, `list_my_tokens`, `create_token`, `delete_token`) graduated end-to-end via the Plane-A `AuthBackend` port (Phase 2). Remaining stubs apply Stub Endpoint Policy: `deprecated = true`, 501 response, planned-shape DTOs. The runtime inventory in `tests/openapi_canon_compliance.rs` enumerates exactly these 12. |
+| (c) Stub (501-equivalent) | 8 (org ×6 + resource ×1 + execution ×1) | Originally 18. Graduated end-to-end and removed from the inventory: `execution::terminate` (Phase 1, ADR-0008 A3 / ADR-0016); 5 `me/*` (`get_me`/`update_me`/`list_my_tokens`/`create_token`/`delete_token`, Phase 2, Plane-A `AuthBackend`); `me::list_my_orgs` + 3 org member endpoints (`list_members`/`add_member`/`remove_member`, Phase 3 "Option 1", `MembershipStore`). Remaining stubs apply Stub Endpoint Policy (`deprecated = true`, 501 response, planned-shape DTOs): org-record `get`/`update`/`delete_org` ×3, service-account `list`/`create`/`delete` ×3, `resource::list_resources` ×1, `execution::restart` ×1. The runtime inventory in `tests/openapi_canon_compliance.rs` enumerates exactly these 8. |
 | (d) Out of scope | 1 (websocket) | Not in spec. |
 | **Total** | **25** | |
 

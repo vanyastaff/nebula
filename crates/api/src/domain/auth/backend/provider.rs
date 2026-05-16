@@ -171,7 +171,7 @@ pub trait AuthBackend: Send + Sync {
         params: CreatePatParams,
     ) -> Result<MintedPat, AuthError>;
 
-    /// Revoke a PAT the caller owns by its `pat_<ULID>` id
+    /// Revoke a PAT the caller owns by its `pat_`-prefixed token id
     /// (`DELETE /me/tokens/{pat}`). Scoped to `user_id`: a token that
     /// exists but belongs to a different principal is reported as
     /// `Err(UserNotFound)` — the same outcome as a missing token — so PAT
