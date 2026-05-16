@@ -1,15 +1,28 @@
-//! Multi-tenant scope isolation layer.
+//! Multi-tenant scope isolation layer for
+//! [`CredentialStore`](nebula_credential::CredentialStore).
 //!
-//! Outermost storage layer — checked before any data access.
-//! Rejects cross-tenant credential access based on `metadata["owner_id"]`
-//! vs the current scope from [`ScopeResolver`].
+//! Re-homed from `nebula_storage::credential::layer::scope` (spec §8): the
+//! credential scope **policy** belongs in the tenancy security boundary,
+//! not in the storage adapter. Shape preserved verbatim — this is the
+//! same `ScopeLayer` / `ScopeResolver` the credential stack has always
+//! used; `nebula_storage::credential` now re-exports these under their
+//! historical names so every consumer compiles unchanged across the move.
+//!
+//! The credential-specific `EncryptionLayer` / `CacheLayer` / `AuditLayer`
+//! stay in `nebula-storage` and re-compose **on top** of this layer; their
+//! ADR-0029 fail-closed audit + zeroize-on-drop invariants are unaffected
+//! by the move (the layer order — `ScopeLayer → AuditLayer →
+//! EncryptionLayer → CacheLayer → Backend` — is preserved at the
+//! composition root) and remain regression-tested in
+//! `crates/storage/tests/credential_*`.
 //!
 //! # Security model
 //!
-//! - Scope mismatches return [`StoreError::NotFound`], never a distinct "permission denied" —
-//!   callers cannot probe credential existence across tenants.
-//! - A `None` return from [`ScopeResolver::current_owner`] represents admin / global access and
-//!   bypasses all scope checks.
+//! - Scope mismatches return [`StoreError::NotFound`], never a distinct
+//!   "permission denied" — callers cannot probe credential existence
+//!   across tenants.
+//! - A `None` return from [`ScopeResolver::current_owner`] represents
+//!   admin / global access and bypasses all scope checks.
 //!
 //! # Scope enforcement
 //!
@@ -25,7 +38,7 @@ use serde_json::Value;
 /// The metadata key used to store the owner identifier.
 const OWNER_KEY: &str = "owner_id";
 
-/// Resolves the current caller's scope for access control.
+/// Resolves the current caller's scope for credential access control.
 ///
 /// Implementations typically extract the owner identity from
 /// a request-scoped context (e.g. JWT claims, session state).
@@ -33,11 +46,11 @@ const OWNER_KEY: &str = "owner_id";
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_storage::credential::ScopeResolver;
+/// use nebula_tenancy::CredentialScopeResolver;
 ///
 /// struct StaticScope(Option<String>);
 ///
-/// impl ScopeResolver for StaticScope {
+/// impl CredentialScopeResolver for StaticScope {
 ///     fn current_owner(&self) -> Option<&str> {
 ///         self.0.as_deref()
 ///     }
@@ -51,7 +64,7 @@ pub trait ScopeResolver: Send + Sync {
     fn current_owner(&self) -> Option<&str>;
 }
 
-/// Multi-tenant isolation layer.
+/// Multi-tenant credential isolation layer.
 ///
 /// Wraps a [`CredentialStore`] and validates that the caller owns
 /// the credential before allowing access. Sits outermost in the
@@ -64,15 +77,16 @@ pub trait ScopeResolver: Send + Sync {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_storage::credential::{InMemoryStore, ScopeLayer, ScopeResolver};
+/// use nebula_tenancy::{CredentialScopeLayer, CredentialScopeResolver};
+/// use nebula_credential::InMemoryStore;
 /// use std::sync::Arc;
 ///
 /// struct TenantScope(String);
-/// impl ScopeResolver for TenantScope {
+/// impl CredentialScopeResolver for TenantScope {
 ///     fn current_owner(&self) -> Option<&str> { Some(&self.0) }
 /// }
 ///
-/// let store = ScopeLayer::new(
+/// let store = CredentialScopeLayer::new(
 ///     InMemoryStore::new(),
 ///     Arc::new(TenantScope("tenant-1".into())),
 /// );
@@ -245,13 +259,14 @@ fn verify_owner(
     }
 }
 
-// Tests gated on `test-util` so storage compiles without features
-// (credential's `test_helpers` is itself behind `test-util`).
-#[cfg(all(test, feature = "test-util"))]
+// The in-memory `CredentialStore` used as the inner store is behind
+// `nebula-credential`'s `test-util` feature; the dev-dependency enables
+// it for test builds, so a plain `#[cfg(test)]` gate suffices.
+#[cfg(test)]
 mod tests {
-    use nebula_credential::PutMode;
+    use nebula_credential::{InMemoryStore, PutMode};
 
-    use super::{super::super::memory::InMemoryStore, *};
+    use super::*;
 
     struct FixedScope(Option<String>);
 
@@ -297,7 +312,6 @@ mod tests {
     async fn get_succeeds_for_matching_owner() {
         let store = scoped_store(Some("tenant-1"));
         let cred = make_credential("cred-1");
-        // put injects owner_id automatically
         store.put(cred, PutMode::CreateOnly).await.unwrap();
 
         let fetched = store.get("cred-1").await.unwrap();
@@ -309,12 +323,10 @@ mod tests {
 
     #[tokio::test]
     async fn get_rejects_wrong_owner() {
-        // Store as tenant-1 via inner store directly
         let inner = InMemoryStore::new();
         let cred = make_credential_with_owner("cred-2", "tenant-1");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Access as tenant-2
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-2".to_owned()))));
         let err = store.get("cred-2").await.unwrap_err();
         assert!(matches!(err, StoreError::NotFound { .. }));
@@ -326,7 +338,6 @@ mod tests {
         let cred = make_credential_with_owner("cred-3", "tenant-1");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Admin scope (None) bypasses checks
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(None)));
         let fetched = store.get("cred-3").await.unwrap();
         assert_eq!(fetched.id, "cred-3");
@@ -335,11 +346,9 @@ mod tests {
     #[tokio::test]
     async fn get_rejects_unscoped_credential_for_non_admin() {
         let inner = InMemoryStore::new();
-        // Credential without owner_id in metadata
         let cred = make_credential("cred-unscoped");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Non-admin caller should NOT be able to access ownerless credentials
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("any-tenant".to_owned()))));
         let err = store.get("cred-unscoped").await.unwrap_err();
         assert!(matches!(err, StoreError::NotFound { .. }));
@@ -348,11 +357,9 @@ mod tests {
     #[tokio::test]
     async fn get_allows_unscoped_credential_for_admin() {
         let inner = InMemoryStore::new();
-        // Credential without owner_id in metadata
         let cred = make_credential("cred-unscoped-admin");
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Admin (None) should still access ownerless credentials
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(None)));
         let fetched = store.get("cred-unscoped-admin").await.unwrap();
         assert_eq!(fetched.id, "cred-unscoped-admin");
@@ -403,7 +410,6 @@ mod tests {
         let cred = make_credential("cred-admin");
         let stored = store.put(cred, PutMode::CreateOnly).await.unwrap();
 
-        // Admin scope: no owner_id injected
         assert!(stored.metadata.get(OWNER_KEY).is_none());
     }
 
@@ -479,7 +485,6 @@ mod tests {
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
         let store = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-a".to_owned()))));
-        // tenant-a should not see tenant-b's credential
         assert!(!store.exists("cred-other").await.unwrap());
     }
 
@@ -507,5 +512,69 @@ mod tests {
     async fn exists_returns_false_for_nonexistent() {
         let store = scoped_store(Some("tenant-a"));
         assert!(!store.exists("no-such-cred").await.unwrap());
+    }
+
+    // ── cross-tenant credential isolation (spec §6.1 abuse case 4) ───────
+
+    /// Tenant B cannot read, overwrite, delete, or even confirm the
+    /// existence of a credential tenant A created — every cross-tenant
+    /// path returns `NotFound`, never the row, never a distinct error
+    /// (the same existence-non-disclosure rule the storage decorators
+    /// enforce). This is the credential-layer analogue of the
+    /// `cross_tenant_denial` execution-store suite and closes abuse
+    /// case 4's cross-tenant half.
+    #[tokio::test]
+    async fn cross_tenant_credential_access_is_denied_uniformly() {
+        let inner = InMemoryStore::new();
+        // Tenant A creates a credential through its own scoped layer
+        // (owner_id is injected automatically).
+        let store_a = ScopeLayer::new(
+            inner.clone(),
+            Arc::new(FixedScope(Some("tenant-a".to_owned()))),
+        );
+        store_a
+            .put(make_credential("shared-id"), PutMode::CreateOnly)
+            .await
+            .unwrap();
+
+        // Tenant B, sharing the SAME backend, attacks every entry point.
+        let store_b = ScopeLayer::new(inner, Arc::new(FixedScope(Some("tenant-b".to_owned()))));
+
+        let read = store_b.get("shared-id").await;
+        assert!(
+            matches!(read, Err(StoreError::NotFound { .. })),
+            "cross-tenant get must be NotFound, got {read:?}"
+        );
+
+        let exists = store_b.exists("shared-id").await.unwrap();
+        assert!(!exists, "cross-tenant exists must be false (no oracle)");
+
+        let mut hijack = make_credential("shared-id");
+        hijack.data = b"hijacked".to_vec();
+        let overwrite = store_b.put(hijack, PutMode::Overwrite).await;
+        assert!(
+            matches!(overwrite, Err(StoreError::NotFound { .. })),
+            "cross-tenant overwrite must be NotFound, got {overwrite:?}"
+        );
+
+        let del = store_b.delete("shared-id").await;
+        assert!(
+            matches!(del, Err(StoreError::NotFound { .. })),
+            "cross-tenant delete must be NotFound, got {del:?}"
+        );
+
+        // Tenant A's credential is intact and untouched.
+        let a_view = store_a.get("shared-id").await.unwrap();
+        assert_eq!(
+            a_view.data, b"test-data",
+            "victim credential must be unmodified by tenant B"
+        );
+
+        // A different tenant's id-space never resolves to A's row.
+        let b_owned = store_b.list(None).await.unwrap();
+        assert!(
+            b_owned.is_empty(),
+            "tenant B must not see tenant A's credential in list"
+        );
     }
 }

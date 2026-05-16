@@ -14,15 +14,27 @@ documentation.workspace = true
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-storage-port = { path = "../storage-port" }
+# Credential scope-layer re-home (spec §8): the `CredentialStore`
+# scope decorator + its owner resolver move here (the policy half);
+# the credential-specific Encryption/Cache/Audit wiring re-composes on
+# top in `nebula-storage`. `nebula-credential` is shared infra
+# importable from Business — see deny.toml [wrappers].
+nebula-credential = { path = "../credential" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# Needed only to spell `serde_json::Value` in the ExecutionStore trait
-# signature the decorator re-implements; no (de)serialization here.
 serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+# `make_credential` test fixture stamps StoredCredential timestamps.
+chrono = { workspace = true }
+# Enable nebula-credential's in-memory `CredentialStore` (behind its
+# `test-util` feature) for the credential-scope-layer regression tests.
+# Cargo unions this with the normal dependency for test builds, so
+# `InMemoryStore` is available under `#[cfg(test)]` without a crate
+# feature of our own.
+nebula-credential = { path = "../credential", features = ["test-util"] }
 
 [lib]
 doctest = false

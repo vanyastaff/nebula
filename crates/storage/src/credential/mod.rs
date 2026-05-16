@@ -4,8 +4,11 @@
 //! Two distinct layer families live here:
 //!
 //! - `CredentialStore` wrappers — `EncryptionLayer`, `CacheLayer`,
-//!   `AuditLayer`, `ScopeLayer`. They compose around a backing store
-//!   that persists `StoredCredential` rows.
+//!   `AuditLayer`. They compose around a backing store that persists
+//!   `StoredCredential` rows. The multi-tenant scope wrapper was
+//!   re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8) —
+//!   scope policy belongs in the tenancy security boundary; it
+//!   re-composes outermost at the composition root.
 //! - `ExternalProvider` wrappers — `ProviderCacheLayer`. They compose
 //!   around an `Arc<dyn ExternalProvider>` that resolves secrets from a
 //!   remote system (Vault, AWS SM, env var, …) per ADR-0051. The
@@ -45,7 +48,7 @@ pub use key_provider::StaticKeyProvider;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
-    CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
+    CacheStats, EncryptionLayer,
 };
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use memory::InMemoryStore;

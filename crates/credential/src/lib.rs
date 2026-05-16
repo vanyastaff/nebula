@@ -28,7 +28,8 @@
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
 //! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
-//!   `CacheLayer`, `AuditLayer`, `ScopeLayer`) live in `nebula_storage::credential` per ADR-0032.
+//!   `CacheLayer`, `AuditLayer`) live in `nebula_storage::credential` per ADR-0032; the multi-tenant
+//!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
 //! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
 //! - `EncryptedData`, `EncryptionKey`, `encrypt_with_aad`, `encrypt_with_key_id`, `decrypt`,

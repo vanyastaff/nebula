@@ -18,10 +18,22 @@
 //!
 //! [`Scope`]: nebula_storage_port::Scope
 
+mod credential_scope;
 mod decorator;
 mod error;
 mod resolver;
 
+// Credential scope-layer (re-homed from `nebula_storage::credential`,
+// spec §8). Exported under `Credential`-prefixed names so they do not
+// collide with the port-scope [`ScopeResolver`] (`Principal` → `Scope`)
+// above — the credential layer keys on `metadata["owner_id"]`, a
+// different (legacy, owner-string) scoping model. `nebula-storage`
+// re-exports these under their historical unprefixed names so existing
+// `nebula_storage::credential::{ScopeLayer, ScopeResolver}` consumers
+// compile unchanged.
+pub use credential_scope::{
+    ScopeLayer as CredentialScopeLayer, ScopeResolver as CredentialScopeResolver,
+};
 pub use decorator::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
     ScopedIdempotencyStore, ScopedWebhookActivationStore,

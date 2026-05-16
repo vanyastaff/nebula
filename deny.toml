@@ -176,6 +176,13 @@ deny = [
     "nebula-resource",
     "nebula-sdk",
     "nebula-storage",
+    # The credential scope-layer (the `CredentialStore` scope decorator
+    # + its owner resolver) is re-homed into the tenancy security
+    # boundary (spec §8); `nebula-tenancy` owns that policy half and
+    # therefore consumes the credential contract directly. The
+    # credential-specific Encryption/Cache/Audit wiring still lives in
+    # `nebula-storage` and re-composes on top.
+    "nebula-tenancy",
   ], reason = "Credential contract is shared infra; the listed Business/Exec/API consumers and first-party backends may depend on it (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper
