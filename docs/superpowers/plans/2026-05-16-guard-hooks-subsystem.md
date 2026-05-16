@@ -277,6 +277,9 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
 have_jq || deny "jq is required by the bash guard and is missing (fail-closed). Install jq."
+# Fail-closed on un-parseable stdin: an invalid-JSON tool call (e.g. an invalid
+# escape like \$ in the command) must DENY, never silently allow.
+printf '%s' "$guard_input" | jq -e . >/dev/null 2>&1 || deny "Tool-call input is not valid JSON (fail-closed). Cannot verify the command."
 [ "$(jqg '.tool_name')" = "Bash" ] || allow
 cmd="$(jqg '.tool_input.command')"; [ -n "$cmd" ] || allow
 # Match deny rules against the RESOLVED command (balanced quotes removed like
