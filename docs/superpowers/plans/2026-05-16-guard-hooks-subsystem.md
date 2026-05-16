@@ -536,8 +536,9 @@ st="$(load_state "$(turn_state_path "$sid" "$cwd")")"
 printf '%s' "$st" | jq -e '.gate_green | index("*workspace*")' >/dev/null 2>&1 && allow
 declare -A touched=()
 _consider() {  # $1=path -> record its crate if it is a crate src .rs
-  printf '%s' "$1" | tr '\\' '/' | grep -qE '(^|/)crates/[^/]+/src/.*\.rs$' || return 0
-  local c; c="$(crate_of "$1")"; [ -n "$c" ] && touched[$c]=1
+  local p="${1%$'\r'}"  # jq -r emits CRLF on git-bash; CR is never a path char
+  printf '%s' "$p" | tr '\\' '/' | grep -qE '(^|/)crates/[^/]+/src/.*\.rs$' || return 0
+  local c; c="$(crate_of "$p")"; [ -n "$c" ] && touched[$c]=1
 }
 # git ground truth: NUL-delimited, UNQUOTED paths (-z) — no quoting/sed-arrow
 # pitfalls. Rename/Copy records are `XY new\0old`; gate BOTH paths + deletions.
