@@ -4,7 +4,7 @@
 
 **Goal:** Harness-enforced, evasion-resistant guard hooks (bash + jq) so the agent cannot weaken tests, suppress lints, bypass lefthook, or claim "done" without a verified gate.
 
-**Architecture:** Six POSIX bash hooks under `scripts/guard/` sharing `_lib.sh`, wired in committed `.claude/settings.json` (`command`-type). Blocking = `exit 2` + stderr. `jq` parses stdin. Hooks fail **open** on internal error EXCEPT `bash-deny.sh` (hook A) which fails **closed**: any command it cannot confidently normalize (`$(`, backticks, `${`, `;`, newline, unbalanced quotes, no resolvable argv0) ⇒ **deny**. Conservative-and-fail-closed beats a clever tokenizer that can be evaded.
+**Architecture (D10):** POSIX bash hooks under `scripts/guard/` sharing `_lib.sh`, wired in committed `.claude/settings.json` (`command`-type). `jq` parses stdin. The no-cheat guarantee is **structural**, not parser-based: **B** (edit-guard, hard-deny) + **A2** (`record.sh` — records a green gate only for a canonical *clean* invocation; lint-suppressed/masked/redirected/echoed runs never count) + **C** (Stop-gate, hard-block) + lefthook/CI. **Hook A is a fail-OPEN advisory tripwire** (blatant literals only), not a security boundary — 5 adversarial rounds proved a hand-rolled bash shell-parser on a boundary is an un-winnable arms race, so the boundary was relocated to the oracle.
 
 **Tech Stack:** bash 5 (git-bash on Windows — already required by lefthook), jq 1.8, git, Taskfile. No Node, no build step.
 
@@ -18,9 +18,9 @@
 
 | File | Responsibility |
 |------|----------------|
-| `scripts/guard/_lib.sh` | Shared: stdin read, jq extract, fail-closed `normalize_argv0`, turn-state path/load/save, `crate_of`/`is_lib_rust`, `deny`/`allow` |
+| `scripts/guard/_lib.sh` | Shared: stdin read, jq extract, turn-state path/load/save, `crate_of`/`is_lib_rust`, `deny`/`allow` (no shell parser — D10) |
 | `scripts/guard/turn-reset.sh` | A0 `UserPromptSubmit`: reset turn-state |
-| `scripts/guard/bash-deny.sh` | A `PreToolUse/Bash`: fail-closed deny (no-verify, clippy -A, fmt --all, force-push) |
+| `scripts/guard/bash-deny.sh` | A `PreToolUse/Bash`: fail-OPEN advisory tripwire — blatant no-verify / fmt --all / force-push only (D10; not a boundary) |
 | `scripts/guard/record.sh` | A2 `PostToolUse/Bash`: record green clippy/nextest per crate |
 | `scripts/guard/edit-guard.sh` | B `PreToolUse/Edit\|Write\|MultiEdit`: cheat/costyl + test-weakening |
 | `scripts/guard/stop-gate.sh` | C `Stop`: block done without recorded green gate |
@@ -260,22 +260,43 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 ### Task 4: A2 — `scripts/guard/record.sh` (`PostToolUse/Bash`)
 
-> **Known limitation:** `PostToolUse` exposes `tool_response` but no guaranteed exit code. A2 records a crate green only when the command is a recognized gate command AND `tool_response` shows no failure token (`error`, `FAILED`, `warning:`, `test result: FAILED`). Heuristic; the Stop gate (Task 6) is the backstop.
+> **D10 design (grounded in verified harness facts):** `PostToolUse` fires
+> ONLY for exit-0 Bash and `tool_response` is a structured object
+> (`exit_code`/`success`/`stdout`). A2 records green via an **allowlist of the
+> canonical CLEAN gate form** — reject any chaining/masking/redirect/comment
+> (`|| && ; | $( \` > < #`), any suppression (`-A`/`--allow`/`--cap-lints`/
+> `RUSTFLAGS=`), or a non-`cargo`/`task` argv0 (`echo`/`grep`…). Non-clean ⇒
+> not recorded ⇒ C blocks (fail-safe, finite, no arms race). This is the
+> load-bearing no-cheat layer; C (Task 6) is its only consumer.
 
 **Files:** Create `scripts/guard/record.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
 ```bash
-# A2 record
+# A2 record (D10: canonical-clean-form allowlist; structured tool_response;
+# gate_green is jq `unique` => sorted)
 R_SID="t-a2"; R_P="$(turn_state_path "$R_SID" "$PWD")"
 mkdir -p "$(dirname "$R_P")"; printf '{"impl_files_edited":[],"gate_green":[]}' >"$R_P"
-printf '{"tool_name":"Bash","tool_input":{"command":"cargo nextest run -p nebula-engine"},"tool_response":"12 passed","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
-chk "A2 records green" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
-printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings"},"tool_response":"error: aborting","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
-chk "A2 ignores failed" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
-printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings -A clippy::all"},"tool_response":"ok","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
-chk "A2 refuses suppressed clippy (D10)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"tool_response":{"exit_code":%s,"success":%s,"stdout":"ok","stderr":""},"session_id":"%s","cwd":"%s"}' "$1" "${2:-0}" "${3:-true}" "$R_SID" "$PWD" | bash "$HERE/record.sh"; }
+rr 'cargo nextest run -p nebula-engine'
+chk "A2 records clean nextest" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'echo cargo clippy -p nebula-core -- -D warnings'
+chk "A2 rejects echo (C-1/M-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings || true'
+chk "A2 rejects ||true (C-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings 2>/dev/null'
+chk "A2 rejects redirect (C-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core --cap-lints allow -- -D warnings'
+chk "A2 rejects --cap-lints (I-1)" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings -A clippy::all'
+chk "A2 rejects -A suppression" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-aaa -p nebula-bbb -- -D warnings'
+chk "A2 multi-p takes first (I-2)" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings' 1 false
+chk "A2 rejects exit!=0" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-core -- -D warnings'
+chk "A2 records clean clippy" '["aaa","core","engine"]' "$(jq -c '.gate_green' "$R_P")"
 ```
 
 - [ ] **Step 2: Run** → FAIL.
@@ -289,27 +310,40 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
 [ "$(jqg '.tool_name')" = "Bash" ] || allow
 have_jq || allow
-cmd="$(jqg '.tool_input.command')"; resp="$(jqg '.tool_response')"
-case "$resp" in *error*|*FAILED*|*"warning:"*|*"test result: FAILED"*) allow;; esac
-# D10: a clippy run that SUPPRESSED lints is not a clean gate — refuse to
-# record green (structural home of the old hook-A clippy rule). Substring is
-# safe here: imperfect detection only ever fails toward "not recorded" (C then
-# blocks), never toward a false green.
-if printf '%s' "$cmd" | grep -Eq 'cargo[[:space:]].*clippy' \
-   && printf '%s' "$cmd" | grep -Eq '([[:space:]]-A([[:space:]]|=|[A-Za-z])|--allow([[:space:]]|=)|RUSTFLAGS=[^&]*-A)'; then
-  allow
-fi
+cmd="$(jqg '.tool_input.command')"
+# Verified harness facts: PostToolUse fires only for exit-0 Bash; tool_response
+# is a structured object. Trust the authenticated status; string-shape
+# fallback treats a failure token as not-clean. Non-clean => not recorded.
+ec="$(jqg '.tool_response.exit_code')"
+[ -n "$ec" ] && [ "$ec" != "0" ] && allow
+[ "$(jqg '.tool_response.success')" = "false" ] && allow
+sresp="$(jqg '.tool_response')"
+case "$sresp" in
+  *'"exit_code"'*|*'"success"'*) : ;;
+  *error*|*FAILED*|*"warning:"*|*"test result: FAILED"*) allow ;;
+esac
+# Record green ONLY for a CANONICAL CLEAN gate invocation — an ALLOWLIST of the
+# exact clean shape, not a blocklist of evasions. Any chaining/masking/
+# redirect/comment, any lint suppression, or a non-cargo/task argv0 => not
+# recognized => not recorded => C blocks (fail-safe; agent runs gate plainly).
+# Closes echo/||true/2>/dev/null/--cap-lints/RUSTFLAGS/multi-p/grep-of-docs.
+case "$cmd" in
+  *'||'*|*'&&'*|*';'*|*'|'*|*'`'*|*'$('*|*'>'*|*'<'*|*'#'*) allow ;;
+  *' -A'*|*'--allow'*|*'--cap-lints'*|*'RUSTFLAGS='*) allow ;;
+esac
+core="$(printf '%s' "$cmd" | sed -E 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//')"
 is_gate=0
-[[ "$cmd" =~ cargo[[:space:]]+clippy.*-D ]] && is_gate=1
-[[ "$cmd" =~ cargo[[:space:]]+nextest[[:space:]]+run ]] && is_gate=1
-[[ "$cmd" =~ (^|[[:space:]])task[[:space:]]+dev:check ]] && is_gate=2
+if   [[ "$core" =~ ^cargo([[:space:]]+\+[^[:space:]]+)?[[:space:]]+clippy([[:space:]]|$) ]] && [[ "$core" =~ (^|[[:space:]])-D([[:space:]]|$) ]]; then is_gate=1
+elif [[ "$core" =~ ^cargo([[:space:]]+\+[^[:space:]]+)?[[:space:]]+nextest[[:space:]]+run([[:space:]]|$) ]]; then is_gate=1
+elif [[ "$core" =~ ^task[[:space:]]+dev:check([[:space:]]|$) ]]; then is_gate=2
+fi
 [ "$is_gate" = 0 ] && allow
 sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 p="$(turn_state_path "$sid" "$cwd")"; st="$(load_state "$p")"
 if [ "$is_gate" = 2 ]; then
   st="$(printf '%s' "$st" | jq -c '.gate_green = (.gate_green + ["*workspace*"] | unique)')"
 else
-  crate="$(printf '%s' "$cmd" | sed -n 's/.*-p[[:space:]]\{1,\}\(nebula-\)\{0,1\}\([A-Za-z0-9_-]\{1,\}\).*/\2/p')"
+  crate="$(printf '%s' "$core" | grep -oE -- '-p[[:space:]]+(nebula-)?[A-Za-z0-9_-]+' | head -1 | sed -E 's/^-p[[:space:]]+(nebula-)?//')"
   [ -n "$crate" ] && st="$(printf '%s' "$st" | jq -c --arg c "$crate" '.gate_green = (.gate_green + [$c] | unique)')"
 fi
 save_state "$p" "$st"
@@ -594,15 +628,15 @@ Expected: `ALL GUARD TESTS PASSED`, exit 0.
 ## Enforced Discipline (guard hooks)
 
 Mechanically enforced by `scripts/guard/*.sh` (committed in `.claude/settings.json`),
-not advisory. `task hooks:test` proves each guard. Hook A is fail-closed
-(un-parseable command ⇒ deny). Plan 2 makes this file canonical.
+not advisory. `task hooks:test` proves each guard. **The no-cheat guarantee is
+structural (D10): B (edit-guard) + A2 (clean-gate recorder) + C (Stop-gate) +
+lefthook/CI.** Hook A is a **fail-open advisory tripwire**, not a security
+boundary — it nudges on blatant literals only. Plan 2 makes this file canonical.
 
 | Rule | Guard |
 |------|-------|
-| No `git commit --no-verify` / lefthook bypass | `bash-deny.sh` |
-| No clippy `-A`/`--allow`/`RUSTFLAGS` suppression | `bash-deny.sh` |
-| No `cargo fmt --all` (Windows 206 / false green) | `bash-deny.sh` |
-| Unverifiable/obfuscated shell command | `bash-deny.sh` (fail-closed) |
+| Nudge: blatant `git commit --no-verify` / `cargo fmt --all` / `git push --force` | `bash-deny.sh` (advisory, fail-open) |
+| Lint-suppressed clippy never counts as a passing gate | `record.sh` (A2) |
 | No `unwrap()/expect()/panic!()` in lib code | `edit-guard.sh` |
 | `#[allow]/todo!/unimplemented!/unreachable!` need `// guard-justified:` | `edit-guard.sh` |
 | No TODO/FIXME/HACK/plan-id in committed code | `edit-guard.sh` |
