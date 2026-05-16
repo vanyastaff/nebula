@@ -933,8 +933,8 @@ fn presence_predicate_on_secret_is_allowed() {
 
 #[test]
 fn nested_value_predicate_targeting_secret_is_rejected() {
-    // H6: the secret-key collection must recurse `Field::Object`, so a value
-    // predicate targeting a *nested* secret (`/auth/api_key`) is also flagged.
+    // The secret-key collection recurses `Field::Object`, so a value predicate
+    // targeting a *nested* secret (`/auth/api_key`) is also flagged.
     let report =
         Schema::builder()
             .add(Field::object(field_key!("auth")).add(Field::secret(field_key!("api_key"))))
