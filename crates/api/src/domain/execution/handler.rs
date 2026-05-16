@@ -16,7 +16,7 @@ use crate::{
             ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse,
             ListExecutionsResponse, RunningExecutionSummary, StartExecutionRequest,
         },
-        shared::{AckResponse, PaginationParams},
+        shared::PaginationParams,
         workflow::handler::extract_timestamp,
     },
     error::{ApiError, ApiResult, ProblemDetails},
@@ -554,10 +554,13 @@ pub async fn cancel_execution(
 
     // Enqueue the Cancel signal to the durable control queue (canon §12.2).
     //
-    // This MUST happen immediately after a successful CAS transition. If this
-    // call fails, we return a 500 so the caller knows to retry the cancel
-    // request — the retry will see the already-cancelled DB row and short-circuit
-    // at the terminal-status guard above without re-enqueuing (idempotent).
+    // This MUST happen immediately after a successful CAS transition. If
+    // this call fails we return 503 when the control-queue backend is
+    // unavailable (orchestration absent — canon §13 step 6), else 500, per
+    // the `StorageError` sentinel match below. Either way the caller should
+    // retry the cancel request — the retry will see the already-cancelled
+    // DB row and short-circuit at the terminal-status guard above without
+    // re-enqueuing (idempotent).
     //
     // M3.5: same W3C stamping policy as [`enqueue_start`] — operator correlation for Cancel.
     let w3c_trace_context = w3c_trace_context_for_control_queue();
@@ -693,8 +696,22 @@ pub async fn get_execution_logs(
     }))
 }
 
-/// Terminate execution — forceful stop.
+/// Terminate execution — forced shutdown.
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate
+///
+/// Forced-terminate is a *forced* shutdown contrasted with
+/// [`cancel_execution`]'s *cooperative* drain. Per ADR-0016 the engine
+/// has no distinct forced-shutdown path today: `ControlCommand::Terminate`
+/// is wired end-to-end (`ControlConsumer` → `EngineControlDispatch::
+/// dispatch_terminate` → `dispatch_cancel` → the engine cancel registry's
+/// live `CancellationToken`), and in-flight work aborts via the same
+/// cooperative token that `Cancel` trips. The operator-visible terminal
+/// state is therefore `ExecutionStatus::Cancelled` — `ExecutionStatus`
+/// has no distinct `Terminated` variant (see
+/// `crates/execution/src/state.rs` / `status.rs`), so pre-setting any
+/// other status string would be a #327 / canon §4.5 false capability the
+/// engine would not round-trip. This mirrors `cancel_execution` exactly
+/// except for the durable command kind.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate",
@@ -706,22 +723,212 @@ pub async fn get_execution_logs(
         ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
     ),
     responses(
-        (status = 501, description = "Not yet implemented; tracked under engine terminate-action milestone.", body = AckResponse),
+        (status = 200, description = "Execution terminated; terminate signal enqueued for the engine.", body = ExecutionResponse),
+        (status = 400, description = "Invalid execution identifier or already in a terminal state.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
-        (status = 409, description = "Execution already in a terminal state.", body = ProblemDetails),
+        (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
+        (status = 503, description = "Control queue is unavailable; the terminate signal cannot reach the engine.", body = ProblemDetails),
     ),
 )]
-#[deprecated(note = "Stub: returns 501 once engine terminate-action milestone closes.")]
 pub async fn terminate_execution(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(_tenant): Extension<TenantContext>,
-    Path((_org, _ws, _exec)): Path<(String, String, String)>,
-) -> ApiResult<Json<serde_json::Value>> {
-    // TODO: Forcefully terminate execution (kill running nodes)
-    Err(ApiError::NotImplemented(
-        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
-    ))
+    Path((_org, _ws, id)): Path<(String, String, String)>,
+) -> ApiResult<Json<ExecutionResponse>> {
+    use nebula_core::ExecutionId;
+
+    // Parse execution ID
+    let execution_id = ExecutionId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
+
+    // Fetch current execution state from repository
+    let state_result = state
+        .execution_repo
+        .get_state(execution_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
+
+    // Check if execution exists
+    let (version, mut execution_state) =
+        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
+
+    // Check if execution is already in a terminal state
+    let current_status = execution_state
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if matches!(
+        current_status,
+        "completed" | "failed" | "cancelled" | "timed_out"
+    ) {
+        return Err(ApiError::validation_message(format!(
+            "Cannot terminate execution in '{current_status}' state"
+        )));
+    }
+
+    // Pre-set the terminal status. Forced-terminate lands in the same
+    // `Cancelled` terminal state as cooperative cancel: ADR-0016 documents
+    // that the engine has no distinct forced-shutdown path and treats
+    // `Terminate` as a cooperative-cancel synonym (the
+    // `Running → Cancelling → Cancelled` bridge in the engine tails), and
+    // `ExecutionStatus` carries no `Terminated` variant. Write the
+    // canonical snake-case string `ExecutionStatus::Cancelled` serializes
+    // to so engine-side reads via `ExecutionStatus::deserialize` round-trip
+    // cleanly (#327, canon §4.5). Persist `completed_at` (not the legacy
+    // `finished_at`) because that is the field `ExecutionState` declares —
+    // see `crates/execution/src/state.rs`.
+    if let Some(state_obj) = execution_state.as_object_mut() {
+        state_obj.insert(
+            "status".to_string(),
+            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
+        );
+
+        // Set completed_at timestamp. The canonical `ExecutionState`
+        // serializes `Option::None` as `null`, not as an absent field —
+        // so `contains_key` alone is not enough; we must also overwrite
+        // explicit nulls. RFC 3339 string matches what `DateTime<Utc>`
+        // serializes to via serde.
+        let needs_write = state_obj
+            .get("completed_at")
+            .is_none_or(serde_json::Value::is_null);
+        if needs_write {
+            let now = chrono::Utc::now();
+            state_obj.insert(
+                "completed_at".to_string(),
+                serde_json::json!(now.to_rfc3339()),
+            );
+        }
+    }
+
+    // Apply state transition using CAS.
+    //
+    // Order: transition first, then enqueue — per canon §12.2 and audit §2.2.
+    // If enqueue fails after a successful transition the execution row is
+    // already `cancelled` but the engine will not see the signal (orphan).
+    // This is documented as a known limitation until a shared transaction
+    // wrapper is available across ExecutionRepo and ControlQueueRepo.
+    // The handler fails loudly on enqueue failure so the caller can retry.
+    let transition_result = state
+        .execution_repo
+        .transition(execution_id, version, execution_state.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to terminate execution: {e}")))?;
+
+    if !transition_result {
+        return Err(ApiError::Conflict(
+            "concurrent modification detected; refetch execution state and retry".to_string(),
+        ));
+    }
+
+    // Enqueue the Terminate signal to the durable control queue (canon
+    // §12.2).
+    //
+    // This MUST happen immediately after a successful CAS transition. If
+    // this call fails we return 503 when the control-queue backend is
+    // unavailable (orchestration absent — canon §13 step 6), else 500, per
+    // the `StorageError` sentinel match below. Either way the caller should
+    // retry the terminate request — the retry will see the already-cancelled
+    // DB row and short-circuit at the terminal-status guard above without
+    // re-enqueuing (idempotent).
+    //
+    // M3.5: same W3C stamping policy as [`enqueue_start`] — operator
+    // correlation for Terminate.
+    let w3c_trace_context = w3c_trace_context_for_control_queue();
+    tracing::debug!(
+        execution_id = %execution_id,
+        command = ControlCommand::Terminate.as_str(),
+        has_trace_context = w3c_trace_context.is_some(),
+        "execution: enqueue Terminate on control queue"
+    );
+    let entry = ControlQueueEntry {
+        id: Uuid::new_v4().as_bytes().to_vec(),
+        execution_id: execution_id.to_string().into_bytes(),
+        command: ControlCommand::Terminate,
+        issued_by: None,
+        issued_at: chrono::Utc::now(),
+        status: "Pending".to_string(),
+        processed_by: None,
+        processed_at: None,
+        error_message: None,
+        reclaim_count: 0,
+        w3c_trace_context,
+    };
+    state
+        .control_queue_repo
+        .enqueue(&entry)
+        .await
+        .map_err(|e| {
+            // Canon §13 step 6: when the control-queue / orchestration backend is
+            // intentionally absent or unreachable, return 503 Service Unavailable
+            // so the caller knows the infrastructure is down (not a logic bug).
+            //
+            // `StorageError::Internal` is the sentinel returned by the
+            // `AlwaysFailControlQueueRepo` test double, and is also the natural
+            // variant for a backend that fails to start or has no driver wired up.
+            // `StorageError::Connection` covers TCP/socket-level failures.
+            // All other variants (Conflict, NotFound, etc.) indicate unexpected
+            // write failures and fall back to 500 Internal.
+            use nebula_storage::StorageError;
+            match &e {
+                StorageError::Internal(_) | StorageError::Connection(_) => {
+                    ApiError::ServiceUnavailable(format!(
+                        "Execution {execution_id} terminated in DB but control-queue backend is \
+                         unavailable — orchestration absent (canon §13 step 6, §12.2 \
+                         orphan): {e}"
+                    ))
+                },
+                _ => ApiError::Internal(format!(
+                    "Execution {execution_id} terminated in DB but failed to enqueue Terminate \
+                     signal (canon §12.2 orphan — caller should retry): {e}"
+                )),
+            }
+        })?;
+
+    // Extract fields from updated execution state
+    let workflow_id = execution_state
+        .get("workflow_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let status = execution_state
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("cancelled")
+        .to_string();
+
+    // Canonical `ExecutionState` exposes `started_at` (engine run start,
+    // `None` until the engine transitions to `Running`) and `created_at`
+    // (always set at construction). Fall back to `created_at` so the API
+    // response retains a meaningful timestamp for executions that have
+    // not yet been dispatched (#327).
+    let started_at = extract_timestamp(&execution_state, "started_at")
+        .or_else(|| extract_timestamp(&execution_state, "created_at"))
+        .unwrap_or(0);
+    // Canonical field is `completed_at`; legacy rows used `finished_at`.
+    let finished_at = extract_timestamp(&execution_state, "completed_at")
+        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
+
+    // Canonical field is `workflow_input`; legacy rows used `input`.
+    let input = execution_state
+        .get("workflow_input")
+        .or_else(|| execution_state.get("input"))
+        .cloned();
+
+    let output = execution_state.get("output").cloned();
+
+    Ok(Json(ExecutionResponse {
+        id,
+        workflow_id,
+        status,
+        started_at,
+        finished_at,
+        input,
+        output,
+    }))
 }
 
 /// Restart execution from the beginning.

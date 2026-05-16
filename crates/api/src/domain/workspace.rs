@@ -5,11 +5,14 @@
 //! `/api/v1/orgs/{org}/workspaces/{ws}/*` group behind auth + tenancy +
 //! RBAC middleware (applied in [`crate::domain::create_routes`]).
 //!
-//! `resource::list_resources`, `execution::terminate_execution`, and
+//! `execution::terminate_execution` is fully implemented end-to-end via
+//! the durable control queue (canon §12.2; `ControlCommand::Terminate` →
+//! `EngineControlDispatch::dispatch_terminate`, ADR-0008 A3 / ADR-0016) —
+//! it is no longer a stub. `resource::list_resources` and
 //! `execution::restart_execution` are still stubbed (501) and carry
 //! `#[deprecated]` so the OpenAPI spec flags them per ADR-0047 Stub
 //! Endpoint Policy. The deprecation lint is silenced at module level —
-//! these handlers are intentionally mounted so the route table stays in
+//! those handlers are intentionally mounted so the route table stays in
 //! sync with the published spec.
 #![allow(deprecated)]
 

@@ -89,10 +89,10 @@ Class **(c)**. Tag: `workspaces.resources (planned)`.
 
 | Line | Handler | Class | Notes |
 |------|---------|-------|-------|
-| 582 | `terminate_execution` | **(c)** | Stub. Planned: `AckResponse` plus 404 on missing exec, 409 on already-terminal. Underlying milestone: terminate-action wiring (ROADMAP §M2 follow-up if not already shipped). |
+| — | `terminate_execution` | **shipped** | Implemented end-to-end via the durable control queue (canon §12.2): CAS-transition to `Cancelled` + enqueue `ControlCommand::Terminate`, consumed by `EngineControlDispatch::dispatch_terminate` (ADR-0008 A3 / ADR-0016). Returns `ExecutionResponse` 200 + 400/401/403/404/409/503. Mirrors `cancel_execution`; no longer `#[deprecated]`. Parity coverage in `tests/execution_terminate_e2e.rs`. |
 | 593 | `restart_execution` | **(c)** | Stub. Planned: `RestartExecutionResponse { new_execution_id }`. Underlying milestone: execution restart semantics. |
 
-Both are class **(c)**. Tag: `workspaces.executions` (no `(planned)` suffix because most executions handlers are shipped — only these two are deprecated).
+`restart_execution` is class **(c)**; `terminate_execution` graduated to shipped. Tag: `workspaces.executions` (no `(planned)` suffix because most executions handlers are shipped — only `restart_execution` is deprecated).
 
 ### `crates/api/src/handlers/credential.rs`
 
@@ -158,5 +158,5 @@ The following cross-layer types appear in current handler signatures and MUST be
 ## Open follow-ups (not blocking M3.2)
 
 - `me`, `org`, `resource` business-logic implementation. Each closes one or more class-(c) entries above. When that PR lands, removing `deprecated` + 501 from the spec is a one-line diff per handler.
-- `execution::terminate` / `execution::restart` semantics — defer to engine team; spec is ready when handlers are.
+- `execution::terminate` — **done**: implemented end-to-end via the durable control queue (ADR-0008 A3 / ADR-0016); the `deprecated`+501 → 200 one-line spec graduation landed with the handler. `execution::restart` semantics — defer to engine team; spec is ready when the handler is.
 - `WebSocket` real-time transport — deferred to ROADMAP 1.1 per RESEARCH.md.

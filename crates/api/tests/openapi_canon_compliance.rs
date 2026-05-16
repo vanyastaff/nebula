@@ -7,8 +7,12 @@
 //!   declare a `501` response. ADR-0047 Stub Endpoint Policy.
 //! - **Runtime check** — every stub endpoint registered under
 //!   `me/*`, `org/*`, `resource::list_resources`,
-//!   `execution::{terminate,restart}` is probed against a booted
-//!   in-memory app. The accepted outcomes are **501** (the
+//!   `execution::restart` is probed against a booted
+//!   in-memory app. (`execution::terminate` graduated stub→implemented
+//!   end-to-end via the durable control queue — ADR-0008 A3 / ADR-0016 —
+//!   so it is no longer in this inventory; it now has full §13-step-5
+//!   parity coverage in `execution_terminate_e2e.rs`.) The accepted
+//!   outcomes are **501** (the
 //!   `ApiError::NotImplemented` variant) for stubs that reach the
 //!   handler body and **403** (`ApiError::InsufficientRole` /
 //!   `Forbidden`) for stubs whose RBAC gate (`tenant.require(...)`)
@@ -106,8 +110,9 @@ async fn deprecated_operations_must_advertise_501_response() {
     assert!(
         deprecated_count > 0,
         "Spec must contain at least one deprecated stub operation; \
-         the M3.2 audit identifies 18+ stub endpoints under me/, org/, \
-         resource/, and execution/{{terminate,restart}}"
+         after `execution::terminate` graduated stub→implemented \
+         (ADR-0008 A3 / ADR-0016) the remaining stubs are under me/, \
+         org/, resource/, and execution/restart"
     );
 }
 
@@ -119,7 +124,7 @@ fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
     let principal = "user_00000000000000000000000000";
     let pat_id = "pat_00000000000000000000000001";
     let sa_id = "sa_00000000000000000000000001";
-    let exec_id = "exe_00000000000000000000000001";
+    let _exec_id = "exe_00000000000000000000000001";
     vec![
         // me/* — 6 stubs
         ("GET", "/api/v1/me".to_owned(), None),
@@ -164,15 +169,12 @@ fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
             format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/resources"),
             None,
         ),
-        // execution — 2 stubs
+        // execution — 1 stub (terminate graduated stub→implemented:
+        // real §12.2 durable-control-queue endpoint, ADR-0008 A3 /
+        // ADR-0016; covered end-to-end by execution_terminate_e2e.rs).
         (
             "POST",
-            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/executions/{exec_id}/terminate"),
-            None,
-        ),
-        (
-            "POST",
-            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/executions/{exec_id}/restart"),
+            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/executions/{_exec_id}/restart"),
             None,
         ),
     ]
@@ -188,9 +190,11 @@ async fn stub_endpoints_return_501_at_runtime() {
     let stubs = stub_endpoints();
     assert_eq!(
         stubs.len(),
-        18,
-        "stub coverage list must enumerate all 18 audit class-(c) endpoints; \
-         got {}",
+        17,
+        "stub coverage list must enumerate all remaining audit class-(c) \
+         endpoints; the M3.2 audit identified 18, and `execution::terminate` \
+         graduated stub→implemented end-to-end (ADR-0008 A3 / ADR-0016 — now \
+         covered by execution_terminate_e2e.rs), leaving 17; got {}",
         stubs.len()
     );
 

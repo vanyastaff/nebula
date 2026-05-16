@@ -170,3 +170,294 @@ pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQ
 pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
     create_state_with_queue().await
 }
+
+// ── Orchestration-absent control queue (canon §13 step 6) ─────────────────────
+
+/// A control-queue repo that always fails on `enqueue` — used to simulate
+/// the "orchestration backend unavailable" scenario (canon §13 step 6).
+/// `StorageError::Internal` is the sentinel `cancel_execution` /
+/// `terminate_execution` map to `ApiError::ServiceUnavailable` → HTTP 503.
+pub(crate) struct AlwaysFailControlQueueRepo;
+
+#[async_trait::async_trait]
+impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
+    async fn enqueue(
+        &self,
+        _entry: &nebula_storage::repos::ControlQueueEntry,
+    ) -> Result<(), nebula_storage::StorageError> {
+        Err(nebula_storage::StorageError::Internal(
+            "control queue backend unavailable (simulated)".to_string(),
+        ))
+    }
+
+    async fn claim_pending(
+        &self,
+        _processor: &[u8],
+        _batch_size: u32,
+    ) -> Result<Vec<nebula_storage::repos::ControlQueueEntry>, nebula_storage::StorageError> {
+        Ok(vec![])
+    }
+
+    async fn mark_completed(
+        &self,
+        _id: &[u8],
+        _processor: &[u8],
+    ) -> Result<(), nebula_storage::StorageError> {
+        Ok(())
+    }
+
+    async fn mark_failed(
+        &self,
+        _id: &[u8],
+        _processor: &[u8],
+        _error: &str,
+    ) -> Result<(), nebula_storage::StorageError> {
+        Ok(())
+    }
+
+    async fn reclaim_stuck(
+        &self,
+        _reclaim_after: std::time::Duration,
+        _max_reclaim_count: u32,
+    ) -> Result<nebula_storage::repos::ReclaimOutcome, nebula_storage::StorageError> {
+        Ok(nebula_storage::repos::ReclaimOutcome::default())
+    }
+
+    async fn cleanup(
+        &self,
+        _retention: std::time::Duration,
+    ) -> Result<u64, nebula_storage::StorageError> {
+        Ok(0)
+    }
+}
+
+/// Create an `AppState` wired with the always-failing control queue repo.
+/// All other repos are fully functional in-memory implementations.
+pub(crate) async fn create_state_with_failing_queue() -> AppState {
+    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
+        Arc::new(AlwaysFailControlQueueRepo);
+    let api_config = ApiConfig::for_test();
+
+    AppState::new(
+        workflow_repo,
+        execution_repo,
+        control_queue_repo,
+        api_config.jwt_secret,
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+}
+
+// ── Engine seam harness (canon §13 step 5 / ADR-0008 A3 / ADR-0016) ──────────
+//
+// Shared real-engine-consumer wiring for the durable-control-plane seam
+// tests. The producer half (API enqueues `Cancel` / `Terminate`) is
+// asserted per-test; this harness owns the CONSUMER half: a long-running
+// cooperatively-cancellable node + the real `WorkflowEngine` +
+// `ControlConsumer` + `EngineControlDispatch` over the same in-memory
+// repos the API writes to.
+//
+// `knife.rs::knife_step5_engine_cancels_running_execution_end_to_end`
+// (the canon §13 seam) and
+// `execution_terminate_e2e.rs::terminate_engine_drives_running_execution_to_terminal_end_to_end`
+// both source the wiring here so they differ ONLY in the final HTTP call
+// (DELETE-cancel vs POST-terminate) and the command/terminal assertion.
+// The wiring (action key `"slow"`, the `ActionExecutor` closure,
+// `InProcessSandbox`, `ActionRuntime`, `EngineControlDispatch`,
+// `ControlConsumer` with a 10ms poll interval and the `b"knife-a3"`
+// processor id) is byte-behaviorally identical to the original inline
+// knife step-5 wiring — the move is mechanical, not a behavior change.
+
+pub(crate) mod engine_seam {
+    use std::{sync::Arc, time::Duration};
+
+    use nebula_api::AppState;
+    use nebula_core::action_key;
+    use nebula_engine::{
+        ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
+        EngineControlDispatch, InProcessSandbox, WorkflowEngine,
+    };
+    use nebula_workflow::{
+        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    };
+    use tokio::task::JoinHandle;
+    use tokio_util::sync::CancellationToken;
+
+    /// A cooperatively-cancellable `slow` action: it would otherwise sleep
+    /// 30s, but exits immediately when `ctx.cancellation()` is tripped.
+    /// Asserting an execution reaches a terminal state well inside the 30s
+    /// window proves a `Cancel` / `Terminate` signal reached the engine's
+    /// *live* frontier loop — not merely that the API CAS-flipped the row.
+    pub(crate) struct SlowAction {
+        pub(crate) started: Arc<tokio::sync::Notify>,
+    }
+
+    impl nebula_action::action::Action for SlowAction {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> &'static nebula_action::metadata::ActionMetadata {
+            static M: std::sync::OnceLock<nebula_action::metadata::ActionMetadata> =
+                std::sync::OnceLock::new();
+            M.get_or_init(|| {
+                nebula_action::metadata::ActionMetadata::new(
+                    nebula_core::action_key!("seam.slow.static"),
+                    "SlowAction",
+                    "static",
+                )
+            })
+        }
+        fn input_schema() -> &'static nebula_schema::ValidSchema {
+            static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
+            S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
+        }
+        fn output_schema() -> &'static nebula_schema::ValidSchema {
+            static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
+            S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
+        }
+        fn dependencies() -> &'static nebula_core::Dependencies {
+            static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
+            D.get_or_init(nebula_core::Dependencies::new)
+        }
+    }
+    impl nebula_action::stateless::StatelessAction for SlowAction {
+        async fn execute(
+            &self,
+            input: <Self as nebula_action::action::Action>::Input,
+            ctx: &(impl nebula_action::ActionContext + ?Sized),
+        ) -> Result<
+            nebula_action::result::ActionResult<<Self as nebula_action::action::Action>::Output>,
+            nebula_action::ActionError,
+        > {
+            self.started.notify_one();
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(30)) => {
+                    Ok(nebula_action::result::ActionResult::success(input))
+                }
+                () = ctx.cancellation().cancelled() => {
+                    Err(nebula_action::ActionError::Cancelled)
+                }
+            }
+        }
+    }
+
+    /// Persist a single-node workflow whose only node uses the `slow`
+    /// action, returning its id. Mirrors the workflow the inline knife
+    /// step-5 / terminate-e2e tests built by hand.
+    pub(crate) async fn persist_slow_workflow(state: &AppState) -> nebula_core::WorkflowId {
+        let workflow_id = nebula_core::WorkflowId::new();
+        let now = chrono::Utc::now();
+        let wf = WorkflowDefinition {
+            id: workflow_id,
+            name: "seam-slow".into(),
+            description: None,
+            version: Version::new(0, 1, 0),
+            nodes: vec![
+                NodeDefinition::new(nebula_core::node_key!("step"), "Step", "slow").unwrap(),
+            ],
+            connections: Vec::<Connection>::new(),
+            variables: std::collections::HashMap::new(),
+            config: WorkflowConfig::default(),
+            trigger: None,
+            tags: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            owner_id: None,
+            ui_metadata: None,
+            schema_version: 1,
+        };
+        state
+            .workflow_repo
+            .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
+            .await
+            .unwrap();
+        workflow_id
+    }
+
+    /// Handle to the spawned engine-consumer harness. Drop-safe: call
+    /// [`EngineSeam::shutdown`] at the end of the test so the spawned
+    /// consumer task does not leak across tests.
+    pub(crate) struct EngineSeam {
+        /// Notified the moment the `slow` node enters its `select {}` —
+        /// i.e. the consumer drained `Start` and the engine dispatched the
+        /// node so the frontier loop is live.
+        pub(crate) slow_started: Arc<tokio::sync::Notify>,
+        shutdown: CancellationToken,
+        consumer_handle: JoinHandle<()>,
+    }
+
+    impl EngineSeam {
+        /// Graceful shutdown so the spawned consumer task doesn't leak.
+        pub(crate) async fn shutdown(self) {
+            self.shutdown.cancel();
+            let _ = self.consumer_handle.await;
+        }
+    }
+
+    /// Build the real `WorkflowEngine` + `ControlConsumer` +
+    /// `EngineControlDispatch` over the shared in-memory repos and spawn
+    /// the consumer so both `Start` and the later `Cancel` / `Terminate`
+    /// are drained continuously.
+    ///
+    /// Byte-behaviorally identical to the original inline knife step-5
+    /// wiring: same action key (`"slow"`), same `ActionExecutor` closure,
+    /// `InProcessSandbox`, `ActionRuntime`, 10ms poll interval, and the
+    /// `b"knife-a3"` processor id.
+    pub(crate) fn spawn_engine_consumer(state: &AppState) -> EngineSeam {
+        let slow_started = Arc::new(tokio::sync::Notify::new());
+        let registry = Arc::new(ActionRegistry::new());
+        registry.legacy_register_stateless_with_metadata(
+            nebula_action::metadata::ActionMetadata::new(
+                action_key!("slow"),
+                "slow",
+                "engine-seam cancellable handler",
+            ),
+            SlowAction {
+                started: Arc::clone(&slow_started),
+            },
+        );
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = nebula_metrics::MetricsRegistry::new();
+        let runtime = Arc::new(
+            ActionRuntime::try_new(
+                registry,
+                sandbox,
+                DataPassingPolicy::default(),
+                metrics.clone(),
+            )
+            .unwrap(),
+        );
+
+        let engine = Arc::new(
+            WorkflowEngine::new(runtime, metrics)
+                .unwrap()
+                .with_execution_repo(Arc::clone(&state.execution_repo))
+                .with_workflow_repo(Arc::clone(&state.workflow_repo)),
+        );
+
+        let dispatch = Arc::new(EngineControlDispatch::new(
+            Arc::clone(&engine),
+            Arc::clone(&state.execution_repo),
+        ));
+        let consumer = ControlConsumer::new(
+            Arc::clone(&state.control_queue_repo),
+            dispatch,
+            b"knife-a3".to_vec(),
+        )
+        .with_poll_interval(Duration::from_millis(10));
+        let shutdown = CancellationToken::new();
+        let consumer_handle = consumer.spawn(shutdown.clone());
+
+        EngineSeam {
+            slow_started,
+            shutdown,
+            consumer_handle,
+        }
+    }
+}
