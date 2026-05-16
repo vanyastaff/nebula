@@ -387,7 +387,7 @@ chk "B denies test-weaken+impl" 2 "$(bdeny "$EW")"
 C1_SID="b-crit1"; C1_P="$(turn_state_path "$C1_SID" "$PWD")"
 mkdir -p "$(dirname "$C1_P")"; printf '{"impl_files_edited":[],"gate_green":[]}' >"$C1_P"
 bdeny "$(W 'crates/zzz/src/m.rs' 'pub fn f()->u8{0}\n#[cfg(test)]\nmod t{}' "$C1_SID")" >/dev/null
-chk "B records src w/ inline test (C-1)" 'true' "$(jq -e '.impl_files_edited|index("crates/zzz/src/m.rs")|type=="number"' "$C1_P" 2>/dev/null && echo true || echo false)"
+chk "B records src w/ inline test (C-1)" 'true' "$(jq -r '.impl_files_edited|index("crates/zzz/src/m.rs")|type=="number"' "$C1_P" 2>/dev/null)"
 # D11/IMPORTANT-2: two escapes, one justification -> deny
 chk "B per-occurrence justified (I-2)" 2 "$(bdeny "$(W 'crates/engine/src/q.rs' '// guard-justified: a\n#[allow(x)]\n#[allow(y)]\nfn f(){}')")"
 # D11/CRIT-2: Write overwrite of an EXISTING test file dropping asserts + impl edited -> deny
