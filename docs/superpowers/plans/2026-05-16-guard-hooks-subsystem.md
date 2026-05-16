@@ -451,7 +451,7 @@ fi
 # path OR a lib file with inline #[cfg(test)]. Only when impl changed this turn.
 impl_n="$(printf '%s' "$st" | jq -r '.impl_files_edited | length')"
 if [ "${impl_n:-0}" -gt 0 ]; then
-  acount() { printf '%s' "$1" | grep -oE '\bassert[A-Za-z_]*!|#\[(test|should_panic)\]' | wc -l | tr -d ' '; }
+  assert_count() { printf '%s' "$1" | grep -oE '\bassert[A-Za-z_]*!|#\[(test|should_panic)\]' | wc -l | tr -d ' '; }
   is_testish=0
   [[ "$nf" =~ /(tests|benches)/ ]] && is_testish=1
   printf '%s' "$added" | grep -qE '#\[(cfg\(test\)|test)\]' && is_testish=1
@@ -462,7 +462,7 @@ if [ "${impl_n:-0}" -gt 0 ]; then
       Write) o="$( [ -f "$file" ] && cat -- "$file" || printf '' )"; n="$added";;
     esac
     weak=0
-    [ "$(acount "$o")" -gt "$(acount "$n")" ] && weak=1
+    [ "$(assert_count "$o")" -gt "$(assert_count "$n")" ] && weak=1
     printf '%s' "$n" | grep -qE 'assert!\([[:space:]]*(true|1[[:space:]]*==[[:space:]]*1)[[:space:]]*\)|#\[ignore\]' && weak=1
     [ "$weak" -eq 1 ] && deny "Weakening a test (fewer asserts/#[test], assert!(true)/tautology/#[ignore]) while impl changed this turn is blocked. Fix the logic, not the test."
   fi
