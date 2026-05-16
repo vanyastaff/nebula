@@ -55,10 +55,11 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
         return;
     }
 
-    // SECURITY (defence-in-depth, not advisory): the root-rule evaluation path
-    // (`run_root_rules`) now builds its `PredicateContext` via the scrubbed
-    // `root_predicate_context_for`, so a value-comparing predicate cannot read
-    // a `Field::Secret` plaintext at runtime. This build-time lint is the
+    // SECURITY (defence-in-depth, not advisory): root-rule evaluation (inlined
+    // in `ValidSchema::validate`) builds its `PredicateContext` via the
+    // scrubbed root-predicate-context builder, so a value-comparing predicate
+    // cannot read a `Field::Secret` plaintext at runtime. This build-time lint
+    // is the
     // additive outer boundary: it rejects such a predicate at `build()` so the
     // schema is refused before it can ever be evaluated, independent of the
     // runtime scrub. Rejecting it here is a security control, so the

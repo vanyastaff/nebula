@@ -1,22 +1,12 @@
 error[E0639]: cannot create non-exhaustive struct using struct expression
-  --> tests/compile_fail/plan_payload_not_separable.rs:7:13
+  --> tests/compile_fail/plan_payload_not_separable.rs:11:13
    |
- 7 |       let _ = nebula_validator::policy::FieldPlan {
+11 |       let _ = nebula_validator::policy::FieldPlan {
    |  _____________^
- 8 | |         path: todo!(),
- 9 | |         presence: todo!(),
-10 | |         requiredness: todo!(),
-11 | |         directive: todo!(),
-12 | |         payload: todo!(),
-13 | |     };
+12 | |         path: todo!(),
+13 | |         presence: todo!(),
+14 | |         requiredness: todo!(),
+15 | |         directive: todo!(),
+16 | |         payload: todo!(),
+17 | |     };
    | |_____^
-
-warning: unreachable expression
- --> tests/compile_fail/plan_payload_not_separable.rs:9:19
-  |
-8 |         path: todo!(),
-  |               ------- any code following this expression is unreachable
-9 |         presence: todo!(),
-  |                   ^^^^^^^ unreachable expression
-  |
-  = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default

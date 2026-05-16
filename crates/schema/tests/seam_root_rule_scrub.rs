@@ -454,3 +454,46 @@ fn unvalidated_blob_undeclared_sibling_cannot_smuggle_secret_via_container_path(
         "redacted Debug must never carry the plaintext"
     );
 }
+
+// A Mode submission may OMIT `mode` and rely on `default_variant`
+// (`validate_literal_value` resolves it via `.or(default_variant)`). For a
+// secret-bearing mode (the scrub branch), the default-variant payload must
+// still reach root predicates — dropping it because `mode` is absent would
+// fail a legal root guard open.
+#[test]
+fn mode_default_variant_payload_survives_scrub_when_mode_omitted() {
+    const SECRET: &str = "s3cr3t-oauth-client";
+    let fields = vec![Field::from(
+        Field::mode(field_key!("auth"))
+            .default_variant("oauth")
+            .variant(
+                "oauth",
+                "OAuth",
+                Field::object(field_key!("o"))
+                    .add(Field::string(field_key!("client_id")))
+                    .add(Field::secret(field_key!("client_secret"))),
+            ),
+    )];
+    // `mode` OMITTED — `default_variant = "oauth"` applies.
+    let mut values = FieldValues::new();
+    values.set(
+        field_key!("auth"),
+        FieldValue::Literal(json!({ "value": { "client_id": "abc", "client_secret": SECRET } })),
+    );
+    let ctx = root_predicate_context_for(&fields, &values);
+
+    assert_eq!(
+        ctx.get(&ValidatorPath::parse("/auth/value/client_id").unwrap()),
+        Some(&json!("abc")),
+        "default-variant payload must survive the scrub when `mode` is omitted"
+    );
+    assert!(
+        ctx.get(&ValidatorPath::parse("/auth/value/client_secret").unwrap())
+            .is_none(),
+        "the secret inside the default-variant payload must be scrubbed"
+    );
+    assert!(
+        !format!("{ctx:?}").contains(SECRET),
+        "redacted Debug must never carry the plaintext"
+    );
+}

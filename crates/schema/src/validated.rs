@@ -367,7 +367,7 @@ impl ValidSchema {
         // non-secret nested predicates still resolve (no fail-open).
         if !self.0.root_rules.is_empty() {
             let json = values.to_json();
-            let pred_ctx = crate::context::root_predicate_context_for(&self.0.fields, values);
+            let pred_ctx = crate::context::root_predicate_context_from_json(&self.0.fields, &json);
             if let Err(errs) = nebula_validator::validate_rules_with_ctx(
                 &json,
                 &self.0.root_rules,
@@ -1155,11 +1155,12 @@ fn gate_and_validate_level(
 
     // Dumb dispatcher: act on `plan.directive` only. Each plan carries the
     // `LevelEntry` it was computed for as its payload, so a plan can never be
-    // paired with the wrong field; `FieldDirective` being cross-crate
-    // `#[non_exhaustive]` keeps any new variant fail-closed (the wildcard arm
-    // does not validate). Every audit line records only the field PATH and the
-    // resolved policy enums — never the value, `entry.raw`, or the predicate
-    // context — so secret-shaped values stay out of logs.
+    // paired with the wrong field; `FieldDirective` is cross-crate
+    // `#[non_exhaustive]`, so an unknown future variant takes the wildcard arm,
+    // which fails closed by still running structural validation (validate-more
+    // — never silently skip a present value). Every audit line records only the
+    // field PATH and the resolved policy enums — never the value, `entry.raw`,
+    // or the predicate context — so secret-shaped values stay out of logs.
     for plan in &resolution.plans {
         let entry = plan.payload;
         match plan.directive {

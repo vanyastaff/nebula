@@ -30,6 +30,10 @@ use crate::{
 ///
 /// Only `FieldValue::Literal` leaves are addressable by predicates;
 /// expression / list / mode / secret-sentinel subtrees are non-addressable.
+///
+/// Reachable across the crate boundary only for seam tests; not a stable
+/// public API (`nebula-schema` is pre-1.0 and this is an internal seam).
+#[doc(hidden)]
 #[must_use]
 pub fn predicate_context_for(fields: &[Field], values: &FieldValues) -> PredicateContext {
     let mut pairs: Vec<(FieldPath, serde_json::Value)> = Vec::new();
@@ -100,14 +104,28 @@ fn collect_non_secret(
 /// blob keys and are dropped, so a sibling cannot smuggle secret plaintext
 /// onto the defined container path. The build-time `secret.predicate_on_value`
 /// lint remains the additive outer boundary.
+///
+/// Reachable across the crate boundary only for seam tests; not a stable
+/// public API (`nebula-schema` is pre-1.0 and this is an internal seam).
+#[doc(hidden)]
 #[must_use]
 pub fn root_predicate_context_for(fields: &[Field], values: &FieldValues) -> PredicateContext {
-    let json = values.to_json();
-    let pruned = match json.as_object() {
-        Some(map) => serde_json::Value::Object(strip_secrets_scope(fields, map, true)),
-        None => json,
-    };
-    PredicateContext::from_json(&pruned)
+    root_predicate_context_from_json(fields, &values.to_json())
+}
+
+/// [`root_predicate_context_for`] over an already-materialized JSON value, so a
+/// caller that has built `values.to_json()` does not pay for it twice.
+#[must_use]
+pub(crate) fn root_predicate_context_from_json(
+    fields: &[Field],
+    json: &serde_json::Value,
+) -> PredicateContext {
+    match json.as_object() {
+        Some(map) => PredicateContext::from_json(&serde_json::Value::Object(strip_secrets_scope(
+            fields, map, true,
+        ))),
+        None => PredicateContext::from_json(json),
+    }
 }
 
 /// True when `field`'s schema subtree contains a `Field::Secret` at any depth.
@@ -164,15 +182,26 @@ fn strip_secret_value(field: &Field, value: &serde_json::Value) -> Option<serde_
             Some(serde_json::Value::Array(stripped))
         },
         (Field::Mode(mode), serde_json::Value::Object(env)) => {
-            // Keep the `mode` selector (a string, never a secret); strip the
-            // `value` payload against the selected variant's schema.
+            // Keep the `mode` selector (a string, never a secret).
             let mut out = serde_json::Map::new();
             if let Some(sel) = env.get("mode") {
                 out.insert("mode".to_owned(), sel.clone());
             }
-            if let (Some(serde_json::Value::String(mk)), Some(payload)) =
-                (env.get("mode"), env.get("value"))
-                && let Some(var) = mode.variants.iter().find(|v| &v.key == mk)
+            // Resolve the active variant exactly as `validate_literal_value`
+            // does: an explicit string `mode`, otherwise `default_variant`
+            // when `mode` is omitted (a non-string `mode` is an invalid input
+            // that fails structural validation — no payload selector then).
+            // The payload is stripped against that variant's schema, so a
+            // legal root predicate on a default-variant (mode-omitted)
+            // submission stays consistent while secrets remain scrubbed.
+            let selected: Option<&str> = match env.get("mode") {
+                Some(serde_json::Value::String(mk)) => Some(mk.as_str()),
+                Some(_) => None,
+                None => mode.default_variant.as_deref(),
+            };
+            if let Some(payload) = env.get("value")
+                && let Some(key) = selected
+                && let Some(var) = mode.variants.iter().find(|v| v.key.as_str() == key)
                 && let Some(stripped) = strip_secret_value(var.field.as_ref(), payload)
             {
                 out.insert("value".to_owned(), stripped);
@@ -206,9 +235,13 @@ fn strip_secrets_scope(
     json: &serde_json::Map<String, serde_json::Value>,
     keep_undeclared: bool,
 ) -> serde_json::Map<String, serde_json::Value> {
+    // One lookup per scope instead of a linear scan per JSON key
+    // (`strip_secrets_scope` runs at validate-time for every root-rule eval).
+    let by_key: std::collections::HashMap<&str, &Field> =
+        schema.iter().map(|f| (f.key().as_str(), f)).collect();
     let mut out = serde_json::Map::new();
     for (key, value) in json {
-        match schema.iter().find(|f| f.key().as_str() == key.as_str()) {
+        match by_key.get(key.as_str()) {
             None => {
                 if keep_undeclared {
                     out.insert(key.clone(), value.clone());
