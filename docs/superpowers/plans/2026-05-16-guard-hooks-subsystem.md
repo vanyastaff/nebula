@@ -295,6 +295,8 @@ rr 'cargo clippy -p nebula-aaa -p nebula-bbb -- -D warnings'
 chk "A2 multi-p takes first (I-2)" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
 rr 'cargo clippy -p nebula-core -- -D warnings' 1 false
 chk "A2 rejects exit!=0" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
+rr 'cargo clippy -p nebula-zzz -- -D warnings\ntrue'
+chk "A2 rejects newline-joined (C-NL)" '["aaa","engine"]' "$(jq -c '.gate_green' "$R_P")"
 rr 'cargo clippy -p nebula-core -- -D warnings'
 chk "A2 records clean clippy" '["aaa","core","engine"]' "$(jq -c '.gate_green' "$R_P")"
 ```
@@ -328,7 +330,7 @@ esac
 # recognized => not recorded => C blocks (fail-safe; agent runs gate plainly).
 # Closes echo/||true/2>/dev/null/--cap-lints/RUSTFLAGS/multi-p/grep-of-docs.
 case "$cmd" in
-  *'||'*|*'&&'*|*';'*|*'|'*|*'`'*|*'$('*|*'>'*|*'<'*|*'#'*) allow ;;
+  *'||'*|*'&&'*|*';'*|*'|'*|*'`'*|*'$('*|*'>'*|*'<'*|*'#'*|*$'\n'*|*$'\r'*|*$'\t'*) allow ;;
   *' -A'*|*'--allow'*|*'--cap-lints'*|*'RUSTFLAGS='*) allow ;;
 esac
 core="$(printf '%s' "$cmd" | sed -E 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//')"
