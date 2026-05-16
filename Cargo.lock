@@ -3975,6 +3975,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-tenancy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nebula-core",
+ "nebula-storage-port",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-validator"
 version = "0.1.0"
 dependencies = [

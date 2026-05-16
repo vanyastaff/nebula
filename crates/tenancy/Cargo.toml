@@ -1,0 +1,28 @@
+[package]
+name = "nebula-tenancy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Multi-tenancy security boundary (ScopeResolver + scope-enforcing decorators) for Nebula"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-core = { path = "../core" }
+nebula-storage-port = { path = "../storage-port" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
