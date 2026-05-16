@@ -16,7 +16,7 @@
 //!
 //! # Module placement
 //!
-//! Lives under `services::webhook` (not `middleware/`) because it is
+//! Lives under `transport::webhook` (not `middleware/`) because it is
 //! consumed exclusively by [`super::WebhookTransport`] — no axum
 //! `Layer`/`Service` plumbing exists. The previous `middleware/`
 //! placement was a misnomer; M3.3 / ADR-0049 phase F1 collapses the

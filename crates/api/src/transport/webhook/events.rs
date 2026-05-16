@@ -402,7 +402,7 @@ mod tests {
     use nebula_engine::ActionRegistry;
     use nebula_storage::rows::WebhookActivationSpec;
 
-    use crate::services::webhook::{WebhookTransport, WebhookTransportConfig};
+    use crate::transport::webhook::{WebhookTransport, WebhookTransportConfig};
 
     struct StaticSecrets {
         map: HashMap<String, Vec<u8>>,

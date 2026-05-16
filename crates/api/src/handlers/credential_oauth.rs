@@ -19,13 +19,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::{
     error::{ApiError, ApiResult},
     middleware::auth::AuthenticatedUser,
-    services::oauth::{
+    state::AppState,
+    transport::oauth::{
         flow::{
             AuthorizationUriRequest, TokenExchangeRequest, build_authorization_uri, exchange_code,
         },
         state::{OAuthStateSigner, build_signed_state},
     },
-    state::AppState,
 };
 
 /// OAuth controller routes mounted under `/api/v1`.

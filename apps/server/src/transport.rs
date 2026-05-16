@@ -115,13 +115,13 @@ impl ServerTransport for WebhookIngressTransport {
                 .map_err(|source| TransportInitError::InvalidWebhookBaseUrl { source })?
         };
 
-        let webhook_config = nebula_api::services::webhook::WebhookTransportConfig {
+        let webhook_config = nebula_api::transport::webhook::WebhookTransportConfig {
             base_url,
-            ..nebula_api::services::webhook::WebhookTransportConfig::default()
+            ..nebula_api::transport::webhook::WebhookTransportConfig::default()
         };
 
         Ok(
-            state.with_webhook_transport(nebula_api::services::webhook::WebhookTransport::new(
+            state.with_webhook_transport(nebula_api::transport::webhook::WebhookTransport::new(
                 webhook_config,
             )),
         )

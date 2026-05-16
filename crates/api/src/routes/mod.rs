@@ -24,7 +24,7 @@ pub mod me;
 pub mod metrics;
 pub mod org;
 // `pub mod webhook;` — removed by M3.3 task C3. The slug-routed
-// surface is mounted by `services::webhook::WebhookTransport::router`.
+// surface is mounted by `transport::webhook::WebhookTransport::router`.
 pub mod workspace;
 
 pub mod credential;
@@ -65,7 +65,7 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
 
     // Webhook routes (M3.3 / ADR-0049): mounted by `transport.router()`
     // in `app::build_app` directly. The legacy `routes::webhook`
-    // module has been absorbed into `services::webhook::transport`
+    // module has been absorbed into `transport::webhook::transport`
     // — slug and programmatic surfaces share `dispatch_inner` there.
 
     // User routes — auth required, no tenant scope.

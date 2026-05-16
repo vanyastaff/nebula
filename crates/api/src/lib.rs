@@ -15,7 +15,7 @@
 //!   `SlugConflict`, `CsrfRejected`, `PaginationInvalid`, `RateLimited`, `TenantMismatch` among
 //!   others.
 //! - `models::pagination` — cursor-based pagination: `CursorParams`, `PaginatedResponse<T>`.
-//! - `services::webhook` — converged inbound webhook transport
+//! - `transport::webhook` — converged inbound webhook transport
 //!   (programmatic + slug-routed surfaces, M3.3 / ADR-0049):
 //!   `WebhookTransport`, `WebhookKey`, `WebhookRateLimiter`,
 //!   `EndpointProviderImpl`, storage bootstrap, lifecycle subscriber.
@@ -27,7 +27,7 @@
 //! - `routes` — domain-scoped route builders: `auth`, `me`, `org`, `workspace`, `workflow`,
 //!   `execution`, `credential`, `catalog`, `openapi`. All tenant-scoped routes nest
 //!   under `/api/v1/orgs/{org}/workspaces/{ws}/…`. Slug-routed webhooks
-//!   are mounted directly by the transport (see [`services::webhook`]).
+//!   are mounted directly by the transport (see [`transport::webhook`]).
 //!   Internal ops endpoints live under [`routes::internal`].
 //!
 //! ## Authentication planes (ADR-0033)
@@ -39,7 +39,7 @@
 //!   user-facing OAuth sign-in flow plus the cookie / JWT / `X-API-Key` middleware that gates the
 //!   Nebula API itself.
 //! - **`credential`** — **Plane B infrastructure**: OAuth2 flow helpers (PKCE, signed state, token
-//!   exchange) and input validators for integration credentials. Located under [`services::oauth`]
+//!   exchange) and input validators for integration credentials. Located under [`transport::oauth`]
 //!   with validators in [`extractors::credential`]. HTTP handlers live in [`handlers::credential`];
 //!   route wiring in [`routes::workspace`] and [`routes::credential`]. All credential routes are
 //!   **protected by Plane A** middleware.
@@ -68,10 +68,10 @@ pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod routes;
-pub mod services;
 pub mod state;
 pub mod telemetry_init;
 mod trace_capture;
+pub mod transport;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};

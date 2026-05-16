@@ -442,7 +442,7 @@ mod tests {
         WebhookActivationCoords, WebhookActivationRecord, WebhookActivationSpec,
     };
 
-    use crate::services::webhook::{WebhookTransport, WebhookTransportConfig};
+    use crate::transport::webhook::{WebhookTransport, WebhookTransportConfig};
 
     struct StaticSecretResolver {
         map: HashMap<String, Vec<u8>>,

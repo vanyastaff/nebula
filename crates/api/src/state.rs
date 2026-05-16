@@ -20,7 +20,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     auth::AuthBackend, config::JwtSecret, error::ApiError, middleware::IdempotencyStore,
-    services::webhook::WebhookTransport,
+    transport::webhook::WebhookTransport,
 };
 
 // ── Port traits ──────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ pub struct AppState {
     /// Optional webhook-activation repository (M3.3 / ADR-0049).
     ///
     /// When `Some`, the composition root invokes
-    /// [`crate::services::webhook::bootstrap_webhook_activations`] before
+    /// [`crate::transport::webhook::bootstrap_webhook_activations`] before
     /// `build_app` to populate the transport's slug map. The same repo
     /// is consulted by the admin reload endpoint
     /// (`POST /internal/v1/webhooks/reload`).
@@ -159,19 +159,19 @@ pub struct AppState {
     /// Optional lifecycle event bus (M3.3 / ADR-0049 — E2).
     ///
     /// Producers (storage CRUD callsites) emit
-    /// [`crate::services::webhook::TriggerLifecycleEvent`] on this
+    /// [`crate::transport::webhook::TriggerLifecycleEvent`] on this
     /// bus; the transport-side subscriber reapplies the change
     /// without a full reload. M3.3 ships the consumer; producer
     /// wiring is deferred to a follow-up.
-    pub trigger_lifecycle_bus: Option<crate::services::webhook::TriggerLifecycleBus>,
+    pub trigger_lifecycle_bus: Option<crate::transport::webhook::TriggerLifecycleBus>,
 
     /// Webhook credential resolver (M3.3 / ADR-0049 — E1+E3).
     ///
     /// Required for storage-driven slug bootstrap and admin reload.
-    pub webhook_secret_resolver: Option<Arc<dyn crate::services::webhook::WebhookSecretResolver>>,
+    pub webhook_secret_resolver: Option<Arc<dyn crate::transport::webhook::WebhookSecretResolver>>,
 
     /// Webhook ctx-template factory (M3.3 / ADR-0049 — E1+E3).
-    pub webhook_ctx_factory: Option<Arc<dyn crate::services::webhook::WebhookContextFactory>>,
+    pub webhook_ctx_factory: Option<Arc<dyn crate::transport::webhook::WebhookContextFactory>>,
 
     /// Internal-routes shared token (M3.3 / ADR-0049 — E3).
     ///
@@ -312,12 +312,12 @@ impl AppState {
         self
     }
 
-    /// Attach a [`crate::services::webhook::TriggerLifecycleBus`]
+    /// Attach a [`crate::transport::webhook::TriggerLifecycleBus`]
     /// for slug-routed activation lifecycle events (M3.3 / ADR-0049).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_trigger_lifecycle_bus(
         mut self,
-        bus: crate::services::webhook::TriggerLifecycleBus,
+        bus: crate::transport::webhook::TriggerLifecycleBus,
     ) -> Self {
         self.trigger_lifecycle_bus = Some(bus);
         self
@@ -327,7 +327,7 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_secret_resolver(
         mut self,
-        resolver: Arc<dyn crate::services::webhook::WebhookSecretResolver>,
+        resolver: Arc<dyn crate::transport::webhook::WebhookSecretResolver>,
     ) -> Self {
         self.webhook_secret_resolver = Some(resolver);
         self
@@ -337,7 +337,7 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_ctx_factory(
         mut self,
-        factory: Arc<dyn crate::services::webhook::WebhookContextFactory>,
+        factory: Arc<dyn crate::transport::webhook::WebhookContextFactory>,
     ) -> Self {
         self.webhook_ctx_factory = Some(factory);
         self

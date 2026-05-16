@@ -2,8 +2,8 @@
 //! type discovery, and OAuth2 transport.
 //!
 //! Thin HTTP handlers that validate inputs, delegate to the credential
-//! service layer ([`crate::services::credential`]) or OAuth infrastructure
-//! ([`crate::services::oauth`]), and return responses.
+//! service layer ([`crate::transport::credential`]) or OAuth infrastructure
+//! ([`crate::transport::oauth`]), and return responses.
 
 use axum::{
     Extension, Form, Json,
@@ -65,7 +65,7 @@ pub async fn list_credentials(
     Path((org, ws)): Path<(String, String)>,
     Query(query): Query<ListCredentialsQuery>,
 ) -> ApiResult<Json<ListCredentialsResponse>> {
-    let response = crate::services::credential::list_credentials(&state, &org, &ws, query).await?;
+    let response = crate::transport::credential::list_credentials(&state, &org, &ws, query).await?;
     Ok(Json(response))
 }
 
@@ -102,7 +102,7 @@ pub async fn create_credential(
     let _name = validate_credential_name(&body.name)?;
     validate_data_is_object(&body.data)?;
 
-    let response = crate::services::credential::create_credential(&state, &org, &ws, body).await?;
+    let response = crate::transport::credential::create_credential(&state, &org, &ws, body).await?;
     Ok(Json(response))
 }
 
@@ -135,7 +135,7 @@ pub async fn get_credential(
     // Validate path parameter.
     validate_credential_id(&cred)?;
 
-    let response = crate::services::credential::get_credential(&state, &org, &ws, &cred).await?;
+    let response = crate::transport::credential::get_credential(&state, &org, &ws, &cred).await?;
     Ok(Json(response))
 }
 
@@ -195,7 +195,7 @@ pub async fn update_credential(
     }
 
     let response =
-        crate::services::credential::update_credential(&state, &org, &ws, &cred, body).await?;
+        crate::transport::credential::update_credential(&state, &org, &ws, &cred, body).await?;
     Ok(Json(response))
 }
 
@@ -229,7 +229,7 @@ pub async fn delete_credential(
     // Validate path parameter.
     validate_credential_id(&cred)?;
 
-    crate::services::credential::delete_credential(&state, &org, &ws, &cred).await?;
+    crate::transport::credential::delete_credential(&state, &org, &ws, &cred).await?;
     Ok(Json(AckResponse::ok()))
 }
 
@@ -265,7 +265,7 @@ pub async fn test_credential(
 ) -> ApiResult<Json<TestCredentialResponse>> {
     validate_credential_id(&cred)?;
 
-    let response = crate::services::credential::test_credential(&state, &org, &ws, &cred).await?;
+    let response = crate::transport::credential::test_credential(&state, &org, &ws, &cred).await?;
     Ok(Json(response))
 }
 
@@ -300,7 +300,7 @@ pub async fn refresh_credential(
     validate_credential_id(&cred)?;
 
     let response =
-        crate::services::credential::refresh_credential(&state, &org, &ws, &cred).await?;
+        crate::transport::credential::refresh_credential(&state, &org, &ws, &cred).await?;
     Ok(Json(response))
 }
 
@@ -335,7 +335,8 @@ pub async fn revoke_credential(
 ) -> ApiResult<Json<RevokeCredentialResponse>> {
     validate_credential_id(&cred)?;
 
-    let response = crate::services::credential::revoke_credential(&state, &org, &ws, &cred).await?;
+    let response =
+        crate::transport::credential::revoke_credential(&state, &org, &ws, &cred).await?;
     Ok(Json(response))
 }
 
@@ -375,7 +376,7 @@ pub async fn resolve_credential(
     validate_data_is_object(&request.data)?;
 
     let response =
-        crate::services::credential::resolve_credential(&state, &org, &ws, request).await?;
+        crate::transport::credential::resolve_credential(&state, &org, &ws, request).await?;
     Ok(Json(response))
 }
 
@@ -417,7 +418,7 @@ pub async fn continue_resolve_credential(
     }
 
     let response =
-        crate::services::credential::continue_resolve(&state, &org, &ws, request).await?;
+        crate::transport::credential::continue_resolve(&state, &org, &ws, request).await?;
     Ok(Json(response))
 }
 
@@ -441,7 +442,7 @@ pub async fn continue_resolve_credential(
 pub async fn list_credential_types(
     State(state): State<AppState>,
 ) -> ApiResult<Json<ListCredentialTypesResponse>> {
-    let response = crate::services::credential::list_credential_types(&state).await?;
+    let response = crate::transport::credential::list_credential_types(&state).await?;
     Ok(Json(response))
 }
 
@@ -471,7 +472,7 @@ pub async fn get_credential_type(
     // ── Input validation ────────────────────────────────────────────
     validate_credential_key(&key)?;
 
-    let response = crate::services::credential::get_credential_type(&state, &key).await?;
+    let response = crate::transport::credential::get_credential_type(&state, &key).await?;
     Ok(Json(response))
 }
 
@@ -500,7 +501,7 @@ pub async fn get_oauth2_authorize_url(
     path: Path<String>,
     state: State<AppState>,
     user: Extension<AuthenticatedUser>,
-    query: Query<crate::services::oauth::flow::AuthorizationUriRequest>,
+    query: Query<crate::transport::oauth::flow::AuthorizationUriRequest>,
 ) -> ApiResult<Json<AuthorizationUriResponse>> {
     oauth_controller::get_oauth2_authorize_url(path, state, user, query).await
 }

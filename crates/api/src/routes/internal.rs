@@ -10,8 +10,8 @@
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use serde::Serialize;
 
-use crate::services::webhook::collect_webhook_activations;
 use crate::state::AppState;
+use crate::transport::webhook::collect_webhook_activations;
 
 /// Body returned by `POST /internal/v1/webhooks/reload`.
 #[derive(Debug, Serialize)]
