@@ -1,20 +1,16 @@
-# Guard Hooks Subsystem Implementation Plan
+# Guard Hooks Subsystem Implementation Plan (bash + jq — D9)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Add harness-enforced, evasion-hardened guard hooks to `.claude/` so the agent cannot weaken tests, suppress lints, bypass `lefthook`, or claim "done" without a verified gate.
+**Goal:** Harness-enforced, evasion-resistant guard hooks (bash + jq) so the agent cannot weaken tests, suppress lints, bypass lefthook, or claim "done" without a verified gate.
 
-**Architecture:** Six Node.js `.mjs` hooks wired in committed `.claude/settings.json` (args[] exec form), sharing a turn-state file under the git common-dir. `PreToolUse/Bash` denies bypass commands; `PreToolUse/Edit` denies cheat/costyl symptoms; `PostToolUse/Bash` records green gates; `Stop` blocks completion when impl changed without a recorded green gate; `UserPromptSubmit` resets turn-state; `PostToolUse/Edit` formats the touched file. Each hook fails open on internal error and is covered by `node --test`.
+**Architecture:** Six POSIX bash hooks under `scripts/guard/` sharing `_lib.sh`, wired in committed `.claude/settings.json` (`command`-type). Blocking = `exit 2` + stderr. `jq` parses stdin. Hooks fail **open** on internal error EXCEPT `bash-deny.sh` (hook A) which fails **closed**: any command it cannot confidently normalize (`$(`, backticks, `${`, `;`, newline, unbalanced quotes, no resolvable argv0) ⇒ **deny**. Conservative-and-fail-closed beats a clever tokenizer that can be evaded.
 
-**Tech Stack:** Node.js 22 (built-in `node --test`, ESM `.mjs`), Claude Code hooks (`permissionDecision`/exit-2 contracts), git, Taskfile.
+**Tech Stack:** bash 5 (git-bash on Windows — already required by lefthook), jq 1.8, git, Taskfile. No Node, no build step.
 
-**Plan series (this is Plan 1 of 4 — spec `docs/superpowers/specs/2026-05-16-agent-discipline-and-curation-design.md` §10):**
-1. **Guard Hooks Subsystem** (this plan) — A0/A/A2/B/C/D + tests + wiring. Self-contained; ships `task hooks:test`.
-2. D8 doc-canon inversion (CLAUDE.md canonical, AGENTS.md pointer, `.cursor`/`.github` cross-refs).
-3. Skill curation G + subagent curation H (joint).
-4. `lefthook.yml` commit-granularity (F) + `nebula-pitfalls` symptom skill (E).
+**Plan series (Plan 1 of 4 — spec `docs/superpowers/specs/2026-05-16-agent-discipline-and-curation-design.md`, decision D9):** 1=this; 2=D8 doc-canon inversion; 3=skill+subagent curation (G/H); 4=lefthook granularity (F)+`nebula-pitfalls` (E).
 
-This plan does **not** depend on Plans 2–4. The §9 "Enforced Discipline" doc section is added to `CLAUDE.md` here as a plain file edit; Plan 2 restructures canon around it.
+**Supersedes the Node `.mjs` draft.** Task 1 removes the obsolete `.claude/hooks/*.mjs` (commits `53707567`, `f275b4da`) and replaces them with `scripts/guard/`.
 
 ---
 
@@ -22,782 +18,523 @@ This plan does **not** depend on Plans 2–4. The §9 "Enforced Discipline" doc 
 
 | File | Responsibility |
 |------|----------------|
-| `.claude/hooks/guard-lib.mjs` | Shared: stdin read, Bash tokenizer + evasion-strip, turn-state path/load/save, deny helpers, rust-file classification |
-| `.claude/hooks/nebula-guard-turn-reset.mjs` | A0 — `UserPromptSubmit`: reset turn-state |
-| `.claude/hooks/nebula-guard-bash.mjs` | A — `PreToolUse/Bash`: deny `--no-verify`, clippy `-A`, `cargo fmt --all`, force-push |
-| `.claude/hooks/nebula-guard-record.mjs` | A2 — `PostToolUse/Bash`: record green clippy+nextest per crate |
-| `.claude/hooks/nebula-guard-edit.mjs` | B — `PreToolUse/Edit\|Write\|MultiEdit`: deny cheat/costyl symptoms + test-weakening |
-| `.claude/hooks/nebula-guard-stop.mjs` | C — `Stop`: block done without recorded green gate |
-| `.claude/hooks/nebula-guard-fmt.mjs` | D — `PostToolUse/Edit\|Write\|MultiEdit`: format touched file |
-| `.claude/hooks/__tests__/*.test.mjs` | `node --test` deny-bad / allow-good per hook |
-| `.claude/settings.json` | Committed wiring (args[] form) + `$schema` + curated permissions |
-| `Taskfile.yml` | `task hooks:test` target |
-| `CLAUDE.md` | "Enforced Discipline" section (rule → guard map) |
+| `scripts/guard/_lib.sh` | Shared: stdin read, jq extract, fail-closed `normalize_argv0`, turn-state path/load/save, `crate_of`/`is_lib_rust`, `deny`/`allow` |
+| `scripts/guard/turn-reset.sh` | A0 `UserPromptSubmit`: reset turn-state |
+| `scripts/guard/bash-deny.sh` | A `PreToolUse/Bash`: fail-closed deny (no-verify, clippy -A, fmt --all, force-push) |
+| `scripts/guard/record.sh` | A2 `PostToolUse/Bash`: record green clippy/nextest per crate |
+| `scripts/guard/edit-guard.sh` | B `PreToolUse/Edit\|Write\|MultiEdit`: cheat/costyl + test-weakening |
+| `scripts/guard/stop-gate.sh` | C `Stop`: block done without recorded green gate |
+| `scripts/guard/fmt.sh` | D `PostToolUse/Edit\|Write\|MultiEdit`: format touched file |
+| `scripts/guard/test/run.sh` | bash assertion harness (`task hooks:test`) |
+| `.claude/settings.json` | Committed wiring + `$schema` + curated permissions |
+| `Taskfile.yml` | `task hooks:test` |
+| `CLAUDE.md` | "Enforced Discipline" rule→guard map |
 
-**Convention for all hooks:** read stdin JSON; on any internal exception print nothing useful and `process.exit(0)` (fail open — a broken guard must never wedge the session); never exceed ~2 s. Deny = structured output, never a thrown error.
+All hooks: `set -uo pipefail`; source `_lib.sh`; end with `allow` (exit 0); never exceed ~2 s.
 
 ---
 
-### Task 1: Shared library `guard-lib.mjs`
+### Task 1: Remove obsolete `.mjs` + create `scripts/guard/_lib.sh`
 
 **Files:**
-- Create: `.claude/hooks/guard-lib.mjs`
-- Test: `.claude/hooks/__tests__/guard-lib.test.mjs`
+- Delete: `.claude/hooks/guard-lib.mjs`, `.claude/hooks/__tests__/guard-lib.test.mjs`
+- Create: `scripts/guard/_lib.sh`, `scripts/guard/test/run.sh`
 
-- [ ] **Step 1: Write the failing test**
-
-```javascript
-// .claude/hooks/__tests__/guard-lib.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { parseBash, crateOf, isLibRust } from "../guard-lib.mjs";
-
-test("parseBash strips inline env and wrappers", () => {
-  const r = parseBash('FOO=1 env BAR=2 sudo cargo clippy -- -D warnings');
-  assert.equal(r.argv0, "cargo");
-  assert.deepEqual(r.args, ["clippy", "--", "-D", "warnings"]);
-});
-
-test("parseBash cuts at redirect and pipe", () => {
-  const r = parseBash('cargo fmt --all 2>&1 | tee log.txt');
-  assert.equal(r.argv0, "cargo");
-  assert.deepEqual(r.args, ["fmt", "--all"]);
-});
-
-test("crateOf extracts crate name", () => {
-  assert.equal(crateOf("crates/engine/src/engine.rs"), "engine");
-  assert.equal(crateOf("README.md"), null);
-});
-
-test("isLibRust excludes tests/benches/examples", () => {
-  assert.equal(isLibRust("crates/engine/src/state.rs"), true);
-  assert.equal(isLibRust("crates/engine/tests/retry.rs"), false);
-  assert.equal(isLibRust("crates/engine/src/main.rs"), false);
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `node --test .claude/hooks/__tests__/guard-lib.test.mjs`
-Expected: FAIL — `Cannot find module '../guard-lib.mjs'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```javascript
-// .claude/hooks/guard-lib.mjs
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-
-export async function readStdin() {
-  try {
-    const chunks = [];
-    for await (const c of process.stdin) chunks.push(c);
-    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-  } catch {
-    return {};
-  }
-}
-
-const WRAPPERS = new Set(["env", "sudo", "nice", "timeout", "watch", "xargs", "command", "stdbuf", "nohup"]);
-const CUTTERS = new Set(["|", "||", "&&", ";", "&", ">", ">>", "<", "2>", "2>&1", "1>&2", "|&"]);
-
-function tokenize(cmd) {
-  const out = [];
-  let cur = "";
-  let q = null;
-  for (let i = 0; i < cmd.length; i++) {
-    const ch = cmd[i];
-    if (q) {
-      if (ch === q) q = null;
-      else cur += ch;
-    } else if (ch === '"' || ch === "'") {
-      q = ch;
-    } else if (/\s/.test(ch)) {
-      if (cur) { out.push(cur); cur = ""; }
-    } else {
-      cur += ch;
-    }
-  }
-  if (cur) out.push(cur);
-  return out;
-}
-
-export function parseBash(command) {
-  let toks = tokenize(String(command || ""));
-  // cut at first shell control / redirect operator
-  const cut = toks.findIndex((t) => CUTTERS.has(t) || t.startsWith(">") || t.startsWith("2>"));
-  if (cut !== -1) toks = toks.slice(0, cut);
-  // strip leading VAR=val and wrapper commands (incl. env VAR=val)
-  let i = 0;
-  while (i < toks.length) {
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]) && !toks[i].includes("/")) { i++; continue; }
-    const base = toks[i].split("/").pop();
-    if (WRAPPERS.has(base)) {
-      i++;
-      while (i < toks.length && toks[i].startsWith("-")) i++; // wrapper flags
-      continue;
-    }
-    break;
-  }
-  toks = toks.slice(i);
-  return { argv0: (toks[0] || "").split("/").pop(), args: toks.slice(1), raw: String(command || "") };
-}
-
-export function crateOf(p) {
-  const m = String(p || "").replace(/\\/g, "/").match(/(?:^|\/)crates\/([^/]+)\//);
-  return m ? m[1] : null;
-}
-
-export function isLibRust(p) {
-  const f = String(p || "").replace(/\\/g, "/");
-  if (!f.endsWith(".rs")) return false;
-  if (!/\/crates\/[^/]+\/src\//.test(f) && !/^crates\/[^/]+\/src\//.test(f)) return false;
-  if (/\/(tests|benches|examples)\//.test(f)) return false;
-  if (/\/(main|build)\.rs$/.test(f)) return false;
-  return true;
-}
-
-export function turnStatePath(sessionId, cwd) {
-  let base;
-  try {
-    const g = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-      cwd: cwd || process.cwd(), encoding: "utf8",
-    }).trim();
-    base = isAbsolute(g) ? g : resolve(cwd || process.cwd(), g);
-  } catch {
-    base = join(tmpdir(), "nebula-guard");
-  }
-  return join(base, ".nebula-guard", `turn-${sessionId || "unknown"}.json`);
-}
-
-export function loadState(p) {
-  try { return JSON.parse(readFileSync(p, "utf8")); }
-  catch { return { impl_files_edited: [], gate_green: [] }; }
-}
-
-export function saveState(p, s) {
-  try { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, JSON.stringify(s)); }
-  catch { /* fail open */ }
-}
-
-export function denyPre(reason) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: reason,
-    },
-  }));
-  process.exit(0);
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/guard-lib.test.mjs`
-Expected: PASS — 4 tests pass.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 1: Remove the superseded Node scaffolding**
 
 ```bash
-git add .claude/hooks/guard-lib.mjs .claude/hooks/__tests__/guard-lib.test.mjs
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): guard-lib shared hook utilities"
+git rm .claude/hooks/guard-lib.mjs .claude/hooks/__tests__/guard-lib.test.mjs
+rmdir .claude/hooks/__tests__ .claude/hooks 2>/dev/null || true
 ```
 
+- [ ] **Step 2: Write the failing test harness `scripts/guard/test/run.sh`**
+
+```bash
+#!/usr/bin/env bash
+# scripts/guard/test/run.sh — guard-hook test harness. Exit 1 if any case fails.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$HERE/_lib.sh"
+fail=0
+chk() { # chk "name" expected actual
+  if [ "$2" = "$3" ]; then printf 'ok   - %s\n' "$1"
+  else printf 'FAIL - %s (expected[%s] got[%s])\n' "$1" "$2" "$3"; fail=1; fi
+}
+
+# --- _lib unit checks ---
+chk "normalize_argv0 strips env+wrappers" cargo "$(normalize_argv0 'FOO=1 env BAR=2 sudo cargo clippy -- -D warnings')"
+chk "normalize_argv0 unwraps timeout value" cargo "$(normalize_argv0 'timeout 600 cargo clippy -- -D warnings')"
+chk "normalize_argv0 unwraps sudo -u value" cargo "$(normalize_argv0 'sudo -u root cargo build')"
+chk "normalize_argv0 nice -n value" cargo "$(normalize_argv0 'nice -n 10 cargo nextest run')"
+chk "normalize_argv0 fail-closed on subshell" UNPARSEABLE "$(normalize_argv0 'cargo $(echo test)')"
+chk "normalize_argv0 fail-closed on chaining" UNPARSEABLE "$(normalize_argv0 'cargo test; rm -rf x')"
+chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
+chk "crate_of windows path" engine "$(crate_of 'crates\\engine\\src\\engine.rs')"
+chk "crate_of none" "" "$(crate_of 'README.md')"
+is_lib_rust 'crates/engine/src/state.rs'        && chk "is_lib_rust src" 0 0 || chk "is_lib_rust src" 0 1
+is_lib_rust 'crates/engine/tests/retry.rs'      && chk "is_lib_rust tests" 1 0 || chk "is_lib_rust tests" 1 1
+is_lib_rust 'crates\\engine\\src\\state.rs'     && chk "is_lib_rust win" 0 0 || chk "is_lib_rust win" 0 1
+
+# Per-hook cases are appended by later tasks below this line. # HOOKMARK
+
+[ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
+exit "$fail"
+```
+
+- [ ] **Step 3: Run it to verify it fails**
+
+Run: `bash scripts/guard/test/run.sh`
+Expected: FAIL — `_lib.sh` not found / function missing (non-zero exit).
+
+- [ ] **Step 4: Implement `scripts/guard/_lib.sh`**
+
+```bash
+# scripts/guard/_lib.sh — shared helpers for Nebula guard hooks. Source, don't exec.
+# Blocking convention: deny() => stderr + exit 2. allow() => exit 0.
+guard_input=""
+read_input() { guard_input="$(cat)"; }
+have_jq() { command -v jq >/dev/null 2>&1; }
+jqg() { printf '%s' "$guard_input" | jq -r "$1" 2>/dev/null || true; }
+
+deny()  { printf 'guard: %s\n' "$1" >&2; exit 2; }
+allow() { exit 0; }
+
+git_common_dir() { # $1=cwd
+  local g
+  if g="$(git -C "${1:-$PWD}" rev-parse --git-common-dir 2>/dev/null)"; then
+    case "$g" in /*|[A-Za-z]:[\\/]*) printf '%s' "$g";; *) printf '%s/%s' "${1:-$PWD}" "$g";; esac
+  else
+    printf '%s' "${TMPDIR:-/tmp}/nebula-guard"
+  fi
+}
+turn_state_path() { printf '%s/.nebula-guard/turn-%s.json' "$(git_common_dir "${2:-$PWD}")" "${1:-unknown}"; }
+load_state() { # $1=path
+  if [ -f "$1" ] && have_jq && jq -e . "$1" >/dev/null 2>&1; then cat "$1"
+  else printf '{"impl_files_edited":[],"gate_green":[]}'; fi
+}
+save_state() { mkdir -p "$(dirname "$1")" 2>/dev/null && printf '%s' "$2" >"$1" 2>/dev/null || true; }
+
+crate_of() { # $1=path -> crate name or empty
+  local p="${1//\\//}"
+  [[ "$p" =~ (^|/)crates/([^/]+)/ ]] && printf '%s' "${BASH_REMATCH[2]}"
+}
+is_lib_rust() { # $1=path -> return 0 if library rust
+  local p="${1//\\//}"
+  [[ "$p" == *.rs ]] || return 1
+  [[ "$p" =~ (^|/)crates/[^/]+/src/ ]] || return 1
+  [[ "$p" =~ /(tests|benches|examples)/ ]] && return 1
+  [[ "$p" =~ /(main|build)\.rs$ ]] && return 1
+  return 0
+}
+# Fail-closed: echoes argv0, or "UNPARSEABLE" for anything we cannot safely
+# analyze (caller MUST treat UNPARSEABLE as deny).
+normalize_argv0() { # $1=raw command
+  local c="$1"
+  case "$c" in *'$('*|*'`'*|*'${'*|*';'*|*'&&'*|*'||'*|*$'\n'*) printf 'UNPARSEABLE'; return;; esac
+  local dq="${c//[^\"]/}" sq="${c//[^\']/}"
+  if (( ${#dq} % 2 != 0 || ${#sq} % 2 != 0 )); then printf 'UNPARSEABLE'; return; fi
+  local -a t; read -ra t <<< "$c"
+  local n=${#t[@]} i=0
+  local -A WRAP=([env]=1 [sudo]=1 [nice]=1 [timeout]=1 [watch]=1 [xargs]=1 [command]=1 [stdbuf]=1 [nohup]=1)
+  local -A VF=([-u]=1 [-g]=1 [-n]=1 [-C]=1 [-k]=1 [-s]=1 [-S]=1 [-h]=1 [-d]=1 [-o]=1 [-e]=1)
+  while (( i < n )); do
+    local w="${t[$i]}"
+    if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$w" != */* ]]; then ((i++)); continue; fi
+    local base="${w##*/}"
+    if [[ -n "${WRAP[$base]:-}" ]]; then
+      ((i++))
+      while (( i < n )); do
+        local x="${t[$i]}"
+        if [[ "$x" == -* ]]; then ((i++)); if [[ -n "${VF[$x]:-}" && $i -lt $n && "${t[$i]}" != -* ]]; then ((i++)); fi; continue; fi
+        if [[ "$x" =~ ^[0-9]+(\.[0-9]+)?[smhdKMG]?$ ]]; then ((i++)); continue; fi
+        if [[ "$x" =~ ^[A-Za-z_][A-Za-z0-9_]*= && "$x" != */* ]]; then ((i++)); continue; fi
+        break
+      done
+      continue
+    fi
+    break
+  done
+  if (( i >= n )); then printf 'UNPARSEABLE'; return; fi
+  local a="${t[$i]}"; printf '%s' "${a##*/}"
+}
+```
+
+- [ ] **Step 5: Run to verify pass**
+
+Run: `bash scripts/guard/test/run.sh`
+Expected: PASS — every `_lib` line `ok`, ends `ALL GUARD TESTS PASSED`, exit 0.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A scripts/guard .claude/hooks
+git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): bash guard-lib + test harness; drop Node .mjs draft (D9)"
+```
 Expected lefthook: `typos` runs (pass); fmt-check/clippy/taplo/cargo-deny skip (no `.rs`/`.toml`); `convco` passes.
 
 ---
 
-### Task 2: A0 — turn-reset hook (`UserPromptSubmit`)
+### Task 2: A0 — `scripts/guard/turn-reset.sh` (`UserPromptSubmit`)
 
-**Files:**
-- Create: `.claude/hooks/nebula-guard-turn-reset.mjs`
-- Test: `.claude/hooks/__tests__/turn-reset.test.mjs`
+**Files:** Create `scripts/guard/turn-reset.sh`; modify `scripts/guard/test/run.sh`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing test case** — insert ABOVE the `# HOOKMARK` line in `run.sh`:
 
-```javascript
-// .claude/hooks/__tests__/turn-reset.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { turnStatePath } from "../guard-lib.mjs";
-
-test("turn-reset clears prior state for the session", () => {
-  const sid = "test-sess-A0";
-  const p = turnStatePath(sid, process.cwd());
-  mkdirSync(p.replace(/[^/\\]+$/, ""), { recursive: true });
-  writeFileSync(p, JSON.stringify({ impl_files_edited: ["x.rs"], gate_green: ["engine"] }));
-  execFileSync("node", [".claude/hooks/nebula-guard-turn-reset.mjs"], {
-    input: JSON.stringify({ session_id: sid, cwd: process.cwd() }),
-  });
-  const s = JSON.parse(readFileSync(p, "utf8"));
-  assert.deepEqual(s.impl_files_edited, []);
-  assert.deepEqual(s.gate_green, []);
-});
+```bash
+# A0 turn-reset
+TS_SID="t-a0"; TS_P="$(turn_state_path "$TS_SID" "$PWD")"
+mkdir -p "$(dirname "$TS_P")"; printf '{"impl_files_edited":["x.rs"],"gate_green":["engine"]}' >"$TS_P"
+printf '{"session_id":"%s","cwd":"%s"}' "$TS_SID" "$PWD" | bash "$HERE/turn-reset.sh"
+chk "A0 clears impl" "[]" "$(jq -c '.impl_files_edited' "$TS_P")"
+chk "A0 clears gate" "[]" "$(jq -c '.gate_green' "$TS_P")"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** `bash scripts/guard/test/run.sh` → FAIL (`turn-reset.sh` missing).
 
-Run: `node --test .claude/hooks/__tests__/turn-reset.test.mjs`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement `scripts/guard/turn-reset.sh`**
 
-- [ ] **Step 3: Write minimal implementation**
-
-```javascript
-// .claude/hooks/nebula-guard-turn-reset.mjs
-import { readStdin, turnStatePath, saveState } from "./guard-lib.mjs";
-
-const inp = await readStdin();
-try {
-  const p = turnStatePath(inp.session_id, inp.cwd);
-  saveState(p, {
-    session: inp.session_id || "unknown",
-    started_at: new Date().toISOString(),
-    impl_files_edited: [],
-    gate_green: [],
-  });
-} catch { /* fail open */ }
-process.exit(0);
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
+read_input
+sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
+p="$(turn_state_path "$sid" "$cwd")"
+save_state "$p" "$(printf '{"session":"%s","started_at":"%s","impl_files_edited":[],"gate_green":[]}' "${sid:-unknown}" "$(date -u +%FT%TZ)")"
+allow
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/turn-reset.test.mjs`
-Expected: PASS.
+- [ ] **Step 4: Run** `bash scripts/guard/test/run.sh` → PASS (A0 lines `ok`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/hooks/nebula-guard-turn-reset.mjs .claude/hooks/__tests__/turn-reset.test.mjs
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A0 UserPromptSubmit turn-state reset hook"
+git add scripts/guard/turn-reset.sh scripts/guard/test/run.sh
+git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A0 UserPromptSubmit turn-reset hook"
 ```
 
 ---
 
-### Task 3: A — Bash deny guard (`PreToolUse/Bash`)
+### Task 3: A — `scripts/guard/bash-deny.sh` (`PreToolUse/Bash`, fail-closed)
 
-**Files:**
-- Create: `.claude/hooks/nebula-guard-bash.mjs`
-- Test: `.claude/hooks/__tests__/bash-guard.test.mjs`
+**Files:** Create `scripts/guard/bash-deny.sh`; modify `run.sh`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
-```javascript
-// .claude/hooks/__tests__/bash-guard.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-
-function run(command, env = {}) {
-  let out = "";
-  try {
-    out = execFileSync("node", [".claude/hooks/nebula-guard-bash.mjs"], {
-      input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: process.cwd() }),
-      encoding: "utf8",
-      env: { ...process.env, ...env },
-    });
-  } catch (e) { out = e.stdout || ""; }
-  return out;
-}
-const denied = (o) => o.includes('"permissionDecision":"deny"');
-
-test("denies git commit --no-verify (even wrapped)", () => {
-  assert.ok(denied(run('env X=1 git commit -m wip --no-verify')));
-});
-test("denies clippy lint suppression", () => {
-  assert.ok(denied(run('cargo clippy -p nebula-engine -- -A clippy::all')));
-});
-test("denies cargo fmt --all", () => {
-  assert.ok(denied(run('cargo fmt --all')));
-});
-test("allows a normal cargo nextest run", () => {
-  assert.equal(run('cargo nextest run -p nebula-engine').trim(), "");
-});
+```bash
+# A bash-deny  (run hook, capture exit code)
+adeny() { printf '%s' "$1" | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?; }
+mk() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$PWD"; }
+chk "A denies --no-verify (wrapped)" 2 "$(adeny "$(mk 'env X=1 git commit -m wip --no-verify')")"
+chk "A denies clippy -A"            2 "$(adeny "$(mk 'cargo clippy -p nebula-engine -- -A clippy::all')")"
+chk "A denies cargo fmt --all"      2 "$(adeny "$(mk 'cargo fmt --all')")"
+chk "A denies timeout-wrapped fmt --all" 2 "$(adeny "$(mk 'timeout 600 cargo fmt --all')")"
+chk "A fail-closed on subshell"     2 "$(adeny "$(mk 'cargo \$(echo test)')")"
+chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** → FAIL (`bash-deny.sh` missing).
 
-Run: `node --test .claude/hooks/__tests__/bash-guard.test.mjs`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement `scripts/guard/bash-deny.sh`**
 
-- [ ] **Step 3: Write minimal implementation**
-
-```javascript
-// .claude/hooks/nebula-guard-bash.mjs
-import { readStdin, parseBash, denyPre } from "./guard-lib.mjs";
-
-const inp = await readStdin();
-if (inp.tool_name !== "Bash") process.exit(0);
-const cmd = (inp.tool_input && inp.tool_input.command) || "";
-let p;
-try { p = parseBash(cmd); } catch { process.exit(0); }
-const { argv0, args, raw } = p;
-const has = (re) => re.test(raw);
-
-// 1. lefthook bypass
-if (argv0 === "git" && args[0] === "commit" &&
-    (args.includes("--no-verify") || args.includes("-n") || args.includes("--no-gpg-sign") ||
-     args.some((a, i) => a === "-c" && /core\.hooksPath=/.test(args[i + 1] || "")))) {
-  denyPre("Bypassing lefthook is the top-level cheat. Run `git commit` without --no-verify/-n/--no-gpg-sign. Fix what the hook flags.");
-}
-// 2. lint suppression at the command level
-if (argv0 === "cargo" && args.includes("clippy") &&
-    (args.some((a) => a === "-A" || a === "--allow") || /(^|\s)RUSTFLAGS=.*-A\s/.test(raw))) {
-  denyPre("Silencing clippy with -A/--allow/RUSTFLAGS to reach green is cheating the oracle. Fix the lint or add a justified #[allow] in code.");
-}
-// 3. cargo fmt --all (Windows os-error-206 footgun + false green)
-if (argv0 === "cargo" && args.includes("fmt") && args.includes("--all")) {
-  denyPre("`cargo fmt --all` trips Windows os-error-206 from worktrees and reports false green. Use `bash scripts/pre-commit-fmt-check.sh` or `cargo fmt -p <crate>`.");
-}
-// 4. force-push to shared history (env override: NEBULA_ALLOW_FORCE=1)
-if (argv0 === "git" && args[0] === "push" &&
-    args.some((a) => a === "--force" || a === "-f" || a.startsWith("--force-with-lease")) &&
-    process.env.NEBULA_ALLOW_FORCE !== "1") {
-  denyPre("Force-push to shared history is blocked (AGENTS.md). Set NEBULA_ALLOW_FORCE=1 only if you truly mean it.");
-}
-process.exit(0);
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
+read_input
+have_jq || deny "jq is required by the bash guard and is missing (fail-closed). Install jq."
+[ "$(jqg '.tool_name')" = "Bash" ] || allow
+cmd="$(jqg '.tool_input.command')"; [ -n "$cmd" ] || allow
+argv0="$(normalize_argv0 "$cmd")"
+[ "$argv0" = "UNPARSEABLE" ] && deny "Command too complex to verify safely (subshell/chaining/quotes). Run it as a single plain command."
+raw="$cmd"
+if [ "$argv0" = git ] && [[ "$raw" =~ (^|[[:space:]])commit([[:space:]]|$) ]] \
+   && [[ "$raw" =~ (--no-verify|(^|[[:space:]])-n([[:space:]]|$)|--no-gpg-sign|core\.hooksPath=) ]]; then
+  deny "Bypassing lefthook is the top-level cheat. Commit without --no-verify/-n/--no-gpg-sign; fix what the hook flags."
+fi
+if [ "$argv0" = cargo ] && [[ "$raw" =~ (^|[[:space:]])clippy([[:space:]]|$) ]] \
+   && [[ "$raw" =~ ([[:space:]]-A[[:space:]]|--allow[[:space:]]|RUSTFLAGS=[^\&]*-A) ]]; then
+  deny "Silencing clippy to reach green is cheating the oracle. Fix the lint or add a justified #[allow] in code."
+fi
+if [ "$argv0" = cargo ] && [[ "$raw" =~ (^|[[:space:]])fmt([[:space:]]|$) ]] \
+   && [[ "$raw" =~ ([[:space:]]|^)--all([[:space:]]|$) ]]; then
+  deny "cargo fmt --all trips Windows os-error-206 and false green. Use bash scripts/pre-commit-fmt-check.sh or cargo fmt -p <crate>."
+fi
+if [ "$argv0" = git ] && [[ "$raw" =~ (^|[[:space:]])push([[:space:]]|$) ]] \
+   && [[ "$raw" =~ (--force([[:space:]]|=|$)|--force-with-lease|(^|[[:space:]])-f([[:space:]]|$)) ]] \
+   && [ "${NEBULA_ALLOW_FORCE:-}" != "1" ]; then
+  deny "Force-push to shared history is blocked (AGENTS.md). Set NEBULA_ALLOW_FORCE=1 only if you truly mean it."
+fi
+allow
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/bash-guard.test.mjs`
-Expected: PASS — 4 tests pass.
+- [ ] **Step 4: Run** → PASS (all A lines `ok`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/hooks/nebula-guard-bash.mjs .claude/hooks/__tests__/bash-guard.test.mjs
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A PreToolUse Bash deny guard"
+git add scripts/guard/bash-deny.sh scripts/guard/test/run.sh
+git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A fail-closed PreToolUse Bash deny guard"
 ```
 
 ---
 
-### Task 4: A2 — gate-green recorder (`PostToolUse/Bash`)
+### Task 4: A2 — `scripts/guard/record.sh` (`PostToolUse/Bash`)
 
-**Files:**
-- Create: `.claude/hooks/nebula-guard-record.mjs`
-- Test: `.claude/hooks/__tests__/record.test.mjs`
+> **Known limitation:** `PostToolUse` exposes `tool_response` but no guaranteed exit code. A2 records a crate green only when the command is a recognized gate command AND `tool_response` shows no failure token (`error`, `FAILED`, `warning:`, `test result: FAILED`). Heuristic; the Stop gate (Task 6) is the backstop.
 
-> **Known limitation (document, do not hide):** `PostToolUse` exposes `tool_response` but not a guaranteed exit code. A2 records a crate green only when the command is a recognized gate command AND `tool_response` shows no failure signal (`error`, `FAILED`, `warning:`, `test result: FAILED`). This is a heuristic; the Stop gate (Task 6) is the backstop, and a false "green" still requires the agent to have actually run the gate command.
+**Files:** Create `scripts/guard/record.sh`; modify `run.sh`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
-```javascript
-// .claude/hooks/__tests__/record.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { turnStatePath } from "../guard-lib.mjs";
-
-function seed(sid) {
-  const p = turnStatePath(sid, process.cwd());
-  mkdirSync(p.replace(/[^/\\]+$/, ""), { recursive: true });
-  writeFileSync(p, JSON.stringify({ impl_files_edited: [], gate_green: [] }));
-  return p;
-}
-function run(sid, command, response) {
-  execFileSync("node", [".claude/hooks/nebula-guard-record.mjs"], {
-    input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, tool_response: response, session_id: sid, cwd: process.cwd() }),
-  });
-}
-
-test("records crate green on passing nextest", () => {
-  const sid = "test-A2-ok"; const p = seed(sid);
-  run(sid, "cargo nextest run -p nebula-engine", "Summary 12 tests run: 12 passed");
-  assert.deepEqual(JSON.parse(readFileSync(p, "utf8")).gate_green, ["engine"]);
-});
-
-test("does NOT record on failing output", () => {
-  const sid = "test-A2-fail"; const p = seed(sid);
-  run(sid, "cargo clippy -p nebula-engine -- -D warnings", "warning: unused variable\nerror: aborting");
-  assert.deepEqual(JSON.parse(readFileSync(p, "utf8")).gate_green, []);
-});
+```bash
+# A2 record
+R_SID="t-a2"; R_P="$(turn_state_path "$R_SID" "$PWD")"
+mkdir -p "$(dirname "$R_P")"; printf '{"impl_files_edited":[],"gate_green":[]}' >"$R_P"
+printf '{"tool_name":"Bash","tool_input":{"command":"cargo nextest run -p nebula-engine"},"tool_response":"12 passed","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
+chk "A2 records green" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
+printf '{"tool_name":"Bash","tool_input":{"command":"cargo clippy -p nebula-core -- -D warnings"},"tool_response":"error: aborting","session_id":"%s","cwd":"%s"}' "$R_SID" "$PWD" | bash "$HERE/record.sh"
+chk "A2 ignores failed" '["engine"]' "$(jq -c '.gate_green' "$R_P")"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** → FAIL.
 
-Run: `node --test .claude/hooks/__tests__/record.test.mjs`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement `scripts/guard/record.sh`**
 
-- [ ] **Step 3: Write minimal implementation**
-
-```javascript
-// .claude/hooks/nebula-guard-record.mjs
-import { readStdin, parseBash, crateOf, turnStatePath, loadState, saveState } from "./guard-lib.mjs";
-
-const inp = await readStdin();
-if (inp.tool_name !== "Bash") process.exit(0);
-try {
-  const cmd = (inp.tool_input && inp.tool_input.command) || "";
-  const { argv0, args } = parseBash(cmd);
-  const resp = typeof inp.tool_response === "string"
-    ? inp.tool_response : JSON.stringify(inp.tool_response || "");
-  const failed = /(^|\W)(error\b|FAILED|warning:|test result: FAILED)/i.test(resp);
-
-  const isClippy = argv0 === "cargo" && args.includes("clippy") && args.includes("-D");
-  const isNextest = argv0 === "cargo" && args.includes("nextest") && args.includes("run");
-  const isDevCheck = argv0 === "task" && args.includes("dev:check");
-  if (!failed && (isClippy || isNextest || isDevCheck)) {
-    const p = turnStatePath(inp.session_id, inp.cwd);
-    const s = loadState(p);
-    const pIdx = args.indexOf("-p");
-    const crate = pIdx !== -1 ? (args[pIdx + 1] || "").replace(/^nebula-/, "") : null;
-    const set = new Set(s.gate_green || []);
-    if (crate) set.add(crate);
-    if (isDevCheck) set.add("*workspace*");
-    s.gate_green = [...set];
-    saveState(p, s);
-  }
-} catch { /* fail open */ }
-process.exit(0);
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
+read_input
+[ "$(jqg '.tool_name')" = "Bash" ] || allow
+have_jq || allow
+cmd="$(jqg '.tool_input.command')"; resp="$(jqg '.tool_response')"
+case "$resp" in *error*|*FAILED*|*"warning:"*|*"test result: FAILED"*) allow;; esac
+is_gate=0
+[[ "$cmd" =~ cargo[[:space:]]+clippy.*-D ]] && is_gate=1
+[[ "$cmd" =~ cargo[[:space:]]+nextest[[:space:]]+run ]] && is_gate=1
+[[ "$cmd" =~ (^|[[:space:]])task[[:space:]]+dev:check ]] && is_gate=2
+[ "$is_gate" = 0 ] && allow
+sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
+p="$(turn_state_path "$sid" "$cwd")"; st="$(load_state "$p")"
+if [ "$is_gate" = 2 ]; then
+  st="$(printf '%s' "$st" | jq -c '.gate_green = (.gate_green + ["*workspace*"] | unique)')"
+else
+  crate="$(printf '%s' "$cmd" | sed -n 's/.*-p[[:space:]]\{1,\}\(nebula-\)\{0,1\}\([A-Za-z0-9_-]\{1,\}\).*/\2/p')"
+  [ -n "$crate" ] && st="$(printf '%s' "$st" | jq -c --arg c "$crate" '.gate_green = (.gate_green + [$c] | unique)')"
+fi
+save_state "$p" "$st"
+allow
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/record.test.mjs`
-Expected: PASS — 2 tests pass.
+- [ ] **Step 4: Run** → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/hooks/nebula-guard-record.mjs .claude/hooks/__tests__/record.test.mjs
+git add scripts/guard/record.sh scripts/guard/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A2 PostToolUse gate-green recorder"
 ```
 
 ---
 
-### Task 5: B — edit anti-cheat guard (`PreToolUse/Edit|Write|MultiEdit`)
+### Task 5: B — `scripts/guard/edit-guard.sh` (`PreToolUse/Edit|Write|MultiEdit`)
 
-**Files:**
-- Create: `.claude/hooks/nebula-guard-edit.mjs`
-- Test: `.claude/hooks/__tests__/edit-guard.test.mjs`
+> **Known limitation:** B inspects incoming text (`Write.content` / `Edit.new_string` / `MultiEdit.edits[].new_string`). Inline `#[cfg(test)]` in a lib file can cause a false negative for the unwrap rule (clippy at the gate is the backstop). Test-weakening compares `old_string` vs `new_string` assert counts.
 
-> **Known limitation:** B inspects incoming text (`Write.content` / `Edit.new_string` / `MultiEdit.edits[].new_string`). Inline `#[cfg(test)]` modules inside a lib file may cause a false negative for the unwrap rule (clippy at the gate is the backstop). Test-weakening detection compares `old_string` vs `new_string` assert counts (Edit/MultiEdit only).
+**Files:** Create `scripts/guard/edit-guard.sh`; modify `run.sh`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
-```javascript
-// .claude/hooks/__tests__/edit-guard.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { turnStatePath } from "../guard-lib.mjs";
-
-function run(payload) {
-  let out = "";
-  try {
-    out = execFileSync("node", [".claude/hooks/nebula-guard-edit.mjs"], {
-      input: JSON.stringify({ cwd: process.cwd(), session_id: payload.sid || "edit-t", ...payload }),
-      encoding: "utf8",
-    });
-  } catch (e) { out = e.stdout || ""; }
-  return out;
-}
-const denied = (o) => o.includes('"permissionDecision":"deny"');
-
-test("denies new unwrap() in lib rust", () => {
-  assert.ok(denied(run({
-    tool_name: "Write",
-    tool_input: { file_path: "crates/engine/src/state.rs", content: "fn f(){ let x = g().unwrap(); }" },
-  })));
-});
-
-test("denies #[allow] without guard-justified", () => {
-  assert.ok(denied(run({
-    tool_name: "Write",
-    tool_input: { file_path: "crates/engine/src/state.rs", content: "#[allow(dead_code)]\nfn f(){}" },
-  })));
-});
-
-test("allows #[allow] WITH guard-justified", () => {
-  assert.equal(run({
-    tool_name: "Write",
-    tool_input: { file_path: "crates/engine/src/state.rs",
-      content: "// guard-justified: FFI shim, lint is a false positive\n#[allow(dead_code)]\nfn f(){}" },
-  }).trim(), "");
-});
-
-test("denies test weakening when impl edited same turn", () => {
-  const sid = "edit-weaken";
-  const p = turnStatePath(sid, process.cwd());
-  mkdirSync(p.replace(/[^/\\]+$/, ""), { recursive: true });
-  writeFileSync(p, JSON.stringify({ impl_files_edited: ["crates/engine/src/state.rs"], gate_green: [] }));
-  assert.ok(denied(run({
-    sid,
-    tool_name: "Edit",
-    tool_input: { file_path: "crates/engine/tests/retry.rs",
-      old_string: "assert_eq!(got, want);", new_string: "assert!(true);" },
-  })));
-});
+```bash
+# B edit-guard
+bdeny() { printf '%s' "$1" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1; echo $?; }
+W() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"%s"},"cwd":"%s","session_id":"%s"}' "$1" "$2" "$PWD" "${3:-b-t}"; }
+chk "B denies unwrap in lib"   2 "$(bdeny "$(W 'crates/engine/src/state.rs' 'fn f(){ let x = g().unwrap(); }')")"
+chk "B denies bare #[allow]"   2 "$(bdeny "$(W 'crates/engine/src/state.rs' '#[allow(dead_code)]\nfn f(){}')")"
+chk "B allows justified allow" 0 "$(bdeny "$(W 'crates/engine/src/state.rs' '// guard-justified: FFI shim\n#[allow(dead_code)]\nfn f(){}')")"
+# test weakening while impl edited this turn
+BW_SID="b-weaken"; BW_P="$(turn_state_path "$BW_SID" "$PWD")"
+mkdir -p "$(dirname "$BW_P")"; printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":[]}' >"$BW_P"
+EW='{"tool_name":"Edit","tool_input":{"file_path":"crates/engine/tests/retry.rs","old_string":"assert_eq!(got, want);","new_string":"assert!(true);"},"cwd":"'"$PWD"'","session_id":"'"$BW_SID"'"}'
+chk "B denies test-weaken+impl" 2 "$(bdeny "$EW")"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** → FAIL.
 
-Run: `node --test .claude/hooks/__tests__/edit-guard.test.mjs`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement `scripts/guard/edit-guard.sh`**
 
-- [ ] **Step 3: Write minimal implementation**
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
+read_input
+tool="$(jqg '.tool_name')"
+case "$tool" in Write|Edit|MultiEdit) :;; *) allow;; esac
+have_jq || allow
+file="$(jqg '.tool_input.file_path')"; [ -n "$file" ] || allow
+case "$tool" in
+  Write)  added="$(jqg '.tool_input.content')";;
+  Edit)   added="$(jqg '.tool_input.new_string')";;
+  MultiEdit) added="$(jqg '.tool_input.edits[].new_string')";;
+esac
+sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
+p="$(turn_state_path "$sid" "$cwd")"; st="$(load_state "$p")"
+nf="${file//\\//}"
+is_test=0
+[[ "$nf" =~ /(tests|benches)/ ]] && is_test=1
+printf '%s' "$added" | grep -qE '#\[(cfg\(test\)|test)\]' && is_test=1
 
-```javascript
-// .claude/hooks/nebula-guard-edit.mjs
-import { readStdin, isLibRust, turnStatePath, loadState, saveState, denyPre } from "./guard-lib.mjs";
+if is_lib_rust "$file" && [ "$is_test" -eq 0 ]; then
+  st="$(printf '%s' "$st" | jq -c --arg f "$nf" '.impl_files_edited = (.impl_files_edited + [$f] | unique)')"
+  save_state "$p" "$st"
+  printf '%s' "$added" | grep -qE '\.unwrap\(\)|\.expect\(|(^|[^A-Za-z_])panic!\(' \
+    && deny "New unwrap()/expect()/panic!() in library code is forbidden (AGENTS.md). Use a typed thiserror variant."
+  if printf '%s' "$added" | grep -qE '#\[allow\(|(^|[^A-Za-z_])(todo!|unimplemented!|unreachable!)\('; then
+    printf '%s' "$added" | grep -qE '//[[:space:]]*guard-justified:' \
+      || deny "allow/todo!/unimplemented!/unreachable! is a path-of-least-work escape. Fix it, or add a '// guard-justified: <reason>' line above."
+  fi
+  printf '%s' "$added" | grep -qE '//[[:space:]]*(TODO|FIXME|HACK|XXX)\b|TODO\([A-Z]+-?[0-9]|(^|[^A-Za-z])Phase[[:space:]][A-Z]\b' \
+    && deny "TODO/FIXME/HACK/plan-id comments must not land in committed code."
+  printf '%s' "$added" | grep -qE 'let[[:space:]]+_[[:space:]]*=[[:space:]]*[A-Za-z0-9_.]*(transition|send|write|commit|flush|lock|spawn)[A-Za-z0-9_]*\(' \
+    && deny "let _ = <call> silently swallows a Result/must-use. Handle the error explicitly."
+fi
 
-const inp = await readStdin();
-const tool = inp.tool_name;
-if (!["Write", "Edit", "MultiEdit"].includes(tool)) process.exit(0);
-const ti = inp.tool_input || {};
-const file = (ti.file_path || "").replace(/\\/g, "/");
-if (!file) process.exit(0);
-
-let added = "";
-if (tool === "Write") added = ti.content || "";
-else if (tool === "Edit") added = ti.new_string || "";
-else if (tool === "MultiEdit") added = (ti.edits || []).map((e) => e.new_string || "").join("\n");
-
-const isTest = /\/(tests|benches)\//.test(file) || /#\[(cfg\(test\)|test)\]/.test(added);
-
-// track impl edits this turn (non-test rust under src)
-const sp = turnStatePath(inp.session_id, inp.cwd);
-const st = loadState(sp);
-if (isLibRust(file) && !isTest) {
-  if (!st.impl_files_edited.includes(file)) st.impl_files_edited.push(file);
-  saveState(sp, st);
-}
-
-function justified(text, idx) {
-  const before = text.slice(0, idx);
-  const prevLine = before.split("\n").slice(-2, -1)[0] || before.split("\n").pop() || "";
-  return /\/\/\s*guard-justified:/.test(prevLine) || /\/\/\s*guard-justified:/.test(before.split("\n").pop() || "");
-}
-
-if (isLibRust(file) && !isTest) {
-  if (/\.unwrap\(\)|\.expect\(|(^|\W)panic!\(/.test(added)) {
-    denyPre("New unwrap()/expect()/panic!() in library code is forbidden (AGENTS.md). Use a typed thiserror variant.");
-  }
-  for (const m of added.matchAll(/#\[allow\(|(?:^|\W)(todo!|unimplemented!|unreachable!)\(/g)) {
-    if (!justified(added, m.index)) {
-      denyPre(`'${m[0].replace(/\(.*/, "")}' is a path-of-least-work escape. Fix it, or justify with a '// guard-justified: <reason>' line directly above.`);
-    }
-  }
-  if (/\/\/\s*(TODO|FIXME|HACK|XXX)\b|TODO\([A-Z]+-?\d|(^|\W)Phase\s[A-Z]\b/.test(added)) {
-    denyPre("TODO/FIXME/HACK/plan-id comments must not land in committed code (comments must read fine after the plan is deleted).");
-  }
-  if (/let\s+_\s*=\s*[\w.]*\b(transition|send|write|commit|flush|lock|spawn)\w*\s*\(/.test(added)) {
-    denyPre("`let _ = <call>` silently swallows a Result/must-use. Handle the error explicitly.");
-  }
-}
-
-// test-integrity: weakening a test while impl changed this turn
-if ((tool === "Edit" || tool === "MultiEdit") && /\/(tests|benches)\//.test(file) && st.impl_files_edited.length) {
-  const olds = (tool === "Edit" ? [ti.old_string || ""] : (ti.edits || []).map((e) => e.old_string || "")).join("\n");
-  const news = (tool === "Edit" ? [ti.new_string || ""] : (ti.edits || []).map((e) => e.new_string || "")).join("\n");
-  const cnt = (s) => (s.match(/\bassert\w*!/g) || []).length;
-  const weaken = cnt(olds) > cnt(news) || /assert!\(\s*true\s*\)|#\[ignore\]/.test(news) ||
-    /assert_eq!\(\s*([A-Za-z_]\w*)\s*,\s*\1\s*\)/.test(news);
-  if (weaken) {
-    denyPre("Weakening a test (removed assert / #[ignore] / assert!(true) / tautology) while impl changed this turn is blocked. Fix the logic, not the test.");
-  }
-}
-process.exit(0);
+if { [ "$tool" = Edit ] || [ "$tool" = MultiEdit ]; } && [[ "$nf" =~ /(tests|benches)/ ]]; then
+  impl_n="$(printf '%s' "$st" | jq -r '.impl_files_edited | length')"
+  if [ "${impl_n:-0}" -gt 0 ]; then
+    case "$tool" in
+      Edit) olds="$(jqg '.tool_input.old_string')"; news="$(jqg '.tool_input.new_string')";;
+      MultiEdit) olds="$(jqg '.tool_input.edits[].old_string')"; news="$(jqg '.tool_input.edits[].new_string')";;
+    esac
+    oc="$(printf '%s' "$olds" | grep -oE '\bassert[A-Za-z_]*!' | wc -l | tr -d ' ')"
+    nc="$(printf '%s' "$news" | grep -oE '\bassert[A-Za-z_]*!' | wc -l | tr -d ' ')"
+    weak=0
+    [ "${oc:-0}" -gt "${nc:-0}" ] && weak=1
+    printf '%s' "$news" | grep -qE 'assert!\([[:space:]]*true[[:space:]]*\)|#\[ignore\]' && weak=1
+    [ "$weak" -eq 1 ] && deny "Weakening a test (removed assert / assert!(true) / #[ignore]) while impl changed this turn is blocked. Fix the logic, not the test."
+  fi
+fi
+allow
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/edit-guard.test.mjs`
-Expected: PASS — 4 tests pass.
+- [ ] **Step 4: Run** → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/hooks/nebula-guard-edit.mjs .claude/hooks/__tests__/edit-guard.test.mjs
+git add scripts/guard/edit-guard.sh scripts/guard/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): B PreToolUse edit anti-cheat guard"
 ```
 
 ---
 
-### Task 6: C — Stop falsifiable-finish gate (`Stop`)
+### Task 6: C — `scripts/guard/stop-gate.sh` (`Stop`)
 
-**Files:**
-- Create: `.claude/hooks/nebula-guard-stop.mjs`
-- Test: `.claude/hooks/__tests__/stop-guard.test.mjs`
+**Files:** Create `scripts/guard/stop-gate.sh`; modify `run.sh`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
-```javascript
-// .claude/hooks/__tests__/stop-guard.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { turnStatePath } from "../guard-lib.mjs";
-
-function seed(sid, state) {
-  const p = turnStatePath(sid, process.cwd());
-  mkdirSync(p.replace(/[^/\\]+$/, ""), { recursive: true });
-  writeFileSync(p, JSON.stringify(state));
-}
-function run(sid, stopActive = false) {
-  try {
-    execFileSync("node", [".claude/hooks/nebula-guard-stop.mjs"], {
-      input: JSON.stringify({ session_id: sid, cwd: process.cwd(), stop_hook_active: stopActive }),
-      encoding: "utf8",
-    });
-    return { code: 0, stderr: "" };
-  } catch (e) { return { code: e.status, stderr: (e.stderr || "").toString() }; }
-}
-
-test("blocks when impl changed but no green gate", () => {
-  seed("stop-block", { impl_files_edited: ["crates/engine/src/state.rs"], gate_green: [] });
-  const r = run("stop-block");
-  assert.equal(r.code, 2);
-  assert.match(r.stderr, /never showed clippy \+ nextest green/);
-});
-
-test("allows when touched crate is green", () => {
-  seed("stop-ok", { impl_files_edited: ["crates/engine/src/state.rs"], gate_green: ["engine"] });
-  assert.equal(run("stop-ok").code, 0);
-});
-
-test("never re-blocks when stop_hook_active", () => {
-  seed("stop-loop", { impl_files_edited: ["crates/engine/src/state.rs"], gate_green: [] });
-  assert.equal(run("stop-loop", true).code, 0);
-});
+```bash
+# C stop-gate
+cstop() { printf '%s' "$1" | bash "$HERE/stop-gate.sh" >/dev/null 2>&1; echo $?; }
+C_SID="c-blk"; C_P="$(turn_state_path "$C_SID" "$PWD")"; mkdir -p "$(dirname "$C_P")"
+printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":[]}' >"$C_P"
+chk "C blocks no-green"  2 "$(cstop '{"session_id":"'"$C_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":["engine"]}' >"$C_P"
+chk "C allows green"     0 "$(cstop '{"session_id":"'"$C_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+printf '{"impl_files_edited":["crates/engine/src/state.rs"],"gate_green":[]}' >"$C_P"
+chk "C no reblock loop"  0 "$(cstop '{"session_id":"'"$C_SID"'","cwd":"'"$PWD"'","stop_hook_active":true}')"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** → FAIL.
 
-Run: `node --test .claude/hooks/__tests__/stop-guard.test.mjs`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement `scripts/guard/stop-gate.sh`**
 
-- [ ] **Step 3: Write minimal implementation**
-
-```javascript
-// .claude/hooks/nebula-guard-stop.mjs
-// Side-effect-free: reads turn-state only, runs no tools (deadlock-safe).
-import { readStdin, crateOf, turnStatePath, loadState } from "./guard-lib.mjs";
-
-const inp = await readStdin();
-if (inp.stop_hook_active === true) process.exit(0); // loop guard
-try {
-  const s = loadState(turnStatePath(inp.session_id, inp.cwd));
-  const touched = [...new Set((s.impl_files_edited || []).map(crateOf).filter(Boolean))];
-  if (touched.length === 0) process.exit(0);
-  const green = new Set(s.gate_green || []);
-  if (green.has("*workspace*")) process.exit(0);
-  const missing = touched.filter((c) => !green.has(c));
-  if (missing.length) {
-    process.stderr.write(
-      `You changed crate(s) [${missing.join(", ")}] but never showed clippy + nextest green ` +
-      `for them this turn. Run \`cargo clippy -p nebula-<crate> -- -D warnings\` and ` +
-      `\`cargo nextest run -p nebula-<crate>\` (or \`task dev:check\`) before claiming done. ` +
-      `Weakening tests to get there is blocked by the edit guard.`,
-    );
-    process.exit(2);
-  }
-} catch { process.exit(0); } // fail open
-process.exit(0);
+```bash
+#!/usr/bin/env bash
+# Side-effect-free: reads turn-state only; runs no tools (deadlock-safe).
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
+read_input
+[ "$(jqg '.stop_hook_active')" = "true" ] && allow   # loop guard
+have_jq || allow
+sid="$(jqg '.session_id')"; cwd="$(jqg '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
+st="$(load_state "$(turn_state_path "$sid" "$cwd")")"
+mapfile -t files < <(printf '%s' "$st" | jq -r '.impl_files_edited[]?' )
+[ "${#files[@]}" -eq 0 ] && allow
+printf '%s' "$st" | jq -e '.gate_green | index("*workspace*")' >/dev/null 2>&1 && allow
+declare -A seen; missing=""
+for f in "${files[@]}"; do
+  c="$(crate_of "$f")"; [ -n "$c" ] || continue
+  [ -n "${seen[$c]:-}" ] && continue; seen[$c]=1
+  if ! printf '%s' "$st" | jq -e --arg c "$c" '.gate_green | index($c)' >/dev/null 2>&1; then
+    missing="$missing $c"
+  fi
+done
+[ -z "$missing" ] && allow
+deny "You changed crate(s)$missing but never showed clippy + nextest green for them this turn. Run \`cargo clippy -p nebula-<crate> -- -D warnings\` and \`cargo nextest run -p nebula-<crate>\` (or \`task dev:check\`) before claiming done. Weakening tests to get there is blocked by the edit guard."
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/stop-guard.test.mjs`
-Expected: PASS — 3 tests pass.
+- [ ] **Step 4: Run** → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/hooks/nebula-guard-stop.mjs .claude/hooks/__tests__/stop-guard.test.mjs
+git add scripts/guard/stop-gate.sh scripts/guard/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): C Stop falsifiable-finish gate"
 ```
 
 ---
 
-### Task 7: D — post-edit formatter (`PostToolUse/Edit|Write|MultiEdit`)
+### Task 7: D — `scripts/guard/fmt.sh` (`PostToolUse/Edit|Write|MultiEdit`)
 
-**Files:**
-- Create: `.claude/hooks/nebula-guard-fmt.mjs`
-- Test: `.claude/hooks/__tests__/fmt-hook.test.mjs`
+**Files:** Create `scripts/guard/fmt.sh`; modify `run.sh`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
-```javascript
-// .claude/hooks/__tests__/fmt-hook.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-
-test("fmt hook always exits 0 and never blocks (non-rust path)", () => {
-  const out = execFileSync("node", [".claude/hooks/nebula-guard-fmt.mjs"], {
-    input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: "README.md" }, cwd: process.cwd() }),
-    encoding: "utf8",
-  });
-  assert.equal(out, "");
-});
-
-test("fmt hook tolerates missing file without throwing", () => {
-  const out = execFileSync("node", [".claude/hooks/nebula-guard-fmt.mjs"], {
-    input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: "crates/zzz/src/nope.rs" }, cwd: process.cwd() }),
-    encoding: "utf8",
-  });
-  assert.equal(out, "");
-});
+```bash
+# D fmt (must always exit 0, never block)
+dfmt() { printf '%s' "$1" | bash "$HERE/fmt.sh" >/dev/null 2>&1; echo $?; }
+chk "D exits 0 non-rust"  0 "$(dfmt '{"tool_name":"Write","tool_input":{"file_path":"README.md"},"cwd":"'"$PWD"'"}')"
+chk "D exits 0 missing rs" 0 "$(dfmt '{"tool_name":"Write","tool_input":{"file_path":"crates/zzz/src/nope.rs"},"cwd":"'"$PWD"'"}')"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run** → FAIL.
 
-Run: `node --test .claude/hooks/__tests__/fmt-hook.test.mjs`
-Expected: FAIL — module not found.
+- [ ] **Step 3: Implement `scripts/guard/fmt.sh`**
 
-- [ ] **Step 3: Write minimal implementation**
-
-```javascript
-// .claude/hooks/nebula-guard-fmt.mjs
-// Format-only, single file, never organize-imports (split-edit safe), never blocks.
-import { execFileSync } from "node:child_process";
-import { readStdin } from "./guard-lib.mjs";
-
-const inp = await readStdin();
-try {
-  if (!["Write", "Edit", "MultiEdit"].includes(inp.tool_name)) process.exit(0);
-  const f = (inp.tool_input && inp.tool_input.file_path) || "";
-  const opts = { cwd: inp.cwd || process.cwd(), stdio: "ignore", timeout: 8000 };
-  if (f.endsWith(".rs")) {
-    try { execFileSync("rustfmt", ["--edition", "2024", f], opts); } catch { /* best effort */ }
-  } else if (f.endsWith(".toml")) {
-    try { execFileSync("taplo", ["fmt", f], opts); } catch { /* best effort */ }
-  }
-} catch { /* fail open */ }
-process.exit(0);
+```bash
+#!/usr/bin/env bash
+# Format-only, single file, never organize-imports (split-edit safe), never blocks.
+set -uo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
+read_input
+case "$(jqg '.tool_name')" in Write|Edit|MultiEdit) :;; *) allow;; esac
+f="$(jqg '.tool_input.file_path')"
+case "$f" in
+  *.rs)   rustfmt --edition 2024 "$f" >/dev/null 2>&1 || true;;
+  *.toml) command -v taplo >/dev/null 2>&1 && taplo fmt "$f" >/dev/null 2>&1 || true;;
+esac
+allow
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `node --test .claude/hooks/__tests__/fmt-hook.test.mjs`
-Expected: PASS — 2 tests pass.
+- [ ] **Step 4: Run** → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/hooks/nebula-guard-fmt.mjs .claude/hooks/__tests__/fmt-hook.test.mjs
+git add scripts/guard/fmt.sh scripts/guard/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): D PostToolUse single-file formatter"
 ```
 
 ---
 
-### Task 8: Wire hooks into committed `.claude/settings.json`
+### Task 8: Wire committed `.claude/settings.json`
 
-**Files:**
-- Create: `.claude/settings.json`
+**Files:** Create `.claude/settings.json`.
 
-> Hooks arrays concatenate with `.claude/settings.local.json` (personal, BridgeSpace-free after the spec's §7 work). `permissions.allow` is broad **because** guard A is now the real Bash gate. Uses the `args: string[]` exec form per changelog 2.1.121.
-
-- [ ] **Step 1: Create the settings file**
+- [ ] **Step 1: Create the file**
 
 ```json
 {
@@ -810,91 +547,82 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(bash scripts/*)",
-      "Bash(node --test *)",
       "Bash(rustfmt *)",
-      "Bash(taplo *)"
+      "Bash(taplo *)",
+      "Bash(jq *)"
     ]
   },
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "node", "args": ["$CLAUDE_PROJECT_DIR/.claude/hooks/nebula-guard-turn-reset.mjs"] } ] }
+      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/turn-reset.sh\"" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node", "args": ["$CLAUDE_PROJECT_DIR/.claude/hooks/nebula-guard-bash.mjs"] } ] },
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "node", "args": ["$CLAUDE_PROJECT_DIR/.claude/hooks/nebula-guard-edit.mjs"] } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/bash-deny.sh\"" } ] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/edit-guard.sh\"" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "node", "args": ["$CLAUDE_PROJECT_DIR/.claude/hooks/nebula-guard-record.mjs"] } ] },
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "node", "args": ["$CLAUDE_PROJECT_DIR/.claude/hooks/nebula-guard-fmt.mjs"] } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/record.sh\"" } ] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/fmt.sh\"" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "node", "args": ["$CLAUDE_PROJECT_DIR/.claude/hooks/nebula-guard-stop.mjs"] } ] }
+      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/stop-gate.sh\"" } ] }
     ]
   }
 }
 ```
 
-- [ ] **Step 2: Validate JSON + schema-shape**
-
-Run: `node -e "const j=require('./.claude/settings.json'); if(!j['$schema']||!j.hooks.PreToolUse.length||!j.hooks.Stop.length) process.exit(1); console.log('settings.json OK')"`
-Expected: `settings.json OK`
+- [ ] **Step 2: Validate** — Run: `jq -e '.["$schema"] and (.hooks.PreToolUse|length==2) and (.hooks.Stop|length==1)' .claude/settings.json && echo "settings.json OK"`
+Expected: `true` then `settings.json OK`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add .claude/settings.json
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): wire guard hooks in committed settings.json"
+git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): wire bash guard hooks in committed settings.json"
 ```
 
 ---
 
-### Task 9: `task hooks:test` target + CLAUDE.md Enforced-Discipline section
+### Task 9: `task hooks:test` + CLAUDE.md Enforced-Discipline section
 
-**Files:**
-- Modify: `Taskfile.yml` (add a `hooks:test` task under `tasks:`)
-- Modify: `CLAUDE.md` (append an "Enforced Discipline" section)
+**Files:** Modify `Taskfile.yml`, `CLAUDE.md`.
 
-- [ ] **Step 1: Add the Taskfile target**
-
-Locate the top-level `tasks:` map in `Taskfile.yml` and add:
+- [ ] **Step 1: Add to the `tasks:` map in `Taskfile.yml`:**
 
 ```yaml
   hooks:test:
-    desc: Run guard-hook unit tests (node --test)
+    desc: Run guard-hook test harness (bash)
     cmds:
-      - node --test .claude/hooks/__tests__
+      - bash scripts/guard/test/run.sh
 ```
 
-- [ ] **Step 2: Verify the target runs all hook tests**
+- [ ] **Step 2: Verify** — Run: `task hooks:test`
+Expected: `ALL GUARD TESTS PASSED`, exit 0.
 
-Run: `task hooks:test`
-Expected: all `__tests__/*.test.mjs` pass (15 tests across 6 files + lib).
-
-- [ ] **Step 3: Append the Enforced-Discipline section to CLAUDE.md**
-
-Append to `CLAUDE.md`:
+- [ ] **Step 3: Append to `CLAUDE.md`:**
 
 ```markdown
 ## Enforced Discipline (guard hooks)
 
-These rules are mechanically enforced by `.claude/hooks/` (committed in
-`.claude/settings.json`), not advisory. `task hooks:test` proves each guard
-deny-bad / allow-good. Plan 2 makes this file canonical.
+Mechanically enforced by `scripts/guard/*.sh` (committed in `.claude/settings.json`),
+not advisory. `task hooks:test` proves each guard. Hook A is fail-closed
+(un-parseable command ⇒ deny). Plan 2 makes this file canonical.
 
 | Rule | Guard |
 |------|-------|
-| No `git commit --no-verify` / lefthook bypass | `nebula-guard-bash.mjs` |
-| No clippy `-A`/`--allow`/`RUSTFLAGS` lint suppression | `nebula-guard-bash.mjs` |
-| No `cargo fmt --all` (Windows 206 / false green) | `nebula-guard-bash.mjs` |
-| No `unwrap()/expect()/panic!()` in lib code | `nebula-guard-edit.mjs` |
-| `#[allow]/todo!/unimplemented!/unreachable!` need `// guard-justified:` | `nebula-guard-edit.mjs` |
-| No TODO/FIXME/HACK/plan-id in committed code | `nebula-guard-edit.mjs` |
-| No test-weakening while impl changed same turn | `nebula-guard-edit.mjs` |
-| Cannot end a turn with impl changed but no green clippy+nextest | `nebula-guard-stop.mjs` |
+| No `git commit --no-verify` / lefthook bypass | `bash-deny.sh` |
+| No clippy `-A`/`--allow`/`RUSTFLAGS` suppression | `bash-deny.sh` |
+| No `cargo fmt --all` (Windows 206 / false green) | `bash-deny.sh` |
+| Unverifiable/obfuscated shell command | `bash-deny.sh` (fail-closed) |
+| No `unwrap()/expect()/panic!()` in lib code | `edit-guard.sh` |
+| `#[allow]/todo!/unimplemented!/unreachable!` need `// guard-justified:` | `edit-guard.sh` |
+| No TODO/FIXME/HACK/plan-id in committed code | `edit-guard.sh` |
+| No test-weakening while impl changed same turn | `edit-guard.sh` |
+| Cannot end a turn with impl changed but no green clippy+nextest | `stop-gate.sh` |
 
-Escape hatch for discretionary edit rules: a `// guard-justified: <reason>`
-line directly above the construct. There is **no** escape for the lefthook
-bypass, lint-suppression, or no-unwrap rules.
+Escape hatch for discretionary edit rules: a `// guard-justified: <reason>` line
+directly above the construct. No escape for lefthook-bypass, lint-suppression,
+or no-unwrap.
 ```
 
 - [ ] **Step 4: Commit**
@@ -908,58 +636,29 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 ### Task 10: Integration smoke (acceptance §11)
 
-**Files:**
-- Create: `.claude/hooks/__tests__/integration-smoke.test.mjs`
+**Files:** Modify `scripts/guard/test/run.sh` (append a scenario block before `# HOOKMARK`).
 
-- [ ] **Step 1: Write the smoke test (deny-cheat / allow-clean end to end)**
+- [ ] **Step 1: Add the end-to-end scenario**
 
-```javascript
-// .claude/hooks/__tests__/integration-smoke.test.mjs
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { turnStatePath } from "../guard-lib.mjs";
-
-const callEdit = (payload) => {
-  try {
-    return execFileSync("node", [".claude/hooks/nebula-guard-edit.mjs"], {
-      input: JSON.stringify({ cwd: process.cwd(), ...payload }), encoding: "utf8",
-    });
-  } catch (e) { return e.stdout || ""; }
-};
-
-test("cheat path: edit impl then neuter a test → denied", () => {
-  const sid = "smoke-cheat";
-  callEdit({ session_id: sid, tool_name: "Write",
-    tool_input: { file_path: "crates/engine/src/state.rs", content: "pub fn add(a:i32,b:i32)->i32{a+b}" } });
-  const out = callEdit({ session_id: sid, tool_name: "Edit",
-    tool_input: { file_path: "crates/engine/tests/state.rs",
-      old_string: "assert_eq!(add(2,2), 4);", new_string: "assert!(true);" } });
-  assert.ok(out.includes('"permissionDecision":"deny"'));
-});
-
-test("clean path: well-formed impl edit → allowed", () => {
-  const sid = "smoke-clean";
-  const p = turnStatePath(sid, process.cwd());
-  mkdirSync(p.replace(/[^/\\]+$/, ""), { recursive: true });
-  writeFileSync(p, JSON.stringify({ impl_files_edited: [], gate_green: [] }));
-  const out = callEdit({ session_id: sid, tool_name: "Write",
-    tool_input: { file_path: "crates/engine/src/state.rs",
-      content: "pub fn add(a: i32, b: i32) -> i32 { a + b }" } });
-  assert.equal(out.trim(), "");
-});
+```bash
+# Integration: cheat path (edit impl then neuter a test) => B denies
+S_SID="smoke"; S_P="$(turn_state_path "$S_SID" "$PWD")"; mkdir -p "$(dirname "$S_P")"
+printf '{"impl_files_edited":[],"gate_green":[]}' >"$S_P"
+printf '{"tool_name":"Write","tool_input":{"file_path":"crates/engine/src/state.rs","content":"pub fn add(a:i32,b:i32)->i32{a+b}"},"cwd":"%s","session_id":"%s"}' "$PWD" "$S_SID" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1 || true
+SE='{"tool_name":"Edit","tool_input":{"file_path":"crates/engine/tests/state.rs","old_string":"assert_eq!(add(2,2),4);","new_string":"assert!(true);"},"cwd":"'"$PWD"'","session_id":"'"$S_SID"'"}'
+printf '%s' "$SE" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1; chk "SMOKE cheat denied" 2 "$?"
+# Integration: clean impl edit => allowed
+printf '{"impl_files_edited":[],"gate_green":[]}' >"$S_P"
+printf '{"tool_name":"Write","tool_input":{"file_path":"crates/engine/src/ok.rs","content":"pub fn add(a: i32, b: i32) -> i32 { a + b }"},"cwd":"%s","session_id":"%s"}' "$PWD" "$S_SID" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1; chk "SMOKE clean allowed" 0 "$?"
 ```
 
-- [ ] **Step 2: Run the full suite**
-
-Run: `task hooks:test`
-Expected: PASS — all files including `integration-smoke` green.
+- [ ] **Step 2: Run full suite** — Run: `task hooks:test`
+Expected: `ALL GUARD TESTS PASSED`, exit 0.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add .claude/hooks/__tests__/integration-smoke.test.mjs
+git add scripts/guard/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "test(scripts): guard-hooks integration smoke (cheat denied / clean allowed)"
 ```
 
@@ -967,31 +666,14 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 ## Self-Review
 
-**1. Spec coverage (§ → task):**
-- §4.A0 turn-reset → Task 2 ✓
-- §4.A Bash deny (no-verify, clippy -A, fmt --all, force-push) → Task 3 ✓
-- §4.A2 gate-green record → Task 4 ✓ (limitation documented)
-- §4.B edit anti-cheat (unwrap, allow/todo without justified, TODO/plan-id, `let _ =` swallow, test-weakening) → Task 5 ✓
-- §4.C Stop falsifiable finish + `stop_hook_active` guard + side-effect-free → Task 6 ✓
-- §4.D post-edit fmt (rustfmt --edition 2024 / taplo, single file, never block) → Task 7 ✓
-- §4 settings wiring (args[] form, $schema, concatenation, broad permissions) → Task 8 ✓
-- §8.1 `__tests__` deny-bad/allow-good + `task hooks:test` → Tasks 1–10 ✓
-- §8.2 CLAUDE.md rule→guard map → Task 9 ✓
-- §11 acceptance (scripted cheat denied, clean allowed) → Task 10 ✓
-- Out of scope for Plan 1 (correctly): D8 inversion, G/H curation, lefthook granularity, `nebula-pitfalls`, full `permissions.allow` cleanup → Plans 2–4.
+**1. Spec coverage (spec § → task):** §4 runtime/contract (bash+jq, exit2, fail-open-except-A) → Tasks 1,3 ✓; §4.A0 → T2 ✓; §4.A fail-closed deny set → T3 ✓; §4.A2 record (+limitation) → T4 ✓; §4.B cheat/costyl/test-weaken → T5 ✓; §4.C stop + `stop_hook_active` + side-effect-free → T6 ✓; §4.D fmt-only → T7 ✓; §4 settings wiring + `$schema` + permissions → T8 ✓; §8.1 harness + `task hooks:test` → T1–10 ✓; §8.2 CLAUDE.md map → T9 ✓; §11 cheat-denied/clean-allowed → T10 ✓. D9 (bash, fail-closed A, scripts/guard) → whole plan ✓. Out of scope (correct): D8, G/H, lefthook-granularity, `nebula-pitfalls`, full permissions cleanup → Plans 2–4.
 
-**2. Placeholder scan:** No TBD/TODO-as-instruction; every code step contains complete runnable code; every command has expected output. (Literal `TODO` strings appear only as regex content the guard detects.)
+**2. Placeholder scan:** No TBD/TODO-as-instruction; every step has complete runnable code/commands with expected output. Literal `TODO`/`HACK` appear only as guard regex content.
 
-**3. Type consistency:** `guard-lib.mjs` exports `readStdin, parseBash, crateOf, isLibRust, turnStatePath, loadState, saveState, denyPre` — all consumed with those exact names/signatures in Tasks 2–7. Turn-state shape `{session, started_at, impl_files_edited[], gate_green[]}` is written by A0 and read consistently by A2/B/C. `*workspace*` sentinel set by A2 (`task dev:check`) is honored by C.
+**3. Consistency:** `_lib.sh` defines `read_input, jqg, have_jq, deny, allow, git_common_dir, turn_state_path, load_state, save_state, crate_of, is_lib_rust, normalize_argv0`; every hook sources `_lib.sh` and uses those exact names. Turn-state shape `{session,started_at,impl_files_edited[],gate_green[]}` written by A0, mutated by A2/B, read by C; `*workspace*` sentinel set by A2 (`task dev:check`) honored by C. `# HOOKMARK` insertion point is stable across Tasks 2–10. Blocking is uniformly `exit 2`; D never blocks.
 
 ---
 
 ## Execution Handoff
 
-**Plan complete and saved to `docs/superpowers/plans/2026-05-16-guard-hooks-subsystem.md`. Two execution options:**
-
-**1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
-
-**2. Inline Execution** — Execute tasks in this session using executing-plans, batch execution with checkpoints.
-
-**Which approach?**
+Already chosen: **Subagent-Driven** (superpowers:subagent-driven-development) — fresh implementer per task + spec then code-quality review, in this session, continuous.
