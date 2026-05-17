@@ -644,6 +644,11 @@ impl Manager {
     /// still carry unresolved templates; validating the *post-resolution*
     /// shape is an activation-time concern.
     ///
+    /// On success returns the validated, deserialized `R::Config`: the
+    /// closed-set guard and `serde_json::from_value::<R::Config>` already
+    /// run here, so the live `register_from_value` path consumes this
+    /// owned value directly instead of deserializing the same JSON twice.
+    ///
     /// # Errors
     ///
     /// - [`Error::permanent`] when the JSON is not a field tree, fails the
@@ -655,7 +660,7 @@ impl Manager {
     ///   secret-shaped field is rejected here rather than silently ignored
     ///   (PRODUCT_CANON §3.5). The error names only the offending key,
     ///   never its value.
-    pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<(), Error>
+    pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<R::Config, Error>
     where
         R: Resource,
         R::Config: serde::de::DeserializeOwned,
@@ -708,16 +713,16 @@ impl Manager {
         }
 
         // Deserialize R::Config from the JSON to surface any residual
-        // type-shape mismatch the structural schema pass did not (the live
-        // path deserializes here too, before constructing the runtime).
+        // type-shape mismatch the structural schema pass did not, and
+        // return the parsed value: the live `register_from_value` path
+        // consumes this owned `R::Config` directly, so the JSON is
+        // deserialized exactly once across validation + typed dispatch.
         serde_json::from_value::<R::Config>(config_json).map_err(|e| {
             Error::permanent(format!(
                 "validate_config_value: failed to deserialize {ty} config from JSON: {e}",
                 ty = std::any::type_name::<R::Config>()
             ))
-        })?;
-
-        Ok(())
+        })
     }
 
     /// JSON-driven registration with `{{ ... }}` template resolution + schema validation (Phase 9
@@ -819,17 +824,7 @@ impl Manager {
         //    path validates the *post-template-resolution* JSON (step 1
         //    above) whereas the config-CRUD seam validates the stored shape
         //    directly (no expression context at config-create time).
-        Self::validate_config_value::<R>(resolved.clone())?;
-
-        // Re-deserialize for the typed dispatch below. `validate_config_value`
-        // only proves the config is well-formed; the typed `register` path
-        // consumes an owned `R::Config`.
-        let config: R::Config = serde_json::from_value(resolved).map_err(|e| {
-            Error::permanent(format!(
-                "register_from_value: failed to deserialize {ty} config from JSON: {e}",
-                ty = std::any::type_name::<R::Config>()
-            ))
-        })?;
+        let config: R::Config = Self::validate_config_value::<R>(resolved)?;
 
         // 4. Derive the structural slot identity from the *resolved* slot bindings. This is the
         //    per-slot resolved-credential identity available at the register/dedup point on the

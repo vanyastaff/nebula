@@ -323,7 +323,10 @@ where
         // is purely a function of the config JSON and the monomorphized
         // `R::Config` schema — exactly the live path's pre-register checks,
         // minus template resolution and the typed-runtime construction.
-        Manager::validate_config_value::<R>(config_json)
+        // `validate_config_value` returns the parsed `R::Config` for the
+        // live register path; the config-CRUD seam only needs the
+        // pass/fail outcome, so the typed value is discarded here.
+        Manager::validate_config_value::<R>(config_json).map(|_| ())
     }
 }
 
