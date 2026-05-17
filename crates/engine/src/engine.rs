@@ -5688,6 +5688,22 @@ mod tests {
                 .unwrap();
         }
 
+        /// Legacy-shaped typed-result read. Mirrors the production port
+        /// path (`NodeResultStore::load_node_result`, scoped to the
+        /// engine placeholder) — the port analog of the legacy
+        /// `ExecutionRepo::load_node_result`. The returned record's
+        /// `kind_tag`/`json` correspond to the legacy `kind`/`result`.
+        async fn load_node_result(
+            &self,
+            id: ExecutionId,
+            node: NodeKey,
+        ) -> Result<Option<nebula_storage_port::dto::NodeResultRecord>, StorageError> {
+            let scope = crate::store_seam::engine_scope();
+            self.node_results
+                .load_node_result(&scope, &id.to_string(), node.as_str())
+                .await
+        }
+
         /// Non-mutating dedup-state read. Mirrors the production path's
         /// idempotency mark (`engine_scope()` + `{execution_id}:{node}:
         /// {attempt}`) without perturbing it — the port analog of the
@@ -8517,9 +8533,9 @@ mod tests {
             EchoHandler,
         );
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(repo.clone());
+        let engine = engine.with_execution_stores(stores.execution_stores());
 
         let n1 = node_key!("n1");
         let ghost = node_key!("ghost");
@@ -8547,7 +8563,7 @@ mod tests {
         // after the setup failure. The persisted status must be
         // `failed` and the failed node's state must be `failed` with
         // an error_message populated.
-        let (_version, state_json) = repo
+        let (_version, state_json) = stores
             .get_state(result.execution_id)
             .await
             .unwrap()
@@ -8586,7 +8602,7 @@ mod tests {
             EchoHandler,
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
 
         let n1 = node_key!("n1");
@@ -8594,7 +8610,7 @@ mod tests {
             vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        stores.save_workflow(&wf).await;
 
         // Build a partial execution state for a FRESH execution where
         // the entry node has not yet run. Persist it with the original
@@ -8606,14 +8622,9 @@ mod tests {
             .unwrap();
         exec_state.set_workflow_input(serde_json::json!({"trigger": "webhook-payload"}));
         let state_json = serde_json::to_value(&exec_state).unwrap();
-        exec_repo
-            .create(execution_id, wf.id, state_json)
-            .await
-            .unwrap();
+        stores.inject_state(execution_id, wf.id, state_json).await;
 
-        let engine = engine
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine = stores.attach(engine);
 
         let result = engine.resume_execution(execution_id).await.unwrap();
 
@@ -8838,9 +8849,9 @@ mod tests {
             PanicHandler,
         );
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(repo.clone());
+        let engine = engine.with_execution_stores(stores.execution_stores());
 
         let n1 = node_key!("n1");
         let wf = make_workflow(
@@ -8871,7 +8882,7 @@ mod tests {
         );
 
         // Persisted state should also reflect n1 as the failed node.
-        let (_v, state_json) = repo
+        let (_v, state_json) = stores
             .get_state(result.execution_id)
             .await
             .unwrap()
@@ -8906,9 +8917,9 @@ mod tests {
             EchoHandler,
         );
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(repo.clone());
+        let engine = engine.with_execution_stores(stores.execution_stores());
 
         // A → B (branch_key="true") / C (branch_key="false")
         let a = node_key!("a");
@@ -8949,18 +8960,18 @@ mod tests {
         // Verify the persisted ActionResult encodes a Branch variant
         // rather than bare output — this is the byte-level check
         // behind issue #299's fix.
-        let persisted_record = repo
+        let persisted_record = stores
             .load_node_result(first.execution_id, a.clone())
             .await
             .unwrap()
             .expect("load_node_result should return the persisted ActionResult after #299");
         assert_eq!(
-            persisted_record.kind, "Branch",
+            persisted_record.kind_tag, "Branch",
             "persisted ActionResult for A should be the Branch variant, got: {persisted_record:?}"
         );
         assert_eq!(
             persisted_record
-                .result
+                .json
                 .get("selected")
                 .and_then(|v| v.as_str()),
             Some("true"),
@@ -9318,7 +9329,20 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
 
-        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        // Port-seam equivalent of the legacy #333 non-terminal-conflict
+        // case: a fresh row has `fencing_generation == 0`, so the gen-0
+        // token is the current holder and the engine can `commit`
+        // without acquiring a lease. The external bump is itself a
+        // gen-0 `commit` (the port analog of the old
+        // `ExecutionRepo::transition`) — a pure CAS race, not a
+        // fencing race. The reconciliation contract is identical:
+        // non-terminal conflict ⇒ retry at the refreshed version
+        // succeeds ⇒ `Ok(None)` and the engine's Completed decision is
+        // durably persisted.
+        let stores = TestStores::new();
+        let execution = stores.execution.clone();
+        let scope = crate::store_seam::engine_scope();
+        let token = nebula_storage_port::FencingToken::from_generation(0);
 
         let execution_id = ExecutionId::new();
         let workflow_id = WorkflowId::new();
@@ -9327,43 +9351,57 @@ mod tests {
         local_state
             .transition_status(ExecutionStatus::Running)
             .unwrap();
-        inner
+        execution
             .create(
-                execution_id,
-                workflow_id,
+                &scope,
+                &execution_id.to_string(),
+                &workflow_id.to_string(),
                 serde_json::to_value(&local_state).unwrap(),
             )
             .await
             .unwrap();
 
         // External non-terminal bump: stay in Running but advance
-        // `updated_at` by re-saving the row at a new version.
+        // `updated_at`, committed at the baseline version v=0.
         let mut external_state = local_state.clone();
         external_state.updated_at = Utc::now();
-        external_state.version += 1;
         let external_json = serde_json::to_value(&external_state).unwrap();
-        let ok = inner
-            .transition(execution_id, 1, external_json)
+        let external_outcome = execution
+            .commit(
+                nebula_storage_port::TransitionBatch::builder()
+                    .scope(scope.clone())
+                    .execution_id(execution_id.to_string())
+                    .expected_version(0)
+                    .fencing(token)
+                    .new_state(external_json)
+                    .build()
+                    .unwrap(),
+            )
             .await
-            .expect("external transition should succeed");
-        assert!(ok, "external transition must commit at v=1");
+            .expect("external commit should succeed");
+        assert!(
+            matches!(
+                external_outcome,
+                nebula_storage_port::TransitionOutcome::Applied { new_version: 1 }
+            ),
+            "external commit must apply at v=1, got {external_outcome:?}"
+        );
 
         // Engine's local final state is Completed, using the stale
-        // repo_version=1.
-        let mut repo_version: u64 = 1;
+        // repo_version=0.
+        let mut repo_version: u64 = 0;
         let mut engine_final_state = local_state.clone();
         engine_final_state
             .transition_status(ExecutionStatus::Completed)
             .unwrap();
 
-        let repo: Arc<dyn ExecutionRepo> = inner.clone();
         let outcome = engine
-            .persist_final_state(
-                Some(&repo),
+            .persist_final_state_port(
+                &stores.execution_stores(),
                 execution_id,
                 &mut engine_final_state,
                 &mut repo_version,
-                None,
+                token,
             )
             .await
             .expect("retry should succeed on non-terminal conflict");
@@ -9376,14 +9414,14 @@ mod tests {
         );
 
         // The persisted row must now be Completed at a bumped version.
-        let (persisted_version, final_state) = inner
+        let (persisted_version, final_state) = stores
             .get_state(execution_id)
             .await
             .unwrap()
             .expect("row must still exist");
         assert!(
-            persisted_version >= 3,
-            "expected version ≥ 3 (create + external bump + retry), \
+            persisted_version >= 2,
+            "expected version ≥ 2 (create + external bump + retry), \
              got {persisted_version}"
         );
         assert_eq!(
@@ -9406,10 +9444,19 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
 
-        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        // Port-seam equivalent of the legacy #333 terminal-conflict
+        // case. Same gen-0 reasoning as the non-terminal sibling: a
+        // fresh row's fencing generation is 0, so the engine commits
+        // with the gen-0 token and the external cancel is a gen-0
+        // `commit`. The reconciliation contract is identical: an
+        // external *terminal* write is honored — the helper returns
+        // `Ok(Some(Cancelled))` and the engine's local Completed
+        // decision must NOT overwrite the durable Cancelled row.
+        let stores = TestStores::new();
+        let execution = stores.execution.clone();
+        let scope = crate::store_seam::engine_scope();
+        let token = nebula_storage_port::FencingToken::from_generation(0);
 
-        // Seed an execution row manually at version 0 with Running
-        // status (mirrors what `execute_workflow`'s `create` does).
         let execution_id = ExecutionId::new();
         let workflow_id = WorkflowId::new();
         let node_ids = vec![node_key!("x")];
@@ -9417,17 +9464,18 @@ mod tests {
         local_state
             .transition_status(ExecutionStatus::Running)
             .unwrap();
-        inner
+        execution
             .create(
-                execution_id,
-                workflow_id,
+                &scope,
+                &execution_id.to_string(),
+                &workflow_id.to_string(),
                 serde_json::to_value(&local_state).unwrap(),
             )
             .await
             .unwrap();
 
-        // Simulate an external cancel: bump the row to version 2 with
-        // status=cancelled.
+        // Simulate an external cancel: commit status=cancelled at the
+        // baseline version v=0.
         let mut external_state = local_state.clone();
         external_state
             .transition_status(ExecutionStatus::Cancelling)
@@ -9436,29 +9484,43 @@ mod tests {
             .transition_status(ExecutionStatus::Cancelled)
             .ok();
         let external_json = serde_json::to_value(&external_state).unwrap();
-        let ok = inner
-            .transition(execution_id, 1, external_json)
+        let external_outcome = execution
+            .commit(
+                nebula_storage_port::TransitionBatch::builder()
+                    .scope(scope.clone())
+                    .execution_id(execution_id.to_string())
+                    .expected_version(0)
+                    .fencing(token)
+                    .new_state(external_json)
+                    .build()
+                    .unwrap(),
+            )
             .await
-            .expect("external transition should succeed");
-        assert!(ok, "external transition must commit at v=1");
+            .expect("external commit should succeed");
+        assert!(
+            matches!(
+                external_outcome,
+                nebula_storage_port::TransitionOutcome::Applied { new_version: 1 }
+            ),
+            "external cancel commit must apply at v=1, got {external_outcome:?}"
+        );
 
         // Now ask the engine to persist its final state as Completed
         // starting from the stale version it had before the external
         // bump. This is exactly the pre-fix silent-overwrite scenario.
-        let mut repo_version: u64 = 1;
+        let mut repo_version: u64 = 0;
         let mut engine_final_state = local_state.clone();
         engine_final_state
             .transition_status(ExecutionStatus::Completed)
             .unwrap();
 
-        let repo: Arc<dyn ExecutionRepo> = inner.clone();
         let outcome = engine
-            .persist_final_state(
-                Some(&repo),
+            .persist_final_state_port(
+                &stores.execution_stores(),
                 execution_id,
                 &mut engine_final_state,
                 &mut repo_version,
-                None,
+                token,
             )
             .await
             .expect("reconciliation must succeed against an external terminal write");
@@ -9472,7 +9534,7 @@ mod tests {
         );
 
         // Double-check: the persisted row still says `cancelled`.
-        let (_v, final_state) = inner
+        let (_v, final_state) = stores
             .get_state(execution_id)
             .await
             .unwrap()
