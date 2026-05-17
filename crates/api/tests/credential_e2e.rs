@@ -598,16 +598,27 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
     // dispatch is not wired into this API build); the genuine `{cred}`
     // position stays strictly ULID-validated. Regression guard for the
     // route-shadow.
+    // The sentinel is placed in the submitted credential material
+    // (`data` / `user_input`) so the no-secret assertion below is a
+    // *real* redaction guard, not vacuous: the honest-503 problem body
+    // must never echo caller-submitted secret material (§12.5 / §13 —
+    // same contract as the forced-error bodies elsewhere in this file).
     let resolve_503: &[(&str, String, serde_json::Value)] = &[
         (
             "POST",
             ws_path("/credentials/resolve"),
-            serde_json::json!({ "credential_key": "api_key", "data": {} }),
+            serde_json::json!({
+                "credential_key": "api_key",
+                "data": { "api_key": SECRET_TOKEN }
+            }),
         ),
         (
             "POST",
             ws_path("/credentials/resolve/continue"),
-            serde_json::json!({ "pending_token": "tok", "user_input": {} }),
+            serde_json::json!({
+                "pending_token": "tok",
+                "user_input": { "code": SECRET_TOKEN }
+            }),
         ),
     ];
 
@@ -627,7 +638,9 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         let problem = body_string(resp).await;
         assert!(
             !problem.contains(SECRET_TOKEN),
-            "503 body must never carry a secret: {problem}"
+            "honest-503 problem body must not echo caller-submitted \
+             credential material (SECRET_TOKEN was in the request \
+             `data`/`user_input`): {problem}"
         );
     }
 
