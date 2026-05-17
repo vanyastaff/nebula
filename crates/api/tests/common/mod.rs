@@ -170,3 +170,104 @@ pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQ
 pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
     create_state_with_queue().await
 }
+
+/// Create an `AppState` whose execution / workflow / control-queue
+/// surface is the **spec-16 scoped port**, wired exactly as the
+/// composition root would: the InMemory port adapters wrapped in the
+/// `nebula-tenancy` decorators (bound to the placeholder scope), then
+/// attached via [`AppState::with_execution_store`] /
+/// [`AppState::with_workflow_store`] / [`AppState::with_control_queue`].
+///
+/// The legacy repos passed to [`AppState::new`] stay present (the
+/// not-yet-migrated fields still need them — expand-contract), but every
+/// accessor the knife exercises now prefers the port. This lets the §13
+/// knife run end-to-end through the port and proves it is
+/// behaviourally equivalent to the legacy path. The returned
+/// `InMemoryControlQueue` shares the execution store's core, so its
+/// non-consuming `snapshot()` observes a `commit`'s / `enqueue`'s outbox
+/// rows — the port analogue of `InMemoryControlQueueRepo::snapshot()`.
+pub(crate) async fn create_state_with_port_queue()
+-> (AppState, nebula_storage::inmem::InMemoryControlQueue) {
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_tenancy::{
+        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    };
+
+    // Fixed placeholder scope: the tenancy decorator substitutes its
+    // bound scope on every call, so the concrete value is immaterial to
+    // isolation — it only has to be a valid `Scope` (mirrors
+    // `AppState`'s own `placeholder_scope`).
+    let scope = nebula_storage_port::Scope::new("nebula", "nebula");
+
+    // One shared execution-store core so the control queue + journal
+    // observe the rows a `commit`/`enqueue` writes (same wiring contract
+    // the conformance harness uses).
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_store = InMemoryWorkflowStore::new();
+    // ONE workflow-version store instance shared between the
+    // workflow-CRUD path (`with_workflow_store`) and the
+    // resume/definition path (`with_execution_store`). Both InMemory
+    // stores are `Clone` over an `Arc<Mutex<…>>`, so cloning shares
+    // state — a version published via the workflow handlers must be
+    // readable through the execution/resume accessor (otherwise a
+    // workflow created in step 1 would be invisible to step 3's start).
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+
+    let api_config = ApiConfig::for_test();
+
+    // Legacy repos remain for the not-yet-migrated `AppState` fields.
+    let legacy_workflow = Arc::new(InMemoryWorkflowRepo::new());
+    let legacy_execution = Arc::new(InMemoryExecutionRepo::new());
+    let legacy_control: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
+        Arc::new(InMemoryControlQueueRepo::new());
+
+    let state = AppState::new(
+        legacy_workflow,
+        legacy_execution,
+        legacy_control,
+        api_config.jwt_secret,
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    .with_execution_store(
+        Arc::new(ScopedExecutionStore::new(
+            Arc::new(exec_store),
+            scope.clone(),
+        )),
+        Arc::new(ScopedWorkflowVersionStore::new(
+            Arc::new(workflow_versions.clone()),
+            scope.clone(),
+        )),
+        Arc::new(ScopedNodeResultStore::new(
+            Arc::new(node_results),
+            scope.clone(),
+        )),
+        Arc::new(ScopedExecutionJournalReader::new(
+            Arc::new(journal),
+            scope.clone(),
+        )),
+    )
+    .with_workflow_store(
+        Arc::new(ScopedWorkflowStore::new(
+            Arc::new(workflow_store),
+            scope.clone(),
+        )),
+        Arc::new(ScopedWorkflowVersionStore::new(
+            Arc::new(workflow_versions),
+            scope.clone(),
+        )),
+    )
+    .with_control_queue(Arc::new(ScopedControlQueue::new(
+        Arc::new(control_queue.clone()),
+        scope,
+    )));
+
+    (state, control_queue)
+}
