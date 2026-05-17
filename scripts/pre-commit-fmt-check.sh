@@ -45,7 +45,9 @@ for f in "$@"; do
     continue
   fi
 
-  name="$(awk -F'"' '/^name[[:space:]]*=[[:space:]]*"/ { print $2; exit }' "$d/Cargo.toml")"
+  # Scope to the [package] table — a `name = "…"` under another table
+  # (e.g. [[bin]], [package.metadata]) must not be mistaken for the crate.
+  name="$(awk -F'"' '/^\[package\]/{p=1;next} /^\[/{p=0} p&&/^name[[:space:]]*=[[:space:]]*"/{print $2;exit}' "$d/Cargo.toml")"
   [[ -z "$name" ]] && continue
 
   if [[ -n "${seen[$name]:-}" ]]; then

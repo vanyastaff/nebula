@@ -158,6 +158,11 @@ tasks:
     cmds:
       - cargo test -p {{.CRATE}} --all-features
 
+  hooks:test:
+    desc: Run guard-hook test harness (bash)
+    cmds:
+      - bash .claude/hooks/test/run.sh
+
   # ── Benchmarks ────────────────────────────────────────────────────────────
 
   bench:

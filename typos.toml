@@ -45,3 +45,5 @@ a486010c5ca2f7ba8 = "a486010c5ca2f7ba8"
 [default.extend-words]
 Hashi = "Hashi"
 mis = "mis"
+# guard-hook interface sentinel: UNPARSEABLE is intentional (not UNPARSABLE)
+UNPARSEABLE = "UNPARSEABLE"
