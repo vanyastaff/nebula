@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::dispatch::CredentialDispatch;
 use crate::observer::CredentialObserver;
+use crate::ops::DispatchOps;
 use crate::service::CredentialService;
 use crate::state_source::StateSource;
 
@@ -40,6 +41,7 @@ pub struct CredentialServiceBuilder<B: CredentialStore, PS: PendingStateStore> {
     pending_store: PS,
     registry: Arc<CredentialRegistry>,
     dispatch: Arc<CredentialDispatch>,
+    ops: Arc<DispatchOps<B, PS>>,
     observer: Arc<dyn CredentialObserver>,
     lease_config: LeaseLifecycleConfig,
     shutdown: CancellationToken,
@@ -59,6 +61,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
         pending_store: PS,
         registry: Arc<CredentialRegistry>,
         dispatch: Arc<CredentialDispatch>,
+        ops: Arc<DispatchOps<B, PS>>,
         observer: Arc<dyn CredentialObserver>,
         lease_config: LeaseLifecycleConfig,
         shutdown: CancellationToken,
@@ -71,6 +74,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
             pending_store,
             registry,
             dispatch,
+            ops,
             observer,
             lease_config,
             shutdown,
@@ -130,6 +134,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
             self.pending_store,
             self.registry,
             self.dispatch,
+            self.ops,
             self.observer,
             self.external,
         )

@@ -14,7 +14,12 @@ nebula-error = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 nebula-credential = { path = "../credential" }
 nebula-credential-builtin = { path = "../credential-builtin" }
-nebula-storage = { path = "../storage", features = ["credential-in-memory", "test-util"] }
+# Production deps use only the unconditionally-public storage layer
+# types (EncryptionLayer/CacheLayer/AuditLayer/KeyProvider/AuditSink).
+# The `credential-in-memory` / `test-util` features (InMemoryStore,
+# StaticKeyProvider) are dev-only — ADR-0023 forbids test-util in a
+# release build, so they live under [dev-dependencies], not here.
+nebula-storage = { path = "../storage" }
 nebula-engine = { path = "../engine" }
 nebula-core = { path = "../core" }
 nebula-schema = { path = "../schema" }
@@ -23,11 +28,16 @@ nebula-resilience = { path = "../resilience" }
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 arc-swap = { workspace = true }
 chrono = { workspace = true }
+zeroize = { version = "1.8.2" }
 
 [dev-dependencies]
+# ADR-0023: test-util / credential-in-memory are confined to the test
+# build (test_support uses InMemoryStore + StaticKeyProvider).
+nebula-storage = { path = "../storage", features = ["credential-in-memory", "test-util"] }
 pretty_assertions = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 trybuild = "1.0"
