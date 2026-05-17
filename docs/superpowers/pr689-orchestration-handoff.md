@@ -23,6 +23,38 @@ this file + `git status` + the coordinator's last phase report. NEVER relocate
 to a different worktree while `MERGE_HEAD` is active (a fresh worktree won't
 inherit the in-progress merge).
 
+## PROGRESS LOG (fact-only; durable resume state)
+
+- **(A) MERGE — done&verified.** `be42f4e0`, 2-parent, origin/main ancestor (PR mergeable).
+- **(B) P1 — done&verified.** `da216ca4` atomic `WorkflowStore::save_with_published_version`.
+- **(C) P2 — done&verified.** Folded into `087467c0`: `workflow_list` now uses
+  dual-format `extract_timestamp` (codex 3255507515).
+- **`087467c0` — done&verified.** Three coherent fixes:
+  1. **InMemory workflow-store footgun (regression from da216ca4).** P1's
+     `save_with_published_version` wrote the version into the row store's
+     map, but `InMemoryWorkflowStore::new()` gave a *private* unshared
+     map; every site except the conformance matrix paired `new()` with a
+     separate version store → created workflows 404'd (10 nebula-api
+     tests, masked by fail-fast at HEAD). Removed the `new()`/`Default`
+     footgun; `new_with_versions(&versions)` is the sole constructor
+     (mirrors `InMemoryControlQueue`/`InMemoryJournalReader`). Rewired
+     all 11 call sites.
+  2. **(C)** workflow_list dual-format sort key (3255507515).
+  3. **Pre-existing merge drift (independent, fixed not masked):**
+     `From<nebula_storage::StorageError> for ApiError` mapped non-caller
+     faults to `Internal`, but #688's test +
+     `map_resource_create_storage_error` doc require the opaque `Storage`
+     variant. Faults now map through the port `StorageError`. Classified
+     pre-existing: reproduced at clean `da216ca4`; #688 test vs HEAD impl
+     drifted across the merge; unrelated to footgun/C.
+  - Verified: nebula-api 366/366 (1 pg-gated skip), storage+tenancy+
+    storage-port 272/272, touched crates fmt + clippy -D warnings clean,
+    lefthook green.
+- **REMAINING: (D) only** — work the VERIFIED REVIEW TRIAGE below
+  (FIX/ADOPT/PUSHBACK; some items discharged by da216ca4 — verify with
+  `git show da216ca4 --stat` before redoing). Then per-crate gates →
+  `git push` (no force) → per-comment_id factual replies + resolve.
+
 ## Finish sequence (strict order)
 
 - **(A) MERGE — blocking, in progress (~90%).** `git merge origin/main`
