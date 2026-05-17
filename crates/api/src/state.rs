@@ -17,7 +17,8 @@ use nebula_storage::{
     repos::{ControlQueueRepo, WebhookActivationRepo},
 };
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowVersionStore,
+    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use tokio::sync::RwLock;
 
@@ -195,6 +196,16 @@ pub struct AppState {
     /// definition lookup). Wired alongside [`Self::execution_store`].
     pub workflow_version_store: Option<Arc<dyn WorkflowVersionStore>>,
 
+    /// Optional spec-16 scoped workflow-row port handle.
+    ///
+    /// When set (via [`Self::with_workflow_store`]), the workflow CRUD
+    /// handlers read / mutate the workflow row + its versions through
+    /// this already-scoped port pair instead of the legacy
+    /// [`Self::workflow_repo`]. The spec-16 split stores the definition
+    /// on version records, so this handle is always wired together with
+    /// [`Self::workflow_version_store`].
+    pub workflow_store: Option<Arc<dyn WorkflowStore>>,
+
     /// Optional spec-16 scoped control-queue port handle.
     ///
     /// When set (via [`Self::with_control_queue`]), the cancel / start
@@ -260,6 +271,7 @@ impl AppState {
             internal_shared_token: None,
             execution_store: None,
             workflow_version_store: None,
+            workflow_store: None,
             control_queue: None,
             node_result_store: None,
             journal_reader: None,
@@ -296,6 +308,283 @@ impl AppState {
     pub fn with_control_queue(mut self, control_queue: Arc<dyn ControlQueue>) -> Self {
         self.control_queue = Some(control_queue);
         self
+    }
+
+    /// Attach the spec-16 scoped workflow-row + workflow-version port
+    /// handles (tenant-bound via the `nebula-tenancy` decorator). When
+    /// set, the workflow CRUD handlers prefer these over the legacy
+    /// [`Self::workflow_repo`]. The split stores the definition on
+    /// version records, so both handles are wired together.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_workflow_store(
+        mut self,
+        workflow: Arc<dyn WorkflowStore>,
+        workflow_version: Arc<dyn WorkflowVersionStore>,
+    ) -> Self {
+        self.workflow_store = Some(workflow);
+        self.workflow_version_store = Some(workflow_version);
+        self
+    }
+
+    /// Read a workflow's stored definition, or `None` if absent.
+    /// Dual-dispatch: the scoped spec-16 workflow stores (row +
+    /// highest-numbered published version's `definition`) when wired,
+    /// else the legacy `WorkflowRepo::get`. The definition lives on the
+    /// version record in the split model.
+    pub(crate) async fn workflow_definition(
+        &self,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<Option<serde_json::Value>, ApiError> {
+        Ok(self
+            .workflow_with_version(id)
+            .await?
+            .map(|(_, definition)| definition))
+    }
+
+    /// Read a workflow's `(version, definition)`, or `None` if absent.
+    /// Dual-dispatch: the spec-16 workflow-row `version` paired with its
+    /// published version's `definition` when the port is wired, else the
+    /// legacy `WorkflowRepo::get_with_version`. The workflow row carries
+    /// no definition (spec-16 split), so a row with no published version
+    /// is treated as absent — the legacy single-store always had a
+    /// definition alongside its counter, so this preserves the
+    /// caller-visible "exists ⇒ has a definition" invariant.
+    pub(crate) async fn workflow_with_version(
+        &self,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
+        if let (Some(rows), Some(versions)) = (&self.workflow_store, &self.workflow_version_store) {
+            let scope = placeholder_scope();
+            let id_str = id.to_string();
+            let Some(row) = rows
+                .get(&scope, &id_str)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+            else {
+                return Ok(None);
+            };
+            let published = versions
+                .get_published(&scope, &id_str)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
+            return Ok(published.map(|v| (row.version, v.definition)));
+        }
+        self.workflow_repo
+            .get_with_version(id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))
+    }
+
+    /// Persist a workflow definition with optimistic concurrency.
+    /// Dual-dispatch: the spec-16 split (`version == 0` creates the
+    /// workflow row at version 1 plus version record #1, else a CAS bump
+    /// of the row to `version + 1` plus a new published version record)
+    /// when the port is wired, else the legacy `WorkflowRepo::save`. A
+    /// CAS miss maps to [`ApiError::Conflict`] with the exact message the
+    /// legacy handler produced, so callers stay byte-identical.
+    pub(crate) async fn workflow_save(
+        &self,
+        id: nebula_core::id::WorkflowId,
+        version: u64,
+        definition: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        if let (Some(rows), Some(versions)) = (&self.workflow_store, &self.workflow_version_store) {
+            let scope = placeholder_scope();
+            let id_str = id.to_string();
+            let conflict =
+                || ApiError::Conflict("Workflow was modified by another request".to_string());
+
+            if version == 0 {
+                // New workflow: row at version 1 + first version record
+                // (number 1, published). The row slug is the workflow id
+                // string — unique per tenant among active rows, which is
+                // all the partial-unique index requires (this legacy-
+                // compat surface has no author-facing slug concept).
+                rows.create(
+                    &scope,
+                    nebula_storage_port::dto::WorkflowRecord {
+                        id: id_str.clone(),
+                        scope: scope.clone(),
+                        version: 1,
+                        slug: id_str.clone(),
+                        deleted: false,
+                    },
+                )
+                .await
+                .map_err(|e| match e {
+                    nebula_storage_port::StorageError::Duplicate { .. } => conflict(),
+                    other => ApiError::Internal(format!("Failed to create workflow: {other}")),
+                })?;
+                versions
+                    .create(
+                        &scope,
+                        nebula_storage_port::dto::WorkflowVersionRecord {
+                            workflow_id: id_str,
+                            number: 1,
+                            published: true,
+                            pinned: false,
+                            definition,
+                        },
+                    )
+                    .await
+                    .map_err(|e| {
+                        ApiError::Internal(format!("Failed to create workflow version: {e}"))
+                    })?;
+                return Ok(());
+            }
+
+            // Existing workflow: CAS the row counter forward and append
+            // the next published version record. `version` is the
+            // caller's expected current counter; the new counter is
+            // `version + 1` (legacy `save` semantics).
+            let next = version + 1;
+            rows.update(
+                &scope,
+                nebula_storage_port::dto::WorkflowRecord {
+                    id: id_str.clone(),
+                    scope: scope.clone(),
+                    version: next,
+                    slug: id_str.clone(),
+                    deleted: false,
+                },
+                version,
+            )
+            .await
+            .map_err(|e| match e {
+                nebula_storage_port::StorageError::Conflict { .. }
+                | nebula_storage_port::StorageError::NotFound { .. } => conflict(),
+                other => ApiError::Internal(format!("Failed to update workflow: {other}")),
+            })?;
+            versions
+                .create(
+                    &scope,
+                    nebula_storage_port::dto::WorkflowVersionRecord {
+                        workflow_id: id_str,
+                        number: u32::try_from(next).unwrap_or(u32::MAX),
+                        published: true,
+                        pinned: false,
+                        definition,
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to create workflow version: {e}"))
+                })?;
+            return Ok(());
+        }
+        self.workflow_repo
+            .save(id, version, definition)
+            .await
+            .map_err(|e| {
+                use nebula_storage::WorkflowRepoError;
+                match e {
+                    WorkflowRepoError::Conflict { .. } => {
+                        ApiError::Conflict("Workflow was modified by another request".to_string())
+                    },
+                    other => ApiError::Internal(format!("Failed to save workflow: {other}")),
+                }
+            })
+    }
+
+    /// Soft-delete a workflow. Dual-dispatch: the spec-16
+    /// `WorkflowStore::soft_delete` (a missing row ⇒ `false`) when the
+    /// port is wired, else the legacy `WorkflowRepo::delete`. Returns
+    /// `true` iff a row existed and was removed.
+    pub(crate) async fn workflow_delete(
+        &self,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<bool, ApiError> {
+        if let Some(rows) = &self.workflow_store {
+            return match rows
+                .soft_delete(&placeholder_scope(), &id.to_string())
+                .await
+            {
+                Ok(()) => Ok(true),
+                Err(nebula_storage_port::StorageError::NotFound { .. }) => Ok(false),
+                Err(e) => Err(ApiError::Internal(format!(
+                    "Failed to delete workflow: {e}"
+                ))),
+            };
+        }
+        self.workflow_repo
+            .delete(id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to delete workflow: {e}")))
+    }
+
+    /// List workflows with pagination, preserving the legacy
+    /// `(created_at, id)` ordering. Dual-dispatch: the spec-16
+    /// `WorkflowStore::list` joined to each row's published definition
+    /// when the port is wired, else the legacy `WorkflowRepo::list`. The
+    /// split has no `created_at` column, so the legacy ordering is
+    /// reconstructed from the definition JSON's `created_at` (the
+    /// handler writes it there), falling back to id order.
+    pub(crate) async fn workflow_list(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(nebula_core::id::WorkflowId, serde_json::Value)>, ApiError> {
+        if let (Some(rows), Some(versions)) = (&self.workflow_store, &self.workflow_version_store) {
+            let scope = placeholder_scope();
+            let listed = rows
+                .list(&scope)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?;
+            let mut out: Vec<(nebula_core::id::WorkflowId, i64, serde_json::Value)> =
+                Vec::with_capacity(listed.len());
+            for row in listed {
+                let Some(published) = versions
+                    .get_published(&scope, &row.id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?
+                else {
+                    // A row with no published version has no definition
+                    // to surface (mirrors `workflow_with_version`).
+                    continue;
+                };
+                let wid = nebula_core::id::WorkflowId::parse(&row.id).map_err(|e| {
+                    ApiError::Internal(format!("stored workflow id {:?} invalid: {e}", row.id))
+                })?;
+                let created = published
+                    .definition
+                    .get("created_at")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
+                out.push((wid, created, published.definition));
+            }
+            // Legacy contract: ORDER BY created_at, id.
+            out.sort_by(|a, b| {
+                a.1.cmp(&b.1)
+                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+            });
+            return Ok(out
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|(id, _, def)| (id, def))
+                .collect());
+        }
+        self.workflow_repo
+            .list(offset, limit)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))
+    }
+
+    /// Total workflow count (matches [`Self::workflow_list`]'s filter
+    /// scope). Dual-dispatch: the spec-16 `WorkflowStore::list` length
+    /// when the port is wired, else the legacy `WorkflowRepo::count`.
+    pub(crate) async fn workflow_count(&self) -> Result<usize, ApiError> {
+        if let Some(rows) = &self.workflow_store {
+            return rows
+                .list(&placeholder_scope())
+                .await
+                .map(|v| v.len())
+                .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")));
+        }
+        self.workflow_repo
+            .count()
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 
     /// List running execution ids. Dual-dispatch: the scoped

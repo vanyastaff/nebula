@@ -132,18 +132,11 @@ pub async fn list_workflows(
     let offset = params.offset();
     let limit = params.limit();
 
-    // Fetch workflows from repository
-    let workflows = state
-        .workflow_repo
-        .list(offset, limit)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?;
+    // Fetch workflows via the workflow accessor (dual-dispatch: scoped
+    // spec-16 stores when wired, else the legacy `WorkflowRepo`).
+    let workflows = state.workflow_list(offset, limit).await?;
 
-    let total = state
-        .workflow_repo
-        .count()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))?;
+    let total = state.workflow_count().await?;
 
     // Map to response DTOs
     let workflow_responses: Vec<WorkflowResponse> = workflows
@@ -212,16 +205,11 @@ pub async fn get_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Fetch workflow from repository
+    // Fetch workflow via the workflow accessor (dual-dispatch).
     let definition = state
-        .workflow_repo
-        .get(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
-
-    // Check if workflow exists
-    let definition =
-        definition.ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+        .workflow_definition(workflow_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Extract fields from workflow definition JSON
     let name = definition
@@ -307,12 +295,10 @@ pub async fn create_workflow(
         });
     }
 
-    // Save workflow with version 0 (new workflow)
+    // Save workflow with version 0 (new workflow) via the accessor.
     state
-        .workflow_repo
-        .save(workflow_id, 0, definition.clone())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create workflow: {e}")))?;
+        .workflow_save(workflow_id, 0, definition.clone())
+        .await?;
 
     // Build response
     let response = WorkflowResponse {
@@ -359,12 +345,10 @@ pub async fn update_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Get current workflow with version
+    // Get current workflow with version via the accessor.
     let (version, mut definition) = state
-        .workflow_repo
-        .get_with_version(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_with_version(workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
@@ -419,20 +403,11 @@ pub async fn update_workflow(
         ));
     }
 
-    // Save with optimistic concurrency control
+    // Save with optimistic concurrency control via the accessor (a CAS
+    // miss is mapped to the same 409 message the legacy path produced).
     state
-        .workflow_repo
-        .save(workflow_id, version, definition.clone())
-        .await
-        .map_err(|e| {
-            use nebula_storage::WorkflowRepoError;
-            match e {
-                WorkflowRepoError::Conflict { .. } => {
-                    ApiError::Conflict("Workflow was modified by another request".to_string())
-                },
-                _ => ApiError::Internal(format!("Failed to update workflow: {e}")),
-            }
-        })?;
+        .workflow_save(workflow_id, version, definition.clone())
+        .await?;
 
     // Extract fields for response
     let name = definition
@@ -488,12 +463,8 @@ pub async fn delete_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Delete workflow from repository
-    let existed = state
-        .workflow_repo
-        .delete(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete workflow: {e}")))?;
+    // Delete workflow via the accessor (dual-dispatch; missing ⇒ false).
+    let existed = state.workflow_delete(workflow_id).await?;
 
     // Return 404 if workflow didn't exist, 204 No Content if it was deleted
     if existed {
@@ -535,12 +506,11 @@ pub async fn activate_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Get current workflow with version for optimistic concurrency
+    // Get current workflow with version for optimistic concurrency,
+    // via the accessor (dual-dispatch).
     let (version, mut definition) = state
-        .workflow_repo
-        .get_with_version(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_with_version(workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Canon §10 step 2: validate the workflow definition before flipping the
@@ -590,20 +560,11 @@ pub async fn activate_workflow(
         ));
     }
 
-    // Save with optimistic concurrency control
+    // Save with optimistic concurrency control via the accessor (a CAS
+    // miss is mapped to the same 409 message the legacy path produced).
     state
-        .workflow_repo
-        .save(workflow_id, version, definition.clone())
-        .await
-        .map_err(|e| {
-            use nebula_storage::WorkflowRepoError;
-            match e {
-                WorkflowRepoError::Conflict { .. } => {
-                    ApiError::Conflict("Workflow was modified by another request".to_string())
-                },
-                _ => ApiError::Internal(format!("Failed to activate workflow: {e}")),
-            }
-        })?;
+        .workflow_save(workflow_id, version, definition.clone())
+        .await?;
 
     // Extract fields for response
     let name = definition
@@ -662,12 +623,10 @@ pub async fn execute_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify workflow exists
+    // Verify workflow exists via the accessor (dual-dispatch).
     state
-        .workflow_repo
-        .get(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_definition(workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Generate new execution ID
@@ -750,10 +709,8 @@ pub async fn validate_workflow_handler(
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
     let definition = state
-        .workflow_repo
-        .get(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_definition(workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Deserialise the stored JSON into a WorkflowDefinition.
