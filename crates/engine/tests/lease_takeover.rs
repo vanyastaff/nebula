@@ -682,11 +682,11 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     // Processing row is swept back to Pending and re-claimed within
     // seconds. Same scoped store the engine was configured with, so the
     // dispatch idempotency read and the engine's CAS observe one row.
-    let dispatch_b: Arc<dyn ControlDispatch> = Arc::new(EngineControlDispatch::new_port(
+    let dispatch_b: Arc<dyn ControlDispatch> = Arc::new(EngineControlDispatch::new(
         Arc::clone(&engine_b),
         stores.execution.clone(),
     ));
-    let consumer = ControlConsumer::new_port(queue.clone(), dispatch_b, b"runner-b".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch_b, b"runner-b".to_vec())
         .with_batch_size(4)
         .with_poll_interval(Duration::from_millis(50))
         .with_reclaim_after(Duration::from_millis(100))

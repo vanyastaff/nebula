@@ -61,6 +61,55 @@ impl InMemoryControlQueue {
             })
             .collect()
     }
+
+    /// Test-only detailed snapshot: `(msg, status, error_message)` per
+    /// row, ordered by id. The SQL backends expose the `error_message`
+    /// column on a failed row; this surfaces the same for in-memory
+    /// assertions (e.g. a poison row marked `Failed` with a reason).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn snapshot_detailed(&self) -> Vec<(ControlMsg, String, Option<String>)> {
+        let st = self.inner.lock();
+        let mut rows: Vec<(&[u8; 16], &QueuedMsg)> = st.queue.iter().collect();
+        rows.sort_unstable_by_key(|(id, _)| **id);
+        rows.into_iter()
+            .map(|(_, q)| {
+                let mut msg = q.msg.clone();
+                msg.reclaim_count = q.reclaim_count;
+                (msg, q.status.clone(), q.error_message.clone())
+            })
+            .collect()
+    }
+
+    /// Test-only seed of an already-`Processing` row owned by a (dead)
+    /// `processor`, claimed `stale_for` ago, with a given prior
+    /// `reclaim_count`. Reproduces a crashed-runner orphan for reclaim
+    /// tests — the legacy `InMemoryControlQueueRepo` allowed enqueuing a
+    /// pre-built `Processing` entry; the port queue's `enqueue` is always
+    /// `Pending`, so this restores that test affordance structurally.
+    #[doc(hidden)]
+    pub fn seed_processing(
+        &self,
+        msg: &ControlMsg,
+        processor: [u8; 16],
+        stale_for: Duration,
+        reclaim_count: u32,
+    ) {
+        let now = Instant::now();
+        let processed_at = now.checked_sub(stale_for).unwrap_or(now);
+        let mut st = self.inner.lock();
+        st.queue.insert(
+            msg.id,
+            QueuedMsg {
+                msg: msg.clone(),
+                status: "Processing".to_string(),
+                processed_by: Some(processor),
+                processed_at: Some(processed_at),
+                reclaim_count,
+                error_message: None,
+            },
+        );
+    }
 }
 
 #[async_trait::async_trait]

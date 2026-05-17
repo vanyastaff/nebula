@@ -134,26 +134,12 @@ pub struct WorkflowEngine {
     resolver: ParamResolver,
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
-    /// Optional execution repository for persistent state storage.
-    ///
-    /// Legacy Layer-1 god-trait handle. Retained during the spec-16 port
-    /// migration so not-yet-migrated paths keep working; production paths
-    /// prefer [`Self::stores`] when configured. Removed in the migration's
-    /// contract phase once every consumer is on the port.
-    execution_repo: Option<Arc<dyn nebula_storage::ExecutionRepo>>,
-    /// Optional workflow repository for loading workflow definitions during resume.
-    ///
-    /// Legacy Layer-1 handle; see [`Self::execution_repo`].
-    workflow_repo: Option<Arc<dyn nebula_storage::WorkflowRepo>>,
     /// Optional spec-16 port bundle (execution-state / lease / journal /
-    /// node-result / idempotency / checkpoint). When set, the migrated
-    /// production paths use this instead of [`Self::execution_repo`];
-    /// the remaining paths fall back to the legacy handle until their
-    /// migration slice lands.
+    /// node-result / idempotency / checkpoint). `None` puts the engine in
+    /// single-process library mode (no coordination seam, no lease).
     stores: Option<crate::store_seam::ExecutionStores>,
     /// Optional spec-16 workflow-definition port bundle for the resume
-    /// path. When set, the resume load path uses this instead of
-    /// [`Self::workflow_repo`].
+    /// path (workflow-row + version stores).
     workflow_stores: Option<crate::store_seam::WorkflowStores>,
     /// Optional credential resolver function for providing credentials to actions.
     credential_resolver: Option<CredentialResolveFn>,
@@ -306,8 +292,6 @@ impl WorkflowEngine {
             plugin_registry: PluginRegistry::new(),
             resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
-            execution_repo: None,
-            workflow_repo: None,
             stores: None,
             workflow_stores: None,
             credential_resolver: None,
@@ -546,35 +530,14 @@ impl WorkflowEngine {
         self
     }
 
-    /// Set the execution repository for persistent state storage.
-    ///
-    /// When set, the engine persists execution state after creation and
-    /// after each node completes (checkpoint). Without a repo, state
-    /// is in-memory only (suitable for testing).
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_execution_repo(mut self, repo: Arc<dyn nebula_storage::ExecutionRepo>) -> Self {
-        self.execution_repo = Some(repo);
-        self
-    }
-
-    /// Set the workflow repository for loading workflow definitions during resume.
-    ///
-    /// Required for [`resume_execution`]. When not set, `resume_execution` returns an error.
-    ///
-    /// [`resume_execution`]: Self::resume_execution
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_workflow_repo(mut self, repo: Arc<dyn nebula_storage::WorkflowRepo>) -> Self {
-        self.workflow_repo = Some(repo);
-        self
-    }
-
     /// Set the spec-16 storage-port bundle for persistent execution state.
     ///
-    /// When set, production paths use these scoped port handles (state
+    /// When set, the engine persists execution state after creation and
+    /// after each node completes through these scoped port handles (state
     /// CAS via [`nebula_storage_port::TransitionBatch`], lease fencing,
-    /// node results, idempotency) instead of the legacy
-    /// [`Self::with_execution_repo`] handle. The engine threads its lease
+    /// node results, idempotency) and threads its lease
     /// [`nebula_storage_port::FencingToken`] into every committed batch.
+    /// Without it, state is in-memory only (single-process library mode).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_execution_stores(mut self, stores: crate::store_seam::ExecutionStores) -> Self {
         self.stores = Some(stores);
@@ -582,7 +545,10 @@ impl WorkflowEngine {
     }
 
     /// Set the spec-16 workflow-definition port bundle for the resume
-    /// path. When set, used instead of [`Self::with_workflow_repo`].
+    /// path. Required for [`resume_execution`]; when not set,
+    /// `resume_execution` returns an error.
+    ///
+    /// [`resume_execution`]: Self::resume_execution
     #[must_use = "builder methods must be chained or built"]
     pub fn with_workflow_stores(mut self, stores: crate::store_seam::WorkflowStores) -> Self {
         self.workflow_stores = Some(stores);
@@ -927,42 +893,7 @@ impl WorkflowEngine {
                     holder,
                 });
             };
-            crate::store_seam::LeaseBackend::Port {
-                store: stores.execution.clone(),
-                scope,
-                token,
-            }
-        } else if let Some(repo) = self.execution_repo.clone() {
-            let acquired = repo
-                .acquire_lease(execution_id, holder.clone(), ttl)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
-            if !acquired {
-                // Someone else holds the lease (or it's our own holder
-                // string from an earlier, still-live attempt — ADR 0008
-                // "same-holder re-acquire" — but for safety we still
-                // report as Leased so the caller can decide).
-                let labels = self
-                    .metrics
-                    .interner()
-                    .single("reason", engine_lease_contention_reason::ALREADY_HELD);
-                self.metrics
-                    .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)?
-                    .inc();
-                tracing::warn!(
-                    %execution_id,
-                    %holder,
-                    "execution lease is held by another runner; refusing to dispatch (§12.2, #325)"
-                );
-                return Err(EngineError::Leased {
-                    execution_id,
-                    holder,
-                });
-            }
-            crate::store_seam::LeaseBackend::Legacy {
-                repo,
-                holder: holder.clone(),
-            }
+            crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope, token)
         } else {
             // No storage seam configured — single-process library mode,
             // proceed without a lease.
@@ -1127,12 +1058,10 @@ impl WorkflowEngine {
         // to `ExecutionBudget::default()` (issue #289).
         exec_state.set_budget(budget.clone());
 
-        // 4b. Persist initial execution state. Dual-dispatch: the
-        // spec-16 port `create` starts the row at version 0 (the first
-        // `commit` CASes against `expected_version == 0`); the legacy
-        // repo's first `transition` historically started at 1. The
-        // version baseline therefore differs per backend and must match
-        // whichever backend the checkpoints below use.
+        // 4b. Persist initial execution state. The spec-16 port `create`
+        // starts the row at version 0 (the first `commit` CASes against
+        // `expected_version == 0`); the checkpoints below track from this
+        // baseline.
         let mut repo_version: u64 = 0;
         if let Some(stores) = &self.stores {
             let state_json = serde_json::to_value(&exec_state)
@@ -1147,14 +1076,6 @@ impl WorkflowEngine {
                 )
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("persist initial state: {e}")))?;
-            repo_version = 0;
-        } else if let Some(repo) = &self.execution_repo {
-            let state_json = serde_json::to_value(&exec_state)
-                .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
-            repo.create(execution_id, workflow.id, state_json)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("persist initial state: {e}")))?;
-            repo_version = 1;
         }
 
         // 5. Create cancellation token
@@ -1176,9 +1097,8 @@ impl WorkflowEngine {
             .await?;
 
         // Fencing token threaded into every checkpoint / final-state
-        // commit. `Some` only on the spec-16 port lease path; `None`
-        // (legacy lease or no lease) routes checkpoints to the legacy
-        // transition path.
+        // commit. `Some` when a port lease is held; `None` only in
+        // single-process library mode (no lease).
         let fencing = lease.as_ref().and_then(LeaseGuard::fencing_token);
 
         // 5b. Publish the cancel token into the running registry ONLY
@@ -1291,7 +1211,7 @@ impl WorkflowEngine {
                 execution_id,
                 holder: self.instance_id.to_string(),
             });
-        } else if self.stores.is_some() || self.execution_repo.is_some() {
+        } else if self.stores.is_some() {
             // Persist final execution state with CAS-conflict
             // reconciliation (issue #333). The pre-fix branch was
             // log-and-continue on CAS mismatch, which let the engine
@@ -1300,16 +1220,9 @@ impl WorkflowEngine {
             // now reloads the persisted state on mismatch, honors
             // external terminal transitions, and retries once on
             // non-terminal conflicts before surfacing a typed
-            // `CasConflict` error. `persist_final_state` itself
-            // dual-dispatches port-vs-legacy on `(stores, fencing)`.
+            // `CasConflict` error.
             match self
-                .persist_final_state(
-                    self.execution_repo.as_ref(),
-                    execution_id,
-                    &mut exec_state,
-                    &mut repo_version,
-                    fencing,
-                )
+                .persist_final_state(execution_id, &mut exec_state, &mut repo_version, fencing)
                 .await
             {
                 Ok(None) => final_status,
@@ -1433,96 +1346,54 @@ impl WorkflowEngine {
             serde_json::Value,
             serde_json::Value,
             Vec<(NodeKey, serde_json::Value)>,
-        ) =
-            if let Some(stores) = self.stores.as_ref() {
-                // Port path is primary once the execution bundle is
-                // configured. The workflow bundle is required here; its
-                // absence is reported with the historical `workflow_repo`
-                // wording the resume contract (and tests) assert on.
-                let workflow_stores = self.workflow_stores.as_ref().ok_or_else(|| {
-                    EngineError::PlanningFailed("no workflow_repo configured".into())
+        ) = {
+            // The scoped execution-store bundle is required for resume;
+            // its absence preserves the historical `execution_repo`
+            // wording the resume contract (and tests) assert on.
+            let stores = self.stores.as_ref().ok_or_else(|| {
+                EngineError::PlanningFailed("no execution_repo configured".into())
+            })?;
+            // The workflow bundle is likewise required; its absence
+            // preserves the historical `workflow_repo` wording.
+            let workflow_stores = self
+                .workflow_stores
+                .as_ref()
+                .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
+            let scope = crate::store_seam::engine_scope();
+            let id = execution_id.to_string();
+            let record = stores
+                .execution
+                .get(&scope, &id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
                 })?;
-                let scope = crate::store_seam::engine_scope();
-                let id = execution_id.to_string();
-                let record = stores
-                    .execution
-                    .get(&scope, &id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
-                    })?;
-                let workflow_id = record.workflow_id.clone();
-                let workflow_json = workflow_stores
-                    .versions
-                    .get_published(&scope, &workflow_id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
-                    })?
-                    .definition;
-                // Reload the raw per-node *outputs* (not the typed-result
-                // slot): the result slot stores the serialized `ActionResult`
-                // envelope, whereas successors consume the bare output payload
-                // — reading results here would feed a crash-resumed run a
-                // different value than a non-crashed run. This mirrors the
-                // legacy `ExecutionRepo::load_all_outputs` reload.
-                let outputs = stores
-                    .node_results
-                    .load_all_node_outputs(&scope, &id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
-                    .into_iter()
-                    .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
-                    .collect();
-                (record.version, record.state, workflow_json, outputs)
-            } else {
-                // Legacy path: preserve the original per-repo requirement
-                // errors verbatim (callers and tests assert on the
-                // `execution_repo` / `workflow_repo` wording).
-                let exec_repo = self.execution_repo.as_ref().ok_or_else(|| {
-                    EngineError::PlanningFailed("no execution_repo configured".into())
-                })?;
-                let workflow_repo = self.workflow_repo.as_ref().ok_or_else(|| {
-                    EngineError::PlanningFailed("no workflow_repo configured".into())
-                })?;
-                let (version, state_json) = exec_repo
-                    .get_state(execution_id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
-                    })?;
-                // The legacy workflow lookup needs the workflow id, which is
-                // only known after the state deserializes; peek it from the
-                // raw JSON so the load order matches the port path.
-                let workflow_id_str = state_json
-                    .get("workflow_id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(
-                            "persisted state has no `workflow_id` field".to_owned(),
-                        )
-                    })?;
-                let workflow_id = WorkflowId::parse(workflow_id_str).map_err(|e| {
-                    EngineError::PlanningFailed(format!("invalid persisted workflow_id: {e}"))
-                })?;
-                let workflow_json = workflow_repo
-                    .get(workflow_id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
-                    })?;
-                let outputs = exec_repo
-                    .load_all_outputs(execution_id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
-                    .into_iter()
-                    .collect();
-                (version, state_json, workflow_json, outputs)
-            };
+            let workflow_id = record.workflow_id.clone();
+            let workflow_json = workflow_stores
+                .versions
+                .get_published(&scope, &workflow_id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                .ok_or_else(|| {
+                    EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                })?
+                .definition;
+            // Reload the raw per-node *outputs* (not the typed-result
+            // slot): the result slot stores the serialized `ActionResult`
+            // envelope, whereas successors consume the bare output payload
+            // — reading results here would feed a crash-resumed run a
+            // different value than a non-crashed run.
+            let outputs = stores
+                .node_results
+                .load_all_node_outputs(&scope, &id)
+                .await
+                .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
+                .into_iter()
+                .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
+                .collect();
+            (record.version, record.state, workflow_json, outputs)
+        };
 
         // Deserialize via JSON string to avoid `serde_json::from_value` issues
         // with Key<D> types that expect borrowed strings (domain-key serde impl).
@@ -1817,19 +1688,12 @@ impl WorkflowEngine {
                 execution_id,
                 holder: self.instance_id.to_string(),
             });
-        } else if self.stores.is_some() || self.execution_repo.is_some() {
+        } else if self.stores.is_some() {
             // Persist final state with CAS-conflict reconciliation
             // (issue #333). Mirrors `execute_workflow` — see its comment
-            // for the full contract. `persist_final_state` dual-dispatches
-            // port-vs-legacy on `(stores, fencing)`.
+            // for the full contract.
             match self
-                .persist_final_state(
-                    self.execution_repo.as_ref(),
-                    execution_id,
-                    &mut exec_state,
-                    &mut repo_version,
-                    fencing,
-                )
+                .persist_final_state(execution_id, &mut exec_state, &mut repo_version, fencing)
                 .await
             {
                 Ok(None) => final_status,
@@ -2570,23 +2434,8 @@ impl WorkflowEngine {
                     // the exact routing semantics (issue #299).
                     //
                     // ADR-0042 §M2.1 T4 — `attempt_count + 1` is the
-                    // current dispatch's attempt number BEFORE we push
-                    // the success record below; same formula as
-                    // `idempotency_key_for_node` and the
-                    // `record_node_attempt` internal mint, so the
-                    // idempotency-key store, per-attempt result store,
-                    // and attempt-history row all carry the same N.
-                    let attempt = exec_state
-                        .node_states
-                        .get(&node_key)
-                        .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
-                    self.record_node_result(
-                        execution_id,
-                        node_key.clone(),
-                        attempt,
-                        &action_result,
-                    )
-                    .await;
+                    self.record_node_result(execution_id, node_key.clone(), &action_result)
+                        .await;
 
                     // ADR-0042 §M2.1 T4 — push the success attempt
                     // record AFTER record_idempotency / record_node_result
@@ -3153,15 +3002,12 @@ impl WorkflowEngine {
         required_count: &HashMap<NodeKey, usize>,
         ready_queue: &mut VecDeque<NodeKey>,
     ) -> bool {
-        // Dual-dispatch: prefer the spec-16 port bundle when configured,
-        // else the legacy `ExecutionRepo`. Both resolve to the same
-        // `(output, optional typed result)` so the replay routing logic
-        // below is shared. Replay is detected by a persisted node
-        // *output* — the port's §11.3 guard is check-and-mark with no
-        // read-only probe, so the durable output is the authoritative
-        // "already ran" signal (identical fallback to the legacy
-        // `check_idempotency` + `load_node_output` pair: a present mark
-        // with a missing output is a partial write ⇒ re-execute).
+        // Replay is detected by a persisted node *output*: the port's
+        // §11.3 guard is check-and-mark with no read-only probe, so the
+        // durable output is the authoritative "already ran" signal (a
+        // present mark with a missing output is a partial write ⇒
+        // re-execute). Without a store bundle there is no persistence,
+        // so nothing can be replayed.
         let (output_value, stored_result) = if let Some(stores) = &self.stores {
             let scope = crate::store_seam::engine_scope();
             let id = execution_id.to_string();
@@ -3188,69 +3034,6 @@ impl WorkflowEngine {
                 .await
             {
                 Ok(Some(record)) => deserialize_stored_result(record.json, execution_id, &node_key),
-                Ok(None) => {
-                    tracing::warn!(
-                        %execution_id,
-                        %node_key,
-                        "idempotency replay has no persisted ActionResult; \
-                         synthesizing Success — Branch/Route/MultiOutput \
-                         routing will not be preserved"
-                    );
-                    None
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        %execution_id,
-                        %node_key,
-                        error = %e,
-                        "failed to load persisted action result; \
-                         falling back to synthesized Success"
-                    );
-                    None
-                },
-            };
-            (output_value, stored_result)
-        } else if let Some(repo) = &self.execution_repo {
-            let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-            let already_done = match repo.check_idempotency(idem_key.as_str()).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        %execution_id,
-                        %node_key,
-                        error = %e,
-                        "idempotency check failed; proceeding with execution"
-                    );
-                    return false;
-                },
-            };
-            if !already_done {
-                return false;
-            }
-            let output_value = match repo.load_node_output(execution_id, node_key.clone()).await {
-                Ok(Some(v)) => v,
-                Ok(None) => {
-                    tracing::warn!(
-                        %execution_id,
-                        %node_key,
-                        "idempotency key present but output missing; re-executing node"
-                    );
-                    return false;
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        %execution_id,
-                        %node_key,
-                        error = %e,
-                        "failed to load idempotent node output; re-executing"
-                    );
-                    return false;
-                },
-            };
-            let stored_result = match repo.load_node_result(execution_id, node_key.clone()).await {
-                Ok(Some(record)) => {
-                    deserialize_stored_result(record.result, execution_id, &node_key)
-                },
                 Ok(None) => {
                     tracing::warn!(
                         %execution_id,
@@ -3308,7 +3091,6 @@ impl WorkflowEngine {
         &self,
         execution_id: ExecutionId,
         node_key: NodeKey,
-        attempt: u32,
         action_result: &ActionResult<serde_json::Value>,
     ) {
         let value = match serde_json::to_value(action_result) {
@@ -3323,8 +3105,8 @@ impl WorkflowEngine {
                 return;
             },
         };
-        // Dual-dispatch: spec-16 port bundle when configured, else the
-        // legacy repo. Both stamp the variant tag identically.
+        // Best-effort persist through the spec-16 node-result store when
+        // a store bundle is configured (in-memory-only mode skips it).
         if let Some(stores) = &self.stores {
             let record = crate::store_seam::node_result_record(value);
             if let Err(e) = stores
@@ -3335,24 +3117,6 @@ impl WorkflowEngine {
                     node_key.as_str(),
                     record,
                 )
-                .await
-            {
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    error = %e,
-                    "failed to persist action result"
-                );
-            }
-        } else if let Some(repo) = &self.execution_repo {
-            let kind = value
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown")
-                .to_owned();
-            let record = nebula_storage::NodeResultRecord::new(kind, value);
-            if let Err(e) = repo
-                .save_node_result(execution_id, node_key.clone(), attempt, record)
                 .await
             {
                 tracing::warn!(
@@ -3393,19 +3157,6 @@ impl WorkflowEngine {
                     node_key.as_str(),
                     attempt,
                 )
-                .await
-            {
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    error = %e,
-                    "failed to mark node as idempotent"
-                );
-            }
-        } else if let Some(repo) = &self.execution_repo {
-            let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
-            if let Err(e) = repo
-                .mark_idempotent(idem_key.as_str(), execution_id, node_key.clone())
                 .await
             {
                 tracing::warn!(
@@ -3484,129 +3235,35 @@ impl WorkflowEngine {
         repo_version: &mut u64,
         fencing: Option<nebula_storage_port::FencingToken>,
     ) -> Result<(), EngineError> {
-        // Port path: spec-16 stores + the lease fencing token. State,
-        // output, and (empty) outbox/journal commit through one
-        // `TransitionBatch`; a superseded fencing token is rejected even
-        // on a matching version (closes the zombie-runner hole).
-        if let (Some(stores), Some(token)) = (&self.stores, fencing) {
-            return self
-                .checkpoint_node_port(
-                    stores,
-                    execution_id,
-                    node_key,
-                    outputs,
-                    exec_state,
-                    repo_version,
-                    token,
-                )
-                .await;
-        }
-
-        let Some(repo) = &self.execution_repo else {
+        // No store bundle ⇒ single-process library mode: nothing to
+        // checkpoint.
+        let Some(stores) = &self.stores else {
             return Ok(());
         };
-
-        // Save node output individually. A write failure here is a real
-        // durability gap — replayers load outputs from this table, so
-        // losing one means a downstream consumer may reconstruct a
-        // node as "ran and returned nothing" after restart (§11.5).
-        if let Some(output) = outputs.get(&node_key) {
-            // ADR-0042 §M2.1 T4 — `attempt_count + 1` is the
-            // current dispatch's attempt number BEFORE the success
-            // record gets pushed (push happens after this checkpoint).
-            // Same formula as `idempotency_key_for_node` so
-            // `save_node_output`, `record_node_result`, and
-            // `record_node_attempt` all stay in lockstep — the
-            // pre-fix formula `attempt_count().max(1)` produced
-            // attempt N-1 here while the result/history rows used
-            // attempt N, desynchronising the audit trail on retries.
-            let attempt = exec_state
-                .node_states
-                .get(&node_key)
-                .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
-            if let Err(e) = repo
-                .save_node_output(
-                    execution_id,
-                    node_key.clone(),
-                    attempt,
-                    output.value().clone(),
-                )
-                .await
-            {
-                return Err(EngineError::CheckpointFailed {
-                    node_key,
-                    reason: format!("save_node_output: {e}"),
-                });
-            }
-        }
-
-        // Save execution state snapshot.
-        let state_json =
-            serde_json::to_value(exec_state).map_err(|e| EngineError::CheckpointFailed {
-                node_key: node_key.clone(),
-                reason: format!("serialize state: {e}"),
-            })?;
-
-        match repo
-            .transition(execution_id, *repo_version, state_json)
-            .await
-        {
-            Ok(true) => {
-                *repo_version += 1;
-                Ok(())
-            },
-            Ok(false) => {
-                // CAS mismatch: another actor moved the row (API cancel,
-                // second engine worker, etc.). We cannot durably commit
-                // this node's transition on top of a stale version, so
-                // the frontier must abort this progression rather than
-                // silently advance (§11.5 "durability precedes
-                // visibility", §12.4 "no silent log-and-continue").
-                //
-                // Per issue #333 we refetch the **full** persisted
-                // state — not just the version — so the failure surface
-                // carries the observer-visible status (e.g. `Cancelling`
-                // / `Cancelled`) rather than discarding authoritative
-                // fields. The caller (frontier loop) aborts the node's
-                // progression and the outer execute/resume path
-                // reconciles against the newly observed state.
-                let expected_version = *repo_version;
-                let observed_status = match repo.get_state(execution_id).await {
-                    Ok(Some((current_version, current_state))) => {
-                        *repo_version = current_version;
-                        parse_observed_status(&current_state)
-                    },
-                    Ok(None) => "unknown".to_owned(),
-                    Err(e) => {
-                        tracing::warn!(
-                            %execution_id,
-                            %node_key,
-                            error = %e,
-                            "checkpoint CAS mismatch: failed to refetch persisted state"
-                        );
-                        "unknown".to_owned()
-                    },
-                };
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    expected_version,
-                    observed_version = *repo_version,
-                    %observed_status,
-                    "checkpoint CAS mismatch — aborting node progression (§11.1, #333)"
-                );
-                Err(EngineError::CasConflict {
-                    execution_id,
-                    expected_version,
-                    observed_version: *repo_version,
-                    observed_status,
-                })
-            },
-            Err(e) => Err(EngineError::CheckpointFailed {
+        // A configured store always implies an acquired lease (the
+        // no-lease branch only fires when `stores` is absent), so the
+        // fencing token is present. A missing token here is a wiring
+        // bug, surfaced as a typed checkpoint failure rather than a panic.
+        let Some(token) = fencing else {
+            return Err(EngineError::CheckpointFailed {
                 node_key,
-                reason: e.to_string(),
-            }),
-        }
+                reason: "no fencing token for a configured store checkpoint".to_owned(),
+            });
+        };
+        // Spec-16 port path: state, output, and (empty) outbox/journal
+        // commit through one `TransitionBatch`; a superseded fencing
+        // token is rejected even on a matching version (closes the
+        // zombie-runner hole).
+        self.checkpoint_node_port(
+            stores,
+            execution_id,
+            node_key,
+            outputs,
+            exec_state,
+            repo_version,
+            token,
+        )
+        .await
     }
 
     /// Spec-16 port variant of [`Self::checkpoint_node`]: save the node
@@ -3759,138 +3416,24 @@ impl WorkflowEngine {
     ///   surfaces a typed failure instead of a silent success.
     async fn persist_final_state(
         &self,
-        repo: Option<&Arc<dyn nebula_storage::ExecutionRepo>>,
         execution_id: ExecutionId,
         exec_state: &mut ExecutionState,
         repo_version: &mut u64,
         fencing: Option<nebula_storage_port::FencingToken>,
     ) -> Result<Option<ExecutionStatus>, EngineError> {
-        if let (Some(stores), Some(token)) = (self.stores.clone(), fencing) {
-            return self
-                .persist_final_state_port(&stores, execution_id, exec_state, repo_version, token)
-                .await;
-        }
-        // Legacy path: the caller only routes here with a configured
-        // repo. An absent repo here is a wiring bug, surfaced as a typed
-        // checkpoint failure rather than a panic.
-        let repo = repo.ok_or_else(|| EngineError::CheckpointFailed {
-            node_key: final_state_node_key(),
-            reason: "no execution repo configured for final-state persist".to_owned(),
-        })?;
-        let state_json =
-            serde_json::to_value(&*exec_state).map_err(|e| EngineError::CheckpointFailed {
+        // The caller only routes here when `self.stores` is configured,
+        // and a configured store always implies an acquired lease (the
+        // no-lease branch only fires when `stores` is absent), so the
+        // fencing token is present. A missing token here is a wiring
+        // bug, surfaced as a typed checkpoint failure rather than a panic.
+        let (Some(stores), Some(token)) = (self.stores.clone(), fencing) else {
+            return Err(EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
-                reason: format!("serialize final state: {e}"),
-            })?;
-
-        match repo
-            .transition(execution_id, *repo_version, state_json)
+                reason: "no fencing-gated store configured for final-state persist".to_owned(),
+            });
+        };
+        self.persist_final_state_port(&stores, execution_id, exec_state, repo_version, token)
             .await
-        {
-            Ok(true) => {
-                *repo_version += 1;
-                Ok(None)
-            },
-            Ok(false) => {
-                let expected_version = *repo_version;
-                // Reload the full persisted state — not just version —
-                // so we can decide whether the external transition is
-                // authoritative (issue #333).
-                let (observed_version, observed_json) = match repo.get_state(execution_id).await {
-                    Ok(Some(pair)) => pair,
-                    Ok(None) => {
-                        return Err(EngineError::CasConflict {
-                            execution_id,
-                            expected_version,
-                            observed_version: 0,
-                            observed_status: "missing".to_owned(),
-                        });
-                    },
-                    Err(e) => {
-                        return Err(EngineError::CheckpointFailed {
-                            node_key: final_state_node_key(),
-                            reason: format!("final CAS refetch failed: {e}"),
-                        });
-                    },
-                };
-                *repo_version = observed_version;
-                let observed_status_enum = parse_observed_execution_status(&observed_json);
-                let observed_status_str = parse_observed_status(&observed_json);
-
-                // External state already terminal → honor it. The
-                // engine must not overwrite an authoritative
-                // cancellation / failure with its own local decision
-                // (§11.5, #333).
-                if observed_status_enum
-                    .as_ref()
-                    .is_some_and(ExecutionStatus::is_terminal)
-                {
-                    tracing::warn!(
-                        %execution_id,
-                        expected_version,
-                        observed_version,
-                        %observed_status_str,
-                        "final state CAS mismatch: external transition is terminal — \
-                         honoring external status instead of overwriting (§11.5, #333)"
-                    );
-                    return Ok(observed_status_enum);
-                }
-
-                // External state non-terminal (e.g. sibling runner
-                // still in-flight). Retry once: re-serialize the local
-                // state at the freshly observed version and attempt the
-                // final write again. If it still conflicts, surface
-                // the typed error rather than dropping the write.
-                let retry_json = match serde_json::to_value(&*exec_state) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return Err(EngineError::CheckpointFailed {
-                            node_key: final_state_node_key(),
-                            reason: format!("serialize retry state: {e}"),
-                        });
-                    },
-                };
-                match repo
-                    .transition(execution_id, *repo_version, retry_json)
-                    .await
-                {
-                    Ok(true) => {
-                        tracing::info!(
-                            %execution_id,
-                            expected_version,
-                            observed_version,
-                            "final state CAS retry succeeded after external bump (§11.5, #333)"
-                        );
-                        *repo_version += 1;
-                        Ok(None)
-                    },
-                    Ok(false) => {
-                        // Refresh the observed version once more so
-                        // the error carries the latest truth.
-                        let (latest_version, latest_json) = match repo.get_state(execution_id).await
-                        {
-                            Ok(Some(pair)) => pair,
-                            _ => (observed_version, observed_json),
-                        };
-                        *repo_version = latest_version;
-                        Err(EngineError::CasConflict {
-                            execution_id,
-                            expected_version,
-                            observed_version: latest_version,
-                            observed_status: parse_observed_status(&latest_json),
-                        })
-                    },
-                    Err(e) => Err(EngineError::CheckpointFailed {
-                        node_key: NodeKey::new("__final__").expect("placeholder node key"),
-                        reason: format!("final CAS retry failed: {e}"),
-                    }),
-                }
-            },
-            Err(e) => Err(EngineError::CheckpointFailed {
-                node_key: final_state_node_key(),
-                reason: format!("final state persist: {e}"),
-            }),
-        }
     }
 
     /// Spec-16 port variant of [`Self::persist_final_state`]: the final
@@ -6626,7 +6169,7 @@ mod tests {
     async fn resume_requires_execution_repo() {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
-        // No execution_repo or workflow_repo attached.
+        // No execution / workflow store bundles attached.
         let err = engine
             .resume_execution(ExecutionId::new())
             .await

@@ -29,9 +29,81 @@ use nebula_engine::{
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_schema::{HasSchema, ValidSchema};
-use nebula_storage::{ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo};
+use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
+use nebula_storage_port::dto::WorkflowVersionRecord;
+use nebula_storage_port::store::{ExecutionStore, WorkflowVersionStore};
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 use tokio::sync::Notify;
+
+/// Bundled port adapters for one shared in-memory tenant (mirrors the
+/// in-source `TestStores` pattern). The engine threads the fixed
+/// `engine_scope()` placeholder, so the raw adapters behave as one tenant.
+#[derive(Clone)]
+struct DispatchStores {
+    execution: Arc<InMemoryExecutionStore>,
+    journal: Arc<nebula_storage::InMemoryJournalReader>,
+    node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
+    checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
+    idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
+    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
+    versions: Arc<InMemoryWorkflowVersionStore>,
+}
+
+impl DispatchStores {
+    fn new() -> Self {
+        let execution = Arc::new(InMemoryExecutionStore::new());
+        let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
+        Self {
+            execution,
+            journal,
+            node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+            workflow: Arc::new(nebula_storage::InMemoryWorkflowStore::new()),
+            versions: Arc::new(InMemoryWorkflowVersionStore::new()),
+        }
+    }
+
+    fn execution_stores(&self) -> nebula_engine::ExecutionStores {
+        nebula_engine::ExecutionStores {
+            execution: self.execution.clone(),
+            journal: self.journal.clone(),
+            node_results: self.node_results.clone(),
+            checkpoints: self.checkpoints.clone(),
+            idempotency: self.idempotency.clone(),
+        }
+    }
+
+    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
+        nebula_engine::WorkflowStores {
+            workflow: self.workflow.clone(),
+            versions: self.versions.clone(),
+        }
+    }
+
+    fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
+        engine
+            .with_execution_stores(self.execution_stores())
+            .with_workflow_stores(self.workflow_stores())
+    }
+
+    /// Persist a workflow definition as published version 0.
+    async fn save_workflow(&self, wf: &WorkflowDefinition) {
+        self.versions
+            .create(
+                &nebula_engine::store_seam::engine_scope(),
+                WorkflowVersionRecord {
+                    workflow_id: wf.id.to_string(),
+                    number: 0,
+                    published: true,
+                    pinned: false,
+                    definition: serde_json::to_value(wf).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
 
 // ── Test handlers (Variant A) ─────────────────────────────────────────────
 
@@ -140,8 +212,7 @@ fn meta(key: ActionKey) -> ActionMetadata {
 struct Harness {
     dispatch: EngineControlDispatch,
     engine: Arc<WorkflowEngine>,
-    execution_repo: Arc<InMemoryExecutionRepo>,
-    workflow_repo: Arc<InMemoryWorkflowRepo>,
+    stores: DispatchStores,
     action_count: Arc<AtomicU32>,
     slow_count: Arc<AtomicU32>,
     slow_started: Arc<Notify>,
@@ -182,25 +253,14 @@ impl Harness {
             .unwrap(),
         );
 
-        let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-        let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-
-        let execution_repo_dyn: Arc<dyn ExecutionRepo> = Arc::clone(&execution_repo) as _;
-        let workflow_repo_dyn: Arc<dyn WorkflowRepo> = Arc::clone(&workflow_repo) as _;
-
-        let engine = WorkflowEngine::new(runtime, metrics)
-            .unwrap()
-            .with_execution_repo(Arc::clone(&execution_repo_dyn))
-            .with_workflow_repo(workflow_repo_dyn);
-        let engine = Arc::new(engine);
-
-        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), execution_repo_dyn);
+        let stores = DispatchStores::new();
+        let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
+        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
 
         Self {
             dispatch,
             engine,
-            execution_repo,
-            workflow_repo,
+            stores,
             action_count,
             slow_count,
             slow_started,
@@ -228,10 +288,7 @@ impl Harness {
             ui_metadata: None,
             schema_version: 1,
         };
-        self.workflow_repo
-            .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
-            .await
-            .unwrap();
+        self.stores.save_workflow(&wf).await;
         workflow_id
     }
 
@@ -246,8 +303,14 @@ impl Harness {
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(input);
         let state_json = serde_json::to_value(&exec_state).unwrap();
-        self.execution_repo
-            .create(execution_id, workflow_id, state_json)
+        self.stores
+            .execution
+            .create(
+                &nebula_engine::store_seam::engine_scope(),
+                &execution_id.to_string(),
+                &workflow_id.to_string(),
+                state_json,
+            )
             .await
             .unwrap();
         execution_id
@@ -274,21 +337,19 @@ impl Harness {
             ui_metadata: None,
             schema_version: 1,
         };
-        self.workflow_repo
-            .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
-            .await
-            .unwrap();
+        self.stores.save_workflow(&wf).await;
         workflow_id
     }
 
     async fn status(&self, id: ExecutionId) -> ExecutionStatus {
-        let (_, json) = self
-            .execution_repo
-            .get_state(id)
+        let record = self
+            .stores
+            .execution
+            .get(&nebula_engine::store_seam::engine_scope(), &id.to_string())
             .await
             .unwrap()
             .expect("execution exists");
-        serde_json::from_value(json.get("status").cloned().unwrap()).unwrap()
+        serde_json::from_value(record.state.get("status").cloned().unwrap()).unwrap()
     }
 
     /// Poll the execution row until `status.is_terminal()`, bounded by `deadline`.
