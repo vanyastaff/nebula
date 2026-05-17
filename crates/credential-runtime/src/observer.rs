@@ -33,12 +33,37 @@ pub trait CredentialObserver: Send + Sync {
 
 /// Silent observer. Must be chosen *explicitly* at the composition root
 /// (tests) — never a default that hides missing wiring.
-#[derive(Debug)]
-pub struct NoopObserver;
+///
+/// Holds one cached event bus so [`event_bus`](CredentialObserver::event_bus)
+/// is idempotent: the resolver wired at `build()` and anything that later
+/// queries the observer share the *same* bus instead of each call minting
+/// a fresh, disconnected `EventBus`.
+#[derive(Debug, Clone)]
+pub struct NoopObserver {
+    bus: Arc<EventBus<CredentialEvent>>,
+}
+
+impl NoopObserver {
+    /// Construct a silent observer with its single cached event bus.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            // Capacity 1: the noop observer never emits, the bus exists
+            // only so the resolver has a real (if unused) handle.
+            bus: Arc::new(EventBus::new(1)),
+        }
+    }
+}
+
+impl Default for NoopObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CredentialObserver for NoopObserver {
     fn event_bus(&self) -> Arc<EventBus<CredentialEvent>> {
-        Arc::new(EventBus::new(1))
+        Arc::clone(&self.bus)
     }
     fn lease_bus(&self) -> Option<Arc<EventBus<LeaseEvent>>> {
         None
@@ -118,10 +143,12 @@ mod tests {
 
     #[test]
     fn noop_observer_is_object_safe_and_silent() {
-        let obs: Arc<dyn CredentialObserver> = Arc::new(NoopObserver);
+        let obs: Arc<dyn CredentialObserver> = Arc::new(NoopObserver::new());
         obs.on_revoke(&CredentialId::new());
         assert!(obs.lease_bus().is_none());
         assert!(obs.metrics().is_none());
+        // `event_bus()` is idempotent — same cached bus every call.
+        assert!(Arc::ptr_eq(&obs.event_bus(), &obs.event_bus()));
     }
 
     #[tokio::test]

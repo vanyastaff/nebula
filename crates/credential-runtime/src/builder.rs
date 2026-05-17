@@ -91,8 +91,20 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
         self
     }
 
-    /// Resolve credential state from an external provider chain instead
-    /// of the local encrypted store.
+    /// Configure an external provider chain as the credential
+    /// [`StateSource`] instead of the local encrypted store.
+    ///
+    /// **Not yet wired.** This records the provider on the service, but
+    /// the resolution path that routes through an external chain is the
+    /// ADR-0051 Phase-D external-source bridge, which is out of this
+    /// crate's current scope (see `docs/adr/0066` / the credential-runtime
+    /// subsystem spec §8). Until that lands, a service built with an
+    /// external source rejects every secret-resolving call
+    /// (`create` / `resolve` / `continue_resolve`) with
+    /// [`CredentialServiceError::ExternalSourceNotWired`](crate::CredentialServiceError::ExternalSourceNotWired)
+    /// rather than silently resolving from the local store (which would
+    /// hand back material from the wrong source). The default
+    /// [`StateSource::LocalEncrypted`] is fully functional.
     #[must_use = "builder methods must be chained or built"]
     pub fn external_providers(
         mut self,

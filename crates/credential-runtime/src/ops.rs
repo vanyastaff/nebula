@@ -131,9 +131,18 @@ type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<
 /// [`RefreshOutcome::CoalescedByOtherReplica`](nebula_credential::RefreshOutcome)
 /// contract says the caller must re-read, not re-write.
 pub(crate) enum RefreshOutcomeKind {
-    /// This caller refreshed; `data` is the freshly serialized state for
-    /// the service to CAS-persist.
-    Rewrote(Zeroizing<Vec<u8>>),
+    /// This caller refreshed; the service CAS-persists this freshly
+    /// serialized state.
+    Rewrote {
+        /// Freshly serialized post-refresh `C::State` bytes.
+        data: Zeroizing<Vec<u8>>,
+        /// `<C::State as CredentialState>::expires_at()` read off the
+        /// *refreshed* state. A refresh that rotated the token typically
+        /// produces a new expiry; the service must persist this, not the
+        /// stale pre-refresh `expires_at` (otherwise a refreshed
+        /// credential keeps its old — possibly already-elapsed — expiry).
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
     /// Another replica refreshed while this caller waited on the
     /// cross-replica claim. The service must skip the write and re-read
     /// the now-fresher state from the store.
@@ -715,12 +724,18 @@ where
                 })?;
             match outcome {
                 nebula_credential::RefreshOutcome::Refreshed => {
-                    let bytes = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
+                    // Read the expiry off the *refreshed* state — a token
+                    // rotation typically sets a new TTL. Persisting the
+                    // pre-refresh `expires_at` would leave a freshly
+                    // refreshed credential carrying a stale (possibly
+                    // already-elapsed) expiry.
+                    let expires_at = state.expires_at();
+                    let data = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
                         CredentialServiceError::Internal(format!(
                             "refreshed state serialization failed: {e}"
                         ))
                     })?);
-                    Ok(RefreshOutcomeKind::Rewrote(bytes))
+                    Ok(RefreshOutcomeKind::Rewrote { data, expires_at })
                 },
                 // Another replica already refreshed while this caller
                 // waited on the cross-replica claim. The local `state` is
@@ -758,6 +773,15 @@ where
 /// Attach the erased `revoke` closure for `C: Revocable`. The base
 /// [`register_runtime_ops`] must have run first.
 ///
+/// `Revocable::revoke` takes `&mut state` and may mutate it (e.g. clear a
+/// server-side handle). Those mutations are intentionally **not**
+/// re-persisted: revocation deletes the stored row
+/// ([`CredentialService::revoke`](crate::CredentialService::revoke) calls
+/// `store.delete` right after this closure returns), so the post-revoke
+/// state has no row to write back to. This is correct-by-design, not a
+/// lost write — unlike `refresh`, which re-persists its `&mut state`
+/// because the row survives.
+///
 /// # Errors
 ///
 /// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
@@ -780,6 +804,10 @@ where
                     "stored state deserialization failed: {e}"
                 ))
             })?;
+            // `revoke` may mutate `state`; the mutation is deliberately
+            // dropped here. The service deletes the row immediately after
+            // this returns (revocation = gone), so there is nothing to
+            // re-persist. See this fn's doc comment.
             dispatch_revoke::<C>(&mut state, ctx).await.map_err(|e| {
                 CredentialServiceError::Provider(format!("credential revoke failed: {e}"))
             })

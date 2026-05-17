@@ -91,6 +91,23 @@ pub enum CredentialServiceError {
     #[error("credential store error: {0}")]
     Store(String),
 
+    /// An external [`StateSource`](crate::StateSource) was configured via
+    /// [`external_providers`](crate::CredentialServiceBuilder::external_providers)
+    /// but the resolution wiring that consumes it is not implemented in
+    /// this crate yet — it lands with the ADR-0051 Phase-D external-source
+    /// bridge (see `docs/adr/0066` / spec §8). Returned instead of
+    /// silently resolving from the local store, which would hand back
+    /// material from the wrong source.
+    #[classify(category = "internal", code = "CREDENTIAL_SERVICE:EXTERNAL_NOT_WIRED")]
+    #[error(
+        "external credential source '{provider}' is configured but its resolution wiring is not \
+         implemented yet (ADR-0051 Phase-D bridge)"
+    )]
+    ExternalSourceNotWired {
+        /// `ExternalProvider::provider_name()` of the configured source.
+        provider: String,
+    },
+
     /// An invariant the runtime owns was violated.
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:INTERNAL")]
     #[error("internal credential runtime error: {0}")]

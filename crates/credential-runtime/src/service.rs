@@ -148,9 +148,10 @@ pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
     pub(crate) dispatch: Arc<CredentialDispatch>,
     pub(crate) ops: Arc<DispatchOps<B, PS>>,
     pub(crate) observer: Arc<dyn CredentialObserver>,
-    // Consumed by the acquisition path when state comes from an external
-    // provider chain instead of the local encrypted store.
-    #[allow(dead_code)]
+    // Read by `ensure_local_source` on every secret-resolving entry
+    // point. `External` is configurable but its resolution wiring (the
+    // ADR-0051 Phase-D bridge) is not implemented here yet, so it fails
+    // typed rather than silently resolving from the local store.
     pub(crate) source: StateSource,
 }
 
@@ -180,6 +181,30 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             ops,
             observer,
             source,
+        }
+    }
+
+    /// Guard the resolution path against a configured-but-unwired
+    /// external [`StateSource`].
+    ///
+    /// [`external_providers`](crate::CredentialServiceBuilder::external_providers)
+    /// records an [`StateSource::External`] but the resolution wiring that
+    /// would route through the provider chain is the ADR-0051 Phase-D
+    /// bridge, not yet implemented in this crate. Without this guard a
+    /// caller that configured Vault would silently get material resolved
+    /// from the *local* store — a wrong-source security hazard. Every
+    /// secret-resolving entry point (`create` / `resolve` /
+    /// `continue_resolve`) calls this first so the misconfiguration fails
+    /// loud and typed instead of resolving from the wrong place.
+    /// `LocalEncrypted` (the default) is the success path.
+    fn ensure_local_source(&self) -> Result<(), CredentialServiceError> {
+        match &self.source {
+            StateSource::LocalEncrypted => Ok(()),
+            StateSource::External(provider) => {
+                Err(CredentialServiceError::ExternalSourceNotWired {
+                    provider: provider.provider_name().to_owned(),
+                })
+            },
         }
     }
 
@@ -215,6 +240,10 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         credential_key: &str,
         props: Value,
     ) -> Result<CredentialSnapshot, CredentialServiceError> {
+        // Fail loud if an external source was configured but its
+        // resolution wiring is not implemented yet — never silently
+        // resolve from the local store under a Vault-configured service.
+        self.ensure_local_source()?;
         // The type must be registered (TypeUnknown closes the abuse where
         // an unregistered key reaches resolution).
         if !self.dispatch.contains(credential_key) {
@@ -554,8 +583,8 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             },
         })?;
 
-        let refreshed = match outcome {
-            crate::ops::RefreshOutcomeKind::Rewrote(bytes) => bytes,
+        let (refreshed, refreshed_expires_at) = match outcome {
+            crate::ops::RefreshOutcomeKind::Rewrote { data, expires_at } => (data, expires_at),
             // Another replica already refreshed and persisted fresher
             // state. Re-writing the un-mutated local copy here would
             // either spuriously `VersionConflict` or clobber that fresher
@@ -588,7 +617,12 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             version: stored.version,
             created_at: stored.created_at,
             updated_at: now,
-            expires_at: stored.expires_at,
+            // The refresh closure read this off the *refreshed* state
+            // (`CredentialState::expires_at()`), not the pre-refresh row:
+            // a token rotation typically produces a new expiry, so reusing
+            // `stored.expires_at` would persist a stale (possibly
+            // already-elapsed) expiry against fresh credential bytes.
+            expires_at: refreshed_expires_at,
             reauth_required: false,
             metadata: stored.metadata.clone(),
         };
@@ -624,6 +658,13 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// logged, not propagated — the credential is still revoked); the
     /// stored row is then deleted per the revoke contract. On success
     /// [`CredentialObserver::on_revoke`] fires.
+    ///
+    /// `Revocable::revoke` receives `&mut state` and may mutate it. That
+    /// mutation is intentionally **not** re-persisted: revocation deletes
+    /// the row (a revoked credential is gone), so there is no surviving
+    /// row to write the mutated state back to. This is by design — unlike
+    /// [`refresh`](Self::refresh), which keeps the row and CAS-persists
+    /// its mutated state.
     ///
     /// # Errors
     ///
@@ -700,6 +741,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         credential_key: &str,
         props: Value,
     ) -> Result<Acquisition, CredentialServiceError> {
+        self.ensure_local_source()?;
         if !self.dispatch.contains(credential_key) {
             return Err(CredentialServiceError::TypeUnknown {
                 key: credential_key.to_owned(),
@@ -745,6 +787,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         pending_token: &str,
         user_input: UserInput,
     ) -> Result<Acquisition, CredentialServiceError> {
+        self.ensure_local_source()?;
         if !self.dispatch.contains(credential_key) {
             return Err(CredentialServiceError::TypeUnknown {
                 key: credential_key.to_owned(),
@@ -1078,7 +1121,7 @@ pub mod test_support {
             Arc::new(registry),
             Arc::new(dispatch),
             Arc::new(ops),
-            Arc::new(NoopObserver),
+            Arc::new(NoopObserver::new()),
             LeaseLifecycleConfig::default(),
             CancellationToken::new(),
         )
