@@ -147,11 +147,12 @@ fn phase_from_seam(phase: &str) -> ResourcePhase {
 ///
 /// Returns resource definitions scoped to the caller's workspace,
 /// paginated with the shared `page`/`page_size` query convention (same
-/// extractor as `list_workflows`). Soft-deleted rows are excluded *after*
-/// the store returns the page (the store returns the raw window including
-/// tombstones; the handler owns the `deleted_at` filter). The raw
-/// `config` blob is never surfaced — only the non-secret summary fields
-/// (ADR-0028 §7).
+/// extractor as `list_workflows`). Soft-deleted rows are excluded by the
+/// store **as part of** pagination (the `ResourceRepo::list` contract:
+/// the `(offset, limit)` window is over the live row set), so the
+/// handler does no `deleted_at` post-filter — paginating then filtering
+/// would yield sparse pages / skip live rows. The raw `config` blob is
+/// never surfaced — only the non-secret summary fields (ADR-0028 §7).
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/resources",
@@ -199,14 +200,14 @@ pub async fn list_resources(
     let offset = params.offset() as u64;
     let limit = params.limit() as u64;
 
+    // The `ResourceRepo::list` contract guarantees this window already
+    // excludes soft-deleted rows (tombstone filter applied as part of
+    // pagination), so no handler-side `deleted_at` post-filter — that
+    // would re-introduce the sparse-page bug the contract prevents.
     let entries = repo.list(ws_bytes.as_slice(), offset, limit).await?;
 
     let resources = entries
         .into_iter()
-        // Soft-deleted definitions are not part of the catalog view. The
-        // store returns the raw page (tombstones included); the handler
-        // owns this exclusion policy.
-        .filter(|entry| entry.deleted_at.is_none())
         .map(entry_to_summary)
         .collect::<Result<Vec<_>, ApiError>>()?;
 
@@ -331,7 +332,7 @@ fn validate_resource_config(
 /// Map a [`nebula_storage::StorageError`] from a resource CAS `update`
 /// onto the HTTP contract.
 ///
-/// Only the **specific** [`StorageError::Conflict`] variant (the
+/// Only the **specific** `StorageError::Conflict` variant (the
 /// optimistic-concurrency / CAS-version mismatch) becomes
 /// [`ApiError::Conflict`] (409): a caller's `expected_version` was stale.
 /// Every other `StorageError` stays the opaque
@@ -356,6 +357,40 @@ pub fn map_resource_update_storage_error(err: nebula_storage::StorageError) -> A
         },
         // Connection / serialization / timeout / not-found-on-update / …
         // are not a version conflict — keep the opaque 500 mapping.
+        other => ApiError::Storage(other),
+    }
+}
+
+/// Map a [`nebula_storage::StorageError`] from a resource `create` onto
+/// the HTTP contract.
+///
+/// A workspace `slug` is unique per workspace, so a colliding create is a
+/// **caller** conflict, not a server fault: the store surfaces it as
+/// `StorageError::Duplicate` (the unique-constraint variant — slug /
+/// idempotency / dedup). That, and the CAS `StorageError::Conflict`
+/// variant for symmetry, become [`ApiError::Conflict`] (409). Every
+/// other `StorageError` (connection / serialization / timeout / …) stays
+/// the opaque [`ApiError::Storage`] → 500 — a genuine backend fault must
+/// not be mis-signalled to the client as a duplicate. Mirrors
+/// [`map_resource_update_storage_error`]'s deliberately-narrow shape (no
+/// catch-all "any storage error ⇒ 409").
+#[must_use]
+pub fn map_resource_create_storage_error(err: nebula_storage::StorageError) -> ApiError {
+    match err {
+        // Unique-constraint violation — a duplicate workspace slug is the
+        // expected case here. The `detail` is store-authored (constraint
+        // name / generic text), not the submitted config, so it carries
+        // no secret material (ADR-0028 §7).
+        nebula_storage::StorageError::Duplicate { detail, .. } => {
+            ApiError::Conflict(format!("resource already exists: {detail}"))
+        },
+        // CAS-mismatch cannot arise on an initial create, but map it to a
+        // 409 for symmetry rather than letting it fall through to a 500.
+        nebula_storage::StorageError::Conflict { .. } => ApiError::Conflict(
+            "resource conflicts with an existing row; re-read and retry".to_string(),
+        ),
+        // Connection / serialization / timeout / … are not a caller
+        // conflict — keep the opaque 500 mapping.
         other => ApiError::Storage(other),
     }
 }
@@ -421,6 +456,9 @@ fn created_by_bytes(principal: &Principal) -> Vec<u8> {
 /// - unknown `kind` ⇒ **409 Conflict** (the kind is not in the closed
 ///   allowlist — a non-retryable caller fault, classified exactly as the
 ///   engine's `RegistrarError::UnknownKind`);
+/// - the workspace `slug` collides with an existing resource ⇒ **409
+///   Conflict** (a workspace-unique slug — a caller conflict mapped from
+///   the store's `StorageError::Duplicate`, not a 500);
 /// - `config` fails the kind's schema or carries an undeclared,
 ///   secret-shaped field ⇒ **422 Unprocessable** with a generic detail
 ///   (the validator's raw report is logged server-side, never echoed —
@@ -441,7 +479,7 @@ fn created_by_bytes(principal: &Principal) -> Vec<u8> {
         (status = 201, description = "Resource created; returns the new `res_<ULID>` id.", body = CreateResourceResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 409, description = "Unknown resource `kind` (not in the closed registrar allowlist).", body = ProblemDetails),
+        (status = 409, description = "Unknown resource `kind` (not in the closed registrar allowlist), or the workspace `slug` collides with an existing resource.", body = ProblemDetails),
         (status = 422, description = "Resource config failed schema/closed-set validation, or the validation backend is not configured.", body = ProblemDetails),
         (status = 500, description = "Resource repository error.", body = ProblemDetails),
         (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
@@ -486,7 +524,13 @@ pub async fn create_resource(
         deleted_at: None,
     };
 
-    repo.create(&entry).await?;
+    // A colliding workspace slug is a caller conflict (409), not a
+    // server fault (500): the store surfaces it as
+    // `StorageError::Duplicate`. Map it specifically — the narrow shape
+    // mirrors the update path's CAS mapper.
+    repo.create(&entry)
+        .await
+        .map_err(map_resource_create_storage_error)?;
 
     Ok((
         StatusCode::CREATED,
@@ -696,10 +740,10 @@ pub async fn delete_resource(
 /// or credential material (ADR-0028 §7).
 ///
 /// Tenant isolation composes with the read path. The runtime
-/// [`nebula_resource::Manager`] is keyed by `(ResourceKey, ScopeLevel)`,
+/// `nebula_resource::Manager` is keyed by `(ResourceKey, ScopeLevel)`,
 /// **not** by workspace — workspace ownership lives in the config row. So
 /// the handler first establishes ownership through the *same* audited
-/// [`fetch_owned_resource`] boundary as the read/update/delete paths
+/// `fetch_owned_resource` boundary as the read/update/delete paths
 /// (an unknown / unparsable id, a resource owned by a *different*
 /// workspace, and a soft-deleted row ALL collapse to an indistinguishable
 /// **404** — no cross-tenant existence/content/status oracle), and only

@@ -58,14 +58,19 @@ pub trait ResourceRepo: Send + Sync {
     /// Soft-delete a resource.
     async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
 
-    /// List resources in a workspace with pagination.
+    /// List **live** resources in a workspace with pagination.
     ///
     /// `offset`/`limit` page the workspace window (mirrors
     /// [`WorkflowRepo::list`](super::WorkflowRepo::list)). An
-    /// implementation MUST return **all** matching rows in that window
-    /// **including soft-deleted ones** — the `deleted_at` filter is the
-    /// caller's responsibility (the catalog handler owns the
-    /// tombstone-exclusion policy), so the store must not pre-filter.
+    /// implementation **MUST** exclude soft-deleted rows
+    /// (`deleted_at IS NOT NULL`) **as part of** pagination — i.e. the
+    /// `(offset, limit)` window is over the *live* row set, applied
+    /// **after** the tombstone filter, never before. Paginating the raw
+    /// window and filtering tombstones afterwards is forbidden: it yields
+    /// sparse/short pages and can skip live rows entirely. A SQL backend
+    /// therefore puts `WHERE deleted_at IS NULL` in the same query as
+    /// `LIMIT`/`OFFSET`; an in-memory impl filters, then slices. With
+    /// this contract the caller does no `deleted_at` post-filter.
     async fn list(
         &self,
         workspace_id: &[u8],

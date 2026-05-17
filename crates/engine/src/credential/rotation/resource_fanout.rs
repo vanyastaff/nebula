@@ -671,6 +671,8 @@ mod tests {
                         // timeout must elapse and record TimedOut without
                         // touching siblings.
                         std::future::pending::<()>().await;
+                        // guard-justified: `std::future::pending()` never
+                        // resolves, so this line is statically unreachable.
                         unreachable!("pending future never resolves")
                     },
                 }
@@ -687,6 +689,8 @@ mod tests {
                     Behaviour::FastErr => Err(HookError("revoke boom".to_owned())),
                     Behaviour::Hang => {
                         std::future::pending::<()>().await;
+                        // guard-justified: `std::future::pending()` never
+                        // resolves, so this line is statically unreachable.
                         unreachable!("pending future never resolves")
                     },
                 }

@@ -79,10 +79,12 @@ fn entry(
 /// One parametrizable fake [`ResourceRepo`] for every resource-handler
 /// test.
 ///
-/// - `list` returns `list_rows` verbatim (including soft-deleted rows) —
-///   the handler owns the `deleted_at` filter, so the fixture must not
-///   pre-filter. When `expect_list_ws` is set the looked-up workspace id
-///   is asserted, pinning that the handler scopes `list()` to the tenant.
+/// - `list` honours the `ResourceRepo::list` contract: it excludes
+///   soft-deleted rows **as part of** pagination (filter tombstones,
+///   then window over the live set) — the store owns tombstone
+///   exclusion, not the handler. When `expect_list_ws` is set the
+///   looked-up workspace id is asserted, pinning that the handler scopes
+///   `list()` to the tenant.
 /// - `get` mirrors the real id-keyed store: it returns `get_row` only
 ///   when the looked-up id equals the stored row's id, and is *not*
 ///   workspace-scoped — tenant isolation is the handler's job, asserted
@@ -237,14 +239,16 @@ impl ResourceRepo for FakeResourceRepo {
                 "handler must scope list() to the tenant workspace id bytes"
             );
         }
-        // Mirror a real store's windowing: slice [offset, offset+limit).
-        // The handler owns the soft-delete filter, so the fixture still
-        // returns tombstoned rows that fall in the window verbatim.
+        // Honour the `ResourceRepo::list` contract: exclude soft-deleted
+        // rows as PART OF pagination — filter tombstones first, *then*
+        // window [offset, offset+limit) over the live set (never the
+        // reverse, which would yield sparse pages / skip live rows).
         let offset = usize::try_from(offset).unwrap_or(usize::MAX);
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         Ok(self
             .list_rows
             .iter()
+            .filter(|e| e.deleted_at.is_none())
             .skip(offset)
             .take(limit)
             .cloned()
@@ -273,8 +277,9 @@ fn state_with_repo(api_config: &ApiConfig, repo: Arc<dyn ResourceRepo>) -> AppSt
 #[tokio::test]
 async fn list_resources_returns_200_with_mapped_summaries() {
     let api_config = ApiConfig::for_test();
-    // Two live rows plus one soft-deleted one for the test workspace;
-    // `list` returns every row (the handler owns the soft-delete filter).
+    // Two live rows plus one soft-deleted one for the test workspace.
+    // Per the `ResourceRepo::list` contract the repo excludes the
+    // tombstone as part of pagination, so only the two live rows surface.
     let rows = vec![
         entry(
             ResourceId::new(),
@@ -346,11 +351,12 @@ async fn list_resources_returns_200_with_mapped_summaries() {
         .as_array()
         .expect("`resources` must be a JSON array");
 
-    // The soft-deleted row is excluded → exactly 2 live summaries.
+    // The repo excludes the soft-deleted row as part of pagination →
+    // exactly 2 live summaries reach the handler.
     assert_eq!(
         resources.len(),
         2,
-        "soft-deleted resources must be excluded; got {resources:?}"
+        "soft-deleted resources must be excluded by the repo; got {resources:?}"
     );
 
     let first = &resources[0];
@@ -380,6 +386,101 @@ async fn list_resources_returns_200_with_mapped_summaries() {
     assert_eq!(second["name"], "Redis Cache");
     assert_eq!(second["kind"], "redis_cache");
     assert_eq!(second["version"], 1);
+}
+
+/// Non-default pagination over the **live** row set. A tombstone is
+/// interleaved between the live rows; with `?page=2&page_size=1`
+/// (offset=1, limit=1) the handler must return exactly the *second
+/// live* row — not the tombstone, and not an empty page. This is the
+/// regression guard for the pagination-before-tombstone bug: paginating
+/// the raw window then filtering would make this page sparse (it would
+/// land on the tombstone and return nothing); the `ResourceRepo::list`
+/// contract (filter, then window over the live set) makes it correct.
+#[tokio::test]
+async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
+    let api_config = ApiConfig::for_test();
+    // Live, TOMBSTONE, Live, Live — the tombstone sits at raw index 1,
+    // exactly where a naive `skip(1)` of the *raw* window would land.
+    let rows = vec![
+        entry(
+            ResourceId::new(),
+            test_ws_bytes(),
+            "live-a",
+            "Live A",
+            "http_pool",
+            1,
+            false,
+        ),
+        entry(
+            ResourceId::new(),
+            test_ws_bytes(),
+            "tomb",
+            "Tombstone",
+            "http_pool",
+            2,
+            true,
+        ),
+        entry(
+            ResourceId::new(),
+            test_ws_bytes(),
+            "live-b",
+            "Live B",
+            "redis_cache",
+            3,
+            false,
+        ),
+        entry(
+            ResourceId::new(),
+            test_ws_bytes(),
+            "live-c",
+            "Live C",
+            "http_pool",
+            4,
+            false,
+        ),
+    ];
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_list(rows));
+    let state = state_with_repo(&api_config, repo);
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // page=2, page_size=1 ⇒ offset=1, limit=1 over the LIVE set.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(ws_path("/resources?page=2&page_size=1"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON body");
+    let resources = json["resources"]
+        .as_array()
+        .expect("`resources` must be a JSON array");
+
+    // Exactly the SECOND LIVE row — the window is over live rows, the
+    // tombstone is excluded by the repo (never a sparse/empty page).
+    assert_eq!(
+        resources.len(),
+        1,
+        "offset=1 limit=1 over the live set must yield exactly one row, \
+         not an empty/sparse page; got {resources:?}"
+    );
+    assert_eq!(
+        resources[0]["slug"], "live-b",
+        "the window must honour offset/limit over LIVE rows (2nd live row \
+         is `live-b`); a tombstone must never occupy a page slot"
+    );
 }
 
 #[tokio::test]
@@ -1378,6 +1479,45 @@ fn storage_cas_conflict_maps_to_409_other_storage_errors_stay_500() {
     );
 }
 
+/// The create duplicate-slug → 409 mapping, asserted directly at the
+/// type level (the API crate cannot build a populated `nebula-resource`
+/// registrar to drive the full handler path — same constraint that makes
+/// the CAS mapper a direct test above). A workspace `slug` is
+/// workspace-unique, so a colliding create is a **caller** conflict the
+/// store surfaces as `StorageError::Duplicate`: the handler must map it
+/// to 409, NOT a 500 (which would mislabel a normal name clash as a
+/// server fault). Any unrelated `StorageError` stays the opaque 500 — no
+/// catch-all "any storage error ⇒ 409".
+#[test]
+fn create_duplicate_slug_maps_to_409_other_storage_errors_stay_500() {
+    use nebula_api::ApiError;
+
+    let dup = nebula_api::map_resource_create_storage_error(
+        nebula_storage::StorageError::duplicate("resource", "workspace slug already in use"),
+    );
+    let (status, _) = dup.to_problem_details();
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a duplicate workspace slug (StorageError::Duplicate) must map to 409 Conflict, not 500"
+    );
+
+    // A non-duplicate storage fault must NOT be coerced to 409 — 500.
+    let other = nebula_api::map_resource_create_storage_error(
+        nebula_storage::StorageError::Connection("db down".to_owned()),
+    );
+    let (status, _) = other.to_problem_details();
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a non-duplicate StorageError must stay 500, never be mis-mapped to 409"
+    );
+    assert!(
+        matches!(other, ApiError::Storage(_)),
+        "non-duplicate storage errors must remain the opaque Storage variant"
+    );
+}
+
 /// End-to-end interplay: a successful soft-delete followed by a GET of
 /// the same id is 404 — the get-by-id filter already excludes
 /// `deleted_at.is_some()`, so a deleted resource is indistinguishable
@@ -1643,6 +1783,62 @@ async fn get_resource_status_cross_workspace_is_404_no_status_oracle() {
             && !raw.contains("secret_looking_key")
             && !raw.contains("do-not-leak"),
         "cross-workspace 404 must not echo the foreign resource; body: {raw}"
+    );
+}
+
+/// A soft-deleted (tombstoned) row owned by the caller's OWN workspace
+/// MUST be **404** on status — a tombstone is not a resource — and the
+/// engine status seam must NEVER be consulted (a deleted resource is
+/// indistinguishable from a missing one; no status oracle for it).
+/// `fetch_owned_resource` excludes `deleted_at.is_some()` and
+/// short-circuits before the seam.
+#[tokio::test]
+async fn get_resource_status_soft_deleted_is_404_no_status_oracle() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+
+    // Owned by the CALLER's workspace, but soft-deleted (`deleted = true`).
+    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 4, true);
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
+    // The seam would resolve `http_pool` — isolation/tombstone filter
+    // must stop the request before it is ever consulted.
+    let status = Arc::new(FakeResourceStatus::resolving(
+        "http_pool",
+        ResourceRuntimeStatus {
+            phase: "ready",
+            healthy: true,
+            accepting: true,
+        },
+    ));
+    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &id.to_string()).await;
+    let st = response.status();
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "a soft-deleted resource must be 404 on status — a tombstone is \
+         not a resource; got {st}, body: {raw}"
+    );
+    assert!(
+        status.queried().is_none(),
+        "the engine status seam must NOT be consulted for a soft-deleted \
+         resource — the tombstone filter short-circuits first"
+    );
+    assert!(
+        !raw.contains("Deleted Pool")
+            && !raw.contains("secret_looking_key")
+            && !raw.contains("do-not-leak"),
+        "a tombstone 404 must not echo the deleted resource; body: {raw}"
     );
 }
 

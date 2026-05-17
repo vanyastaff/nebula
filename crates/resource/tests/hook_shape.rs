@@ -1,5 +1,8 @@
-//! Compile-time assertion of the D2 hook shape: &self + slot + &Runtime,
-//! plus on_credential_revoke. Body is never run; compilation is the test.
+//! Compile-time assertion of the hook shape (&self + slot + &Runtime,
+//! plus on_credential_revoke; ADR-0044/0067). Body is never run;
+//! compilation is the test.
+// guard-justified: this file is a type-shape probe — items exist only to
+// be type-checked, never executed, so dead_code/unused are inherent.
 #![allow(dead_code, unused)]
 use nebula_resource::Resource;
 

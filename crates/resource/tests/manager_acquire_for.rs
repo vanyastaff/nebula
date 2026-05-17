@@ -472,6 +472,23 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
         "revoke_slot_for must have driven tenant A's resolved row"
     );
 
+    // Tenant A's pinned row is now tainted by the revoke: a subsequent
+    // identity-pinned acquire for A must be rejected (not silently still
+    // serviceable). This proves the revoke actually tainted A's row —
+    // without it, "B is acquirable" alone would also pass if the revoke
+    // were a no-op. `Unavailable` is the post-revoke/tainted category
+    // (mirrors `manager_refresh_slot.rs`'s post-revoke assertion).
+    use nebula_error::{Classify, ErrorCategory};
+    let a_after = manager
+        .acquire_resident_for::<ResRes>(&ctx, &AcquireOptions::default(), a)
+        .await
+        .expect_err("tenant A must NOT be acquirable after its pinned row is revoked");
+    assert_eq!(
+        a_after.category(),
+        ErrorCategory::Unavailable,
+        "a revoked/tainted pinned row must reject acquires with Unavailable, got: {a_after}"
+    );
+
     // Tenant B's row is a distinct registry row (distinct slot_identity):
     // A's revoke taints A's row only, so B remains acquirable.
     let _guard = manager

@@ -96,6 +96,8 @@ impl Resource for Ctl {
             Behaviour::Ok => Ok(()),
             Behaviour::Hang => {
                 std::future::pending::<()>().await;
+                // guard-justified: `std::future::pending()` never resolves,
+                // so control cannot reach here — the wedged-resource arm.
                 unreachable!()
             },
         }
@@ -163,10 +165,16 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
     }
 
     // Per-resource budget: the wedged row times out fast; the two OK rows
-    // complete well within it.
-    let out: RotationOutcome = idx
-        .dispatch_refresh(cid, &mgr, Duration::from_millis(150))
-        .await;
+    // complete well within it. The whole dispatch is additionally bounded
+    // by a generous outer timeout so an isolation regression (the wedged
+    // hang leaking past its per-resource budget to stall the dispatch)
+    // fails this test loudly instead of hanging the test runner.
+    let out: RotationOutcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        idx.dispatch_refresh(cid, &mgr, Duration::from_millis(150)),
+    )
+    .await
+    .expect("dispatch_refresh must complete under timeout isolation");
 
     assert_eq!(
         out,

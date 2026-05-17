@@ -167,8 +167,12 @@ pub struct EventSourceAdapter<E: EventSource> {
     source: E,
     runtime: Arc<E::Runtime>,
     metadata: ActionMetadata,
+    // guard-justified: retained as a downstream-observability buffer-size
+    // hint; not read on the current adapter path.
     #[allow(dead_code, reason = "buffer_size hint for downstream observability")]
     config: EventSourceConfig,
+    // guard-justified: a single boxed-fn field — a type alias would not
+    // improve readability over the inline signature.
     #[allow(
         clippy::type_complexity,
         reason = "single field — extracting to a type alias adds no readability"
