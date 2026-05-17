@@ -3,12 +3,11 @@
 //! All routes under `/api/v1/orgs/{org}/workspaces/{ws}/*` are behind
 //! auth + tenancy + RBAC middleware layers.
 //!
-//! `resource::list_resources`, `execution::terminate_execution`, and
-//! `execution::restart_execution` are still stubbed (501) and carry
-//! `#[deprecated]` so the OpenAPI spec flags them per ADR-0047 Stub
-//! Endpoint Policy. The deprecation lint is silenced at module level —
-//! these handlers are intentionally mounted so the route table stays in
-//! sync with the published spec.
+//! `execution::terminate_execution` and `execution::restart_execution`
+//! are still stubbed (501) and carry `#[deprecated]` so the OpenAPI spec
+//! flags them per ADR-0047 Stub Endpoint Policy. The deprecation lint is
+//! silenced at module level — these handlers are intentionally mounted so
+//! the route table stays in sync with the published spec.
 #![allow(deprecated)]
 
 use utoipa_axum::{router::OpenApiRouter, routes};

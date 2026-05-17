@@ -6,8 +6,8 @@
 //! - **Static check** — every operation flagged `deprecated = true` MUST
 //!   declare a `501` response. ADR-0047 Stub Endpoint Policy.
 //! - **Runtime check** — every stub endpoint registered under
-//!   `me/*`, `org/*`, `resource::list_resources`,
-//!   `execution::{terminate,restart}` is probed against a booted
+//!   `me/*`, `org/*`, `execution::{terminate,restart}` is probed
+//!   against a booted
 //!   in-memory app. The accepted outcomes are **501** (the
 //!   `ApiError::NotImplemented` variant) for stubs that reach the
 //!   handler body and **403** (`ApiError::InsufficientRole` /
@@ -106,8 +106,9 @@ async fn deprecated_operations_must_advertise_501_response() {
     assert!(
         deprecated_count > 0,
         "Spec must contain at least one deprecated stub operation; \
-         the M3.2 audit identifies 18+ stub endpoints under me/, org/, \
-         resource/, and execution/{{terminate,restart}}"
+         the remaining stub endpoints live under me/, org/, and \
+         execution/{{terminate,restart}} (resource catalog now \
+         implemented — no longer a stub)"
     );
 }
 
@@ -158,12 +159,6 @@ fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
             format!("/api/v1/orgs/{TEST_ORG}/service-accounts/{sa_id}"),
             None,
         ),
-        // resource — 1 stub
-        (
-            "GET",
-            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/resources"),
-            None,
-        ),
         // execution — 2 stubs
         (
             "POST",
@@ -188,8 +183,9 @@ async fn stub_endpoints_return_501_at_runtime() {
     let stubs = stub_endpoints();
     assert_eq!(
         stubs.len(),
-        18,
-        "stub coverage list must enumerate all 18 audit class-(c) endpoints; \
+        17,
+        "stub coverage list must enumerate all remaining audit class-(c) \
+         endpoints (resource catalog implemented — dropped from the list); \
          got {}",
         stubs.len()
     );
