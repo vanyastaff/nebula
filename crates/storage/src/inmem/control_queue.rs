@@ -44,7 +44,15 @@ impl InMemoryControlQueue {
         let mut rows: Vec<(&[u8; 16], &QueuedMsg)> = st.queue.iter().collect();
         rows.sort_unstable_by_key(|(id, _)| **id);
         rows.into_iter()
-            .map(|(_, q)| (q.msg.clone(), q.status.clone()))
+            .map(|(_, q)| {
+                // Reflect the live reclaim bookkeeping on the snapshot's
+                // message, matching the SQL backends where `reclaim_count`
+                // is a row column (a swept-but-not-yet-reclaimed row already
+                // shows the bumped count).
+                let mut msg = q.msg.clone();
+                msg.reclaim_count = q.reclaim_count;
+                (msg, q.status.clone())
+            })
             .collect()
     }
 }
@@ -93,6 +101,12 @@ impl ControlQueue for InMemoryControlQueue {
                 q.status = "Processing".to_string();
                 q.processed_by = Some(*processor);
                 q.processed_at = Some(now);
+                // Surface the post-reclaim count on the delivered message,
+                // matching the SQL backends (which read the `reclaim_count`
+                // column back into `ControlMsg` on claim). A consumer that
+                // re-claims a reclaimed row therefore observes the bumped
+                // count — the cross-runner-redeliver invariant relies on it.
+                q.msg.reclaim_count = q.reclaim_count;
                 claimed.push(q.msg.clone());
             }
         }
