@@ -34,6 +34,14 @@ pub trait ResourceRepo: Send + Sync {
     ) -> Result<Option<ResourceEntry>, StorageError>;
 
     /// Update a resource with CAS on `version`.
+    ///
+    /// CAS is checked on `expected_version`. A concrete implementation
+    /// MUST set the persisted `version` to `actual + 1` (the post-CAS
+    /// value) — `resource.version` supplied by the caller is advisory only
+    /// and MUST NOT be trusted as the new value; this mirrors
+    /// `WorkflowRepo`'s store-owned increment. (Until a concrete impl
+    /// exists, `UpdateResourceResponse.version` is a provisional
+    /// handler-side prediction.)
     async fn update(
         &self,
         resource: &ResourceEntry,

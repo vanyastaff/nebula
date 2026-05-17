@@ -70,6 +70,39 @@ fn entry_to_summary(entry: ResourceEntry) -> Result<ResourceSummary, ApiError> {
     })
 }
 
+/// Fetch a resource by its `res_<ULID>` path id, enforcing tenant isolation.
+///
+/// `ResourceRepo::get` is keyed purely by id and is **not**
+/// workspace-scoped, so this is the sole by-id tenant boundary: a resource
+/// in another workspace, a soft-deleted row, an unknown id, and an
+/// unparsable id ALL collapse to the same [`ApiError::NotFound`] (no
+/// cross-tenant existence / content / structural oracle — probing ids can
+/// never learn which are structurally valid, which exist, or which belong
+/// to another tenant). Every by-id resource handler MUST go through this —
+/// never call `repo.get` plus an ad-hoc filter inline, so the isolation
+/// predicate has exactly one audited definition that cannot drift between
+/// the read/update/delete paths.
+///
+/// The order is load-bearing: parse first (an unparsable id is a 404 with
+/// no backend touch), then the single fetch (a genuine backend fault
+/// propagates as a `?`-mapped 500, *not* a 404), then the
+/// caller-workspace + live predicate (foreign / tombstoned ⇒ 404). It is
+/// applied **before any mutation** in the update/delete paths, so a caller
+/// authorized for one workspace can neither mutate nor learn of another's
+/// resource.
+async fn fetch_owned_resource(
+    repo: &dyn nebula_storage::repos::ResourceRepo,
+    ws_bytes: &[u8],
+    res: &str,
+) -> Result<ResourceEntry, ApiError> {
+    let resource_id = ResourceId::parse(res)
+        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?;
+    repo.get(resource_id.as_bytes().as_slice())
+        .await?
+        .filter(|entry| entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none())
+        .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))
+}
+
 /// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` — list workspace resources.
 ///
 /// Returns resource definitions scoped to the caller's workspace. Soft-deleted
@@ -170,24 +203,11 @@ pub async fn get_resource(
         ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
     })?;
 
-    // An unparsable id cannot name an existing resource. Surfacing it as
-    // 404 (not 400) keeps malformed-id and cross-tenant lookups
-    // indistinguishable, so probing ids never leaks which ones are
-    // structurally valid.
-    let resource_id = ResourceId::parse(&res)
-        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?;
-
-    let entry = repo
-        .get(resource_id.as_bytes().as_slice())
-        .await?
-        .filter(|entry| {
-            // Tenant isolation + soft-delete tombstone collapse to the
-            // same "not found" outcome as a genuinely absent row: a
-            // resource in another workspace, or a deleted one, must be
-            // indistinguishable from non-existence.
-            entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none()
-        })
-        .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))?;
+    // Single audited by-id tenant boundary: an unknown / unparsable id, a
+    // foreign-workspace row, and a soft-deleted tombstone all collapse to
+    // an indistinguishable 404 (no cross-tenant existence/content/
+    // structural oracle).
+    let entry = fetch_owned_resource(&**repo, &ws_bytes, &res).await?;
 
     Ok(Json(entry_to_summary(entry)?))
 }
@@ -453,22 +473,13 @@ pub async fn update_resource(
         ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
     })?;
 
-    // An unparsable id cannot name an existing resource — 404 (not 400),
-    // indistinguishable from a missing / cross-tenant target.
-    let resource_id = ResourceId::parse(&res)
-        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?;
-
-    // Tenant-isolation boundary: fetch by id (the store is NOT
-    // workspace-scoped), then require the row to be the caller's *and*
-    // live. A foreign / missing / soft-deleted target collapses to the
-    // same 404 *before* any mutation — a caller authorized for one
-    // workspace can neither mutate nor learn of another workspace's
-    // resource (no 200/403/409, no existence or content leak).
-    let existing = repo
-        .get(resource_id.as_bytes().as_slice())
-        .await?
-        .filter(|entry| entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none())
-        .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))?;
+    // Tenant-isolation boundary *before any mutation*: the single audited
+    // by-id fetch (the store is NOT workspace-scoped). A foreign / missing
+    // / soft-deleted / unparsable target collapses to the same 404 — a
+    // caller authorized for one workspace can neither mutate nor learn of
+    // another workspace's resource (no 200/403/409, no existence/content
+    // leak).
+    let existing = fetch_owned_resource(&**repo, &ws_bytes, &res).await?;
 
     // Re-validate kind + config BEFORE persistence (same fail-closed
     // rules as create). A PUT must not bypass create-time validation.
@@ -499,8 +510,17 @@ pub async fn update_resource(
         .await
         .map_err(map_resource_update_storage_error)?;
 
+    // Canonical `res_<ULID>` echo of the (already isolation-verified) path
+    // id. `fetch_owned_resource` parsed `res` successfully, so this parse
+    // is on the success path; the unreachable error maps to the *same*
+    // `NotFound`, so the response value is byte-identical to the prior
+    // `ResourceId::parse(&res)?.to_string()` with no new error edge.
+    let id = ResourceId::parse(&res)
+        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?
+        .to_string();
+
     Ok(Json(UpdateResourceResponse {
-        id: resource_id.to_string(),
+        id,
         version: updated.version.to_string(),
     }))
 }
@@ -554,20 +574,12 @@ pub async fn delete_resource(
         ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
     })?;
 
-    let resource_id = ResourceId::parse(&res)
-        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?;
-
-    // Tenant-isolation boundary (identical to the update path): resolve
-    // by id, then require the row to be the caller's *and* still live. A
-    // foreign / missing / already-tombstoned target collapses to the same
-    // 404 *before* `soft_delete` is ever issued — a caller authorized for
-    // one workspace can neither delete nor learn of another workspace's
-    // resource.
-    let existing = repo
-        .get(resource_id.as_bytes().as_slice())
-        .await?
-        .filter(|entry| entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none())
-        .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))?;
+    // Tenant-isolation boundary (identical single audited fetch as the
+    // read/update paths): a foreign / missing / already-tombstoned /
+    // unparsable target collapses to the same 404 *before* `soft_delete`
+    // is ever issued — a caller authorized for one workspace can neither
+    // delete nor learn of another workspace's resource.
+    let existing = fetch_owned_resource(&**repo, &ws_bytes, &res).await?;
 
     repo.soft_delete(existing.id.as_slice()).await?;
 
