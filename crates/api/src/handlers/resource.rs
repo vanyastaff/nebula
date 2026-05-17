@@ -34,15 +34,15 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use nebula_core::{Principal, ResourceId, TenantContext};
+use nebula_core::{Principal, ResourceId, ResourceKey, TenantContext};
 use nebula_engine::RegistrarError;
 use nebula_storage::repos::ResourceEntry;
 
 use crate::{
     errors::{ApiError, ApiResult, ProblemDetails},
     models::{
-        CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourceSummary,
-        UpdateResourceRequest, UpdateResourceResponse,
+        CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourceStatusDto,
+        ResourceSummary, UpdateResourceRequest, UpdateResourceResponse,
     },
     state::AppState,
 };
@@ -584,4 +584,133 @@ pub async fn delete_resource(
     repo.soft_delete(existing.id.as_slice()).await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status` —
+/// **read-only** runtime-status projection of one resource.
+///
+/// This endpoint **observes** a resource's lifecycle phase; it never
+/// mutates one. Resource lifecycle (acquire / release / drain / reload)
+/// is engine-owned and is intentionally NOT exposed over HTTP — there is
+/// deliberately no acquire/release/drain route (INTEGRATION_MODEL
+/// §13.1). The response body carries phase/health only, never `config`
+/// or credential material (ADR-0028 §7).
+///
+/// Tenant isolation composes with the read path. The runtime
+/// [`nebula_resource::Manager`] is keyed by `(ResourceKey, ScopeLevel)`,
+/// **not** by workspace — workspace ownership lives in the config row. So
+/// the handler first establishes ownership through the *same* audited
+/// [`fetch_owned_resource`] boundary as the read/update/delete paths
+/// (an unknown / unparsable id, a resource owned by a *different*
+/// workspace, and a soft-deleted row ALL collapse to an indistinguishable
+/// **404** — no cross-tenant existence/content/status oracle), and only
+/// then projects the engine status seam for that **confirmed-owned**
+/// resource. A status request for a resource not owned by the caller's
+/// workspace never reaches the seam.
+///
+/// Outcomes for an owned, live resource:
+/// - it has a live runtime in the engine ⇒ **200** with its projected
+///   phase/health;
+/// - it exists as a definition but was never activated ⇒ **200** with a
+///   well-defined `inactive` status (it exists as config; it is just not
+///   running — NOT a 404);
+/// - no status backend is configured on this instance ⇒ **503** (the
+///   catalog None-convention — an honest "unavailable", never a
+///   fabricated status), checked *after* ownership so a 503 cannot leak
+///   the existence of a foreign resource.
+///
+/// A stored `kind` that is not a valid resource key is a storage
+/// invariant violation (the resource genuinely exists and is owned), so
+/// it is an opaque **500** — never a 404 (which would falsely deny an
+/// owned resource) and never a fabricated status.
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/resources/{res}/status",
+    tag = "workspaces.resources",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("res" = String, Path, description = "Resource identifier (`res_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Read-only runtime status (phase/health only; no raw config). A configured-but-never-activated resource reports an `inactive` phase here, not a 404.", body = ResourceStatusDto),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
+        (status = 500, description = "Resource repository error, or a stored resource `kind` that is not a valid resource key.", body = ProblemDetails),
+        (status = 503, description = "Resource catalog backend or the runtime-status backend is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
+pub async fn get_resource_status(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, res)): Path<(String, String, String)>,
+) -> ApiResult<Json<ResourceStatusDto>> {
+    let workspace_id = tenant
+        .require_workspace()
+        .map_err(|_| ApiError::Forbidden("workspace context required".to_string()))?;
+    let ws_bytes = workspace_id.as_bytes();
+
+    let repo = state.resource_repo.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
+    })?;
+
+    // Tenant-isolation boundary FIRST (the single audited by-id fetch;
+    // the store is NOT workspace-scoped). A foreign / missing /
+    // soft-deleted / unparsable target collapses to the same 404 —
+    // resolved *before* the status seam is ever consulted, so a status
+    // request can never be an existence/content/status oracle for
+    // another workspace's resource.
+    let entry = fetch_owned_resource(&**repo, &ws_bytes, &res).await?;
+
+    // Ownership confirmed. The runtime-status backend is checked only
+    // now (after isolation) so an absent backend reports 503 without
+    // ever revealing whether a *foreign* resource exists.
+    let status_port = state.resource_status.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Resource runtime-status backend not configured".into())
+    })?;
+
+    // The confirmed row's own `kind` keys the engine status seam — never
+    // an attacker-influenced value. A stored kind that is not a valid
+    // resource key is a storage-invariant violation on an
+    // already-confirmed-owned resource: an opaque 500, never a 404 (the
+    // resource exists and is owned) and never a fabricated status.
+    let key = ResourceKey::new(&entry.kind).map_err(|_| {
+        tracing::error!(
+            target: "nebula_api::resource",
+            "stored resource kind is not a valid resource key"
+        );
+        ApiError::Internal("resource has an invalid stored kind".to_string())
+    })?;
+
+    // Canonical `res_<ULID>` echo of the (already isolation-verified)
+    // path id. `fetch_owned_resource` parsed `res` successfully, so this
+    // is on the success path; the unreachable error maps to the *same*
+    // 404 so the response value is byte-identical with no new error edge.
+    let id = ResourceId::parse(&res)
+        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?
+        .to_string();
+
+    // Project the read-only engine seam. `None` = the resource exists as
+    // a definition but has no live runtime (never activated, or a
+    // fail-closed ambiguous `(key, scope)`): a well-defined `inactive`
+    // status in a 200 body — NOT a 404 (the config row exists; absence
+    // of a *live runtime* is a status, not a missing resource).
+    let dto = match status_port.runtime_status(&key) {
+        Some(s) => ResourceStatusDto {
+            id,
+            phase: s.phase.to_owned(),
+            healthy: s.healthy,
+            accepting: s.accepting,
+        },
+        None => ResourceStatusDto {
+            id,
+            phase: "inactive".to_owned(),
+            healthy: false,
+            accepting: false,
+        },
+    };
+
+    Ok(Json(dto))
 }

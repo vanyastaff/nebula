@@ -110,3 +110,34 @@ pub struct UpdateResourceResponse {
     /// The row's new CAS version after the successful update.
     pub version: String,
 }
+
+/// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status`
+/// response — a **read-only** runtime-status projection.
+///
+/// Carries lifecycle phase / health only. It deliberately has **no**
+/// `config` / credential / secret field (ADR-0028 §7): a status read is
+/// not a config read. There is also no acquire/release/drain control on
+/// this DTO or its endpoint — resource lifecycle is engine-owned and not
+/// exposed over HTTP (INTEGRATION_MODEL §13.1).
+///
+/// A resource that exists as a definition but has never been activated in
+/// the engine reports `phase = "inactive"` (with `healthy`/`accepting`
+/// `false`) — it exists as config, it is just not running. This is a
+/// `200`, not a `404` (the row exists; absence of a *live runtime* is a
+/// well-defined status, not a missing resource).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ResourceStatusDto {
+    /// `res_<ULID>` identifier of the resource the status is for.
+    pub id: String,
+    /// Lifecycle phase as a stable lowercase token: one of
+    /// `initializing`, `ready`, `reloading`, `draining`,
+    /// `shutting_down`, `failed`, `unknown`, or `inactive`
+    /// (configured but no live runtime).
+    pub phase: String,
+    /// `true` iff the resource is in a healthy, request-serving phase
+    /// (`ready`). A configured-but-inactive resource is not healthy.
+    pub healthy: bool,
+    /// `true` iff the resource can currently accept new acquire requests
+    /// (`ready` / `reloading`). Surfaced read-only — it does not acquire.
+    pub accepting: bool,
+}

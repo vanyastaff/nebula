@@ -74,6 +74,7 @@ pub mod node_output;
 pub(crate) mod resolver;
 pub mod resource;
 pub mod resource_accessor;
+pub mod resource_status;
 pub mod result;
 pub mod runtime;
 pub mod scoped_resources;
@@ -106,6 +107,9 @@ pub use resource::{
     TypedResourceRegistrar,
 };
 pub use resource_accessor::EngineResourceAccessor;
+pub use resource_status::{
+    EngineManagerResourceStatus, EngineResourceStatus, ResourceRuntimeStatus,
+};
 pub use result::ExecutionResult;
 pub use runtime::{
     ActionExecutor, ActionRegistry, ActionRuntime, BlobRef, BlobStorage, BoundedStreamBuffer,

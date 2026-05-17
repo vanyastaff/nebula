@@ -51,6 +51,12 @@ pub fn router() -> OpenApiRouter<AppState> {
             handlers::resource::update_resource,
             handlers::resource::delete_resource
         ))
+        // READ-ONLY runtime-status projection. Resource lifecycle
+        // (acquire/release/drain/reload) is engine-owned and
+        // deliberately NOT exposed over HTTP (INTEGRATION_MODEL §13.1):
+        // this is the ONLY `{res}/...` sub-route, and it is a GET only —
+        // there is intentionally no acquire/release/drain route.
+        .routes(routes!(handlers::resource::get_resource_status))
         // Credentials (Plane B — ADR-0031). Literal paths first, then
         // collection, then parameterized `{cred}`, then sub-resources.
         .routes(routes!(handlers::credential::resolve_credential))

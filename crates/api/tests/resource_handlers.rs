@@ -26,7 +26,8 @@ use axum::{
 };
 use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_core::{ResourceId, WorkspaceId};
+use nebula_core::{ResourceId, ResourceKey, WorkspaceId};
+use nebula_engine::{EngineResourceStatus, ResourceRuntimeStatus};
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo,
     repos::{InMemoryControlQueueRepo, ResourceEntry, ResourceRepo},
@@ -1391,5 +1392,456 @@ async fn delete_then_get_same_id_is_404() {
         StatusCode::NOT_FOUND,
         "a GET after soft-delete must be 404 — a deleted resource is \
          indistinguishable from a missing one"
+    );
+}
+
+// ── get_resource_status (read-only runtime projection) ───────────────────────
+//
+// `GET .../resources/{res}/status` is a READ-ONLY runtime-status
+// projection. Resource lifecycle (acquire/release/drain/reload) is owned
+// by the engine and is NOT exposed over HTTP (INTEGRATION_MODEL §13.1):
+// there is no `{res}/acquire` (or release/drain) route at all, asserted
+// below as the explicit non-lifecycle guarantee.
+//
+// Tenant isolation composes with the read path: the handler first
+// establishes config-row ownership through the SAME audited
+// `fetch_owned_resource` boundary (foreign / missing / soft-deleted /
+// unparsable ⇒ an indistinguishable 404, no status oracle), and only
+// then projects the engine status seam for the confirmed-owned resource.
+// The seam is api-safe (`nebula_engine::EngineResourceStatus` →
+// `ResourceRuntimeStatus`), so the API crate never depends on
+// `nebula-resource` (deny.toml `[[wrappers]]`). The status DTO carries
+// phase/health only — never config or credential material (ADR-0028 §7).
+
+/// Fake [`EngineResourceStatus`] for the handler tests.
+///
+/// The API crate cannot construct a real `nebula_resource::Manager` (no
+/// `nebula-resource` dependency), so the read-only status seam is faked
+/// at the api-safe boundary: `runtime_status` returns a fixed
+/// [`ResourceRuntimeStatus`] for `present_key` and `None` for everything
+/// else (the "configured but never activated" path). The looked-up key
+/// is captured so a test can prove the handler queried the seam with the
+/// confirmed-owned resource's kind, never an attacker-influenced value.
+struct FakeResourceStatus {
+    present_key: Option<String>,
+    status: ResourceRuntimeStatus,
+    last_query: Mutex<Option<String>>,
+}
+
+impl FakeResourceStatus {
+    /// Seam that resolves `key` (a resource `kind`) to `status`, and
+    /// `None` for any other key.
+    fn resolving(key: &str, status: ResourceRuntimeStatus) -> Self {
+        Self {
+            present_key: Some(key.to_owned()),
+            status,
+            last_query: Mutex::new(None),
+        }
+    }
+
+    /// Seam that has no live runtime for ANY key (every resource is
+    /// "configured but not currently active").
+    fn empty() -> Self {
+        Self {
+            present_key: None,
+            status: ResourceRuntimeStatus {
+                phase: "ready",
+                healthy: true,
+                accepting: true,
+            },
+            last_query: Mutex::new(None),
+        }
+    }
+
+    fn queried(&self) -> Option<String> {
+        self.last_query
+            .lock()
+            .expect("status query capture mutex not poisoned")
+            .clone()
+    }
+}
+
+impl EngineResourceStatus for FakeResourceStatus {
+    fn runtime_status(&self, key: &ResourceKey) -> Option<ResourceRuntimeStatus> {
+        *self
+            .last_query
+            .lock()
+            .expect("status query capture mutex not poisoned") = Some(key.as_str().to_owned());
+        match &self.present_key {
+            Some(present) if present == key.as_str() => Some(self.status.clone()),
+            _ => None,
+        }
+    }
+}
+
+async fn get_status_request(app: axum::Router, res_id: &str) -> axum::http::Response<Body> {
+    let token = create_test_jwt();
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(ws_path(&format!("/resources/{res_id}/status")))
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// A live, owned resource with a live runtime ⇒ **200** + a
+/// `ResourceStatusDto` projecting phase/health. The raw config must NOT
+/// leak (ADR-0028 §7) and no secret/credential field may appear.
+#[tokio::test]
+async fn get_resource_status_owned_active_is_200_with_dto() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    // The stored row's `kind` is what the handler must use to key the
+    // engine status seam.
+    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let status = Arc::new(FakeResourceStatus::resolving(
+        "http_pool",
+        ResourceRuntimeStatus {
+            phase: "ready",
+            healthy: true,
+            accepting: true,
+        },
+    ));
+    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &id.to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a live owned resource with a live runtime must be 200"
+    );
+
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    // No secret / config material in a status body (ADR-0028 §7): the
+    // fixture's config is deliberately secret-shaped.
+    assert!(
+        !raw.contains("secret_looking_key") && !raw.contains("do-not-leak"),
+        "status response must not surface raw resource config; body: {raw}"
+    );
+
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON body");
+    assert_eq!(json["phase"], "ready", "phase must be the projected phase");
+    assert_eq!(json["healthy"], true, "healthy must be projected");
+    assert_eq!(json["accepting"], true, "accepting must be projected");
+    assert_eq!(
+        json["id"].as_str().expect("id is a string"),
+        id.to_string(),
+        "id must round-trip to the same res_<ULID>"
+    );
+
+    // The DTO must expose ONLY phase/health/id — never config/secret keys.
+    let obj = json.as_object().expect("status body is a JSON object");
+    let allowed = ["id", "phase", "healthy", "accepting"];
+    for k in obj.keys() {
+        assert!(
+            allowed.contains(&k.as_str()),
+            "status DTO leaked an unexpected field `{k}` (no config / \
+             credential material may appear — ADR-0028 §7)"
+        );
+    }
+
+    // The handler keyed the seam with the CONFIRMED row's kind.
+    assert_eq!(
+        status.queried().as_deref(),
+        Some("http_pool"),
+        "the engine status seam must be queried with the owned row's kind"
+    );
+}
+
+/// SECURITY (tenant isolation): a resource owned by ANOTHER workspace
+/// MUST be **404** — indistinguishable from missing — and the engine
+/// status seam must NEVER be consulted (no cross-tenant status oracle).
+/// `fetch_owned_resource` short-circuits before the seam.
+#[tokio::test]
+async fn get_resource_status_cross_workspace_is_404_no_status_oracle() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+
+    let other_workspace = vec![0xAB_u8; 16];
+    assert_ne!(
+        other_workspace,
+        test_ws_bytes(),
+        "the cross-workspace fixture must differ from the caller's workspace"
+    );
+    let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 9, false);
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
+    // The seam would resolve `http_pool` — but isolation must stop the
+    // request before it is ever consulted.
+    let status = Arc::new(FakeResourceStatus::resolving(
+        "http_pool",
+        ResourceRuntimeStatus {
+            phase: "ready",
+            healthy: true,
+            accepting: true,
+        },
+    ));
+    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &id.to_string()).await;
+    let st = response.status();
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "a resource in another workspace must be 404 (no cross-tenant \
+         status; no existence leak) — got {st}, body: {raw}"
+    );
+    assert!(
+        status.queried().is_none(),
+        "the engine status seam must NOT be consulted for a \
+         foreign-workspace resource — isolation short-circuits first"
+    );
+    assert!(
+        !raw.contains("Foreign Pool")
+            && !raw.contains("secret_looking_key")
+            && !raw.contains("do-not-leak"),
+        "cross-workspace 404 must not echo the foreign resource; body: {raw}"
+    );
+}
+
+/// An unknown id is an indistinguishable 404, seam never consulted.
+#[tokio::test]
+async fn get_resource_status_unknown_id_is_404() {
+    let api_config = ApiConfig::for_test();
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(None));
+    let status = Arc::new(FakeResourceStatus::empty());
+    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &ResourceId::new().to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an id with no backing row must be 404 on status"
+    );
+    assert!(
+        status.queried().is_none(),
+        "an absent target must not reach the engine status seam"
+    );
+}
+
+/// An unparsable id is 404 (indistinguishable), never 400/500.
+#[tokio::test]
+async fn get_resource_status_malformed_id_is_404() {
+    let api_config = ApiConfig::for_test();
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(None));
+    let status = Arc::new(FakeResourceStatus::empty());
+    let state = state_with_repo(&api_config, repo).with_resource_status(status as _);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, "not-a-valid-resource-id").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an unparsable resource id must be 404 on status, never 500"
+    );
+}
+
+/// The resource EXISTS and is owned, but has no live runtime in the
+/// engine (never acquired). That is **200** with a well-defined
+/// "not currently active" status — NOT 404 (the config row exists; it is
+/// merely not running).
+#[tokio::test]
+async fn get_resource_status_owned_but_not_active_is_200_inactive() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let row = get_entry(id, test_ws_bytes(), "Idle Pool", "http_pool", 1, false);
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    // Seam resolves NOTHING → the owned resource is configured but not
+    // currently active.
+    let status = Arc::new(FakeResourceStatus::empty());
+    let state = state_with_repo(&api_config, repo).with_resource_status(Arc::clone(&status) as _);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &id.to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an owned-but-not-activated resource exists as config → 200 with \
+         an inactive status, NOT 404"
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .expect("valid JSON body");
+    assert_eq!(
+        json["phase"], "inactive",
+        "a configured-but-never-activated resource must report a \
+         well-defined inactive phase"
+    );
+    assert_eq!(
+        json["healthy"], false,
+        "an inactive resource is not healthy"
+    );
+    assert_eq!(
+        json["accepting"], false,
+        "an inactive resource is not accepting work"
+    );
+    assert_eq!(
+        status.queried().as_deref(),
+        Some("http_pool"),
+        "the seam is still consulted for the owned resource (it just \
+         has no live runtime)"
+    );
+}
+
+/// No status backend configured ⇒ the honest non-faked path: **503**
+/// (the C2/C4 None-convention — an absent optional backend is 503, never
+/// a fabricated status). Ownership is still verified first (the row is
+/// owned), so a 503 here is specifically "status backend missing", not
+/// an isolation outcome.
+#[tokio::test]
+async fn get_resource_status_without_status_backend_is_503() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    // `.with_resource_status(...)` deliberately NOT called.
+    let state = state_with_repo(&api_config, repo);
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &id.to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no status backend ⇒ 503 (honest None path), never a fabricated \
+         status"
+    );
+}
+
+/// No resource repo configured ⇒ 503 (same convention as the other
+/// resource endpoints), checked before any isolation/status work.
+#[tokio::test]
+async fn get_resource_status_without_repo_is_503() {
+    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let api_config = ApiConfig::for_test();
+    let state = AppState::new(
+        workflow_repo,
+        execution_repo,
+        control_queue_repo,
+        api_config.jwt_secret.clone(),
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let app = app::build_app(state, &api_config);
+
+    let response = get_status_request(app, &ResourceId::new().to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unconfigured resource repo must be 503 on status"
+    );
+}
+
+/// D3 GUARANTEE — resource lifecycle is NOT exposed over HTTP
+/// (INTEGRATION_MODEL §13.1). There is deliberately **no**
+/// `POST .../resources/{res}/acquire` route (nor release/drain): the only
+/// `{res}/...` sub-route is the read-only `{res}/status` GET.
+///
+/// The guarantee under test is *route absence*: a lifecycle POST must be
+/// rejected exactly like any path that names no route — it must NEVER be
+/// a success and never reach a resource handler. The precise status of an
+/// unmatched path is **not** decided by the resource route table: the
+/// merged `/internal/v1/*` router carries a blanket auth layer that
+/// becomes the whole-app fallback for unmatched paths (401 with a token
+/// configured, 503 without — an artifact of the internal-route
+/// subsystem, unrelated to resources and pre-existing this endpoint). A
+/// brittle literal-404 assertion would therefore be testing that
+/// unrelated fallback, not D3.
+///
+/// So D3 is proven structurally: `POST .../{res}/acquire` returns the
+/// **same** response as `POST .../{res}/<a definitely-nonexistent
+/// sub-segment>` (equivalence-to-nonexistent — there is no special
+/// acquire handling), and that response is **not** a 2xx (no lifecycle
+/// route handled it). A faked status or a lifecycle mutation over HTTP
+/// would both be worse than this honest absence.
+#[tokio::test]
+async fn post_resource_acquire_route_does_not_exist_d3_guarantee() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
+    let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let status = Arc::new(FakeResourceStatus::resolving(
+        "http_pool",
+        ResourceRuntimeStatus {
+            phase: "ready",
+            healthy: true,
+            accepting: true,
+        },
+    ));
+    let state = state_with_repo(&api_config, repo).with_resource_status(status as _);
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    async fn lifecycle_post(app: axum::Router, token: &str, suffix: String) -> StatusCode {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&suffix))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    // The lifecycle verb the engine owns and we deliberately do NOT mount.
+    let acquire = lifecycle_post(app.clone(), &token, format!("/resources/{id}/acquire")).await;
+    // A control sub-segment that unambiguously names no route.
+    let control = lifecycle_post(
+        app.clone(),
+        &token,
+        format!("/resources/{id}/__definitely_no_route__"),
+    )
+    .await;
+
+    // D3: `acquire` is handled identically to a path that names no route
+    // — there is no acquire/release/drain route, so it is rejected purely
+    // as "no such route", never specially.
+    assert_eq!(
+        acquire, control,
+        "a lifecycle POST must be rejected exactly like any nonexistent \
+         route — there must be NO acquire/release/drain route (resource \
+         lifecycle is engine-owned, INTEGRATION_MODEL §13.1)"
+    );
+
+    // And it is unambiguously NOT a success: no lifecycle mutation can
+    // ever happen over HTTP.
+    assert!(
+        !acquire.is_success(),
+        "a lifecycle POST must NEVER succeed — got {acquire}"
     );
 }

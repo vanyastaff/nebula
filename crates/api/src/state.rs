@@ -197,6 +197,24 @@ pub struct AppState {
     /// unvalidated config. Set via
     /// [`AppState::with_resource_registrars`].
     pub resource_registrars: Option<Arc<nebula_engine::ResourceRegistrarRegistry>>,
+
+    /// Optional **read-only** resource runtime-status port.
+    ///
+    /// Projects a live resource's lifecycle phase in api-safe types
+    /// ([`EngineResourceStatus`](nebula_engine::EngineResourceStatus) →
+    /// [`ResourceRuntimeStatus`](nebula_engine::ResourceRuntimeStatus)) so
+    /// the resource-status endpoint never imports `nebula-resource`
+    /// (deny.toml `[[wrappers]]`: no upward deps from API). This is the
+    /// status counterpart of the engine's resource accessor: it observes
+    /// a phase and **cannot** mutate a resource — there is no
+    /// acquire/release/drain seam here (resource lifecycle is
+    /// engine-owned, INTEGRATION_MODEL §13.1). When `None`, the
+    /// `GET .../resources/{res}/status` endpoint reports `503 Service
+    /// Unavailable` (the catalog None-convention — never a fabricated
+    /// status). Set via [`AppState::with_resource_status`]; compose in
+    /// production from the same `nebula_resource::Manager` the engine is
+    /// built with.
+    pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
 }
 
 impl AppState {
@@ -236,6 +254,7 @@ impl AppState {
             internal_shared_token: None,
             resource_repo: None,
             resource_registrars: None,
+            resource_status: None,
         }
     }
 
@@ -403,6 +422,25 @@ impl AppState {
         registrars: Arc<nebula_engine::ResourceRegistrarRegistry>,
     ) -> Self {
         self.resource_registrars = Some(registrars);
+        self
+    }
+
+    /// Attach the **read-only** resource runtime-status port backing
+    /// `GET .../resources/{res}/status`.
+    ///
+    /// Projects a live resource's lifecycle phase in api-safe types — it
+    /// observes a phase and cannot mutate a resource (no
+    /// acquire/release/drain; resource lifecycle is engine-owned,
+    /// INTEGRATION_MODEL §13.1). Compose this in production from the same
+    /// `nebula_resource::Manager` the engine is built with (via
+    /// `nebula_engine::EngineManagerResourceStatus`). When left `None`
+    /// the status endpoint reports `503` rather than fabricate a status.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_status(
+        mut self,
+        status: Arc<dyn nebula_engine::EngineResourceStatus>,
+    ) -> Self {
+        self.resource_status = Some(status);
         self
     }
 }
