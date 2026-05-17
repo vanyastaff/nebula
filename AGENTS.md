@@ -77,7 +77,7 @@ nebula/
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.95)
-├── crates/             # 33 workspace members (incl. 8 derive companions)
+├── crates/             # 35 workspace members (incl. 8 derive companions)
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
 ├── .claude/            # Claude Code skills + subagents
@@ -98,9 +98,9 @@ any level.
 |--------------|--------|
 | API / Public | `api`, `sdk` |
 | Exec         | `engine`, `storage`, `storage-loom-probe` |
-| Business     | `credential-builtin`, `resource`, `action`, `plugin` |
+| Business     | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
 | Plugin-Proto | `plugin-sdk`, `sandbox` |
-| Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata` |
+| Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
 | Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error` |
 
 **Plugin-Proto** is a leaf tier between Core and Business: the

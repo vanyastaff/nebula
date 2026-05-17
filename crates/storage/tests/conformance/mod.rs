@@ -13,9 +13,11 @@
 //! - cross-scope `get` / `commit` ⇒ `None` / `NotFound` (never another
 //!   tenant's row)
 //!
-//! Backends whose adapter does not yet exist return their store via
-//! `unimplemented!()`, so the suite compiles and is *red* until the
-//! adapter lands (TDD target for P2 Tasks 9–14).
+//! All three adapters (InMemory / SQLite / Postgres) implement the port.
+//! The Postgres case is `DATABASE_URL`-gated and skip-cleans (WARN +
+//! pass) when no database is configured; the SQLite case skips without
+//! the `sqlite` feature. A skipped backend never reports a false green
+//! and never hard-fails on a host that cannot run it.
 
 use std::sync::Arc;
 

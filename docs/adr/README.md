@@ -16,12 +16,14 @@ The repository's full ADR archive lives at the parent project's `docs/adr/` (e.g
 | [0047](./0047-openapi-31-generator.md) | OpenAPI 3.1 spec generation — adopt `utoipa` for `nebula-api` | accepted (2026-05-06) | api, openapi, drift-detection, layer-boundary, m3 |
 | [0048](./0048-idempotency-store-backend.md) | Idempotency-Store Backend — Hybrid (in-memory + PG-backed) | accepted (2026-05-07) | api, idempotency, storage, m3 |
 | [0050](./0050-m3-5-w3c-trace-context-propagation.md) | M3.5 W3C Trace Context propagation (HTTP → control queue → engine) | accepted (2026-05-11) | observability, tracing, api, engine, m3, m9 |
+| [0066](./0066-nebula-storage-spec16-port-adapter-tenancy.md) | nebula-storage spec-16 port / adapter / tenancy | accepted (2026-05-17) | storage, storage-port, tenancy, engine, api, spec-16, supersession |
 
 ## Supersession
 
 | Superseded ADR | Supersedes | Note |
 |---|---|---|
 | 0036 (`resource-credential-adoption-auth-retirement`, external `C:/Users/vanya/RustroverProjects/docs/adr/0036-*.md`) | [0044](./0044-supersede-0036-resource-credential-singular.md) | Singular `Resource::Credential` associated type → typed credential slot fields via `#[credential(key = …)]`. Per-slot rotation hook replaces the singular `on_credential_refresh` signature. |
+| "Sprint E — adopt spec-16 row model" deferral (`docs/superpowers/specs/2026-04-16-workspace-health-audit.md`, ROADMAP "Out of scope for 1.0") | [0066](./0066-nebula-storage-spec16-port-adapter-tenancy.md) | The spec-16 row model is no longer deferred — it is the single shipped storage architecture (port + adapter + tenancy). The Layer-1 `ExecutionRepo` / `WorkflowRepo` surface and the never-implemented Layer-2 placeholders were deleted; engine/api/knife/loom run on the port. |
 | Canon `[L1-§3.10]` (in `crates/telemetry/README.md`) | [0046](./0046-metrics-telemetry-boundary.md) | The "primitives below, naming/policy/export above" cross-crate invariant is replaced by intra-crate module discipline (`mod` boundaries + `pub`/`pub(crate)`) in the merged `nebula-metrics`. Implementation deferred to follow-up `/aif-plan` iteration. |
 
 ## Related plan
