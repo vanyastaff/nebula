@@ -1,6 +1,5 @@
-//! Loom CAS atomicity probe for the credential refresh-claim pattern.
-//!
-//! Per ADR-0041 + sub-spec §10 DoD requirement.
+//! Loom CAS atomicity probe for the credential refresh-claim pattern
+//! (ADR-0041).
 //!
 //! # Why a standalone crate?
 //!
