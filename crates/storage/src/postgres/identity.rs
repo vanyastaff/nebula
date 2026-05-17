@@ -47,25 +47,25 @@ impl PgUserStore {
     }
 }
 
-fn user_from_row(r: &sqlx::postgres::PgRow) -> UserRow {
-    UserRow {
-        id: r.try_get("id").unwrap_or_default(),
-        email: r.try_get("email").unwrap_or_default(),
+fn user_from_row(r: &sqlx::postgres::PgRow) -> Result<UserRow, StorageError> {
+    Ok(UserRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        email: r.try_get("email").map_err(conn_err)?,
         email_verified_at: r.try_get("email_verified_at").ok(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
+        display_name: r.try_get("display_name").map_err(conn_err)?,
         avatar_url: r.try_get("avatar_url").ok(),
         password_hash: r.try_get("password_hash").ok(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
+        created_at: r.try_get("created_at").map_err(conn_err)?,
         last_login_at: r.try_get("last_login_at").ok(),
         locked_until: r.try_get("locked_until").ok(),
         failed_login_count: r
             .try_get::<i64, _>("failed_login_count")
-            .unwrap_or_default() as i32,
-        mfa_enabled: r.try_get("mfa_enabled").unwrap_or_default(),
+            .map_err(conn_err)? as i32,
+        mfa_enabled: r.try_get("mfa_enabled").map_err(conn_err)?,
         mfa_secret: r.try_get("mfa_secret").ok(),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
+        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -111,7 +111,7 @@ impl UserStore for PgUserStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(user_from_row))
+        row.as_ref().map(user_from_row).transpose()
     }
 
     async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError> {
@@ -123,7 +123,7 @@ impl UserStore for PgUserStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(user_from_row))
+        row.as_ref().map(user_from_row).transpose()
     }
 
     async fn update(&self, row: UserRow, expected_version: u64) -> Result<(), StorageError> {
@@ -177,22 +177,22 @@ impl PgOrgStore {
     }
 }
 
-fn org_from_row(r: &sqlx::postgres::PgRow) -> OrgRow {
-    OrgRow {
-        id: r.try_get("id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        plan: r.try_get("plan").unwrap_or_default(),
+fn org_from_row(r: &sqlx::postgres::PgRow) -> Result<OrgRow, StorageError> {
+    Ok(OrgRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        slug: r.try_get("slug").map_err(conn_err)?,
+        display_name: r.try_get("display_name").map_err(conn_err)?,
+        created_at: r.try_get("created_at").map_err(conn_err)?,
+        created_by: r.try_get("created_by").map_err(conn_err)?,
+        plan: r.try_get("plan").map_err(conn_err)?,
         billing_email: r.try_get("billing_email").ok(),
         settings: r
             .try_get::<Json<serde_json::Value>, _>("settings")
             .map(|j| j.0)
-            .unwrap_or(serde_json::Value::Null),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
+            .map_err(conn_err)?,
+        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -233,7 +233,7 @@ impl OrgStore for PgOrgStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(org_from_row))
+        row.as_ref().map(org_from_row).transpose()
     }
 
     async fn get_by_slug(&self, slug: &str) -> Result<Option<OrgRow>, StorageError> {
@@ -242,7 +242,7 @@ impl OrgStore for PgOrgStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(org_from_row))
+        row.as_ref().map(org_from_row).transpose()
     }
 
     async fn update(&self, row: OrgRow, expected_version: u64) -> Result<(), StorageError> {
@@ -290,23 +290,23 @@ impl PgWorkspaceStore {
     }
 }
 
-fn workspace_from_row(r: &sqlx::postgres::PgRow) -> WorkspaceRow {
-    WorkspaceRow {
-        id: r.try_get("id").unwrap_or_default(),
-        org_id: r.try_get("org_id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
+fn workspace_from_row(r: &sqlx::postgres::PgRow) -> Result<WorkspaceRow, StorageError> {
+    Ok(WorkspaceRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        org_id: r.try_get("org_id").map_err(conn_err)?,
+        slug: r.try_get("slug").map_err(conn_err)?,
+        display_name: r.try_get("display_name").map_err(conn_err)?,
         description: r.try_get("description").ok(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        is_default: r.try_get("is_default").unwrap_or_default(),
+        created_at: r.try_get("created_at").map_err(conn_err)?,
+        created_by: r.try_get("created_by").map_err(conn_err)?,
+        is_default: r.try_get("is_default").map_err(conn_err)?,
         settings: r
             .try_get::<Json<serde_json::Value>, _>("settings")
             .map(|j| j.0)
-            .unwrap_or(serde_json::Value::Null),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
+            .map_err(conn_err)?,
+        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -355,7 +355,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(workspace_from_row))
+        row.as_ref().map(workspace_from_row).transpose()
     }
 
     async fn list_for_org(&self, org_id: &str) -> Result<Vec<WorkspaceRow>, StorageError> {
@@ -367,7 +367,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows.iter().map(workspace_from_row).collect())
+        rows.iter().map(workspace_from_row).collect()
     }
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
@@ -446,16 +446,16 @@ impl PgMembershipStore {
     }
 }
 
-fn membership_from_row(r: &sqlx::postgres::PgRow) -> MembershipRow {
-    MembershipRow {
-        scope_kind: r.try_get("scope_kind").unwrap_or_default(),
-        scope_id: r.try_get("scope_id").unwrap_or_default(),
-        principal_kind: r.try_get("principal_kind").unwrap_or_default(),
-        principal_id: r.try_get("principal_id").unwrap_or_default(),
-        role: r.try_get("role").unwrap_or_default(),
-        added_at: r.try_get("added_at").unwrap_or_default(),
+fn membership_from_row(r: &sqlx::postgres::PgRow) -> Result<MembershipRow, StorageError> {
+    Ok(MembershipRow {
+        scope_kind: r.try_get("scope_kind").map_err(conn_err)?,
+        scope_id: r.try_get("scope_id").map_err(conn_err)?,
+        principal_kind: r.try_get("principal_kind").map_err(conn_err)?,
+        principal_id: r.try_get("principal_id").map_err(conn_err)?,
+        role: r.try_get("role").map_err(conn_err)?,
+        added_at: r.try_get("added_at").map_err(conn_err)?,
         added_by: r.try_get("added_by").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -500,7 +500,7 @@ impl MembershipStore for PgMembershipStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(membership_from_row))
+        row.as_ref().map(membership_from_row).transpose()
     }
 
     async fn list_for_scope(
@@ -517,7 +517,7 @@ impl MembershipStore for PgMembershipStore {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows.iter().map(membership_from_row).collect())
+        rows.iter().map(membership_from_row).collect()
     }
 
     async fn remove(
@@ -559,22 +559,22 @@ impl PgResourceStore {
     }
 }
 
-fn resource_from_row(r: &sqlx::postgres::PgRow) -> ResourceRow {
-    ResourceRow {
-        id: r.try_get("id").unwrap_or_default(),
-        workspace_id: r.try_get("workspace_id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
-        kind: r.try_get("kind").unwrap_or_default(),
+fn resource_from_row(r: &sqlx::postgres::PgRow) -> Result<ResourceRow, StorageError> {
+    Ok(ResourceRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        workspace_id: r.try_get("workspace_id").map_err(conn_err)?,
+        slug: r.try_get("slug").map_err(conn_err)?,
+        display_name: r.try_get("display_name").map_err(conn_err)?,
+        kind: r.try_get("kind").map_err(conn_err)?,
         config: r
             .try_get::<Json<serde_json::Value>, _>("config")
             .map(|j| j.0)
-            .unwrap_or(serde_json::Value::Null),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
+            .map_err(conn_err)?,
+        created_at: r.try_get("created_at").map_err(conn_err)?,
+        created_by: r.try_get("created_by").map_err(conn_err)?,
+        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -622,7 +622,7 @@ impl ResourceStore for PgResourceStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(resource_from_row))
+        row.as_ref().map(resource_from_row).transpose()
     }
 
     async fn list(&self, scope: &Scope) -> Result<Vec<ResourceRow>, StorageError> {
@@ -636,7 +636,7 @@ impl ResourceStore for PgResourceStore {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows.iter().map(resource_from_row).collect())
+        rows.iter().map(resource_from_row).collect()
     }
 
     async fn update(
@@ -723,26 +723,26 @@ impl PgTriggerStore {
     }
 }
 
-fn trigger_from_row(r: &sqlx::postgres::PgRow) -> TriggerRow {
-    TriggerRow {
-        id: r.try_get("id").unwrap_or_default(),
-        workspace_id: r.try_get("workspace_id").unwrap_or_default(),
-        workflow_id: r.try_get("workflow_id").unwrap_or_default(),
-        slug: r.try_get("slug").unwrap_or_default(),
-        display_name: r.try_get("display_name").unwrap_or_default(),
-        kind: r.try_get("kind").unwrap_or_default(),
+fn trigger_from_row(r: &sqlx::postgres::PgRow) -> Result<TriggerRow, StorageError> {
+    Ok(TriggerRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        workspace_id: r.try_get("workspace_id").map_err(conn_err)?,
+        workflow_id: r.try_get("workflow_id").map_err(conn_err)?,
+        slug: r.try_get("slug").map_err(conn_err)?,
+        display_name: r.try_get("display_name").map_err(conn_err)?,
+        kind: r.try_get("kind").map_err(conn_err)?,
         config: r
             .try_get::<Json<serde_json::Value>, _>("config")
             .map(|j| j.0)
-            .unwrap_or(serde_json::Value::Null),
-        state: r.try_get("state").unwrap_or_default(),
+            .map_err(conn_err)?,
+        state: r.try_get("state").map_err(conn_err)?,
         run_as: r.try_get("run_as").ok(),
         webhook_path: r.try_get("webhook_path").ok(),
-        created_at: r.try_get("created_at").unwrap_or_default(),
-        created_by: r.try_get("created_by").unwrap_or_default(),
-        version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
+        created_at: r.try_get("created_at").map_err(conn_err)?,
+        created_by: r.try_get("created_by").map_err(conn_err)?,
+        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -796,7 +796,7 @@ impl TriggerStore for PgTriggerStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(trigger_from_row))
+        row.as_ref().map(trigger_from_row).transpose()
     }
 
     async fn list(&self, scope: &Scope) -> Result<Vec<TriggerRow>, StorageError> {
@@ -810,7 +810,7 @@ impl TriggerStore for PgTriggerStore {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows.iter().map(trigger_from_row).collect())
+        rows.iter().map(trigger_from_row).collect()
     }
 
     async fn update(
@@ -903,29 +903,29 @@ impl PgQuotaStore {
     }
 }
 
-fn quota_from_row(r: &sqlx::postgres::PgRow) -> QuotaRow {
-    QuotaRow {
-        org_id: r.try_get("org_id").unwrap_or_default(),
-        plan: r.try_get("plan").unwrap_or_default(),
+fn quota_from_row(r: &sqlx::postgres::PgRow) -> Result<QuotaRow, StorageError> {
+    Ok(QuotaRow {
+        org_id: r.try_get("org_id").map_err(conn_err)?,
+        plan: r.try_get("plan").map_err(conn_err)?,
         concurrent_executions_limit: r
             .try_get::<i64, _>("concurrent_executions_limit")
-            .unwrap_or_default() as i32,
+            .map_err(conn_err)? as i32,
         executions_per_month_limit: r
             .try_get::<Option<i64>, _>("executions_per_month_limit")
-            .unwrap_or_default(),
+            .map_err(conn_err)?,
         active_workflows_limit: r
             .try_get::<Option<i64>, _>("active_workflows_limit")
-            .unwrap_or_default()
+            .map_err(conn_err)?
             .map(|v| v as i32),
         concurrent_executions: r
             .try_get::<i64, _>("concurrent_executions")
-            .unwrap_or_default() as i32,
+            .map_err(conn_err)? as i32,
         executions_this_month: r
             .try_get::<i64, _>("executions_this_month")
-            .unwrap_or_default(),
-        month_reset_at: r.try_get("month_reset_at").unwrap_or_default(),
-        updated_at: r.try_get("updated_at").unwrap_or_default(),
-    }
+            .map_err(conn_err)?,
+        month_reset_at: r.try_get("month_reset_at").map_err(conn_err)?,
+        updated_at: r.try_get("updated_at").map_err(conn_err)?,
+    })
 }
 
 #[async_trait::async_trait]
@@ -936,7 +936,7 @@ impl QuotaStore for PgQuotaStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(quota_from_row))
+        row.as_ref().map(quota_from_row).transpose()
     }
 
     async fn upsert(&self, row: QuotaRow) -> Result<(), StorageError> {
@@ -1024,24 +1024,24 @@ impl PgAuditStore {
     }
 }
 
-fn audit_from_row(r: &sqlx::postgres::PgRow) -> AuditLogRow {
-    AuditLogRow {
-        id: r.try_get("id").unwrap_or_default(),
-        org_id: r.try_get("org_id").unwrap_or_default(),
+fn audit_from_row(r: &sqlx::postgres::PgRow) -> Result<AuditLogRow, StorageError> {
+    Ok(AuditLogRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        org_id: r.try_get("org_id").map_err(conn_err)?,
         workspace_id: r.try_get("workspace_id").ok(),
-        actor_kind: r.try_get("actor_kind").unwrap_or_default(),
+        actor_kind: r.try_get("actor_kind").map_err(conn_err)?,
         actor_id: r.try_get("actor_id").ok(),
-        action: r.try_get("action").unwrap_or_default(),
+        action: r.try_get("action").map_err(conn_err)?,
         target_kind: r.try_get("target_kind").ok(),
         target_id: r.try_get("target_id").ok(),
         details: r
             .try_get::<Option<Json<serde_json::Value>>, _>("details")
-            .unwrap_or_default()
+            .map_err(conn_err)?
             .map(|j| j.0),
         ip_address: r.try_get("ip_address").ok(),
         user_agent: r.try_get("user_agent").ok(),
-        emitted_at: r.try_get("emitted_at").unwrap_or_default(),
-    }
+        emitted_at: r.try_get("emitted_at").map_err(conn_err)?,
+    })
 }
 
 #[async_trait::async_trait]
@@ -1085,7 +1085,7 @@ impl AuditStore for PgAuditStore {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows.iter().map(audit_from_row).collect())
+        rows.iter().map(audit_from_row).collect()
     }
 }
 
@@ -1105,25 +1105,25 @@ impl PgBlobStore {
     }
 }
 
-fn blob_from_row(r: &sqlx::postgres::PgRow) -> BlobRow {
-    BlobRow {
-        id: r.try_get("id").unwrap_or_default(),
-        workspace_id: r.try_get("workspace_id").unwrap_or_default(),
+fn blob_from_row(r: &sqlx::postgres::PgRow) -> Result<BlobRow, StorageError> {
+    Ok(BlobRow {
+        id: r.try_get("id").map_err(conn_err)?,
+        workspace_id: r.try_get("workspace_id").map_err(conn_err)?,
         execution_id: r.try_get("execution_id").ok(),
-        kind: r.try_get("kind").unwrap_or_default(),
+        kind: r.try_get("kind").map_err(conn_err)?,
         content_type: r.try_get("content_type").ok(),
-        size_bytes: r.try_get::<i64, _>("size_bytes").unwrap_or_default(),
+        size_bytes: r.try_get::<i64, _>("size_bytes").map_err(conn_err)?,
         checksum: r.try_get("checksum").ok(),
-        storage_mode: r.try_get("storage_mode").unwrap_or_default(),
+        storage_mode: r.try_get("storage_mode").map_err(conn_err)?,
         data: r.try_get("data").ok(),
         external_ref: r.try_get("external_ref").ok(),
         metadata: r
             .try_get::<Option<Json<serde_json::Value>>, _>("metadata")
-            .unwrap_or_default()
+            .map_err(conn_err)?
             .map(|j| j.0),
-        created_at: r.try_get("created_at").unwrap_or_default(),
+        created_at: r.try_get("created_at").map_err(conn_err)?,
         expires_at: r.try_get("expires_at").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -1168,7 +1168,7 @@ impl BlobStore for PgBlobStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(conn_err)?;
-        Ok(row.as_ref().map(blob_from_row))
+        row.as_ref().map(blob_from_row).transpose()
     }
 
     async fn delete(&self, workspace_id: &str, id: &str) -> Result<(), StorageError> {
