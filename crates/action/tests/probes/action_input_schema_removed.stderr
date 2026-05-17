@@ -1,0 +1,5 @@
+error[E0576]: cannot find method or associated constant `input_schema` in trait `Action`
+  --> tests/probes/action_input_schema_removed.rs:17:32
+   |
+17 |     let _ = <Probe as Action>::input_schema();
+   |                                ^^^^^^^^^^^^ not found in `Action`

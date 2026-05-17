@@ -4,16 +4,18 @@
 //! lands per ADR-0043 §6 (Phase 3 / Session 1).
 
 use nebula_core::Dependencies;
-use nebula_schema::{HasSchema, ValidSchema};
+use nebula_schema::HasSchema;
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::metadata::ActionMetadata;
 
 /// Base trait for all action types.
 ///
-/// Identity (`metadata`), type-level input/output (`Self::Input`, `Self::Output`),
-/// validation schemas (`input_schema` / `output_schema`), and slot-binding
-/// declarations (`dependencies`) — all static per concrete type. Sub-traits
+/// Identity (`metadata`), type-level input/output (`Self::Input`,
+/// `Self::Output`), and slot-binding declarations (`dependencies`) — all
+/// static per concrete type. The schema is reached via the
+/// `Input`/`Output: HasSchema` bound (`nebula_schema::schema_of::<A::Input>()`);
+/// there is no per-trait schema method (ADR-0052 P3). Sub-traits
 /// ([`StatelessAction`](crate::StatelessAction) etc.) define the execution
 /// surface and consume `Self::Input` / `Self::Output`.
 ///
@@ -29,7 +31,6 @@ use crate::metadata::ActionMetadata;
 /// use std::sync::OnceLock;
 /// use nebula_action::{Action, ActionMetadata};
 /// use nebula_core::{Dependencies, action_key};
-/// use nebula_schema::ValidSchema;
 ///
 /// struct Echo;
 ///
@@ -41,20 +42,15 @@ use crate::metadata::ActionMetadata;
 ///         static M: OnceLock<ActionMetadata> = OnceLock::new();
 ///         M.get_or_init(|| ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input"))
 ///     }
-///     fn input_schema() -> &'static ValidSchema {
-///         static S: OnceLock<ValidSchema> = OnceLock::new();
-///         S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
-///     }
-///     fn output_schema() -> &'static ValidSchema {
-///         static S: OnceLock<ValidSchema> = OnceLock::new();
-///         S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
-///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
 ///         D.get_or_init(Dependencies::new)
 ///     }
 /// }
 /// ```
+///
+/// The input/output schema is obtained from the associated type, e.g.
+/// `nebula_schema::schema_of::<<Echo as Action>::Input>()`.
 ///
 /// `#[derive(Action)]` (Phase 3 / Session 3) emits this boilerplate automatically.
 #[diagnostic::on_unimplemented(
@@ -71,12 +67,6 @@ pub trait Action: Sized + Send + Sync + 'static {
 
     /// Static metadata describing this action type (key, version, ports, etc.).
     fn metadata() -> &'static ActionMetadata;
-
-    /// Schema describing valid `Self::Input` values.
-    fn input_schema() -> &'static ValidSchema;
-
-    /// Schema describing valid `Self::Output` values.
-    fn output_schema() -> &'static ValidSchema;
 
     /// Slot-binding declarations (`#[resource]` / `#[credential]` fields, Phase 3 / S3+).
     fn dependencies() -> &'static Dependencies;

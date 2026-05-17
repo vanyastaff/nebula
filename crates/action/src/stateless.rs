@@ -216,14 +216,6 @@ mod tests {
                 )
             })
         }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<AddInput as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<AddOutput as HasSchema>::schema)
-        }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)

@@ -629,14 +629,6 @@ impl nebula_action::action::Action for KnifeEcho {
             )
         })
     }
-    fn input_schema() -> &'static nebula_schema::ValidSchema {
-        static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
-        S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
-    }
-    fn output_schema() -> &'static nebula_schema::ValidSchema {
-        static S: std::sync::OnceLock<nebula_schema::ValidSchema> = std::sync::OnceLock::new();
-        S.get_or_init(<serde_json::Value as nebula_schema::HasSchema>::schema)
-    }
     fn dependencies() -> &'static nebula_core::Dependencies {
         static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
         D.get_or_init(nebula_core::Dependencies::new)

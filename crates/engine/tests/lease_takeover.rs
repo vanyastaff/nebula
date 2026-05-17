@@ -27,7 +27,6 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
-use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
     ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo,
     repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo},
@@ -50,14 +49,6 @@ macro_rules! placeholder_action_impl {
             fn metadata() -> &'static ActionMetadata {
                 static M: OnceLock<ActionMetadata> = OnceLock::new();
                 M.get_or_init(|| ActionMetadata::new($key, $name, $desc))
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();

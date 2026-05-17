@@ -4670,7 +4670,7 @@ mod tests {
         result::ActionResult, stateless::StatelessAction,
     };
     use nebula_core::{Dependencies, action_key};
-    use nebula_schema::{HasSchema, ValidSchema};
+
     use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -4700,14 +4700,6 @@ mod tests {
                 ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
             })
         }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -4733,14 +4725,6 @@ mod tests {
         fn metadata() -> &'static ActionMetadata {
             static M: OnceLock<ActionMetadata> = OnceLock::new();
             M.get_or_init(|| ActionMetadata::new(action_key!("test.fail.static"), "Fail", "fails"))
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -4769,14 +4753,6 @@ mod tests {
         fn metadata() -> &'static ActionMetadata {
             static M: OnceLock<ActionMetadata> = OnceLock::new();
             M.get_or_init(|| ActionMetadata::new(action_key!("test.slow.static"), "Slow", "delays"))
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -5153,14 +5129,6 @@ mod tests {
             static M: OnceLock<ActionMetadata> = OnceLock::new();
             M.get_or_init(|| ActionMetadata::new(action_key!("test.skip.static"), "Skip", "skips"))
         }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -5190,14 +5158,6 @@ mod tests {
             M.get_or_init(|| {
                 ActionMetadata::new(action_key!("test.branch.static"), "Branch", "branches")
             })
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -6676,14 +6636,6 @@ mod tests {
                     ActionMetadata::new(action_key!("counting.static"), "Counting", "counts calls")
                 })
             }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -6799,14 +6751,6 @@ mod tests {
                     ActionMetadata::new(action_key!("versioned.v1.static"), "V1", "v1 static")
                 })
             }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -6835,14 +6779,6 @@ mod tests {
                 M.get_or_init(|| {
                     ActionMetadata::new(action_key!("versioned.v2.static"), "V2", "v2 static")
                 })
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -7392,14 +7328,6 @@ mod tests {
                 M.get_or_init(|| {
                     ActionMetadata::new(action_key!("never.static"), "Never", "must not run")
                 })
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -8059,14 +7987,6 @@ mod tests {
             fn metadata() -> &'static ActionMetadata {
                 static M: OnceLock<ActionMetadata> = OnceLock::new();
                 M.get_or_init(|| ActionMetadata::new(action_key!("boom.static"), "Boom", "panics"))
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -9120,14 +9040,6 @@ mod tests {
                     "echo via factory dispatch",
                 )
             })
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

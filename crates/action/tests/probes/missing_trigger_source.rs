@@ -9,7 +9,6 @@ use nebula_action::{
     Action, ActionError, ActionMetadata, TriggerAction, TriggerEventOutcome, TriggerSource,
 };
 use nebula_core::{Dependencies, action_key};
-use nebula_schema::{HasSchema, ValidSchema};
 
 struct BadTrigger;
 
@@ -20,14 +19,6 @@ impl Action for BadTrigger {
     fn metadata() -> &'static ActionMetadata {
         static M: OnceLock<ActionMetadata> = OnceLock::new();
         M.get_or_init(|| ActionMetadata::new(action_key!("bad.trigger"), "Bad", "x"))
-    }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
