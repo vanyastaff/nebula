@@ -21,9 +21,10 @@ use harness::{
     Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
     assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
-    assert_idempotency_first_writer_wins, assert_idempotency_store_first_writer_and_scope,
-    assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
-    assert_stale_fencing_is_fenced_out, assert_webhook_activation_and_scope, skip_reason,
+    assert_get_published_is_highest_numbered, assert_idempotency_first_writer_wins,
+    assert_idempotency_store_first_writer_and_scope, assert_journal_visibility_and_scope,
+    assert_live_lease_blocks_acquire, assert_stale_fencing_is_fenced_out,
+    assert_webhook_activation_and_scope, assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -100,6 +101,11 @@ matrix!(
     webhook_activation_and_scope,
     assert_webhook_activation_and_scope
 );
+matrix!(workflow_store_contract, assert_workflow_store_contract);
+matrix!(
+    get_published_is_highest_numbered,
+    assert_get_published_is_highest_numbered
+);
 
 // ── Scoped variant ────────────────────────────────────────────────────────
 // The same contract suite, but every store is wrapped in the
@@ -161,4 +167,12 @@ scoped_matrix!(
 scoped_matrix!(
     scoped_idempotency_store_first_writer_and_scope,
     assert_idempotency_store_first_writer_and_scope
+);
+scoped_matrix!(
+    scoped_workflow_store_contract,
+    assert_workflow_store_contract
+);
+scoped_matrix!(
+    scoped_get_published_is_highest_numbered,
+    assert_get_published_is_highest_numbered
 );

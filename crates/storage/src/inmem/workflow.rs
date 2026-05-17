@@ -192,14 +192,21 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         workflow_id: &str,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
         let map = self.inner.lock();
+        // Highest-numbered published version wins. `HashMap` iteration
+        // order is unspecified, so `find` would return an arbitrary
+        // published row when more than one is marked published (e.g. a
+        // stale publish that was never cleared) — `max_by_key` makes the
+        // result deterministic and matches the SQL backends'
+        // `ORDER BY number DESC LIMIT 1`.
         Ok(map
             .iter()
-            .find(|((ws, org, wf, _), r)| {
+            .filter(|((ws, org, wf, _), r)| {
                 ws == &scope.workspace_id
                     && org == &scope.org_id
                     && wf == workflow_id
                     && r.published
             })
+            .max_by_key(|((.., number), _)| *number)
             .map(|(_, r)| r.clone()))
     }
 

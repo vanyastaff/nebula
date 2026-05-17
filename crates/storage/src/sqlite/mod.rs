@@ -15,10 +15,12 @@
 mod control_queue;
 mod execution;
 mod idempotency_store;
+mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
 pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
 pub use idempotency_store::{SqliteIdempotencyStore, SqliteWebhookActivationStore};
+pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
 /// Embedded port-scoped DDL applied by [`init_schema`].
 pub const SCHEMA_SQL: &str = include_str!("schema.sql");

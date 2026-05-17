@@ -95,3 +95,40 @@ CREATE TABLE IF NOT EXISTS port_webhook_activations (
 
 CREATE INDEX IF NOT EXISTS idx_port_webhook_activations_trigger
     ON port_webhook_activations (workspace_id, org_id, trigger_id);
+
+-- Spec-16 workflow split: the workflow row (id / slug / soft-delete /
+-- CAS version) is separate from its versions. Scoped: every query is
+-- `WHERE workspace_id = ? AND org_id = ?`, so a cross-tenant probe is
+-- indistinguishable from a missing row (no existence oracle).
+CREATE TABLE IF NOT EXISTS port_workflows (
+    id           TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    org_id       TEXT NOT NULL,
+    version      INTEGER NOT NULL DEFAULT 0,
+    slug         TEXT NOT NULL,
+    deleted      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, org_id, id)
+);
+
+-- A slug is unique per workspace among *active* rows only; a soft-deleted
+-- row must not block re-creating the slug, so the uniqueness predicate is
+-- partial on `deleted = 0`.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_workflows_active_slug
+    ON port_workflows (workspace_id, org_id, slug) WHERE deleted = 0;
+
+-- Workflow versions. `definition` is opaque JSON owned by the workflow
+-- compiler. `published` marks the served version; `pinned` excludes a
+-- version from automatic GC.
+CREATE TABLE IF NOT EXISTS port_workflow_versions (
+    workspace_id TEXT NOT NULL,
+    org_id       TEXT NOT NULL,
+    workflow_id  TEXT NOT NULL,
+    number       INTEGER NOT NULL,
+    published    INTEGER NOT NULL DEFAULT 0,
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    definition   TEXT NOT NULL,            -- opaque JSON
+    PRIMARY KEY (workspace_id, org_id, workflow_id, number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_port_workflow_versions_published
+    ON port_workflow_versions (workspace_id, org_id, workflow_id, published);

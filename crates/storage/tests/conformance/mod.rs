@@ -21,12 +21,13 @@ use std::sync::Arc;
 
 use nebula_storage_port::dto::{
     CachedRecord, ControlCommand, ControlMsg, JournalEntry, WebhookActivationRecord,
+    WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
-    WebhookActivationStore,
+    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
-use nebula_storage_port::{FencingToken, Scope, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
 
 /// A storage backend under conformance test. Returns port handles built on
 /// that backend's concrete adapter.
@@ -50,6 +51,11 @@ pub trait Backend: Send + Sync {
     async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore>;
     /// A webhook-activation store backed by this backend.
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore>;
+    /// A workflow-row store backed by this backend (spec-16 split).
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore>;
+    /// A workflow-version store backed by this backend, sharing the same
+    /// backend as [`Backend::workflow_store`].
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore>;
 }
 
 /// InMemory backend (always available).
@@ -62,6 +68,8 @@ pub struct InMemoryBackend {
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
     idem_store: nebula_storage::inmem::InMemoryIdempotencyStore,
     webhook: nebula_storage::inmem::InMemoryWebhookActivationStore,
+    workflow: nebula_storage::inmem::InMemoryWorkflowStore,
+    workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore,
 }
 
 impl Default for InMemoryBackend {
@@ -71,6 +79,8 @@ impl Default for InMemoryBackend {
             guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
             idem_store: nebula_storage::inmem::InMemoryIdempotencyStore::new(),
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
+            workflow: nebula_storage::inmem::InMemoryWorkflowStore::new(),
+            workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore::new(),
         }
     }
 }
@@ -101,6 +111,12 @@ impl Backend for InMemoryBackend {
     }
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         Arc::new(self.webhook.clone())
+    }
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore> {
+        Arc::new(self.workflow.clone())
+    }
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
+        Arc::new(self.workflow_version.clone())
     }
 }
 
@@ -207,6 +223,26 @@ impl Backend for SqliteBackend {
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
+    #[cfg(feature = "sqlite")]
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore> {
+        Arc::new(nebula_storage::sqlite::SqliteWorkflowStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
+        Arc::new(nebula_storage::sqlite::SqliteWorkflowVersionStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
 }
 
 /// Postgres backend — only exercised when `DATABASE_URL` is set and the
@@ -305,6 +341,26 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore> {
+        Arc::new(nebula_storage::postgres::PgWorkflowStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
+        Arc::new(nebula_storage::postgres::PgWorkflowVersionStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
@@ -676,6 +732,227 @@ pub async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
     );
 }
 
+/// The spec-16 workflow split contract: a workflow row round-trips by id
+/// and by slug, a soft-deleted row disappears from reads / `list` /
+/// `get_by_slug`, `update` is a strict CAS (stale `expected_version` →
+/// `Conflict`, missing row → `NotFound`), a duplicate id → `Duplicate`,
+/// and the version store round-trips a version and lists newest-first.
+/// Asserted across every backend so the SQL adapters match the in-memory
+/// reference exactly.
+pub async fn assert_workflow_store_contract(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
+    let ver = backend.workflow_version_store().await;
+    let s = scope_a();
+
+    let rec = WorkflowRecord {
+        id: "wf_c".into(),
+        scope: s.clone(),
+        version: 0,
+        slug: "billing".into(),
+        deleted: false,
+    };
+    wf.create(&s, rec.clone()).await.expect("create");
+
+    // Duplicate id is a Duplicate, not a silent overwrite.
+    let dup = wf.create(&s, rec.clone()).await;
+    assert!(
+        matches!(dup, Err(StorageError::Duplicate { .. })),
+        "[{}] duplicate workflow id must be Duplicate, got {dup:?}",
+        backend.name()
+    );
+
+    // Round-trip by id and by slug.
+    let by_id = wf
+        .get(&s, "wf_c")
+        .await
+        .expect("get")
+        .unwrap_or_else(|| panic!("[{}] workflow row by id", backend.name()));
+    assert_eq!(by_id.slug, "billing");
+    let by_slug = wf
+        .get_by_slug(&s, "billing")
+        .await
+        .expect("get_by_slug")
+        .unwrap_or_else(|| panic!("[{}] workflow row by slug", backend.name()));
+    assert_eq!(by_slug.id, "wf_c");
+
+    // CAS update: stale expected_version is rejected.
+    let stale = wf
+        .update(
+            &s,
+            WorkflowRecord {
+                version: 1,
+                ..by_id.clone()
+            },
+            999,
+        )
+        .await;
+    assert!(
+        matches!(stale, Err(StorageError::Conflict { .. })),
+        "[{}] stale CAS update must Conflict, got {stale:?}",
+        backend.name()
+    );
+    // CAS update with the right expected_version succeeds.
+    wf.update(
+        &s,
+        WorkflowRecord {
+            version: 1,
+            slug: "billing-v2".into(),
+            ..by_id.clone()
+        },
+        0,
+    )
+    .await
+    .expect("CAS update at expected_version 0");
+    let updated = wf
+        .get(&s, "wf_c")
+        .await
+        .expect("get")
+        .unwrap_or_else(|| panic!("[{}] updated row", backend.name()));
+    assert_eq!(updated.version, 1);
+    assert_eq!(updated.slug, "billing-v2");
+
+    // Update of a missing row is NotFound (never an implicit insert).
+    let missing = wf
+        .update(
+            &s,
+            WorkflowRecord {
+                id: "wf_absent".into(),
+                ..by_id.clone()
+            },
+            0,
+        )
+        .await;
+    assert!(
+        matches!(missing, Err(StorageError::NotFound { .. })),
+        "[{}] update of a missing row must be NotFound, got {missing:?}",
+        backend.name()
+    );
+
+    // Soft-delete removes the row from reads, slug lookup, and list.
+    wf.soft_delete(&s, "wf_c").await.expect("soft_delete");
+    assert!(
+        wf.get(&s, "wf_c").await.expect("get").is_none(),
+        "[{}] soft-deleted row must be a read miss",
+        backend.name()
+    );
+    assert!(
+        wf.get_by_slug(&s, "billing-v2")
+            .await
+            .expect("get_by_slug")
+            .is_none(),
+        "[{}] soft-deleted row must not resolve by slug",
+        backend.name()
+    );
+    assert!(
+        wf.list(&s)
+            .await
+            .expect("list")
+            .iter()
+            .all(|r| r.id != "wf_c"),
+        "[{}] soft-deleted row must not appear in list",
+        backend.name()
+    );
+    // Soft-deleting an absent row is NotFound.
+    let del_missing = wf.soft_delete(&s, "wf_absent").await;
+    assert!(
+        matches!(del_missing, Err(StorageError::NotFound { .. })),
+        "[{}] soft-delete of a missing row must be NotFound, got {del_missing:?}",
+        backend.name()
+    );
+
+    // Version store: create + round-trip + duplicate guard + list order.
+    for n in 1u32..=3 {
+        ver.create(
+            &s,
+            WorkflowVersionRecord {
+                workflow_id: "wf_v".into(),
+                number: n,
+                published: false,
+                pinned: false,
+                definition: serde_json::json!({ "n": n }),
+            },
+        )
+        .await
+        .expect("version create");
+    }
+    let dup_ver = ver
+        .create(
+            &s,
+            WorkflowVersionRecord {
+                workflow_id: "wf_v".into(),
+                number: 2,
+                published: false,
+                pinned: false,
+                definition: serde_json::json!({}),
+            },
+        )
+        .await;
+    assert!(
+        matches!(dup_ver, Err(StorageError::Duplicate { .. })),
+        "[{}] duplicate (workflow,number) must be Duplicate, got {dup_ver:?}",
+        backend.name()
+    );
+    let got_v2 = ver
+        .get(&s, "wf_v", 2)
+        .await
+        .expect("version get")
+        .unwrap_or_else(|| panic!("[{}] version 2", backend.name()));
+    assert_eq!(got_v2.definition, serde_json::json!({ "n": 2 }));
+    let listed: Vec<u32> = ver
+        .list(&s, "wf_v")
+        .await
+        .expect("version list")
+        .iter()
+        .map(|r| r.number)
+        .collect();
+    assert_eq!(
+        listed,
+        vec![3, 2, 1],
+        "[{}] version list must be newest-first",
+        backend.name()
+    );
+}
+
+/// `get_published` returns the **highest-numbered** published version when
+/// more than one row is marked published (a stale publish that was never
+/// cleared). The original in-memory `find` returned an arbitrary
+/// `HashMap`-order row; this locks the deterministic
+/// `ORDER BY number DESC LIMIT 1` contract across every backend.
+pub async fn assert_get_published_is_highest_numbered(backend: &dyn Backend) {
+    let ver = backend.workflow_version_store().await;
+    let s = scope_a();
+    // Two published versions for the same workflow (1 and 3) plus an
+    // unpublished one (2) — `get_published` must return version 3.
+    for (n, published) in [(1u32, true), (2, false), (3, true)] {
+        ver.create(
+            &s,
+            WorkflowVersionRecord {
+                workflow_id: "wf_pub".into(),
+                number: n,
+                published,
+                pinned: false,
+                definition: serde_json::json!({ "v": n }),
+            },
+        )
+        .await
+        .expect("version create");
+    }
+    let published = ver
+        .get_published(&s, "wf_pub")
+        .await
+        .expect("get_published")
+        .unwrap_or_else(|| panic!("[{}] a published version exists", backend.name()));
+    assert_eq!(
+        published.number,
+        3,
+        "[{}] get_published must return the highest-numbered published \
+         version (deterministic), got {}",
+        backend.name(),
+        published.number
+    );
+    assert_eq!(published.definition, serde_json::json!({ "v": 3 }));
+}
+
 /// A `commit`'s outbox rows are claimable through the control queue, and
 /// the claiming processor fences `mark_completed` (a stale runner whose
 /// row was reclaimed cannot flip a newer claim). Also exercises the
@@ -1016,6 +1293,20 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         Arc::new(nebula_tenancy::ScopedWebhookActivationStore::new(
             self.inner.webhook_store().await,
+            scope_a(),
+        ))
+    }
+
+    async fn workflow_store(&self) -> Arc<dyn WorkflowStore> {
+        Arc::new(nebula_tenancy::ScopedWorkflowStore::new(
+            self.inner.workflow_store().await,
+            scope_a(),
+        ))
+    }
+
+    async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore> {
+        Arc::new(nebula_tenancy::ScopedWorkflowVersionStore::new(
+            self.inner.workflow_version_store().await,
             scope_a(),
         ))
     }
