@@ -251,6 +251,21 @@ mapped to HTTP by api. No stringly-typed "requires X pending".
 | 7 | Plaintext-at-rest | `build()` wraps the raw backend in nesting order (outermost→innermost) `Scope(Audit(Cache(Encryption(raw))))` — `Encryption` is adjacent to the backend so persisted bytes are always ciphertext; raw never escapes the crate; compile-fail probe: raw store unusable without layers |
 | 8 | Audit not fail-closed | sink refusal → `StoreError::AuditFailure` (ADR-0028 inv. 4), never log-and-continue |
 
+**Refinement #3 (lead-reviewed, implemented `3d6c2aa5`):** the row-#3
+proof is *stronger* than "response serialized redacted". `CredentialSnapshot`
+is deliberately **not `Serialize`** (it holds a type-erased
+`Box<dyn Any>`), so it can never reach the wire via serde at all;
+serializing the *projected* scheme would in fact expose the secret
+because the scheme's `#[serde(with = serde_secret)]` is the
+*encrypted-at-rest* path that must preserve the value. The facade proof
+is therefore: (a) `Debug` redaction to `[REDACTED]` on freshly-created
+**and** re-fetched snapshots (`tests/adversarial.rs::abuse3`), and (b)
+the `!Serialize` property pinned structurally by
+`tests/compile_fail/snapshot_not_serialize.rs` (E0277). The API layer
+(Plan 3) must build its response DTO from the secret-free
+`CredentialSnapshot` accessors (`kind`/`scheme_pattern`/`record`), never
+by serializing the snapshot or scheme.
+
 ## 7. B — observability closed structurally
 
 Non-`Option` `CredentialObserver` injected at the constructor. Default impl:
