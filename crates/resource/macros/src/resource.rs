@@ -13,8 +13,9 @@
 //!
 //! Field-level attributes recognised:
 //! - `#[credential]` / `#[credential(key = "...", purpose = "...")]` — declares a credential slot.
-//!   Field type must be `SlotCell<CredentialGuard<C>>` (optionally wrapped in `Option<...>`,
-//!   and/or with `Lazy<...>` between the cell and the guard).
+//!   Field type must be **exactly** `SlotCell<CredentialGuard<C>>`. The generated accessor emits a
+//!   single fixed body that only fits that shape, so `Option<…>`- and `Lazy<…>`-wrapped slots are
+//!   rejected at derive time (a compile error pointing at the field).
 
 use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;

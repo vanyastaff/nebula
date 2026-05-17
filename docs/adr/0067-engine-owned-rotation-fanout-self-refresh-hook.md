@@ -20,10 +20,18 @@ related:
 
 ## Status
 
-Accepted (2026-05-17). Closes ROADMAP §M11.5 (per-slot rotation fan-out)
-and §M12.4 (`nebula-resource` frontier→stable) end-to-end. Amends
-ADR-0044 (hook signature **and** the credential-slot-field / migration
-shape — see [Supersession](#supersession)); overrides the
+Accepted (2026-05-17) — accepts the **infrastructure** for per-slot
+rotation fan-out and the `&self` refresh hook (the engine-side reverse
+index, dispatch port, `RotationOutcome` aggregation, `SlotCell`
+substrate, and the API config-CRUD surface). Production wiring — the
+rotation scheduler (ADR-0030) and lease-revoke (ADR-0051) actually
+invoking the fan-out — is **Deferred** (see [Deferred](#deferred)).
+ROADMAP §M11.5 (per-slot rotation fan-out) and §M12.4 (`nebula-resource`
+frontier→stable) are therefore **not** closed end-to-end yet: they close
+only once that wiring lands and the per-resource-drain correctness items
+in the Deferred section are fixed with it. Amends ADR-0044 (hook
+signature **and** the credential-slot-field / migration shape — see
+[Supersession](#supersession)); overrides the
 `.ai-factory/PHASE4_BLOCKED.md §1` "re-add rotation orchestration to
 `resource::Manager`" candidate (a phase-note, never an accepted ADR).
 
@@ -204,7 +212,7 @@ silently drift.
 | # | Abuse | Invariant |
 |---|---|---|
 | 1 | Cross-tenant dedup — `ResourceConfig::fingerprint()` defaults to `0`, collapsing every config of a type to one runtime regardless of resolved credential | **Confirmed bug, fixed structurally at `Manager`**: the dedup key gains a slot-identity component derived from the resolved credential identity per `#[credential]` slot, independent of the author's `fingerprint()`. Not discipline-based — authors cannot regress it by forgetting an override. |
-| 2 | Revoke race on a shared runtime (ADR-0036: zero authenticated traffic post-revoke) | Engine-driven ordering: engine marks the credential `revoking` → `Manager::revoke_slot` taints the runtime (new acquires rejected via the existing `tainted` guard) → drains in-flight guards (`ReleaseQueue` + `drain_tracker`) → reports → engine completes revoke. No acquire after taint observes the revoked credential. |
+| 2 | Revoke race on a shared runtime (ADR-0036: zero authenticated traffic post-revoke) | Engine-driven ordering: engine marks the credential `revoking` → `Manager::revoke_slot` taints the runtime (new acquires rejected via the existing `tainted` guard) → drains in-flight guards (`ReleaseQueue` + `drain_tracker`) → reports → engine completes revoke. **Deferred — not yet satisfied end-to-end:** the drain step awaits the *manager-wide* `drain_tracker`, not a per-resource counter, and there is no per-resource post-taint re-check, so a sibling resource's traffic can delay the revoke and the "no acquire after taint observes the revoked credential" guarantee is not provable per-resource. A per-resource drain + post-taint re-check is required before / together with the fan-out wiring (see [Deferred](#deferred)). |
 | 3 | Secret in config JSON via API (ADR-0028 §7) | `register_from_value(json)` validates against `<R::Config as HasSchema>::schema()`; `ResourceConfig` carries no secrets (slots are credential *references* by key/id, §3.5). API DTOs use ADR-0047 wrappers — zero core/engine/storage types in the wire schema. A regression test rejects secret-shaped config (negative + positive control). |
 | 4 | Type confusion `kind: String → R` in `register_from_value` | `kind → registrar` is a **closed allowlist** (INTEGRATION_MODEL §114-120 closed dependency graph), never reflection. Unknown `kind` ⇒ a typed conflict error, never a silent runtime grab. |
 
@@ -253,12 +261,12 @@ behind the plan):
   awaits the *manager-wide* `drain_tracker` (the same primitive
   `graceful_shutdown` uses), so an unrelated busy resource can delay a
   revoke's drain phase and the post-taint re-check is not per-resource.
-  This is acceptable while the fan-out is unwired (no production caller),
-  but draining must move to a **per-resource counter with a post-taint
-  re-check** before or together with the fan-out wiring above — a
-  revoke must not block on traffic to a sibling resource. Trigger: the
-  fan-out wiring lands (same trigger as above; the two are sequenced
-  together).
+  This is **untested in production** (no production caller) and **must
+  be fixed before wiring the fan-out**: draining must move to a
+  **per-resource counter with a post-taint re-check** before or together
+  with the fan-out wiring above — a revoke must not block on traffic to
+  a sibling resource. Trigger: the fan-out wiring lands (same trigger as
+  above; the two are sequenced together).
 - **Plugin-driven registrar auto-population.** The engine holds a
   closed `ResourceRegistrarRegistry`, but it is fed by the composition
   root, not auto-populated from `PluginRegistry::resources()`. Wiring a
@@ -273,7 +281,12 @@ behind the plan):
   the API holds because every by-id handler routes through a single
   audited `fetch_owned_resource`. Any production `ResourceRepo` impl
   **must** keep `get` keyed by id only (never `(workspace, id)`), or the
-  isolation argument changes. Trigger: a concrete `ResourceRepo` lands.
+  isolation argument changes. Before any production `ResourceRepo`
+  ships, cross-tenant isolation **must** be verified with automated
+  tests that exercise `fetch_owned_resource` and the by-id handlers
+  against a foreign-workspace row (a foreign / soft-deleted / unparsable
+  target must collapse to an indistinguishable 404). Trigger: a concrete
+  `ResourceRepo` lands.
 - **Update version ownership.** `ResourceRepo::update` is pinned to a
   post-CAS version contract in its doc. Trigger: a backend implements
   `update` and must honour that contract.

@@ -309,8 +309,10 @@ impl Manager {
 
 One family of register methods — no `scheme` parameter and no credential-type
 bound on any of them (per ADR-0044 credentials are not threaded through
-registration; the `resource: R` value already carries resolved credentials in
-its `#[credential]` slot fields). 1 full `register`, plus `register_with_identity`
+registration; the `resource: R` value *declares* its `#[credential]` slot
+fields, and the framework binds the resolved credential guards into those
+slots before `Resource::create` — registration itself does not carry resolved
+credentials). 1 full `register`, plus `register_with_identity`
 (pins the registry row to a resolved per-slot identity), plus 5 + 5 topology
 shorthands. The `register_*_with` shorthands consolidate scope / resilience /
 recovery_gate / slot_identity into `RegisterOptions`.

@@ -177,9 +177,13 @@ impl<R: Resource> PoolRuntime<R> {
     /// Tradeoff: because the idle lock spans every entry's hook `.await`,
     /// a slow hook blocks concurrent idle checkouts for the full rotation
     /// duration (head-of-line blocking). New-instance creation is
-    /// unaffected — that path does not take this lock. This is acceptable
-    /// because rotation is rare (not a hot path) and the caller bounds
-    /// each hook with a timeout, so the stall is short and finite. Do not
+    /// unaffected — that path does not take this lock. This is tolerated
+    /// because rotation is rare (not a hot path); note the external
+    /// timeout the dispatch caller may apply bounds the *whole*
+    /// refresh/revoke dispatch, **not** each idle-entry hook — a single
+    /// pathologically slow hook can still hold the idle lock for that
+    /// hook's full (unbounded) duration. Per-entry hook timeouts are a
+    /// tracked deferred design item, not implemented here. Do not
     /// "optimize" by dropping and reacquiring the lock between entries:
     /// that reopens the window for an instance to be checked out
     /// mid-rotation and miss its hook, violating the post-revoke
