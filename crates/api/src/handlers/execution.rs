@@ -153,11 +153,7 @@ pub async fn get_execution_outputs(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
-    let outputs = state
-        .execution_repo
-        .load_all_outputs(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
+    let outputs = state.execution_node_outputs(execution_id).await?;
 
     // Convert NodeKey keys to strings for JSON serialisation.
     let string_outputs: std::collections::HashMap<String, serde_json::Value> = outputs
@@ -325,10 +321,8 @@ pub async fn start_execution(
     // exists yet), so every call returned `Ok(false)` and the handler
     // surfaced an Internal error unconditionally.
     state
-        .execution_repo
-        .create(execution_id, workflow_id_parsed, state_json)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))?;
+        .create_execution(execution_id, workflow_id_parsed, state_json)
+        .await?;
 
     // Enqueue the Start signal onto the durable control queue (canon §12.2,
     // §13 step 3, #332). Before this PR the API persisted the row but never
@@ -495,10 +489,8 @@ pub async fn cancel_execution(
     // wrapper is available across ExecutionRepo and ControlQueueRepo.
     // The handler fails loudly on enqueue failure so the caller can retry.
     let transition_result = state
-        .execution_repo
-        .transition(execution_id, version, execution_state.clone())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
+        .cas_transition(execution_id, version, execution_state.clone())
+        .await?;
 
     if !transition_result {
         return Err(ApiError::Conflict(
@@ -596,11 +588,7 @@ pub async fn get_execution_logs(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
-    let logs = state
-        .execution_repo
-        .get_journal(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load execution logs: {e}")))?;
+    let logs = state.execution_journal(execution_id).await?;
 
     Ok(Json(ExecutionLogsResponse {
         execution_id: id,

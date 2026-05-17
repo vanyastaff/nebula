@@ -16,7 +16,9 @@ use nebula_storage::{
     credential::{InMemoryPendingStore, InMemoryStore},
     repos::{ControlQueueRepo, WebhookActivationRepo},
 };
-use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
+use nebula_storage_port::store::{
+    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowVersionStore,
+};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -199,6 +201,15 @@ pub struct AppState {
     /// enqueue path uses this scoped port instead of
     /// [`Self::control_queue_repo`].
     pub control_queue: Option<Arc<dyn ControlQueue>>,
+
+    /// Optional spec-16 scoped node-result port handle (per-node
+    /// output reads on the outputs endpoint). Wired alongside
+    /// [`Self::execution_store`] via [`Self::with_execution_store`].
+    pub node_result_store: Option<Arc<dyn NodeResultStore>>,
+
+    /// Optional spec-16 scoped journal-reader port handle (execution
+    /// log reads). Wired alongside [`Self::execution_store`].
+    pub journal_reader: Option<Arc<dyn ExecutionJournalReader>>,
 }
 
 /// Fixed placeholder scope passed to scoped port handles.
@@ -250,11 +261,15 @@ impl AppState {
             execution_store: None,
             workflow_version_store: None,
             control_queue: None,
+            node_result_store: None,
+            journal_reader: None,
         }
     }
 
-    /// Attach the spec-16 scoped execution-store + workflow-version
-    /// port handles.
+    /// Attach the spec-16 scoped execution-state port handles
+    /// (execution store + workflow-version + node-result + journal
+    /// reader — all the read/transition surface the execution handlers
+    /// touch).
     ///
     /// The composition root MUST pass handles already wrapped in the
     /// `nebula-tenancy` decorator (tenant-bound); `AppState` never sees
@@ -265,9 +280,13 @@ impl AppState {
         mut self,
         execution: Arc<dyn ExecutionStore>,
         workflow_version: Arc<dyn WorkflowVersionStore>,
+        node_results: Arc<dyn NodeResultStore>,
+        journal: Arc<dyn ExecutionJournalReader>,
     ) -> Self {
         self.execution_store = Some(execution);
         self.workflow_version_store = Some(workflow_version);
+        self.node_result_store = Some(node_results);
+        self.journal_reader = Some(journal);
         self
     }
 
@@ -439,6 +458,146 @@ impl AppState {
             let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
             to_api_err(unavailable, e.to_string())
         })
+    }
+
+    /// Create a fresh execution row. Dual-dispatch: the scoped
+    /// [`ExecutionStore`] port `create` when wired, else the legacy
+    /// `ExecutionRepo::create`.
+    pub(crate) async fn create_execution(
+        &self,
+        execution_id: ExecutionId,
+        workflow_id: nebula_core::id::WorkflowId,
+        state_json: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        if let Some(store) = &self.execution_store {
+            return store
+                .create(
+                    &placeholder_scope(),
+                    &execution_id.to_string(),
+                    &workflow_id.to_string(),
+                    state_json,
+                )
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")));
+        }
+        self.execution_repo
+            .create(execution_id, workflow_id, state_json)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
+    }
+
+    /// CAS-update an execution's state, returning `false` on a
+    /// version/fencing conflict (caller maps that to 409). Dual-dispatch:
+    /// the scoped [`ExecutionStore`] port `commit` when wired, else the
+    /// legacy `ExecutionRepo::transition`.
+    ///
+    /// The API is an *external* mutator (no held lease), so the port
+    /// path reads the row's current fencing generation and commits at
+    /// it. If a runner concurrently takes over (bumping the generation)
+    /// the commit returns `FencedOut`, which maps to the same
+    /// `Ok(false)` (retry) the legacy CAS produced on a version miss —
+    /// the engine's reconciliation honors a concurrent terminal write
+    /// (§11.5, #333).
+    pub(crate) async fn cas_transition(
+        &self,
+        execution_id: ExecutionId,
+        expected_version: u64,
+        new_state: serde_json::Value,
+    ) -> Result<bool, ApiError> {
+        if let Some(store) = &self.execution_store {
+            let scope = placeholder_scope();
+            let id = execution_id.to_string();
+            let current = store
+                .get(&scope, &id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
+            let Some(record) = current else {
+                // No row: a CAS that can never match — caller treats
+                // `false` as a 409 / refetch, same as the legacy path.
+                return Ok(false);
+            };
+            let fencing =
+                nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
+            let batch = nebula_storage_port::TransitionBatch::builder()
+                .scope(scope)
+                .execution_id(&id)
+                .expected_version(expected_version)
+                .fencing(fencing)
+                .new_state(new_state)
+                .build()
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to build cancel transition: {e}"))
+                })?;
+            return match store.commit(batch).await {
+                Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
+                Ok(
+                    nebula_storage_port::TransitionOutcome::VersionConflict { .. }
+                    | nebula_storage_port::TransitionOutcome::FencedOut,
+                ) => Ok(false),
+                Err(e) => Err(ApiError::Internal(format!(
+                    "Failed to cancel execution: {e}"
+                ))),
+            };
+        }
+        self.execution_repo
+            .transition(execution_id, expected_version, new_state)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))
+    }
+
+    /// Load all persisted per-node *outputs* for an execution. Dual-
+    /// dispatch: the scoped [`NodeResultStore`] port
+    /// `load_all_node_outputs` (mapping `record.json`) when wired, else
+    /// the legacy `ExecutionRepo::load_all_outputs`. Returns
+    /// `Vec<(NodeKey, Value)>` (order-independent — callers re-key).
+    pub(crate) async fn execution_node_outputs(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
+        if let Some(store) = &self.node_result_store {
+            let rows = store
+                .load_all_node_outputs(&placeholder_scope(), &execution_id.to_string())
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
+            return rows
+                .into_iter()
+                .map(|(node_id, rec)| {
+                    nebula_core::NodeKey::new(&node_id)
+                        .map(|k| (k, rec.json))
+                        .map_err(|e| {
+                            ApiError::Internal(format!("stored node id {node_id:?} invalid: {e}"))
+                        })
+                })
+                .collect();
+        }
+        Ok(self
+            .execution_repo
+            .load_all_outputs(execution_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?
+            .into_iter()
+            .collect())
+    }
+
+    /// Load an execution's journal entries (opaque payloads). Dual-
+    /// dispatch: the scoped [`ExecutionJournalReader`] port `get_journal`
+    /// (mapping `entry.payload`) when wired, else the legacy
+    /// `ExecutionRepo::get_journal`.
+    pub(crate) async fn execution_journal(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<Vec<serde_json::Value>, ApiError> {
+        if let Some(reader) = &self.journal_reader {
+            return reader
+                .get_journal(&placeholder_scope(), &execution_id.to_string())
+                .await
+                .map(|entries| entries.into_iter().map(|e| e.payload).collect())
+                .map_err(|e| ApiError::Internal(format!("Failed to load logs: {e}")));
+        }
+        self.execution_repo
+            .get_journal(execution_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to load logs: {e}")))
     }
 
     /// Set the static API keys accepted via `X-API-Key` header.
