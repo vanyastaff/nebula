@@ -29,7 +29,7 @@
 //! - [`NodeAttempt`] — attempt-keyed shape used by `save_node_output`; the engine does not retry
 //!   nodes, but the type still backs attempt-numbered output rows.
 //! - [`IdempotencyKey`] — deterministic key `{execution_id}:{node_id}:{attempt}`; dedup enforcement
-//!   lives in `nebula_storage::ExecutionRepo`.
+//!   lives behind the storage port's idempotency guard.
 //! - [`ExecutionError`] — typed error for state machine violations.
 //!
 //! ## Non-goals

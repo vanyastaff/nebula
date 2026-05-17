@@ -1,57 +1,47 @@
-//! Repository traits — **planned spec-16 architecture**, per canon §11.6.
+//! Backend repository traits for the persistence concerns that have not
+//! moved onto the `nebula-storage-port` contract.
 //!
-//! ## Status — read before depending on these traits
+//! Execution and workflow state are served by the spec-16 port adapters
+//! (`crate::inmem` / `crate::sqlite` / `crate::postgres`). What lives
+//! here is the remaining surface:
 //!
-//! | Trait | Status | Notes |
-//! |---|---|---|
-//! | `ControlQueueRepo` + `InMemoryControlQueueRepo` + `pg::PgControlQueueRepo` | **implemented** | Produced by the API start / cancel handlers; consumed by `nebula_engine::ControlConsumer`. All five commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — dispatched via `nebula_engine::EngineControlDispatch` (ADR-0008 A2 + A3). Crashed-runner reclaim sweep wired via `reclaim_stuck` (ADR-0008 B1 / ADR-0017). Two backings exist: `InMemoryControlQueueRepo` is the currently wired runtime path (tests, local, `simple_server` example); `pg::PgControlQueueRepo` is available behind the `postgres` feature and ready for multi-process / restart-tolerant deployments (`FOR UPDATE SKIP LOCKED` per ADR-0008 §1), but no composition root selects it by default yet — a future `apps/server` (ADR-0008 follow-up) picks it up. Safe to depend on as a storage port. |
-//! | `ExecutionRepo`, `WorkflowRepo`, `ExecutionNodeRepo`, `JournalRepo` | **planned** | Trait definitions only — zero in-memory / Postgres implementations exist in this crate. Engine and API cannot compile against these signatures today. |
-//! | `AuditRepo`, `BlobRepo`, `CredentialRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`, `OrgRepo`, `WorkspaceRepo` | **planned** (some with partial Postgres glue) | Same caveat. |
+//! - **Control-command outbox** — [`ControlQueueRepo`] with
+//!   [`InMemoryControlQueueRepo`] and, behind the `postgres` feature,
+//!   `pg::PgControlQueueRepo` (`FOR UPDATE SKIP LOCKED`, ADR-0008 §1).
+//!   The five commands (`Start` / `Resume` / `Restart` / `Cancel` /
+//!   `Terminate`) and the crashed-runner [`reclaim_stuck`] sweep
+//!   (ADR-0008 / ADR-0017) are implemented on both backings.
+//! - **Idempotency-cache store** — [`IdempotencyStoreRepo`] /
+//!   [`InMemoryIdempotencyStoreRepo`], consumed by the API idempotency
+//!   middleware (`StorageBackedIdempotencyStore`).
+//! - **Webhook-activation store** — [`WebhookActivationRepo`].
+//! - **Identity-row surface** — [`AuditRepo`], [`BlobRepo`],
+//!   [`CredentialRepo`], [`OrgRepo`], [`QuotaRepo`], [`ResourceRepo`],
+//!   [`TriggerRepo`], [`UserRepo`], [`WorkspaceRepo`]. The Postgres glue
+//!   in [`crate::pg`] implements the subset the API consumes.
 //!
-//! For execution / workflow persistence **use the layer-1 traits**
-//! re-exported at the crate root (`nebula_storage::ExecutionRepo`,
-//! `nebula_storage::WorkflowRepo`). Those are the production contract
-//! the knife scenario exercises end-to-end.
+//! ## Conventions
 //!
-//! Adopting this module's design as the production contract requires
-//! engine + API + runtime refactor tracked as "Sprint E — adopt spec-16
-//! row model" in the workspace health audit spec
-//! (`docs/superpowers/specs/2026-04-16-workspace-health-audit.md`).
-//!
-//! ## Design (when / if adopted)
-//!
-//! - Traits accept **raw byte slices** for IDs; callers encode their domain newtypes. This keeps
-//!   the storage layer independent of `nebula-core` ID types and avoids cross-crate compile-time
-//!   coupling.
-//! - Return types are row structs from `crate::rows::*` — multi-tenant by construction
-//!   (`workspace_id` / `org_id` are mandatory columns).
+//! - Traits accept **raw byte slices** for IDs; callers encode their
+//!   domain newtypes. This keeps the storage layer independent of
+//!   `nebula-core` ID types.
+//! - Return types are row structs from [`crate::rows`] — multi-tenant by
+//!   construction (`workspace_id` / `org_id` are mandatory columns).
 //! - All errors funnel through [`crate::StorageError`].
 //!
-//! # Example (layer-1 production path)
-//!
-//! ```ignore
-//! use nebula_storage::{ExecutionRepo, InMemoryExecutionRepo};
-//!
-//! let repo: std::sync::Arc<dyn ExecutionRepo> =
-//!     std::sync::Arc::new(InMemoryExecutionRepo::new());
-//! // Use repo with the engine / API today — see canon §13 knife scenario.
-//! ```
+//! [`reclaim_stuck`]: ControlQueueRepo::reclaim_stuck
 
 mod audit;
 mod blob;
 mod control_queue;
 mod credential;
-mod execution;
-mod execution_node;
 mod idempotency;
-mod journal;
 mod org;
 mod quota;
 mod resource;
 mod trigger;
 mod user;
 pub(crate) mod webhook_activation;
-mod workflow;
 mod workspace;
 
 pub use audit::AuditRepo;
@@ -60,15 +50,11 @@ pub use control_queue::{
     ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo, ReclaimOutcome,
 };
 pub use credential::CredentialRepo;
-pub use execution::ExecutionRepo;
-pub use execution_node::ExecutionNodeRepo;
 pub use idempotency::{CachedRecord, IdempotencyStoreRepo, InMemoryIdempotencyStoreRepo};
-pub use journal::JournalRepo;
 pub use org::OrgRepo;
 pub use quota::QuotaRepo;
 pub use resource::ResourceRepo;
 pub use trigger::TriggerRepo;
 pub use user::{PatRepo, SessionRepo, UserRepo};
 pub use webhook_activation::{InMemoryWebhookActivationRepo, WebhookActivationRepo};
-pub use workflow::{WorkflowRepo, WorkflowVersionRepo};
 pub use workspace::WorkspaceRepo;

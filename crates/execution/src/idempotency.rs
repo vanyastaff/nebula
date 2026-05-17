@@ -1,10 +1,10 @@
 //! Idempotency key generation.
 //!
-//! Deduplication itself is owned by `nebula_storage::ExecutionRepo` via
-//! `check_idempotency` / `mark_idempotent`. The engine constructs a key with
+//! Deduplication itself is owned by the storage port's idempotency guard
+//! (`check_and_mark`). The engine constructs a key with
 //! [`IdempotencyKey::for_attempt`] / [`IdempotencyKey::for_iteration`] and
-//! routes the dedup decision through the repository so that durability and
-//! the key namespace stay in lock-step.
+//! routes the dedup decision through that port so that durability and the
+//! key namespace stay in lock-step.
 
 use std::fmt;
 

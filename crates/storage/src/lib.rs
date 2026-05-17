@@ -47,12 +47,10 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-mod backend;
 /// Credential persistence — see
 /// [ADR-0029](../../../docs/adr/0029-storage-owns-credential-persistence.md).
 pub mod credential;
 mod error;
-mod execution_repo;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;
 /// In-memory adapter implementing the `nebula-storage-port` contract.
@@ -68,29 +66,22 @@ pub mod pool;
 /// (production multi-process; real tx + `FOR UPDATE SKIP LOCKED`).
 #[cfg(feature = "postgres")]
 pub mod postgres;
-/// Repository trait API (spec-16 architecture) — **planned / experimental**, per canon §11.6.
+/// Backend repository traits for the persistence concerns that have not
+/// yet moved onto the `nebula-storage-port` contract.
 ///
-/// Only [`repos::ControlQueueRepo`] has a production-wired consumer today
-/// (`nebula_engine::ControlConsumer`). Two backings live in this crate:
-/// [`repos::InMemoryControlQueueRepo`] is the currently selected runtime
-/// (tests, local, `simple_server` example); `pg::PgControlQueueRepo` is
-/// available behind the `postgres` feature for multi-process /
-/// restart-tolerant deployments (`FOR UPDATE SKIP LOCKED` per ADR-0008
-/// §1) but is not yet selected by any composition root — a future
-/// `apps/server` binary (ADR-0008 follow-up) wires it in.
+/// Execution and workflow persistence are served by the spec-16 port
+/// adapters (`inmem` / `sqlite` / `postgres`); this module is what
+/// remains: the durable control-command outbox
+/// ([`repos::ControlQueueRepo`] + [`repos::InMemoryControlQueueRepo`],
+/// `pg::PgControlQueueRepo` behind the `postgres` feature), the
+/// idempotency-cache store ([`repos::IdempotencyStoreRepo`], consumed by
+/// the API idempotency middleware), the webhook-activation store, and
+/// the identity-row repository surface implemented by the Postgres glue
+/// in [`pg`].
 ///
 /// `pg::PgControlQueueRepo` is only present under the `postgres` feature,
-/// so this reference is intentionally kept as plain backticks (not an
-/// intra-doc link) to keep default-feature rustdoc clean.
-///
-/// The rest of the traits in this module are design placeholders with
-/// no implementations yet — adopting them requires an engine + API
-/// refactor tracked as "Sprint E — adopt spec-16 row model" in the
-/// workspace health audit spec.
-///
-/// For execution / workflow persistence, use the top-level [`ExecutionRepo`]
-/// and [`WorkflowRepo`] re-exports (layer 1) — they are the production
-/// contract the knife scenario (canon §13) runs against.
+/// so it is referenced with plain backticks (not an intra-doc link) to
+/// keep default-feature rustdoc clean.
 pub mod repos;
 /// Database row types.
 pub mod rows;
@@ -98,18 +89,11 @@ pub mod rows;
 /// (dev / edge single-writer; spec §5 SQLite parity boundary).
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
-mod workflow_repo;
 
 #[cfg(test)]
 pub mod test_support;
 
-#[cfg(feature = "postgres")]
-pub use backend::{PgExecutionRepo, PgWorkflowRepo, PostgresStorage, PostgresStorageConfig};
 pub use error::StorageError;
-pub use execution_repo::{
-    ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo, MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
-    NodeResultRecord, StatefulCheckpointRecord,
-};
 pub use format::StorageFormat;
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
@@ -117,4 +101,3 @@ pub use inmem::{
     InMemoryNodeResultStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
     InMemoryWorkflowVersionStore,
 };
-pub use workflow_repo::{InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError};
