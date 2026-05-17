@@ -2,8 +2,8 @@
 //!
 //! The `Properties: HasSchema` associated-type bound is the single source of
 //! truth; schema is reached via `nebula_schema::schema_of::<C::Properties>()`.
-//! There is no `properties_schema()` method on the trait, so this call must
-//! fail to compile (`E0599`).
+//! There is no `properties_schema()` method on the trait, so this
+//! fully-qualified call must fail to compile (`E0576` — not found in trait).
 
 // FQS forces resolution on the `Credential` trait itself, so the only
 // reason this fails post-P3 is the removed method — not a missing trait
