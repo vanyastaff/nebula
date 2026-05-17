@@ -76,13 +76,20 @@ pub struct InMemoryBackend {
 
 impl Default for InMemoryBackend {
     fn default() -> Self {
+        // The workflow-row store shares the version store's map (same
+        // contract as `control_queue`/`journal` over the shared execution
+        // core) so `save_with_published_version` is genuinely atomic
+        // across the pair under the conformance matrix.
+        let workflow_version = nebula_storage::inmem::InMemoryWorkflowVersionStore::new();
+        let workflow =
+            nebula_storage::inmem::InMemoryWorkflowStore::new_with_versions(&workflow_version);
         Self {
             store: nebula_storage::inmem::InMemoryExecutionStore::new(),
             guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
             idem_store: nebula_storage::inmem::InMemoryIdempotencyStore::new(),
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
-            workflow: nebula_storage::inmem::InMemoryWorkflowStore::new(),
-            workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore::new(),
+            workflow,
+            workflow_version,
         }
     }
 }
@@ -911,6 +918,139 @@ pub async fn assert_workflow_store_contract(backend: &dyn Backend) {
         listed,
         vec![3, 2, 1],
         "[{}] version list must be newest-first",
+        backend.name()
+    );
+}
+
+/// `WorkflowStore::save_with_published_version` is a real all-or-nothing
+/// unit of work on every backend: the row write and the published-version
+/// write either both land or neither does. This locks the spec-16
+/// orphan-row invariant (a workflow row with no published version is
+/// invisible to readers — "the workflow vanished") that the previous
+/// two-await sequence could violate on a partial failure.
+pub async fn assert_save_with_published_version_is_atomic(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
+    let ver = backend.workflow_version_store().await;
+    let s = scope_a();
+
+    // 1. Create commits BOTH the row and version #1 as one unit.
+    wf.save_with_published_version(
+        &s,
+        WorkflowRecord {
+            id: "wf_atomic".into(),
+            scope: s.clone(),
+            version: 1,
+            slug: "wf_atomic".into(),
+            deleted: false,
+        },
+        WorkflowVersionRecord {
+            workflow_id: "wf_atomic".into(),
+            number: 1,
+            published: true,
+            pinned: false,
+            definition: serde_json::json!({ "v": 1 }),
+        },
+        None,
+    )
+    .await
+    .expect("atomic create");
+    assert!(
+        wf.get(&s, "wf_atomic").await.expect("get").is_some(),
+        "[{}] row must exist after atomic create",
+        backend.name()
+    );
+    let pub1 = ver
+        .get_published(&s, "wf_atomic")
+        .await
+        .expect("get_published")
+        .unwrap_or_else(|| panic!("[{}] published version after create", backend.name()));
+    assert_eq!(
+        pub1.number,
+        1,
+        "[{}] published version #1 must exist after atomic create",
+        backend.name()
+    );
+
+    // 2. A CAS update at the WRONG expected_version must roll BOTH back:
+    //    the row counter must NOT advance and version #2 must NOT appear.
+    let conflict = wf
+        .save_with_published_version(
+            &s,
+            WorkflowRecord {
+                id: "wf_atomic".into(),
+                scope: s.clone(),
+                version: 2,
+                slug: "wf_atomic".into(),
+                deleted: false,
+            },
+            WorkflowVersionRecord {
+                workflow_id: "wf_atomic".into(),
+                number: 2,
+                published: true,
+                pinned: false,
+                definition: serde_json::json!({ "v": 2 }),
+            },
+            Some(999), // stale expected version
+        )
+        .await;
+    assert!(
+        matches!(conflict, Err(StorageError::Conflict { .. })),
+        "[{}] stale-CAS atomic save must Conflict, got {conflict:?}",
+        backend.name()
+    );
+    let row_after = wf
+        .get(&s, "wf_atomic")
+        .await
+        .expect("get")
+        .unwrap_or_else(|| panic!("[{}] row still present", backend.name()));
+    assert_eq!(
+        row_after.version,
+        1,
+        "[{}] row counter must NOT advance on a rolled-back atomic save",
+        backend.name()
+    );
+    assert!(
+        ver.get(&s, "wf_atomic", 2)
+            .await
+            .expect("version get")
+            .is_none(),
+        "[{}] version #2 must NOT exist after a rolled-back atomic save \
+         (no orphan version; the unit rolled back whole)",
+        backend.name()
+    );
+
+    // 3. A create whose version slot is already taken must roll the row
+    //    back too (the row insert must not survive the version failure).
+    let dup = wf
+        .save_with_published_version(
+            &s,
+            WorkflowRecord {
+                id: "wf_atomic2".into(),
+                scope: s.clone(),
+                version: 1,
+                slug: "wf_atomic2".into(),
+                deleted: false,
+            },
+            WorkflowVersionRecord {
+                // Collides with wf_atomic's existing version #1.
+                workflow_id: "wf_atomic".into(),
+                number: 1,
+                published: true,
+                pinned: false,
+                definition: serde_json::json!({ "dup": true }),
+            },
+            None,
+        )
+        .await;
+    assert!(
+        matches!(dup, Err(StorageError::Duplicate { .. })),
+        "[{}] atomic create with a taken version slot must Duplicate, got {dup:?}",
+        backend.name()
+    );
+    assert!(
+        wf.get(&s, "wf_atomic2").await.expect("get").is_none(),
+        "[{}] the new row must NOT survive a failed atomic create \
+         (row insert rolled back with the version failure)",
         backend.name()
     );
 }

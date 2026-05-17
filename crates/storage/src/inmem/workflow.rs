@@ -40,17 +40,54 @@ fn wf_ver_key(scope: &Scope, workflow_id: &str, number: u32) -> WfVerKey {
     )
 }
 
+/// Shared workflow-version map handle. The version store owns this map;
+/// [`InMemoryWorkflowStore`] holds a clone of the same `Arc` so
+/// [`WorkflowStore::save_with_published_version`] can mutate the row map
+/// **and** the version map inside one critical section (both-or-neither),
+/// mirroring how [`super::InMemoryControlQueue`] / journal reader build
+/// over the shared [`super::InMemoryExecutionStore`] core.
+type SharedVersions = Arc<Mutex<HashMap<WfVerKey, WorkflowVersionRecord>>>;
+
 /// In-memory workflow-row store.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct InMemoryWorkflowStore {
     inner: Arc<Mutex<HashMap<WfKey, WorkflowRecord>>>,
+    /// Same map the paired [`InMemoryWorkflowVersionStore`] reads/writes.
+    /// For a store built via [`Self::new`] this is a private map (the
+    /// atomic save is still both-or-neither over its own pair); for one
+    /// built via [`Self::new_with_versions`] it is the *shared* version
+    /// map, so the atomic save and the version store observe one state.
+    versions: SharedVersions,
+}
+
+impl Default for InMemoryWorkflowStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryWorkflowStore {
-    /// Create an empty store.
+    /// Create an empty store with a private (unshared) version map.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            versions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Create a workflow-row store that shares its version map with
+    /// `versions`, so [`WorkflowStore::save_with_published_version`]
+    /// commits the row and the version atomically and the paired
+    /// [`InMemoryWorkflowVersionStore`] observes the same data (the
+    /// composition-root wiring — mirrors
+    /// [`super::InMemoryControlQueue::new`] over a shared execution core).
+    #[must_use]
+    pub fn new_with_versions(versions: &InMemoryWorkflowVersionStore) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            versions: Arc::clone(&versions.inner),
+        }
     }
 }
 
@@ -114,6 +151,76 @@ impl WorkflowStore for InMemoryWorkflowStore {
         }
         map.insert(key, record);
         Ok(())
+    }
+
+    async fn save_with_published_version(
+        &self,
+        scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: Option<u64>,
+    ) -> Result<(), StorageError> {
+        let row_key = wf_key(scope, &row.id);
+        let ver_key = wf_ver_key(scope, &version.workflow_id, version.number);
+        // Lock the row map and the version map together so the pair is
+        // applied (or rejected) as one unit — no orphan-row window. Lock
+        // order is fixed (rows then versions) and no other path takes
+        // both, so this cannot deadlock.
+        let mut rows = self.inner.lock();
+        let mut vers = self.versions.lock();
+
+        match expected_version {
+            None => {
+                // Create: the row must not exist and the version slot must
+                // be free. Validate both before mutating either.
+                if rows.contains_key(&row_key) {
+                    return Err(StorageError::Duplicate {
+                        entity: "workflow",
+                        detail: format!("workflow {} already exists", row.id),
+                    });
+                }
+                if vers.contains_key(&ver_key) {
+                    return Err(StorageError::Duplicate {
+                        entity: "workflow_version",
+                        detail: format!(
+                            "workflow {} version {} already exists",
+                            version.workflow_id, version.number
+                        ),
+                    });
+                }
+                rows.insert(row_key, row);
+                vers.insert(ver_key, version);
+                Ok(())
+            },
+            Some(expected) => {
+                // CAS update: the row must exist at `expected` and the new
+                // version slot must be free. Validate both before mutating.
+                let current_version = match rows.get(&row_key) {
+                    Some(current) => current.version,
+                    None => return Err(StorageError::not_found("workflow", row.id)),
+                };
+                if current_version != expected {
+                    return Err(StorageError::Conflict {
+                        entity: "workflow",
+                        id: row.id,
+                        expected,
+                        actual: current_version,
+                    });
+                }
+                if vers.contains_key(&ver_key) {
+                    return Err(StorageError::Duplicate {
+                        entity: "workflow_version",
+                        detail: format!(
+                            "workflow {} version {} already exists",
+                            version.workflow_id, version.number
+                        ),
+                    });
+                }
+                rows.insert(row_key, row);
+                vers.insert(ver_key, version);
+                Ok(())
+            },
+        }
     }
 
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {

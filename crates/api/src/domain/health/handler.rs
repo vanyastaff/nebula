@@ -139,7 +139,11 @@ mod tests {
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
-    use nebula_storage_port::{Scope, StorageError, dto::WorkflowRecord, store::WorkflowStore};
+    use nebula_storage_port::{
+        Scope, StorageError,
+        dto::{WorkflowRecord, WorkflowVersionRecord},
+        store::WorkflowStore,
+    };
     use nebula_tenancy::{
         ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
         ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
@@ -157,12 +161,18 @@ mod tests {
 
     #[async_trait]
     impl WorkflowStore for AlwaysFailWorkflowStore {
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn get_by_slug(
             &self,
             _: &Scope,
@@ -170,9 +180,24 @@ mod tests {
         ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
+        async fn save_with_published_version(
+            &self,
+            _: &Scope,
+            _: WorkflowRecord,
+            _: WorkflowVersionRecord,
+            _: Option<u64>,
+        ) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
@@ -191,12 +216,18 @@ mod tests {
 
     #[async_trait]
     impl WorkflowStore for SlowWorkflowStore {
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn get_by_slug(
             &self,
             _: &Scope,
@@ -204,9 +235,24 @@ mod tests {
         ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
+        async fn save_with_published_version(
+            &self,
+            _: &Scope,
+            _: WorkflowRecord,
+            _: WorkflowVersionRecord,
+            _: Option<u64>,
+        ) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `list`; this op is
+        // unreachable on the probe path.
         async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }

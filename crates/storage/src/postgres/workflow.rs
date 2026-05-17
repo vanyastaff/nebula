@@ -156,6 +156,120 @@ impl WorkflowStore for PgWorkflowStore {
         }
     }
 
+    async fn save_with_published_version(
+        &self,
+        scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: Option<u64>,
+    ) -> Result<(), StorageError> {
+        // One transaction so the row write and the version write commit
+        // (or roll back) together — no orphan-row window.
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+
+        match expected_version {
+            None => {
+                // Create the row.
+                let res = sqlx::query(
+                    "INSERT INTO port_workflows \
+                     (id, workspace_id, org_id, version, slug, deleted) \
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(&row.id)
+                .bind(&scope.workspace_id)
+                .bind(&scope.org_id)
+                .bind(row.version as i64)
+                .bind(&row.slug)
+                .bind(row.deleted)
+                .execute(&mut *tx)
+                .await;
+                if let Err(e) = res {
+                    return Err(match e {
+                        sqlx::Error::Database(db) if db.is_unique_violation() => {
+                            StorageError::Duplicate {
+                                entity: "workflow",
+                                detail: format!("workflow {} already exists", row.id),
+                            }
+                        },
+                        other => conn_err(other),
+                    });
+                }
+            },
+            Some(expected) => {
+                // CAS the row counter forward in the same tx.
+                let res = sqlx::query(
+                    "UPDATE port_workflows \
+                     SET version = $1, slug = $2, deleted = $3 \
+                     WHERE id = $4 AND workspace_id = $5 AND org_id = $6 AND version = $7",
+                )
+                .bind(row.version as i64)
+                .bind(&row.slug)
+                .bind(row.deleted)
+                .bind(&row.id)
+                .bind(&scope.workspace_id)
+                .bind(&scope.org_id)
+                .bind(expected as i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(conn_err)?;
+                if res.rows_affected() == 0 {
+                    // Disambiguate row-gone vs version-moved within the tx
+                    // (rolled back on drop) so neither write lands.
+                    let current = sqlx::query_scalar::<_, i64>(
+                        "SELECT version FROM port_workflows \
+                         WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
+                    )
+                    .bind(&row.id)
+                    .bind(&scope.workspace_id)
+                    .bind(&scope.org_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(conn_err)?;
+                    return Err(match current {
+                        Some(actual) => StorageError::Conflict {
+                            entity: "workflow",
+                            id: row.id,
+                            expected,
+                            actual: actual as u64,
+                        },
+                        None => StorageError::not_found("workflow", row.id),
+                    });
+                }
+            },
+        }
+
+        // Append the published version row inside the same tx.
+        let res = sqlx::query(
+            "INSERT INTO port_workflow_versions \
+             (workspace_id, org_id, workflow_id, number, published, pinned, definition) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&scope.workspace_id)
+        .bind(&scope.org_id)
+        .bind(&version.workflow_id)
+        .bind(i64::from(version.number))
+        .bind(version.published)
+        .bind(version.pinned)
+        .bind(&version.definition)
+        .execute(&mut *tx)
+        .await;
+        if let Err(e) = res {
+            return Err(match e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => StorageError::Duplicate {
+                    entity: "workflow_version",
+                    detail: format!(
+                        "workflow {} version {} already exists",
+                        version.workflow_id, version.number
+                    ),
+                },
+                other => conn_err(other),
+            });
+        }
+
+        tx.commit().await.map_err(conn_err)?;
+        Ok(())
+    }
+
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
         let res = sqlx::query(
             "UPDATE port_workflows SET deleted = TRUE \

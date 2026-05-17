@@ -27,6 +27,31 @@ pub trait WorkflowStore: Send + Sync + std::fmt::Debug {
         expected_version: u64,
     ) -> Result<(), StorageError>;
 
+    /// Atomically persist a workflow row **and** its published version as
+    /// one unit of work (spec-16: a workflow's definition lives on its
+    /// version records, so a row without a published version is invisible
+    /// to every reader — "the workflow vanished"). Splitting the row write
+    /// and the version write into two awaits leaves that orphan window on
+    /// any partial failure; this method closes it.
+    ///
+    /// - `expected_version == None` — **create**: insert `row` and
+    ///   `version` together. Either both land or neither does.
+    /// - `expected_version == Some(v)` — **CAS update**: the row is
+    ///   rewritten only if its stored version equals `v`, and the new
+    ///   `version` record is appended in the same unit. A version miss
+    ///   (`Conflict`) or missing row (`NotFound`) leaves both untouched.
+    ///
+    /// Atomicity is per backend: one SQL transaction for SQLite/Postgres,
+    /// one mutex-guarded critical section for the in-memory store. This is
+    /// a real unit of work, not a best-effort/compensation sequence.
+    async fn save_with_published_version(
+        &self,
+        scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: Option<u64>,
+    ) -> Result<(), StorageError>;
+
     /// Soft-delete a workflow row.
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError>;
 

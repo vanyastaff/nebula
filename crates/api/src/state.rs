@@ -489,8 +489,13 @@ impl AppState {
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
         let node_results = InMemoryNodeResultStore::new();
-        let workflow_store = InMemoryWorkflowStore::new();
+        // The workflow-row store shares the version store's map so
+        // `workflow_save`'s atomic `save_with_published_version` commits
+        // the row + version as one unit and the version-read path
+        // observes the same data (mirrors the shared execution core
+        // backing the control queue / journal above).
         let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
         Self::new(
             Arc::new(ScopedWorkflowStore::new(
@@ -563,13 +568,24 @@ impl AppState {
         Ok(published.map(|v| (row.version, v.definition)))
     }
 
-    /// Persist a workflow definition with optimistic concurrency.
-    /// Dual-dispatch: the spec-16 split (`version == 0` creates the
-    /// workflow row at version 1 plus version record #1, else a CAS bump
-    /// of the row to `version + 1` plus a new published version record)
-    /// when the port is wired, else the legacy `WorkflowRepo::save`. A
-    /// CAS miss maps to [`ApiError::Conflict`] with the exact message the
-    /// legacy handler produced, so callers stay byte-identical.
+    /// Persist a workflow definition with optimistic concurrency, as a
+    /// **single atomic unit of work** via
+    /// [`WorkflowStore::save_with_published_version`].
+    ///
+    /// Spec-16 splits the workflow row from its version records and a
+    /// row's definition lives on its published version — so a row without
+    /// a published version is invisible to every reader ("the workflow
+    /// vanished"). The previous two-await sequence (row write, then
+    /// version write) left exactly that orphan window on any partial
+    /// failure. This now commits the row and its published version
+    /// together (one DB transaction per SQL backend, one mutex-guarded
+    /// section in-memory) — both land or neither does.
+    ///
+    /// `version == 0` creates the workflow row at version 1 plus version
+    /// record #1; otherwise it CAS-bumps the row counter to `version + 1`
+    /// and appends the new published version record. A CAS miss maps to
+    /// [`ApiError::Conflict`] with the exact message the legacy handler
+    /// produced, so callers stay byte-identical.
     pub(crate) async fn workflow_save(
         &self,
         id: nebula_core::id::WorkflowId,
@@ -581,82 +597,48 @@ impl AppState {
         let conflict =
             || ApiError::Conflict("Workflow was modified by another request".to_string());
 
-        if version == 0 {
-            // New workflow: row at version 1 + first version record
-            // (number 1, published). The row slug is the workflow id
-            // string — unique per tenant among active rows, which is all
-            // the partial-unique index requires (this REST surface has
-            // no author-facing slug concept).
-            self.workflow_store
-                .create(
-                    &scope,
-                    nebula_storage_port::dto::WorkflowRecord {
-                        id: id_str.clone(),
-                        scope: scope.clone(),
-                        version: 1,
-                        slug: id_str.clone(),
-                        deleted: false,
-                    },
-                )
-                .await
-                .map_err(|e| match e {
-                    nebula_storage_port::StorageError::Duplicate { .. } => conflict(),
-                    other => ApiError::Internal(format!("Failed to create workflow: {other}")),
-                })?;
-            self.workflow_version_store
-                .create(
-                    &scope,
-                    nebula_storage_port::dto::WorkflowVersionRecord {
-                        workflow_id: id_str,
-                        number: 1,
-                        published: true,
-                        pinned: false,
-                        definition,
-                    },
-                )
-                .await
-                .map_err(|e| {
-                    ApiError::Internal(format!("Failed to create workflow version: {e}"))
-                })?;
-            return Ok(());
-        }
+        // `version == 0` → create (row v1 + version #1); else CAS the row
+        // to `version + 1` and append version `version + 1`. The slug is
+        // the workflow id string — unique per tenant among active rows,
+        // all the partial-unique index requires (this REST surface has no
+        // author-facing slug concept).
+        let (row_version, ver_number, expected) = if version == 0 {
+            (1u64, 1u32, None)
+        } else {
+            let next = version + 1;
+            (next, u32::try_from(next).unwrap_or(u32::MAX), Some(version))
+        };
 
-        // Existing workflow: CAS the row counter forward and append the
-        // next published version record. `version` is the caller's
-        // expected current counter; the new counter is `version + 1`.
-        let next = version + 1;
         self.workflow_store
-            .update(
+            .save_with_published_version(
                 &scope,
                 nebula_storage_port::dto::WorkflowRecord {
                     id: id_str.clone(),
                     scope: scope.clone(),
-                    version: next,
+                    version: row_version,
                     slug: id_str.clone(),
                     deleted: false,
                 },
-                version,
-            )
-            .await
-            .map_err(|e| match e {
-                nebula_storage_port::StorageError::Conflict { .. }
-                | nebula_storage_port::StorageError::NotFound { .. } => conflict(),
-                other => ApiError::Internal(format!("Failed to update workflow: {other}")),
-            })?;
-        self.workflow_version_store
-            .create(
-                &scope,
                 nebula_storage_port::dto::WorkflowVersionRecord {
                     workflow_id: id_str,
-                    number: u32::try_from(next).unwrap_or(u32::MAX),
+                    number: ver_number,
                     published: true,
                     pinned: false,
                     definition,
                 },
+                expected,
             )
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to create workflow version: {e}")))?;
-        Ok(())
+            .map_err(|e| match e {
+                // A row/version conflict, a missing row on CAS, or a
+                // duplicate (create raced, or the version slot is taken)
+                // all mean "modified by another request" — the exact
+                // legacy message, byte-identical for callers.
+                nebula_storage_port::StorageError::Conflict { .. }
+                | nebula_storage_port::StorageError::NotFound { .. }
+                | nebula_storage_port::StorageError::Duplicate { .. } => conflict(),
+                other => ApiError::Internal(format!("Failed to save workflow: {other}")),
+            })
     }
 
     /// Soft-delete a workflow via `WorkflowStore::soft_delete` (a missing

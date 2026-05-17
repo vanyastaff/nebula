@@ -23,8 +23,9 @@ use harness::{
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_get_published_is_highest_numbered, assert_idempotency_first_writer_wins,
     assert_idempotency_store_first_writer_and_scope, assert_journal_visibility_and_scope,
-    assert_live_lease_blocks_acquire, assert_stale_fencing_is_fenced_out,
-    assert_webhook_activation_and_scope, assert_workflow_store_contract, skip_reason,
+    assert_live_lease_blocks_acquire, assert_save_with_published_version_is_atomic,
+    assert_stale_fencing_is_fenced_out, assert_webhook_activation_and_scope,
+    assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -103,6 +104,10 @@ matrix!(
 );
 matrix!(workflow_store_contract, assert_workflow_store_contract);
 matrix!(
+    save_with_published_version_is_atomic,
+    assert_save_with_published_version_is_atomic
+);
+matrix!(
     get_published_is_highest_numbered,
     assert_get_published_is_highest_numbered
 );
@@ -171,6 +176,10 @@ scoped_matrix!(
 scoped_matrix!(
     scoped_workflow_store_contract,
     assert_workflow_store_contract
+);
+scoped_matrix!(
+    scoped_save_with_published_version_is_atomic,
+    assert_save_with_published_version_is_atomic
 );
 scoped_matrix!(
     scoped_get_published_is_highest_numbered,

@@ -78,6 +78,22 @@ impl WorkflowStore for ScopedWorkflowStore {
             .await
     }
 
+    async fn save_with_published_version(
+        &self,
+        _scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: Option<u64>,
+    ) -> Result<(), StorageError> {
+        // Rebind the row's embedded scope to the bound tenant exactly as
+        // `create`/`update` do — the atomic unit is forced into the bound
+        // tenant; the version record carries no scope (the scope arg is
+        // its sole tenant carrier and is always the bound one here).
+        self.inner
+            .save_with_published_version(&self.bound, self.rebind(row), version, expected_version)
+            .await
+    }
+
     async fn soft_delete(&self, _scope: &Scope, id: &str) -> Result<(), StorageError> {
         self.inner.soft_delete(&self.bound, id).await
     }
