@@ -228,8 +228,37 @@ impl IdentityBackend for SqliteBackend {
 
 // ── Postgres backend (DATABASE_URL-gated) ─────────────────────────────────
 
+/// Each `PostgresBackend` instance owns one pool created lazily on first
+/// store request (port schema installed once). Only exercised when
+/// `DATABASE_URL` is set and the crate is built with `--features
+/// postgres`; otherwise the case skips cleanly.
 #[derive(Default)]
-struct PostgresBackend;
+struct PostgresBackend {
+    #[cfg(feature = "postgres")]
+    pool: tokio::sync::OnceCell<sqlx::PgPool>,
+}
+
+#[cfg(feature = "postgres")]
+impl PostgresBackend {
+    async fn pool(&self) -> sqlx::PgPool {
+        self.pool
+            .get_or_init(|| async {
+                let url = std::env::var("DATABASE_URL")
+                    .unwrap_or_else(|e| panic!("DATABASE_URL required for the Postgres case: {e}"));
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(8)
+                    .connect(&url)
+                    .await
+                    .expect("connect Postgres (DATABASE_URL)");
+                nebula_storage::postgres::init_schema(&pool)
+                    .await
+                    .expect("install port schema");
+                pool
+            })
+            .await
+            .clone()
+    }
+}
 
 #[async_trait::async_trait]
 impl IdentityBackend for PostgresBackend {
@@ -237,31 +266,92 @@ impl IdentityBackend for PostgresBackend {
         "Postgres"
     }
     async fn user_store(&self) -> Arc<dyn UserStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgUserStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgOrgStore::new(self.pool().await))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn workspace_store(&self) -> Arc<dyn WorkspaceStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgWorkspaceStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn membership_store(&self) -> Arc<dyn MembershipStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgMembershipStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn resource_store(&self) -> Arc<dyn ResourceStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgResourceStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn trigger_store(&self) -> Arc<dyn TriggerStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgTriggerStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgQuotaStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgAuditStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
     async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        unimplemented!("Postgres identity adapter lands in a follow-up commit")
+        #[cfg(feature = "postgres")]
+        {
+            Arc::new(nebula_storage::postgres::PgBlobStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "postgres"))]
+        unimplemented!("built without the `postgres` feature")
     }
 }
 
@@ -309,7 +399,7 @@ fn sqlite() -> Box<dyn IdentityBackend> {
 }
 
 fn postgres() -> Box<dyn IdentityBackend> {
-    Box::new(PostgresBackend)
+    Box::new(PostgresBackend::default())
 }
 
 // ── row builders ──────────────────────────────────────────────────────────
