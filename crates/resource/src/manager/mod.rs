@@ -748,7 +748,7 @@ impl Manager {
         if !declared.is_empty()
             && let Some((unknown, _)) = field_values
                 .iter()
-                .find(|(k, _)| !declared.iter().any(|f| f.key().as_str() == k.as_str()))
+                .find(|(k, _)| !declared.iter().any(|f| f.key() == *k))
         {
             return Err(Error::permanent(format!(
                 "register_from_value: config field `{unknown}` is not declared by the \
