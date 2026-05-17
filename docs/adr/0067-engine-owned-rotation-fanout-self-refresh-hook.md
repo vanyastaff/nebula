@@ -20,16 +20,30 @@ related:
 
 ## Status
 
-Accepted (2026-05-17) — accepts the **infrastructure** for per-slot
-rotation fan-out and the `&self` refresh hook (the engine-side reverse
+Accepted (2026-05-17). The original infrastructure (engine-side reverse
 index, dispatch port, `RotationOutcome` aggregation, `SlotCell`
-substrate, and the API config-CRUD surface). Production wiring — the
-rotation scheduler (ADR-0030) and lease-revoke (ADR-0051) actually
-invoking the fan-out — is **Deferred** (see [Deferred](#deferred)).
-ROADMAP §M11.5 (per-slot rotation fan-out) and §M12.4 (`nebula-resource`
-frontier→stable) are therefore **not** closed end-to-end yet: they close
-only once that wiring lands and the per-resource-drain correctness items
-in the Deferred section are fixed with it. Amends ADR-0044 (hook
+substrate, API config-CRUD surface) plus, landed 2026-05-17 on
+`feat/engine-resource-rotation-wiring`, the **rotation/lease-revoke
+dispatch wiring and the per-slot-rotation correctness fixes**: an
+engine-owned `ResourceFanoutDriver` subscribes the credential-runtime
+`CredentialEvent::{Refreshed,Revoked}` and `LeaseEvent::LeaseRevoked`
+buses and invokes `dispatch_refresh` / `dispatch_revoke` (proven e2e
+through the real bus path), and the three items that became live with
+it are fixed — per-resource drain + post-taint re-check (#679), a
+two-phase cancellation-safe revoke port so a timed-out/dropped revoke
+still leaves the row tainted (#681), and epoch-reconcile of a rotation
+racing a resident's first acquire (#680). **Still deferred:** the
+*bind-population* producer — populating the reverse index when a
+credential is resolved into a `#[credential]` slot in production —
+depends on the resource-activation path (plugin-driven registrar
+auto-population / a production `ResourceRepo`), which remains deferred
+(see [Deferred](#deferred)); the bind seam (`register_and_bind`) is
+implemented and ready but has no production caller yet. Net: §M11.5's
+rotation **orchestration and correctness** are closed; full end-to-end
+§M11.5 / §M12.4 (`nebula-resource` frontier→stable) closure
+additionally requires that deferred resource-activation bind-population
+— a real rotation/revoke event now fans out correctly to every *bound*
+row, but production binds none until activation lands. Amends ADR-0044 (hook
 signature **and** the credential-slot-field / migration shape — see
 [Supersession](#supersession)); overrides the
 `.ai-factory/PHASE4_BLOCKED.md §1` "re-add rotation orchestration to
@@ -212,7 +226,7 @@ silently drift.
 | # | Abuse | Invariant |
 |---|---|---|
 | 1 | Cross-tenant dedup — `ResourceConfig::fingerprint()` defaults to `0`, collapsing every config of a type to one runtime regardless of resolved credential | **Confirmed bug, fixed structurally at `Manager`**: the dedup key gains a slot-identity component derived from the resolved credential identity per `#[credential]` slot, independent of the author's `fingerprint()`. Not discipline-based — authors cannot regress it by forgetting an override. |
-| 2 | Revoke race on a shared runtime (ADR-0036: zero authenticated traffic post-revoke) | Engine-driven ordering: engine marks the credential `revoking` → `Manager::revoke_slot` taints the runtime (new acquires rejected via the existing `tainted` guard) → drains in-flight guards (`ReleaseQueue` + `drain_tracker`) → reports → engine completes revoke. **Deferred — not yet satisfied end-to-end:** the drain step awaits the *manager-wide* `drain_tracker`, not a per-resource counter, and there is no per-resource post-taint re-check, so a sibling resource's traffic can delay the revoke and the "no acquire after taint observes the revoked credential" guarantee is not provable per-resource. A per-resource drain + post-taint re-check is required before / together with the fan-out wiring (see [Deferred](#deferred)). |
+| 2 | Revoke race on a shared runtime (ADR-0036: zero authenticated traffic post-revoke) | Engine-driven ordering: engine marks the credential `revoking` → `Manager::revoke_slot` taints the runtime (new acquires rejected via the existing `tainted` guard) → drains in-flight guards (`ReleaseQueue` + `drain_tracker`) → reports → engine completes revoke. **Satisfied (2026-05-17):** the drain step awaits a *per-resource* in-flight counter (the manager-wide `drain_tracker` stays only for `graceful_shutdown`) and every `run_*_acquire` re-checks taint after the in-flight increment (#679); the revoke port is two-phase — a synchronous taint is applied before any `.await`, so a timed-out or dropped `drain_and_revoke` still leaves the row tainted (#681). The "no acquire after taint observes the revoked credential" guarantee is now per-resource and tested end-to-end through the wired bus path. |
 | 3 | Secret in config JSON via API (ADR-0028 §7) | `register_from_value(json)` validates against `<R::Config as HasSchema>::schema()`; `ResourceConfig` carries no secrets (slots are credential *references* by key/id, §3.5). API DTOs use ADR-0047 wrappers — zero core/engine/storage types in the wire schema. A regression test rejects secret-shaped config (negative + positive control). |
 | 4 | Type confusion `kind: String → R` in `register_from_value` | `kind → registrar` is a **closed allowlist** (INTEGRATION_MODEL §114-120 closed dependency graph), never reflection. Unknown `kind` ⇒ a typed conflict error, never a silent runtime grab. |
 
@@ -242,31 +256,32 @@ stale Strategy-§6.4 term — the live taxonomy is `frontier`/`stable`).
 Implementation-discovered deferrals (recorded here so they are not lost
 behind the plan):
 
-- **Rotation fan-out is implemented but unwired.** The engine-side
-  reverse index + dispatch port
-  (`ResourceFanoutIndex::{bind,dispatch_refresh,dispatch_revoke}`,
-  `RotationOutcome` aggregation) is fully implemented and unit-tested,
-  but **no production credential-rotation or lease-revoke path invokes
-  it yet** — every current call site is a `#[cfg(test)]` test. The
-  rotation scheduler (ADR-0030) and lease-revoke (ADR-0051) do not yet
-  call `bind` on slot resolution or fan a `dispatch_refresh` /
-  `dispatch_revoke` on a rotation/revoke event; that engine wiring is
-  the remaining work. Consequently the per-resource-drain correctness
-  items below become **live only when that wiring lands** and must be
-  fixed as part of it — they cannot be exercised end-to-end before then.
-  Trigger: the rotation scheduler / lease-revoke handler is wired to
-  call the fan-out port.
-- **Revoke drains the manager-wide tracker, not per-resource.**
-  `Manager::revoke_slot{,_for}` currently taints the target row then
-  awaits the *manager-wide* `drain_tracker` (the same primitive
-  `graceful_shutdown` uses), so an unrelated busy resource can delay a
-  revoke's drain phase and the post-taint re-check is not per-resource.
-  This is **untested in production** (no production caller) and **must
-  be fixed before wiring the fan-out**: draining must move to a
-  **per-resource counter with a post-taint re-check** before or together
-  with the fan-out wiring above — a revoke must not block on traffic to
-  a sibling resource. Trigger: the fan-out wiring lands (same trigger as
-  above; the two are sequenced together).
+- **Rotation fan-out dispatch wired (2026-05-17); bind-population still
+  deferred.** The dispatch path is live and e2e-proven: an
+  engine-owned `ResourceFanoutDriver` subscribes the credential-runtime
+  `CredentialEvent::{Refreshed,Revoked}` and `LeaseEvent::LeaseRevoked`
+  buses and invokes `ResourceFanoutIndex::dispatch_refresh` /
+  `dispatch_revoke` (branch `feat/engine-resource-rotation-wiring`;
+  tested through the real bus path, not by calling `dispatch_*`
+  directly). The remaining unwired piece is **bind-population** —
+  calling `ResourceFanoutIndex::bind` (via the ready `register_and_bind`
+  seam) when a credential is resolved into a `#[credential]` slot in
+  production. No production path resolves credential→slot yet; that
+  producer is the resource-activation path covered by the *Plugin-driven
+  registrar auto-population* / *No production `ResourceRepo`* items
+  below. Until it lands, a real rotation/revoke event fans out
+  correctly to every *bound* row but production binds none. Trigger: a
+  production resource-activation path resolves a credential into a slot
+  and calls `register_and_bind`.
+- **Revoke per-resource drain — resolved (2026-05-17).** `Manager` now
+  drains a *per-resource* in-flight counter for revoke (the manager-wide
+  `drain_tracker` is retained only for `graceful_shutdown`), and every
+  `run_*_acquire` re-checks taint after the in-flight increment (#679).
+  The revoke port is two-phase: a synchronous `taint_slot{,_for}`
+  applied before any `.await`, then `drain_and_revoke` wrapped in the
+  per-resource timeout by the fan-out, so a timed-out/dropped revoke
+  still leaves the row tainted (#681). A revoke no longer blocks on
+  traffic to a sibling resource.
 - **Plugin-driven registrar auto-population.** The engine holds a
   closed `ResourceRegistrarRegistry`, but it is fed by the composition
   root, not auto-populated from `PluginRegistry::resources()`. Wiring a

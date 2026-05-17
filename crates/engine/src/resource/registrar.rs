@@ -186,6 +186,29 @@ pub struct RegisterRequest<'a> {
     /// asserted against the resource's declared slots inside the typed
     /// call.
     pub slot_bindings: HashMap<String, nebula_core::CredentialKey>,
+    /// Slot-name → resolved `CredentialId` for the rotation fan-out
+    /// reverse index (ADR-0067 §D1).
+    ///
+    /// `slot_bindings` carries the `CredentialKey` (the credential
+    /// *name*, what `Manager::register_from_value` hashes into the
+    /// structural `slot_identity`); the rotation fan-out index and the
+    /// rotation/lease-revoke events are keyed by `CredentialId` (the
+    /// resolved credential *record* — `CredentialEvent` /
+    /// `LeaseEvent`). Both are needed to bind a row: the `CredentialId`
+    /// is the index key, the `CredentialKey` recomputes the matching
+    /// `slot_identity`. **Only the caller that resolved the credential
+    /// knows both**, so it threads this map per slot it bound; an entry
+    /// is added to the reverse index for every `(slot_name,
+    /// CredentialId)` whose `slot_name` also appears in `slot_bindings`.
+    ///
+    /// Empty (the default via [`HashMap::new`]) when the caller resolved
+    /// no credential into a slot, or when no fan-out index is threaded
+    /// to [`ResourceRegistrarRegistry::register`] — registration then
+    /// proceeds exactly as before with no reverse-index row (a later
+    /// rotation for an unbound credential is a correct no-op fan-out).
+    /// Never fabricated: a slot whose `CredentialId` the caller does not
+    /// have is simply absent here rather than bound under a guessed id.
+    pub credential_ids: HashMap<String, nebula_credential::CredentialId>,
     /// Registration scope.
     pub scope: ScopeLevel,
     /// Optional acquire-time resilience policy.
@@ -219,6 +242,19 @@ pub trait ErasedResourceRegistrar: Send + Sync {
         manager: &'a Manager,
         request: RegisterRequest<'a>,
     ) -> BoxFut<'a, Result<(), nebula_resource::Error>>;
+
+    /// The static, type-level [`ResourceKey`](nebula_core::ResourceKey)
+    /// (`R::key()`) of the concrete resource this registrar registers.
+    ///
+    /// The erased boundary hides `R`, but the rotation reverse index
+    /// (`ResourceFanoutIndex`, the `rotation`-feature-gated reverse
+    /// index in `crate::credential::rotation`)
+    /// keys a bound row by `(ResourceKey, ScopeLevel, slot_identity)`.
+    /// Without `R` the registry cannot name the row it just registered,
+    /// so the erased registrar exposes the key explicitly (the same
+    /// `R::key()` `register_from_value` registers the row under). Cheap,
+    /// pure, and type-stable — it is a `const`-ish accessor, not I/O.
+    fn resource_key(&self) -> nebula_core::ResourceKey;
 
     /// Validate `config_json` against this kind's `R::Config` schema
     /// **without registering anything**.
@@ -318,6 +354,10 @@ where
         })
     }
 
+    fn resource_key(&self) -> nebula_core::ResourceKey {
+        <R as Resource>::key()
+    }
+
     fn validate(&self, config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
         // No `resource_factory` / `topology_factory` are invoked: validation
         // is purely a function of the config JSON and the monomorphized
@@ -388,6 +428,10 @@ impl ResourceRegistrarRegistry {
     /// Resolves `kind` through the closed allowlist and dispatches into
     /// its typed registrar.
     ///
+    /// Equivalent to `register_and_bind` (the `rotation`-feature-gated
+    /// variant) with no rotation fan-out index — registration only, no
+    /// reverse-index row recorded.
+    ///
     /// # Errors
     ///
     /// - [`RegistrarError::UnknownKind`] if `kind` is not in the
@@ -416,6 +460,140 @@ impl ResourceRegistrarRegistry {
                 kind: kind.to_owned(),
                 source,
             })
+    }
+
+    /// Resolves `kind` through the closed allowlist, dispatches into its
+    /// typed registrar, and — on success — records the resolved row in
+    /// the rotation fan-out reverse index (ADR-0067 §D1).
+    ///
+    /// This is the §M11.5 `bind` seam: the registered row resolved one
+    /// or more `#[credential]` slots, so a later rotation / lease-revoke
+    /// of any of those credentials must fan out to *this exact resolved
+    /// row*. The structural row identity
+    /// (`slot_identity`) is recomputed here **verbatim** the way
+    /// `Manager::register_from_value` computes it
+    /// ([`nebula_resource::slot_identity`] over the `(slot_key,
+    /// CredentialKey)` pairs in `request.slot_bindings`), so the index
+    /// addresses the same registry row the manager just created. For
+    /// every `(slot_name, CredentialId)` in `request.credential_ids`
+    /// whose `slot_name` also appears in `slot_bindings`, one
+    /// [`ResourceFanoutIndex::bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
+    /// is recorded. `bind` is idempotent, so a re-registration of the
+    /// same resolved row does not duplicate the entry.
+    ///
+    /// Binding happens **only after `register` returns `Ok`**: a
+    /// registration that failed schema / deserialize / slot validation
+    /// created no registry row, so no reverse-index row may exist for it
+    /// either (no orphan binds, no bogus future `failed` fan-out rows).
+    /// `fanout_index = None` (or an empty `credential_ids`) skips the
+    /// bind entirely — registration is unchanged.
+    ///
+    /// # Ordering contract — caller must quiesce fan-out during activation
+    ///
+    /// `register(...).await` makes the `Manager` row **discoverable**
+    /// before this method records the reverse-index bind. Those two
+    /// steps are deliberately **not** atomic (atomicity would require a
+    /// transactional `Manager::register_from_value` "register-then-
+    /// publish" surface — a heavy Manager API change with no production
+    /// consumer yet). There is therefore a window in which the Manager
+    /// row exists but the reverse-index row does not: a credential
+    /// rotation / lease-revoke for this row that the fan-out driver
+    /// processes *inside that window* would fan to zero rows (a silent
+    /// miss for this row) even though the row is live.
+    ///
+    /// **The caller MUST ensure the rotation fan-out is quiescent for
+    /// the credentials being bound while it activates a row through this
+    /// seam** (e.g. activate before the driver is spawned, or serialise
+    /// activation against rotation for the affected credentials). This
+    /// is a documented contract, not an enforced invariant, because the
+    /// seam has **no production caller today**: *bind-population* (the
+    /// production credential→slot resolution that would call this) is the
+    /// deferred resource-activation path (ADR-0067 §Deferred — *bind-
+    /// population producer*). The driver cannot observe a row that
+    /// nothing activated, so the window is not reachable in production
+    /// until that deferred producer lands; when it does, it must honour
+    /// this contract (or the seam must first gain a transactional
+    /// register+bind surface).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`register`](Self::register): the bind step runs only on
+    /// the `Ok` path and cannot itself fail (it is an in-memory index
+    /// insert), so it does not add an error variant.
+    ///
+    /// Feature-gated with the reverse index itself (`rotation`): the
+    /// `ResourceFanoutIndex` type only exists under that feature, so the
+    /// bind seam follows it. A non-`rotation` build registers via
+    /// [`register`](Self::register) (no reverse-index row — there is no
+    /// fan-out to feed).
+    #[cfg(feature = "rotation")]
+    pub async fn register_and_bind(
+        &self,
+        kind: &str,
+        manager: &Manager,
+        request: RegisterRequest<'_>,
+        fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
+    ) -> Result<(), RegistrarError> {
+        let registrar = self
+            .registrars
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+
+        // Snapshot the bind inputs before `request` is moved into the
+        // typed `register` call. Cheap clones (a small slot map + scope);
+        // the resource key comes from the erased registrar so the
+        // reverse index addresses the same `(key, scope, slot_identity)`
+        // row `register_from_value` registers under.
+        let bind_plan = fanout_index.map(|idx| {
+            (
+                idx,
+                registrar.resource_key(),
+                request.scope.clone(),
+                request.slot_bindings.clone(),
+                request.credential_ids.clone(),
+            )
+        });
+
+        registrar
+            .register(manager, request)
+            .await
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })?;
+
+        // Registration succeeded — the registry row exists. Record the
+        // reverse-index binding so a later rotation / lease-revoke fans
+        // to this exact resolved row.
+        if let Some((idx, resource_key, scope, slot_bindings, credential_ids)) = bind_plan {
+            // Recompute the structural slot identity EXACTLY as
+            // `Manager::register_from_value` does (a stable hash over the
+            // `(slot_key, CredentialKey)` pairs) so the reverse-index row
+            // and the manager registry row share one identity. Mismatch
+            // here would route a rotation to a non-existent row
+            // (`Ambiguous` / silent miss).
+            let slot_identity = nebula_resource::slot_identity(
+                slot_bindings
+                    .iter()
+                    .map(|(slot, key)| (slot.as_str(), key.as_str())),
+            );
+            for (slot_name, cred_id) in &credential_ids {
+                // Only bind slots the resource actually declared (those
+                // present in `slot_bindings`): a stray `credential_ids`
+                // entry for an unbound slot must not create a phantom
+                // reverse-index row.
+                if slot_bindings.contains_key(slot_name) {
+                    idx.bind(
+                        *cred_id,
+                        resource_key.clone(),
+                        scope.clone(),
+                        slot_name.clone(),
+                        slot_identity,
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Resolves `kind` through the closed allowlist and validates
@@ -592,6 +770,7 @@ mod tests {
             config_json: serde_json::json!({ "name": "from-registry" }),
             expr_engine,
             slot_bindings: HashMap::new(),
+            credential_ids: HashMap::new(),
             scope: ScopeLevel::Global,
             resilience: None,
             recovery_gate: None,

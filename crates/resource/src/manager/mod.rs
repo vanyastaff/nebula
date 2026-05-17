@@ -62,7 +62,7 @@ use crate::{
 mod execute;
 mod gate;
 pub(crate) mod options;
-mod shutdown;
+pub(crate) mod shutdown;
 
 use execute::{execute_with_resilience, validate_pool_config};
 use gate::{admit_through_gate, settle_gate_admission};
@@ -82,6 +82,108 @@ pub struct ResourceHealthSnapshot {
     pub metrics: Option<ResourceOpsSnapshot>,
     /// Config generation counter.
     pub generation: u64,
+}
+
+/// A resource registry row whose credential slot has been **synchronously
+/// tainted** by [`Manager::taint_slot`](Manager::taint_slot) /
+/// [`Manager::taint_slot_for`](Manager::taint_slot_for) — phase 1 of the
+/// two-phase revoke port (ADR-0067 §Deferred).
+///
+/// Holding one is proof the taint already ran to completion: new acquires on
+/// this row's credential are already rejected. It is consumed by
+/// [`Manager::drain_and_revoke`](Manager::drain_and_revoke) to run the
+/// cancellation-safe drain + revoke-hook tail.
+///
+/// **Why two phases.** The engine rotation fan-out wraps the awaited
+/// drain/hook tail in `tokio::time::timeout`. A Rust `async fn` body is lazy:
+/// if the timeout future is dropped before its first poll, the body never
+/// runs. Splitting the taint into this synchronous phase guarantees the taint
+/// is applied *before and outside* any per-resource timeout — a dropped
+/// `drain_and_revoke` future therefore leaves the row tainted and consistent
+/// (the credential is never silently un-revoked), it only forgoes the
+/// best-effort drain/hook tail.
+///
+/// Opaque by design: the only valid use is to pass it to
+/// [`drain_and_revoke`](Manager::drain_and_revoke). It is **not** `Clone` —
+/// one taint maps to exactly one drain/revoke tail.
+#[must_use = "a TaintedSlot only completes the revoke when passed to Manager::drain_and_revoke"]
+pub struct TaintedSlot {
+    /// Structural key of the tainted resource registry row (span/event
+    /// label only — no credential material).
+    key: ResourceKey,
+    /// The credential slot on that row that was revoked.
+    slot: String,
+    /// The resolved row whose taint flag was already set synchronously.
+    managed: Arc<dyn crate::registry::AnyManagedResource>,
+    /// When the synchronous taint was applied — the drain/revoke duration
+    /// metric spans from here so it covers the whole revoke, not just the
+    /// awaited tail.
+    tainted_at: Instant,
+}
+
+impl std::fmt::Debug for TaintedSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Deliberately omits `managed` (not `Debug`, and an internal
+        // erased handle); only the credential-free routing labels.
+        f.debug_struct("TaintedSlot")
+            .field("key", &self.key)
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Outcome of the cancellation-safe revoke tail
+/// ([`Manager::drain_and_revoke`]).
+///
+/// The tail has exactly one owner of the per-resource time budget (the
+/// `drain_timeout` argument): the drain wait is bounded by it
+/// (best-effort — a timed-out drain still proceeds to the hook), and the
+/// revoke hook is *separately* bounded by it. There is **no** caller-side
+/// `tokio::time::timeout` wrapping the whole tail — that wrapper used to
+/// be able to drop the future *before the hook ran* when the drain was
+/// slow, contradicting the "hook still runs after a timed-out drain"
+/// contract (ADR-0067 §Deferred). So the three terminal states are
+/// reported here rather than inferred from a dropped outer future:
+///
+/// - [`Done`](Self::Done) — the revoke hook completed `Ok`.
+/// - [`HookFailed`](Self::HookFailed) — the hook returned `Err` (carried
+///   verbatim).
+/// - [`HookTimedOut`](Self::HookTimedOut) — the hook itself did not
+///   complete within the budget. The row stays tainted (the taint ran in
+///   the synchronous phase-1); only a *hung hook* is bounded, never the
+///   taint, and never at the cost of skipping a hook after a slow drain.
+#[derive(Debug)]
+#[must_use = "the revoke tail outcome must be recorded (it is not a silent success)"]
+pub enum RevokeTail {
+    /// Drain + revoke hook completed; the hook returned `Ok`. (A
+    /// best-effort drain timeout that still reached a successful hook is
+    /// still `Done` — the drain timeout is non-fatal.)
+    Done,
+    /// The revoke hook returned an error. The row stays tainted; the
+    /// inner error is preserved for the caller's outcome accounting.
+    HookFailed(Error),
+    /// The revoke hook did not complete within the per-resource budget
+    /// (a wedged `on_credential_revoke`). The row stays tainted; this is
+    /// the only thing the budget bounds.
+    HookTimedOut,
+}
+
+impl RevokeTail {
+    /// Adapts the tail outcome to `Result<(), Error>` for the back-compat
+    /// convenience callers ([`Manager::revoke_slot`] /
+    /// [`Manager::revoke_slot_for`]) that run taint+tail back-to-back and
+    /// only need pass/fail. A hook timeout becomes a retryable transient
+    /// error (the row is tainted; a later retry is meaningful), distinct
+    /// from a hook failure which carries the hook's own error.
+    fn into_result(self) -> Result<(), Error> {
+        match self {
+            RevokeTail::Done => Ok(()),
+            RevokeTail::HookFailed(e) => Err(e),
+            RevokeTail::HookTimedOut => Err(Error::transient(
+                "revoke hook timed out — row stays tainted, no new leases",
+            )),
+        }
+    }
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -274,6 +376,7 @@ impl Manager {
             resilience,
             recovery_gate,
             tainted: AtomicBool::new(false),
+            in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
@@ -987,13 +1090,41 @@ impl Manager {
         managed: Arc<ManagedResource<R>>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         if managed.is_tainted() {
-            return Err(Error::revoked(format!(
-                "{}: resource tainted by credential revoke — new acquires rejected",
-                R::key()
-            ))
-            .with_resource_key(R::key()));
+            return Err(Self::tainted_error::<R>());
         }
         Ok(managed)
+    }
+
+    /// Post-`InFlightCounter::new` taint re-check shared by every
+    /// `run_*_acquire` / `try_acquire_*` pipeline.
+    ///
+    /// The acquire-side [`taint_gate`](Self::taint_gate) ran before the
+    /// in-flight counter was constructed, leaving a window where a concurrent
+    /// `revoke_slot` could taint *after* the gate but *before* the increment.
+    /// Re-checking here — once this acquire is reflected in the resource's
+    /// own in-flight counter (the exact counter `revoke_slot` drains,
+    /// ADR-0067 §Deferred) — closes that revoke-vs-acquire TOCTOU so a guard
+    /// is never handed out on a just-revoked credential (ADR-0044/0036).
+    /// Same error/classification as the gate so the caller-facing category
+    /// is unchanged (`Revoked` → `ErrorCategory::Unavailable`).
+    fn reject_if_tainted_post_count<R: Resource>(
+        managed: &Arc<ManagedResource<R>>,
+    ) -> Result<(), Error> {
+        if managed.is_tainted() {
+            return Err(Self::tainted_error::<R>());
+        }
+        Ok(())
+    }
+
+    /// The single typed error both taint checks return — keeps the message
+    /// and `Revoked` (→ `Unavailable`) classification identical at the
+    /// pre-count gate and the post-count re-check.
+    fn tainted_error<R: Resource>() -> Error {
+        Error::revoked(format!(
+            "{}: resource tainted by credential revoke — new acquires rejected",
+            R::key()
+        ))
+        .with_resource_key(R::key())
     }
 
     /// Notifies a registered resource that one of its `#[credential]`
@@ -1120,58 +1251,332 @@ impl Manager {
         result
     }
 
-    /// Notifies a registered resource that one of its `#[credential]`
-    /// slots was revoked.
+    /// **Phase 1 of the revoke port — synchronous, runs to completion before
+    /// any `.await`.** Resolves the registry row pinned to a resolved
+    /// per-slot credential identity and *taints it immediately* so the
+    /// `acquire_*` funnel rejects new leases on the revoked credential, then
+    /// returns a [`TaintedSlot`] handle the caller passes to
+    /// [`drain_and_revoke`](Self::drain_and_revoke) for the cancellation-safe
+    /// drain + hook tail.
     ///
-    /// Sequence (reusing existing primitives, no parallel mechanism):
+    /// Why this is split off as a non-`async` function: the engine fan-out
+    /// wraps the awaited tail in `tokio::time::timeout`. A Rust `async fn`
+    /// body is *lazy* — if a `timeout` future is dropped before the runtime
+    /// first polls it, the body never runs. Were the taint the first
+    /// statement of an `async` body, a timeout that fired before the first
+    /// poll would drop the future and **skip the taint entirely**, leaving
+    /// new acquires accepted on a credential whose revoke "timed out". This
+    /// function is plain `fn`: the taint is applied eagerly at the call site,
+    /// fully completed before this returns, and therefore *outside* and
+    /// *before* any per-resource timeout (ADR-0067 §Deferred).
     ///
-    /// 1. **Taint** the [`ManagedResource`] so the `acquire_*` funnel rejects new leases on the
-    ///    revoked credential *immediately* (same flag-gated rejection as `shutting_down`).
-    /// 2. **Drain** in-flight handles via the manager's shared `drain_tracker`
-    ///    (`wait_for_drain`, the exact primitive `graceful_shutdown` uses).
-    /// 3. **Dispatch** [`Resource::on_credential_revoke`] against the live runtime per topology.
-    /// 4. Emit [`ResourceEvent::SlotRevoked`].
+    /// Identity routing: resolves the registry row whose `slot_identity`
+    /// matches via the unambiguous-by-construction
+    /// [`get_for`](crate::registry::Registry::get_for) path, so a
+    /// multi-tenant `(key, scope)` taints the *specific* resolved row
+    /// instead of failing closed with
+    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous). This is
+    /// the entry point the engine per-slot rotation fan-out drives on a
+    /// lease revoke; identity-agnostic [`taint_slot`](Self::taint_slot) stays
+    /// fail-closed for the no-identity caller.
     ///
-    /// The drain is best-effort bounded: a long-held handle should not wedge
-    /// revoke forever, so a bounded wait is used and a timeout still
-    /// proceeds to the revoke hook (the taint already stops *new* leases;
-    /// the hook makes the resource stop emitting on the old credential).
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of `key` at `scope`
+    ///   matches `slot_identity`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    ///
+    /// Carries only `key` / `slot` / `slot_identity` / `topology` (no
+    /// credential material) onto the span.
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_taint",
+        skip(self),
+        fields(key = %key, slot = %slot, slot_identity, topology, op = "revoke")
+    )]
+    pub fn taint_slot_for(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: u64,
+    ) -> Result<TaintedSlot, Error> {
+        tracing::Span::current().record("slot_identity", slot_identity);
+        let managed = self.lookup_any_for_slot_identity(key, &scope, slot_identity)?;
+        Ok(Self::taint_now(key, slot, managed))
+    }
+
+    /// [`taint_slot_for`](Self::taint_slot_for) for the slot-identity-agnostic
+    /// caller (the convenience [`revoke_slot`](Self::revoke_slot) path and
+    /// non-fan-out callers/tests).
+    ///
+    /// Same eager, pre-`await` taint guarantee as
+    /// [`taint_slot_for`](Self::taint_slot_for); only row resolution differs
+    /// (identity-agnostic, so a multi-tenant `(key, scope)` fails closed with
+    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) rather
+    /// than tainting an arbitrary tenant's row).
     ///
     /// # Errors
     ///
     /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource is registered for
     ///   `key` at `scope`.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more than one
+    ///   resolved-credential row exists for `(key, scope)`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_taint",
+        skip(self),
+        fields(key = %key, slot = %slot, topology, op = "revoke")
+    )]
+    pub fn taint_slot(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+    ) -> Result<TaintedSlot, Error> {
+        let managed = self.lookup_any_for_slot(key, &scope)?;
+        Ok(Self::taint_now(key, slot, managed))
+    }
+
+    /// Applies the taint synchronously and packages the [`TaintedSlot`]
+    /// handle. Shared tail of [`taint_slot`](Self::taint_slot) /
+    /// [`taint_slot_for`](Self::taint_slot_for); the safety-critical
+    /// invariant — *taint is fully applied before this returns* — is written
+    /// once here.
+    fn taint_now(
+        key: &ResourceKey,
+        slot: &str,
+        managed: Arc<dyn crate::registry::AnyManagedResource>,
+    ) -> TaintedSlot {
+        tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
+        // Taint NOW — synchronously, before any caller `.await`. The acquire
+        // pipelines re-check this taint *after* their per-resource in-flight
+        // increment, so an acquire that passed the taint gate but had not yet
+        // incremented cannot slip a guard out on the just-revoked credential
+        // (ADR-0044/0036 "no authenticated traffic on a revoked credential
+        // post-revoke"). Because this function is not `async`, the store has
+        // *already happened* by the time control returns to the caller — a
+        // subsequently-dropped timeout future on the drain tail cannot
+        // un-apply it.
+        managed.taint_erased();
+        TaintedSlot {
+            key: key.clone(),
+            slot: slot.to_owned(),
+            managed,
+            tainted_at: Instant::now(),
+        }
+    }
+
+    /// Default per-resource revoke budget for the back-compat
+    /// back-to-back convenience callers ([`revoke_slot`](Self::revoke_slot)
+    /// / [`revoke_slot_for`](Self::revoke_slot_for)).
+    ///
+    /// 30 s — the same budget the manager-wide `graceful_shutdown` drain
+    /// uses and the value [`drain_and_revoke`](Self::drain_and_revoke)
+    /// previously hard-coded for the drain wait. The engine rotation
+    /// fan-out does **not** use this: it passes its own per-resource
+    /// rotation budget so the timeout has one owner end-to-end (ADR-0067
+    /// §Deferred / #690 review).
+    pub const DEFAULT_REVOKE_DRAIN_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(30);
+
+    /// **Phase 2 of the revoke port — the cancellation-safe awaited tail.**
+    /// Consumes a [`TaintedSlot`] from [`taint_slot`](Self::taint_slot) /
+    /// [`taint_slot_for`](Self::taint_slot_for) (whose taint already ran
+    /// synchronously) and performs the remaining steps:
+    ///
+    /// 1. **Drain** only *this resource's* in-flight handles via its own per-resource counter
+    ///    (ADR-0067 §Deferred) — never the manager-wide `drain_tracker`, so a revoke is isolated
+    ///    from in-flight traffic to unrelated resources.
+    /// 2. **Dispatch** [`Resource::on_credential_revoke`] against the live runtime per topology.
+    /// 3. Emit [`ResourceEvent::SlotRevoked`] / `SlotRevokeFailed`.
+    ///
+    /// **Single budget owner (ADR-0067 §Deferred / #690 review).** The
+    /// `drain_timeout` argument is the caller's per-resource budget and is
+    /// the *only* timeout governing this tail. It bounds **two** waits
+    /// independently:
+    ///
+    /// - the per-resource **drain** — *best-effort*: a drain timeout is
+    ///   non-fatal, it records the `TimedOut` outcome metric and the tail
+    ///   **still proceeds to the revoke hook** (the taint already stops
+    ///   *new* leases; the hook makes the resource stop emitting on the
+    ///   old credential);
+    /// - the **revoke hook** itself — a *wedged* `on_credential_revoke`
+    ///   is the only thing the budget actually cuts short
+    ///   ([`RevokeTail::HookTimedOut`]).
+    ///
+    /// The caller **must not** wrap this call in its own
+    /// `tokio::time::timeout`. The previous design did, and a slow drain
+    /// could make that outer timeout elapse and **drop the whole future
+    /// before the hook ran** — silently skipping the documented
+    /// "hook still runs after a timed-out drain" guarantee. Bounding both
+    /// waits *inside* this method (one owner, no outer wrapper) means a
+    /// timed-out drain can never skip the hook, and only a hung hook is
+    /// bounded — never the taint.
+    ///
+    /// **Cancellation-safety.** The taint is *not* in this future — it
+    /// ran in the synchronous [`taint_slot_for`](Self::taint_slot_for)
+    /// phase. So if this future *is* dropped anyway (an outer abort, task
+    /// cancel), the row stays tainted and consistent: new acquires are
+    /// still rejected, the credential is never silently un-revoked.
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_drain_revoke",
+        skip(self, tainted),
+        fields(
+            key = %tainted.key,
+            slot = %tainted.slot,
+            topology = tainted.managed.topology_tag_erased().as_str(),
+            duration_ms,
+            op = "revoke",
+        )
+    )]
+    pub async fn drain_and_revoke(
+        &self,
+        tainted: TaintedSlot,
+        drain_timeout: std::time::Duration,
+    ) -> RevokeTail {
+        let TaintedSlot {
+            key,
+            slot,
+            managed,
+            tainted_at,
+        } = tainted;
+
+        // 1. Drain **only this resource's** in-flight handles (ADR-0067
+        //    §Deferred): a revoke on resource A must not block on in-flight
+        //    traffic to an unrelated resource B, so this awaits the row's
+        //    own per-resource counter — not the manager-wide `drain_tracker`
+        //    (which stays the `graceful_shutdown` primitive). Bounded by the
+        //    caller's per-resource budget so a stuck handle on *this*
+        //    resource cannot wedge revoke; the taint (already applied
+        //    synchronously in the phase-1 function) already stops new
+        //    leases.
+        //
+        //    A drain timeout is *terminal* for this dispatch's outcome
+        //    metric: it records `TimedOut` and the subsequent hook
+        //    success/failure does NOT record a second outcome (one dispatch
+        //    = exactly one outcome). The hook still runs and its event /
+        //    returned outcome are unaffected — this is the contract the
+        //    removed outer `tokio::time::timeout` wrapper used to break.
+        let drain_result = managed.wait_for_in_flight_drain_erased(drain_timeout).await;
+        let drain_timed_out = drain_result.is_err();
+        if let Err(outstanding) = &drain_result {
+            if let Some(m) = &self.metrics {
+                m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::TimedOut);
+            }
+            tracing::warn!(
+                outstanding = *outstanding,
+                "slot revoke: per-resource drain timed out; proceeding to \
+                 revoke hook (resource already tainted, no new leases)"
+            );
+        }
+
+        // 2. Dispatch the revoke hook against the live runtime, bounded by
+        //    the SAME per-resource budget. This is the only place the
+        //    budget can cut the tail short: a wedged `on_credential_revoke`
+        //    must not pin the fan-out row forever. A timed-out drain (above)
+        //    has *already* consumed the metric outcome, so a hook that then
+        //    also times out does not double-record.
+        let hook_outcome =
+            tokio::time::timeout(drain_timeout, managed.dispatch_on_revoke_erased(&slot)).await;
+        tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
+
+        match hook_outcome {
+            Ok(Ok(())) => {
+                // Only record Success when the drain did not already record
+                // the terminal TimedOut outcome for this dispatch.
+                if !drain_timed_out && let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Success);
+                }
+                self.emit(ResourceEvent::SlotRevoked {
+                    key: key.clone(),
+                    slot: slot.clone(),
+                });
+                tracing::debug!("slot revoke hook completed");
+                RevokeTail::Done
+            },
+            Ok(Err(e)) => {
+                if !drain_timed_out && let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
+                }
+                self.emit(ResourceEvent::SlotRevokeFailed {
+                    key,
+                    slot,
+                    error: e.to_string(),
+                });
+                tracing::warn!(error = %e, "slot revoke hook failed");
+                RevokeTail::HookFailed(e)
+            },
+            Err(_elapsed) => {
+                // The hook itself wedged. The row stays tainted (phase 1).
+                // Record `TimedOut` unless the drain already did (one
+                // dispatch = exactly one outcome).
+                if !drain_timed_out && let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::TimedOut);
+                }
+                self.emit(ResourceEvent::SlotRevokeFailed {
+                    key,
+                    slot,
+                    error: "revoke hook timed out".to_owned(),
+                });
+                tracing::warn!(
+                    timeout_ms = drain_timeout.as_millis() as u64,
+                    "slot revoke hook timed out (row stays tainted, no new leases)"
+                );
+                RevokeTail::HookTimedOut
+            },
+        }
+    }
+
+    /// Notifies a registered resource that one of its `#[credential]` slots
+    /// was revoked — **thin two-phase convenience** for non-fan-out callers
+    /// and tests.
+    ///
+    /// Equivalent to [`taint_slot`](Self::taint_slot) immediately followed by
+    /// [`drain_and_revoke`](Self::drain_and_revoke). The engine per-slot
+    /// rotation fan-out deliberately does **not** call this: it must run the
+    /// synchronous taint phase *outside* its `tokio::time::timeout` and wrap
+    /// only the awaited drain/hook tail, so a dropped timeout future can
+    /// never skip the taint (ADR-0067 §Deferred). This convenience is for the
+    /// no-timeout caller where the two phases run back-to-back on the same
+    /// task.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource is registered for
+    ///   `key` at `scope`.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more than one
+    ///   resolved-credential row exists for `(key, scope)`.
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
     /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
-    #[tracing::instrument(
-        level = "debug",
-        name = "nebula.resource.slot_revoke",
-        skip(self),
-        fields(key = %key, slot = %slot, topology, duration_ms, op = "revoke")
-    )]
     pub async fn revoke_slot(
         &self,
         key: &ResourceKey,
         scope: ScopeLevel,
         slot: &str,
     ) -> Result<(), Error> {
-        let managed = self.lookup_any_for_slot(key, &scope)?;
-        self.revoke_resolved(key, slot, managed).await
+        let tainted = self.taint_slot(key, scope, slot)?;
+        self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+            .await
+            .into_result()
     }
 
     /// [`revoke_slot`](Self::revoke_slot) pinned to a resolved per-slot
-    /// credential identity.
+    /// credential identity — the slot-identity-aware two-phase convenience.
     ///
-    /// Resolves the registry row whose `slot_identity` matches (the same
-    /// unambiguous-by-construction path
-    /// [`get_for`](crate::registry::Registry::get_for) backs), so a
+    /// Equivalent to [`taint_slot_for`](Self::taint_slot_for) immediately
+    /// followed by [`drain_and_revoke`](Self::drain_and_revoke); a
     /// multi-tenant `(key, scope)` taints/drains/revokes the *specific*
     /// resolved row instead of failing closed with
-    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous). This is
-    /// the entry point the engine per-slot rotation fan-out drives on a
-    /// lease revoke; identity-agnostic [`revoke_slot`](Self::revoke_slot)
-    /// stays fail-closed for the no-identity caller.
+    /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous). Like
+    /// [`revoke_slot`](Self::revoke_slot) this is the back-compat
+    /// back-to-back path; the engine fan-out calls the two phases separately
+    /// (sync taint outside the timeout) per ADR-0067 §Deferred.
     ///
     /// # Errors
     ///
@@ -1180,12 +1585,6 @@ impl Manager {
     /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
     ///   down.
     /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
-    #[tracing::instrument(
-        level = "debug",
-        name = "nebula.resource.slot_revoke",
-        skip(self),
-        fields(key = %key, slot = %slot, slot_identity, topology, duration_ms, op = "revoke")
-    )]
     pub async fn revoke_slot_for(
         &self,
         key: &ResourceKey,
@@ -1193,85 +1592,10 @@ impl Manager {
         slot: &str,
         slot_identity: u64,
     ) -> Result<(), Error> {
-        tracing::Span::current().record("slot_identity", slot_identity);
-        let managed = self.lookup_any_for_slot_identity(key, &scope, slot_identity)?;
-        self.revoke_resolved(key, slot, managed).await
-    }
-
-    /// Post-resolution revoke sequence (taint → bounded drain → hook → event)
-    /// shared by [`revoke_slot`](Self::revoke_slot) (identity-agnostic) and
-    /// [`revoke_slot_for`](Self::revoke_slot_for) (slot-identity-pinned).
-    ///
-    /// The two public entry points differ only in how they resolve the row;
-    /// the safety-critical taint-before-drain-before-hook ordering and the
-    /// one-outcome-per-dispatch metric (a drain timeout being terminal) are
-    /// identical and live here.
-    async fn revoke_resolved(
-        &self,
-        key: &ResourceKey,
-        slot: &str,
-        managed: Arc<dyn crate::registry::AnyManagedResource>,
-    ) -> Result<(), Error> {
-        let started = Instant::now();
-        tracing::Span::current().record("topology", managed.topology_tag_erased().as_str());
-
-        // 1. Taint first — rejects new acquires before we drain/dispatch.
-        managed.taint_erased();
-
-        // 2. Drain in-flight handles via the shared drain tracker (the same
-        //    primitive graceful_shutdown uses). Bounded so a stuck handle
-        //    cannot wedge revoke; the taint already stops new leases.
-        //
-        //    A drain timeout is *terminal* for this dispatch's outcome
-        //    metric: it records `TimedOut` and the subsequent hook
-        //    success/failure does NOT record a second outcome (one dispatch
-        //    = exactly one outcome). The hook still runs and its event /
-        //    returned `Result` are unaffected.
-        let drain_result = self
-            .wait_for_drain(std::time::Duration::from_secs(30))
-            .await;
-        let drain_timed_out = drain_result.is_err();
-        if let Err(err) = &drain_result {
-            if let Some(m) = &self.metrics {
-                m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::TimedOut);
-            }
-            tracing::warn!(
-                outstanding = err.outstanding,
-                "slot revoke: drain timed out; proceeding to revoke hook \
-                 (resource already tainted, no new leases)"
-            );
-        }
-
-        // 3. Dispatch the revoke hook against the live runtime.
-        let result = managed.dispatch_on_revoke_erased(slot).await;
-        tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
-
-        match &result {
-            Ok(()) => {
-                // Only record Success when the drain did not already record
-                // the terminal TimedOut outcome for this dispatch.
-                if !drain_timed_out && let Some(m) = &self.metrics {
-                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Success);
-                }
-                let _ = self.event_tx.send(ResourceEvent::SlotRevoked {
-                    key: key.clone(),
-                    slot: slot.to_owned(),
-                });
-                tracing::debug!("slot revoke hook completed");
-            },
-            Err(e) => {
-                if !drain_timed_out && let Some(m) = &self.metrics {
-                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
-                }
-                let _ = self.event_tx.send(ResourceEvent::SlotRevokeFailed {
-                    key: key.clone(),
-                    slot: slot.to_owned(),
-                    error: e.to_string(),
-                });
-                tracing::warn!(error = %e, "slot revoke hook failed");
-            },
-        }
-        result
+        let tainted = self.taint_slot_for(key, scope, slot, slot_identity)?;
+        self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+            .await
+            .into_result()
     }
 
     /// Type-erased `(key, scope)` → live `ManagedResource` resolution for
@@ -1429,8 +1753,21 @@ impl Manager {
         // acquire from the moment `lookup()` succeeds. RAII decrements + notifies
         // on every failure / cancel / panic path; on success the slot is handed
         // off to the resulting `ResourceGuard` so the count is held continuously
-        // until the guard drops.
-        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
+        // until the guard drops. The same counter is the per-resource one
+        // `revoke_slot` drains, which is what the post-taint re-check below
+        // relies on.
+        let in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        // Post-count taint re-check (ADR-0044/0036 "no authenticated traffic
+        // on a revoked credential post-revoke"): the taint gate ran in
+        // `lookup_for_acquire`, but a revoke could have tainted *after* that
+        // gate yet *before* the in-flight increment above. Re-checking here —
+        // after the per-resource counter is incremented — closes that TOCTOU:
+        // `revoke_slot` taints, then drains this same counter, so either we
+        // observe the taint here or our increment is visible to its drain.
+        // Mirrors the `shutting_down` Defense pattern; same `Revoked`
+        // (→ `Unavailable`) classification as the taint gate.
+        Self::reject_if_tainted_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1548,7 +1885,13 @@ impl Manager {
     {
         let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
+        let in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
+        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // this acquire is reflected in the per-resource counter `revoke_slot`
+        // drains.
+        Self::reject_if_tainted_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1658,7 +2001,13 @@ impl Manager {
     {
         let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
+        let in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
+        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // this acquire is reflected in the per-resource counter `revoke_slot`
+        // drains.
+        Self::reject_if_tainted_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1776,7 +2125,13 @@ impl Manager {
     {
         let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
+        let in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
+        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // this acquire is reflected in the per-resource counter `revoke_slot`
+        // drains.
+        Self::reject_if_tainted_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1898,7 +2253,13 @@ impl Manager {
     {
         let started = Instant::now();
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
+        let in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
+        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // this acquire is reflected in the per-resource counter `revoke_slot`
+        // drains.
+        Self::reject_if_tainted_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1971,7 +2332,13 @@ impl Manager {
         let started = Instant::now();
         let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight = InFlightCounter::new(self.drain_tracker.clone());
+        let in_flight =
+            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
+        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // this acquire is reflected in the per-resource counter `revoke_slot`
+        // drains.
+        Self::reject_if_tainted_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         let result = match &managed.topology {
@@ -2054,6 +2421,24 @@ impl Manager {
         let config = managed.config();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
+                // `warmup` runs `R::create` against the resolved credential
+                // to materialize fresh pool instances — it is acquire-like
+                // and must observe the SAME revoke-vs-acquire TOCTOU close
+                // the `run_*_acquire` pipelines use (#679 / ADR-0044/0036).
+                // The `lookup_for_acquire` taint gate above ran *before*
+                // this in-flight increment, leaving a window where a
+                // concurrent `revoke_slot` could taint after the gate yet
+                // before warmup creates entries. Pre-count this work in the
+                // resource's own in-flight counter (the exact counter
+                // `revoke_slot` drains), then re-check the taint: either we
+                // observe the taint here and reject, or our increment is
+                // visible to the revoke's drain — so no fresh pool entry is
+                // ever created on a just-revoked credential. The counter is
+                // held for the whole `warmup` await (RAII drop on every
+                // exit path).
+                let _in_flight =
+                    InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+                Self::reject_if_tainted_post_count::<R>(&managed)?;
                 let count = rt.warmup(&managed.resource, &config, ctx).await;
                 Ok(count)
             },
@@ -2269,6 +2654,24 @@ impl Manager {
             },
         }
     }
+
+    /// Broadcasts a [`ResourceEvent`] to current subscribers.
+    ///
+    /// `broadcast::Sender::send` only returns `Err` when there are **zero**
+    /// receivers — an expected, non-error condition (events are a passive
+    /// observability stream, not a delivery guarantee). This helper names
+    /// that contract in one place so the absence of a subscriber is
+    /// explicitly a deliberate no-op rather than a silently discarded
+    /// `Result` at the emit site.
+    fn emit(&self, event: ResourceEvent) {
+        match self.event_tx.send(event) {
+            Ok(_subscribers) => {},
+            // No subscribers attached — the event stream is best-effort
+            // observability, so this is the documented normal case, not a
+            // failure to propagate.
+            Err(broadcast::error::SendError(_dropped)) => {},
+        }
+    }
 }
 
 impl Default for Manager {
@@ -2343,35 +2746,51 @@ fn resolve_json_templates(
 // has been torn down.
 
 pub(crate) struct InFlightCounter {
-    tracker: Arc<(AtomicU64, Notify)>,
+    /// Manager-wide drain tracker — the `graceful_shutdown` drain primitive.
+    manager: crate::guard::DrainTracker,
+    /// Per-`ManagedResource` in-flight tracker — the *only* counter
+    /// `revoke_slot` drains (ADR-0067 §Deferred), so a revoke on one
+    /// resource never blocks on a sibling's in-flight work.
+    per_resource: crate::guard::DrainTracker,
     armed: bool,
 }
 
 impl InFlightCounter {
-    pub(crate) fn new(tracker: Arc<(AtomicU64, Notify)>) -> Self {
-        tracker.0.fetch_add(1, AtomicOrdering::AcqRel);
+    /// Pre-counts an in-flight acquire against **both** the manager-wide
+    /// drain tracker (shutdown) and the per-resource tracker (revoke drain
+    /// + the taint→increment→re-check TOCTOU close, ADR-0044/0036/0067).
+    pub(crate) fn new(
+        manager: crate::guard::DrainTracker,
+        per_resource: crate::guard::DrainTracker,
+    ) -> Self {
+        manager.0.fetch_add(1, AtomicOrdering::AcqRel);
+        per_resource.0.fetch_add(1, AtomicOrdering::AcqRel);
         Self {
-            tracker,
+            manager,
+            per_resource,
             armed: true,
         }
     }
 
-    /// Hand off the in-flight slot to a `ResourceGuard`. The drain tracker
-    /// remains incremented; the guard's drop will decrement it.
+    /// Hand off the in-flight slot to a `ResourceGuard`. Both trackers stay
+    /// incremented; the guard's drop decrements + notifies both.
     ///
-    /// Disarms this counter so the slot is NOT decremented on drop.
-    pub(crate) fn release_to_guard(mut self) -> Arc<(AtomicU64, Notify)> {
+    /// Disarms this counter so the slot is NOT decremented on drop. Returns
+    /// `(manager_wide, per_resource)` for
+    /// [`ResourceGuard::with_drain_tracker`](crate::guard::ResourceGuard::with_drain_tracker).
+    pub(crate) fn release_to_guard(mut self) -> crate::guard::DrainTrackers {
         self.armed = false;
-        self.tracker.clone()
+        (self.manager.clone(), self.per_resource.clone())
     }
 }
 
 impl Drop for InFlightCounter {
     fn drop(&mut self) {
         if self.armed {
-            let prev = self.tracker.0.fetch_sub(1, AtomicOrdering::AcqRel);
-            if prev == 1 {
-                self.tracker.1.notify_waiters();
+            for tracker in [&self.manager, &self.per_resource] {
+                if tracker.0.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+                    tracker.1.notify_waiters();
+                }
             }
         }
     }

@@ -12,13 +12,87 @@
 //! silently force-clearing the registry on drain timeout is now opt-in
 //! through [`DrainTimeoutPolicy::Force`](super::DrainTimeoutPolicy::Force).
 
-use std::{sync::atomic::Ordering as AtomicOrdering, time::Duration};
+use std::{
+    sync::{Arc, atomic::Ordering as AtomicOrdering},
+    time::Duration,
+};
+
+use tokio::sync::Notify;
 
 use crate::{
     events::ResourceEvent,
     manager::{DrainTimeoutPolicy, Manager, ShutdownConfig},
     release_queue::ReleaseQueue,
 };
+
+/// Waits until `tracker`'s counter reaches `0` or `timeout` elapses.
+///
+/// Shared by the manager-wide [`Manager::wait_for_drain`] (drains
+/// `Manager::drain_tracker` for `graceful_shutdown`) and the per-resource
+/// drain in `Manager::revoke_resolved` (drains a single
+/// [`ManagedResource`](crate::runtime::managed::ManagedResource)'s own
+/// in-flight tracker). Both must reject a revoked / shutting-down credential
+/// *before* the drained phase, so the subtle lost-wakeup ordering is written
+/// **once** here rather than duplicated per call site (a structural
+/// guarantee, not a discipline one).
+///
+/// The loop uses a `register-then-check` ordering to avoid the classic
+/// `Notify::notify_waiters` lost-wakeup:
+///
+/// 1. Construct + pin + `enable()` a fresh `Notified` future. `enable()`
+///    registers this waiter on the `Notify` queue without an `.await`, so
+///    any subsequent `notify_waiters()` (fired when a handle's `Drop`
+///    decrements the counter from `1 → 0`) reaches us.
+/// 2. Re-check the counter. If it hit `0` between the outer check and our
+///    registration, return now — the wakeup is already consumed.
+/// 3. Only then await the `Notified` future.
+///
+/// Returns `Ok(())` once drained, or `Err(outstanding)` with the snapshot of
+/// the counter at the moment the timer fired.
+pub(crate) async fn wait_for_tracker_drain(
+    tracker: &Arc<(std::sync::atomic::AtomicU64, Notify)>,
+    timeout: Duration,
+) -> Result<(), u64> {
+    let active = tracker.0.load(AtomicOrdering::Acquire);
+    if active == 0 {
+        return Ok(());
+    }
+
+    tracing::debug!(active_handles = active, "waiting for handles to drain");
+    let drained = tokio::time::timeout(timeout, async {
+        loop {
+            // Pre-register this waiter BEFORE re-checking the counter.
+            let notified = tracker.1.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            // Re-check after registration. If the last handle dropped while
+            // we were between the outer check and `enable()`, the counter is
+            // now 0 and we would otherwise wait on a notification that has
+            // already fired.
+            if tracker.0.load(AtomicOrdering::Acquire) == 0 {
+                return;
+            }
+
+            notified.await;
+
+            if tracker.0.load(AtomicOrdering::Acquire) == 0 {
+                return;
+            }
+        }
+    })
+    .await;
+
+    if drained.is_err() {
+        let outstanding = tracker.0.load(AtomicOrdering::Acquire);
+        tracing::warn!(
+            outstanding,
+            "resource manager: drain timeout expired with handles still active"
+        );
+        return Err(outstanding);
+    }
+    Ok(())
+}
 
 /// Structured result of a successful (or forced-through) graceful shutdown.
 #[derive(Debug, Clone)]
@@ -257,66 +331,17 @@ impl Manager {
         }
     }
 
-    /// Waits until all active `ResourceGuard`s are dropped or timeout expires.
+    /// Waits until all active manager-wide `ResourceGuard`s are dropped or
+    /// `timeout` expires (the `graceful_shutdown` drain).
     ///
-    /// The loop uses a `register-then-check` ordering to avoid the classic
-    /// `Notify::notify_waiters` lost-wakeup:
-    ///
-    /// 1. Construct + pin + `enable()` a fresh `Notified` future. Calling `enable()` registers this
-    ///    waiter on the `Notify` queue without requiring a `.await`, so any subsequent
-    ///    `notify_waiters()` (fired when a handle's `Drop` decrements the counter from 1 → 0) will
-    ///    reach us.
-    /// 2. Re-check the counter. If it already hit 0 between the outer initial check and our
-    ///    registration, return now — the wakeup we would otherwise wait for has already been
-    ///    consumed.
-    /// 3. Only then await the `Notified` future.
-    ///
-    /// Without this ordering, a burst of handle drops that completes the
-    /// drain *before* the first `notified().await` poll would leak the
-    /// notification entirely, stalling `graceful_shutdown` for the full
-    /// `drain_timeout` (default 30 s) and risking `SIGKILL` escalation
-    /// under a tight orchestrator shutdown window.
+    /// Thin typed wrapper over [`wait_for_tracker_drain`] against
+    /// `Manager::drain_tracker`; the lost-wakeup-safe ordering and its
+    /// rationale live on that shared helper (the per-resource revoke drain
+    /// reuses the same helper against a single resource's tracker).
     pub(super) async fn wait_for_drain(&self, timeout: Duration) -> Result<(), DrainTimeoutError> {
-        let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
-        if active == 0 {
-            return Ok(());
-        }
-
-        tracing::debug!(active_handles = active, "waiting for handles to drain");
-        let tracker = &self.drain_tracker;
-        let drained = tokio::time::timeout(timeout, async {
-            loop {
-                // Pre-register this waiter BEFORE re-checking the counter.
-                let notified = tracker.1.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-
-                // Re-check after registration. If the last handle dropped
-                // while we were between the outer check and `enable()`,
-                // the counter is now 0 and we would otherwise wait on a
-                // notification that has already fired.
-                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
-                    return;
-                }
-
-                notified.await;
-
-                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
-                    return;
-                }
-            }
-        })
-        .await;
-
-        if drained.is_err() {
-            let outstanding = tracker.0.load(AtomicOrdering::Acquire);
-            tracing::warn!(
-                outstanding,
-                "resource manager: drain timeout expired with handles still active"
-            );
-            return Err(DrainTimeoutError { outstanding });
-        }
-        Ok(())
+        wait_for_tracker_drain(&self.drain_tracker, timeout)
+            .await
+            .map_err(|outstanding| DrainTimeoutError { outstanding })
     }
 }
 

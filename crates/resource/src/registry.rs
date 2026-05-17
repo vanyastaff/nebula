@@ -17,11 +17,38 @@ use crate::{
     error::Error, resource::Resource, runtime::managed::ManagedResource, topology_tag::TopologyTag,
 };
 
+/// Crate-private seal: only `nebula-resource` can name `sealed::Sealed`,
+/// so [`AnyManagedResource`] is **not implementable downstream**.
+///
+/// `AnyManagedResource` is engine-internal: the only purpose is to let
+/// the [`Registry`] store heterogeneous `ManagedResource<R>` behind one
+/// `dyn AnyManagedResource`, and the sole implementor is the blanket
+/// `impl<R: Resource>` below. Sealing makes that a *structural*
+/// guarantee rather than a convention — adding a required method (e.g.
+/// the per-resource-drain hook) can never be a downstream
+/// compile-break, because no downstream impl can exist. The
+/// `LookupOutcome::Found(Arc<dyn AnyManagedResource>)` surface stays
+/// usable (callers only *consume* the trait object); they just cannot
+/// *implement* it.
+mod sealed {
+    /// Sealed marker. Implemented only by the crate-internal blanket
+    /// `impl<R: Resource>` for `ManagedResource<R>`.
+    pub trait Sealed {}
+}
+
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
 /// Every `ManagedResource<R>` implements this trait, allowing the registry
 /// to store heterogeneous resource types behind a single `dyn AnyManagedResource`.
-pub trait AnyManagedResource: Send + Sync + 'static {
+///
+/// **Sealed (engine-internal).** This trait has a private `sealed::Sealed`
+/// supertrait, so it can only be implemented inside `nebula-resource` (by
+/// the blanket `impl<R: Resource>`). It is an engine-internal erasure
+/// boundary, **not** a downstream extension point — new required methods
+/// may be added without it being a semver-breaking change for consumers
+/// (they only ever hold `Arc<dyn AnyManagedResource>` via
+/// [`LookupOutcome::Found`], never implement it).
+pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// Returns the resource key for this managed resource.
     fn resource_key(&self) -> ResourceKey;
 
@@ -91,7 +118,28 @@ pub trait AnyManagedResource: Send + Sync + 'static {
         &'a self,
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+
+    /// Type-erased bounded drain of **this resource's own** in-flight
+    /// acquires.
+    ///
+    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
+    /// it drains through the erased view. Forwards to
+    /// `ManagedResource::wait_for_in_flight_drain`, which waits on this
+    /// row's per-resource counter — *not* the manager-wide `drain_tracker`
+    /// — so a revoke is isolated from in-flight traffic to unrelated
+    /// resources (ADR-0067 §Deferred). Boxed for the same `dyn`-safety
+    /// reason as the dispatch hooks. `Err(outstanding)` carries the counter
+    /// snapshot at the moment the timer fired.
+    fn wait_for_in_flight_drain_erased<'a>(
+        &'a self,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>>;
 }
+
+// The one and only `Sealed` impl: every `ManagedResource<R>` (and
+// nothing else, anywhere) — this is what makes `AnyManagedResource`
+// non-implementable downstream.
+impl<R: Resource> sealed::Sealed for ManagedResource<R> {}
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
     fn resource_key(&self) -> ResourceKey {
@@ -138,6 +186,13 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(self.dispatch_slot_hook(slot, false))
+    }
+
+    fn wait_for_in_flight_drain_erased<'a>(
+        &'a self,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+        Box::pin(self.wait_for_in_flight_drain(timeout))
     }
 }
 
@@ -474,6 +529,12 @@ mod tests {
     struct FakeA;
     struct FakeB;
 
+    // In-crate test doubles: the seal is crate-private, so the test
+    // module can satisfy it directly (an out-of-crate type could not —
+    // that is the point of the seal).
+    impl sealed::Sealed for FakeA {}
+    impl sealed::Sealed for FakeB {}
+
     fn unit_dispatch<'a>() -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
@@ -509,6 +570,12 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
             unit_dispatch()
         }
+        fn wait_for_in_flight_drain_erased<'a>(
+            &'a self,
+            _timeout: std::time::Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     impl AnyManagedResource for FakeB {
@@ -541,6 +608,12 @@ mod tests {
             _slot: &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
             unit_dispatch()
+        }
+        fn wait_for_in_flight_drain_erased<'a>(
+            &'a self,
+            _timeout: std::time::Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
         }
     }
 
