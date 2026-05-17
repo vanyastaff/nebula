@@ -24,6 +24,7 @@ mod control_queue;
 mod execution;
 mod idempotency;
 mod journal;
+mod node_result;
 mod webhook;
 mod workflow;
 
@@ -31,5 +32,6 @@ pub use control_queue::ScopedControlQueue;
 pub use execution::ScopedExecutionStore;
 pub use idempotency::{ScopedIdempotencyGuard, ScopedIdempotencyStore};
 pub use journal::ScopedExecutionJournalReader;
+pub use node_result::ScopedNodeResultStore;
 pub use webhook::ScopedWebhookActivationStore;
 pub use workflow::{ScopedWorkflowStore, ScopedWorkflowVersionStore};

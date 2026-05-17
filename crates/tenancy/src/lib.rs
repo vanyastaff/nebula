@@ -36,8 +36,8 @@ pub use credential_scope::{
 };
 pub use decorator::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
-    ScopedIdempotencyStore, ScopedWebhookActivationStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
+    ScopedIdempotencyStore, ScopedNodeResultStore, ScopedWebhookActivationStore,
+    ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 pub use error::TenancyError;
 pub use resolver::{BindingScopeResolver, Principal, ScopeResolver};
