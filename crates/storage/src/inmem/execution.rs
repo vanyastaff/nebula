@@ -353,6 +353,26 @@ impl InMemoryIdempotencyGuard {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Non-mutating introspection: report whether
+    /// `{scope}:{execution_id}:{node_id}:{attempt}` is already marked,
+    /// without marking it. Mirrors the key derivation of
+    /// [`IdempotencyGuard::check_and_mark`] so callers can assert
+    /// dedup state without perturbing it.
+    #[must_use]
+    pub fn is_marked(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_id: &str,
+        attempt: u32,
+    ) -> bool {
+        let key = format!(
+            "{}:{}:{execution_id}:{node_id}:{attempt}",
+            scope.workspace_id, scope.org_id
+        );
+        self.marked.lock().contains(&key)
+    }
 }
 
 #[async_trait::async_trait]

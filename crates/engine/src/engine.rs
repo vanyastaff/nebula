@@ -1433,91 +1433,96 @@ impl WorkflowEngine {
             serde_json::Value,
             serde_json::Value,
             Vec<(NodeKey, serde_json::Value)>,
-        ) = if let (Some(stores), Some(workflow_stores)) =
-            (self.stores.as_ref(), self.workflow_stores.as_ref())
-        {
-            let scope = crate::store_seam::engine_scope();
-            let id = execution_id.to_string();
-            let record = stores
-                .execution
-                .get(&scope, &id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+        ) =
+            if let Some(stores) = self.stores.as_ref() {
+                // Port path is primary once the execution bundle is
+                // configured. The workflow bundle is required here; its
+                // absence is reported with the historical `workflow_repo`
+                // wording the resume contract (and tests) assert on.
+                let workflow_stores = self.workflow_stores.as_ref().ok_or_else(|| {
+                    EngineError::PlanningFailed("no workflow_repo configured".into())
                 })?;
-            let workflow_id = record.workflow_id.clone();
-            let workflow_json = workflow_stores
-                .versions
-                .get_published(&scope, &workflow_id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
-                })?
-                .definition;
-            // Reload the raw per-node *outputs* (not the typed-result
-            // slot): the result slot stores the serialized `ActionResult`
-            // envelope, whereas successors consume the bare output payload
-            // — reading results here would feed a crash-resumed run a
-            // different value than a non-crashed run. This mirrors the
-            // legacy `ExecutionRepo::load_all_outputs` reload.
-            let outputs = stores
-                .node_results
-                .load_all_node_outputs(&scope, &id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
-                .into_iter()
-                .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
-                .collect();
-            (record.version, record.state, workflow_json, outputs)
-        } else {
-            // Legacy path: preserve the original per-repo requirement
-            // errors verbatim (callers and tests assert on the
-            // `execution_repo` / `workflow_repo` wording).
-            let exec_repo = self.execution_repo.as_ref().ok_or_else(|| {
-                EngineError::PlanningFailed("no execution_repo configured".into())
-            })?;
-            let workflow_repo = self
-                .workflow_repo
-                .as_ref()
-                .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
-            let (version, state_json) = exec_repo
-                .get_state(execution_id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+                let scope = crate::store_seam::engine_scope();
+                let id = execution_id.to_string();
+                let record = stores
+                    .execution
+                    .get(&scope, &id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+                    })?;
+                let workflow_id = record.workflow_id.clone();
+                let workflow_json = workflow_stores
+                    .versions
+                    .get_published(&scope, &workflow_id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                    })?
+                    .definition;
+                // Reload the raw per-node *outputs* (not the typed-result
+                // slot): the result slot stores the serialized `ActionResult`
+                // envelope, whereas successors consume the bare output payload
+                // — reading results here would feed a crash-resumed run a
+                // different value than a non-crashed run. This mirrors the
+                // legacy `ExecutionRepo::load_all_outputs` reload.
+                let outputs = stores
+                    .node_results
+                    .load_all_node_outputs(&scope, &id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
+                    .into_iter()
+                    .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
+                    .collect();
+                (record.version, record.state, workflow_json, outputs)
+            } else {
+                // Legacy path: preserve the original per-repo requirement
+                // errors verbatim (callers and tests assert on the
+                // `execution_repo` / `workflow_repo` wording).
+                let exec_repo = self.execution_repo.as_ref().ok_or_else(|| {
+                    EngineError::PlanningFailed("no execution_repo configured".into())
                 })?;
-            // The legacy workflow lookup needs the workflow id, which is
-            // only known after the state deserializes; peek it from the
-            // raw JSON so the load order matches the port path.
-            let workflow_id_str = state_json
-                .get("workflow_id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(
-                        "persisted state has no `workflow_id` field".to_owned(),
-                    )
+                let workflow_repo = self.workflow_repo.as_ref().ok_or_else(|| {
+                    EngineError::PlanningFailed("no workflow_repo configured".into())
                 })?;
-            let workflow_id = WorkflowId::parse(workflow_id_str).map_err(|e| {
-                EngineError::PlanningFailed(format!("invalid persisted workflow_id: {e}"))
-            })?;
-            let workflow_json = workflow_repo
-                .get(workflow_id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                let (version, state_json) = exec_repo
+                    .get_state(execution_id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+                    })?;
+                // The legacy workflow lookup needs the workflow id, which is
+                // only known after the state deserializes; peek it from the
+                // raw JSON so the load order matches the port path.
+                let workflow_id_str = state_json
+                    .get("workflow_id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(
+                            "persisted state has no `workflow_id` field".to_owned(),
+                        )
+                    })?;
+                let workflow_id = WorkflowId::parse(workflow_id_str).map_err(|e| {
+                    EngineError::PlanningFailed(format!("invalid persisted workflow_id: {e}"))
                 })?;
-            let outputs = exec_repo
-                .load_all_outputs(execution_id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
-                .into_iter()
-                .collect();
-            (version, state_json, workflow_json, outputs)
-        };
+                let workflow_json = workflow_repo
+                    .get(workflow_id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                    })?;
+                let outputs = exec_repo
+                    .load_all_outputs(execution_id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
+                    .into_iter()
+                    .collect();
+                (version, state_json, workflow_json, outputs)
+            };
 
         // Deserialize via JSON string to avoid `serde_json::from_value` issues
         // with Key<D> types that expect borrowed strings (domain-key serde impl).
@@ -5682,6 +5687,16 @@ mod tests {
                 .await
                 .unwrap();
         }
+
+        /// Non-mutating dedup-state read. Mirrors the production path's
+        /// idempotency mark (`engine_scope()` + `{execution_id}:{node}:
+        /// {attempt}`) without perturbing it — the port analog of the
+        /// legacy `ExecutionRepo::check_idempotency`.
+        fn is_idempotency_marked(&self, id: ExecutionId, node: NodeKey, attempt: u32) -> bool {
+            let scope = crate::store_seam::engine_scope();
+            self.idempotency
+                .is_marked(&scope, &id.to_string(), node.as_str(), attempt)
+        }
     }
 
     // -- Tests --
@@ -6631,9 +6646,9 @@ mod tests {
     async fn resume_requires_workflow_repo() {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        let engine = engine.with_execution_repo(exec_repo);
-        // No workflow_repo attached.
+        let stores = TestStores::new();
+        let engine = engine.with_execution_stores(stores.execution_stores());
+        // No workflow store attached.
         let err = engine
             .resume_execution(ExecutionId::new())
             .await
@@ -7351,13 +7366,11 @@ mod tests {
                 ..WorkflowConfig::default()
             },
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
+        stores.save_workflow(&wf).await;
 
         let (engine, _) = make_engine(registry);
-        let engine = engine
-            .with_execution_repo(repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine = stores.attach(engine);
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -7371,7 +7384,7 @@ mod tests {
         // The OnError input payload must have been loadable from the
         // persistence store — i.e. captured by the checkpoint that
         // commits A's Failed state, not written ephemerally after.
-        let persisted = repo
+        let persisted = stores
             .load_node_output(result.execution_id, a.clone())
             .await
             .unwrap()
@@ -7453,9 +7466,9 @@ mod tests {
             },
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(exec_repo.clone());
+        let engine = engine.with_execution_stores(stores.execution_stores());
 
         let n = node_key!("n");
         let wf = make_workflow(
@@ -7491,7 +7504,7 @@ mod tests {
         // avoids `#[serde(borrow)]` issues on domain keys — the same
         // workaround `resume_execution` applies when loading state.
         let execution_id = result1.execution_id;
-        let (_, state_json) = exec_repo
+        let (_, state_json) = stores
             .get_state(execution_id)
             .await
             .unwrap()
@@ -7499,22 +7512,23 @@ mod tests {
         let state_str = serde_json::to_string(&state_json).unwrap();
         let exec_state: ExecutionState =
             serde_json::from_str(&state_str).expect("deserialize persisted execution state");
-        let idem_key = exec_state
+        // The engine marks idempotency under `engine_scope()` with the
+        // attempt number it dispatched the node under (1 on the first
+        // run). Assert that mark was recorded without perturbing it.
+        let attempt = exec_state
             .node_state(n.clone())
-            .and_then(|ns| ns.attempts.last().map(|a| a.idempotency_key.clone()))
+            .map(|ns| ns.attempts.len() as u32)
+            .filter(|&a| a >= 1)
             .expect("first run must have pushed an attempt record (ADR-0042 §M2.1 T4)");
 
-        let already_marked = exec_repo
-            .check_idempotency(idem_key.as_str())
-            .await
-            .unwrap();
+        let already_marked = stores.is_idempotency_marked(execution_id, n.clone(), attempt);
         assert!(
             already_marked,
             "idempotency key should be recorded after first execution"
         );
 
         // Also verify the persisted output is loadable.
-        let persisted = exec_repo.load_node_output(execution_id, n).await.unwrap();
+        let persisted = stores.load_node_output(execution_id, n).await.unwrap();
         assert_eq!(
             persisted,
             Some(serde_json::json!("payload")),
