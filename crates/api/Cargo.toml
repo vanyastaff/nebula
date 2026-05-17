@@ -26,11 +26,12 @@ nebula-resilience = { path = "../resilience" }
 nebula-credential = { path = "../credential" }
 # ADR-0052 P4: production dep (with `schemars`) for the concrete
 # `CredentialSchemaPort` impl (`ValidSchema::validate` / `json_schema()`).
-# `nebula-schema` is Core (freely importable — no deny.toml change; deny
-# `ignored = ["schemars"]`). DTOs still carry only `serde_json::Value` —
-# no `ValidSchema` type crosses into any DTO (ADR-0047 DTO-purity rule
-# intact; the informal "api never imports nebula-schema" prose is
-# relaxed, recorded in the ADR-0052 P4 / ADR-0047 amendments).
+# `nebula-schema` is Core-tier with no `deny.toml` wrapper rule (freely
+# importable), so this needs **no `deny.toml` change**. DTOs still carry
+# only `serde_json::Value` — no `ValidSchema` type crosses into any DTO
+# (ADR-0047 DTO-purity rule intact; the informal "api never imports
+# nebula-schema" prose is relaxed, recorded in the ADR-0052 P4 / ADR-0047
+# amendments).
 nebula-schema = { path = "../schema", features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
 

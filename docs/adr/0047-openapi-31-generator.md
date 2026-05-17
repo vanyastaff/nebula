@@ -281,8 +281,8 @@ change" constraint feasible post-PR #671 (composition root is now a
 separate `nebula-server` crate not in `nebula-credential`'s wrapper
 allowlist), the concrete port impl lives in `nebula-api`, which therefore
 takes a `nebula-schema` **production** dependency + the `schemars`
-feature. `nebula-schema` is Core (freely importable; no `deny.toml`
-change) and `schemars` is already `ignored` in `deny.toml`. The informal
+feature. `nebula-schema` is Core-tier with no `deny.toml` wrapper rule
+(freely importable; **no `deny.toml` change** required). The informal
 "`nebula-api` never imports `nebula-schema`" prose preference is
 **relaxed** to "no `nebula-schema` *type* crosses into a DTO" — the
 load-bearing layer guarantee (DTO purity, public-contract stability,

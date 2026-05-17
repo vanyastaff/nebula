@@ -230,8 +230,9 @@ change" was infeasible as written** — post-#671 the composition root is a
 separate `nebula-server` crate not in `nebula-credential`'s wrapper
 allowlist. The user adjudicated #6: keep the harder "zero deny.toml
 change" constraint and host the concrete impl in `nebula-api` (already an
-allow-listed `nebula-credential` consumer; `nebula-schema` is Core —
-freely importable, no deny change; deny `ignored = ["schemars"]`).
+allow-listed `nebula-credential` consumer; `nebula-schema` is Core-tier
+with no `deny.toml` wrapper rule — freely importable, so **no `deny.toml`
+change** is required).
 Consequence: `nebula-api` takes a `nebula-schema` **production** dep +
 the `schemars` feature. ADR-0047's actual DTO-purity rule (no lower-layer
 **types in DTOs**) remains intact — the port returns only

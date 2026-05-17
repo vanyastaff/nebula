@@ -30,6 +30,42 @@ use crate::ports::credential_schema::{
     CredentialCapabilityFlags, CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
 };
 
+/// Map a validator/schema vocabulary `code` to a **static, value-free**
+/// message. The seam NEVER forwards a lower-layer `ValidationError.message`
+/// (some validators embed the submitted input — e.g. `'{input}' is not a
+/// valid IPv4 address` — and `validate_json_keys` embeds the raw object
+/// key). Deriving the message from the code makes the ADR-0034 "never the
+/// submitted value" invariant hold *by construction* at this seam,
+/// independent of any upstream validator's message hygiene.
+fn safe_field_message(code: &str) -> &'static str {
+    match code {
+        "required" => "value is required",
+        "min_length" => "value is too short",
+        "max_length" => "value is too long",
+        "min" => "value is below the allowed minimum",
+        "max" => "value is above the allowed maximum",
+        "invalid_format" => "value does not match the required format",
+        "type_mismatch" => "value has the wrong type",
+        "invalid_key" => "object contains an invalid field key",
+        "recursion_limit" => "value is nested too deeply",
+        "unknown_credential_type" => "no such credential type",
+        // Vocabulary codes are value-free tokens; echoing the code (not
+        // the submitted value) is safe and stays informative.
+        _ => "field failed schema validation",
+    }
+}
+
+/// Build a secret-safe field error. `path` is the schema/RFC-6901
+/// structural location (declared-field/parent path — value-free);
+/// `message` is derived from `code`, never from the submitted value.
+fn field_error(path: String, code: &str) -> CredentialFieldError {
+    CredentialFieldError {
+        path,
+        code: code.to_owned(),
+        message: safe_field_message(code).to_owned(),
+    }
+}
+
 /// `CredentialSchemaPort` backed by a registered credential set.
 pub struct RegistryCredentialSchema {
     registry: Arc<CredentialRegistry>,
@@ -93,22 +129,16 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
     ) -> Result<(), Vec<CredentialFieldError>> {
         let Some(any) = self.registry.resolve_any(credential_key) else {
             tracing::Span::current().record("outcome", "unknown_type");
-            return Err(vec![CredentialFieldError {
-                path: "/credential_key".to_owned(),
-                code: "unknown_credential_type".to_owned(),
-                message: "no such credential type".to_owned(),
-            }]);
+            return Err(vec![field_error(
+                "/credential_key".to_owned(),
+                "unknown_credential_type",
+            )]);
         };
         let schema = any.metadata().base.schema;
         // Ingest only (NEVER `.resolve()` — canon §12.5: credential data
         // must not be expression-resolved against workflow state).
-        let values = FieldValues::from_json(data.clone()).map_err(|e| {
-            vec![CredentialFieldError {
-                path: e.path.to_string(),
-                code: e.code.as_ref().to_owned(),
-                message: e.message.to_string(),
-            }]
-        })?;
+        let values = FieldValues::from_json(data.clone())
+            .map_err(|e| vec![field_error(e.path.to_string(), e.code.as_ref())])?;
         match schema.validate(&values) {
             Ok(_valid) => {
                 tracing::Span::current().record("outcome", "ok");
@@ -117,11 +147,7 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
             Err(report) => {
                 let errors: Vec<CredentialFieldError> = report
                     .errors()
-                    .map(|e| CredentialFieldError {
-                        path: e.path.to_string(),
-                        code: e.code.as_ref().to_owned(),
-                        message: e.message.to_string(),
-                    })
+                    .map(|e| field_error(e.path.to_string(), e.code.as_ref()))
                     .collect();
                 tracing::Span::current().record("outcome", "rejected");
                 debug_assert!(
@@ -161,21 +187,20 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
 /// registered (ADR-0052 P4). Used by the composition root so
 /// `apps/server` needs no `nebula-credential`/`nebula-schema` dep.
 ///
-/// Static registration of distinct const KEYs is infallible in practice;
-/// a duplicate is a composition bug surfaced loudly at startup.
-#[must_use]
-pub fn default_registry_port() -> Arc<dyn CredentialSchemaPort> {
+/// # Errors
+///
+/// Returns [`nebula_credential::RegisterError`] if a credential KEY is
+/// already registered (a composition bug — distinct first-party const
+/// KEYs make this unreachable in practice, but the library returns the
+/// typed error rather than panicking; the caller decides how to surface
+/// it — AGENTS.md "no `expect()` in library code").
+pub fn try_default_registry_port()
+-> Result<Arc<dyn CredentialSchemaPort>, nebula_credential::RegisterError> {
     let mut registry = CredentialRegistry::new();
-    registry
-        .register(ApiKeyCredential, "nebula-credential")
-        .expect("ApiKeyCredential KEY is statically unique");
-    registry
-        .register(BasicAuthCredential, "nebula-credential")
-        .expect("BasicAuthCredential KEY is statically unique");
-    registry
-        .register(OAuth2Credential, "nebula-credential")
-        .expect("OAuth2Credential KEY is statically unique");
-    Arc::new(RegistryCredentialSchema::new(Arc::new(registry)))
+    registry.register(ApiKeyCredential, "nebula-credential")?;
+    registry.register(BasicAuthCredential, "nebula-credential")?;
+    registry.register(OAuth2Credential, "nebula-credential")?;
+    Ok(Arc::new(RegistryCredentialSchema::new(Arc::new(registry))))
 }
 
 #[cfg(test)]
@@ -237,7 +262,7 @@ mod tests {
         assert!(p.get_type("nope").is_none());
 
         // The composition default registers all three first-party types.
-        let default = default_registry_port();
+        let default = try_default_registry_port().expect("first-party set registers (unique KEYs)");
         let listed = default.list_types();
         for k in ["api_key", "basic_auth", "oauth2"] {
             assert!(

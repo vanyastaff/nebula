@@ -78,6 +78,12 @@ pub enum TransportInitError {
         /// What is missing for that backend to work.
         requirement: &'static str,
     },
+    /// The credential-schema port could not be built (ADR-0052 P4 —
+    /// first-party credential registration failed; a composition bug).
+    /// Carried as a `String` so this crate needs no `nebula-credential`
+    /// dependency (the typed `RegisterError` stays inside `nebula-api`).
+    #[error("credential-schema port init failed: {0}")]
+    CredentialSchemaInit(String),
 }
 
 /// Start a server binary for a selected transport profile.
@@ -179,7 +185,9 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
     // `nebula-api` (deny.toml-allow-listed `nebula-credential` consumer),
     // so this composition crate needs no `nebula-credential`/
     // `nebula-schema` dep — just the api constructor.
-    let credential_schema = nebula_api::ports::credential_schema_registry::default_registry_port();
+    let credential_schema =
+        nebula_api::ports::credential_schema_registry::try_default_registry_port()
+            .map_err(|e| TransportInitError::CredentialSchemaInit(e.to_string()))?;
 
     Ok(AppState::new(
         workflow_repo,

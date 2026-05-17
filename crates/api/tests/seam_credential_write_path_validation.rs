@@ -162,3 +162,55 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
         "503 body must not echo submitted data; got: {text}"
     );
 }
+
+#[tokio::test]
+async fn update_credential_rejects_invalid_data_secret_safe() {
+    // ADR-0052 P4: the V2 gate also covers the update path (validates the
+    // supplied `data` against the *existing* credential type's schema).
+    let (state, _q) = create_state_with_queue().await;
+    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Seed a valid credential (RequireApiKeyPort accepts `api_key`).
+    let app = app::build_app(state.clone(), &config);
+    let created = app
+        .oneshot(auth_json(
+            "POST",
+            &ws_path("/credentials"),
+            &token,
+            &serde_json::json!({
+                "credential_key": "api_key", "name": "u",
+                "data": { "api_key": "k-1" }, "tags": {}
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK, "seed create must succeed");
+    let id = serde_json::from_str::<serde_json::Value>(&body_string(created).await).unwrap()["id"]
+        .as_str()
+        .expect("created id")
+        .to_owned();
+
+    // PUT new `data` that fails the schema (no `api_key`) + a secret.
+    let app = app::build_app(state, &config);
+    let resp = app
+        .oneshot(auth_json(
+            "PUT",
+            &ws_path(&format!("/credentials/{id}")),
+            &token,
+            &serde_json::json!({ "data": { "server": "x", "leak": NEVER_LEAK } }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "update with schema-invalid data must be rejected (400)"
+    );
+    let text = body_string(resp).await;
+    assert!(
+        text.contains("/api_key") && !text.contains(NEVER_LEAK),
+        "update 400 must be secret-safe (path/code only, no value); got: {text}"
+    );
+}

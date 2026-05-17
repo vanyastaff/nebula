@@ -139,7 +139,9 @@ fn encode_secret_data(data: &serde_json::Value) -> ApiResult<Vec<u8>> {
         .map_err(|e| ApiError::Internal(format!("failed to encode credential envelope: {e}")))
 }
 
-/// Map a secret-safe [`CredentialFieldError`] list to the api 422.
+/// Map a secret-safe [`CredentialFieldError`] list to the api-wide
+/// validation status (400 — `ApiError::Validation`, consistent with every
+/// other request-validation failure).
 ///
 /// `CredentialFieldError` carries only an RFC-6901 path, a validator code,
 /// and a static message — never the submitted value (ADR-0034 redaction;

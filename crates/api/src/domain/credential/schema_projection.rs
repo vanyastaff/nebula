@@ -1,11 +1,17 @@
 //! Public-schema projection (ADR-0052 P4, design-spec hole #6).
 //!
-//! `ValidSchema::json_schema()` emits Nebula vendor extensions that encode
-//! **cross-field predicate logic** (`crates/schema/src/json_schema.rs:115`
-//! `x-nebula-root-rules`; the conditional `x-nebula-required-mode` /
-//! `x-nebula-visibility-mode` "when" operands). Exposing those to
-//! unauthenticated catalog clients leaks the credential type's internal
-//! rule graph. This api-owned mapper strips that family **recursively**
+//! `ValidSchema::json_schema()` emits the credential type's internal rule
+//! graph as Nebula vendor extensions: `x-nebula-root-rules`
+//! (`crates/schema/src/json_schema.rs:115`) serializes the full
+//! cross-field `Rule` operands, and `x-nebula-required-mode` /
+//! `x-nebula-visibility-mode` mark fields as rule-conditioned (the
+//! exporter emits these two as a bare discriminant string — `"when"` —
+//! not the operand; they are still rule-derived metadata, not part of the
+//! public JSON-Schema contract). Exposing this family to catalog clients
+//! leaks rule-graph internals. This api-owned mapper strips the whole
+//! family **recursively** (defence-in-depth: `x-nebula-root-rules` is the
+//! genuinely-sensitive operand carrier; the two mode keys are stripped as
+//! non-contract rule-derived metadata)
 //! while keeping the standard JSON-Schema contract (`type`, `properties`,
 //! `required`, `minLength`, `pattern`, `enum`, `additionalProperties`, …)
 //! and non-predicate structural hints (`x-nebula-field-kind`,
