@@ -358,19 +358,49 @@ pub fn map_resource_update_storage_error(err: nebula_storage::StorageError) -> A
     }
 }
 
+/// Reserved-prefix tag (byte 0) marking a `created_by` value as a
+/// non-human **audit sentinel**, never an identity.
+///
+/// `UserId` / `ServiceAccountId` are ULIDs whose byte 0 is the high byte
+/// of a 48-bit millisecond Unix timestamp — it stays well below `0xFF`
+/// for several thousand more years. So a leading `0xFF` is structurally
+/// unreachable for any real id and unambiguously marks "this is a
+/// reserved sentinel, not a ULID". `0x00…` (16 zero bytes) remains the
+/// pre-existing "unset creator" value and is intentionally left distinct
+/// from these.
+const CREATED_BY_SENTINEL_TAG: u8 = 0xFF;
+/// Sentinel class discriminant (byte 1) for a workflow-initiated create.
+const CREATED_BY_CLASS_WORKFLOW: u8 = 0x01;
+/// Sentinel class discriminant (byte 1) for a system-internal create.
+const CREATED_BY_CLASS_SYSTEM: u8 = 0x02;
+
 /// 16 raw id bytes for the resource's `created_by`, derived from the
 /// authenticated principal.
 ///
 /// `User` / `ServiceAccount` carry a single ULID identity → its bytes.
 /// `Workflow` / `System` are not a config-author identity for a
-/// human/SA-initiated create; recording 16 zero bytes is the honest
-/// "no individual creator" sentinel (consistent with the unset-creator
-/// rows elsewhere) rather than fabricating one or panicking.
+/// human/SA-initiated create, but they are two *distinct* non-human
+/// actor classes and must not collapse into the same audit bytes (nor
+/// into the pre-existing all-zero "unset" value). Each gets a fixed
+/// 16-byte reserved sentinel — `[0xFF, class, 0, …]` — that is
+/// **audit-only**: structurally not a valid ULID/user-id, never to be
+/// resolved back to an identity. `Workflow`'s `workflow_id` is
+/// deliberately NOT embedded: `created_by` is a *who authored this
+/// config* field, and a workflow is an actor class here, not an
+/// individual creator — recording its id would fabricate a per-row
+/// identity the audit model does not assign.
 fn created_by_bytes(principal: &Principal) -> Vec<u8> {
+    let sentinel = |class: u8| {
+        let mut bytes = vec![0_u8; 16];
+        bytes[0] = CREATED_BY_SENTINEL_TAG;
+        bytes[1] = class;
+        bytes
+    };
     match principal {
         Principal::User(uid) => uid.as_bytes().to_vec(),
         Principal::ServiceAccount(sid) => sid.as_bytes().to_vec(),
-        Principal::Workflow { .. } | Principal::System => vec![0_u8; 16],
+        Principal::Workflow { .. } => sentinel(CREATED_BY_CLASS_WORKFLOW),
+        Principal::System => sentinel(CREATED_BY_CLASS_SYSTEM),
     }
 }
 
@@ -776,4 +806,59 @@ pub async fn get_resource_status(
     };
 
     Ok(Json(dto))
+}
+
+#[cfg(test)]
+mod tests {
+    use nebula_core::{Principal, WorkflowId};
+
+    use super::{
+        CREATED_BY_CLASS_SYSTEM, CREATED_BY_CLASS_WORKFLOW, CREATED_BY_SENTINEL_TAG,
+        created_by_bytes,
+    };
+
+    /// SECURITY/audit: the two non-human actor classes must NOT collapse
+    /// into identical `created_by` bytes, and neither may collide with
+    /// the pre-existing all-zero "unset creator" value. A `Workflow`
+    /// principal must also never embed its `workflow_id` (a workflow is
+    /// an actor *class* in this audit field, not an individual creator).
+    #[test]
+    fn created_by_distinguishes_workflow_system_and_unset() {
+        let wf = created_by_bytes(&Principal::Workflow {
+            workflow_id: WorkflowId::new(),
+            trigger_id: None,
+        });
+        let sys = created_by_bytes(&Principal::System);
+
+        // All exactly 16 bytes (the `resources.created_by` BYTEA width).
+        assert_eq!(wf.len(), 16);
+        assert_eq!(sys.len(), 16);
+
+        // Distinct from each other and from the unset sentinel.
+        assert_ne!(
+            wf, sys,
+            "Workflow and System must produce different created_by bytes"
+        );
+        assert_ne!(wf, vec![0_u8; 16], "Workflow must not be the unset value");
+        assert_ne!(sys, vec![0_u8; 16], "System must not be the unset value");
+
+        // Reserved tag + class discriminant, audit-only (structurally
+        // not a valid ULID — byte 0 == 0xFF is unreachable for a real
+        // id for millennia).
+        assert_eq!(wf[0], CREATED_BY_SENTINEL_TAG);
+        assert_eq!(wf[1], CREATED_BY_CLASS_WORKFLOW);
+        assert_eq!(sys[0], CREATED_BY_SENTINEL_TAG);
+        assert_eq!(sys[1], CREATED_BY_CLASS_SYSTEM);
+
+        // The workflow id is NOT embedded: two different workflows yield
+        // the same class sentinel (no fabricated per-row identity).
+        let wf2 = created_by_bytes(&Principal::Workflow {
+            workflow_id: WorkflowId::new(),
+            trigger_id: None,
+        });
+        assert_eq!(
+            wf, wf2,
+            "the Workflow sentinel must not vary with workflow_id"
+        );
+    }
 }
