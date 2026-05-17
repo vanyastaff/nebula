@@ -349,7 +349,7 @@ fn entry_with_id(
     }
 }
 
-async fn get_resource(app: axum::Router, res_id: &str) -> axum::http::Response<Body> {
+async fn get_resource_request(app: axum::Router, res_id: &str) -> axum::http::Response<Body> {
     let token = create_test_jwt();
     app.oneshot(
         Request::builder()
@@ -373,7 +373,7 @@ async fn get_resource_returns_200_with_mapped_summary() {
     let state = state_with_get_repo(&api_config, Some(entry)).await;
     let app = app::build_app(state, &api_config);
 
-    let response = get_resource(app, &id.to_string()).await;
+    let response = get_resource_request(app, &id.to_string()).await;
     assert_eq!(
         response.status(),
         StatusCode::OK,
@@ -422,7 +422,7 @@ async fn get_resource_unknown_id_is_404() {
     let state = state_with_get_repo(&api_config, None).await;
     let app = app::build_app(state, &api_config);
 
-    let response = get_resource(app, &ResourceId::new().to_string()).await;
+    let response = get_resource_request(app, &ResourceId::new().to_string()).await;
     assert_eq!(
         response.status(),
         StatusCode::NOT_FOUND,
@@ -457,7 +457,7 @@ async fn get_resource_cross_workspace_is_404_not_leaked() {
     let state = state_with_get_repo(&api_config, Some(foreign)).await;
     let app = app::build_app(state, &api_config);
 
-    let response = get_resource(app, &id.to_string()).await;
+    let response = get_resource_request(app, &id.to_string()).await;
     let status = response.status();
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -491,7 +491,7 @@ async fn get_resource_soft_deleted_is_404() {
     let state = state_with_get_repo(&api_config, Some(tombstone)).await;
     let app = app::build_app(state, &api_config);
 
-    let response = get_resource(app, &id.to_string()).await;
+    let response = get_resource_request(app, &id.to_string()).await;
     assert_eq!(
         response.status(),
         StatusCode::NOT_FOUND,
@@ -507,7 +507,7 @@ async fn get_resource_malformed_id_is_404() {
 
     // Not a `res_<ULID>` — an unparsable id is "not found", consistent
     // with the other workspace-scoped get-by-id handlers.
-    let response = get_resource(app, "not-a-valid-resource-id").await;
+    let response = get_resource_request(app, "not-a-valid-resource-id").await;
     assert_eq!(
         response.status(),
         StatusCode::NOT_FOUND,

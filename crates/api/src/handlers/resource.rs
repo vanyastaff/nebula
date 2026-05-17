@@ -170,7 +170,7 @@ pub async fn get_resource(
             // same "not found" outcome as a genuinely absent row: a
             // resource in another workspace, or a deleted one, must be
             // indistinguishable from non-existence.
-            entry.workspace_id.as_slice() == ws_bytes.as_slice() && entry.deleted_at.is_none()
+            entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none()
         })
         .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))?;
 
