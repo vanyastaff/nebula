@@ -354,6 +354,93 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
     }
 
+    /// Enqueue a control command onto the durable outbox. Dual-dispatch:
+    /// the scoped [`ControlQueue`] port (typed 16-byte id, opaque
+    /// `execution_id` string, `traceparent` string — no UTF-8-of-ULID
+    /// encoding) when wired, else the legacy `ControlQueueRepo`. The
+    /// §13-step-6 503-vs-500 error policy is centralized here so both
+    /// enqueue sites stay identical.
+    pub(crate) async fn enqueue_control(
+        &self,
+        command: nebula_storage::repos::ControlCommand,
+        execution_id: ExecutionId,
+        w3c: Option<nebula_core::W3cTraceContext>,
+    ) -> Result<(), ApiError> {
+        // §13 step 6: a backend that is intentionally absent or
+        // unreachable (`Internal`/`Connection`) is a 503 (infra down,
+        // not a logic bug); any other write failure is a 500. The two
+        // backends have distinct `StorageError` types, so each arm
+        // classifies its own error into `(is_unavailable, detail)` and
+        // this mapper centralizes the message + status policy.
+        let to_api_err = |is_unavailable: bool, detail: String| {
+            if is_unavailable {
+                ApiError::ServiceUnavailable(format!(
+                    "Execution {execution_id} persisted but control-queue backend is \
+                     unavailable — orchestration absent (canon §13 step 6, §12.2 \
+                     orphan): {detail}"
+                ))
+            } else {
+                ApiError::Internal(format!(
+                    "Execution {execution_id} persisted but failed to enqueue control \
+                     signal (canon §12.2 orphan — caller should retry): {detail}"
+                ))
+            }
+        };
+
+        if let Some(queue) = &self.control_queue {
+            let port_command = match command {
+                nebula_storage::repos::ControlCommand::Start => {
+                    nebula_storage_port::dto::ControlCommand::Start
+                },
+                nebula_storage::repos::ControlCommand::Cancel => {
+                    nebula_storage_port::dto::ControlCommand::Cancel
+                },
+                nebula_storage::repos::ControlCommand::Terminate => {
+                    nebula_storage_port::dto::ControlCommand::Terminate
+                },
+                nebula_storage::repos::ControlCommand::Resume => {
+                    nebula_storage_port::dto::ControlCommand::Resume
+                },
+                nebula_storage::repos::ControlCommand::Restart => {
+                    nebula_storage_port::dto::ControlCommand::Restart
+                },
+            };
+            let msg = nebula_storage_port::dto::ControlMsg {
+                id: *uuid::Uuid::new_v4().as_bytes(),
+                execution_id: execution_id.to_string(),
+                command: port_command,
+                scope: placeholder_scope(),
+                w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
+                reclaim_count: 0,
+            };
+            return queue.enqueue(&msg).await.map_err(|e| {
+                use nebula_storage_port::StorageError;
+                let unavailable =
+                    matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
+                to_api_err(unavailable, e.to_string())
+            });
+        }
+
+        let entry = nebula_storage::repos::ControlQueueEntry {
+            id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+            execution_id: execution_id.to_string().into_bytes(),
+            command,
+            issued_by: None,
+            issued_at: chrono::Utc::now(),
+            status: "Pending".to_string(),
+            processed_by: None,
+            processed_at: None,
+            error_message: None,
+            reclaim_count: 0,
+            w3c_trace_context: w3c,
+        };
+        self.control_queue_repo.enqueue(&entry).await.map_err(|e| {
+            use nebula_storage::StorageError;
+            let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
+            to_api_err(unavailable, e.to_string())
+        })
+    }
+
     /// Set the static API keys accepted via `X-API-Key` header.
     ///
     /// Each key should use the `nbl_sk_` prefix. Keys are compared in constant

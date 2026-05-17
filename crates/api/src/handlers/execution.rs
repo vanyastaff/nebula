@@ -7,8 +7,7 @@ use axum::{
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::{ExecutionState, ExecutionStatus};
-use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
-use uuid::Uuid;
+use nebula_storage::repos::ControlCommand;
 
 use crate::{
     errors::{ApiError, ApiResult, ProblemDetails},
@@ -398,35 +397,9 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
         has_trace_context = w3c_trace_context.is_some(),
         "execution: enqueue Start on control queue"
     );
-    let entry = ControlQueueEntry {
-        id: Uuid::new_v4().as_bytes().to_vec(),
-        execution_id: execution_id.to_string().into_bytes(),
-        command: ControlCommand::Start,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Pending".to_string(),
-        processed_by: None,
-        processed_at: None,
-        error_message: None,
-        reclaim_count: 0,
-        w3c_trace_context,
-    };
-    state.control_queue_repo.enqueue(&entry).await.map_err(|e| {
-        use nebula_storage::StorageError;
-        match &e {
-            StorageError::Internal(_) | StorageError::Connection(_) => {
-                ApiError::ServiceUnavailable(format!(
-                    "Execution {execution_id} persisted but control-queue backend is \
-                     unavailable — engine will not see Start signal \
-                     (canon §13 step 6, §12.2 orphan): {e}"
-                ))
-            },
-            _ => ApiError::Internal(format!(
-                "Execution {execution_id} persisted but failed to enqueue Start signal \
-                 (canon §12.2 orphan — caller should retry): {e}"
-            )),
-        }
-    })
+    state
+        .enqueue_control(ControlCommand::Start, execution_id, w3c_trace_context)
+        .await
 }
 
 /// Cancel execution
@@ -548,49 +521,12 @@ pub async fn cancel_execution(
         has_trace_context = w3c_trace_context.is_some(),
         "execution: enqueue Cancel on control queue"
     );
-    let entry = ControlQueueEntry {
-        id: Uuid::new_v4().as_bytes().to_vec(),
-        execution_id: execution_id.to_string().into_bytes(),
-        command: ControlCommand::Cancel,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Pending".to_string(),
-        processed_by: None,
-        processed_at: None,
-        error_message: None,
-        reclaim_count: 0,
-        w3c_trace_context,
-    };
+    // Canon §13 step 6 503-vs-500 policy is centralized in
+    // `enqueue_control`; the cancel row is already committed above, so
+    // a failed enqueue still surfaces as the orphan-signal error.
     state
-        .control_queue_repo
-        .enqueue(&entry)
-        .await
-        .map_err(|e| {
-            // Canon §13 step 6: when the control-queue / orchestration backend is
-            // intentionally absent or unreachable, return 503 Service Unavailable
-            // so the caller knows the infrastructure is down (not a logic bug).
-            //
-            // `StorageError::Internal` is the sentinel returned by the
-            // `AlwaysFailControlQueueRepo` test double, and is also the natural
-            // variant for a backend that fails to start or has no driver wired up.
-            // `StorageError::Connection` covers TCP/socket-level failures.
-            // All other variants (Conflict, NotFound, etc.) indicate unexpected
-            // write failures and fall back to 500 Internal.
-            use nebula_storage::StorageError;
-            match &e {
-                StorageError::Internal(_) | StorageError::Connection(_) => {
-                    ApiError::ServiceUnavailable(format!(
-                        "Execution {execution_id} cancelled in DB but control-queue backend is \
-                         unavailable — orchestration absent (canon §13 step 6, §12.2 \
-                         orphan): {e}"
-                    ))
-                },
-                _ => ApiError::Internal(format!(
-                    "Execution {execution_id} cancelled in DB but failed to enqueue Cancel signal \
-                     (canon §12.2 orphan — caller should retry): {e}"
-                )),
-            }
-        })?;
+        .enqueue_control(ControlCommand::Cancel, execution_id, w3c_trace_context)
+        .await?;
 
     // Extract fields from updated execution state
     let workflow_id = execution_state
