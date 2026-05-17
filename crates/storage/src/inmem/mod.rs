@@ -11,6 +11,7 @@
 mod control_queue;
 mod execution;
 mod idempotency_store;
+mod identity;
 mod journal;
 mod node_result;
 mod workflow;
@@ -18,6 +19,11 @@ mod workflow;
 pub use control_queue::InMemoryControlQueue;
 pub use execution::{InMemoryExecutionStore, InMemoryIdempotencyGuard};
 pub use idempotency_store::{InMemoryIdempotencyStore, InMemoryWebhookActivationStore};
+pub use identity::{
+    InMemoryAuditStore, InMemoryBlobStore, InMemoryMembershipStore, InMemoryOrgStore,
+    InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore, InMemoryUserStore,
+    InMemoryWorkspaceStore,
+};
 pub use journal::InMemoryJournalReader;
 pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};
