@@ -197,6 +197,21 @@ async fn drift_smoke_known_paths_are_present() {
         "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
         "/api/v1/orgs/{org}/workspaces/{ws}/executions",
         "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
+        "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+        // The single-resource config path: GET (read) / PUT
+        // (CAS update) / DELETE (soft-delete). Pinned so the
+        // config-CRUD surface is drift-detected alongside the
+        // collection and status paths.
+        "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}",
+        // The resource runtime-status read is the ONLY `{res}`
+        // sub-route, and it is GET-only: resource lifecycle
+        // (acquire/release/drain/reload) is engine-owned and
+        // deliberately never exposed over HTTP (INTEGRATION_MODEL
+        // §13.1). Pinning the status path here makes that
+        // "observe-only, no lifecycle verbs" boundary drift-detected —
+        // if a mutating `{res}` sub-route is ever added, the contract
+        // change is visible against this list.
+        "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status",
         // Webhooks: `POST /api/v1/hooks/{org}/{ws}/{trigger_slug}` is
         // mounted directly by `WebhookTransport::router()` (a plain
         // axum Router, not an OpenApiRouter) so it does not appear in
@@ -217,6 +232,35 @@ async fn drift_smoke_known_paths_are_present() {
              registration changed without updating this list."
         );
     }
+
+    // The resource runtime-status sub-route is **observe-only**: it must
+    // expose ONLY a `get` operation. Resource lifecycle
+    // (acquire/release/drain/reload) is engine-owned and deliberately
+    // never exposed over HTTP (INTEGRATION_MODEL §13.1), so an accidental
+    // mutating verb on this path is a contract regression — fail drift
+    // here rather than silently shipping a lifecycle write endpoint.
+    let status_item = paths
+        .get("/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status")
+        .and_then(Value::as_object)
+        .expect("the resource status path item must be an object");
+    let methods: Vec<&String> = status_item
+        .keys()
+        // OpenAPI path-item keys include non-operation fields
+        // (`parameters`, `summary`, …); only the HTTP verbs are operations.
+        .filter(|k| {
+            matches!(
+                k.as_str(),
+                "get" | "put" | "post" | "delete" | "patch" | "head" | "options" | "trace"
+            )
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        vec!["get"],
+        "the resource `/status` sub-route must be GET-only (observe-only; \
+         no lifecycle mutation over HTTP — INTEGRATION_MODEL §13.1); a \
+         non-`get` operation here is a contract regression. Found: {methods:?}"
+    );
 }
 
 /// Probe the two SwaggerUi-served endpoints — `/api/v1/openapi.json`

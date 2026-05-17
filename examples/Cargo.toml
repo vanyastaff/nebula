@@ -20,12 +20,15 @@ nebula-expression = { path = "../crates/expression" }
 nebula-core = { path = "../crates/core" }
 nebula-resource = { path = "../crates/resource" }
 nebula-schema = { path = "../crates/schema" }
+nebula-api = { path = "../crates/api" }
+nebula-storage = { path = "../crates/storage", features = ["credential-in-memory"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 parking_lot = { workspace = true }
 futures = { workspace = true }
 
@@ -44,6 +47,10 @@ path = "examples/expression_template_advanced.rs"
 [[example]]
 name = "expression_template_rendering"
 path = "examples/expression_template_rendering.rs"
+
+[[example]]
+name = "api_simple_server"
+path = "examples/api_simple_server.rs"
 
 [[example]]
 name = "m6_postgres_pool"

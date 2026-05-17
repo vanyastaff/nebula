@@ -1,4 +1,4 @@
-//! Integration tests for `nebula-api::services::webhook::WebhookTransport`.
+//! Integration tests for `nebula-api::transport::webhook::WebhookTransport`.
 //!
 //! Exercise the full HTTP round-trip: build a real axum router from
 //! the transport, drive requests through it with
@@ -31,9 +31,8 @@ use nebula_action::{
     TriggerHandler, TriggerRuntimeContext, WebhookAction, WebhookConfig, WebhookRequest,
     WebhookResponse, WebhookTriggerAdapter,
 };
-use nebula_api::services::webhook::{WebhookTransport, WebhookTransportConfig};
+use nebula_api::transport::webhook::{WebhookTransport, WebhookTransportConfig};
 use nebula_core::Dependencies;
-use nebula_schema::{HasSchema, ValidSchema};
 use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -70,14 +69,6 @@ impl Action for GitHubLikeWebhook {
                 "Integration test webhook",
             )
         })
-    }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -180,7 +171,7 @@ async fn register_webhook(
     transport: &WebhookTransport,
     secret: Vec<u8>,
 ) -> (
-    nebula_api::services::webhook::ActivationHandle,
+    nebula_api::transport::webhook::ActivationHandle,
     Arc<Mutex<Option<Url>>>,
 ) {
     let captured = Arc::new(Mutex::new(None));
@@ -428,14 +419,6 @@ impl Action for HangingWebhook {
             )
         })
     }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -647,14 +630,6 @@ impl Action for UnsignedWebhook {
             )
         })
     }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -705,14 +680,6 @@ impl Action for DefaultConfigWebhook {
             )
         })
     }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -744,7 +711,7 @@ impl WebhookAction for DefaultConfigWebhook {
 async fn register_typed<A: WebhookAction>(
     transport: &WebhookTransport,
     action: A,
-) -> nebula_api::services::webhook::ActivationHandle {
+) -> nebula_api::transport::webhook::ActivationHandle {
     let adapter = WebhookTriggerAdapter::new(action);
     let config = adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);

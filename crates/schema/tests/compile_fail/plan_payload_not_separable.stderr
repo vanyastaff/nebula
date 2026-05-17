@@ -1,0 +1,12 @@
+error[E0639]: cannot create non-exhaustive struct using struct expression
+  --> tests/compile_fail/plan_payload_not_separable.rs:11:13
+   |
+11 |       let _ = nebula_validator::policy::FieldPlan {
+   |  _____________^
+12 | |         path: todo!(),
+13 | |         presence: todo!(),
+14 | |         requiredness: todo!(),
+15 | |         directive: todo!(),
+16 | |         payload: todo!(),
+17 | |     };
+   | |_____^

@@ -123,8 +123,8 @@ extern crate self as nebula_schema;
 
 /// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
 pub mod builder;
-/// [`nebula_validator::RuleContext`] adapters backed by [`FieldValues`].
-pub(crate) mod context;
+/// Builds the validator predicate context (visibility/required) from schema fields + values.
+pub mod context;
 /// Error types for schema operations.
 pub mod error;
 /// Expression wrapper and [`ExpressionContext`] trait.
@@ -154,6 +154,8 @@ pub mod option;
 pub mod path;
 /// Common imports for schema-definition code.
 pub mod prelude;
+/// Pure schema-path / rule-reference parsing for lints and error merging.
+pub(crate) mod rule_ref;
 /// Top-level schema aggregate.
 pub mod schema;
 /// Secret value types, optional KDF, and `SecretWire`.
@@ -162,8 +164,6 @@ pub mod secret;
 pub mod transformer;
 /// Validated schema proof-tokens.
 pub mod validated;
-/// Internal adapters for validator path and error types.
-pub(crate) mod validator_bridge;
 /// Runtime value wrappers and wire-format helpers.
 pub mod value;
 /// Typed widget hints by field family.
@@ -216,7 +216,7 @@ pub use field::{
     ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, SecretField,
     SelectField, StringField,
 };
-pub use has_schema::{HasSchema, HasSelectOptions};
+pub use has_schema::{HasSchema, HasSelectOptions, schema_of};
 pub use input_hint::InputHint;
 #[cfg(feature = "schemars")]
 pub use json_schema::JsonSchemaExportError;
@@ -245,7 +245,7 @@ pub use widget::{
     StringWidget,
 };
 
-/// Schema wire-format version emitted in serialized output (Phase 2+ plugins read this).
+/// Schema wire-format version emitted in serialized output (plugins read this).
 pub const SCHEMA_WIRE_VERSION: u16 = 1;
 
 #[doc(hidden)]

@@ -54,7 +54,7 @@ provides the adapters:
 
 Execution / workflow persistence goes through the port adapters; the
 legacy `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` surface and the
-never-implemented spec-16 trait placeholders were deleted (ADR-0066).
+never-implemented spec-16 trait placeholders were deleted (ADR-0068).
 
 Layer 2 — planned / experimental (`repos` module):
 
@@ -142,12 +142,12 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - API stability: `stable` — the single architecture is the spec-16
   storage **port** (`nebula-storage-port`), implemented here for
   InMemory + SQLite + Postgres and rewired through `engine` / `api`
-  (ADR-0066). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
+  (ADR-0068). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
   deleted.
 - Lease fencing is **enforced**: `acquire_lease` returns a monotone
   `FencingToken` that gates every committed `TransitionBatch`, so a
   superseded holder is rejected even on a matching CAS version (the
-  zombie-runner hole; ADR-0066). Verified by
+  zombie-runner hole; ADR-0068). Verified by
   `crates/engine/tests/lease_takeover.rs`, the lease-handoff loom probe
   at `crates/storage-loom-probe/src/lease_handoff.rs`, and the
   conformance matrix's lease cases.
@@ -160,7 +160,7 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - Postgres adapter + identity stores are compile-verified and structurally
   identical to the runtime-verified SQLite tree, but Postgres runtime
   coverage is `DATABASE_URL`-gated and skip-clean — not claimed as
-  pg-verified (ADR-0066 "Verification status").
+  pg-verified (ADR-0068 "Verification status").
 
 ## Database migrations
 
@@ -185,7 +185,7 @@ migration — it destroys all local dev data.
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.3, §11.5, §12.2, §12.3.
 - Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
-- ADR: `docs/adr/0066-nebula-storage-spec16-port-adapter-tenancy.md`
+- ADR: `docs/adr/0068-nebula-storage-spec16-port-adapter-tenancy.md`
   (port / adapter / tenancy decision, supersession, the three
   correctness bugs, the migration-gap history).
 - Glossary: `docs/GLOSSARY.md` §2 (`execution_journal`,
@@ -197,7 +197,7 @@ migration — it destroys all local dev data.
 
 ## Appendix
 
-### Single storage architecture — the spec-16 port (ADR-0066)
+### Single storage architecture — the spec-16 port (ADR-0068)
 
 There is one architecture: the spec-16 storage **port**
 (`nebula-storage-port`, Core tier — ISP-segregated object-safe traits,
@@ -223,7 +223,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | `port_execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state |
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
 | stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
-| lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0066) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
+| lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0068) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
 | idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 

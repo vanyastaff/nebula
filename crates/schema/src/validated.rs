@@ -18,7 +18,7 @@ use crate::{
     field::{Field, ListField, NumberField, ObjectField},
     key::FieldKey,
     loader::{LoaderContext, LoaderRegistry, LoaderResult},
-    mode::{ExpressionMode, RequiredMode, VisibilityMode},
+    mode::ExpressionMode,
     option::SelectOption,
     path::FieldPath,
     schema::{
@@ -26,7 +26,6 @@ use crate::{
         resolve_select_loader_path,
     },
     secret::SecretValue,
-    validator_bridge::schema_path_from_validator_error,
     value::{FieldValue, FieldValues},
 };
 
@@ -331,17 +330,53 @@ impl ValidSchema {
         )
     )]
     pub fn validate(&self, values: &FieldValues) -> Result<ValidValues, ValidationReport> {
-        use crate::context::RootContext;
+        use crate::context::predicate_context_for;
 
         let mut report = ValidationReport::new();
-        let ctx = RootContext(values);
 
-        for field in &self.0.fields {
-            let path = FieldPath::root().join(field.key().clone());
-            validate_field(field, values.get(field.key()), &ctx, &path, &mut report);
+        // One whole-tree predicate context. Built once and shared across all
+        // nesting levels: a nested field's `When` may reference a sibling at
+        // any depth via an absolute RFC-6901 pointer, so per-level rebuilds
+        // would make cross-level predicates fail open.
+        let ctx = predicate_context_for(&self.0.fields, values);
+
+        // Top-level fields are the first field-set level. Visibility/required
+        // for every level (this one and each nested object/list/mode level)
+        // goes through the single policy resolver in `gate_and_validate_level`.
+        let entries: Vec<LevelEntry<'_>> = self
+            .0
+            .fields
+            .iter()
+            .map(|field| {
+                let schema_path = FieldPath::root().join(field.key().clone());
+                let validator_path = validator_path_from_schema_path(&schema_path);
+                LevelEntry {
+                    field,
+                    raw: values.get(field.key()),
+                    schema_path,
+                    validator_path,
+                }
+            })
+            .collect();
+        gate_and_validate_level(&entries, &ctx, &mut report);
+
+        // Schema-level rules run against the full submission
+        // (`values.to_json()`), but the predicate context is the
+        // secret-scrubbed `root_predicate_context_for`: a value-comparing root
+        // predicate can never read a `Field::Secret` plaintext, while legal
+        // non-secret nested predicates still resolve (no fail-open).
+        if !self.0.root_rules.is_empty() {
+            let json = values.to_json();
+            let pred_ctx = crate::context::root_predicate_context_from_json(&self.0.fields, &json);
+            if let Err(errs) = nebula_validator::validate_rules_with_ctx(
+                &json,
+                &self.0.root_rules,
+                Some(&pred_ctx),
+                nebula_validator::ExecutionMode::StaticOnly,
+            ) {
+                merge_validator_errors(&errs, &FieldPath::root(), &mut report);
+            }
         }
-
-        run_root_rules(&self.0.root_rules, values, &mut report);
 
         if report.has_errors() {
             tracing::warn!(
@@ -367,7 +402,7 @@ impl ValidSchema {
 
 /// Validated values — tied to a specific `ValidSchema`.
 ///
-/// Produced by `ValidSchema::validate()` (Task 21). Proof-token that values
+/// Produced by `ValidSchema::validate()`. Proof-token that values
 /// have been checked against the schema at least once.
 ///
 /// Owns an `Arc`-backed clone of the schema so the token can cross `.await`
@@ -553,7 +588,7 @@ impl ValidValues {
 
 /// Resolved values — all `FieldValue::Expression` entries have been evaluated.
 ///
-/// Produced by `ValidValues::resolve()` (Task 23). Proof-token that no
+/// Produced by `ValidValues::resolve()`. Proof-token that no
 /// expression placeholders remain in the value tree.
 ///
 /// Owns an `Arc`-backed clone of the schema so it is freely `Send + 'static`
@@ -1032,42 +1067,165 @@ fn is_absent_for_required(field: &Field, raw: Option<&FieldValue>) -> bool {
     }
 }
 
+/// Convert an absolute schema path to the validator's RFC-6901 `FieldPath`.
+///
+/// The shared predicate context is keyed by absolute `/a/b` pointers, so a
+/// nested field's policy decl must use the same absolute pointer for its
+/// `When` predicate lookups to resolve across nesting levels.
+fn validator_path_from_schema_path(path: &FieldPath) -> nebula_validator::foundation::FieldPath {
+    nebula_validator::foundation::FieldPath::from_segments(path.segments().iter().map(|seg| {
+        match seg {
+            crate::path::PathSegment::Key(k) => k.as_str().to_owned(),
+            crate::path::PathSegment::Index(i) => i.to_string(),
+        }
+    }))
+    .unwrap_or_else(|| nebula_validator::foundation::FieldPath::single(""))
+}
+
+/// One field of a level, paired with its value and the schema/validator
+/// paths for that exact position in the tree.
+struct LevelEntry<'a> {
+    field: &'a Field,
+    raw: Option<&'a FieldValue>,
+    /// Schema-side path (dotted/indexed) used by value-rule reporting.
+    schema_path: FieldPath,
+    /// Validator-side RFC-6901 path used for the policy decl + the field
+    /// pointer carried on a `required` failure.
+    validator_path: nebula_validator::foundation::FieldPath,
+}
+
+/// Resolve visibility/required for one field-set level against the shared
+/// whole-tree predicate context, then dispatch the per-field validation the
+/// validator decided.
+///
+/// This is the SOLE route into per-field value validation at every nesting
+/// level: a field reaches its value rules only through the `FieldPlan`
+/// produced by `resolve_field_policies`. Each plan carries the `LevelEntry` it
+/// was computed for as its opaque payload, so this runner cannot pair a plan
+/// with the wrong field — it is a dumb dispatcher on `plan.directive` with no
+/// policy logic of its own.
+///
+/// Each decl's `value_present` is computed here as
+/// `!is_absent_for_required(field, raw)` and `raw_present` as `raw.is_some()`:
+/// the schema owns the emptiness verdict (an empty string / empty collection /
+/// null counts as ABSENT for the required check — HTML-form parity), feeds it
+/// to the validator as data, and the validator decides and emits `required`.
+fn gate_and_validate_level(
+    entries: &[LevelEntry<'_>],
+    ctx: &nebula_validator::PredicateContext,
+    report: &mut ValidationReport,
+) {
+    use nebula_validator::policy::{
+        FieldDirective, FieldPolicyDecl, RequiredPolicy, VisibilityPolicy, resolve_field_policies,
+    };
+
+    fn vis_policy(m: &crate::mode::VisibilityMode) -> VisibilityPolicy<'_> {
+        match m {
+            crate::mode::VisibilityMode::Always => VisibilityPolicy::Always,
+            crate::mode::VisibilityMode::Never => VisibilityPolicy::Never,
+            crate::mode::VisibilityMode::When(r) => VisibilityPolicy::When(r),
+        }
+    }
+    fn req_policy(m: &crate::mode::RequiredMode) -> RequiredPolicy<'_> {
+        match m {
+            crate::mode::RequiredMode::Never => RequiredPolicy::Optional,
+            crate::mode::RequiredMode::Always => RequiredPolicy::Always,
+            crate::mode::RequiredMode::When(r) => RequiredPolicy::When(r),
+        }
+    }
+
+    let decls = entries.iter().map(|e| {
+        FieldPolicyDecl::new(
+            &e.validator_path,
+            vis_policy(e.field.visible()),
+            req_policy(e.field.required()),
+            !is_absent_for_required(e.field, e.raw),
+            e.raw.is_some(),
+            e,
+        )
+    });
+    let resolution = resolve_field_policies(decls, ctx);
+
+    // `required_failures` are validator errors carrying the field pointer;
+    // merge them verbatim (code stays `required`, schema path resolved from
+    // the carried pointer). The fallback path is unused because every decl
+    // carries an explicit validator path. The validator is the SOLE
+    // `required` emitter — this runner never synthesizes one.
+    merge_validator_errors(&resolution.required_failures, &FieldPath::root(), report);
+
+    // Dumb dispatcher: act on `plan.directive` only. Each plan carries the
+    // `LevelEntry` it was computed for as its payload, so a plan can never be
+    // paired with the wrong field; `FieldDirective` is cross-crate
+    // `#[non_exhaustive]`, so an unknown future variant takes the wildcard arm,
+    // which fails closed by still running structural validation (validate-more
+    // — never silently skip a present value). Every audit line records only the
+    // field PATH and the resolved policy enums — never the value, `entry.raw`,
+    // or the predicate context — so secret-shaped values stay out of logs.
+    for plan in &resolution.plans {
+        let entry = plan.payload;
+        match plan.directive {
+            FieldDirective::Skip => {
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "skipped",
+                    "field-gate decision"
+                );
+            },
+            FieldDirective::RequiredAbsent => {
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "required-emitted",
+                    "field-gate decision"
+                );
+            },
+            FieldDirective::Validate => {
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "value-validated",
+                    "field-gate decision"
+                );
+                validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
+            },
+            _ => {
+                // Conservative fallback for an unknown future directive: still
+                // run structural validation. For a validation seam the safe
+                // direction is to validate more, not less — silently skipping
+                // would let a present value (e.g. a smuggled expression) reach
+                // resolve unchecked. The validator remains the sole `required`
+                // emitter, so this never synthesizes a `required`.
+                tracing::debug!(
+                    target: "nebula_schema::validate",
+                    field = %entry.schema_path,
+                    presence = ?plan.presence,
+                    requiredness = ?plan.requiredness,
+                    decision = "unknown-directive-validated",
+                    "field-gate decision"
+                );
+                validate_field(entry.field, entry.raw, &entry.schema_path, ctx, report);
+            },
+        }
+    }
+}
+
 /// Validate a single field against an optional raw value and a context.
 ///
 /// Recurses for `Object`, `List`, and `Mode` containers.
 fn validate_field(
     field: &Field,
     raw: Option<&FieldValue>,
-    ctx: &dyn nebula_validator::RuleContext,
     path: &FieldPath,
+    ctx: &nebula_validator::PredicateContext,
     report: &mut ValidationReport,
 ) {
-    // Visibility predicate — if hidden and absent, skip silently.
-    let visible = match field.visible() {
-        VisibilityMode::Always => true,
-        VisibilityMode::Never => false,
-        VisibilityMode::When(rule) => rule.evaluate(ctx),
-    };
-    if !visible && raw.is_none() {
-        return;
-    }
-
-    // Required predicate.
-    let required = match field.required() {
-        RequiredMode::Never => false,
-        RequiredMode::Always => true,
-        RequiredMode::When(rule) => rule.evaluate(ctx),
-    };
-    if required && is_absent_for_required(field, raw) {
-        report.push(
-            ValidationError::builder("required")
-                .at(path.clone())
-                .message(format!("field `{path}` is required"))
-                .build(),
-        );
-        return;
-    }
-
     let Some(value) = raw else {
         return;
     };
@@ -1106,7 +1264,7 @@ fn validate_field(
     }
 
     // Value rules apply to literals only from this point on.
-    validate_literal_value(field, value, ctx, path, report);
+    validate_literal_value(field, value, path, ctx, report);
 }
 
 /// Type-check and rule-run a literal (non-expression) value.
@@ -1117,8 +1275,8 @@ fn validate_field(
 fn validate_literal_value(
     field: &Field,
     value: &FieldValue,
-    ctx: &dyn nebula_validator::RuleContext,
     path: &FieldPath,
+    ctx: &nebula_validator::PredicateContext,
     report: &mut ValidationReport,
 ) {
     use crate::{
@@ -1146,7 +1304,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Secret(f) => {
             if let FieldValue::SecretLiteral(sv) = value {
@@ -1184,7 +1342,7 @@ fn validate_literal_value(
                         transformed
                     },
                 };
-                run_rules(field.rules(), &v_for_rules, path, report);
+                run_value_rules(field.rules(), &v_for_rules, path, report);
                 return;
             }
             let FieldValue::Literal(lit) = value else {
@@ -1200,7 +1358,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Code(f) => {
             let FieldValue::Literal(lit) = value else {
@@ -1216,7 +1374,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Number(NumberField {
             integer,
@@ -1246,7 +1404,7 @@ fn validate_literal_value(
                 );
                 return;
             }
-            run_rules(rules, &transformed, path, report);
+            run_value_rules(rules, &transformed, path, report);
         },
         Field::Boolean(_) => {
             let FieldValue::Literal(lit) = value else {
@@ -1300,7 +1458,7 @@ fn validate_literal_value(
                 _ => return,
             };
             let transformed = apply_transformers(transformers, raw_json);
-            run_rules(rules, &transformed, path, report);
+            run_value_rules(rules, &transformed, path, report);
             if !allow_custom && !options.is_empty() {
                 check_select_options(options, *multiple, &transformed, path, report);
             }
@@ -1339,7 +1497,7 @@ fn validate_literal_value(
                 _ => return,
             };
             let transformed_list_json = apply_transformers(transformers, list_json);
-            run_rules(rules, &transformed_list_json, path, report);
+            run_value_rules(rules, &transformed_list_json, path, report);
             if let Some(min) = min_items
                 && item_count < *min as usize
             {
@@ -1391,12 +1549,25 @@ fn validate_literal_value(
                     );
                 }
             }
-            // Recurse into typed items when schema is present.
+            // Recurse into typed items when schema is present. Each element
+            // is the same item schema at a distinct index — one level, gated
+            // through the shared policy resolver.
             if let (Some(item_field), Some(items_fv)) = (item.as_deref(), items_typed) {
-                for (i, item_val) in items_fv.iter().enumerate() {
-                    let item_path = path.clone().join(i);
-                    validate_field(item_field, Some(item_val), ctx, &item_path, report);
-                }
+                let entries: Vec<LevelEntry<'_>> = items_fv
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item_val)| {
+                        let item_path = path.clone().join(i);
+                        let validator_path = validator_path_from_schema_path(&item_path);
+                        LevelEntry {
+                            field: item_field,
+                            raw: Some(item_val),
+                            schema_path: item_path,
+                            validator_path,
+                        }
+                    })
+                    .collect();
+                gate_and_validate_level(&entries, ctx, report);
             }
         },
         Field::Object(ObjectField {
@@ -1415,12 +1586,24 @@ fn validate_literal_value(
                 return;
             };
             let transformed = apply_transformers(transformers, value.to_json());
-            run_rules(rules, &transformed, path, report);
-            let sub_ctx = crate::context::ObjectContext(map);
-            for child in child_fields {
-                let child_path = path.clone().join(child.key().clone());
-                validate_field(child, map.get(child.key()), &sub_ctx, &child_path, report);
-            }
+            run_value_rules(rules, &transformed, path, report);
+            // Nested object children are their own field-set level, gated
+            // against the shared whole-tree context (a child's `When` may
+            // reference a sibling at any depth via an absolute pointer).
+            let entries: Vec<LevelEntry<'_>> = child_fields
+                .iter()
+                .map(|child| {
+                    let child_path = path.clone().join(child.key().clone());
+                    let validator_path = validator_path_from_schema_path(&child_path);
+                    LevelEntry {
+                        field: child,
+                        raw: map.get(child.key()),
+                        schema_path: child_path,
+                        validator_path,
+                    }
+                })
+                .collect();
+            gate_and_validate_level(&entries, ctx, report);
         },
         Field::Mode(ModeField {
             variants,
@@ -1483,7 +1666,7 @@ fn validate_literal_value(
                     return;
                 },
             };
-            run_rules(rules, &value.to_json(), path, report);
+            run_value_rules(rules, &value.to_json(), path, report);
             let resolved_key = resolved_key.or(default_variant.as_deref());
             let Some(resolved_key) = resolved_key else {
                 report.push(
@@ -1507,8 +1690,18 @@ fn validate_literal_value(
                 return;
             };
             {
+                // The mode payload is a single-field level; gate it through
+                // the shared resolver so the variant field's own
+                // visibility/required is honored too.
                 let payload_path = path.clone().join(payload_key.clone());
-                validate_field(&variant.field, mode_value, ctx, &payload_path, report);
+                let validator_path = validator_path_from_schema_path(&payload_path);
+                let entries = [LevelEntry {
+                    field: &variant.field,
+                    raw: mode_value,
+                    schema_path: payload_path,
+                    validator_path,
+                }];
+                gate_and_validate_level(&entries, ctx, report);
             }
         },
         // File, Computed, Dynamic, Notice — no type-check rule at schema time.
@@ -1568,10 +1761,10 @@ fn validate_literal_value(
                 return;
             }
 
-            run_rules(field.rules(), &transformed, path, report);
+            run_value_rules(field.rules(), &transformed, path, report);
         },
         Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {
-            run_rules(field.rules(), &value.to_json(), path, report);
+            run_value_rules(field.rules(), &value.to_json(), path, report);
         },
     }
 }
@@ -1656,98 +1849,59 @@ fn check_select_options(
     }
 }
 
-/// Translate a raw validator error code to the `STANDARD_CODES` vocabulary.
+/// Merge validator errors into the schema [`ValidationReport`] verbatim.
 ///
-/// The nebula-validator crate uses its own code names (e.g. `"min_length"`,
-/// `"invalid_format"`). The schema crate `STANDARD_CODES` use a different
-/// namespace (`"length.min"`, `"pattern"`, etc.). This function performs the
-/// one-way mapping so that callers observe only `STANDARD_CODES` values.
-fn translate_validator_code(
-    raw_code: &str,
-    params: &[(
-        std::borrow::Cow<'static, str>,
-        std::borrow::Cow<'static, str>,
-    )],
-) -> String {
-    match raw_code {
-        "min_length" => "length.min".to_owned(),
-        "max_length" => "length.max".to_owned(),
-        "min" => "range.min".to_owned(),
-        "max" => "range.max".to_owned(),
-        // "invalid_format" is emitted by Pattern, Email, and Url rules.
-        // Pattern rule includes a "pattern" param; Email/Url set "expected" to "email"/"url".
-        "invalid_format" => {
-            let has_pattern_param = params.iter().any(|(k, _)| k.as_ref() == "pattern");
-            if has_pattern_param {
-                return "pattern".to_owned();
-            }
-            let expected = params
-                .iter()
-                .find(|(k, _)| k.as_ref() == "expected")
-                .map(|(_, v)| v.as_ref());
-            match expected {
-                Some("email") => "email".to_owned(),
-                Some("url") => "url".to_owned(),
-                _ => "pattern".to_owned(),
-            }
-        },
-        other => other.to_owned(),
-    }
-}
-
-/// Apply a slice of rules to a JSON literal value, pushing errors into `report`.
-fn run_rules(
-    rules: &[nebula_validator::Rule],
-    value: &serde_json::Value,
-    path: &FieldPath,
-    report: &mut ValidationReport,
-) {
-    use nebula_validator::ExecutionMode;
-    if let Err(errs) = nebula_validator::validate_rules(value, rules, ExecutionMode::StaticOnly) {
-        push_validator_rule_errors(&errs, path, report);
-    }
-}
-
-/// Run schema-level rules against the full submitted JSON object.
-fn run_root_rules(
-    rules: &[nebula_validator::Rule],
-    values: &FieldValues,
-    report: &mut ValidationReport,
-) {
-    use nebula_validator::{ExecutionMode, PredicateContext};
-
-    if rules.is_empty() {
-        return;
-    }
-
-    let json = values.to_json();
-    let pred_ctx = PredicateContext::from_json(&json);
-    if let Err(errs) = nebula_validator::validate_rules_with_ctx(
-        &json,
-        rules,
-        Some(&pred_ctx),
-        ExecutionMode::StaticOnly,
-    ) {
-        push_validator_rule_errors(&errs, &FieldPath::root(), report);
-    }
-}
-
-fn push_validator_rule_errors(
+/// The validator is the sole emitter of rule-failure codes: each error's code
+/// flows through unchanged (no schema-side namespace remap), the message is
+/// preserved, and the issue path is the validator error's own RFC-6901 field
+/// pointer parsed back into a schema [`FieldPath`]. When the validator error
+/// carries no parsable pointer the caller-supplied `fallback` path is used.
+fn merge_validator_errors(
     errs: &nebula_validator::foundation::ValidationErrors,
-    path: &FieldPath,
+    fallback: &FieldPath,
     report: &mut ValidationReport,
 ) {
     for e in errs.errors() {
-        let raw_code: &str = e.code.as_ref();
+        let code: String = e.code.as_ref().to_owned();
         let msg: String = e.message.as_ref().to_owned();
-        let code = translate_validator_code(raw_code, e.params());
-        let issue_path = schema_path_from_validator_error(path, e);
+        let issue_path = match e.field_pointer().as_deref() {
+            Some(pointer) => {
+                crate::rule_ref::field_path_from_json_pointer(pointer).unwrap_or_else(|| {
+                    tracing::warn!(
+                        target: "nebula_schema::validate",
+                        pointer,
+                        fallback = %fallback,
+                        "validator error carried unparsable field pointer; falling back"
+                    );
+                    fallback.clone()
+                })
+            },
+            None => fallback.clone(),
+        };
         report.push(
             ValidationError::builder(code)
                 .at(issue_path)
                 .message(msg)
                 .build(),
         );
+    }
+}
+
+/// Apply a slice of rules to a JSON value through the single validator
+/// crossing, merging any failures into `report`.
+fn run_value_rules(
+    rules: &[nebula_validator::Rule],
+    value: &serde_json::Value,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    if let Err(errs) = nebula_validator::validate_rules_with_ctx(
+        value,
+        rules,
+        None,
+        nebula_validator::ExecutionMode::StaticOnly,
+    ) {
+        merge_validator_errors(&errs, path, report);
     }
 }
 

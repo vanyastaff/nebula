@@ -8,7 +8,7 @@
 //! `<Name>Properties` companion struct (`#[derive(Schema, Deserialize)]`)
 //! that owns the setup-form schema; `Credential::Properties` points at
 //! it and the engine reads the schema via
-//! `Credential::properties_schema()`.
+//! `nebula_schema::schema_of::<C::Properties>()` (ADR-0052 P3).
 
 pub mod api_key;
 pub mod basic_auth;

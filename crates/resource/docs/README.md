@@ -14,7 +14,7 @@ event streaming.
 
 | Type | Role |
 |------|------|
-| [`Resource`] | Central trait — 5 associated types, 4 lifecycle methods (`create`, `check`, `shutdown`, `destroy`) |
+| [`Resource`] | Central trait — 4 associated types, lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + credential-rotation hooks |
 | [`Pooled`] | Topology trait for N interchangeable instances with checkout/recycle semantics |
 | [`Resident`] | Topology trait for one shared instance cloned on each acquire |
 | [`Service`] | Topology trait for a long-lived runtime that issues short-lived tokens |
@@ -55,7 +55,6 @@ use nebula_resource::{
     resource_key, ResourceContext, Error, Manager, PoolConfig, Resource,
     ResourceConfig, ResourceMetadata,
 };
-use nebula_credential::NoCredential;
 use nebula_core::ResourceKey;
 
 // --- Config (no secrets) -----------------------------------------------------
@@ -86,12 +85,14 @@ struct HttpRuntime {
 
 struct HttpResource;
 
+// No `#[credential]` field — this resource needs no credential. (There is
+// no `Credential` associated type or `NoCredential` opt-out; a credential-
+// bound resource instead declares a `#[credential(key = "...")]` slot.)
 impl Resource for HttpResource {
     type Config     = HttpConfig;
     type Runtime    = HttpRuntime;
     type Lease      = HttpRuntime;   // Pooled: Lease == Runtime (cloned on checkout)
     type Error      = Error;
-    type Credential = NoCredential;  // No credential needed
 
     fn key() -> ResourceKey {
         resource_key!("http.client")
@@ -100,7 +101,6 @@ impl Resource for HttpResource {
     async fn create(
         &self,
         config: &HttpConfig,
-        _scheme: &(),
         _ctx: &ResourceContext,
     ) -> Result<HttpRuntime, Error> {
         Ok(HttpRuntime { base_url: config.base_url.clone() })
@@ -140,7 +140,7 @@ use tokio_util::sync::CancellationToken;
 async fn main() -> Result<(), nebula_resource::Error> {
     let manager = Manager::new();
 
-    // Simple registration — Credential = NoCredential, scope = Global, no resilience.
+    // Simple registration — Global scope, no resilience, no recovery gate.
     manager.register_pooled(
         HttpResource,
         HttpConfig { base_url: "https://api.example.com".into(), timeout_ms: 5_000 },
@@ -149,9 +149,10 @@ async fn main() -> Result<(), nebula_resource::Error> {
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
 
-    // acquire_pooled_default: no scheme arg for Credential = NoCredential.
+    // acquire_pooled: no scheme arg — credentials live in the resource's
+    // `#[credential]` slot fields, not in an acquire argument.
     let handle = manager
-        .acquire_pooled_default::<HttpResource>(&ctx, &AcquireOptions::default())
+        .acquire_pooled::<HttpResource>(&ctx, &AcquireOptions::default())
         .await?;
 
     // Use via Deref — handle is held until dropped.
@@ -261,20 +262,20 @@ suffixes.
 crates/resource/
 ├── src/
 │   ├── lib.rs             Re-exports and crate-level docs
-│   ├── resource.rs        Resource trait (5 associated types + 6 lifecycle methods)
-│   ├── manager/           Manager directory — split per Tech Spec §5.4:
-│   │   ├── mod.rs              Manager type + register/acquire entry points
+│   ├── resource.rs        Resource trait (4 associated types + lifecycle methods)
+│   ├── slot.rs            SlotCell — lock-free per-slot resolved-credential holder
+│   ├── dedup.rs           slot_identity + SLOT_IDENTITY_UNBOUND (anti-bleed key)
+│   ├── manager/           Manager directory:
+│   │   ├── mod.rs              Manager type + register/acquire + refresh_slot/revoke_slot
 │   │   ├── options.rs          ManagerConfig, RegisterOptions, ShutdownConfig, DrainTimeoutPolicy
-│   │   ├── registration.rs     register_inner + reverse-index population
 │   │   ├── gate.rs             Recovery-gate admission helpers
 │   │   ├── execute.rs          Resilience pipeline + register-time pool config validation
-│   │   ├── rotation.rs         ResourceDispatcher + on_credential_* fan-out
 │   │   └── shutdown.rs         graceful_shutdown + drain helpers + set_phase_all*
 │   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
 │   ├── guard.rs           ResourceGuard — RAII acquire lease (Owned / Guarded / Shared)
 │   ├── context.rs         ResourceContext — execution context with capabilities
-│   ├── error.rs           Error, ErrorKind, ErrorScope, RotationOutcome
-│   ├── events.rs          ResourceEvent — 12 lifecycle event variants
+│   ├── error.rs           Error, ErrorKind, ErrorScope
+│   ├── events.rs          ResourceEvent — 14 lifecycle event variants
 │   ├── options.rs         AcquireOptions (deadline-only since R-051)
 │   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot, OutcomeCountersSnapshot
 │   ├── state.rs           ResourcePhase, ResourceStatus

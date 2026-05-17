@@ -18,11 +18,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     config::{ApiConfig, IdempotencyApiConfig},
+    domain,
     middleware::{
         IdempotencyLayer, idempotency::IdempotencyConfig, rate_limit::RateLimitState,
         security_headers::security_headers_middleware,
     },
-    routes,
     state::AppState,
 };
 
@@ -34,7 +34,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // generated `OpenApi` value, so any handler missing
     // `#[utoipa::path]` would fail to pass through `routes!()` at compile
     // time — drift detection is structural rather than review-time.
-    let (api_routes, openapi_spec) = routes::create_routes(state.clone(), config);
+    let (api_routes, openapi_spec) = domain::create_routes(state.clone(), config);
 
     let path_count = openapi_spec.paths.paths.len();
     // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
@@ -137,7 +137,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // Mounted on the plain axum `Router` so they never appear in
     // `/api/v1/openapi.json`. Auth is the shared-token middleware
     // gated by `AppState.internal_shared_token`.
-    let routes = routes.merge(routes::internal::router(state));
+    let routes = routes.merge(domain::internal::router(state));
 
     // Build per-IP rate limiter from config.
     let rate_limit = RateLimitState::new(config.rate_limit_per_second);

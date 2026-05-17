@@ -99,7 +99,7 @@ impl Credential for InteractiveTestCredential {
             nebula_core::credential_key!("interactive_test"),
             "Interactive Test",
             "Test credential for pending lifecycle",
-            Self::properties_schema(),
+            nebula_credential::schema_of::<Self::Properties>(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }
@@ -166,7 +166,7 @@ impl Credential for RetryAwareCredential {
             nebula_core::credential_key!("retry_aware"),
             "Retry Aware",
             "Test credential for retry-poll pending lifecycle",
-            Self::properties_schema(),
+            nebula_credential::schema_of::<Self::Properties>(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

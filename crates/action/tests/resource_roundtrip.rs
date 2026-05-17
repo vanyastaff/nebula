@@ -15,7 +15,6 @@ use nebula_action::{
     ResourceActionAdapter, ResourceHandler, TestContextBuilder,
 };
 use nebula_core::Dependencies;
-use nebula_schema::{HasSchema, ValidSchema};
 
 /// Handle to a fictitious pool. Non-trivial enough to expose any
 /// downcast mismatch as a test failure rather than a spurious pass.
@@ -49,16 +48,6 @@ impl Action for PoolAction {
                 "Typed pool resource",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {

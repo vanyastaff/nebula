@@ -6,16 +6,26 @@
 //!
 //! ## Key modules
 //!
-//! - `handlers` — thin HTTP handlers: extract, validate, delegate, return. Includes `auth`, `me`,
-//!   `org`, `workflow`, `execution`, `credential`, `catalog`, `openapi`.
+//! - `domain` — self-contained per-domain modules (canon §12.7), each
+//!   `domain/<x>/{routes,handler,dto}.rs`: `auth`, `me`, `org`, `workflow`,
+//!   `execution`, `credential`, `catalog`, `health`, `resource`. Route
+//!   assembly (`create_routes` + the per-group middleware / tenant nesting)
+//!   lives in [`domain`]'s `mod.rs`; the flat `domain::workspace`,
+//!   `domain::internal`, and `domain::metrics` modules carry assembly-only
+//!   routing. All tenant-scoped routes nest under
+//!   `/api/v1/orgs/{org}/workspaces/{ws}/…`. Slug-routed webhooks are
+//!   mounted directly by the transport (see [`transport::webhook`]);
+//!   internal ops endpoints live under [`domain::internal`].
+//! - `domain::shared` — cross-domain DTOs: cursor pagination
+//!   (`CursorParams`, `PaginatedResponse<T>`), the page/offset
+//!   `PaginationParams`, and the canonical `AckResponse`.
 //! - `middleware` — auth (JWT + API-key → `AuthContext`), tenancy (path-based org/workspace
 //!   resolution via `nebula-core::Slug`), RBAC, CSRF, tracing, security headers, request ID.
-//! - `errors` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4. Includes
+//! - `error` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4. Includes
 //!   `SessionExpired`, `MfaRequired`, `InsufficientRole`, `OrgNotFound`, `WorkspaceNotFound`,
 //!   `SlugConflict`, `CsrfRejected`, `PaginationInvalid`, `RateLimited`, `TenantMismatch` among
 //!   others.
-//! - `models::pagination` — cursor-based pagination: `CursorParams`, `PaginatedResponse<T>`.
-//! - `services::webhook` — converged inbound webhook transport
+//! - `transport::webhook` — converged inbound webhook transport
 //!   (programmatic + slug-routed surfaces, M3.3 / ADR-0049):
 //!   `WebhookTransport`, `WebhookKey`, `WebhookRateLimiter`,
 //!   `EndpointProviderImpl`, storage bootstrap, lifecycle subscriber.
@@ -24,25 +34,21 @@
 //! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CookieConfig`, `CorsConfig`,
 //!   `VersioningConfig`, `PaginationConfig`) / `JwtSecret`; startup fails hard on a missing or
 //!   short secret — no `Default` impl (§4.5 operational honesty).
-//! - `routes` — domain-scoped route builders: `auth`, `me`, `org`, `workspace`, `workflow`,
-//!   `execution`, `credential`, `catalog`, `openapi`. All tenant-scoped routes nest
-//!   under `/api/v1/orgs/{org}/workspaces/{ws}/…`. Slug-routed webhooks
-//!   are mounted directly by the transport (see [`services::webhook`]).
-//!   Internal ops endpoints live under [`routes::internal`].
 //!
 //! ## Authentication planes (ADR-0033)
 //!
 //! Keep **Plane A** (who may call this API) separate from **Plane B** (integration credentials
 //! for workflows talking to *external* systems):
 //!
-//! - **`auth`** + **`middleware::auth`** — **Plane A**: identity, sessions, MFA, PATs, and the
-//!   user-facing OAuth sign-in flow plus the cookie / JWT / `X-API-Key` middleware that gates the
-//!   Nebula API itself.
-//! - **`credential`** — **Plane B infrastructure**: OAuth2 flow helpers (PKCE, signed state, token
-//!   exchange) and input validators for integration credentials. Located under [`services::oauth`]
-//!   with validators in [`extractors::credential`]. HTTP handlers live in [`handlers::credential`];
-//!   route wiring in [`routes::workspace`] and [`routes::credential`]. All credential routes are
-//!   **protected by Plane A** middleware.
+//! - **[`domain::auth`]** + **`middleware::auth`** — **Plane A**: identity, sessions, MFA, PATs,
+//!   and the user-facing OAuth sign-in flow plus the cookie / JWT / `X-API-Key` middleware that
+//!   gates the Nebula API itself. The Plane-A backend subsystem lives under
+//!   [`domain::auth::backend`].
+//! - **[`domain::credential`]** — **Plane B infrastructure**: OAuth2 flow helpers (PKCE, signed
+//!   state, token exchange) and input validators for integration credentials. Flow helpers live
+//!   under [`transport::oauth`] with validators in [`extractors::credential`]. HTTP handlers live
+//!   in [`domain::credential::handler`]; route wiring in [`domain::workspace`] and
+//!   [`domain::credential::routes`]. All credential routes are **protected by Plane A** middleware.
 //!
 //! Do not merge these into one conceptual “auth” module — naming stays explicit per ADR-0033.
 //!
@@ -59,24 +65,24 @@
 #![warn(clippy::all)]
 
 pub mod app;
-pub mod auth;
 pub mod config;
-pub mod errors;
+pub mod domain;
+pub mod error;
 pub mod extractors;
-pub mod handlers;
 pub mod middleware;
-pub mod models;
 pub mod openapi;
-pub mod routes;
-pub mod server;
-pub mod services;
+pub mod ports;
 pub mod state;
 pub mod telemetry_init;
 mod trace_capture;
+pub mod transport;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
-pub use errors::{ApiError, ApiResult};
-pub use models::pagination::{CursorParams, PaginatedResponse};
+pub use domain::resource::handler::{
+    map_resource_create_storage_error, map_resource_update_storage_error,
+};
+pub use domain::shared::{CursorParams, PaginatedResponse};
+pub use error::{ApiError, ApiResult, ProblemDetails};
 pub use state::AppState;
 pub use telemetry_init::init_api_telemetry;

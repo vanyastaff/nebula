@@ -39,7 +39,7 @@ Related DMMF / typestate discussion: `docs/GLOSSARY.md` §9, `docs/STYLE.md`.
 - `Rule` — typed sum-of-sums: `Value(ValueRule)` / `Predicate(Predicate)` / `Logic(Box<Logic>)` / `Deferred(DeferredRule)` / `Described(Box<Rule>, String)`. Each inner kind owns exactly one method that makes sense for it; cross-kind silent-pass is a compile error.
 - `FieldPath` — RFC 6901 JSON-pointer with construction-time validation (replaces raw `String` paths in predicates).
 - `Described` — decorator with `{placeholder}` message templates (replaces per-variant `message: Option<String>` fields).
-- `RuleContext` — context map for predicate evaluation (sibling field lookups).
+- `PredicateContext` — structured value context for predicate evaluation (nested JSON-Pointer sibling lookups).
 - `ExecutionMode` — controls which rule categories run (`StaticOnly`, `Deferred`, `Full`).
 - `validate_rules` — batch-evaluate a slice of `Rule` against a `serde_json::Value`.
 - `ValidatorError` — crate-level operational error type.

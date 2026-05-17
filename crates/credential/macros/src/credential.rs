@@ -16,8 +16,9 @@
 //!   as the storage `State` (identity-state pattern).
 //! - `properties = TypePath` — Direct path to the `<Name>Properties` struct that owns the
 //!   setup-form schema. Mutually exclusive with `protocol`. The macro emits `type Properties =
-//!   #properties` and reuses `<#properties as HasSchema>::schema()` through the default
-//!   [`Credential::properties_schema`](nebula_credential::Credential::properties_schema) impl. When
+//!   #properties`; the generated metadata reads the schema via
+//!   `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3 — no per-trait schema method).
+//!   When
 //!   `properties` is supplied, the user is responsible for implementing [`Credential::resolve`]
 //!   (and [`Credential::project`] when scheme ≠ state) on a separate inherent impl block.
 //! - `protocol = TypePath` — Reusable [`StaticProtocol`](nebula_credential::StaticProtocol) for
@@ -41,8 +42,9 @@
 //!
 //! - Renamed emitted `type Input` → `type Properties` to mirror `Action::Input` /
 //!   `Resource::Config` and shift schema ownership from instance metadata to a type-level companion
-//!   struct. The default `Credential::properties_schema()` body reads the schema via
-//!   `<Self::Properties as HasSchema>::schema()`.
+//!   struct. Generated metadata reads the schema via
+//!   `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3 — the
+//!   `Properties: HasSchema` bound is the single source of truth; no schema method on the trait).
 //! - Added a `properties = TypePath` attribute as the canonical, direct way to specify the
 //!   companion struct (no longer requires plumbing through a `StaticProtocol` indirection when the
 //!   user only wants the schema bridge — `protocol` is retained for the canonical static-resolve
@@ -474,7 +476,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     .key(::nebula_core::credential_key!(#key))
                     .name(#name)
                     .description(#name)
-                    .schema(Self::properties_schema())
+                    .schema(::nebula_credential::schema_of::<Self::Properties>())
                     .pattern(<#scheme as ::nebula_credential::AuthScheme>::pattern())
             };
             if let Some(icon) = &attrs.icon {

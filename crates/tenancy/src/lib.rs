@@ -27,17 +27,22 @@ mod resolver;
 // spec §8). Exported under `Credential`-prefixed names so they do not
 // collide with the port-scope [`ScopeResolver`] (`Principal` → `Scope`)
 // above — the credential layer keys on `metadata["owner_id"]`, a
-// different (legacy, owner-string) scoping model. `nebula-storage`
-// re-exports these under their historical unprefixed names so existing
-// `nebula_storage::credential::{ScopeLayer, ScopeResolver}` consumers
-// compile unchanged.
-pub use credential_scope::{
-    ScopeLayer as CredentialScopeLayer, ScopeResolver as CredentialScopeResolver,
-};
+// different (legacy, owner-string) scoping model. The
+// `CredentialScopeResolver` **trait** is the canonical
+// `nebula_credential::ScopeResolver` (the credential contract crate —
+// downward-reachable by the credential runtime without an upward
+// `→ nebula-tenancy` edge, spec §3 data-vs-policy split); this crate
+// owns only the concrete `CredentialScopeLayer` policy. The legacy
+// `nebula_storage::credential::{ScopeLayer, ScopeResolver}` surface is
+// **deleted** (spec-16 CONTRACT phase) — there is no back-compat
+// re-export; consumers name `nebula_credential::ScopeResolver` /
+// `nebula_tenancy::CredentialScopeLayer` directly.
+pub use credential_scope::ScopeLayer as CredentialScopeLayer;
 pub use decorator::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
     ScopedIdempotencyStore, ScopedNodeResultStore, ScopedWebhookActivationStore,
     ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 pub use error::TenancyError;
+pub use nebula_credential::ScopeResolver as CredentialScopeResolver;
 pub use resolver::{BindingScopeResolver, Principal, ScopeResolver};

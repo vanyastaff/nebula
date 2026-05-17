@@ -38,4 +38,4 @@ newtypes + the actor `Principal`). No sqlx, no adapter, no upward deps.
 
 Business tier. Only composition roots depend on it (`nebula-api`
 `AppState`, the engine wiring, and the scoped-conformance dev-dep). See the
-`deny.toml` `[wrappers]` allowlist and ADR-0066.
+`deny.toml` `[wrappers]` allowlist and ADR-0068.

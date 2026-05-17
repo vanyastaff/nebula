@@ -36,22 +36,6 @@ pub use value::ValueRule;
 
 use crate::{engine::ExecutionMode, foundation::ValidationError};
 
-/// Borrowed view over a value bag used by predicate rules.
-///
-/// Kept for backward compatibility with callers that built their own
-/// `HashMap<String, Value>`-based contexts. New code should prefer
-/// [`PredicateContext`].
-pub trait RuleContext {
-    /// Fetch a value by key.
-    fn get(&self, key: &str) -> Option<&serde_json::Value>;
-}
-
-impl RuleContext for std::collections::HashMap<String, serde_json::Value> {
-    fn get(&self, key: &str) -> Option<&serde_json::Value> {
-        std::collections::HashMap::get(self, key)
-    }
-}
-
 /// Unified declarative rule. See module docs.
 ///
 /// `Serialize` is manual because `Described` must emit as
@@ -161,118 +145,23 @@ impl Rule {
         }
     }
 
-    /// Evaluates this rule as a boolean predicate against field values.
+    /// Boolean predicate evaluation against a structured context.
     ///
-    /// **Compat bridge**: this method exists for callers that still pass a
-    /// flat `HashMap<String, Value>` (via [`RuleContext`]). New code should
-    /// use [`Rule::validate`] with a [`PredicateContext`], which handles
-    /// nested JSON Pointer paths (`/user/email`) correctly.
-    ///
-    /// Value and Deferred rules always return `true` (they are not
-    /// predicates). Predicates look up their field via `ctx.get(key)` where
-    /// the lookup key is the predicate's path with the leading `/` stripped.
-    ///
-    /// # Known limitation
-    ///
-    /// For nested paths like `/user/email`, this method strips the leading
-    /// `/` and does a flat key lookup for `"user/email"`. Flat `RuleContext`
-    /// implementations won't have such a key, so nested predicates will
-    /// silently evaluate to `false`. Use
-    /// `Rule::validate(input, Some(&ctx), mode)` instead for nested-path
-    /// predicate evaluation.
-    ///
-    /// TODO(post-refactor): retire this method once `schema::validated`
-    /// migrates to `PredicateContext::from_json`.
+    /// Resolves nested JSON-Pointer paths via [`PredicateContext`]
+    /// (`/a/b`-style sibling lookups). `Value` and `Deferred` rules are not
+    /// predicates and evaluate to `true`.
     #[must_use]
-    pub fn evaluate(&self, ctx: &dyn RuleContext) -> bool {
+    pub fn matches(&self, ctx: &PredicateContext) -> bool {
         match self {
             Self::Value(_) | Self::Deferred(_) => true,
-            Self::Predicate(p) => evaluate_predicate_via_rule_context(p, ctx),
+            Self::Predicate(p) => p.evaluate(ctx),
             Self::Logic(l) => match l.as_ref() {
-                Logic::All(rules) => rules.iter().all(|r| r.evaluate(ctx)),
-                Logic::Any(rules) => rules.iter().any(|r| r.evaluate(ctx)),
-                Logic::Not(inner) => !inner.evaluate(ctx),
+                Logic::All(rules) => rules.iter().all(|r| r.matches(ctx)),
+                Logic::Any(rules) => rules.iter().any(|r| r.matches(ctx)),
+                Logic::Not(inner) => !inner.matches(ctx),
             },
-            Self::Described(inner, _) => inner.evaluate(ctx),
+            Self::Described(inner, _) => inner.matches(ctx),
         }
-    }
-}
-
-/// Evaluates a single `Predicate` against a legacy `RuleContext`.
-///
-/// The `FieldPath` is flattened to a legacy flat key by stripping the
-/// leading `/` (e.g. `/status` → `status`). Multi-segment paths are
-/// passed through verbatim after stripping the slash; `RuleContext`
-/// implementations that only understand flat keys will return `None`
-/// for nested paths.
-fn evaluate_predicate_via_rule_context(p: &Predicate, ctx: &dyn RuleContext) -> bool {
-    fn lookup_key(p: &Predicate) -> &str {
-        let s = p.field().as_str();
-        s.strip_prefix('/').unwrap_or(s)
-    }
-    let key = lookup_key(p);
-
-    fn number_cmp(
-        ctx_val: Option<&serde_json::Value>,
-        rhs: &serde_json::Number,
-        expected: impl Fn(std::cmp::Ordering) -> bool,
-    ) -> bool {
-        let Some(v) = ctx_val else { return false };
-        // Try i64/u64/f64 comparison in decreasing precision order.
-        let num = match v.as_number() {
-            Some(n) => n,
-            None => return false,
-        };
-        let ord = if let (Some(a), Some(b)) = (num.as_i64(), rhs.as_i64()) {
-            a.cmp(&b)
-        } else if let (Some(a), Some(b)) = (num.as_u64(), rhs.as_u64()) {
-            a.cmp(&b)
-        } else if let (Some(a), Some(b)) = (num.as_f64(), rhs.as_f64()) {
-            match a.partial_cmp(&b) {
-                Some(o) => o,
-                None => return false,
-            }
-        } else {
-            return false;
-        };
-        expected(ord)
-    }
-
-    match p {
-        Predicate::Eq(_, v) => ctx.get(key).is_some_and(|x| x == v),
-        Predicate::Ne(_, v) => ctx.get(key).is_none_or(|x| x != v),
-        Predicate::Gt(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_gt),
-        Predicate::Gte(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_ge),
-        Predicate::Lt(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_lt),
-        Predicate::Lte(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_le),
-        Predicate::IsTrue(_) => ctx.get(key).and_then(serde_json::Value::as_bool) == Some(true),
-        Predicate::IsFalse(_) => ctx.get(key).and_then(serde_json::Value::as_bool) == Some(false),
-        Predicate::Set(_) => ctx.get(key).is_some_and(|v| {
-            !v.is_null()
-                && match v {
-                    serde_json::Value::String(s) => !s.is_empty(),
-                    serde_json::Value::Array(a) => !a.is_empty(),
-                    _ => true,
-                }
-        }),
-        Predicate::Empty(_) => ctx.get(key).is_none_or(|v| {
-            v.is_null()
-                || match v {
-                    serde_json::Value::String(s) => s.is_empty(),
-                    serde_json::Value::Array(a) => a.is_empty(),
-                    _ => false,
-                }
-        }),
-        Predicate::Contains(_, v) => ctx.get(key).is_some_and(|x| match x {
-            serde_json::Value::String(s) => v.as_str().is_some_and(|needle| s.contains(needle)),
-            serde_json::Value::Array(items) => items.contains(v),
-            _ => false,
-        }),
-        Predicate::Matches(_, pat) => ctx
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|s| regex::Regex::new(pat).is_ok_and(|re| re.is_match(s))),
-        Predicate::In(_, allowed) => ctx.get(key).is_some_and(|x| allowed.contains(x)),
     }
 }
 

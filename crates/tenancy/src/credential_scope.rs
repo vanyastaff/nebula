@@ -32,37 +32,19 @@
 
 use std::sync::Arc;
 
-use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_credential::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
 use serde_json::Value;
+
+// The `ScopeResolver` trait is the credential-store scope abstraction; it
+// lives in `nebula-credential` (the contract crate) so downward consumers
+// name it without an upward `→ nebula-tenancy` dependency (spec §3
+// data-vs-policy split). This crate owns only the concrete scoping
+// **policy** (`ScopeLayer`) that `impl`s the credential-store contract on
+// top of that resolver — re-exported as `CredentialScopeResolver` /
+// `CredentialScopeLayer` from `nebula_tenancy` (see `lib.rs`).
 
 /// The metadata key used to store the owner identifier.
 const OWNER_KEY: &str = "owner_id";
-
-/// Resolves the current caller's scope for credential access control.
-///
-/// Implementations typically extract the owner identity from
-/// a request-scoped context (e.g. JWT claims, session state).
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_tenancy::CredentialScopeResolver;
-///
-/// struct StaticScope(Option<String>);
-///
-/// impl CredentialScopeResolver for StaticScope {
-///     fn current_owner(&self) -> Option<&str> {
-///         self.0.as_deref()
-///     }
-/// }
-/// ```
-pub trait ScopeResolver: Send + Sync {
-    /// Returns the owner ID for the current request context.
-    ///
-    /// Returns `None` for admin / global access, which bypasses
-    /// all scope checks.
-    fn current_owner(&self) -> Option<&str>;
-}
 
 /// Multi-tenant credential isolation layer.
 ///

@@ -24,6 +24,42 @@ pub enum PutMode {
     },
 }
 
+/// Resolves the current caller's scope for credential access control.
+///
+/// The contract-level abstraction the multi-tenant credential scoping
+/// **policy** (`nebula_tenancy::CredentialScopeLayer`) keys on: it
+/// supplies the per-request owner identity that filters every
+/// [`CredentialStore`] operation. The trait lives here in the credential
+/// contract crate (not in the tenancy policy crate) so downward
+/// consumers — the credential runtime, builtins — can name it without an
+/// upward `→ nebula-tenancy` dependency (spec §3 data-vs-policy split:
+/// the abstraction goes down, the concrete resolver + scoping layer stay
+/// in `nebula-tenancy`).
+///
+/// Implementations typically extract the owner identity from a
+/// request-scoped context (e.g. JWT claims, session state).
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use nebula_credential::ScopeResolver;
+///
+/// struct StaticScope(Option<String>);
+///
+/// impl ScopeResolver for StaticScope {
+///     fn current_owner(&self) -> Option<&str> {
+///         self.0.as_deref()
+///     }
+/// }
+/// ```
+pub trait ScopeResolver: Send + Sync {
+    /// Returns the owner ID for the current request context.
+    ///
+    /// Returns `None` for admin / global access, which bypasses
+    /// all scope checks.
+    fn current_owner(&self) -> Option<&str>;
+}
+
 /// A stored credential with metadata.
 #[derive(Debug, Clone)]
 pub struct StoredCredential {

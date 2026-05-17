@@ -68,7 +68,12 @@ impl CredentialMetadata {
         C: crate::Credential,
     {
         Self {
-            base: BaseMetadata::new(key, name, description, C::properties_schema()),
+            base: BaseMetadata::new(
+                key,
+                name,
+                description,
+                nebula_schema::schema_of::<C::Properties>(),
+            ),
             pattern,
         }
     }

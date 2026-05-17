@@ -20,7 +20,8 @@ pub enum Severity {
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ValidationError {
-    /// Machine-readable issue code (e.g. `"length.max"`, `"required"`).
+    /// Machine-readable issue code (e.g. `"required"`, `"type_mismatch"`,
+    /// or a validator-native rule code such as `"max_length"`).
     pub code: Cow<'static, str>,
     /// Path within the schema where the issue was observed.
     pub path: FieldPath,
@@ -265,22 +266,33 @@ impl fmt::Display for ValidationReport {
 
 impl std::error::Error for ValidationReport {}
 
-/// Canonical set of stable error codes emitted by the schema crate.
+/// Canonical set of stable error codes observable from the schema crate.
+///
+/// Two provenances:
+/// - **Schema-owned structural codes** — emitted by the schema crate itself
+///   (`required`, `type_mismatch`, `items.*`, `option.*`, `mode.*`,
+///   `expression.*`, and all build-time/lint codes). Stable.
+/// - **Rule-failure codes** — produced by `nebula-validator` and surfaced
+///   verbatim (no namespace remap). A failing length/range/format rule
+///   reports the validator-native `min_length` / `max_length` / `min` /
+///   `max` / `invalid_format`. See ADR-0052 (P2 amendment): this replaced
+///   the former schema-side `length.*` / `range.*` / `pattern` / `url` /
+///   `email` remap. `nebula-schema` is `frontier`/pre-1.0, so the change is
+///   canon-legal.
 ///
 /// Plugins may add their own under a namespace prefix (e.g. `my_plugin.foo`).
 /// A test in the schema crate guarantees every entry here is emittable from
 /// an integration test (see `tests/flow/all_error_codes.rs`).
 pub const STANDARD_CODES: &[&str] = &[
-    // value validation
+    // value validation — schema-owned structural code
     "required",
     "type_mismatch",
-    "length.min",
-    "length.max",
-    "range.min",
-    "range.max",
-    "pattern",
-    "url",
-    "email",
+    // rule failures — surfaced verbatim from nebula-validator
+    "min_length",
+    "max_length",
+    "min",
+    "max",
+    "invalid_format",
     "items.min",
     "items.max",
     "items.unique",

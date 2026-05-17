@@ -17,8 +17,9 @@ use crate::{
 /// the legacy `ApiKeyInput`).
 ///
 /// The struct is purely the schema-bearing companion: `#[derive(Schema)]`
-/// emits the `HasSchema` impl that [`Credential::properties_schema`]
-/// reads via the default body. The actual auth material conversion to
+/// emits the `HasSchema` impl read via
+/// `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3). The
+/// actual auth material conversion to
 /// [`SecretToken`] happens in [`Credential::resolve`].
 ///
 /// The plaintext lives in a `String` here rather than `SecretString` so
@@ -69,7 +70,7 @@ impl Credential for ApiKeyCredential {
             .key(nebula_core::credential_key!("api_key"))
             .name("API Key")
             .description("Static API key or bearer token for HTTP APIs.")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(crate::AuthPattern::SecretToken)
             .icon("key")
             .build()
@@ -164,7 +165,7 @@ mod tests {
 
     #[test]
     fn parameters_contains_server_and_api_key() {
-        let params = ApiKeyCredential::properties_schema();
+        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
         assert!(params.fields().iter().any(|f| f.key().as_str() == "server"));
         assert!(
             params
@@ -177,7 +178,7 @@ mod tests {
 
     #[test]
     fn server_is_optional() {
-        let params = ApiKeyCredential::properties_schema();
+        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
         let server = params
             .fields()
             .iter()

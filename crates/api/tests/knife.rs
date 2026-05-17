@@ -36,128 +36,22 @@
 
 mod common;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use common::*;
-use nebula_api::{ApiConfig, AppState, app};
-use nebula_storage::inmem::{
-    InMemoryExecutionStore, InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
-    InMemoryWorkflowVersionStore,
-};
-use nebula_storage_port::dto::ControlMsg;
-use nebula_storage_port::store::ControlQueue;
-use nebula_storage_port::{Scope, StorageError, store::ReclaimOutcome};
-use nebula_tenancy::{
-    ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
-};
+use nebula_api::{ApiConfig, app};
 use tower::ServiceExt;
 
-/// The fixed placeholder scope every port store (and the `AppState` tenancy
-/// decorators) bind to — mirrors `AppState::placeholder_scope`, so a row
-/// seeded through the raw handle is visible through the decorated stores.
-fn knife_scope() -> Scope {
-    Scope::new("nebula", "nebula")
-}
-
-/// A spec-16 [`ControlQueue`] port adapter that always fails on `enqueue`
-/// — used to simulate the "orchestration backend unavailable" scenario in
-/// canon §13 step 6. Every other operation is a successful no-op.
-#[derive(Debug)]
-struct AlwaysFailControlQueue;
-
-#[async_trait::async_trait]
-impl ControlQueue for AlwaysFailControlQueue {
-    async fn enqueue(&self, _msg: &ControlMsg) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "control queue backend unavailable (simulated)".to_string(),
-        ))
-    }
-
-    async fn claim_pending(
-        &self,
-        _processor: &[u8; 16],
-        _batch_size: u32,
-    ) -> Result<Vec<ControlMsg>, StorageError> {
-        Ok(vec![])
-    }
-
-    async fn mark_completed(
-        &self,
-        _id: &[u8; 16],
-        _processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn mark_failed(
-        &self,
-        _id: &[u8; 16],
-        _processor: &[u8; 16],
-        _error: &str,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn reclaim_stuck(
-        &self,
-        _reclaim_after: Duration,
-        _max_reclaim_count: u32,
-    ) -> Result<ReclaimOutcome, StorageError> {
-        Ok(ReclaimOutcome::default())
-    }
-
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        Ok(0)
-    }
-}
-
-/// Build an `AppState` wired through the scoped storage port whose
-/// control-queue surface is the always-failing [`AlwaysFailControlQueue`];
-/// every other store is a fully functional in-memory port adapter wrapped
-/// in its `nebula-tenancy` scoping decorator (the same composition the
-/// production root performs). Returns the state plus the raw
-/// `InMemoryExecutionStore` so a test can seed a running execution row
-/// directly under the bound scope.
-async fn create_state_with_failing_queue() -> (AppState, InMemoryExecutionStore) {
-    let scope = knife_scope();
-    let exec_store = InMemoryExecutionStore::new();
-    let journal = InMemoryJournalReader::new(&exec_store);
-    let node_results = InMemoryNodeResultStore::new();
-    let workflow_store = InMemoryWorkflowStore::new();
-    let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let api_config = ApiConfig::for_test();
-
-    let state = AppState::new(
-        Arc::new(ScopedWorkflowStore::new(
-            Arc::new(workflow_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedWorkflowVersionStore::new(
-            Arc::new(workflow_versions),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionStore::new(
-            Arc::new(exec_store.clone()),
-            scope.clone(),
-        )),
-        Arc::new(ScopedNodeResultStore::new(
-            Arc::new(node_results),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionJournalReader::new(Arc::new(journal), scope)),
-        Arc::new(AlwaysFailControlQueue),
-        api_config.jwt_secret,
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
-
-    (state, exec_store)
-}
+// The orchestration-absent control queue (`AlwaysFailControlQueue` +
+// `create_state_with_failing_queue`) and the engine-seam harness
+// (`engine_seam::{persist_slow_workflow, spawn_engine_consumer}`) live in
+// the shared `common` module — see `tests/common/mod.rs`. The §13 step-6
+// test reuses the placeholder scope every port store binds to via
+// `common::port_scope`.
+use common::port_scope as knife_scope;
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
@@ -458,4 +352,444 @@ async fn knife_step6_queue_failure_returns_error() {
         "step 6: orchestration-absent enqueue failure must return 503 Service Unavailable \
          (canon §13 step 6)"
     );
+}
+
+// ── Step 3 end-to-end (ADR-0008 A2) ───────────────────────────────────────────
+//
+// The `knife_scenario_end_to_end` test above asserts the PRODUCER side of §13
+// step 3 — the API writes the execution row and enqueues `Start` onto the
+// durable control queue (#332). This separate test asserts the CONSUMER side:
+// the engine-owned `EngineControlDispatch` (ADR-0008 A2) drains the queue and
+// actually drives the workflow to `Completed`, closing the §4.5 gap that was
+// still open after #332 landed.
+//
+// The two tests intentionally stand up separate `AppState`s — the producer
+// test pins a pre-consumer snapshot of the queue (Start still Pending when
+// step 5 runs), while this test spawns the consumer so the Start row is
+// drained end-to-end.
+
+/// A hand-built echo `Action` (Variant A) that the engine can dispatch.
+/// Mirrors the workflow definition saved below (`action_key = "echo"`).
+struct KnifeEcho;
+
+impl nebula_action::action::Action for KnifeEcho {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static nebula_action::metadata::ActionMetadata {
+        static M: std::sync::OnceLock<nebula_action::metadata::ActionMetadata> =
+            std::sync::OnceLock::new();
+        M.get_or_init(|| {
+            nebula_action::metadata::ActionMetadata::new(
+                nebula_core::action_key!("knife.echo.static"),
+                "KnifeEcho",
+                "static",
+            )
+        })
+    }
+    fn dependencies() -> &'static nebula_core::Dependencies {
+        static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
+        D.get_or_init(nebula_core::Dependencies::new)
+    }
+}
+impl nebula_action::stateless::StatelessAction for KnifeEcho {
+    async fn execute(
+        &self,
+        input: <Self as nebula_action::action::Action>::Input,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<
+        nebula_action::result::ActionResult<<Self as nebula_action::action::Action>::Output>,
+        nebula_action::ActionError,
+    > {
+        Ok(nebula_action::result::ActionResult::success(input))
+    }
+}
+
+/// Canon §13 step 3 end-to-end (ADR-0008 A2).
+///
+/// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
+/// over shared in-memory repos, POSTs `/workflows/:id/executions`, and polls
+/// the repo until the execution transitions all the way to `Completed`. This
+/// exercises the full §12.2 loop that ADR-0008 promised:
+///
+/// ```text
+/// POST /executions
+///   → execution_repo.create (Created)
+///   → execution_control_queue.enqueue(Start)
+///   → ControlConsumer.claim_pending
+///   → EngineControlDispatch::dispatch_start
+///   → WorkflowEngine::resume_execution (ADR-0015 lease scope)
+///   → node run → transition to Completed
+///   → mark_completed on the queue row
+/// ```
+#[tokio::test]
+async fn knife_step3_engine_dispatches_start_end_to_end() {
+    use std::time::Duration;
+
+    use nebula_core::action_key;
+    use nebula_engine::{
+        ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
+        EngineControlDispatch, ExecutionStores, InProcessSandbox, WorkflowEngine, WorkflowStores,
+    };
+    use nebula_execution::ExecutionStatus;
+    use nebula_workflow::{
+        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    let (state, _control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // ── Persist a valid workflow (`action_key = "echo"`) directly ────────────
+    //
+    // Avoids the HTTP activation round-trip — that path is exercised by the
+    // producer-side knife test above. Here we care about the engine-side
+    // dispatch of the Start command that the API will enqueue below.
+    let workflow_id = nebula_core::WorkflowId::new();
+    let now = chrono::Utc::now();
+    let wf = WorkflowDefinition {
+        id: workflow_id,
+        name: "knife-a2-dispatch".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![NodeDefinition::new(nebula_core::node_key!("step"), "Step", "echo").unwrap()],
+        connections: Vec::<Connection>::new(),
+        variables: std::collections::HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger: None,
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: 1,
+    };
+    // Port equivalent of the old `state.workflow_repo.save(id, 0, def)`: a
+    // workflow row at version 1 plus a published version record #1 through
+    // the scoped port handles on `AppState` (the tenancy decorators
+    // substitute their bound scope, so the `knife_scope()` argument is
+    // immaterial — it only needs to be a valid `Scope`).
+    {
+        let scope = knife_scope();
+        let id_str = workflow_id.to_string();
+        state
+            .workflow_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowRecord {
+                    id: id_str.clone(),
+                    scope: scope.clone(),
+                    version: 1,
+                    slug: id_str.clone(),
+                    deleted: false,
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .workflow_version_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowVersionRecord {
+                    workflow_id: id_str,
+                    number: 1,
+                    published: true,
+                    pinned: false,
+                    definition: serde_json::to_value(&wf).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    // ── Build the engine bound to the same scoped port handles the API
+    // wrote to ──────────────────────────────────────────────────────────────
+    let registry = Arc::new(ActionRegistry::new());
+    registry.legacy_register_stateless_with_metadata(
+        nebula_action::metadata::ActionMetadata::new(
+            action_key!("echo"),
+            "echo",
+            "knife echo handler",
+        ),
+        KnifeEcho,
+    );
+
+    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+        Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
+    });
+    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let metrics = nebula_metrics::MetricsRegistry::new();
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+
+    // The echo node never checkpoints or replays, so a fresh in-memory
+    // checkpoint/idempotency pair is sufficient for the two
+    // `ExecutionStores` fields `AppState` does not expose; execution /
+    // journal / node-result / workflow / version are the SAME scoped port
+    // handles the API enqueued the `Start` against.
+    let engine = Arc::new(
+        WorkflowEngine::new(runtime, metrics)
+            .unwrap()
+            .with_execution_stores(ExecutionStores {
+                execution: Arc::clone(&state.execution_store),
+                journal: Arc::clone(&state.journal_reader),
+                node_results: Arc::clone(&state.node_result_store),
+                checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
+                idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
+            })
+            .with_workflow_stores(WorkflowStores {
+                workflow: Arc::clone(&state.workflow_store),
+                versions: Arc::clone(&state.workflow_version_store),
+            }),
+    );
+
+    // ── Spawn the consumer so `Start` rows are drained continuously ──────────
+    let dispatch = Arc::new(EngineControlDispatch::new(
+        engine,
+        Arc::clone(&state.execution_store),
+    ));
+    let consumer = ControlConsumer::new(
+        Arc::clone(&state.control_queue),
+        dispatch,
+        b"knife-a2".to_vec(),
+    )
+    .with_poll_interval(Duration::from_millis(10));
+    let shutdown = CancellationToken::new();
+    let consumer_handle = consumer.spawn(shutdown.clone());
+
+    // ── POST /executions — the A1 producer path ──────────────────────────────
+    let start_request = serde_json::json!({
+        "input": { "knife_e2e": "a2" }
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "step 3 end-to-end: start execution must return 202"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"]
+        .as_str()
+        .expect("execution response must carry an id")
+        .to_string();
+    let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
+
+    // ── Wait for the consumer + engine to drive the execution to Completed ───
+    //
+    // Poll the repo because the consumer loop is cross-task; a small timeout
+    // tolerates scheduler jitter on slow test hosts. A fail here means the
+    // §4.5 gap #332 was only half-closed — producer works, consumer does not.
+    let final_status = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            // Read through the same scoped port handle the engine was
+            // wired with; the tenancy decorator substitutes its bound
+            // scope so the `knife_scope()` argument is immaterial.
+            let json = state
+                .execution_store
+                .get(&knife_scope(), &execution_id.to_string())
+                .await
+                .unwrap()
+                .expect("execution row is present")
+                .state;
+            let status: ExecutionStatus =
+                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
+            if status.is_terminal() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("engine drove execution to terminal within 5s (A2 consumer + engine wired)");
+
+    assert_eq!(
+        final_status,
+        ExecutionStatus::Completed,
+        "step 3 end-to-end: the A2 engine dispatch must transition the execution to \
+         Completed — the §4.5 gap named in #332 is now closed on both halves"
+    );
+
+    // Graceful shutdown so the spawned task doesn't leak across tests.
+    shutdown.cancel();
+    let _ = consumer_handle.await;
+}
+
+// ── Knife step 5 end-to-end (ADR-0008 A3) ──────────────────────────────────
+//
+// Symmetric to `knife_step3_engine_dispatches_start_end_to_end`. The producer
+// half — `POST /cancel` writes the `Cancelled` row and enqueues `Cancel` — is
+// already asserted by `knife_scenario_end_to_end` above. This test asserts the
+// CONSUMER half: the `EngineControlDispatch::dispatch_cancel` signals the
+// engine's live frontier loop so a long-running workflow is actually aborted
+// end-to-end, not left sleeping until its natural completion.
+//
+// The wiring mirrors step 3:
+//   POST /cancel
+//     → execution_repo.transition (Cancelled)
+//     → execution_control_queue.enqueue(Cancel)
+//     → ControlConsumer.claim_pending
+//     → EngineControlDispatch::dispatch_cancel
+//     → WorkflowEngine::cancel_execution
+//     → frontier loop observes `ctx.cancellation()` → node exits
+//
+// The workflow uses a cooperatively-cancellable `slow` handler that would
+// otherwise wait 30s; asserting that the execution reaches a terminal state
+// within a few seconds proves the signal reached the engine's live loop.
+// The action + real-engine-consumer wiring is the shared
+// `common::engine_seam` harness (byte-behaviorally identical to the
+// original inline wiring — the move is mechanical).
+
+/// Canon §13 step 5 end-to-end (ADR-0008 A3).
+///
+/// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
+/// over shared in-memory repos, starts a long-running execution, POSTs
+/// `/executions/:id/cancel`, and asserts the execution reaches a terminal
+/// state well inside the slow handler's 30-second sleep window. Closes #330.
+#[tokio::test]
+async fn knife_step5_engine_cancels_running_execution_end_to_end() {
+    use std::time::Duration;
+
+    use nebula_execution::ExecutionStatus;
+
+    let (state, _control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // ── Persist a single-`slow`-node workflow (shared harness) ───────────────
+    let workflow_id = engine_seam::persist_slow_workflow(&state).await;
+
+    // ── Build + spawn the real engine consumer (shared harness) ──────────────
+    //
+    // Byte-behaviorally identical to the original inline knife step-5
+    // wiring: same action key (`"slow"`), `ActionExecutor` closure,
+    // `InProcessSandbox`, `ActionRuntime`, 10ms poll interval, and the
+    // `b"knife-a3"` processor id — see `common::engine_seam`.
+    let seam = engine_seam::spawn_engine_consumer(&state);
+
+    // ── Start the execution via the A1/A2 producer path ──────────────────────
+    let start_request = serde_json::json!({ "input": { "knife_e2e": "a3" } });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "step 5 end-to-end: start execution must return 202"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"]
+        .as_str()
+        .expect("start response carries an id")
+        .to_string();
+
+    // ── Wait until the slow handler enters its select{} — frontier is live ──
+    tokio::time::timeout(Duration::from_secs(10), seam.slow_started.notified())
+        .await
+        .expect(
+            "slow handler started within 10s (A2 consumer drained Start and the engine \
+             dispatched the node)",
+        );
+
+    // ── Cancel via the API — step 5 producer path ──────────────────────────
+    let cancel_app = app::build_app(state.clone(), &api_config);
+    let cancel_response = cancel_app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id_str}")))
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        cancel_response.status(),
+        StatusCode::OK,
+        "step 5 end-to-end: cancel must return 200"
+    );
+
+    // ── The execution must reach a terminal state well inside the slow
+    //    handler's 30s sleep — proving the Cancel reached the engine's live
+    //    cancel token and the handler exited cooperatively. Without A3 the
+    //    row would be `Cancelled` via the API's CAS but the slow handler
+    //    would still be sleeping in-process for up to 30s.
+    let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
+    let final_status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            // Read through the same scoped port handle the engine was
+            // wired with; the tenancy decorator substitutes its bound
+            // scope so the `knife_scope()` argument is immaterial.
+            let json = state
+                .execution_store
+                .get(&knife_scope(), &execution_id.to_string())
+                .await
+                .unwrap()
+                .expect("execution row present")
+                .state;
+            let status: ExecutionStatus =
+                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
+            if status.is_terminal() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect(
+        "engine reached a terminal state within 10s (A3 cancel dispatch signalled the \
+         live frontier loop) — the 30s slow handler was aborted cooperatively",
+    );
+
+    assert!(
+        final_status.is_terminal(),
+        "step 5 end-to-end: execution reached a terminal state after Cancel — A3 closed \
+         the §4.5 gap on the cancel half (#330). got: {final_status:?}"
+    );
+
+    // Graceful shutdown so the spawned consumer task doesn't leak.
+    seam.shutdown().await;
 }

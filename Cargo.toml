@@ -9,6 +9,7 @@ members = [
   "crates/credential",
   "crates/credential-builtin",
   "crates/credential-vault",
+  "crates/credential-runtime",
   "crates/engine",
   "crates/eventbus",
   "crates/execution",
@@ -24,6 +25,7 @@ members = [
 
   "crates/validator",
   "crates/api",
+  "apps/server",
   "crates/workflow",
   "crates/sdk/macros-support",
   "crates/resource/macros",
@@ -86,7 +88,7 @@ unicode-width = "0.2"
 
 # Graph
 petgraph = "0.8"
-domain-key = { version = "0.5.1", features = [
+domain-key = { version = "0.5.2", features = [
   "serde",
   "ulid",
   "uuid",
@@ -115,6 +117,9 @@ zeroize = { version = "1.8.2", features = ["std", "zeroize_derive"] }
 secrecy = { version = "0.10", features = ["serde"] }
 argon2 = { version = "0.5.3", default-features = false, features = ["std"] }
 totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
 
 # HTTP
 http = "1.4"

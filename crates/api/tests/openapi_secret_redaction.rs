@@ -12,7 +12,7 @@
 //! contain the plaintext password.
 
 use axum::{Json, Router, body::Body, http::Request, routing::post};
-use nebula_api::auth::dto::LoginRequest;
+use nebula_api::domain::auth::backend::dto::LoginRequest;
 use tower::ServiceExt;
 
 const PLAINTEXT_PASSWORD: &str = "very-secret-hunter2-do-not-leak";

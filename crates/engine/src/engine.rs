@@ -51,8 +51,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
-    resolver::ParamResolver, resource_accessor::EngineResourceAccessor, result::ExecutionResult,
-    runtime::ActionRuntime, scoped_resources::LayeredResourceAccessor,
+    resolver::ParamResolver, resource::ResourceRegistrarRegistry,
+    resource_accessor::EngineResourceAccessor, result::ExecutionResult, runtime::ActionRuntime,
+    scoped_resources::LayeredResourceAccessor,
 };
 
 /// Type alias for the optional event sender.
@@ -130,6 +131,37 @@ pub struct WorkflowEngine {
     workflow_execution_duration_seconds: Histogram,
     /// Node registry for node-level metadata and versioning.
     plugin_registry: PluginRegistry,
+    /// Closed `kind → typed registrar` allowlist for stored-resource-row
+    /// activation.
+    ///
+    /// A persisted resource row carries only a `kind` string plus opaque
+    /// JSON; turning it into a typed `Manager::register_from_value::<R>`
+    /// call needs a per-concrete-`R` registrar that already knows its
+    /// resource and `TopologyRuntime<R>` (see [`ResourceRegistrarRegistry`]
+    /// / [`crate::TypedResourceRegistrar`]). The map is **closed**: a kind
+    /// is registrable only if a registrar was explicitly inserted; an
+    /// unknown kind is a wiring fault caught at activation, never a silent
+    /// no-op (INTEGRATION_MODEL §114-120; ADR-0030 / ADR-0036 / ADR-0044).
+    ///
+    /// Held in engine state next to [`plugin_registry`] because the two
+    /// are siblings: `impl Plugin` is the runtime source of truth for
+    /// *what* a plugin contributes, and this allowlist is *how* a declared
+    /// resource's `kind` reaches a typed registration. It is **not**
+    /// auto-derivable from `Plugin::resources()`: that yields
+    /// `dyn AnyResource` (metadata-only — no constructor, no
+    /// `TopologyRuntime<R>`), and `#[derive(Resource)]` emits no per-`R`
+    /// value/topology factory. The composition root pairs each declared
+    /// resource `kind` with the concrete-`R` constructors it holds and
+    /// threads the assembled registry in via
+    /// [`with_resource_registrars`](Self::with_resource_registrars) —
+    /// mirroring caller-supplied typed Action registration, not a
+    /// plugin-registry auto-pull.
+    ///
+    /// Defaults empty (fail-closed: every kind rejected) for engines wired
+    /// without resource activation.
+    ///
+    /// [`plugin_registry`]: Self::plugin_registry
+    resource_registrars: ResourceRegistrarRegistry,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
     /// Optional resource manager for providing resources to actions.
@@ -290,6 +322,7 @@ impl WorkflowEngine {
             workflow_executions_failed,
             workflow_execution_duration_seconds,
             plugin_registry: PluginRegistry::new(),
+            resource_registrars: ResourceRegistrarRegistry::new(),
             resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
             stores: None,
@@ -379,10 +412,62 @@ impl WorkflowEngine {
         &mut self.plugin_registry
     }
 
+    /// The closed `kind → typed registrar` allowlist.
+    ///
+    /// This is the only path from a stored resource row (a `kind` string
+    /// plus opaque JSON) to a typed `Manager::register_from_value::<R>`
+    /// call. A kind is registrable only if a registrar was explicitly
+    /// wired in (via [`with_resource_registrars`](Self::with_resource_registrars));
+    /// an unknown kind is a wiring fault surfaced at activation, never a
+    /// silent no-op (INTEGRATION_MODEL §114-120). Defaults empty
+    /// (fail-closed) when the engine is built without resource activation.
+    ///
+    /// The activation path (resolving a persisted row's `kind` through
+    /// this allowlist) is built on top of this accessor; this method is
+    /// the live producer the §M11.5 fan-out / resource activation consumes.
+    #[must_use]
+    pub fn resource_registrars(&self) -> &ResourceRegistrarRegistry {
+        &self.resource_registrars
+    }
+
     /// Attach a resource manager for providing resources to actions.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
         self.resource_manager = Some(manager);
+        self
+    }
+
+    /// Thread in the closed `kind → typed registrar` allowlist.
+    ///
+    /// `impl Plugin` is the runtime source of truth for *what* a plugin
+    /// contributes (`actions()` / `resources()` / `credentials()` —
+    /// INTEGRATION_MODEL, "Plugin packaging" §). But `Plugin::resources()`
+    /// yields `Vec<Arc<dyn nebula_resource::AnyResource>>`, and
+    /// `AnyResource` is **metadata-only** (`key()` + `metadata()`, no
+    /// associated types, no constructor); `#[derive(Resource)]` emits an
+    /// `impl Resource` whose `create` body is `todo!()`, a
+    /// `DeclaresDependencies` impl, and an informational topology *tag*
+    /// const — it emits no per-`R` value factory and no
+    /// `TopologyRuntime<R>` factory. The typed
+    /// `Manager::register_from_value::<R>` consumes a `resource: R` and a
+    /// `TopologyRuntime<R>` by value, monomorphized, so neither is
+    /// recoverable from `dyn AnyResource`.
+    ///
+    /// The engine therefore cannot synthesize this allowlist by reflecting
+    /// over `Plugin::resources()`. The composition root pairs each
+    /// plugin-declared resource `kind` (taken from the resource's own
+    /// catalog key — never guessed) with the concrete-`R`
+    /// resource/topology constructors it holds (the shape
+    /// [`crate::TypedResourceRegistrar`] takes) and threads the assembled
+    /// [`ResourceRegistrarRegistry`] in here — mirroring how Actions are
+    /// registered by the caller (typed registration), not auto-pulled from
+    /// the plugin registry. Scope is row/activation context, not a
+    /// plugin-declaration field, and is supplied per-call via
+    /// [`RegisterRequest`](crate::RegisterRequest) — never defaulted, since
+    /// a wrong scope is an isolation hole (ADR-0036 / ADR-0044).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_registrars(mut self, registrars: ResourceRegistrarRegistry) -> Self {
+        self.resource_registrars = registrars;
         self
     }
 
@@ -4840,7 +4925,6 @@ mod tests {
         result::ActionResult, stateless::StatelessAction,
     };
     use nebula_core::{Dependencies, action_key};
-    use nebula_schema::{HasSchema, ValidSchema};
     use nebula_storage_port::StorageError;
     use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
     use nebula_workflow::{
@@ -4871,14 +4955,6 @@ mod tests {
                 ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
             })
         }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -4904,14 +4980,6 @@ mod tests {
         fn metadata() -> &'static ActionMetadata {
             static M: OnceLock<ActionMetadata> = OnceLock::new();
             M.get_or_init(|| ActionMetadata::new(action_key!("test.fail.static"), "Fail", "fails"))
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -4940,14 +5008,6 @@ mod tests {
         fn metadata() -> &'static ActionMetadata {
             static M: OnceLock<ActionMetadata> = OnceLock::new();
             M.get_or_init(|| ActionMetadata::new(action_key!("test.slow.static"), "Slow", "delays"))
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -5531,14 +5591,6 @@ mod tests {
             static M: OnceLock<ActionMetadata> = OnceLock::new();
             M.get_or_init(|| ActionMetadata::new(action_key!("test.skip.static"), "Skip", "skips"))
         }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -5568,14 +5620,6 @@ mod tests {
             M.get_or_init(|| {
                 ActionMetadata::new(action_key!("test.branch.static"), "Branch", "branches")
             })
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -6971,14 +7015,6 @@ mod tests {
                     ActionMetadata::new(action_key!("counting.static"), "Counting", "counts calls")
                 })
             }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -7095,14 +7131,6 @@ mod tests {
                     ActionMetadata::new(action_key!("versioned.v1.static"), "V1", "v1 static")
                 })
             }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
                 D.get_or_init(Dependencies::new)
@@ -7131,14 +7159,6 @@ mod tests {
                 M.get_or_init(|| {
                     ActionMetadata::new(action_key!("versioned.v2.static"), "V2", "v2 static")
                 })
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -7688,14 +7708,6 @@ mod tests {
                 M.get_or_init(|| {
                     ActionMetadata::new(action_key!("never.static"), "Never", "must not run")
                 })
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -8340,14 +8352,6 @@ mod tests {
             fn metadata() -> &'static ActionMetadata {
                 static M: OnceLock<ActionMetadata> = OnceLock::new();
                 M.get_or_init(|| ActionMetadata::new(action_key!("boom.static"), "Boom", "panics"))
-            }
-            fn input_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
-            }
-            fn output_schema() -> &'static ValidSchema {
-                static S: OnceLock<ValidSchema> = OnceLock::new();
-                S.get_or_init(<serde_json::Value as HasSchema>::schema)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -9382,14 +9386,6 @@ mod tests {
                     "echo via factory dispatch",
                 )
             })
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<serde_json::Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

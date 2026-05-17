@@ -19,7 +19,7 @@ pub type EvalFuture<'a> =
 ///
 /// Implement this to bridge nebula-schema's resolution phase with any
 /// expression engine. The real evaluator lives in `nebula-expression`;
-/// this trait is the integration seam so Phase 1 tests can use a stub.
+/// this trait is the integration seam so tests can use a stub.
 ///
 /// The trait is dyn-safe: callers receive `&dyn ExpressionContext` from
 /// [`ValidValues::resolve`](crate::ValidValues::resolve). The `evaluate`
@@ -55,7 +55,7 @@ pub trait ExpressionContext: Send + Sync {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ExpressionAst {
-    /// Raw expression source — the only payload exposed in Phase 1.
+    /// Raw expression source — the only payload this wrapper exposes.
     pub(crate) source: Arc<str>,
 }
 

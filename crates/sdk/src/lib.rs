@@ -258,22 +258,6 @@ macro_rules! simple_action {
                 })
             }
 
-            fn input_schema() -> &'static $crate::nebula_action::ValidSchema {
-                static SCHEMA: ::std::sync::OnceLock<$crate::nebula_action::ValidSchema> =
-                    ::std::sync::OnceLock::new();
-                SCHEMA.get_or_init(|| {
-                    <$input as $crate::nebula_schema::HasSchema>::schema()
-                })
-            }
-
-            fn output_schema() -> &'static $crate::nebula_action::ValidSchema {
-                static SCHEMA: ::std::sync::OnceLock<$crate::nebula_action::ValidSchema> =
-                    ::std::sync::OnceLock::new();
-                SCHEMA.get_or_init(|| {
-                    <$output as $crate::nebula_schema::HasSchema>::schema()
-                })
-            }
-
             fn dependencies() -> &'static $crate::nebula_core::Dependencies {
                 static DEPS: ::std::sync::OnceLock<$crate::nebula_core::Dependencies> =
                     ::std::sync::OnceLock::new();

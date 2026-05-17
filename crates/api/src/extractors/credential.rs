@@ -5,7 +5,7 @@
 //! controllers. All validators return [`ApiResult`] with structured
 //! [`ApiError::Validation`] errors following RFC 9457.
 
-use crate::errors::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult};
 
 // ── Constraint constants ────────────────────────────────────────────────
 

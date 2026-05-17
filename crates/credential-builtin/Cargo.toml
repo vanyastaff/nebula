@@ -23,6 +23,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 trybuild = "1.0"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+serde_json = { workspace = true }
 
 [features]
 default = []

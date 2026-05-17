@@ -28,7 +28,7 @@
 
 use std::future::Future;
 
-use nebula_schema::{FieldValues, ValidSchema};
+use nebula_schema::FieldValues;
 
 use super::CredentialState;
 use crate::{
@@ -123,8 +123,8 @@ pub trait Credential: Send + Sync + 'static {
     /// schema-bearing companion struct. Per Phase 5 of the M6 redesign
     /// the schema lives on this type rather than being baked into
     /// [`CredentialMetadata`]: read it via
-    /// [`properties_schema()`](Credential::properties_schema), which
-    /// defaults to `<Self::Properties as HasSchema>::schema()`.
+    /// [`nebula_schema::schema_of::<Self::Properties>()`](nebula_schema::schema_of)
+    /// (there is no per-trait schema method — ADR-0052 P3).
     ///
     /// Use [`FieldValues`] for legacy credentials that do not yet
     /// declare a typed properties struct (the blanket
@@ -148,19 +148,6 @@ pub trait Credential: Send + Sync + 'static {
     fn metadata() -> CredentialMetadata
     where
         Self: Sized;
-
-    /// Returns the schema for credential setup parameters.
-    ///
-    /// Defaults to `<Self::Properties as HasSchema>::schema()`. Phase 5
-    /// shifts schema ownership from instance metadata to the type-level
-    /// properties struct; consumers should call this rather than
-    /// reading a baked schema from `metadata().schema`.
-    fn properties_schema() -> ValidSchema
-    where
-        Self: Sized,
-    {
-        <Self::Properties as nebula_schema::HasSchema>::schema()
-    }
 
     /// Project the runtime [`Scheme`] from stored [`State`]. Synchronous,
     /// pure. `where Self: Sized` excludes this from any object-safe

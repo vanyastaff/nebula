@@ -31,10 +31,11 @@ pub trait Action: Sized + Send + Sync + 'static {
     type Output: HasSchema + Serialize         + Send + Sync;
 
     fn metadata()       -> &'static ActionMetadata;
-    fn input_schema()   -> &'static ValidSchema;   // derives from Self::Input
-    fn output_schema()  -> &'static ValidSchema;   // derives from Self::Output
     fn dependencies()   -> &'static Dependencies;  // slot-binding metadata
 }
+// No schema method — the `Input`/`Output: HasSchema` bound is the single
+// source of truth; read it via `nebula_schema::schema_of::<A::Input>()`
+// (ADR-0052 P3).
 ```
 
 `Action` is **not object-safe** — `dyn Action` will not compile. Engine dispatch goes through `ActionFactory` + `ErasedAction` (see below).

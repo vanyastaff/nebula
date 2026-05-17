@@ -1,4 +1,4 @@
-//! Wire-format invariants — must not break at Phase 1.
+//! Wire-format invariants — must not break.
 
 use nebula_schema::{FieldValue, FieldValues};
 use serde_json::json;
