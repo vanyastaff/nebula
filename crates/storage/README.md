@@ -157,6 +157,25 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - `repos::InMemoryControlQueueRepo` is the only implemented Layer-2 type that should be
   depended on today.
 
+## Database migrations
+
+Migrations live in two per-backend trees: `migrations/postgres/` and
+`migrations/sqlite/` (logically identical tables; dialect types differ).
+There is no flat top-level migration tree.
+
+The spec-16 storage-port adapters persist through the `port_*` tables in
+`0027_port_adapter_schema.sql`, which is byte-identical to the embedded
+`src/{postgres,sqlite}/schema.sql` that `init_schema` applies for
+in-memory / test pools. The migration is the canonical source for a real
+database rebuild; the embedded schema is the test/`:memory:` path. Keep
+the pair in lockstep (regenerate the migration with `cp` from the
+embedded schema — see the per-tree README).
+
+`task db:migrate` applies pending Postgres migrations
+(`--source crates/storage/migrations/postgres`, `DATABASE_URL`-gated).
+`task db:reset` **drops and recreates the database** then re-runs every
+migration — it destroys all local dev data.
+
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.3, §11.5, §12.2, §12.3.

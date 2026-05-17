@@ -207,17 +207,17 @@ tasks:
   db:migrate:
     desc: Run pending sqlx migrations (requires DATABASE_URL)
     cmds:
-      - sqlx migrate run --source migrations
+      - sqlx migrate run --source crates/storage/migrations/postgres
 
   db:migrate:revert:
     desc: Revert the last applied migration
     cmds:
-      - sqlx migrate revert --source migrations
+      - sqlx migrate revert --source crates/storage/migrations/postgres
 
   db:migrate:info:
     desc: Show migration status
     cmds:
-      - sqlx migrate info --source migrations
+      - sqlx migrate info --source crates/storage/migrations/postgres
 
   db:prepare:
     desc: Generate sqlx offline query data (sqlx prepare)
@@ -225,12 +225,12 @@ tasks:
       - cargo sqlx prepare --workspace
 
   db:reset:
-    desc: Drop and recreate the database, then re-run all migrations
+    desc: Drop and recreate the database, then re-run all migrations (destroys the local dev DB)
     prompt: This will DROP the database. Are you sure?
     cmds:
       - sqlx database drop -y
       - sqlx database create
-      - sqlx migrate run --source migrations
+      - sqlx migrate run --source crates/storage/migrations/postgres
 
   # ── Docker ────────────────────────────────────────────────────────────────
 
