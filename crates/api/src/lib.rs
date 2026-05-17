@@ -77,6 +77,7 @@ mod trace_capture;
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
 pub use errors::{ApiError, ApiResult};
+pub use handlers::resource::map_resource_update_storage_error;
 pub use models::pagination::{CursorParams, PaginatedResponse};
 pub use state::AppState;
 pub use telemetry_init::init_api_telemetry;

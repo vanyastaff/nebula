@@ -46,7 +46,11 @@ pub fn router() -> OpenApiRouter<AppState> {
             handlers::resource::list_resources,
             handlers::resource::create_resource
         ))
-        .routes(routes!(handlers::resource::get_resource))
+        .routes(routes!(
+            handlers::resource::get_resource,
+            handlers::resource::update_resource,
+            handlers::resource::delete_resource
+        ))
         // Credentials (Plane B — ADR-0031). Literal paths first, then
         // collection, then parameterized `{cred}`, then sub-resources.
         .routes(routes!(handlers::credential::resolve_credential))

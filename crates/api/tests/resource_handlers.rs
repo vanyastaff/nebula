@@ -97,17 +97,13 @@ struct FakeResourceRepo {
     expect_list_ws: Option<Vec<u8>>,
     last_create: Mutex<Option<ResourceEntry>>,
     // Populated by `update` / `soft_delete`; read by the mutation tests
-    // that exercise those handlers (the accessors land with them).
-    #[allow(
-        dead_code,
-        reason = "shared mutation-capture fixture; create is the first consumer"
-    )]
+    // that exercise those handlers via `updated()` / `soft_deleted()`.
     last_update: Mutex<Option<(ResourceEntry, i64)>>,
-    #[allow(
-        dead_code,
-        reason = "shared mutation-capture fixture; create is the first consumer"
-    )]
     last_soft_delete: Mutex<Option<Vec<u8>>>,
+    // When set, `update` returns this CAS conflict instead of `Ok` — so a
+    // stale-`expected_version` test can drive the handler's
+    // `StorageError::Conflict` → 409 mapping without a stateful store.
+    update_conflict: Option<(i64, i64)>,
 }
 
 impl FakeResourceRepo {
@@ -131,16 +127,42 @@ impl FakeResourceRepo {
         }
     }
 
+    /// Repo whose `get(id)` resolves `row` and whose `update` rejects
+    /// with a CAS [`StorageError::Conflict`] (`expected` vs `actual`)
+    /// instead of `Ok`. Drives the handler's stale-version → 409 path
+    /// without a stateful store.
+    fn with_get_and_update_conflict(row: ResourceEntry, expected: i64, actual: i64) -> Self {
+        Self {
+            get_row: Some(row),
+            update_conflict: Some((expected, actual)),
+            ..Self::default()
+        }
+    }
+
     /// The `ResourceEntry` the handler passed to `create`, if any.
-    ///
-    /// Capture-inspection accessor used by the create tests. The
-    /// `last_update` / `last_soft_delete` siblings are populated by the
-    /// same fixture; their accessors are added alongside the handlers
-    /// that exercise them.
     fn created(&self) -> Option<ResourceEntry> {
         self.last_create
             .lock()
             .expect("create capture mutex not poisoned")
+            .clone()
+    }
+
+    /// The `(entry, expected_version)` the handler passed to `update`, if
+    /// any. `None` proves `update` was never reached (e.g. a foreign-
+    /// workspace target must collapse to 404 *before* any mutation).
+    fn updated(&self) -> Option<(ResourceEntry, i64)> {
+        self.last_update
+            .lock()
+            .expect("update capture mutex not poisoned")
+            .clone()
+    }
+
+    /// The raw id bytes the handler passed to `soft_delete`, if any.
+    /// `None` proves `soft_delete` was never reached.
+    fn soft_deleted(&self) -> Option<Vec<u8>> {
+        self.last_soft_delete
+            .lock()
+            .expect("soft_delete capture mutex not poisoned")
             .clone()
     }
 }
@@ -176,10 +198,18 @@ impl ResourceRepo for FakeResourceRepo {
         r: &ResourceEntry,
         expected: i64,
     ) -> Result<(), nebula_storage::StorageError> {
+        // Capture first (even on the conflict path): a CAS-conflict test
+        // still asserts the handler reached `update` with the EXISTING
+        // row's workspace_id, never a body-supplied one.
         *self
             .last_update
             .lock()
             .expect("update capture mutex not poisoned") = Some((r.clone(), expected));
+        if let Some((expected_v, actual_v)) = self.update_conflict {
+            return Err(nebula_storage::StorageError::conflict(
+                "resource", "res", expected_v, actual_v,
+            ));
+        }
         Ok(())
     }
 
@@ -753,5 +783,613 @@ async fn get_resource_malformed_id_is_404() {
         response.status(),
         StatusCode::NOT_FOUND,
         "an unparsable resource id must be 404, never 500"
+    );
+}
+
+// ── update_resource (CAS) ────────────────────────────────────────────────────
+//
+// Same constraint as the create tests: the schema/closed-set validation
+// *logic* against a real `R::Config` is pinned at the engine layer
+// (`crates/engine/tests/resource_registrar_validate.rs`). The API layer
+// must not depend on `nebula-resource` (deny.toml `[[wrappers]]`), so
+// these tests pin the *handler's HTTP contract, CAS mapping, and tenant
+// isolation* over every path reachable without a concrete resource type:
+// re-validation fires before persistence (unknown-kind → 409,
+// no-validation-backend → 422 fail closed), the CAS-mismatch
+// `StorageError::Conflict` maps to 409, the persisted row keeps the
+// EXISTING workspace_id (never body-supplied), a foreign / unknown / soft-
+// deleted target collapses to an indistinguishable 404 with NO mutation,
+// and no-repo → 503.
+
+/// Issue a `PUT .../resources/{res}` with `body`.
+async fn update_resource_request(
+    app: axum::Router,
+    res_id: &str,
+    body: serde_json::Value,
+) -> axum::http::Response<Body> {
+    let token = create_test_jwt();
+    app.oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(ws_path(&format!("/resources/{res_id}")))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// A well-formed update body. `config` is deliberately secret-shaped so
+/// every rejection path is asserted never to echo it (ADR-0028 §7).
+fn update_body(kind: &str, expected_version: i64) -> serde_json::Value {
+    serde_json::json!({
+        "display_name": "Renamed Pool",
+        "kind": kind,
+        "config": { "rotated_secret_key": "do-not-leak-on-update" },
+        "expected_version": expected_version,
+    })
+}
+
+/// SECURITY (cross-tenant mutation isolation — the severe surface): a
+/// resource that exists but is owned by ANOTHER workspace MUST collapse
+/// to a 404 *before any mutation*. `ResourceRepo::get`/`update` are keyed
+/// purely by id (not workspace-scoped), so the fake faithfully resolves
+/// the foreign row; the handler is the isolation boundary. The capture
+/// MUST stay `None` — the foreign row is never written, and neither its
+/// content nor its existence leaks.
+#[tokio::test]
+async fn update_resource_cross_workspace_is_404_no_mutation() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+
+    let other_workspace = vec![0xAB_u8; 16];
+    assert_ne!(
+        other_workspace,
+        test_ws_bytes(),
+        "the cross-workspace fixture must differ from the caller's workspace"
+    );
+    let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 4, false);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(app, &id.to_string(), update_body("http_pool", 4)).await;
+    let status = response.status();
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a resource in another workspace must be 404 (no cross-tenant \
+         mutation; no existence leak) — got {status}, body: {raw}"
+    );
+    assert!(
+        repo.updated().is_none(),
+        "the foreign-workspace row must NEVER be passed to update — \
+         isolation must short-circuit before any mutation"
+    );
+    assert!(
+        !raw.contains("Foreign Pool")
+            && !raw.contains("rotated_secret_key")
+            && !raw.contains("do-not-leak"),
+        "cross-workspace 404 must not echo the foreign row or the \
+         submitted config; body: {raw}"
+    );
+}
+
+/// An update targeting an id with no backing row is an indistinguishable
+/// 404, and nothing is mutated.
+#[tokio::test]
+async fn update_resource_unknown_id_is_404_no_mutation() {
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::with_get(None));
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(
+        app,
+        &ResourceId::new().to_string(),
+        update_body("http_pool", 0),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an id with no backing row must be 404 on update"
+    );
+    assert!(
+        repo.updated().is_none(),
+        "an absent target must not reach update"
+    );
+}
+
+/// A soft-deleted (tombstoned) row is not a resource: an update to it is
+/// 404, and the tombstone is never re-written.
+#[tokio::test]
+async fn update_resource_soft_deleted_is_404_no_mutation() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 7, true);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(app, &id.to_string(), update_body("http_pool", 7)).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "a soft-deleted resource is a tombstone, not a resource → 404"
+    );
+    assert!(
+        repo.updated().is_none(),
+        "a tombstone must not be re-written by update"
+    );
+}
+
+/// An unparsable id cannot name a resource → 404 (indistinguishable from
+/// missing/foreign), never 400/500.
+#[tokio::test]
+async fn update_resource_malformed_id_is_404() {
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::with_get(None));
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response =
+        update_resource_request(app, "not-a-valid-resource-id", update_body("http_pool", 0)).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an unparsable resource id must be 404 on update, never 500"
+    );
+}
+
+/// Re-validation fires BEFORE persistence: an unknown `kind` on a row the
+/// caller legitimately owns is rejected as 409 (RegistrarError::UnknownKind
+/// → Conflict) and the row is NEVER passed to `update`. A PUT must not be
+/// a path to persist an unknown-kind config that create would reject.
+#[tokio::test]
+async fn update_resource_unknown_kind_is_409_no_mutation() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    // A live row the caller owns — so a non-200 can only be the
+    // re-validation gate, not isolation/soft-delete.
+    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 2, false);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    // Empty registry ⇒ every kind is UnknownKind.
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(
+        app,
+        &id.to_string(),
+        update_body("never_registered_kind", 2),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "an unknown resource kind on update must be 409 (UnknownKind → \
+         Conflict), re-validated before any write"
+    );
+    assert!(
+        repo.updated().is_none(),
+        "a config whose kind failed re-validation must NOT be persisted"
+    );
+}
+
+/// With no validation backend wired, update fails **closed**: 422, and
+/// nothing is persisted — exactly the create-time fail-closed rule. A PUT
+/// must never be a path to persist an unvalidated (possibly secret-
+/// carrying) config. The error body must not echo the submitted config.
+#[tokio::test]
+async fn update_resource_without_validation_backend_is_422_fail_closed_no_secret() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 1, false);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    // `.with_resource_registrars(...)` deliberately NOT called.
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(app, &id.to_string(), update_body("http_pool", 1)).await;
+    let status = response.status();
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "no validation backend ⇒ fail closed with 422 on update, never \
+         persist unvalidated; got {status}, body: {raw}"
+    );
+    assert!(
+        repo.updated().is_none(),
+        "an unvalidated config must NEVER be persisted on update"
+    );
+    assert!(
+        !raw.contains("rotated_secret_key") && !raw.contains("do-not-leak"),
+        "a re-validation rejection must not echo the submitted config / \
+         secret values; body: {raw}"
+    );
+}
+
+/// Gate ordering: re-validation runs BEFORE the CAS write. The repo stub
+/// is armed to reject the write with a CAS `StorageError::Conflict`, but
+/// the validation backend is absent — so the request must fail closed
+/// with 422 (an unvalidated config never even reaches the CAS layer)
+/// rather than surface the repo's 409. The CAS→409 mapping itself is
+/// asserted directly at the type level in
+/// `storage_cas_conflict_maps_to_409_other_storage_errors_stay_500`
+/// (the API crate cannot stand up a real registrar — no `nebula-resource`
+/// dependency — so the success/CAS-409 e2e path is not constructible
+/// here; the type-level test is the decisive coverage).
+#[tokio::test]
+async fn update_resource_revalidation_precedes_cas() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 5, false);
+
+    // Repo would reject with a CAS conflict — but re-validation (absent
+    // backend → 422) MUST run first, proving the gate ordering.
+    let repo = Arc::new(FakeResourceRepo::with_get_and_update_conflict(row, 5, 9));
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(app, &id.to_string(), update_body("http_pool", 5)).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "re-validation (no backend → 422) must precede the CAS write — \
+         an unvalidated config must never even reach the CAS layer"
+    );
+    assert!(
+        repo.updated().is_none(),
+        "update must not be reached when re-validation fails closed"
+    );
+}
+
+/// No resource repo configured ⇒ 503 (same convention as the read/create
+/// endpoints), checked before any validation or isolation work.
+#[tokio::test]
+async fn update_resource_without_repo_is_503() {
+    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let api_config = ApiConfig::for_test();
+    let state = AppState::new(
+        workflow_repo,
+        execution_repo,
+        control_queue_repo,
+        api_config.jwt_secret.clone(),
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let app = app::build_app(state, &api_config);
+
+    let response = update_resource_request(
+        app,
+        &ResourceId::new().to_string(),
+        update_body("http_pool", 0),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unconfigured resource repo must be 503 on update"
+    );
+}
+
+/// SECURITY (no client-controlled workspace_id): `UpdateResourceRequest`
+/// has no workspace/owner field, so a body that tries to smuggle one is
+/// accepted with the extra key dropped by serde — there is no field
+/// through which a caller could re-home the resource. The persisted
+/// `workspace_id` is always the existing row's (== caller ws, verified).
+#[tokio::test]
+async fn update_resource_request_body_cannot_set_workspace() {
+    use nebula_api::models::UpdateResourceRequest;
+
+    let smuggled = serde_json::json!({
+        "display_name": "Evil Rename",
+        "kind": "http_pool",
+        "config": { "k": "v" },
+        "expected_version": 3,
+        "workspace_id": "ws_99999999999999999999999999",
+        "created_by": "usr_99999999999999999999999999",
+    });
+    let parsed: UpdateResourceRequest =
+        serde_json::from_value(smuggled).expect("extra keys are ignored by the DTO");
+    assert_eq!(parsed.display_name, "Evil Rename");
+    assert_eq!(parsed.kind, "http_pool");
+    assert_eq!(parsed.expected_version, 3);
+    // (Compile-time guarantee: `UpdateResourceRequest` has no
+    // `workspace_id` / owner field at all — the only "which workspace" is
+    // the authenticated path context, and on update the persisted row
+    // keeps the existing row's workspace_id.)
+}
+
+// ── delete_resource (soft) ───────────────────────────────────────────────────
+
+async fn delete_resource_request(app: axum::Router, res_id: &str) -> axum::http::Response<Body> {
+    let token = create_test_jwt();
+    app.oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(ws_path(&format!("/resources/{res_id}")))
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// A live resource the caller owns is soft-deleted: **204 No Content**,
+/// and the handler passed the resolved row's id bytes to `soft_delete`.
+#[tokio::test]
+async fn delete_resource_valid_is_204_and_soft_deletes() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let row = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, false);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(row)));
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = delete_resource_request(app, &id.to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "a live resource the caller owns must soft-delete with 204"
+    );
+    assert_eq!(
+        repo.soft_deleted().as_deref(),
+        Some(id.as_bytes().as_slice()),
+        "soft_delete must be called with the resolved row's id bytes"
+    );
+}
+
+/// SECURITY (cross-tenant delete isolation): a resource owned by ANOTHER
+/// workspace MUST be 404 with NO mutation — a W1 caller must not be able
+/// to soft-delete (or even learn of) a W2 resource. `soft_delete` is id-
+/// keyed (not workspace-scoped), so the handler is the isolation
+/// boundary; the capture must stay `None`.
+#[tokio::test]
+async fn delete_resource_cross_workspace_is_404_no_mutation() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+
+    let other_workspace = vec![0xCD_u8; 16];
+    assert_ne!(
+        other_workspace,
+        test_ws_bytes(),
+        "the cross-workspace fixture must differ from the caller's workspace"
+    );
+    let foreign = get_entry(id, other_workspace, "Foreign Pool", "http_pool", 8, false);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(foreign)));
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = delete_resource_request(app, &id.to_string()).await;
+    let status = response.status();
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a resource in another workspace must be 404 on delete (no \
+         cross-tenant delete; no existence leak) — got {status}"
+    );
+    assert!(
+        repo.soft_deleted().is_none(),
+        "the foreign-workspace row must NEVER be soft-deleted — \
+         isolation must short-circuit before any mutation"
+    );
+    assert!(
+        !raw.contains("Foreign Pool"),
+        "cross-workspace 404 must not echo the foreign row; body: {raw}"
+    );
+}
+
+/// Deleting an id with no backing row is an indistinguishable 404, no
+/// mutation.
+#[tokio::test]
+async fn delete_resource_unknown_id_is_404_no_mutation() {
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::with_get(None));
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = delete_resource_request(app, &ResourceId::new().to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an id with no backing row must be 404 on delete"
+    );
+    assert!(
+        repo.soft_deleted().is_none(),
+        "an absent target must not reach soft_delete"
+    );
+}
+
+/// Deleting an already soft-deleted row is 404 (a tombstone is not a
+/// resource) — idempotent-by-absence, no re-mutation.
+#[tokio::test]
+async fn delete_resource_already_deleted_is_404() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+    let tombstone = get_entry(id, test_ws_bytes(), "Deleted Pool", "http_pool", 7, true);
+
+    let repo = Arc::new(FakeResourceRepo::with_get(Some(tombstone)));
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = delete_resource_request(app, &id.to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an already soft-deleted resource is a tombstone → 404"
+    );
+    assert!(
+        repo.soft_deleted().is_none(),
+        "an already-tombstoned row must not be soft-deleted again"
+    );
+}
+
+/// An unparsable id is 404 on delete (indistinguishable), never 400/500.
+#[tokio::test]
+async fn delete_resource_malformed_id_is_404() {
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::with_get(None));
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = delete_resource_request(app, "not-a-valid-resource-id").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "an unparsable resource id must be 404 on delete, never 500"
+    );
+}
+
+/// No resource repo configured ⇒ 503 on delete (same convention).
+#[tokio::test]
+async fn delete_resource_without_repo_is_503() {
+    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let api_config = ApiConfig::for_test();
+    let state = AppState::new(
+        workflow_repo,
+        execution_repo,
+        control_queue_repo,
+        api_config.jwt_secret.clone(),
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let app = app::build_app(state, &api_config);
+
+    let response = delete_resource_request(app, &ResourceId::new().to_string()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unconfigured resource repo must be 503 on delete"
+    );
+}
+
+/// The CAS→409 mapping, asserted directly at the type level (no fake
+/// `nebula-resource` needed): the handler maps the **specific**
+/// `StorageError::Conflict` variant — not a catch-all over every
+/// `StorageError` — to `ApiError::Conflict` (409). Any other
+/// `StorageError` stays a 500. This pins that a stale `expected_version`
+/// cannot be mis-signalled as a 500 and an unrelated storage fault cannot
+/// be mis-signalled as a 409.
+#[test]
+fn storage_cas_conflict_maps_to_409_other_storage_errors_stay_500() {
+    use nebula_api::ApiError;
+
+    let cas = nebula_api::map_resource_update_storage_error(
+        nebula_storage::StorageError::conflict("resource", "res_x", 3, 7),
+    );
+    let (status, _) = cas.to_problem_details();
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a CAS StorageError::Conflict must map to 409 Conflict"
+    );
+
+    // A non-CAS storage fault must NOT be coerced to 409 — it stays 500.
+    let other = nebula_api::map_resource_update_storage_error(
+        nebula_storage::StorageError::Connection("db down".to_owned()),
+    );
+    let (status, _) = other.to_problem_details();
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a non-CAS StorageError must stay 500, never be mis-mapped to 409"
+    );
+    // And it is the generic Storage arm (no internal detail leak).
+    assert!(
+        matches!(other, ApiError::Storage(_)),
+        "non-CAS storage errors must remain the opaque Storage variant"
+    );
+}
+
+/// End-to-end interplay: a successful soft-delete followed by a GET of
+/// the same id is 404 — the C3 get filter already excludes
+/// `deleted_at.is_some()`, so a deleted resource is indistinguishable
+/// from a missing one. Modelled with two repos (the fake is stateless):
+/// delete succeeds (204) on a live row; a GET against a fixture whose row
+/// is now a tombstone is 404.
+#[tokio::test]
+async fn delete_then_get_same_id_is_404() {
+    let api_config = ApiConfig::for_test();
+    let id = ResourceId::new();
+
+    // 1) DELETE a live row → 204.
+    let live = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, false);
+    let del_repo = Arc::new(FakeResourceRepo::with_get(Some(live)));
+    let del_state = state_with_repo(&api_config, Arc::clone(&del_repo) as Arc<dyn ResourceRepo>);
+    let del_app = app::build_app(del_state, &api_config);
+    let del_resp = delete_resource_request(del_app, &id.to_string()).await;
+    assert_eq!(
+        del_resp.status(),
+        StatusCode::NO_CONTENT,
+        "the soft-delete itself must be 204"
+    );
+    assert_eq!(
+        del_repo.soft_deleted().as_deref(),
+        Some(id.as_bytes().as_slice()),
+        "soft_delete must have been issued for that id"
+    );
+
+    // 2) Post-delete the row is a tombstone; GET of the same id → 404
+    //    (C3's get filter excludes `deleted_at.is_some()`).
+    let tombstone = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, true);
+    let get_app = app::build_app(get_state(&api_config, Some(tombstone)), &api_config);
+    let get_resp = get_resource_request(get_app, &id.to_string()).await;
+    assert_eq!(
+        get_resp.status(),
+        StatusCode::NOT_FOUND,
+        "a GET after soft-delete must be 404 — a deleted resource is \
+         indistinguishable from a missing one"
     );
 }

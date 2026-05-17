@@ -42,6 +42,7 @@ use crate::{
     errors::{ApiError, ApiResult, ProblemDetails},
     models::{
         CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourceSummary,
+        UpdateResourceRequest, UpdateResourceResponse,
     },
     state::AppState,
 };
@@ -191,6 +192,95 @@ pub async fn get_resource(
     Ok(Json(entry_to_summary(entry)?))
 }
 
+/// Validate `config` against `kind` through the engine's closed
+/// `kind → registrar` allowlist (schema + closed-set guard, **no** live
+/// `Manager` registration — that is an engine-activation concern,
+/// INTEGRATION_MODEL §13.1).
+///
+/// Shared by `create_resource` and `update_resource` so a PUT can never
+/// be a path to persist a config that a POST would have rejected. The
+/// outcomes are identical and fail **closed**:
+/// - validation backend not configured ⇒ **422** (an unvalidated config
+///   — which could carry an inlined secret — is never persisted);
+/// - unknown `kind` ⇒ **409 Conflict** (closed-allowlist miss; a
+///   non-retryable caller fault, classified exactly as
+///   `RegistrarError::UnknownKind`);
+/// - schema / closed-set failure ⇒ **422** with a generic detail. The
+///   validator's raw report can restate submitted field values, so it is
+///   logged server-side and never echoed to the client (ADR-0028 §7).
+fn validate_resource_config(
+    state: &AppState,
+    kind: &str,
+    config: serde_json::Value,
+) -> Result<(), ApiError> {
+    let registrars = state.resource_registrars.as_ref().ok_or_else(|| {
+        ApiError::Unprocessable(
+            "resource config validation is unavailable on this instance".to_string(),
+        )
+    })?;
+
+    registrars.validate(kind, config).map_err(|err| match err {
+        RegistrarError::UnknownKind(kind) => {
+            ApiError::Conflict(format!("unknown resource kind `{kind}`"))
+        },
+        RegistrarError::Register { kind, source } => {
+            tracing::warn!(
+                target: "nebula_api::resource",
+                kind = %kind,
+                error = %source,
+                "resource config rejected by schema/closed-set validation"
+            );
+            ApiError::Unprocessable(format!(
+                "resource configuration is invalid for kind `{kind}`"
+            ))
+        },
+        // `RegistrarError` is `#[non_exhaustive]`. Any future variant
+        // means validation did not conclusively succeed, so fail closed
+        // with a generic 422 rather than persist an unvalidated config or
+        // leak an unmapped error shape.
+        other => {
+            tracing::warn!(
+                target: "nebula_api::resource",
+                error = %other,
+                "resource config validation failed with an unmapped registrar error"
+            );
+            ApiError::Unprocessable("resource configuration is invalid".to_string())
+        },
+    })
+}
+
+/// Map a [`nebula_storage::StorageError`] from a resource CAS `update`
+/// onto the HTTP contract.
+///
+/// Only the **specific** [`StorageError::Conflict`] variant (the
+/// optimistic-concurrency / CAS-version mismatch) becomes
+/// [`ApiError::Conflict`] (409): a caller's `expected_version` was stale.
+/// Every other `StorageError` stays the opaque
+/// [`ApiError::Storage`] → 500 (no internal detail leak). This is
+/// deliberately *not* a catch-all "any storage error ⇒ 409": a genuine
+/// backend fault (connection, serialization, …) must not be mis-signalled
+/// to the client as a version conflict, and a stale-version write must
+/// not be mis-signalled as a 500.
+#[must_use]
+pub fn map_resource_update_storage_error(err: nebula_storage::StorageError) -> ApiError {
+    match err {
+        nebula_storage::StorageError::Conflict {
+            expected, actual, ..
+        } => {
+            // The version numbers are non-secret optimistic-concurrency
+            // metadata (not config/secret material), so echoing them is a
+            // useful, safe CAS diagnostic per ADR-0028 §7.
+            ApiError::Conflict(format!(
+                "resource was modified concurrently (expected version {expected}, found {actual}); \
+                 re-read and retry"
+            ))
+        },
+        // Connection / serialization / timeout / not-found-on-update / …
+        // are not a version conflict — keep the opaque 500 mapping.
+        other => ApiError::Storage(other),
+    }
+}
+
 /// 16 raw id bytes for the resource's `created_by`, derived from the
 /// authenticated principal.
 ///
@@ -266,51 +356,7 @@ pub async fn create_resource(
     // the validation surface is not wired, fail closed — persisting an
     // unvalidated config (which could carry an inlined secret) would
     // violate ADR-0028 §7 / PRODUCT_CANON §3.5.
-    let registrars = state.resource_registrars.as_ref().ok_or_else(|| {
-        ApiError::Unprocessable(
-            "resource config validation is unavailable on this instance".to_string(),
-        )
-    })?;
-
-    registrars
-        .validate(&body.kind, body.config.clone())
-        .map_err(|err| match err {
-            // Unknown kind: closed-allowlist miss caught before any typed
-            // call — a non-retryable caller conflict, never a 5xx
-            // (mirrors RegistrarError::UnknownKind → ErrorCategory::Conflict).
-            RegistrarError::UnknownKind(kind) => {
-                ApiError::Conflict(format!("unknown resource kind `{kind}`"))
-            },
-            // Schema / closed-set failure. The inner report can restate
-            // submitted field values, so it is logged server-side and the
-            // client gets a generic 422 — never the raw message (ADR-0028
-            // §7). 422 (not the inner Error::permanent → Internal/500):
-            // invalid client input is a client error, and the handler owns
-            // the HTTP contract here rather than delegating classification.
-            RegistrarError::Register { kind, source } => {
-                tracing::warn!(
-                    target: "nebula_api::resource",
-                    kind = %kind,
-                    error = %source,
-                    "resource config rejected by schema/closed-set validation"
-                );
-                ApiError::Unprocessable(format!(
-                    "resource configuration is invalid for kind `{kind}`"
-                ))
-            },
-            // `RegistrarError` is `#[non_exhaustive]`. Any future variant
-            // means validation did not conclusively succeed, so fail
-            // closed with a generic 422 rather than persist an
-            // unvalidated config or leak an unmapped error shape.
-            other => {
-                tracing::warn!(
-                    target: "nebula_api::resource",
-                    error = %other,
-                    "resource config validation failed with an unmapped registrar error"
-                );
-                ApiError::Unprocessable("resource configuration is invalid".to_string())
-            },
-        })?;
+    validate_resource_config(&state, &body.kind, body.config.clone())?;
 
     let resource_id = ResourceId::new();
     let entry = ResourceEntry {
@@ -339,4 +385,191 @@ pub async fn create_resource(
             id: resource_id.to_string(),
         }),
     ))
+}
+
+/// `PUT /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}` — replace a
+/// resource definition (optimistic-concurrency / CAS).
+///
+/// Updates the persisted `display_name`/`kind`/`config` of an existing
+/// resource. The `config`/`kind` are **re-validated** through the
+/// engine's closed `kind → registrar` allowlist *before* the row is
+/// persisted (identical schema + closed-set rules as create) — a PUT can
+/// never be a path to persist a schema-invalid or unknown-kind config
+/// that create would reject.
+///
+/// Tenant isolation (the severe surface — `ResourceRepo::get`/`update`
+/// are keyed purely by id and are **not** workspace-scoped, so the
+/// handler is the isolation boundary). All of the following collapse to
+/// an indistinguishable **404 Not Found** *before any mutation*, so a
+/// caller authorized for one workspace can neither mutate nor learn of a
+/// resource owned by another:
+/// - unknown id, or an unparsable id string;
+/// - a resource owned by a *different* workspace;
+/// - a soft-deleted row (a tombstone is not a resource).
+///
+/// The persisted row keeps the fetched row's `workspace_id` / `id` /
+/// `created_*` (the request body deliberately has no workspace/owner
+/// field), so an update can never re-home a resource into another
+/// tenant's workspace. Other outcomes:
+/// - the caller's `expected_version` is stale ⇒ **409 Conflict** (the
+///   storage CAS-mismatch error mapped specifically — not a catch-all);
+/// - unknown `kind` ⇒ **409**; schema/closed-set failure or no
+///   validation backend ⇒ **422** (fail closed; the validator's raw
+///   report is logged server-side, never echoed — ADR-0028 §7).
+#[utoipa::path(
+    put,
+    path = "/orgs/{org}/workspaces/{ws}/resources/{res}",
+    tag = "workspaces.resources",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("res" = String, Path, description = "Resource identifier (`res_<ULID>`)."),
+    ),
+    request_body = UpdateResourceRequest,
+    responses(
+        (status = 200, description = "Resource updated; returns the new CAS version.", body = UpdateResourceResponse),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
+        (status = 409, description = "Unknown resource `kind`, or the supplied `expected_version` is stale (optimistic-concurrency conflict).", body = ProblemDetails),
+        (status = 422, description = "Resource config failed schema/closed-set validation, or the validation backend is not configured.", body = ProblemDetails),
+        (status = 500, description = "Resource repository error.", body = ProblemDetails),
+        (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
+pub async fn update_resource(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, res)): Path<(String, String, String)>,
+    Json(body): Json<UpdateResourceRequest>,
+) -> ApiResult<Json<UpdateResourceResponse>> {
+    let workspace_id = tenant
+        .require_workspace()
+        .map_err(|_| ApiError::Forbidden("workspace context required".to_string()))?;
+    let ws_bytes = workspace_id.as_bytes();
+
+    let repo = state.resource_repo.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
+    })?;
+
+    // An unparsable id cannot name an existing resource — 404 (not 400),
+    // indistinguishable from a missing / cross-tenant target.
+    let resource_id = ResourceId::parse(&res)
+        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?;
+
+    // Tenant-isolation boundary: fetch by id (the store is NOT
+    // workspace-scoped), then require the row to be the caller's *and*
+    // live. A foreign / missing / soft-deleted target collapses to the
+    // same 404 *before* any mutation — a caller authorized for one
+    // workspace can neither mutate nor learn of another workspace's
+    // resource (no 200/403/409, no existence or content leak).
+    let existing = repo
+        .get(resource_id.as_bytes().as_slice())
+        .await?
+        .filter(|entry| entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none())
+        .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))?;
+
+    // Re-validate kind + config BEFORE persistence (same fail-closed
+    // rules as create). A PUT must not bypass create-time validation.
+    validate_resource_config(&state, &body.kind, body.config.clone())?;
+
+    // Build the row to persist from the *fetched* row: `id`,
+    // `workspace_id` (== caller ws, just verified — NEVER from the body;
+    // the DTO has no such field), `created_at`/`created_by` are
+    // immutable. Only the caller-mutable fields are taken from the
+    // request. `slug` is workspace-unique and not part of the update
+    // contract, so the existing slug is preserved.
+    let updated = ResourceEntry {
+        id: existing.id,
+        workspace_id: existing.workspace_id,
+        slug: existing.slug,
+        display_name: body.display_name,
+        kind: body.kind,
+        config: body.config,
+        created_at: existing.created_at,
+        created_by: existing.created_by,
+        // The CAS contract increments the stored counter on a successful
+        // compare-and-swap against `expected_version`.
+        version: body.expected_version.saturating_add(1),
+        deleted_at: None,
+    };
+
+    repo.update(&updated, body.expected_version)
+        .await
+        .map_err(map_resource_update_storage_error)?;
+
+    Ok(Json(UpdateResourceResponse {
+        id: resource_id.to_string(),
+        version: updated.version.to_string(),
+    }))
+}
+
+/// `DELETE /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}` —
+/// soft-delete a resource definition.
+///
+/// Marks the resource row as deleted (a tombstone — the row is retained
+/// for audit, not physically removed). A subsequent `GET` of the same id
+/// is **404**: the read path excludes `deleted_at.is_some()`, so a
+/// deleted resource is indistinguishable from a missing one.
+///
+/// Tenant isolation is identical to the update path: `ResourceRepo::get`
+/// / `soft_delete` are keyed purely by id and are **not**
+/// workspace-scoped, so the handler is the isolation boundary. An unknown
+/// id, an unparsable id, a resource owned by a *different* workspace, or
+/// an already soft-deleted row all collapse to an indistinguishable
+/// **404 Not Found** *before any mutation* — a caller authorized for one
+/// workspace can neither soft-delete nor learn of another workspace's
+/// resource. A successful soft-delete is **204 No Content**.
+#[utoipa::path(
+    delete,
+    path = "/orgs/{org}/workspaces/{ws}/resources/{res}",
+    tag = "workspaces.resources",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("res" = String, Path, description = "Resource identifier (`res_<ULID>`)."),
+    ),
+    responses(
+        (status = 204, description = "Resource soft-deleted."),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, an already soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
+        (status = 500, description = "Resource repository error.", body = ProblemDetails),
+        (status = 503, description = "Resource catalog backend is not configured on this instance.", body = ProblemDetails),
+    ),
+)]
+pub async fn delete_resource(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, res)): Path<(String, String, String)>,
+) -> ApiResult<StatusCode> {
+    let workspace_id = tenant
+        .require_workspace()
+        .map_err(|_| ApiError::Forbidden("workspace context required".to_string()))?;
+    let ws_bytes = workspace_id.as_bytes();
+
+    let repo = state.resource_repo.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
+    })?;
+
+    let resource_id = ResourceId::parse(&res)
+        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?;
+
+    // Tenant-isolation boundary (identical to the update path): resolve
+    // by id, then require the row to be the caller's *and* still live. A
+    // foreign / missing / already-tombstoned target collapses to the same
+    // 404 *before* `soft_delete` is ever issued — a caller authorized for
+    // one workspace can neither delete nor learn of another workspace's
+    // resource.
+    let existing = repo
+        .get(resource_id.as_bytes().as_slice())
+        .await?
+        .filter(|entry| entry.workspace_id.as_slice() == ws_bytes && entry.deleted_at.is_none())
+        .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))?;
+
+    repo.soft_delete(existing.id.as_slice()).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

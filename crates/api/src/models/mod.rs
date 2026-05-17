@@ -40,6 +40,7 @@ pub use org::{
 pub use pagination::{CursorParams, CursorPayload, PaginatedResponse};
 pub use resource::{
     CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourceSummary,
+    UpdateResourceRequest, UpdateResourceResponse,
 };
 pub use system::AckResponse;
 pub use workflow::{

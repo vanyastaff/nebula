@@ -66,3 +66,47 @@ pub struct CreateResourceResponse {
     /// `res_<ULID>` identifier of the newly created resource.
     pub id: String,
 }
+
+/// `PUT /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}` request body.
+///
+/// Like [`CreateResourceRequest`] there is **deliberately no
+/// `workspace_id` / owner field**: the owning workspace is never taken
+/// from the request body. On update the persisted row keeps the existing
+/// row's `workspace_id` (always the caller's authenticated workspace,
+/// verified before the write) — a PUT can therefore never re-home a
+/// resource into another tenant's workspace (tenant isolation; the
+/// confused-deputy abuse).
+///
+/// `expected_version` is the optimistic-concurrency token the client
+/// read from a prior GET; the store applies a CAS on it and a mismatch
+/// is reported as **409 Conflict**. `config`/`kind` are re-validated
+/// against the kind's `R::Config` schema (and rejected if the config
+/// carries an undeclared, secret-shaped field — ADR-0028 §7 /
+/// PRODUCT_CANON §3.5) *before* the row is persisted, so a PUT can never
+/// be a path to persist a config that a create would have rejected.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UpdateResourceRequest {
+    /// New human-readable display name.
+    pub display_name: String,
+    /// Resource kind key (e.g. `"http_pool"`). Re-validated against the
+    /// closed registrar allowlist; an unknown kind is rejected.
+    pub kind: String,
+    /// Resource-specific, non-secret configuration. Re-validated against
+    /// the kind's `R::Config` schema. Secrets must NOT be inlined here —
+    /// they are bound through typed credential slots.
+    #[schema(value_type = Object)]
+    pub config: serde_json::Value,
+    /// Version the caller expects the stored row to be at (read from a
+    /// prior GET). The update is applied with a CAS on this counter; a
+    /// mismatch is **409 Conflict**.
+    pub expected_version: i64,
+}
+
+/// `PUT /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}` response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UpdateResourceResponse {
+    /// `res_<ULID>` identifier of the updated resource.
+    pub id: String,
+    /// The row's new CAS version after the successful update.
+    pub version: String,
+}
