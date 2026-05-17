@@ -586,31 +586,43 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         );
     }
 
-    // `resolve` / `resolve/continue` are **structurally unreachable**
-    // behind the tenancy middleware: it parses the path segment after
-    // `credentials` as a `CredentialId`, and the literal `resolve`
-    // segment fails ULID parsing → a flat **404 before any handler
-    // runs** (see `crates/api/src/middleware/tenancy.rs`
-    // `resolve_path_ids`). This is a pre-existing route-ordering
-    // condition, not a Phase-4 regression (the prior 503 stub was
-    // equally unreachable). It is still §4.5-honest — the caller
-    // cannot obtain a fake credential; they get a hard 404. The
-    // generic-resolve handler itself stays an honest 503 (asserted by
-    // the transport unit test); the route fix is tracked separately.
-    let post_404: &[(&str, String, serde_json::Value)] = &[
+    // `resolve` / `resolve/continue` reach the handler. The tenancy
+    // middleware special-cases the literal `resolve` sub-route so it is
+    // NOT parsed as a `{cred}` `CredentialId` (see
+    // `crates/api/src/middleware/tenancy.rs` `resolve_path_ids`).
+    // Without that guard the literal `resolve` segment failed ULID
+    // parsing and every acquisition request was a flat 404 before any
+    // handler ran — a route-shadow that made these endpoints
+    // structurally unreachable. They now hit the handler, which returns
+    // the honest engine-owned 503 (generic `Credential::resolve`
+    // dispatch is not wired into this API build); the genuine `{cred}`
+    // position stays strictly ULID-validated. Regression guard for the
+    // route-shadow.
+    // The sentinel is placed in the submitted credential material
+    // (`data` / `user_input`) so the no-secret assertion below is a
+    // *real* redaction guard, not vacuous: the honest-503 problem body
+    // must never echo caller-submitted secret material (§12.5 / §13 —
+    // same contract as the forced-error bodies elsewhere in this file).
+    let resolve_503: &[(&str, String, serde_json::Value)] = &[
         (
             "POST",
             ws_path("/credentials/resolve"),
-            serde_json::json!({ "credential_key": "api_key", "data": {} }),
+            serde_json::json!({
+                "credential_key": "api_key",
+                "data": { "api_key": SECRET_TOKEN }
+            }),
         ),
         (
             "POST",
             ws_path("/credentials/resolve/continue"),
-            serde_json::json!({ "pending_token": "tok", "user_input": {} }),
+            serde_json::json!({
+                "pending_token": "tok",
+                "user_input": { "code": SECRET_TOKEN }
+            }),
         ),
     ];
 
-    for (method, path, body) in post_404 {
+    for (method, path, body) in resolve_503 {
         let app = app::build_app(state.clone(), &config);
         let resp = app
             .oneshot(auth_json(method, path, &token, body))
@@ -618,14 +630,17 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
             .unwrap();
         assert_eq!(
             resp.status(),
-            StatusCode::NOT_FOUND,
-            "{method} {path} is shadowed by the tenancy `{{cred}}` matcher → \
-             honest 404 (no false capability; pre-existing route condition)"
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {path} must reach the handler and return the honest \
+             engine-owned 503 — NOT a pre-handler 404 (that is the tenancy \
+             route-shadow this guards against)"
         );
         let problem = body_string(resp).await;
         assert!(
             !problem.contains(SECRET_TOKEN),
-            "404 body must never carry a secret: {problem}"
+            "honest-503 problem body must not echo caller-submitted \
+             credential material (SECRET_TOKEN was in the request \
+             `data`/`user_input`): {problem}"
         );
     }
 
@@ -642,4 +657,54 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
             "{path} type discovery must stay an honest 503 (no CredentialRegistry)"
         );
     }
+}
+
+/// Guard-precision regression (Copilot review, PR #674): the
+/// `"credentials" if segments[7] != "resolve"` tenancy match guard must
+/// keep rejecting a **non-`resolve`, non-ULID** `{cred}` segment
+/// *before* the handler. Locks the other half of the contract so a
+/// future broadening of the guard cannot silently weaken `{cred}` ULID
+/// validation — the route-shadow fix only carves out the literal
+/// `resolve`, nothing else.
+#[tokio::test]
+async fn tenancy_still_rejects_non_ulid_cred_segment_before_handler() {
+    let (state, _q) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // "not-a-valid-ulid" is neither the literal `resolve` sub-route nor a
+    // `cred_<ULID>` → the tenancy `{cred}` matcher must 404 before any
+    // handler runs (bare `{cred}` GET, and the `{cred}/test` POST
+    // sub-route — both put the bad segment at the `{cred}` position).
+    let bad = "not-a-valid-ulid";
+
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_get(&ws_path(&format!("/credentials/{bad}")), &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /credentials/{bad}: a non-`resolve`, non-ULID `{{cred}}` segment \
+         must be rejected by tenancy ULID validation *before* the handler — \
+         the route-shadow guard must not weaken `{{cred}}` validation"
+    );
+
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_json(
+            "POST",
+            &ws_path(&format!("/credentials/{bad}/test")),
+            &token,
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "POST /credentials/{bad}/test: the `{{cred}}` segment is still strictly \
+         ULID-validated by tenancy before the handler"
+    );
 }

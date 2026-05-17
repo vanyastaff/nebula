@@ -285,10 +285,11 @@ types have no `data` field, so `get` / `list` cannot echo the secret.
 > (`nebula-engine::credential`, ADR-0030/ADR-0041) and/or a
 > `CredentialRegistry` that is not wired into this build, so they
 > deliberately refuse rather than fake a credential capability. The
-> generic `resolve` / `resolve/continue` routes are additionally
-> shadowed by the tenancy `{cred}` path matcher (a pre-existing
-> route-ordering condition) and surface as a flat 404 before the
-> handler — still §4.5-honest (no false success).
+> tenancy path resolver special-cases the literal `resolve` sub-route,
+> so `resolve` / `resolve/continue` are **not** shadowed by the
+> `{cred}` matcher — they reach the handler and return the honest 503
+> above (not a pre-handler 404); the genuine `/credentials/{cred}`
+> position stays strictly ULID-validated.
 
 ### Org membership durability (canon §11.6 / §11.5)
 

@@ -363,6 +363,7 @@ pub async fn revoke_credential(
         (status = 400, description = "Validation error (key or data shape).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 503, description = "Honest stub (canon §4.5): the route is reachable but generic credential resolution is engine-owned (`Credential::resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
     ),
 )]
 pub async fn resolve_credential(
@@ -401,6 +402,7 @@ pub async fn resolve_credential(
         (status = 400, description = "Validation error (e.g. empty `pending_token`).", body = ProblemDetails),
         (status = 401, description = "Authentication required or pending token expired/already-consumed.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 503, description = "Honest stub (canon §4.5): the route is reachable but generic interactive continuation is engine-owned (`Interactive::continue_resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
     ),
 )]
 pub async fn continue_resolve_credential(
