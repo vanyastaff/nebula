@@ -26,6 +26,7 @@ path = "src/bin/nebula-realtime.rs"
 [dependencies]
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
+nebula-storage-port = { path = "../storage-port" }
 nebula-core = { path = "../core" }
 nebula-execution = { path = "../execution" }
 nebula-validator = { path = "../validator" }

@@ -3360,6 +3360,7 @@ dependencies = [
  "nebula-resilience",
  "nebula-schema",
  "nebula-storage",
+ "nebula-storage-port",
  "nebula-validator",
  "nebula-workflow",
  "oas3",

@@ -16,6 +16,7 @@ use nebula_storage::{
     credential::{InMemoryPendingStore, InMemoryStore},
     repos::{ControlQueueRepo, WebhookActivationRepo},
 };
+use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -178,6 +179,26 @@ pub struct AppState {
     /// Required for `POST /internal/v1/webhooks/reload`. When `None`,
     /// every request to `/internal/v1/...` returns 503.
     pub internal_shared_token: Option<Arc<str>>,
+
+    /// Optional spec-16 scoped execution-store port handle.
+    ///
+    /// When set (via [`Self::with_execution_store`]), handlers read /
+    /// transition execution state through this already-scoped port
+    /// instead of [`Self::execution_repo`]. The composition root wraps
+    /// the raw adapter in the `nebula-tenancy` decorator so the handle
+    /// is tenant-bound before it reaches `AppState`.
+    pub execution_store: Option<Arc<dyn ExecutionStore>>,
+
+    /// Optional spec-16 scoped workflow-version port handle (resume /
+    /// definition lookup). Wired alongside [`Self::execution_store`].
+    pub workflow_version_store: Option<Arc<dyn WorkflowVersionStore>>,
+
+    /// Optional spec-16 scoped control-queue port handle.
+    ///
+    /// When set (via [`Self::with_control_queue`]), the cancel / start
+    /// enqueue path uses this scoped port instead of
+    /// [`Self::control_queue_repo`].
+    pub control_queue: Option<Arc<dyn ControlQueue>>,
 }
 
 impl AppState {
@@ -215,7 +236,36 @@ impl AppState {
             webhook_secret_resolver: None,
             webhook_ctx_factory: None,
             internal_shared_token: None,
+            execution_store: None,
+            workflow_version_store: None,
+            control_queue: None,
         }
+    }
+
+    /// Attach the spec-16 scoped execution-store + workflow-version
+    /// port handles.
+    ///
+    /// The composition root MUST pass handles already wrapped in the
+    /// `nebula-tenancy` decorator (tenant-bound); `AppState` never sees
+    /// the raw adapter. When set, handlers prefer these over the legacy
+    /// [`Self::execution_repo`] / [`Self::workflow_repo`].
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_execution_store(
+        mut self,
+        execution: Arc<dyn ExecutionStore>,
+        workflow_version: Arc<dyn WorkflowVersionStore>,
+    ) -> Self {
+        self.execution_store = Some(execution);
+        self.workflow_version_store = Some(workflow_version);
+        self
+    }
+
+    /// Attach the spec-16 scoped control-queue port handle (tenant-
+    /// bound via the `nebula-tenancy` decorator).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_control_queue(mut self, control_queue: Arc<dyn ControlQueue>) -> Self {
+        self.control_queue = Some(control_queue);
+        self
     }
 
     /// Set the static API keys accepted via `X-API-Key` header.
