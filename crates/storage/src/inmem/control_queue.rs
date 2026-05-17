@@ -7,7 +7,13 @@
 //! claiming processor so a reclaimed-then-stale runner cannot overwrite a
 //! newer claim.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// Same `tokio::time::Instant` clock as `inmem::execution` (the
+// `QueuedMsg.processed_at` field originates there): keeps reclaim
+// staleness driven by tokio's clock so paused-time tests are
+// deterministic and the field types stay consistent.
+use tokio::time::Instant;
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::ControlMsg;

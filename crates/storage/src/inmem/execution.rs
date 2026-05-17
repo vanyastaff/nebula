@@ -7,7 +7,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// Lease/queue expiry uses `tokio::time::Instant` (not `std::time::Instant`)
+// so paused-time integration tests (`tokio::time::pause`/`advance`) drive
+// lease TTL and reclaim staleness deterministically with zero wall-clock
+// cost — the contract the prior in-memory adapter guaranteed.
+use tokio::time::Instant;
 
 use nebula_storage_port::dto::{ControlMsg, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
