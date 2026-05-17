@@ -104,23 +104,25 @@ pub async fn readiness_check(
     (status, Json(response))
 }
 
-/// Probe the workflow repository with a bounded timeout.
+/// Probe the workflow store with a bounded timeout.
 ///
-/// `count()` is the cheapest read surface already on the trait, so adding
-/// this probe does not widen the public API. A timeout OR an error from the
-/// backend maps to "not ready" — readiness is a binary signal, callers do
-/// not need to distinguish transport from timeout.
+/// `workflow_count()` is the cheapest read surface and dual-dispatches
+/// (scoped spec-16 store when wired, else the legacy `WorkflowRepo`), so
+/// the probe stays correct under both backends without widening any
+/// public API. A timeout OR an error maps to "not ready" — readiness is
+/// a binary signal, callers do not need to distinguish transport from
+/// timeout.
 async fn probe_database(state: &AppState) -> bool {
-    match tokio::time::timeout(PROBE_TIMEOUT, state.workflow_repo.count()).await {
+    match tokio::time::timeout(PROBE_TIMEOUT, state.workflow_count()).await {
         Ok(Ok(_)) => true,
         Ok(Err(err)) => {
-            tracing::warn!(error = %err, "readiness probe: workflow repo count() failed");
+            tracing::warn!(error = %err, "readiness probe: workflow count() failed");
             false
         },
         Err(_) => {
             tracing::warn!(
                 timeout_secs = PROBE_TIMEOUT.as_secs(),
-                "readiness probe: workflow repo count() timed out",
+                "readiness probe: workflow count() timed out",
             );
             false
         },

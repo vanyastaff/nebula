@@ -646,14 +646,14 @@ pub async fn execute_workflow(
     let state_json = serde_json::to_value(&exec_state)
         .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
 
-    // Create execution record via `create` — `transition` is a CAS UPDATE
-    // and was hitting zero rows for every brand-new ID, so every call to
-    // this handler previously returned a 500.
+    // Create execution record via the accessor (dual-dispatch: scoped
+    // `ExecutionStore::create` when wired, else the legacy
+    // `ExecutionRepo::create`). `transition` is a CAS UPDATE and would
+    // hit zero rows for a brand-new id, so this is `create`, not a
+    // transition.
     state
-        .execution_repo
-        .create(execution_id, workflow_id, state_json)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))?;
+        .create_execution(execution_id, workflow_id, state_json)
+        .await?;
 
     // Enqueue the Start signal on the durable control queue — closes the
     // §4.5 gap where the API advertised dispatch but never reached the

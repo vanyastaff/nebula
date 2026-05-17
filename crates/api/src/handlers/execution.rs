@@ -282,12 +282,11 @@ pub async fn start_execution(
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify workflow exists
+    // Verify workflow exists via the accessor (dual-dispatch: scoped
+    // spec-16 stores when wired, else the legacy `WorkflowRepo`).
     state
-        .workflow_repo
-        .get(workflow_id_parsed)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_definition(workflow_id_parsed)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {workflow_id} not found")))?;
 
     // Generate new execution ID
