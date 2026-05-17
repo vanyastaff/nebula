@@ -11,7 +11,7 @@
 //! / lease mechanism); see `docs/adr/0066-credential-runtime-crate.md`.
 //!
 //! This increment ships only the crate scaffold and the
-//! [`CredentialServiceError`](error::CredentialServiceError) taxonomy.
+//! [`CredentialServiceError`] taxonomy.
 #![forbid(unsafe_code)]
 
 pub mod builder;

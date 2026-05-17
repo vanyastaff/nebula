@@ -111,7 +111,7 @@ pub struct TypeCapabilities {
 
 /// Secret-free descriptor of a registered credential type for discovery
 /// UIs / pickers. Projected from [`CredentialMetadata`] +
-/// [`CredentialDispatch`](crate::dispatch::CredentialDispatch).
+/// [`CredentialDispatch`].
 ///
 /// [`CredentialMetadata`]: nebula_credential::CredentialMetadata
 #[derive(Debug, Clone, Serialize)]
@@ -868,7 +868,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
 
     /// List every registered credential type as a secret-free
     /// descriptor. Capability flags come from the
-    /// [`CredentialDispatch`](crate::dispatch::CredentialDispatch) table
+    /// [`CredentialDispatch`] table
     /// (closure presence), not self-attested metadata.
     #[must_use]
     pub fn list_types(&self) -> Vec<CredentialTypeInfo> {

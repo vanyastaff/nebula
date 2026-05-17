@@ -1,5 +1,5 @@
 //! `CredentialServiceBuilder` — the only construction path for
-//! [`CredentialService`](crate::service::CredentialService).
+//! [`CredentialService`].
 //!
 //! Panel-refined shape (spec §5): every mandatory collaborator is a
 //! by-value argument to [`CredentialServiceBuilder::new`], so omitting

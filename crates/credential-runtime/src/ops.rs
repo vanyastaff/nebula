@@ -649,7 +649,7 @@ where
 }
 
 /// Attach the erased `test` closure for `C: Testable` onto the existing
-/// [`OpsEntry`] at `C::KEY`. The base [`register_runtime_ops`] must have
+/// `OpsEntry` at `C::KEY`. The base [`register_runtime_ops`] must have
 /// run first; closure presence *is* the testable capability (mirrors
 /// `plugin_capability_report`).
 ///
