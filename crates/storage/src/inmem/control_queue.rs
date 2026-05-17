@@ -29,6 +29,24 @@ impl InMemoryControlQueue {
             inner: store.shared(),
         }
     }
+
+    /// Non-consuming snapshot of every enqueued row as
+    /// `(msg, status)` pairs, ordered by id for determinism.
+    ///
+    /// This is the port-side structural equivalent of the legacy
+    /// `InMemoryControlQueueRepo::snapshot` (test assertions need to see
+    /// pending rows *without* the status flip `claim_pending` performs —
+    /// e.g. the §13 knife asserts both the `Start` and `Cancel` rows are
+    /// still `Pending`). Inspection only; never used on a hot path.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<(ControlMsg, String)> {
+        let st = self.inner.lock();
+        let mut rows: Vec<(&[u8; 16], &QueuedMsg)> = st.queue.iter().collect();
+        rows.sort_unstable_by_key(|(id, _)| **id);
+        rows.into_iter()
+            .map(|(_, q)| (q.msg.clone(), q.status.clone()))
+            .collect()
+    }
 }
 
 #[async_trait::async_trait]
