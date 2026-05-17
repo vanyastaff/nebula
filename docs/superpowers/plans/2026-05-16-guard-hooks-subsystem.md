@@ -4,13 +4,13 @@
 
 **Goal:** Harness-enforced, evasion-resistant guard hooks (bash + jq) so the agent cannot weaken tests, suppress lints, bypass lefthook, or claim "done" without a verified gate.
 
-**Architecture (D10):** POSIX bash hooks under `scripts/guard/` sharing `_lib.sh`, wired in committed `.claude/settings.json` (`command`-type). `jq` parses stdin. The no-cheat guarantee is **structural**, not parser-based: **B** (edit-guard, hard-deny) + **A2** (`record.sh` — records a green gate only for a canonical *clean* invocation; lint-suppressed/masked/redirected/echoed runs never count) + **C** (Stop-gate, hard-block) + lefthook/CI. **Hook A is a fail-OPEN advisory tripwire** (blatant literals only), not a security boundary — 5 adversarial rounds proved a hand-rolled bash shell-parser on a boundary is an un-winnable arms race, so the boundary was relocated to the oracle.
+**Architecture (D10):** POSIX bash hooks under `.claude/hooks/` sharing `_lib.sh`, wired in committed `.claude/settings.json` (`command`-type). `jq` parses stdin. The no-cheat guarantee is **structural**, not parser-based: **B** (edit-guard, hard-deny) + **A2** (`record.sh` — records a green gate only for a canonical *clean* invocation; lint-suppressed/masked/redirected/echoed runs never count) + **C** (Stop-gate, hard-block) + lefthook/CI. **Hook A is a fail-OPEN advisory tripwire** (blatant literals only), not a security boundary — 5 adversarial rounds proved a hand-rolled bash shell-parser on a boundary is an un-winnable arms race, so the boundary was relocated to the oracle.
 
 **Tech Stack:** bash 5 (git-bash on Windows — already required by lefthook), jq 1.8, git, Taskfile. No Node, no build step.
 
 **Plan series (Plan 1 of 4 — spec `docs/superpowers/specs/2026-05-16-agent-discipline-and-curation-design.md`, decision D9):** 1=this; 2=D8 doc-canon inversion; 3=skill+subagent curation (G/H); 4=lefthook granularity (F)+`nebula-pitfalls` (E).
 
-**Supersedes the Node `.mjs` draft.** Task 1 removes the obsolete `.claude/hooks/*.mjs` (commits `53707567`, `f275b4da`) and replaces them with `scripts/guard/`.
+**Supersedes the Node `.mjs` draft.** Task 1 removes the obsolete `.claude/hooks/*.mjs` (commits `53707567`, `f275b4da`) and replaces them with `.claude/hooks/`.
 
 ---
 
@@ -18,14 +18,14 @@
 
 | File | Responsibility |
 |------|----------------|
-| `scripts/guard/_lib.sh` | Shared: stdin read, jq extract, turn-state path/load/save, `crate_of`/`is_lib_rust`, `deny`/`allow` (no shell parser — D10) |
-| `scripts/guard/turn-reset.sh` | A0 `UserPromptSubmit`: reset turn-state |
-| `scripts/guard/bash-deny.sh` | A `PreToolUse/Bash`: fail-OPEN advisory tripwire — blatant no-verify / fmt --all / force-push only (D10; not a boundary) |
-| `scripts/guard/record.sh` | A2 `PostToolUse/Bash`: record green clippy/nextest per crate |
-| `scripts/guard/edit-guard.sh` | B `PreToolUse/Edit\|Write\|MultiEdit`: cheat/costyl + test-weakening |
-| `scripts/guard/stop-gate.sh` | C `Stop`: block done without recorded green gate |
-| `scripts/guard/fmt.sh` | D `PostToolUse/Edit\|Write\|MultiEdit`: format touched file |
-| `scripts/guard/test/run.sh` | bash assertion harness (`task hooks:test`) |
+| `.claude/hooks/_lib.sh` | Shared: stdin read, jq extract, turn-state path/load/save, `crate_of`/`is_lib_rust`, `deny`/`allow` (no shell parser — D10) |
+| `.claude/hooks/turn-reset.sh` | A0 `UserPromptSubmit`: reset turn-state |
+| `.claude/hooks/bash-deny.sh` | A `PreToolUse/Bash`: fail-OPEN advisory tripwire — blatant no-verify / fmt --all / force-push only (D10; not a boundary) |
+| `.claude/hooks/record.sh` | A2 `PostToolUse/Bash`: record green clippy/nextest per crate |
+| `.claude/hooks/edit-guard.sh` | B `PreToolUse/Edit\|Write\|MultiEdit`: cheat/costyl + test-weakening |
+| `.claude/hooks/stop-gate.sh` | C `Stop`: block done without recorded green gate |
+| `.claude/hooks/fmt.sh` | D `PostToolUse/Edit\|Write\|MultiEdit`: format touched file |
+| `.claude/hooks/test/run.sh` | bash assertion harness (`task hooks:test`) |
 | `.claude/settings.json` | Committed wiring + `$schema` + curated permissions |
 | `Taskfile.yml` | `task hooks:test` |
 | `CLAUDE.md` | "Enforced Discipline" rule→guard map |
@@ -34,11 +34,11 @@ All hooks: `set -uo pipefail`; source `_lib.sh`; end with `allow` (exit 0); neve
 
 ---
 
-### Task 1: Remove obsolete `.mjs` + create `scripts/guard/_lib.sh`
+### Task 1: Remove obsolete `.mjs` + create `.claude/hooks/_lib.sh`
 
 **Files:**
 - Delete: `.claude/hooks/guard-lib.mjs`, `.claude/hooks/__tests__/guard-lib.test.mjs`
-- Create: `scripts/guard/_lib.sh`, `scripts/guard/test/run.sh`
+- Create: `.claude/hooks/_lib.sh`, `.claude/hooks/test/run.sh`
 
 - [ ] **Step 1: Remove the superseded Node scaffolding**
 
@@ -47,11 +47,11 @@ git rm .claude/hooks/guard-lib.mjs .claude/hooks/__tests__/guard-lib.test.mjs
 rmdir .claude/hooks/__tests__ .claude/hooks 2>/dev/null || true
 ```
 
-- [ ] **Step 2: Write the failing test harness `scripts/guard/test/run.sh`**
+- [ ] **Step 2: Write the failing test harness `.claude/hooks/test/run.sh`**
 
 ```bash
 #!/usr/bin/env bash
-# scripts/guard/test/run.sh — guard-hook test harness. Exit 1 if any case fails.
+# .claude/hooks/test/run.sh — guard-hook test harness. Exit 1 if any case fails.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/_lib.sh"
@@ -81,13 +81,13 @@ exit "$fail"
 
 - [ ] **Step 3: Run it to verify it fails**
 
-Run: `bash scripts/guard/test/run.sh`
+Run: `bash .claude/hooks/test/run.sh`
 Expected: FAIL — `_lib.sh` not found / function missing (non-zero exit).
 
-- [ ] **Step 4: Implement `scripts/guard/_lib.sh`**
+- [ ] **Step 4: Implement `.claude/hooks/_lib.sh`**
 
 ```bash
-# scripts/guard/_lib.sh — shared helpers for Nebula guard hooks. Source, don't exec.
+# .claude/hooks/_lib.sh — shared helpers for Nebula guard hooks. Source, don't exec.
 # Blocking convention: deny() => stderr + exit 2. allow() => exit 0.
 guard_input=""
 read_input() { guard_input="$(cat)"; }
@@ -135,22 +135,22 @@ is_lib_rust() { # $1=path -> return 0 if library rust
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `bash scripts/guard/test/run.sh`
+Run: `bash .claude/hooks/test/run.sh`
 Expected: PASS — every `_lib` line `ok`, ends `ALL GUARD TESTS PASSED`, exit 0.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -A scripts/guard .claude/hooks
+git add -A .claude/hooks
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): bash guard-lib + test harness; drop Node .mjs draft (D9)"
 ```
 Expected lefthook: `typos` runs (pass); fmt-check/clippy/taplo/cargo-deny skip (no `.rs`/`.toml`); `convco` passes.
 
 ---
 
-### Task 2: A0 — `scripts/guard/turn-reset.sh` (`UserPromptSubmit`)
+### Task 2: A0 — `.claude/hooks/turn-reset.sh` (`UserPromptSubmit`)
 
-**Files:** Create `scripts/guard/turn-reset.sh`; modify `scripts/guard/test/run.sh`.
+**Files:** Create `.claude/hooks/turn-reset.sh`; modify `.claude/hooks/test/run.sh`.
 
 - [ ] **Step 1: Add failing test case** — insert ABOVE the `# HOOKMARK` line in `run.sh`:
 
@@ -163,9 +163,9 @@ chk "A0 clears impl" "[]" "$(jq -c '.impl_files_edited' "$TS_P")"
 chk "A0 clears gate" "[]" "$(jq -c '.gate_green' "$TS_P")"
 ```
 
-- [ ] **Step 2: Run** `bash scripts/guard/test/run.sh` → FAIL (`turn-reset.sh` missing).
+- [ ] **Step 2: Run** `bash .claude/hooks/test/run.sh` → FAIL (`turn-reset.sh` missing).
 
-- [ ] **Step 3: Implement `scripts/guard/turn-reset.sh`**
+- [ ] **Step 3: Implement `.claude/hooks/turn-reset.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -185,20 +185,20 @@ save_state "$p" "$(printf '{"session":"%s","started_at":"%s","impl_files_edited"
 allow
 ```
 
-- [ ] **Step 4: Run** `bash scripts/guard/test/run.sh` → PASS (A0 lines `ok`).
+- [ ] **Step 4: Run** `bash .claude/hooks/test/run.sh` → PASS (A0 lines `ok`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/guard/turn-reset.sh scripts/guard/test/run.sh
+git add .claude/hooks/turn-reset.sh .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A0 UserPromptSubmit turn-reset hook"
 ```
 
 ---
 
-### Task 3: A — `scripts/guard/bash-deny.sh` (`PreToolUse/Bash`, fail-OPEN advisory tripwire — D10)
+### Task 3: A — `.claude/hooks/bash-deny.sh` (`PreToolUse/Bash`, fail-OPEN advisory tripwire — D10)
 
-**Files:** Create `scripts/guard/bash-deny.sh`; modify `run.sh`.
+**Files:** Create `.claude/hooks/bash-deny.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
@@ -224,7 +224,7 @@ chk "A fail-open on non-Bash"       0 "$(printf '{"tool_name":"Edit"}' | bash "$
 
 - [ ] **Step 2: Run** → FAIL (`bash-deny.sh` missing).
 
-- [ ] **Step 3: Implement `scripts/guard/bash-deny.sh`**
+- [ ] **Step 3: Implement `.claude/hooks/bash-deny.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -259,13 +259,13 @@ allow
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/guard/bash-deny.sh scripts/guard/test/run.sh
+git add .claude/hooks/bash-deny.sh .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A fail-open PreToolUse advisory tripwire (D10)"
 ```
 
 ---
 
-### Task 4: A2 — `scripts/guard/record.sh` (`PostToolUse/Bash`)
+### Task 4: A2 — `.claude/hooks/record.sh` (`PostToolUse/Bash`)
 
 > **D10 design (grounded in verified harness facts):** `PostToolUse` fires
 > ONLY for exit-0 Bash and `tool_response` is a structured object
@@ -276,7 +276,7 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 > not recorded ⇒ C blocks (fail-safe, finite, no arms race). This is the
 > load-bearing no-cheat layer; C (Task 6) is its only consumer.
 
-**Files:** Create `scripts/guard/record.sh`; modify `run.sh`.
+**Files:** Create `.claude/hooks/record.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
@@ -310,7 +310,7 @@ chk "A2 records clean clippy" '["aaa","core","engine"]' "$(jq -c '.gate_green' "
 
 - [ ] **Step 2: Run** → FAIL.
 
-- [ ] **Step 3: Implement `scripts/guard/record.sh`**
+- [ ] **Step 3: Implement `.claude/hooks/record.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -364,17 +364,17 @@ allow
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/guard/record.sh scripts/guard/test/run.sh
+git add .claude/hooks/record.sh .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): A2 PostToolUse gate-green recorder"
 ```
 
 ---
 
-### Task 5: B — `scripts/guard/edit-guard.sh` (`PreToolUse/Edit|Write|MultiEdit`)
+### Task 5: B — `.claude/hooks/edit-guard.sh` (`PreToolUse/Edit|Write|MultiEdit`)
 
 > **Known limitation:** B inspects incoming text (`Write.content` / `Edit.new_string` / `MultiEdit.edits[].new_string`). Inline `#[cfg(test)]` in a lib file can cause a false negative for the unwrap rule (clippy at the gate is the backstop). Test-weakening compares `old_string` vs `new_string` assert counts.
 
-**Files:** Create `scripts/guard/edit-guard.sh`; modify `run.sh`.
+**Files:** Create `.claude/hooks/edit-guard.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
@@ -408,7 +408,7 @@ rm -rf "$(dirname "$CW_F")"
 
 - [ ] **Step 2: Run** → FAIL.
 
-- [ ] **Step 3: Implement `scripts/guard/edit-guard.sh`**
+- [ ] **Step 3: Implement `.claude/hooks/edit-guard.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -482,15 +482,15 @@ allow
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/guard/edit-guard.sh scripts/guard/test/run.sh
+git add .claude/hooks/edit-guard.sh .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): B PreToolUse edit anti-cheat guard"
 ```
 
 ---
 
-### Task 6: C — `scripts/guard/stop-gate.sh` (`Stop`)
+### Task 6: C — `.claude/hooks/stop-gate.sh` (`Stop`)
 
-**Files:** Create `scripts/guard/stop-gate.sh`; modify `run.sh`.
+**Files:** Create `.claude/hooks/stop-gate.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
@@ -546,7 +546,7 @@ rm -rf "$CG_DIR"
 
 - [ ] **Step 2: Run** → FAIL.
 
-- [ ] **Step 3: Implement `scripts/guard/stop-gate.sh`**
+- [ ] **Step 3: Implement `.claude/hooks/stop-gate.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -600,15 +600,15 @@ deny "You changed crate(s)$missing but never showed a clean clippy + nextest gre
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/guard/stop-gate.sh scripts/guard/test/run.sh
+git add .claude/hooks/stop-gate.sh .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): C Stop falsifiable-finish gate"
 ```
 
 ---
 
-### Task 7: D — `scripts/guard/fmt.sh` (`PostToolUse/Edit|Write|MultiEdit`)
+### Task 7: D — `.claude/hooks/fmt.sh` (`PostToolUse/Edit|Write|MultiEdit`)
 
-**Files:** Create `scripts/guard/fmt.sh`; modify `run.sh`.
+**Files:** Create `.claude/hooks/fmt.sh`; modify `run.sh`.
 
 - [ ] **Step 1: Add failing cases** above `# HOOKMARK`:
 
@@ -621,7 +621,7 @@ chk "D exits 0 missing rs" 0 "$(dfmt '{"tool_name":"Write","tool_input":{"file_p
 
 - [ ] **Step 2: Run** → FAIL.
 
-- [ ] **Step 3: Implement `scripts/guard/fmt.sh`**
+- [ ] **Step 3: Implement `.claude/hooks/fmt.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -643,7 +643,7 @@ allow
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/guard/fmt.sh scripts/guard/test/run.sh
+git add .claude/hooks/fmt.sh .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "feat(scripts): D PostToolUse single-file formatter"
 ```
 
@@ -673,18 +673,18 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
   },
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/turn-reset.sh\"" } ] }
+      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/turn-reset.sh\"" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/bash-deny.sh\"" } ] },
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/edit-guard.sh\"" } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/bash-deny.sh\"" } ] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/edit-guard.sh\"" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/record.sh\"" } ] },
-      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/fmt.sh\"" } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/record.sh\"" } ] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/fmt.sh\"" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/guard/stop-gate.sh\"" } ] }
+      { "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop-gate.sh\"" } ] }
     ]
   }
 }
@@ -712,7 +712,7 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
   hooks:test:
     desc: Run guard-hook test harness (bash)
     cmds:
-      - bash scripts/guard/test/run.sh
+      - bash .claude/hooks/test/run.sh
 ```
 
 - [ ] **Step 2: Verify** — Run: `task hooks:test`
@@ -723,7 +723,7 @@ Expected: `ALL GUARD TESTS PASSED`, exit 0.
 ```markdown
 ## Enforced Discipline (guard hooks)
 
-Mechanically enforced by `scripts/guard/*.sh` (committed in `.claude/settings.json`),
+Mechanically enforced by `.claude/hooks/*.sh` (committed in `.claude/settings.json`),
 not advisory. `task hooks:test` proves each guard. **The no-cheat guarantee is
 structural (D10): B (edit-guard) + A2 (clean-gate recorder) + C (Stop-gate) +
 lefthook/CI.** Hook A is a **fail-open advisory tripwire**, not a security
@@ -755,7 +755,7 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 ### Task 10: Integration smoke (acceptance §11)
 
-**Files:** Modify `scripts/guard/test/run.sh` (append a scenario block before `# HOOKMARK`).
+**Files:** Modify `.claude/hooks/test/run.sh` (append a scenario block before `# HOOKMARK`).
 
 - [ ] **Step 1: Add the end-to-end scenario**
 
@@ -777,7 +777,7 @@ Expected: `ALL GUARD TESTS PASSED`, exit 0.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/guard/test/run.sh
+git add .claude/hooks/test/run.sh
 git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit -m "test(scripts): guard-hooks integration smoke (cheat denied / clean allowed)"
 ```
 
@@ -794,7 +794,7 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 > D11-correct and was implemented + adversarially reviewed accordingly. Read
 > this block as history, not as the design.
 
-**1. Spec coverage (spec § → task):** §4 runtime/contract (bash+jq, exit2, fail-open-except-A) → Tasks 1,3 ✓; §4.A0 → T2 ✓; §4.A fail-closed deny set → T3 ✓; §4.A2 record (+limitation) → T4 ✓; §4.B cheat/costyl/test-weaken → T5 ✓; §4.C stop + `stop_hook_active` + side-effect-free → T6 ✓; §4.D fmt-only → T7 ✓; §4 settings wiring + `$schema` + permissions → T8 ✓; §8.1 harness + `task hooks:test` → T1–10 ✓; §8.2 CLAUDE.md map → T9 ✓; §11 cheat-denied/clean-allowed → T10 ✓. D9 (bash, fail-closed A, scripts/guard) → whole plan ✓. Out of scope (correct): D8, G/H, lefthook-granularity, `nebula-pitfalls`, full permissions cleanup → Plans 2–4.
+**1. Spec coverage (spec § → task):** §4 runtime/contract (bash+jq, exit2, fail-open-except-A) → Tasks 1,3 ✓; §4.A0 → T2 ✓; §4.A fail-closed deny set → T3 ✓; §4.A2 record (+limitation) → T4 ✓; §4.B cheat/costyl/test-weaken → T5 ✓; §4.C stop + `stop_hook_active` + side-effect-free → T6 ✓; §4.D fmt-only → T7 ✓; §4 settings wiring + `$schema` + permissions → T8 ✓; §8.1 harness + `task hooks:test` → T1–10 ✓; §8.2 CLAUDE.md map → T9 ✓; §11 cheat-denied/clean-allowed → T10 ✓. D9 (bash, fail-closed A, .claude/hooks) → whole plan ✓. Out of scope (correct): D8, G/H, lefthook-granularity, `nebula-pitfalls`, full permissions cleanup → Plans 2–4.
 
 **2. Placeholder scan:** No TBD/TODO-as-instruction; every step has complete runnable code/commands with expected output. Literal `TODO`/`HACK` appear only as guard regex content.
 

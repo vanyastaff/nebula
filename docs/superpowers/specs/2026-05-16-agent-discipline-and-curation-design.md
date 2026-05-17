@@ -63,7 +63,7 @@ only where a linter cannot already catch it.
 | D6 | Subagent curation: delete 9 orphan `loop-*`, merge 5 sidecars → 1, keep 4 load-bearing, trim dead MCP grants | Owner + audit |
 | D7 | Remove BridgeSpace integration (in-repo only; owner removed the out-of-repo product directly) | Owner |
 | D8 | Invert doc canon: **CLAUDE.md is canonical**, AGENTS.md becomes a thin pointer to it (non-standard; owner chose it over AGENTS.md-as-canon with the trade-off shown) | Owner |
-| D9 | Hook runtime = **bash + jq** under `scripts/guard/*.sh` (supersedes the Node `.mjs` draft — owner rejected a new Node dependency; repo already requires bash). ~~Hook A is fail-closed.~~ **Fail-closed-A clause SUPERSEDED by D10.** Runtime decision (bash+jq) stands. | Owner |
+| D9 | Hook runtime = **bash + jq** under `.claude/hooks/*.sh` (supersedes the Node `.mjs` draft — owner rejected a new Node dependency; repo already requires bash. **Location revised `scripts/guard/` → `.claude/hooks/*.sh`** — owner 2026-05-17, per Claude Code's documented hooks convention + the cited Bun `.claude/hooks/` precedent this design emulates (§12); `.claude/hooks/` is git-tracked, so the committed/structural guarantee is unchanged). ~~Hook A is fail-closed.~~ **Fail-closed-A clause SUPERSEDED by D10.** Runtime decision (bash+jq) stands. | Owner |
 | D10 | **Security boundary relocated to the oracle.** 5 adversarial rounds proved a hand-rolled bash shell-parser on a security boundary is an un-winnable arms race. The no-cheat guarantee is carried structurally by **B** (edit-guard: no test-weakening) + **A2** (recorder, now self-protecting: refuses to record a green gate if the clippy command suppressed lints via `-A`/`--allow`/`RUSTFLAGS=…-A`) + **C** (Stop-gate: no "done" without a recorded clean gate) + lefthook/CI. `resolve_cmd`/`normalize_argv0` are **deleted**; **hook A is demoted** to a cheap **fail-open** advisory substring tripwire (its parser correctness is no longer security-critical). Guarantee preserved — *relocated*, not weakened. B and C remain hard. **(C's crate-set sourcing refined by D11.)** | Owner |
 | D11 | **Governing principle (3rd recurrence — make it canon, stop re-deriving per round): never rest a guarantee on one fragile detector; source it from ground truth.** Adversarial review of B found the no-cheat guarantee resting on B's bash-regex `impl_files_edited` recording, which Rust's idiomatic colocated `#[cfg(test)] mod tests` in `src/*.rs` silently poisons (edit logic next to the test mod ⇒ not recorded ⇒ C blind ⇒ cheat). Fix is structural, not regex-patching: **C (Stop-gate) derives the touched-crate set from `git diff --name-only` ground truth** (modified `crates/*/src/**` ⇒ a clean recorded gate is required for that crate), with B's `impl_files_edited` as *corroborating* belt-and-suspenders only. Test-weakening is then structurally defeated by A2-clean-gate + CI even if B's weaken-deny misses a shape; **B's weaken-deny + costyl checks are demoted to early edit-time advisory** (still fix CRIT-1 recording-by-path, CRIT-2/3 weaken coverage, per-occurrence `// guard-justified:` — but B need not be perfect). Guarantee = C-via-git-diff + A2-clean-gate + CI (three ground-truth layers). | Owner |
 
@@ -75,9 +75,10 @@ worktree flow uses `bash scripts/worktree.sh`), so bash hooks add **zero new
 toolchain**, whereas a Node runtime would be a new project-level dependency the
 owner explicitly rejected. `bash 5.2` (git-bash) and `jq 1.8` are present and
 verified on the dev machine; git-bash is proven to work here (lefthook). Hook
-scripts live in **`scripts/guard/*.sh`** (consistent with the existing
-`scripts/` + lefthook convention); wiring in **committed `.claude/settings.json`**
-(`command`-type, invoking `bash "$CLAUDE_PROJECT_DIR/scripts/guard/<x>.sh"`).
+scripts live in **`.claude/hooks/*.sh`** — Claude Code's documented hooks
+directory + the Bun `.claude/hooks/` precedent this design emulates (§12),
+not the repo's `scripts/` dir; wiring in **committed `.claude/settings.json`**
+(`command`-type, invoking `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/<x>.sh"`).
 Hook arrays concatenate across settings scopes; `settings.local.json` carries
 no hooks after §7. Add
 `"$schema": "https://json.schemastore.org/claude-code-settings.json"`. `jq` is
@@ -120,13 +121,13 @@ Node draft had exactly such a bypass, caught in review). Hooks complete < 2 s.
 > D10: `resolve_cmd`/`normalize_argv0` are **deleted**; **hook A is fail-open**
 > (advisory tripwire, not a security boundary); the no-cheat guarantee is B +
 > A2 (lint-suppression-aware recorder) + C + lefthook/CI. Every hook is a
-> `scripts/guard/<role>.sh` bash script (jq for JSON, `exit 2`+stderr to block;
+> `.claude/hooks/<role>.sh` bash script (jq for JSON, `exit 2`+stderr to block;
 > fail-**open** on internal error for *all* hooks including A — only B and C
 > are hard-deny on their conditions). The authoritative A/A2 behavior is the
 > two subsections immediately below (already D10-correct); the implementation
 > **plan** carries the exact bash code.
 
-### A. PreToolUse / Bash — `scripts/guard/bash-deny.sh` (matcher `Bash`) — D10: demoted to a fail-open advisory tripwire
+### A. PreToolUse / Bash — `.claude/hooks/bash-deny.sh` (matcher `Bash`) — D10: demoted to a fail-open advisory tripwire
 
 **Not a security boundary** (D10 — that role moved to B+A2+C). No shell parser,
 no `resolve_cmd`/`normalize_argv0` (deleted). A cheap best-effort substring
@@ -164,7 +165,7 @@ Obfuscation (`ca'rg'o`, wrappers, quotes) is **not** A's problem anymore: the
 > recorded ⇒ C blocks. Over-strictness only forces the agent to run the gate
 > plainly — the safe direction, and finite (no arms race).
 
-### A2. PostToolUse / Bash — `scripts/guard/record.sh` (matcher `Bash`) — the oracle's integrity gate (D10)
+### A2. PostToolUse / Bash — `.claude/hooks/record.sh` (matcher `Bash`) — the oracle's integrity gate (D10)
 
 Reads the tool result/exit code (PreToolUse cannot). Records
 `gate_green: [<crate>…]` **only when** `cargo clippy -p <crate> -- -D warnings`
@@ -176,7 +177,7 @@ old hook-A clippy rule (D10): a suppressed clippy is not a clean gate, so C
 will still block "done". This is the falsifiable anchor consumed by C and the
 load-bearing no-cheat guarantee.
 
-### B. PreToolUse / Edit|Write|MultiEdit — `scripts/guard/edit-guard.sh`
+### B. PreToolUse / Edit|Write|MultiEdit — `.claude/hooks/edit-guard.sh`
 
 > **D11:** B is **early edit-time advisory**, not the sole guarantee (that is
 > C-via-git-diff + A2-clean-gate + CI). Required corrections: (a) record the
@@ -214,7 +215,7 @@ Operates on proposed new content / diff. **Deny:**
   non-test file** (turn-state correlation = the cheat signature). A pure test
   refactor with no impl edit in the turn passes.
 
-### C. Stop — `scripts/guard/stop-gate.sh` (matcher `""`)
+### C. Stop — `.claude/hooks/stop-gate.sh` (matcher `""`)
 
 Honors `stop_hook_active` (already true → `exit 0`, no re-block — deadlock-safe).
 **D11: the touched-crate set is derived from git ground truth, not from B's
@@ -235,14 +236,14 @@ canonical gate that must genuinely pass; CI re-runs authoritatively), and a
 poisoned/missed B recording can no longer blind C. Forces red-first: new
 behavior with no clean recorded gate cannot be reported done.
 
-### A0. UserPromptSubmit — `scripts/guard/turn-reset.sh` (matcher `""`)
+### A0. UserPromptSubmit — `.claude/hooks/turn-reset.sh` (matcher `""`)
 
 Rotates/initializes the turn-state file for `session_id` at the start of each
 user turn (resets `impl_files_edited` and `gate_green`). This is the concrete,
 non-hand-wavy reset mechanism C and A2 depend on. Injects no context; the only
 `UserPromptSubmit` hook once BridgeSpace is removed.
 
-### D. PostToolUse / Edit|Write|MultiEdit — `scripts/guard/fmt.sh`
+### D. PostToolUse / Edit|Write|MultiEdit — `.claude/hooks/fmt.sh`
 
 After editing a `.rs` file: `rustfmt --edition 2024 <file>` (rustfmt.toml
 supplies the rest); for `.toml`: `taplo fmt <file>`. Format **only that file**,
