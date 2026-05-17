@@ -50,7 +50,7 @@ impl Credential for FakeCred {
             .key(nebula_core::credential_key!("demo.fake"))
             .name("FakeCred")
             .description("trybuild slot-accessor fixture")
-            .schema(Self::properties_schema())
+            .schema(nebula_credential::schema_of::<Self::Properties>())
             .pattern(AuthPattern::SecretToken)
             .build()
             .expect("FakeCred metadata is valid")
@@ -64,9 +64,9 @@ impl Credential for FakeCred {
         _values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(
-            "fake-token",
-        ))))
+        Ok(ResolveResult::Complete(SecretToken::new(
+            SecretString::new("fake-token"),
+        )))
     }
 }
 
