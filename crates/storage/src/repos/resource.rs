@@ -10,14 +10,21 @@ use crate::error::StorageError;
 /// (connection pools, SDK clients). The engine owns lifecycle; this
 /// repo only stores definitions.
 ///
-/// `#[async_trait]` is used for object-safe `dyn ResourceRepo` and to
-/// match the `#[async_trait]` repo ports (`ControlQueueRepo`,
-/// `WebhookActivationRepo`) that the API layer also holds as
-/// `Arc<dyn …>`. This is a deliberate convention-parity choice:
-/// `ResourceRepo` had no impls when converted, so it is non-breaking.
-/// (RPITIT-with-`+ Send` is also dyn-compatible here, as `WorkflowRepo`
-/// and `ExecutionRepo` show; `#[async_trait]` is chosen only for parity
-/// with the other `Arc<dyn>` port repos.)
+/// `#[async_trait]` (not RPITIT / `async fn` in trait) is required for
+/// object safety: the API layer holds this as
+/// `Arc<dyn ResourceRepo>` in `AppState`, and an async-fn-in-trait
+/// (RPITIT) trait is **not** `dyn`-compatible on stable Rust — its
+/// methods desugar to an opaque `impl Future` return whose type cannot
+/// be named through a vtable. `#[async_trait]` boxes the future
+/// (`Pin<Box<dyn Future + Send>>`) so `dyn ResourceRepo` is object-safe.
+/// This also matches the other `#[async_trait]` port repos the API
+/// layer holds as `Arc<dyn …>` (`ControlQueueRepo`,
+/// `WebhookActivationRepo`). `ResourceRepo` had no impls when written,
+/// so the choice is non-breaking. (The sibling RPITIT
+/// `repos::WorkflowRepo` / `repos::ExecutionRepo` are spec-16
+/// planned/experimental and are *not* used as `dyn` anywhere — they are
+/// not a precedent for a `dyn`-held RPITIT trait, which stable does not
+/// permit.)
 #[async_trait]
 pub trait ResourceRepo: Send + Sync {
     /// Insert a new resource definition.
