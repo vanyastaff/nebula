@@ -1593,7 +1593,7 @@ impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     ///
     /// Runtime code that wraps an action into a `WebhookTriggerAdapter`
     /// reads this and forwards it to
-    /// `nebula_api::services::webhook::WebhookTransport::activate`. Tests can
+    /// `nebula_api::transport::webhook::WebhookTransport::activate`. Tests can
     /// also inspect it to assert the resulting policy shape.
     #[must_use]
     pub fn config(&self) -> &WebhookConfig {
