@@ -9,7 +9,7 @@ use axum::{
 use nebula_validator::foundation::Validate as NebulaValidate;
 use serde::de::DeserializeOwned;
 
-use crate::errors::ApiError;
+use crate::error::ApiError;
 
 /// JSON extractor с валидацией
 pub struct ValidatedJson<T>(pub T);

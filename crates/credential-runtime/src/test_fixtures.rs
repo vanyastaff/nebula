@@ -130,7 +130,7 @@ impl Credential for RefreshableFixtureCredential {
             .key(nebula_core::credential_key!("refreshable_fixture"))
             .name("Refreshable Fixture")
             .description("Test-only refreshable credential (rotates its token on refresh).")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(AuthPattern::SecretToken)
             .icon("key")
             .build()

@@ -9,9 +9,18 @@ use crate::foundation::FieldPath;
 
 /// Typed field context for predicate evaluation. Construct via
 /// `PredicateContext::from_json` or `PredicateContext::from_fields`.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct PredicateContext {
     fields: HashMap<FieldPath, serde_json::Value>,
+}
+
+impl std::fmt::Debug for PredicateContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Field values may be secret-shaped pre-resolve; never print them.
+        f.debug_struct("PredicateContext")
+            .field("field_count", &self.fields.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl PredicateContext {
@@ -103,6 +112,17 @@ mod tests {
     fn empty_context_is_empty() {
         let ctx = PredicateContext::new();
         assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn debug_does_not_leak_field_values() {
+        let ctx = PredicateContext::from_json(&json!({"api_key": "s3cr3t-value", "n": 1}));
+        let dbg = format!("{ctx:?}");
+        assert!(
+            !dbg.contains("s3cr3t-value"),
+            "Debug must not print field values: {dbg}"
+        );
+        assert!(dbg.contains("PredicateContext"));
     }
 
     #[test]

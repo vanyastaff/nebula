@@ -27,11 +27,6 @@ fn empty_deps() -> &'static Dependencies {
     D.get_or_init(Dependencies::new)
 }
 
-fn json_schema() -> &'static ValidSchema {
-    static S: OnceLock<ValidSchema> = OnceLock::new();
-    S.get_or_init(<serde_json::Value as HasSchema>::schema)
-}
-
 // ── StatelessAction ─────────────────────────────────────────────────────────
 
 struct EchoAction;
@@ -47,12 +42,6 @@ impl Action for EchoAction {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        json_schema()
-    }
-    fn output_schema() -> &'static ValidSchema {
-        json_schema()
-    }
     fn dependencies() -> &'static Dependencies {
         empty_deps()
     }
@@ -107,14 +96,6 @@ impl Action for CounterAction {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<() as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<U32Out as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         empty_deps()
     }
@@ -204,12 +185,6 @@ impl Action for NoOpTrigger {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        json_schema()
-    }
-    fn output_schema() -> &'static ValidSchema {
-        json_schema()
-    }
     fn dependencies() -> &'static Dependencies {
         empty_deps()
     }
@@ -277,12 +252,6 @@ impl Action for MigratableAction {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        json_schema()
-    }
-    fn output_schema() -> &'static ValidSchema {
-        json_schema()
-    }
     fn dependencies() -> &'static Dependencies {
         empty_deps()
     }

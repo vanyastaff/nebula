@@ -383,6 +383,16 @@ impl FieldValues {
         self.0.get(key)
     }
 
+    /// Borrow the underlying ordered map.
+    ///
+    /// Used by the predicate-context builder to walk the value tree in
+    /// lockstep with the schema field tree.
+    #[inline]
+    #[must_use]
+    pub(crate) fn as_map(&self) -> &IndexMap<FieldKey, FieldValue> {
+        &self.0
+    }
+
     /// Mutably borrow a value by key.
     #[inline]
     pub fn get_mut(&mut self, key: &FieldKey) -> Option<&mut FieldValue> {

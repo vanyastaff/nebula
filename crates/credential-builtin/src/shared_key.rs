@@ -38,7 +38,7 @@ impl Credential for SharedKeyCredential {
             .key(nebula_core::credential_key!("shared_key"))
             .name("Pre-shared Key")
             .description("Pre-shared symmetric key (TLS-PSK, WireGuard, IoT).")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(AuthPattern::SharedSecret)
             .icon("key")
             .build()

@@ -183,7 +183,6 @@ mod tests {
     use std::sync::{Arc, OnceLock};
 
     use nebula_core::Dependencies;
-    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
     use crate::testing::{TestActionContext, TestContextBuilder};
@@ -209,14 +208,6 @@ mod tests {
                     "Creates a string pool",
                 )
             })
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

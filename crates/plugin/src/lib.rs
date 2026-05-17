@@ -5,8 +5,11 @@
 //! micro-plugins use the same contract).
 //!
 //! A plugin bundles Actions, Credentials, and Resources under a versioned
-//! identity. This crate provides only the trait, manifest types, and in-memory
-//! registry — no I/O, no FFI. Loading and isolation live in `nebula-sandbox`.
+//! identity. This crate provides the trait, manifest types, in-memory
+//! registry, and the host-side discovery path that populates the registry
+//! from out-of-process plugin binaries. The duplex transport itself is the
+//! leaf `nebula-sandbox` crate (depended on downward from here); OS
+//! isolation lives there.
 //!
 //! ## Key types
 //!
@@ -21,6 +24,12 @@
 //! - `PluginError` — typed error for plugin operations.
 //! - `ComponentKind` — discriminant for namespace and duplicate errors.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
+//! - `discovery` — scan a directory for plugin binaries, probe their `plugin.toml` + wire manifest,
+//!   and register them (host-registry population belongs with the registry, not the transport).
+//! - `RemoteAction` / `ProcessSandboxHandler` / `DiscoveredPlugin` — host-side adapters wrapping a
+//!   discovered out-of-process plugin's actions.
+//! - `sandbox_bridge::sandbox_error_to_action_error` — the single `SandboxError` → `ActionError`
+//!   classification seam, shared by the handler and the engine runner adapter.
 //!
 //! ## Canon note — §7.1
 //!
@@ -31,19 +40,30 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod discovered_plugin;
+pub mod discovery;
 mod error;
+mod handler;
 mod manifest;
 mod plugin;
+pub mod plugin_toml;
 mod registry;
+mod remote_action;
 mod resolved_plugin;
+pub mod sandbox_bridge;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use discovered_plugin::DiscoveredPlugin;
+pub use discovery::DiscoveredAction;
 pub use error::{ComponentKind, PluginError};
+pub use handler::ProcessSandboxHandler;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
 pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;
+pub use remote_action::{RemoteAction, RemoteActionFactory};
 pub use resolved_plugin::ResolvedPlugin;
+pub use sandbox_bridge::sandbox_error_to_action_error;

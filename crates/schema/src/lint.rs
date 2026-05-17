@@ -9,7 +9,7 @@ use crate::{
     error::{ValidationError, ValidationReport},
     field_tree::{defined_field_paths, walk_schema_fields},
     path::PathSegment,
-    validator_bridge::{normalize_rule_target_path, referenced_root_key, resolve_rule_dependency},
+    rule_ref::{normalize_rule_target_path, referenced_root_key, resolve_rule_dependency},
 };
 
 fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
@@ -33,6 +33,8 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_visibility_cycles_new(fields, prefix, report);
     lint_required_cycles_new(fields, prefix, report);
     lint_loader_dependency_cycles(fields, prefix, report);
+    lint_secret_predicate_on_value(fields, report);
+    lint_mode_no_payload_variant_must_forbid_expression(fields, report);
     if report.has_errors() || report.has_warnings() {
         tracing::debug!(
             target: "nebula_schema::lint",
@@ -51,6 +53,24 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
 pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut ValidationReport) {
     if rules.is_empty() {
         return;
+    }
+
+    // SECURITY (defence-in-depth, not advisory): root-rule evaluation (inlined
+    // in `ValidSchema::validate`) builds its `PredicateContext` via the
+    // scrubbed root-predicate-context builder, so a value-comparing predicate
+    // cannot read a `Field::Secret` plaintext at runtime. This build-time lint
+    // is the
+    // additive outer boundary: it rejects such a predicate at `build()` so the
+    // schema is refused before it can ever be evaluated, independent of the
+    // runtime scrub. Rejecting it here is a security control, so the
+    // secret-key collection must mirror every shape the schema can address
+    // (object, list-item object including indexed instances, mode variant
+    // payload).
+    let secrets = collect_secret_pointer_segments(fields);
+    if !secrets.is_empty() {
+        for rule in rules {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &FieldPath::root(), report);
+        }
     }
 
     let defined = defined_field_paths(fields);
@@ -1066,6 +1086,290 @@ fn lint_loader_dependency_cycles(
     if let Some((from, to)) = find_cycle_edge(&adj) {
         emit_loader_dependency_cycle_on_edge(&from, &to, report);
     }
+}
+
+// ── Shared addressable-path traversal ─────────────────────────────────────────
+
+/// Kind of an addressable leaf yielded by [`walk_addressable_paths`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddressableKind {
+    /// A `Field::Secret` leaf — its plaintext must never enter a predicate
+    /// context (secret-value-predicate lint keys these).
+    Secret,
+    /// A non-secret scalar leaf (String/Number/Bool/Select/… — anything that
+    /// is not Object/List/Mode/Secret). Safe to expose to predicates.
+    NonSecretLeaf,
+}
+
+/// **The single owner** of the addressable-path invariant. Walks the schema
+/// field tree exactly as the field-tree walker names paths, invoking `visit`
+/// once per addressable *leaf* with its key-segment vector and kind:
+///
+/// - `Field::Object` — descended (the object node itself is not a leaf);
+///   children extend the object's path.
+/// - `Field::List` whose `item` is a `Field::Object` — descended with children
+///   sitting **directly under the list path** (list items are anonymous, so no
+///   index segment); other item shapes are not path-addressable and skipped.
+/// - `Field::Mode` — each variant payload is visited **at** the variant path
+///   (`segs + variant.key`), not under the payload field's own key; variant
+///   keys that cannot form a path segment are skipped.
+/// - `Field::Secret` → `AddressableKind::Secret`.
+/// - any other field → a scalar leaf → `AddressableKind::NonSecretLeaf`.
+///
+/// Segments come from [`crate::key::FieldKey::as_str`], matching the unescaped
+/// segments yielded by `FieldPath::segments`, so callers can compare
+/// segment-wise regardless of JSON-Pointer leading-slash or escaping. Both the
+/// secret-value-predicate lint and the scrubbed root-rule predicate context
+/// (`crate::context::root_predicate_context_for`) consume this one traversal —
+/// keeping the addressable-path invariant single-owned (the ADR-0052 root
+/// cause was two owners of one invariant drifting).
+pub(crate) fn walk_addressable_paths(
+    fields: &[Field],
+    visit: &mut dyn FnMut(&[String], AddressableKind),
+) {
+    // Record (and recurse) one field already resolved to `segs`. `segs` is the
+    // field's own addressable path, so children must extend it (Object/List)
+    // or, for mode variants, the payload is visited *at* the variant path.
+    fn walk_field(
+        field: &Field,
+        segs: &[String],
+        visit: &mut dyn FnMut(&[String], AddressableKind),
+    ) {
+        match field {
+            Field::Secret(_) => {
+                visit(segs, AddressableKind::Secret);
+            },
+            Field::Object(obj) => {
+                walk_scope(obj.fields.as_slice(), segs, visit);
+            },
+            Field::List(list) => {
+                // List items are anonymous: an object item's children sit
+                // directly under the list path, exactly as the field-tree
+                // walker yields them. Non-object items are not path-addressable.
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    walk_scope(obj.fields.as_slice(), segs, visit);
+                }
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    // Skip variant keys that cannot form a path segment, just
+                    // as the field-tree walker (via mode_variant_path) does.
+                    if crate::key::FieldKey::new(variant.key.as_str()).is_err() {
+                        continue;
+                    }
+                    let mut variant_segs = segs.to_vec();
+                    variant_segs.push(variant.key.clone());
+                    // The payload field is visited *at* the variant path, not
+                    // under its own key (matches the field-tree walker's Mode arm).
+                    walk_field(variant.field.as_ref(), &variant_segs, visit);
+                }
+            },
+            // Scalar-typed leaves (String/Number/Bool/Select/…): addressable,
+            // non-secret. The List/Mode non-descent above keeps their leaves
+            // unreachable here, exactly as before.
+            _ => {
+                visit(segs, AddressableKind::NonSecretLeaf);
+            },
+        }
+    }
+
+    fn walk_scope(
+        fields: &[Field],
+        prefix: &[String],
+        visit: &mut dyn FnMut(&[String], AddressableKind),
+    ) {
+        for field in fields {
+            let mut here = prefix.to_vec();
+            here.push(field.key().as_str().to_owned());
+            walk_field(field, &here, visit);
+        }
+    }
+
+    walk_scope(fields, &[], visit);
+}
+
+// ── Secret value-predicate lint ───────────────────────────────────────────────
+
+/// Recursively collect the segment vector of every `Field::Secret` reachable
+/// by a predicate `FieldPath`. Thin filter over [`walk_addressable_paths`] (the
+/// single owner of the addressable-path invariant) keeping only the `Secret`
+/// leaves; the traversal — `Field::Object`, a `Field::List` whose item is an
+/// object (children under the list path; list items are anonymous), each
+/// `Field::Mode` variant payload (addressable under `mode.variant`) — is
+/// defined there. Paths the field-tree walker cannot name (e.g. a list whose
+/// item is a bare scalar) stay non-addressable and are intentionally skipped.
+fn collect_secret_pointer_segments(fields: &[Field]) -> HashSet<Vec<String>> {
+    let mut out = HashSet::new();
+    walk_addressable_paths(fields, &mut |segs, kind| {
+        if kind == AddressableKind::Secret {
+            out.insert(segs.to_vec());
+        }
+    });
+    out
+}
+
+/// A predicate is *value-comparing* when its truth depends on the field's
+/// value. `Set` / `Empty` test presence only and never read the value, so a
+/// secret may legally drive visibility/required through them.
+const fn predicate_reads_value(predicate: &Predicate) -> bool {
+    !matches!(predicate, Predicate::Set(_) | Predicate::Empty(_))
+}
+
+/// Index-normalized key-segment view of a predicate's target pointer.
+///
+/// `collect_secret_pointer_segments` keys secrets by `FieldKey` segments only
+/// (list items are anonymous, so an item-object secret sits at the list path
+/// with no index). A predicate, however, may legally address that same secret
+/// through a concrete list instance — `/items/0/token` — and the codebase
+/// blesses indexed pointers (see the dangling/cycle lints, which run every ref
+/// through [`normalize_rule_target_path`]). Comparing the raw pointer segments
+/// would leave `/items/0/token` unmatched against `["items","token"]`, so a
+/// value-comparing predicate on a list-indexed (or list-indexed-then-mode)
+/// secret would slip the guard and reach the unscrubbed root-rule context.
+/// Drop list indices the same way `normalize_rule_target_path` does, yielding
+/// the key-only segment vector to compare against the secret set.
+fn normalized_predicate_key_segments(predicate: &Predicate) -> Option<Vec<String>> {
+    let resolved = resolve_rule_dependency(predicate.field().as_str())?;
+    let normalized = normalize_rule_target_path(&resolved);
+    let mut keys = Vec::with_capacity(normalized.segments().len());
+    for segment in normalized.segments() {
+        match segment {
+            // After `normalize_rule_target_path`, a leading list index can
+            // still survive (it strips only non-leading indices); a secret can
+            // never be addressed by a *leading* index, so such a path simply
+            // cannot match the key-only secret set — bail rather than coerce.
+            PathSegment::Key(key) => keys.push(key.as_str().to_owned()),
+            PathSegment::Index(_) => return None,
+        }
+    }
+    Some(keys)
+}
+
+/// Walk a rule tree, flagging every value-comparing predicate whose target
+/// path is a `Field::Secret`. Recurses `Logic` children and `Described` inner
+/// rules so a buried predicate is still caught.
+fn walk_rule_for_secret_value_predicates(
+    rule: &Rule,
+    secrets: &HashSet<Vec<String>>,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    match rule {
+        Rule::Predicate(predicate) if predicate_reads_value(predicate) => {
+            // Match either the raw pointer segments or the index-normalized
+            // key segments. The union strictly widens detection: a secret
+            // addressed through a concrete list instance (`/items/0/token`)
+            // normalizes to the same key path the secret set is keyed by, so
+            // it can no longer slip the guard into the unscrubbed root-rule
+            // context. Never narrows — anything the raw check caught before
+            // still matches.
+            let raw: Vec<String> = predicate
+                .field()
+                .segments()
+                .map(std::borrow::Cow::into_owned)
+                .collect();
+            let normalized = normalized_predicate_key_segments(predicate);
+            let hit =
+                secrets.contains(&raw) || normalized.is_some_and(|segs| secrets.contains(&segs));
+            if hit {
+                let pointer = predicate.field().as_str();
+                report.push(
+                    ValidationError::builder("secret.predicate_on_value")
+                        .at(path.clone())
+                        .message(format!(
+                            "predicate targets secret field `{pointer}` by value; only \
+                             Set/Empty (presence) predicates may reference a secret"
+                        ))
+                        .build(),
+                );
+            }
+        },
+        Rule::Predicate(_) => {},
+        Rule::Logic(logic) => {
+            for child in logic.children() {
+                walk_rule_for_secret_value_predicates(child, secrets, path, report);
+            }
+        },
+        Rule::Described(inner, _) => {
+            walk_rule_for_secret_value_predicates(inner, secrets, path, report);
+        },
+        _ => {},
+    }
+}
+
+/// Reject a schema where any value-comparing predicate (`Eq`/`Ne`/`Gt`/`Gte`/
+/// `Lt`/`Lte`/`IsTrue`/`IsFalse`/`Contains`/`Matches`/`In`) targets a
+/// `Field::Secret` path. A secret's plaintext must never be a visibility or
+/// required discriminant. Presence-only predicates (`Set`/`Empty`) stay legal.
+///
+/// The secret-key collection mirrors the addressable-path construction of
+/// `walk_schema_fields` (objects, list-item objects, mode variant payloads),
+/// and the predicate target is also matched after index normalization, so a
+/// secret addressed through a concrete list instance (`/items/0/api_key`) or
+/// a mode variant payload is flagged just like `/auth/api_key`.
+fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationReport) {
+    let secrets = collect_secret_pointer_segments(fields);
+    if secrets.is_empty() {
+        return;
+    }
+
+    walk_schema_fields(fields, |node| {
+        if let Some(rule) = field_visible_rule(node.field) {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+        if let Some(rule) = field_required_rule(node.field) {
+            walk_rule_for_secret_value_predicates(rule, &secrets, &node.path, report);
+        }
+    });
+}
+
+// ── No-payload mode-variant expression lint ───────────────────────────────────
+
+/// Reject a schema where a *no-payload* mode variant's placeholder field does
+/// not pin [`ExpressionMode::Forbidden`](crate::mode::ExpressionMode::Forbidden).
+///
+/// A no-payload variant (the canonical constructor is
+/// [`ModeField::variant_empty`](crate::field::ModeField::variant_empty)) carries
+/// a hidden placeholder field keyed
+/// [`ModeField::EMPTY_PLACEHOLDER_KEY`](crate::field::ModeField::EMPTY_PLACEHOLDER_KEY)
+/// purely so the schema has a child to address; the field is never shown and is
+/// not meant to hold a value. `variant_empty` therefore pins
+/// `ExpressionMode::Forbidden` on it. If a hand-built variant uses that same key
+/// but leaves the placeholder at the default `ExpressionMode::Allowed` (or
+/// `Required`), an attacker can submit `{"mode":"<variant>","value":{"$expr":…}}`:
+/// `FieldValue::from_json` turns `{"$expr":…}` into `FieldValue::Expression`,
+/// which under a non-`Forbidden` placeholder is accepted by `validate` and is
+/// evaluated at `resolve`. Refusing such a schema at `build()` is the fail-closed
+/// boundary (a `ValidSchema` can only be minted through the builder), mirroring
+/// the runtime guard in the validation path. The traversal uses the same
+/// whole-tree walker as the other structural lints, so a no-payload variant
+/// nested inside an object, list-item object, or another mode variant is covered
+/// at any depth.
+fn lint_mode_no_payload_variant_must_forbid_expression(
+    fields: &[Field],
+    report: &mut ValidationReport,
+) {
+    walk_schema_fields(fields, |node| {
+        let Field::Mode(mode) = node.field else {
+            return;
+        };
+        for variant in &mode.variants {
+            if variant.field.key().as_str() == ModeField::EMPTY_PLACEHOLDER_KEY
+                && *variant.field.expression() != crate::mode::ExpressionMode::Forbidden
+            {
+                report.push(
+                    ValidationError::builder("mode.no_payload_variant_must_forbid_expression")
+                        .at(node.path.clone())
+                        .param("variant", variant.key.clone())
+                        .message(format!(
+                            "no-payload mode variant `{}` placeholder must forbid expressions",
+                            variant.key
+                        ))
+                        .build(),
+                );
+            }
+        }
+    });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

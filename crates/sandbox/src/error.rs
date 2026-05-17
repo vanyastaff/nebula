@@ -1,11 +1,11 @@
 //! Sandbox-specific error types.
 //!
 //! These errors describe failures of the plugin transport layer
-//! ([`crate::ProcessSandbox`]) independently of the broader
-//! [`nebula_action::ActionError`] classification. They are converted into
-//! `ActionError::Fatal` / `ActionError::Retryable` at the public boundary
-//! via `ActionError::fatal_from` / `retryable_from`, which preserves the
-//! full source chain for logging and metrics.
+//! ([`crate::ProcessSandbox`]) as a self-contained typed taxonomy. The
+//! crate is a leaf and does not know about the engine's `ActionError`:
+//! the `SandboxError` → `ActionError` classification lives in
+//! `nebula-plugin` (`sandbox_bridge`), shared by the discovery handler
+//! and the engine runner adapter.
 //!
 //! A dedicated type lets the caller distinguish "plugin is misbehaving /
 //! attempting DoS" (`PluginLineTooLarge`, `HandshakeLineTooLarge`) from
@@ -56,10 +56,26 @@ pub enum SandboxError {
     },
 
     /// The plugin closed its end of the transport without sending a
-    /// response envelope. Signals abnormal plugin exit, not a protocol
-    /// violation.
+    /// response envelope, and **no** request bytes had reached a running
+    /// plugin for this attempt (stale handle on entry / failure at or
+    /// before the write). Safe to respawn-and-retry: nothing was executed.
     #[error("plugin closed transport without sending a response envelope")]
     PluginClosed,
+
+    /// The plugin closed its end of the transport **after** the request
+    /// envelope was successfully written to it. The plugin may have
+    /// received and begun (or completed) a non-idempotent action before
+    /// dying, so the request MUST NOT be resent: re-dispatching would risk
+    /// double-executing the action. This is a distinct, typed variant
+    /// (not a `bool` on `PluginClosed`) so the no-resend guarantee is
+    /// structural across the crate boundary — `nebula-plugin`'s
+    /// classifier maps it to a fatal `ActionError` and the engine never
+    /// re-dispatches it.
+    #[error(
+        "plugin closed transport after the request was sent — \
+         action may have run; not resendable"
+    )]
+    PluginClosedAfterSend,
 
     /// An operation was attempted on a transport connection that was
     /// previously poisoned by an oversize read. This is an internal
@@ -114,4 +130,66 @@ pub enum SandboxError {
         /// The correlation id the plugin echoed back in its response.
         got: u64,
     },
+
+    /// Landlock ruleset construction or enforcement failed (Linux only).
+    /// Produced pre-`fork` while preparing the child sandbox — this is a
+    /// spawn-time hardening failure, not a transport/protocol error.
+    #[error("landlock setup failed: {0}")]
+    Landlock(String),
+
+    /// Resource-limit (`setrlimit`) configuration failed (Linux only),
+    /// also a pre-`fork` spawn-time hardening failure.
+    #[error("rlimit setup failed: {0}")]
+    Rlimit(String),
+
+    /// The plugin binary could not be spawned, the handshake could not be
+    /// read/validated, or the announced transport could not be dialled.
+    /// This is a spawn-time failure before any envelope round-trip — a
+    /// blind respawn-retry on the same misconfigured host/binary would
+    /// fail identically.
+    #[error("plugin spawn/dial failed: {0}")]
+    Spawn(String),
+
+    /// The plugin replied with an `ActionResultError` envelope. Carries the
+    /// plugin-reported code/message and its own retry hint. The host maps
+    /// this to the public `ActionError` classification at the engine-side
+    /// runner boundary; `retryable` is the plugin's advice, not a transport
+    /// fact.
+    #[error("plugin returned an action error [{code}]: {message}")]
+    PluginActionError {
+        /// Plugin-supplied error code.
+        code: String,
+        /// Plugin-supplied human-readable message (sanitized before use).
+        message: String,
+        /// Whether the plugin marked this error as retryable.
+        retryable: bool,
+    },
+
+    /// The plugin returned an envelope kind that does not match what the
+    /// host requested (e.g. a `log` line where an `ActionResult*` was
+    /// expected).
+    #[error("plugin returned unexpected envelope (got {kind})")]
+    UnexpectedEnvelope {
+        /// The envelope kind the plugin sent instead.
+        kind: String,
+    },
+
+    /// The per-call envelope round-trip exceeded its wall-clock deadline.
+    /// The connection is dropped (state is undefined after a partial
+    /// write); the engine-side adapter decides retry policy.
+    #[error("plugin {plugin} timed out on {envelope} after {timeout:?}")]
+    Timeout {
+        /// Plugin binary path (display form) that timed out.
+        plugin: String,
+        /// Envelope tag (`action_invoke` / `metadata_request` / `other`).
+        envelope: String,
+        /// The configured per-call timeout that elapsed.
+        timeout: std::time::Duration,
+    },
+
+    /// The dispatch was cancelled mid-round-trip via the engine
+    /// cancellation token. The connection is dropped; the action must not
+    /// be silently resent (it may already be running on the plugin).
+    #[error("plugin dispatch cancelled")]
+    Cancelled,
 }

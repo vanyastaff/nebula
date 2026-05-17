@@ -8,7 +8,7 @@
 //!
 //! Exec tier. Narrowly supersedes the facade-ownership slice of
 //! ADR-0030 (engine retains the low-level resolver / RefreshCoordinator
-//! / lease mechanism); see `docs/adr/0052-credential-runtime-crate.md`.
+//! / lease mechanism); see `docs/adr/0066-credential-runtime-crate.md`.
 //!
 //! This increment ships only the crate scaffold and the
 //! [`CredentialServiceError`](error::CredentialServiceError) taxonomy.

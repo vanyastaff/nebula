@@ -38,7 +38,7 @@ impl Credential for BearerTokenCredential {
             .key(nebula_core::credential_key!("bearer_token"))
             .name("Bearer Token")
             .description("Opaque bearer token (API key, PAT, session token).")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(AuthPattern::SecretToken)
             .icon("key")
             .build()

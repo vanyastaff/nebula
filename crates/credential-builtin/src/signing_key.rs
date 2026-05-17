@@ -42,7 +42,7 @@ impl Credential for SigningKeyCredential {
             .key(nebula_core::credential_key!("signing_key"))
             .name("Signing Key")
             .description("Request-signing secret (HMAC, SigV4, webhook signatures).")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(AuthPattern::RequestSigning)
             .icon("key")
             .build()

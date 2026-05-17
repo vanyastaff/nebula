@@ -198,8 +198,8 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// resolve it to encrypted state, and persist it scoped to `scope`.
     ///
     /// The validation pipeline is the canonical credential pipeline
-    /// (canon §12.5): `properties_schema().validate(FieldValues)` then a
-    /// typed `serde_json::from_value` round-trip — a `{"$expr": ..}`
+    /// (canon §12.5): `schema_of::<Properties>().validate(FieldValues)`
+    /// then a typed `serde_json::from_value` round-trip — a `{"$expr": ..}`
     /// envelope survives schema validation but is refused by the typed
     /// deserialize, so secrets never depend on workflow state.
     ///

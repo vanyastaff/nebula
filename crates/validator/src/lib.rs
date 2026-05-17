@@ -63,6 +63,8 @@ pub mod engine;
 pub mod error;
 /// Core traits, errors, and type-erased validators.
 pub mod foundation;
+/// Field visibility / required policy evaluation (ADR-0052).
+pub mod policy;
 /// Single-import convenience module.
 pub mod prelude;
 /// Proof tokens that certify a value has been validated.
@@ -80,10 +82,12 @@ pub use engine::{ExecutionMode, validate_rules, validate_rules_with_ctx};
 pub use error::ValidatorError;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;
-pub use proof::Validated;
-pub use rule::{
-    DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleContext, RuleKind, ValueRule,
+pub use policy::{
+    FieldDirective, FieldPlan, FieldPolicyDecl, FieldPolicyResolution, Presence, RequiredPolicy,
+    Requiredness, VisibilityPolicy, resolve_field_policies,
 };
+pub use proof::Validated;
+pub use rule::{DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleKind, ValueRule};
 
 // `regex` is re-exported so code emitted by `#[derive(Validator)]` can
 // reference `nebula_validator::__private::regex` without requiring users to

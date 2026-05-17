@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land the `nebula-credential-runtime` Exec-tier crate scaffold (+ `CredentialServiceError`), ADR-0052, and 3 net-new static reference credentials in `nebula-credential-builtin` with `register_builtins`, with `task dev:check` green.
+**Goal:** Land the `nebula-credential-runtime` Exec-tier crate scaffold (+ `CredentialServiceError`), ADR-0066, and 3 net-new static reference credentials in `nebula-credential-builtin` with `register_builtins`, with `task dev:check` green.
 
 **Architecture:** Foundation increment of the credential-subsystem completion (spec `docs/superpowers/specs/2026-05-15-credential-runtime-subsystem-design.md`). No relocation of existing types (grep-gate verdict §3.2/§9 — `OAuth2Credential`/ApiKey/Basic stay in `nebula-credential`). New empty Exec crate settles workspace + `deny.toml` ahead of Plan 2's facade (mirrors the documented `credential-builtin` П1 scaffold-first pattern). The 3 reference credentials mirror the proven `BasicAuthCredential` shape verbatim — static, `State = Scheme`, five `plugin_capability_report::Is* = false`.
 
@@ -26,8 +26,8 @@
 | `crates/credential-runtime/Cargo.toml` | new Exec crate manifest | Create |
 | `crates/credential-runtime/src/lib.rs` | crate root: docs, `#![forbid(unsafe_code)]`, module wiring | Create |
 | `crates/credential-runtime/src/error.rs` | `CredentialServiceError` (thiserror + `nebula_error::Classify`) | Create |
-| `docs/adr/0052-credential-runtime-crate.md` | ADR: narrow supersede of ADR-0030 facade slice; B deferred ideal; ADR-0028 canon audit | Create |
-| `docs/adr/README.md` | worktree ADR index + supersession table | Modify — add 0052 rows |
+| `docs/adr/0066-credential-runtime-crate.md` | ADR: narrow supersede of ADR-0030 facade slice; B deferred ideal; ADR-0028 canon audit | Create |
+| `docs/adr/README.md` | worktree ADR index + supersession table | Modify — add 0066 rows |
 | `crates/credential/src/scheme/shared_key.rs` | add `identity_state!` so `SharedKey` is static-usable | Modify (additive one-liner) |
 | `crates/credential/src/scheme/signing_key.rs` | add `identity_state!` so `SigningKey` is static-usable | Modify (additive one-liner) |
 | `crates/credential-builtin/src/bearer_token.rs` | `BearerTokenCredential` reference impl | Create |
@@ -104,7 +104,7 @@ workspace = true
 //!
 //! Exec tier. Narrowly supersedes the facade-ownership slice of
 //! ADR-0030 (engine retains the low-level resolver / RefreshCoordinator
-//! / lease mechanism); see `docs/adr/0052-credential-runtime-crate.md`.
+//! / lease mechanism); see `docs/adr/0066-credential-runtime-crate.md`.
 //!
 //! This increment ships only the crate scaffold and the
 //! [`CredentialServiceError`](error::CredentialServiceError) taxonomy.
@@ -132,7 +132,7 @@ Mirror the `nebula-credential-vault` scaffold pattern. Immediately after the clo
   # nebula-credential-runtime is the Exec-tier owner of the credential
   # management bounded context (CredentialService facade + type registry +
   # state-source resolution + observability). Narrowly supersedes the
-  # facade-ownership slice of ADR-0030 (see docs/adr/0052). This scaffold
+  # facade-ownership slice of ADR-0030 (see docs/adr/0066). This scaffold
   # increment ships an empty crate; the wrapper allowlist starts at self
   # only and is widened to { nebula-api, nebula-cli } when the facade lands
   # and api depends on it (Plan 2).
@@ -159,7 +159,7 @@ Empty nebula-credential-runtime crate, workspace member, and deny.toml
 self-scaffold ban entry. Mirrors the documented credential-builtin П1
 scaffold-first pattern so workspace + layer-wrapper resolution settle
 ahead of the facade (Plan 2). Narrowly supersedes the ADR-0030 facade
-slice — see ADR-0052 (Task 3).
+slice — see ADR-0066 (Task 3).
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -338,16 +338,16 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 3: ADR-0052
+## Task 3: ADR-0066
 
 **Files:**
-- Create: `docs/adr/0052-credential-runtime-crate.md`
+- Create: `docs/adr/0066-credential-runtime-crate.md`
 - Modify: `docs/adr/README.md` (index table + supersession table)
 
-- [ ] **Step 1: Create `docs/adr/0052-credential-runtime-crate.md`**
+- [ ] **Step 1: Create `docs/adr/0066-credential-runtime-crate.md`**
 
 ```markdown
-# 0052 — Credential management runtime crate (`nebula-credential-runtime`)
+# 0066 — Credential management runtime crate (`nebula-credential-runtime`)
 
 - **Status:** accepted (2026-05-15)
 - **Tags:** credential, runtime, layer-boundary, breaking, supersession, m11
@@ -434,7 +434,7 @@ invariants; each is gated by a test or compile-fail probe:
 In the `## Index` table, after the `0050` row, add:
 
 ```markdown
-| [0052](./0052-credential-runtime-crate.md) | Credential management runtime crate (`nebula-credential-runtime`) | accepted (2026-05-15) | credential, runtime, layer-boundary, breaking, m11 |
+| [0066](./0066-credential-runtime-crate.md) | Credential management runtime crate (`nebula-credential-runtime`) | accepted (2026-05-15) | credential, runtime, layer-boundary, breaking, m11 |
 ```
 
 - [ ] **Step 3: Add the supersession row to `docs/adr/README.md`**
@@ -442,7 +442,7 @@ In the `## Index` table, after the `0050` row, add:
 In the `## Supersession` table, add a row:
 
 ```markdown
-| `0030` facade slice (`engine-owns-credential-orchestration`, external `C:/Users/vanya/RustroverProjects/docs/adr/0030-*.md`) | [0052](./0052-credential-runtime-crate.md) | Management facade ownership moves to `nebula-credential-runtime` (Exec). ADR-0030's low-level mechanism (resolver/RefreshCoordinator/claim-repo) stays in `nebula-engine`. ADR-0041/0051 untouched. |
+| `0030` facade slice (`engine-owns-credential-orchestration`, external `C:/Users/vanya/RustroverProjects/docs/adr/0030-*.md`) | [0066](./0066-credential-runtime-crate.md) | Management facade ownership moves to `nebula-credential-runtime` (Exec). ADR-0030's low-level mechanism (resolver/RefreshCoordinator/claim-repo) stays in `nebula-engine`. ADR-0041/0051 untouched. |
 ```
 
 - [ ] **Step 4: Verify lint hooks accept the docs**
@@ -453,8 +453,8 @@ Expected: `typos` passes (no misspellings). If `typos` flags a token, fix the sp
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/adr/0052-credential-runtime-crate.md docs/adr/README.md
-git commit -m "docs(credential): ADR-0052 credential-runtime crate
+git add docs/adr/0066-credential-runtime-crate.md docs/adr/README.md
+git commit -m "docs(credential): ADR-0066 credential-runtime crate
 
 Narrowly supersedes the ADR-0030 facade slice; records full-extract as
 the deferred ideal; embeds the ADR-0028 8-invariant canon-audit
@@ -1260,11 +1260,11 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Self-Review
 
 **1. Spec coverage (against `2026-05-15-credential-runtime-subsystem-design.md`):**
-- §15 Phase 1 (crate scaffold + layer wiring + ADR-0052) → Tasks 1, 3. ✓
+- §15 Phase 1 (crate scaffold + layer wiring + ADR-0066) → Tasks 1, 3. ✓
 - §15 Phase 2 (3 net-new static reference creds + `register_builtins`, no relocation) → Tasks 4–8. ✓
 - §4 deny.toml runtime entry → Task 1 Step 4 (self-scaffold; widened in Plan 2). ✓
 - §9 concrete reference set (SecretToken/SharedKey/SigningKey, exact KEYs/patterns) → Tasks 5–7. ✓
-- §11 ADR-0052 (narrow supersede + B deferred ideal + ADR-0028 checklist) → Task 3. ✓
+- §11 ADR-0066 (narrow supersede + B deferred ideal + ADR-0028 checklist) → Task 3. ✓
 - Out of scope for Plan 1 (correctly deferred to Plans 2–3): facade/builder, observability seam, StateSource, API wiring, adversarial e2e tests. Not gaps — sequenced.
 
 **2. Placeholder scan:** No "TBD"/"implement later"/"add error handling". Every code step has complete code. The two "if unresolved path → use rustc's suggestion" notes are deterministic compile-fix instructions against types that *are* defined (in `nebula-credential`), not vague placeholders.

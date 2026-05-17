@@ -62,33 +62,44 @@ deny = [
   { crate = "openssl", reason = "Prefer rustls-based TLS stack across the workspace" },
 
   # ---- Layer enforcement: API (top) ----
-  # nebula-api may only be depended on by itself (dev-dep for test-util feature).
+  # nebula-api may only be depended on by itself (dev-dep for test-util feature)
+  # and by the apps/server composition root that wires the binary.
   # nebula-cli talks to the engine directly, not through the API crate.
   { crate = "nebula-api", wrappers = [
     "nebula-api",
+    "nebula-server",
+    # examples/ member hosts the api_simple_server startup demo.
+    "nebula-examples",
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
 
   # ---- Layer enforcement: Exec ----
   { crate = "nebula-engine", wrappers = [
     "nebula-cli",
     # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
-    # for the §13 knife integration test (ADR-0008 follow-up A2). A dedicated
-    # `apps/server` composition root is still tracked as a separate follow-up;
-    # until it exists this is the only place the two layers meet in-process.
+    # for the §13 knife integration test (ADR-0008 follow-up A2).
     "nebula-api",
     # nebula-credential-runtime is the Exec-tier owner of the credential
     # management bounded context; its build() composes the engine-owned
     # resolver + lease lifecycle internally. The edge is acyclic — engine
-    # does NOT depend back on runtime (see docs/adr/0052).
+    # does NOT depend back on runtime (see docs/adr/0066).
     "nebula-credential-runtime",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
+  # ---- Layer enforcement: Plugin-Proto (leaf tier) ----
+  # nebula-sandbox is the duplex plugin transport. It is a leaf with no
+  # Business/Exec dependency (Core + plugin-sdk + tokio/serde only), so
+  # nebula-plugin (Business) -> nebula-sandbox is a legal *downward* edge.
+  # The runner abstraction lives in nebula-engine; discovery + the
+  # SandboxError->ActionError seam live in nebula-plugin.
   { crate = "nebula-sandbox", wrappers = [
     "nebula-engine",
+    "nebula-plugin",
     "nebula-cli",
-  ], reason = "Sandbox is exec/infra boundary; only engine and CLI may depend on it directly" },
+  ], reason = "Sandbox is the Plugin-Proto leaf transport; only engine (runner adapter), plugin (discovery + bridge), and CLI may depend on it directly" },
   { crate = "nebula-storage", wrappers = [
     "nebula-engine",
     "nebula-api",
+    # apps/server composition root wires in-memory repos directly (default_state).
+    "nebula-server",
     # Dev-only: `crates/credential-vault/tests/cache_integration.rs`
     # exercises `ProviderCacheLayer` over `VaultProvider` to prove the
     # cache/lease wiring from ADR-0051 Phase A composes with the Vault
@@ -96,15 +107,19 @@ deny = [
     # carved out above for the §13 knife integration test.
     "nebula-credential-vault",
     # nebula-credential-runtime composes the storage-owned layered
-    # CredentialStore stack (Scope/Audit/Cache/Encryption) inside build().
+    # CredentialStore stack (Audit/Cache/Encryption) inside build().
     "nebula-credential-runtime",
+    # examples/ member hosts the api_simple_server startup demo which
+    # wires in-memory repos directly (same pattern as nebula-server).
+    "nebula-examples",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
   { crate = "nebula-sdk", wrappers = [
     "nebula-examples",
   ], reason = "SDK is the external integration surface; only the examples workspace member may depend on it" },
   { crate = "nebula-plugin-sdk", wrappers = [
     "nebula-sandbox",
-  ], reason = "Plugin-SDK is the out-of-process plugin protocol; only sandbox may depend on it" },
+    "nebula-plugin",
+  ], reason = "Plugin-SDK is the out-of-process plugin protocol (Plugin-Proto tier); the sandbox transport and the plugin discovery path may depend on it" },
 
   # ---- Layer enforcement: Business / shared infra ----
   # nebula-resource is the runtime resource framework consumed by both business
@@ -118,9 +133,33 @@ deny = [
     "nebula-engine",
     "nebula-examples",
     "nebula-plugin",
-    "nebula-sandbox",
     "nebula-sdk",
   ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*); examples demonstrate Resource impls for Pool/Resident topologies (M6.3)" },
+
+  # nebula-credential is the credential contract crate. It is shared infra
+  # (not a single-tier Business crate): the Exec tier (engine/storage) and
+  # the API tier consume it directly alongside the Business tier
+  # (action/plugin/resource) and the first-party backends
+  # (credential-builtin/-vault). The AGENTS.md layer map reflects this as a
+  # shared-infra note rather than a Business row. The allowlist locks the
+  # current consumer set so a future PR cannot introduce an unreviewed
+  # upward dependency from core/*.
+  { crate = "nebula-credential", wrappers = [
+    "nebula-action",
+    "nebula-api",
+    "nebula-credential-builtin",
+    # nebula-credential-runtime is the Exec-tier owner of the credential
+    # management bounded context; it consumes the contract crate directly
+    # (CredentialService facade + type registry + ops dispatch). See
+    # docs/adr/0066.
+    "nebula-credential-runtime",
+    "nebula-credential-vault",
+    "nebula-engine",
+    "nebula-plugin",
+    "nebula-resource",
+    "nebula-sdk",
+    "nebula-storage",
+  ], reason = "Credential contract is shared infra; the listed Business/Exec/API consumers and first-party backends may depend on it (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper
   # allowlist locks the current consumer set so future PRs cannot quietly
@@ -147,7 +186,7 @@ deny = [
   # The wrappers allowlist is widened when a composition-root crate wires
   # the concrete types in via `register_builtins`. nebula-credential-runtime
   # is exactly that root (Exec-tier owner of the credential management
-  # bounded context, docs/adr/0052). Upward deps from other Exec/API tier
+  # bounded context, docs/adr/0066). Upward deps from other Exec/API tier
   # crates (nebula-engine, -storage, -api, -resource, -action, -sandbox,
   # -plugin, -sdk) remain forbidden by the wrapper allowlists on each of
   # those crates, which deliberately omit nebula-credential-builtin.
@@ -155,9 +194,9 @@ deny = [
     "nebula-credential-builtin",
     # The credential-runtime composition root calls
     # `nebula_credential_builtin::register_builtins` to populate the
-    # CredentialRegistry/CredentialDispatch (docs/adr/0052).
+    # CredentialRegistry/CredentialDispatch (docs/adr/0066).
     "nebula-credential-runtime",
-  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0052)" },
+  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066)" },
 
   # nebula-credential-vault is the first concrete LeasedProvider impl per
   # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault
@@ -172,13 +211,13 @@ deny = [
   # nebula-credential-runtime is the Exec-tier owner of the credential
   # management bounded context (CredentialService facade + type registry +
   # state-source resolution + observability). Narrowly supersedes the
-  # facade-ownership slice of ADR-0030 (see docs/adr/0052). The facade
+  # facade-ownership slice of ADR-0030 (see docs/adr/0066). The facade
   # lands here; only the API and CLI composition roots may depend on it.
   { crate = "nebula-credential-runtime", wrappers = [
     "nebula-credential-runtime",
     "nebula-api",
     "nebula-cli",
-  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0052)" },
+  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0066)" },
 ]
 skip = [
   "bitflags",

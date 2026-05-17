@@ -90,7 +90,7 @@ adversarial-security) and the literal ask ("separate crates", "properly
 organize structure").
 
 **Refinements folded in (non-blocking):**
-1. ADR-0052 must record full extraction (engine de-god, variant B) as the
+1. ADR-0066 must record full extraction (engine de-god, variant B) as the
    deferred ideal so the goal is not lost.
 2. The C relocation grep-gate **fired and falsified the relocation premise**
    (2026-05-15). Importer enumeration showed `OAuth2Credential` + the
@@ -360,9 +360,9 @@ ApiKey/Basic/OAuth2 and plugin-discovered types) when constructing the
 - OpenAPI (ADR-0047): handlers cease to be 503; utoipa annotations updated;
   stub-endpoint policy no longer applies (they are implemented).
 
-## 11. ADR-0052
+## 11. ADR-0066
 
-`docs/adr/0052-credential-runtime-crate.md` — narrowly supersedes the
+`docs/adr/0066-credential-runtime-crate.md` — narrowly supersedes the
 facade-ownership slice of ADR-0030: "engine retains the low-level resolver /
 RefreshCoordinator / lease *mechanism*; `nebula-credential-runtime` owns the
 *management facade + type registry + StateSource + observability*; api/cli
@@ -384,7 +384,7 @@ variant B (full engine de-god) as the deferred ideal. Includes the ADR-0028
   without layers does not compile; cross-tenant get denied; `$expr`
   rejected; secret never in response body; SSRF allowlist; audit
   fail-closed).
-- ADR-0028 8-invariant canon-audit checklist completed in ADR-0052.
+- ADR-0028 8-invariant canon-audit checklist completed in ADR-0066.
 
 ## 13. Constraints
 
@@ -407,7 +407,7 @@ variant B (full engine de-god) as the deferred ideal. Includes the ADR-0028
   item; runtime is single-replica, gates multi-replica through the existing
   L2 claim repo).
 - Full engine de-god / variant B relocation (deferred ideal, recorded in
-  ADR-0052).
+  ADR-0066).
 - Broad first-party provider catalogue (GitHub/Slack/AWS SigV4/…): out of
   scope per the user's "contract + 2–3 reference impls" decision.
 - Plane A (platform auth to Nebula): remains separate `nebula-auth` future
@@ -418,7 +418,7 @@ variant B (full engine de-god) as the deferred ideal. Includes the ADR-0028
 Detailed task graph is produced by `writing-plans`. High-level phases:
 
 1. **Crate scaffold + layer wiring:** create `nebula-credential-runtime`,
-   `deny.toml` wrappers, ADR-0052 draft.
+   `deny.toml` wrappers, ADR-0066 draft.
 2. **C — 3 net-new static reference credentials** in
    `nebula-credential-builtin` (mirror `BasicAuthCredential`) +
    `register_builtins`; no relocation, no importer churn, no

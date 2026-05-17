@@ -16,7 +16,6 @@ use nebula_action::{
     PollTriggerAdapter, TestContextBuilder, TriggerHandler,
 };
 use nebula_core::{Dependencies, ExecutionId, context::Context, node_key};
-use nebula_schema::{HasSchema, ValidSchema};
 
 // ── TickPoller ────────────────────────────────────────────────────────────
 
@@ -37,16 +36,6 @@ impl Action for TickPoller {
                 "Test poll trigger",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -194,16 +183,6 @@ impl Action for ZeroIntervalPoller {
                 "Returns Duration::ZERO from poll_config",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -492,16 +471,6 @@ impl Action for FailingValidator {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -562,16 +531,6 @@ impl Action for StartFromNowPoller {
                 "initial_cursor returns 1000",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -684,16 +643,6 @@ impl Action for ReadyPoller {
                 "always-ready, emitter fails",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -818,16 +767,6 @@ impl Action for DropPoller {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -928,16 +867,6 @@ impl Action for HugeOverridePoller {
         })
     }
 
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -1022,16 +951,6 @@ impl Action for EmptyPartialPoller {
                 "returns Partial with no events and a retryable error",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -1119,16 +1038,6 @@ impl Action for SlowPoller {
                 "base_interval 10min, first poll should still run immediately",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -1287,16 +1196,6 @@ impl Action for WildConfigPoller {
                 "Configurable PollConfig for clamp tests",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {

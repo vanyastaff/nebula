@@ -174,7 +174,7 @@ type SnapshotFn = Arc<
 
 /// Erased validation: runs the canonical credential properties pipeline
 /// for the captured concrete `C` —
-/// `C::properties_schema().validate(FieldValues)` then a typed
+/// `schema_of::<C::Properties>().validate(FieldValues)` then a typed
 /// `serde_json::from_value::<C::Properties>` round-trip. The typed step
 /// is the `{"$expr": ..}` refusal point (canon §12.5). Returns only the
 /// schema `code`/`path` on failure, never raw property values.
@@ -565,7 +565,7 @@ where
         // pipeline never resolves expressions, so a `{"$expr": ..}`
         // envelope passes schema validation but is refused by the typed
         // deserialize below (canon §12.5 defense-in-depth #2).
-        let schema = C::properties_schema();
+        let schema = nebula_schema::schema_of::<C::Properties>();
         let values = FieldValues::from_json(props.clone()).map_err(|e| {
             CredentialServiceError::ValidationFailed {
                 reason: format!("[{}] {}", e.code, e.path),

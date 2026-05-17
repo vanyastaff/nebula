@@ -13,7 +13,7 @@ use axum::{
 };
 use nebula_core::{ResolvedIds, TenantContext, role::effective_workspace_role};
 
-use crate::{errors::ApiError, middleware::auth::AuthContext, state::AppState};
+use crate::{error::ApiError, middleware::auth::AuthContext, state::AppState};
 
 /// RBAC middleware — must run AFTER auth and tenancy middleware.
 ///

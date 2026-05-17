@@ -120,6 +120,24 @@ pub enum RuntimeError {
         key: String,
     },
 
+    /// The out-of-process plugin pool was configured with a zero per-key
+    /// capacity. A `0`-permit semaphore makes every `acquire` block
+    /// forever, so the supervisor refuses to construct rather than wedge
+    /// every dispatch silently at runtime.
+    #[classify(
+        category = "validation",
+        code = "RUNTIME:INVALID_POOL_CAPACITY",
+        retryable = false
+    )]
+    #[error(
+        "out-of-process plugin pool capacity must be >= 1 (got {requested}); \
+         a zero-permit semaphore would block every acquire forever"
+    )]
+    InvalidPoolCapacity {
+        /// The rejected per-key capacity (always `0`).
+        requested: usize,
+    },
+
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]
@@ -132,6 +150,17 @@ impl RuntimeError {
         match self {
             Self::ActionError(e) => e.is_retryable(),
             _ => false,
+        }
+    }
+
+    /// The wrapped `ActionError`, if this runtime error is one. Lets the
+    /// engine consult `ActionError::is_fatal` on the just-recorded attempt
+    /// so a fatal action error is never re-dispatched by retry policy.
+    #[must_use]
+    pub fn as_action_error(&self) -> Option<&nebula_action::ActionError> {
+        match self {
+            Self::ActionError(e) => Some(e),
+            _ => None,
         }
     }
 }
