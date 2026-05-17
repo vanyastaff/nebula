@@ -19,11 +19,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use nebula_credential::pending_store::PendingStateStore;
+use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::store::CredentialStore;
 use nebula_credential::{
     Credential, CredentialContext, CredentialRecord, CredentialSnapshot, CredentialState,
+    Interactive, PendingToken, Refreshable, Revocable, Testable,
 };
-use nebula_engine::credential::{ResolveResponse, execute_resolve};
+use nebula_engine::credential::{
+    ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
+};
 use nebula_schema::FieldValues;
 use zeroize::Zeroizing;
 
@@ -45,6 +49,30 @@ pub(crate) struct ResolvedState {
     pub(crate) expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Outcome of an acquisition attempt before the service decides whether
+/// to persist (`Complete`) or surface an interaction (`Pending`). This is
+/// the raw [`ResolveResponse`] shape projected to secret-free pieces: the
+/// `Complete` arm carries serialized state for the create-persist path,
+/// the `Pending` arm carries only the opaque token + the UI instruction.
+pub(crate) enum AcquireOutcome {
+    /// Credential resolved synchronously — `state` is ready to persist
+    /// through the same path `create` uses.
+    Complete(ResolvedState),
+    /// Interactive acquisition kicked off — the caller surfaces the
+    /// token + interaction and resumes via the continue path.
+    Pending {
+        /// Opaque pending-store handle (stringified for transport).
+        token: PendingToken,
+        /// What the UI must show / do next.
+        interaction: InteractionRequest,
+    },
+    /// Framework asked to poll again after `after`.
+    Retry {
+        /// Delay before the next continuation poll.
+        after: std::time::Duration,
+    },
+}
+
 /// Boxed future returned by the erased `resolve` closure.
 type ResolveFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ResolvedState, CredentialServiceError>> + Send + 'a>>;
@@ -56,6 +84,63 @@ type ResolveFn<PS> = Arc<
         + Send
         + Sync,
 >;
+
+/// Boxed future returned by the erased acquisition closures.
+type AcquireFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<AcquireOutcome, CredentialServiceError>> + Send + 'a>>;
+
+/// Erased acquisition `resolve`: runs [`execute_resolve`] for the
+/// captured `C` and maps the full [`ResolveResponse`] (including
+/// `Pending`) into [`AcquireOutcome`] — the create path's `ResolveFn`
+/// rejects `Pending`, this one surfaces it.
+type AcquireFn<PS> = Arc<
+    dyn for<'a> Fn(&'a FieldValues, &'a CredentialContext, &'a PS) -> AcquireFuture<'a>
+        + Send
+        + Sync,
+>;
+
+/// Erased interactive continuation: loads the typed pending state for
+/// `C: Interactive`, drives [`execute_continue`], maps the result into
+/// [`AcquireOutcome`]. Only registered for `C: Interactive`.
+type ContinueFn<PS> = Arc<
+    dyn for<'a> Fn(
+            &'a PendingToken,
+            &'a UserInput,
+            &'a CredentialContext,
+            &'a PS,
+        ) -> AcquireFuture<'a>
+        + Send
+        + Sync,
+>;
+
+/// Boxed future for the erased `test` closure.
+type TestFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<TestResult, CredentialServiceError>> + Send + 'a>>;
+
+/// Erased `test`: deserializes stored state, projects the scheme, and
+/// invokes [`dispatch_test`] for the captured `C: Testable`.
+type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<'a> + Send + Sync>;
+
+/// Boxed future for the erased `refresh` closure. Yields the freshly
+/// serialized state bytes so the service re-persists them.
+type RefreshFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, CredentialServiceError>> + Send + 'a>>;
+
+/// Erased `refresh`: deserializes stored state, runs
+/// `<C as Refreshable>::refresh`, and returns the re-serialized state for
+/// the service to overwrite. Only registered for `C: Refreshable`.
+type RefreshFn =
+    Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RefreshFuture<'a> + Send + Sync>;
+
+/// Boxed future for the erased `revoke` closure.
+type RevokeFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), CredentialServiceError>> + Send + 'a>>;
+
+/// Erased `revoke`: deserializes stored state, runs
+/// `<C as Revocable>::revoke` for the captured `C: Revocable`. Only
+/// registered for `C: Revocable`.
+type RevokeFn =
+    Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RevokeFuture<'a> + Send + Sync>;
 
 /// Erased `project`: deserializes stored state bytes into `C::State`,
 /// runs `C::project`, and wraps the scheme in a secret-free
@@ -76,10 +161,23 @@ type ValidateFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<(), CredentialServiceError> + Send + Sync>;
 
 /// One credential type's erased operation closures.
+///
+/// `validate` / `resolve` / `snapshot` / `acquire` are always present
+/// (the base registration). The capability closures are `Option`: a
+/// `Some` is set **only** by the matching capability-bounded
+/// `register_*_ops` (callable only for `C: Testable` / `Refreshable` /
+/// `Revocable` / `Interactive`), so closure presence *is* the capability
+/// — structurally impossible to advertise one the type lacks (mirrors
+/// `plugin_capability_report`).
 struct OpsEntry<PS> {
     validate: ValidateFn,
     resolve: ResolveFn<PS>,
     snapshot: SnapshotFn,
+    acquire: AcquireFn<PS>,
+    test_fn: Option<TestFn>,
+    refresh_fn: Option<RefreshFn>,
+    revoke_fn: Option<RevokeFn>,
+    continue_fn: Option<ContinueFn<PS>>,
 }
 
 /// Key → erased operation closures. Built alongside
@@ -208,6 +306,147 @@ impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
             })?;
         (entry.validate)(props)
     }
+
+    /// Drive an acquisition for the type at `key`: same canonical
+    /// executor as [`Self::resolve`] but the full [`ResolveResponse`] is
+    /// surfaced, so an interactive kickoff returns
+    /// [`AcquireOutcome::Pending`] instead of being rejected.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent; any
+    /// executor error mapped to a [`CredentialServiceError`].
+    pub(crate) async fn acquire(
+        &self,
+        key: &str,
+        values: &FieldValues,
+        ctx: &CredentialContext,
+        pending: &PS,
+    ) -> Result<AcquireOutcome, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        (entry.acquire)(values, ctx, pending).await
+    }
+
+    /// Continue an interactive acquisition for the type at `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
+    /// [`CredentialServiceError::CapabilityUnsupported`] when the type is
+    /// not interactive (no continuation closure registered); any executor
+    /// error mapped to a [`CredentialServiceError`].
+    pub(crate) async fn continue_resolve(
+        &self,
+        key: &str,
+        token: &PendingToken,
+        input: &UserInput,
+        ctx: &CredentialContext,
+        pending: &PS,
+    ) -> Result<AcquireOutcome, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        let continue_fn = entry.continue_fn.as_ref().ok_or_else(|| {
+            CredentialServiceError::CapabilityUnsupported {
+                capability: "interactive".to_owned(),
+                key: key.to_owned(),
+            }
+        })?;
+        continue_fn(token, input, ctx, pending).await
+    }
+
+    /// Run the provider health probe for the type at `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
+    /// [`CredentialServiceError::CapabilityUnsupported`] when the type is
+    /// not testable; otherwise the probe outcome.
+    pub(crate) async fn test(
+        &self,
+        key: &str,
+        data: &[u8],
+        ctx: &CredentialContext,
+    ) -> Result<TestResult, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        let test_fn = entry.test_fn.as_ref().ok_or_else(|| {
+            CredentialServiceError::CapabilityUnsupported {
+                capability: "test".to_owned(),
+                key: key.to_owned(),
+            }
+        })?;
+        test_fn(data, ctx).await
+    }
+
+    /// Refresh the stored state for the type at `key`, returning the
+    /// re-serialized state bytes for the service to overwrite.
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
+    /// [`CredentialServiceError::CapabilityUnsupported`] when the type is
+    /// not refreshable; otherwise the refresh failure.
+    pub(crate) async fn refresh(
+        &self,
+        key: &str,
+        data: &[u8],
+        ctx: &CredentialContext,
+    ) -> Result<Zeroizing<Vec<u8>>, CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        let refresh_fn = entry.refresh_fn.as_ref().ok_or_else(|| {
+            CredentialServiceError::CapabilityUnsupported {
+                capability: "refresh".to_owned(),
+                key: key.to_owned(),
+            }
+        })?;
+        refresh_fn(data, ctx).await
+    }
+
+    /// Revoke the credential at `key` (mutating provider-side state).
+    ///
+    /// # Errors
+    ///
+    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
+    /// [`CredentialServiceError::CapabilityUnsupported`] when the type is
+    /// not revocable; otherwise the revoke failure.
+    pub(crate) async fn revoke(
+        &self,
+        key: &str,
+        data: &[u8],
+        ctx: &CredentialContext,
+    ) -> Result<(), CredentialServiceError> {
+        let entry = self
+            .entries
+            .get(key)
+            .ok_or_else(|| CredentialServiceError::TypeUnknown {
+                key: key.to_owned(),
+            })?;
+        let revoke_fn = entry.revoke_fn.as_ref().ok_or_else(|| {
+            CredentialServiceError::CapabilityUnsupported {
+                capability: "revoke".to_owned(),
+                key: key.to_owned(),
+            }
+        })?;
+        revoke_fn(data, ctx).await
+    }
 }
 
 /// Register the erased operation closures for one concrete credential
@@ -277,6 +516,19 @@ where
         },
     );
 
+    let acquire: AcquireFn<PS> = Arc::new(
+        |values: &FieldValues, ctx: &CredentialContext, pending: &PS| {
+            Box::pin(async move {
+                let response = execute_resolve::<C, PS>(values, ctx, pending)
+                    .await
+                    .map_err(|e| CredentialServiceError::ValidationFailed {
+                        reason: format!("credential resolve failed: {e}"),
+                    })?;
+                map_resolve_response::<C>(response)
+            }) as AcquireFuture<'_>
+        },
+    );
+
     let snapshot: SnapshotFn = Arc::new(|data: &[u8], record: CredentialRecord| {
         let state: C::State = serde_json::from_slice(data).map_err(|e| {
             CredentialServiceError::Internal(format!("stored state deserialization failed: {e}"))
@@ -325,9 +577,247 @@ where
             validate,
             resolve,
             snapshot,
+            acquire,
+            test_fn: None,
+            refresh_fn: None,
+            revoke_fn: None,
+            continue_fn: None,
         },
     );
     tracing::info!(credential.key = key, "credential runtime ops registered");
+    Ok(())
+}
+
+/// Map a canonical [`ResolveResponse`] into the secret-free
+/// [`AcquireOutcome`]. Shared by the acquisition `resolve` and the
+/// interactive `continue` closures so both surface `Pending`/`Retry`
+/// identically.
+fn map_resolve_response<C>(
+    response: ResolveResponse<C::State>,
+) -> Result<AcquireOutcome, CredentialServiceError>
+where
+    C: Credential,
+{
+    match response {
+        ResolveResponse::Complete(state) => {
+            let data = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
+                CredentialServiceError::Internal(format!("state serialization failed: {e}"))
+            })?);
+            Ok(AcquireOutcome::Complete(ResolvedState {
+                data,
+                state_kind: <C::State as CredentialState>::KIND.to_owned(),
+                state_version: <C::State as CredentialState>::VERSION,
+                expires_at: state.expires_at(),
+            }))
+        },
+        ResolveResponse::Pending { token, interaction } => {
+            Ok(AcquireOutcome::Pending { token, interaction })
+        },
+        ResolveResponse::Retry { after, .. } => Ok(AcquireOutcome::Retry { after }),
+    }
+}
+
+/// Attach the erased `test` closure for `C: Testable` onto the existing
+/// [`OpsEntry`] at `C::KEY`. The base [`register_runtime_ops`] must have
+/// run first; closure presence *is* the testable capability (mirrors
+/// `plugin_capability_report`).
+///
+/// # Errors
+///
+/// [`DispatchError::DuplicateKey`] (reused as the "base ops absent for
+/// this key" signal) when `C::KEY` has no base entry — the capability
+/// registration must follow the base registration.
+pub fn register_testable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+where
+    C: Testable,
+    C::Scheme: Clone,
+    B: CredentialStore,
+    PS: PendingStateStore,
+{
+    let key: &'static str = <C as Credential>::KEY;
+    let entry = ops
+        .entries
+        .get_mut(key)
+        .ok_or(DispatchError::DuplicateKey { key })?;
+    let test_fn: TestFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
+        Box::pin(async move {
+            let state: C::State = serde_json::from_slice(data).map_err(|e| {
+                CredentialServiceError::Internal(format!(
+                    "stored state deserialization failed: {e}"
+                ))
+            })?;
+            let scheme = C::project(&state);
+            dispatch_test::<C>(&scheme, ctx).await.map_err(|e| {
+                CredentialServiceError::Provider(format!("credential test failed: {e}"))
+            })
+        }) as TestFuture<'_>
+    });
+    entry.test_fn = Some(test_fn);
+    tracing::info!(credential.key = key, "credential testable ops registered");
+    Ok(())
+}
+
+/// Attach the erased `refresh` closure for `C: Refreshable`. The base
+/// [`register_runtime_ops`] must have run first.
+///
+/// # Errors
+///
+/// [`DispatchError::DuplicateKey`] when `C::KEY` has no base entry.
+pub fn register_refreshable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+where
+    C: Refreshable,
+    C::Scheme: Clone,
+    B: CredentialStore,
+    PS: PendingStateStore,
+{
+    let key: &'static str = <C as Credential>::KEY;
+    let entry = ops
+        .entries
+        .get_mut(key)
+        .ok_or(DispatchError::DuplicateKey { key })?;
+    let refresh_fn: RefreshFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
+        Box::pin(async move {
+            // Forced refresh: invoke the capability trait method directly
+            // (the same call the engine's internal `perform_refresh`
+            // makes — there is no public engine forced-`dispatch_refresh`;
+            // `resolve_with_refresh` is early-window-gated). The service
+            // wraps this in `retry_with` and re-persists the returned
+            // bytes with `PutMode::Overwrite`.
+            let mut state: C::State = serde_json::from_slice(data).map_err(|e| {
+                CredentialServiceError::Internal(format!(
+                    "stored state deserialization failed: {e}"
+                ))
+            })?;
+            let outcome = <C as Refreshable>::refresh(&mut state, ctx)
+                .await
+                .map_err(|e| {
+                    CredentialServiceError::Provider(format!("credential refresh failed: {e}"))
+                })?;
+            match outcome {
+                nebula_credential::RefreshOutcome::Refreshed
+                | nebula_credential::RefreshOutcome::CoalescedByOtherReplica => {},
+                nebula_credential::RefreshOutcome::ReauthRequired(reason) => {
+                    return Err(CredentialServiceError::Provider(format!(
+                        "credential refresh requires re-authentication: {reason:?}"
+                    )));
+                },
+                // `RefreshOutcome` is `#[non_exhaustive]`; an unknown
+                // future outcome is not provably a success — fail closed
+                // rather than overwrite stored state on an unrecognized
+                // result.
+                other => {
+                    return Err(CredentialServiceError::Provider(format!(
+                        "credential refresh returned an unrecognized outcome: {other:?}"
+                    )));
+                },
+            }
+            let bytes = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
+                CredentialServiceError::Internal(format!(
+                    "refreshed state serialization failed: {e}"
+                ))
+            })?);
+            Ok(bytes)
+        }) as RefreshFuture<'_>
+    });
+    entry.refresh_fn = Some(refresh_fn);
+    tracing::info!(
+        credential.key = key,
+        "credential refreshable ops registered"
+    );
+    Ok(())
+}
+
+/// Attach the erased `revoke` closure for `C: Revocable`. The base
+/// [`register_runtime_ops`] must have run first.
+///
+/// # Errors
+///
+/// [`DispatchError::DuplicateKey`] when `C::KEY` has no base entry.
+pub fn register_revocable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+where
+    C: Revocable,
+    C::Scheme: Clone,
+    B: CredentialStore,
+    PS: PendingStateStore,
+{
+    let key: &'static str = <C as Credential>::KEY;
+    let entry = ops
+        .entries
+        .get_mut(key)
+        .ok_or(DispatchError::DuplicateKey { key })?;
+    let revoke_fn: RevokeFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
+        Box::pin(async move {
+            let mut state: C::State = serde_json::from_slice(data).map_err(|e| {
+                CredentialServiceError::Internal(format!(
+                    "stored state deserialization failed: {e}"
+                ))
+            })?;
+            dispatch_revoke::<C>(&mut state, ctx).await.map_err(|e| {
+                CredentialServiceError::Provider(format!("credential revoke failed: {e}"))
+            })
+        }) as RevokeFuture<'_>
+    });
+    entry.revoke_fn = Some(revoke_fn);
+    tracing::info!(credential.key = key, "credential revocable ops registered");
+    Ok(())
+}
+
+/// Attach the erased interactive `continue` closure for
+/// `C: Interactive`. The base [`register_runtime_ops`] must have run
+/// first.
+///
+/// # Errors
+///
+/// [`DispatchError::DuplicateKey`] when `C::KEY` has no base entry.
+pub fn register_interactive_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+where
+    C: Interactive,
+    C::Scheme: Clone,
+    B: CredentialStore,
+    PS: PendingStateStore,
+{
+    let key: &'static str = <C as Credential>::KEY;
+    let entry = ops
+        .entries
+        .get_mut(key)
+        .ok_or(DispatchError::DuplicateKey { key })?;
+    let continue_fn: ContinueFn<PS> = Arc::new(
+        |token: &PendingToken, input: &UserInput, ctx: &CredentialContext, pending: &PS| {
+            Box::pin(async move {
+                let response = execute_continue::<C, PS>(token, input, ctx, pending)
+                    .await
+                    .map_err(|e| CredentialServiceError::ValidationFailed {
+                        reason: format!("credential continuation failed: {e}"),
+                    })?;
+                map_resolve_response::<C>(response)
+            }) as AcquireFuture<'_>
+        },
+    );
+    entry.continue_fn = Some(continue_fn);
+    tracing::info!(
+        credential.key = key,
+        "credential interactive ops registered"
+    );
+    Ok(())
+}
+
+/// Register the base runtime ops for the three first-party builtins
+/// (`bearer_token`, `shared_key`, `signing_key`). All three are static
+/// (no capability impls), so no capability-bounded `register_*_ops` is
+/// called for them — that is correct: closure absence is "capability not
+/// supported". Mirrors `nebula_credential_builtin::register_builtins`.
+///
+/// # Errors
+///
+/// [`DispatchError::DuplicateKey`] if any builtin key is already present.
+pub fn register_all_builtin_ops<B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
+where
+    B: CredentialStore,
+    PS: PendingStateStore,
+{
+    register_runtime_ops::<nebula_credential_builtin::BearerTokenCredential, B, PS>(ops)?;
+    register_runtime_ops::<nebula_credential_builtin::SharedKeyCredential, B, PS>(ops)?;
+    register_runtime_ops::<nebula_credential_builtin::SigningKeyCredential, B, PS>(ops)?;
     Ok(())
 }
 

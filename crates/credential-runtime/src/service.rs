@@ -24,15 +24,21 @@
 //! [`delete`]: CredentialService::delete
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nebula_credential::pending_store::PendingStateStore;
+use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use nebula_credential::{
-    CredentialContext, CredentialId, CredentialRecord, CredentialRegistry, CredentialSnapshot,
+    AuthPattern, CredentialContext, CredentialId, CredentialRecord, CredentialRegistry,
+    CredentialSnapshot, PendingToken,
 };
 use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
+use nebula_resilience::CallError;
+use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
 use nebula_schema::FieldValues;
 use nebula_storage::credential::{AuditLayer, CacheLayer, EncryptionLayer};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::CredentialServiceError;
@@ -50,6 +56,77 @@ const OWNER_ID_KEY: &str = "owner_id";
 /// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
 /// backend so persisted bytes are always ciphertext (spec §6 #7).
 pub(crate) type LayeredStore<B> = AuditLayer<CacheLayer<EncryptionLayer<B>>>;
+
+/// Outcome of [`CredentialService::test`] — a secret-free health-probe
+/// summary. `message` carries only the provider's failure reason (never
+/// secret material); `Debug` is derived because no field can hold a
+/// secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TestReport {
+    /// `true` when the provider accepted the credential.
+    pub ok: bool,
+    /// Provider-supplied failure reason when `ok` is `false`.
+    pub message: Option<String>,
+}
+
+/// Outcome of [`CredentialService::resolve`] /
+/// [`CredentialService::continue_resolve`]. Secret-free: the `Complete`
+/// arm carries the redacting [`CredentialSnapshot`]; the `Pending` arm
+/// carries the opaque token string + the UI instruction.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Acquisition {
+    /// Resolved synchronously and persisted.
+    Complete {
+        /// Secret-free snapshot of the just-persisted credential.
+        snapshot: CredentialSnapshot,
+    },
+    /// Interactive acquisition kicked off; resume via
+    /// [`continue_resolve`](CredentialService::continue_resolve) with
+    /// `token`.
+    Pending {
+        /// Opaque pending-acquisition token (round-trips as a string).
+        token: String,
+        /// What the UI must show / do to complete the flow.
+        interaction: InteractionRequest,
+    },
+    /// Framework asked to poll the continuation again after `after`.
+    Retry {
+        /// Delay before the next continuation poll.
+        after: Duration,
+    },
+}
+
+/// Capability surface of a credential type, sourced from the dispatch
+/// table (closure presence), not self-attested metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TypeCapabilities {
+    /// Type implements `Refreshable`.
+    pub refreshable: bool,
+    /// Type implements `Testable`.
+    pub testable: bool,
+    /// Type implements `Revocable`.
+    pub revocable: bool,
+}
+
+/// Secret-free descriptor of a registered credential type for discovery
+/// UIs / pickers. Projected from [`CredentialMetadata`] +
+/// [`CredentialDispatch`](crate::dispatch::CredentialDispatch).
+///
+/// [`CredentialMetadata`]: nebula_credential::CredentialMetadata
+#[derive(Debug, Clone, Serialize)]
+pub struct CredentialTypeInfo {
+    /// `Credential::KEY` (normalized type key).
+    pub key: String,
+    /// Human-readable type name.
+    pub name: String,
+    /// Human-readable type description.
+    pub description: String,
+    /// Authentication-pattern classification.
+    pub pattern: AuthPattern,
+    /// Which lifecycle capabilities the type supports.
+    pub capabilities: TypeCapabilities,
+}
 
 /// Sole public entry to the credential management bounded context.
 ///
@@ -161,6 +238,34 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             .resolve(credential_key, &values, &ctx, &self.pending)
             .await?;
 
+        let snapshot = self
+            .persist_resolved(scope, credential_key, id, resolved)
+            .await?;
+
+        self.observer.on_resolve(&id);
+        tracing::info!(
+            credential.key = credential_key,
+            credential.id = %id,
+            "credential created"
+        );
+
+        Ok(snapshot)
+    }
+
+    /// Persist a freshly-resolved credential under `id` scoped to
+    /// `scope`, returning the secret-free snapshot projected from the
+    /// just-resolved bytes (no decrypt round-trip). Shared by [`create`]
+    /// and the synchronous-`Complete` arm of [`resolve`].
+    ///
+    /// [`create`]: Self::create
+    /// [`resolve`]: Self::resolve
+    async fn persist_resolved(
+        &self,
+        scope: &TenantScope,
+        credential_key: &str,
+        id: CredentialId,
+        resolved: crate::ops::ResolvedState,
+    ) -> Result<CredentialSnapshot, CredentialServiceError> {
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
@@ -193,13 +298,6 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             .put(stored, PutMode::CreateOnly)
             .await
             .map_err(Self::map_store_err)?;
-
-        self.observer.on_resolve(&id);
-        tracing::info!(
-            credential.key = credential_key,
-            credential.id = %id,
-            "credential created"
-        );
 
         Ok(snapshot)
     }
@@ -328,6 +426,372 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         Ok(())
     }
 
+    // ── Capability operations (test / refresh / revoke) ──────────────
+
+    /// Run the credential type's provider health probe.
+    ///
+    /// Owner-checked first (a cross-tenant id is
+    /// [`NotFound`](CredentialServiceError::NotFound), never a capability
+    /// leak). If the type is not testable the call fails with
+    /// [`CapabilityUnsupported`](CredentialServiceError::CapabilityUnsupported)
+    /// **before** any decrypt — a static type cannot be probed.
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
+    /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Testable`.
+    /// - [`CredentialServiceError::Provider`] — the probe itself failed.
+    pub async fn test(
+        &self,
+        scope: &TenantScope,
+        id: &str,
+    ) -> Result<TestReport, CredentialServiceError> {
+        let stored = self.load_owned(scope, id).await?;
+        if !self.dispatch.is_testable(&stored.credential_key) {
+            return Err(CredentialServiceError::CapabilityUnsupported {
+                capability: "test".to_owned(),
+                key: stored.credential_key.clone(),
+            });
+        }
+        let ctx = Self::owner_context(scope.owner_id());
+        let result = self
+            .ops
+            .test(&stored.credential_key, &stored.data, &ctx)
+            .await?;
+        let report = match result {
+            TestResult::Success => TestReport {
+                ok: true,
+                message: None,
+            },
+            TestResult::Failed { reason } => TestReport {
+                ok: false,
+                message: Some(reason),
+            },
+            // `TestResult` is `#[non_exhaustive]`; an unrecognized future
+            // variant is not provably a success — report not-ok so a new
+            // outcome never silently presents as a passing probe.
+            other => TestReport {
+                ok: false,
+                message: Some(format!("unrecognized test outcome: {other:?}")),
+            },
+        };
+        tracing::info!(credential.id = %id, ok = report.ok, "credential tested");
+        Ok(report)
+    }
+
+    /// Force-refresh the credential's stored state and re-persist it.
+    ///
+    /// Owner-checked first. The refresh runs through
+    /// [`nebula_resilience::retry_with`] (3 attempts, exponential
+    /// backoff); the resulting state is written back under
+    /// compare-and-swap on the version observed at load. A concurrent
+    /// refresh/update wins and this attempt fails explicitly with
+    /// [`CredentialServiceError::VersionConflict`] — canon §13.2: refresh
+    /// must never silently strand a concurrent write. On success
+    /// [`CredentialObserver::on_refresh`] fires and the fresh secret-free
+    /// snapshot is returned.
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
+    /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Refreshable`.
+    /// - [`CredentialServiceError::Provider`] — refresh failed after retries.
+    /// - [`CredentialServiceError::VersionConflict`] — a concurrent write landed first.
+    /// - [`CredentialServiceError::Store`] — re-persist failed.
+    pub async fn refresh(
+        &self,
+        scope: &TenantScope,
+        id: &str,
+    ) -> Result<CredentialSnapshot, CredentialServiceError> {
+        let stored = self.load_owned(scope, id).await?;
+        if !self.dispatch.is_refreshable(&stored.credential_key) {
+            return Err(CredentialServiceError::CapabilityUnsupported {
+                capability: "refresh".to_owned(),
+                key: stored.credential_key.clone(),
+            });
+        }
+        let ctx = Self::owner_context(scope.owner_id());
+
+        let config = RetryConfig::<CredentialServiceError>::new(3)
+            .map_err(|e| CredentialServiceError::Internal(format!("retry config invalid: {e}")))?
+            .backoff(BackoffConfig::Exponential {
+                base: Duration::from_millis(200),
+                multiplier: 2.0,
+                max: Duration::from_secs(5),
+            });
+
+        let refreshed = retry_with(config, || async {
+            self.ops
+                .refresh(&stored.credential_key, &stored.data, &ctx)
+                .await
+        })
+        .await
+        .map_err(|call_err| match call_err {
+            CallError::Operation(e) | CallError::RetriesExhausted { last: e, .. } => e,
+            other => {
+                CredentialServiceError::Provider(format!("credential refresh failed: {other}"))
+            },
+        })?;
+
+        let now = chrono::Utc::now();
+        let state_kind = stored.state_kind.clone();
+        let state_version = stored.state_version;
+        let stored_next = StoredCredential {
+            id: stored.id.clone(),
+            credential_key: stored.credential_key.clone(),
+            data: refreshed.to_vec(),
+            state_kind,
+            state_version,
+            version: stored.version,
+            created_at: stored.created_at,
+            updated_at: now,
+            expires_at: stored.expires_at,
+            reauth_required: false,
+            metadata: stored.metadata.clone(),
+        };
+        // Re-persist under compare-and-swap on the version observed at
+        // load. A concurrent refresh/update that landed in between wins
+        // and this attempt fails *explicitly* with `VersionConflict`
+        // (canon §13.2: refresh must never silently strand a concurrent
+        // write; failure is explicit). Blind `Overwrite` here would
+        // last-writer-wins and clobber the racing write.
+        self.store
+            .put(
+                stored_next,
+                PutMode::CompareAndSwap {
+                    expected_version: stored.version,
+                },
+            )
+            .await
+            .map_err(Self::map_store_err)?;
+
+        let credential_id = CredentialId::parse(&stored.id).map_err(|e| {
+            CredentialServiceError::Internal(format!("stored credential id unparsable: {e}"))
+        })?;
+        self.observer.on_refresh(&credential_id);
+        tracing::info!(credential.id = %id, "credential refreshed");
+        self.snapshot_from_store(scope, id).await
+    }
+
+    /// Revoke the credential at the provider, release any leases, and
+    /// delete the stored row.
+    ///
+    /// Owner-checked first. The provider-side revoke runs the type's
+    /// `Revocable::revoke`; lease release is best-effort (a failure is
+    /// logged, not propagated — the credential is still revoked); the
+    /// stored row is then deleted per the revoke contract. On success
+    /// [`CredentialObserver::on_revoke`] fires.
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
+    /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Revocable`.
+    /// - [`CredentialServiceError::Provider`] — the provider revoke failed.
+    /// - [`CredentialServiceError::Store`] — deleting the row failed.
+    pub async fn revoke(
+        &self,
+        scope: &TenantScope,
+        id: &str,
+    ) -> Result<(), CredentialServiceError> {
+        let stored = self.load_owned(scope, id).await?;
+        if !self.dispatch.is_revocable(&stored.credential_key) {
+            return Err(CredentialServiceError::CapabilityUnsupported {
+                capability: "revoke".to_owned(),
+                key: stored.credential_key.clone(),
+            });
+        }
+        let ctx = Self::owner_context(scope.owner_id());
+        self.ops
+            .revoke(&stored.credential_key, &stored.data, &ctx)
+            .await?;
+
+        let credential_id = CredentialId::parse(&stored.id).map_err(|e| {
+            CredentialServiceError::Internal(format!("stored credential id unparsable: {e}"))
+        })?;
+
+        // Best-effort lease release: a credential whose provider-side
+        // secret is revoked must not keep dynamic leases alive, but a
+        // lease-subsystem hiccup must not block the revoke itself (the
+        // secret is already dead at the provider).
+        let released = self.lease.revoke_for_credential(credential_id).await;
+        if released > 0 {
+            tracing::info!(
+                credential.id = %id,
+                released,
+                "released dynamic leases for revoked credential"
+            );
+        }
+
+        // Delete the stored row per the revoke contract — a revoked
+        // credential is gone, not a stale row.
+        self.store.delete(id).await.map_err(Self::map_store_err)?;
+
+        self.observer.on_revoke(&credential_id);
+        tracing::info!(credential.id = %id, "credential revoked");
+        Ok(())
+    }
+
+    // ── Acquisition (resolve / continue) ─────────────────────────────
+
+    /// Acquire a credential of `credential_key` from `props`, persisting
+    /// it on synchronous completion or surfacing an interaction token for
+    /// interactive flows.
+    ///
+    /// Validation is the canonical credential pipeline (the `$expr`
+    /// refusal point, canon §12.5). A `Complete` resolution is persisted
+    /// through the same path as [`create`](Self::create) and returned as
+    /// [`Acquisition::Complete`]; a `Pending` kickoff returns
+    /// [`Acquisition::Pending`] with the opaque token + UI instruction.
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialServiceError::TypeUnknown`] — key not registered.
+    /// - [`CredentialServiceError::ValidationFailed`] — schema / typed-deserialize / resolve.
+    /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
+    pub async fn resolve(
+        &self,
+        scope: &TenantScope,
+        credential_key: &str,
+        props: Value,
+    ) -> Result<Acquisition, CredentialServiceError> {
+        if !self.dispatch.contains(credential_key) {
+            return Err(CredentialServiceError::TypeUnknown {
+                key: credential_key.to_owned(),
+            });
+        }
+        self.ops.validate(credential_key, &props)?;
+        let values = FieldValues::from_json(props).map_err(|e| {
+            CredentialServiceError::ValidationFailed {
+                reason: format!("property ingest failed: {e}"),
+            }
+        })?;
+        let ctx = Self::owner_context(scope.owner_id());
+        let outcome = self
+            .ops
+            .acquire(credential_key, &values, &ctx, &self.pending)
+            .await?;
+        self.finish_acquire(scope, credential_key, outcome).await
+    }
+
+    /// Continue an interactive acquisition with the user's input.
+    ///
+    /// Threads the service's pending store through the engine's
+    /// `execute_continue` for the concrete interactive type. The three
+    /// first-party builtins are non-interactive, so no continuation
+    /// closure is registered for them and this returns
+    /// [`CapabilityUnsupported`](CredentialServiceError::CapabilityUnsupported)
+    /// (or [`TypeUnknown`](CredentialServiceError::TypeUnknown) for an
+    /// unregistered key).
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialServiceError::TypeUnknown`] — key not registered.
+    /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Interactive`.
+    /// - [`CredentialServiceError::ValidationFailed`] — continuation failed.
+    /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
+    pub async fn continue_resolve(
+        &self,
+        scope: &TenantScope,
+        credential_key: &str,
+        pending_token: &str,
+        user_input: UserInput,
+    ) -> Result<Acquisition, CredentialServiceError> {
+        if !self.dispatch.contains(credential_key) {
+            return Err(CredentialServiceError::TypeUnknown {
+                key: credential_key.to_owned(),
+            });
+        }
+        // `PendingToken` has no public string constructor; its
+        // documented wire form is a bare JSON string (see its
+        // serde round-trip contract), so reconstruct the client-returned
+        // token through serde — the only public inbound path.
+        let token: PendingToken = serde_json::from_value(Value::String(pending_token.to_owned()))
+            .map_err(|_| CredentialServiceError::ValidationFailed {
+            reason: "malformed pending acquisition token".to_owned(),
+        })?;
+        let ctx = Self::owner_context(scope.owner_id());
+        let outcome = self
+            .ops
+            .continue_resolve(credential_key, &token, &user_input, &ctx, &self.pending)
+            .await?;
+        self.finish_acquire(scope, credential_key, outcome).await
+    }
+
+    /// Map an [`AcquireOutcome`] into the public [`Acquisition`]:
+    /// `Complete` is persisted (shared create path); `Pending`/`Retry`
+    /// surface the token + interaction without persisting.
+    async fn finish_acquire(
+        &self,
+        scope: &TenantScope,
+        credential_key: &str,
+        outcome: crate::ops::AcquireOutcome,
+    ) -> Result<Acquisition, CredentialServiceError> {
+        match outcome {
+            crate::ops::AcquireOutcome::Complete(resolved) => {
+                let id = CredentialId::new();
+                let snapshot = self
+                    .persist_resolved(scope, credential_key, id, resolved)
+                    .await?;
+                self.observer.on_resolve(&id);
+                tracing::info!(
+                    credential.key = credential_key,
+                    credential.id = %id,
+                    "credential acquired"
+                );
+                Ok(Acquisition::Complete { snapshot })
+            },
+            crate::ops::AcquireOutcome::Pending { token, interaction } => {
+                Ok(Acquisition::Pending {
+                    token: token.as_str().to_owned(),
+                    interaction,
+                })
+            },
+            crate::ops::AcquireOutcome::Retry { after } => Ok(Acquisition::Retry { after }),
+        }
+    }
+
+    // ── Type discovery ───────────────────────────────────────────────
+
+    /// List every registered credential type as a secret-free
+    /// descriptor. Capability flags come from the
+    /// [`CredentialDispatch`](crate::dispatch::CredentialDispatch) table
+    /// (closure presence), not self-attested metadata.
+    #[must_use]
+    pub fn list_types(&self) -> Vec<CredentialTypeInfo> {
+        self.registry
+            .iter_compatible(nebula_credential::Capabilities::empty())
+            .filter_map(|(key, _caps)| self.type_info(key))
+            .collect()
+    }
+
+    /// Project a single credential type's descriptor, or `None` when the
+    /// key is not registered.
+    #[must_use]
+    pub fn get_type(&self, key: &str) -> Option<CredentialTypeInfo> {
+        if !self.registry.contains(key) {
+            return None;
+        }
+        self.type_info(key)
+    }
+
+    /// Build a [`CredentialTypeInfo`] from the registry metadata +
+    /// dispatch capability flags. Returns `None` if the registry has no
+    /// instance for `key` (cannot project metadata).
+    fn type_info(&self, key: &str) -> Option<CredentialTypeInfo> {
+        let metadata = self.registry.resolve_any(key)?.metadata();
+        Some(CredentialTypeInfo {
+            key: metadata.base.key.as_str().to_owned(),
+            name: metadata.base.name.clone(),
+            description: metadata.base.description.clone(),
+            pattern: metadata.pattern,
+            capabilities: TypeCapabilities {
+                refreshable: self.dispatch.is_refreshable(key),
+                testable: self.dispatch.is_testable(key),
+                revocable: self.dispatch.is_revocable(key),
+            },
+        })
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────
 
     /// Load a row and assert it belongs to `scope`, mapping both "absent"
@@ -447,7 +911,7 @@ pub(crate) mod test_support {
     use crate::builder::CredentialServiceBuilder;
     use crate::dispatch::CredentialDispatch;
     use crate::observer::NoopObserver;
-    use crate::ops::{DispatchOps, register_runtime_ops};
+    use crate::ops::{DispatchOps, register_all_builtin_ops};
 
     /// No-op audit sink — accepts every event (tests assert behavior via
     /// the store, not the audit trail).
@@ -477,15 +941,12 @@ pub(crate) mod test_support {
             .register::<SigningKeyCredential>()
             .expect("dispatch signing");
 
+        // All three builtins are static (no capability impls), so only
+        // the base ops are registered — no `register_*_ops` capability
+        // call. Closure absence is "capability not supported".
         let mut ops = DispatchOps::<InMemoryStore, InMemoryPendingStore>::new();
-        register_runtime_ops::<BearerTokenCredential, InMemoryStore, InMemoryPendingStore>(
-            &mut ops,
-        )
-        .expect("ops bearer");
-        register_runtime_ops::<SharedKeyCredential, InMemoryStore, InMemoryPendingStore>(&mut ops)
-            .expect("ops shared");
-        register_runtime_ops::<SigningKeyCredential, InMemoryStore, InMemoryPendingStore>(&mut ops)
-            .expect("ops signing");
+        register_all_builtin_ops::<InMemoryStore, InMemoryPendingStore>(&mut ops)
+            .expect("builtin ops");
 
         let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
         CredentialServiceBuilder::new(
@@ -507,6 +968,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use super::Acquisition;
     use super::test_support::in_memory_service;
     use crate::CredentialServiceError;
     use crate::scope::TenantScope;
@@ -658,6 +1120,145 @@ mod tests {
                 .await
                 .expect_err("denied"),
             CredentialServiceError::NotFound { .. }
+        ));
+    }
+
+    /// Abuse #4: a static credential type advertises no capability, so
+    /// `test` / `refresh` / `revoke` are refused with
+    /// `CapabilityUnsupported` (closure-absence = capability-absence).
+    #[tokio::test]
+    async fn static_type_capability_ops_are_unsupported() {
+        let svc = in_memory_service();
+        let scope = TenantScope::new("org1", "ws1");
+        svc.create(
+            &scope,
+            "bearer_token",
+            serde_json::json!({ "token": "sk-cap" }),
+        )
+        .await
+        .expect("create ok");
+        let id = svc.list(&scope).await.expect("list")[0].clone();
+
+        let test_err = svc.test(&scope, &id).await.expect_err("not testable");
+        assert!(matches!(
+            test_err,
+            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
+                if capability == "test"
+        ));
+        let refresh_err = svc.refresh(&scope, &id).await.expect_err("not refreshable");
+        assert!(matches!(
+            refresh_err,
+            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
+                if capability == "refresh"
+        ));
+        let revoke_err = svc.revoke(&scope, &id).await.expect_err("not revocable");
+        assert!(matches!(
+            revoke_err,
+            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
+                if capability == "revoke"
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_complete_persists_and_is_gettable() {
+        let svc = in_memory_service();
+        let scope = TenantScope::new("org1", "ws1");
+        let acq = svc
+            .resolve(
+                &scope,
+                "bearer_token",
+                serde_json::json!({ "token": "sk-acquired" }),
+            )
+            .await
+            .expect("resolve ok");
+        let snapshot = match acq {
+            Acquisition::Complete { snapshot } => snapshot,
+            other => panic!("expected Complete, got {other:?}"),
+        };
+        assert_eq!(snapshot.kind(), "bearer_token");
+
+        // The acquired credential is now a normal stored credential.
+        let ids = svc.list(&scope).await.expect("list ok");
+        assert_eq!(ids.len(), 1);
+        let got = svc.get(&scope, &ids[0]).await.expect("get ok");
+        assert_eq!(got.kind(), "bearer_token");
+        assert!(!format!("{got:?}").contains("sk-acquired"));
+    }
+
+    #[tokio::test]
+    async fn list_types_contains_builtins_with_no_capabilities() {
+        let svc = in_memory_service();
+        let types = svc.list_types();
+        let keys: Vec<&str> = types.iter().map(|t| t.key.as_str()).collect();
+        for expected in ["bearer_token", "shared_key", "signing_key"] {
+            assert!(keys.contains(&expected), "missing {expected} in {keys:?}");
+        }
+        for info in &types {
+            assert!(
+                !info.capabilities.refreshable
+                    && !info.capabilities.testable
+                    && !info.capabilities.revocable,
+                "static builtin {} must advertise no capabilities",
+                info.key
+            );
+        }
+        // get_type agrees with list_types for a known key, None otherwise.
+        let one = svc.get_type("bearer_token").expect("known type");
+        assert_eq!(one.key, "bearer_token");
+        assert!(svc.get_type("no_such_type").is_none());
+    }
+
+    #[tokio::test]
+    async fn cross_tenant_capability_ops_are_not_found() {
+        let svc = in_memory_service();
+        let owner = TenantScope::new("org1", "ws1");
+        svc.create(
+            &owner,
+            "bearer_token",
+            serde_json::json!({ "token": "sk-xt" }),
+        )
+        .await
+        .expect("create ok");
+        let id = svc.list(&owner).await.expect("list")[0].clone();
+
+        let other = TenantScope::new("org9", "ws9");
+        // A cross-tenant id is reported as missing on every new op —
+        // never a capability leak (the owner check runs before the
+        // capability gate).
+        assert!(matches!(
+            svc.test(&other, &id).await.expect_err("denied"),
+            CredentialServiceError::NotFound { .. }
+        ));
+        assert!(matches!(
+            svc.refresh(&other, &id).await.expect_err("denied"),
+            CredentialServiceError::NotFound { .. }
+        ));
+        assert!(matches!(
+            svc.revoke(&other, &id).await.expect_err("denied"),
+            CredentialServiceError::NotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn continue_resolve_on_non_interactive_is_unsupported() {
+        let svc = in_memory_service();
+        let scope = TenantScope::new("org1", "ws1");
+        // bearer_token is non-interactive: no continuation closure is
+        // registered, so the continuation path refuses with a clear
+        // capability error rather than a confusing pending-store miss.
+        let err = svc
+            .continue_resolve(
+                &scope,
+                "bearer_token",
+                "irrelevant-token",
+                nebula_credential::resolve::UserInput::Poll,
+            )
+            .await
+            .expect_err("non-interactive");
+        assert!(matches!(
+            err,
+            CredentialServiceError::CapabilityUnsupported { ref capability, .. }
+                if capability == "interactive"
         ));
     }
 }

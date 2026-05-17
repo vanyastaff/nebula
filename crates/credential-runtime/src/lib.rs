@@ -27,7 +27,12 @@ pub use builder::CredentialServiceBuilder;
 pub use dispatch::{CredentialDispatch, DispatchError};
 pub use error::CredentialServiceError;
 pub use observer::{CredentialObserver, EventMetricObserver, NoopObserver};
-pub use ops::{DispatchOps, register_runtime_ops};
+pub use ops::{
+    DispatchOps, register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
+};
 pub use scope::{FixedScopeResolver, TenantScope};
-pub use service::CredentialService;
+pub use service::{
+    Acquisition, CredentialService, CredentialTypeInfo, TestReport, TypeCapabilities,
+};
 pub use state_source::StateSource;
