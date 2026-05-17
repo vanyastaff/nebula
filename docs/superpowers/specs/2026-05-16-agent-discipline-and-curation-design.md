@@ -176,7 +176,7 @@ old hook-A clippy rule (D10): a suppressed clippy is not a clean gate, so C
 will still block "done". This is the falsifiable anchor consumed by C and the
 load-bearing no-cheat guarantee.
 
-### B. PreToolUse / Edit|Write|MultiEdit — `nebula-guard-edit.mjs`
+### B. PreToolUse / Edit|Write|MultiEdit — `scripts/guard/edit-guard.sh`
 
 > **D11:** B is **early edit-time advisory**, not the sole guarantee (that is
 > C-via-git-diff + A2-clean-gate + CI). Required corrections: (a) record the
@@ -214,7 +214,7 @@ Operates on proposed new content / diff. **Deny:**
   non-test file** (turn-state correlation = the cheat signature). A pure test
   refactor with no impl edit in the turn passes.
 
-### C. Stop — `nebula-guard-stop.mjs` (matcher `""`)
+### C. Stop — `scripts/guard/stop-gate.sh` (matcher `""`)
 
 Honors `stop_hook_active` (already true → `exit 0`, no re-block — deadlock-safe).
 **D11: the touched-crate set is derived from git ground truth, not from B's
@@ -235,14 +235,14 @@ canonical gate that must genuinely pass; CI re-runs authoritatively), and a
 poisoned/missed B recording can no longer blind C. Forces red-first: new
 behavior with no clean recorded gate cannot be reported done.
 
-### A0. UserPromptSubmit — `nebula-guard-turn-reset.mjs` (matcher `""`)
+### A0. UserPromptSubmit — `scripts/guard/turn-reset.sh` (matcher `""`)
 
 Rotates/initializes the turn-state file for `session_id` at the start of each
 user turn (resets `impl_files_edited` and `gate_green`). This is the concrete,
 non-hand-wavy reset mechanism C and A2 depend on. Injects no context; the only
 `UserPromptSubmit` hook once BridgeSpace is removed.
 
-### D. PostToolUse / Edit|Write|MultiEdit — `nebula-guard-fmt.mjs`
+### D. PostToolUse / Edit|Write|MultiEdit — `scripts/guard/fmt.sh`
 
 After editing a `.rs` file: `rustfmt --edition 2024 <file>` (rustfmt.toml
 supplies the rest); for `.toml`: `taplo fmt <file>`. Format **only that file**,
@@ -267,7 +267,7 @@ review surface). No env flag, no CLI bypass for the edit guard.
 
 `<git-common-dir>/.nebula-guard/turn-<session_id>.json`, where
 `<git-common-dir>` is resolved via `git rev-parse --git-common-dir` (fallback
-`os.tmpdir()/nebula-guard/`). **This is worktree-safe**: in a git worktree
+`${TMPDIR:-/tmp}/nebula-guard`). **This is worktree-safe**: in a git worktree
 `.git` is a *file*, not a directory, so a naive `<repo>/.git/` path breaks
 exactly in this environment; the common-dir is shared, never tracked, never
 staged. Shape:
