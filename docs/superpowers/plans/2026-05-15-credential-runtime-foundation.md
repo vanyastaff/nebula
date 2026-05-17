@@ -414,8 +414,10 @@ The runtime implementation (Plans 2–3) must satisfy all eight ADR-0028
 invariants; each is gated by a test or compile-fail probe:
 
 1. §12.5 encryption-at-rest preserved — runtime composes the layered
-   store (`Scope(Audit(Cache(Encryption(raw))))`); compile-fail probe:
-   raw backend unusable without layers.
+   store (as-built: `Audit(Cache(Encryption(raw)))`, no storage
+   `ScopeLayer` — spec §5 refinement; cross-tenant isolation is the
+   facade `owner_id` invariant instead); compile-fail probe: raw backend
+   unusable without layers.
 2. §13.2 refresh/rotation seam integrity — no silent strand; explicit
    `ReauthRequired`.
 3. Stored-state vs projected-auth-material split — responses built from

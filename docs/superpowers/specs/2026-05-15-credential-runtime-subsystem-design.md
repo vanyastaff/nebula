@@ -242,13 +242,13 @@ mapped to HTTP by api. No stringly-typed "requires X pending".
 
 | # | Abuse | Structural fix |
 |---|-------|----------------|
-| 1 | Confused deputy (cross-tenant `GET /…/{cred}`) | store key is a composite derived from mandatory `TenantScope`; no op callable without scope |
+| 1 | Confused deputy (cross-tenant `GET /…/{cred}`) | as-built (spec §5 panel refinement — no storage `ScopeLayer`): the facade stamps `StoredCredential.metadata["owner_id"] = scope.owner_id()` on write and `load_owned` rejects a row whose `owner_id` ≠ `scope.owner_id()` with `NotFound`; every op takes a mandatory `TenantScope`, none callable without scope |
 | 2 | Schema-bypass / `$expr` injection | `validate_props`: `registry.get(key).schema().validate()` + `serde_json::from_value()`; `{"$expr":…}` envelope refused (canon §12.5/Phase 9); reuse `properties_pipeline.rs` invariant |
 | 3 | Secret echo in responses | API response built only from `CredentialSnapshot`; `State`/`Scheme` never serialized (`SecretWire`/ADR-0034) |
 | 4 | SSRF via test/refresh | dispatch only when capability present + URL allowlist (parity with OAuth ADR-0031) |
 | 5 | Cross-tenant lease replay | `revoke_for_credential` scans namespaced ids (ties to #1) |
 | 6 | Pending-token hijack | general `PendingStateStore` inherits OAuth guarantees: unguessable + single-use + TTL ≤ 10 min + bound to principal |
-| 7 | Plaintext-at-rest | `build()` wraps the raw backend in nesting order (outermost→innermost) `Scope(Audit(Cache(Encryption(raw))))` — `Encryption` is adjacent to the backend so persisted bytes are always ciphertext; raw never escapes the crate; compile-fail probe: raw store unusable without layers |
+| 7 | Plaintext-at-rest | `build()` wraps the raw backend in nesting order (outermost→innermost) as-built `Audit(Cache(Encryption(raw)))` (no storage `ScopeLayer` — spec §5 refinement; tenant isolation is the facade `owner_id` invariant, row #1) — `Encryption` is adjacent to the backend so persisted bytes are always ciphertext; raw never escapes the crate; compile-fail probe: raw store unusable without layers |
 | 8 | Audit not fail-closed | sink refusal → `StoreError::AuditFailure` (ADR-0028 inv. 4), never log-and-continue |
 
 **Refinement #3 (lead-reviewed, implemented `3d6c2aa5`):** the row-#3

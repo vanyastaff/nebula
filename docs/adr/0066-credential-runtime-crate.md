@@ -65,8 +65,15 @@ The runtime implementation (Plans 2–3) must satisfy all eight ADR-0028
 invariants; each is gated by a test or compile-fail probe:
 
 1. §12.5 encryption-at-rest preserved — runtime composes the layered
-   store (`Scope(Audit(Cache(Encryption(raw))))`); compile-fail probe:
-   raw backend unusable without layers.
+   store (as-built: `Audit(Cache(Encryption(raw)))`); compile-fail probe:
+   raw backend unusable without layers. The storage `ScopeLayer` is
+   **deliberately omitted** (spec §5 panel refinement): abuse-case #1
+   (confused deputy / cross-tenant isolation) is instead closed at the
+   facade — `create` stamps `StoredCredential.metadata["owner_id"] =
+   scope.owner_id()` and `get`/`list`/`update`/`delete`/`refresh`/
+   `revoke`/`test` reject a row whose `owner_id` differs from
+   `scope.owner_id()` with `NotFound` (see `service.rs` `load_owned`).
+   Tenant isolation is a facade invariant, not a storage-layer one.
 2. §13.2 refresh/rotation seam integrity — no silent strand; explicit
    `ReauthRequired`.
 3. Stored-state vs projected-auth-material split — responses built from
