@@ -15,11 +15,16 @@
 mod control_queue;
 mod execution;
 mod idempotency_store;
+mod identity;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
 pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
 pub use idempotency_store::{SqliteIdempotencyStore, SqliteWebhookActivationStore};
+pub use identity::{
+    SqliteAuditStore, SqliteBlobStore, SqliteMembershipStore, SqliteOrgStore, SqliteQuotaStore,
+    SqliteResourceStore, SqliteTriggerStore, SqliteUserStore, SqliteWorkspaceStore,
+};
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
 /// Embedded port-scoped DDL applied by [`init_schema`].

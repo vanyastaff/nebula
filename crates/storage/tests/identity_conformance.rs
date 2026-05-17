@@ -93,8 +93,41 @@ impl IdentityBackend for InMemoryBackend {
 
 // ── SQLite backend (built only with `--features sqlite`) ──────────────────
 
+/// Each `SqliteBackend` instance owns one shared-cache in-memory database
+/// (so a `create` and a later read observe the same rows), created lazily
+/// on first store request. Only built when the `sqlite` feature is on;
+/// without it the case skips like Postgres.
 #[derive(Default)]
-struct SqliteBackend;
+struct SqliteBackend {
+    #[cfg(feature = "sqlite")]
+    pool: tokio::sync::OnceCell<sqlx::SqlitePool>,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteBackend {
+    async fn pool(&self) -> sqlx::SqlitePool {
+        use std::str::FromStr;
+        self.pool
+            .get_or_init(|| async {
+                let db_name = format!("nebula-identity-{}", uuid::Uuid::new_v4());
+                let url = format!("sqlite:file:{db_name}?mode=memory&cache=shared");
+                let opts = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+                    .expect("parse sqlite memory url")
+                    .create_if_missing(true);
+                let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(4)
+                    .connect_with(opts)
+                    .await
+                    .expect("connect sqlite memory");
+                nebula_storage::sqlite::init_schema(&pool)
+                    .await
+                    .expect("install port schema");
+                pool
+            })
+            .await
+            .clone()
+    }
+}
 
 #[async_trait::async_trait]
 impl IdentityBackend for SqliteBackend {
@@ -102,31 +135,94 @@ impl IdentityBackend for SqliteBackend {
         "Sqlite(:memory:)"
     }
     async fn user_store(&self) -> Arc<dyn UserStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteUserStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteOrgStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn workspace_store(&self) -> Arc<dyn WorkspaceStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteWorkspaceStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn membership_store(&self) -> Arc<dyn MembershipStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteMembershipStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn resource_store(&self) -> Arc<dyn ResourceStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteResourceStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn trigger_store(&self) -> Arc<dyn TriggerStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteTriggerStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteQuotaStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteAuditStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
     async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        unimplemented!("SQLite identity adapter lands in a follow-up commit")
+        #[cfg(feature = "sqlite")]
+        {
+            Arc::new(nebula_storage::sqlite::SqliteBlobStore::new(
+                self.pool().await,
+            ))
+        }
+        #[cfg(not(feature = "sqlite"))]
+        unimplemented!("built without the `sqlite` feature")
     }
 }
 
@@ -209,7 +305,7 @@ fn in_memory() -> Box<dyn IdentityBackend> {
 }
 
 fn sqlite() -> Box<dyn IdentityBackend> {
-    Box::new(SqliteBackend)
+    Box::new(SqliteBackend::default())
 }
 
 fn postgres() -> Box<dyn IdentityBackend> {

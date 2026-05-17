@@ -132,3 +132,156 @@ CREATE TABLE IF NOT EXISTS port_workflow_versions (
 
 CREATE INDEX IF NOT EXISTS idx_port_workflow_versions_published
     ON port_workflow_versions (workspace_id, org_id, workflow_id, published);
+
+-- ── Identity zoo ──────────────────────────────────────────────────────────
+--
+-- Port-scoped TEXT-id form of the spec-16 identity aggregates (column sets
+-- mirror migrations/postgres/{0001,0003,0004,0005,0009,0010,0014,0015,0019}
+-- but as the adapter's own bare schema — no BYTEA, no cross-table FKs).
+-- Uniqueness among *active* rows is a partial index `WHERE deleted_at IS
+-- NULL`, so a soft-deleted row frees its email/slug. JSON-bearing columns
+-- are opaque TEXT; binary columns are BLOB.
+
+CREATE TABLE IF NOT EXISTS port_users (
+    id                 TEXT PRIMARY KEY,
+    email              TEXT NOT NULL,
+    email_verified_at  TEXT,
+    display_name       TEXT NOT NULL,
+    avatar_url         TEXT,
+    password_hash      TEXT,
+    created_at         TEXT NOT NULL,
+    last_login_at      TEXT,
+    locked_until       TEXT,
+    failed_login_count INTEGER NOT NULL DEFAULT 0,
+    mfa_enabled        INTEGER NOT NULL DEFAULT 0,
+    mfa_secret         BLOB,
+    version            INTEGER NOT NULL DEFAULT 0,
+    deleted_at         TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_users_active_email
+    ON port_users (lower(email)) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS port_orgs (
+    id            TEXT PRIMARY KEY,
+    slug          TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    plan          TEXT NOT NULL,
+    billing_email TEXT,
+    settings      TEXT NOT NULL DEFAULT '{}',   -- opaque JSON
+    version       INTEGER NOT NULL DEFAULT 0,
+    deleted_at    TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_orgs_active_slug
+    ON port_orgs (slug) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS port_workspaces (
+    id            TEXT NOT NULL,
+    org_id        TEXT NOT NULL,
+    slug          TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    description   TEXT,
+    created_at    TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    is_default    INTEGER NOT NULL DEFAULT 0,
+    settings      TEXT NOT NULL DEFAULT '{}',   -- opaque JSON
+    version       INTEGER NOT NULL DEFAULT 0,
+    deleted_at    TEXT,
+    PRIMARY KEY (org_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_workspaces_active_slug
+    ON port_workspaces (org_id, slug) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS port_memberships (
+    scope_kind     TEXT NOT NULL,
+    scope_id       TEXT NOT NULL,
+    principal_kind TEXT NOT NULL,
+    principal_id   TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    added_at       TEXT NOT NULL,
+    added_by       TEXT,
+    PRIMARY KEY (scope_kind, scope_id, principal_kind, principal_id)
+);
+
+CREATE TABLE IF NOT EXISTS port_resources (
+    id            TEXT NOT NULL,
+    workspace_id  TEXT NOT NULL,
+    org_id        TEXT NOT NULL,                -- port scope (no migration column)
+    slug          TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    config        TEXT NOT NULL,                -- opaque JSON
+    created_at    TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    version       INTEGER NOT NULL DEFAULT 0,
+    deleted_at    TEXT,
+    PRIMARY KEY (workspace_id, org_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_port_resources_active_slug
+    ON port_resources (workspace_id, org_id, slug) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS port_triggers (
+    id            TEXT NOT NULL,
+    workspace_id  TEXT NOT NULL,
+    org_id        TEXT NOT NULL,                -- port scope (no migration column)
+    workflow_id   TEXT NOT NULL,
+    slug          TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    config        TEXT NOT NULL,                -- opaque JSON
+    state         TEXT NOT NULL,
+    run_as        TEXT,
+    webhook_path  TEXT,
+    created_at    TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    version       INTEGER NOT NULL DEFAULT 0,
+    deleted_at    TEXT,
+    PRIMARY KEY (workspace_id, org_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS port_quotas (
+    org_id                       TEXT PRIMARY KEY,
+    plan                         TEXT NOT NULL,
+    concurrent_executions_limit  INTEGER NOT NULL,
+    executions_per_month_limit   INTEGER,
+    active_workflows_limit       INTEGER,
+    concurrent_executions        INTEGER NOT NULL DEFAULT 0,
+    executions_this_month        INTEGER NOT NULL DEFAULT 0,
+    month_reset_at               TEXT NOT NULL,
+    updated_at                   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS port_audit_log (
+    id           TEXT PRIMARY KEY,
+    org_id       TEXT NOT NULL,
+    workspace_id TEXT,
+    actor_kind   TEXT NOT NULL,
+    actor_id     TEXT,
+    action       TEXT NOT NULL,
+    target_kind  TEXT,
+    target_id    TEXT,
+    details      TEXT,                          -- opaque JSON, nullable
+    ip_address   TEXT,
+    user_agent   TEXT,
+    emitted_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_port_audit_log_org
+    ON port_audit_log (org_id, emitted_at);
+
+CREATE TABLE IF NOT EXISTS port_blobs (
+    id           TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    execution_id TEXT,
+    kind         TEXT NOT NULL,
+    content_type TEXT,
+    size_bytes   INTEGER NOT NULL,
+    checksum     BLOB,
+    storage_mode TEXT NOT NULL,
+    data         BLOB,
+    external_ref TEXT,
+    metadata     TEXT,                          -- opaque JSON, nullable
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    PRIMARY KEY (workspace_id, id)
+);
