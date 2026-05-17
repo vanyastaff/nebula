@@ -48,11 +48,7 @@ pub async fn list_executions(
     Extension(_tenant): Extension<TenantContext>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
-    let running_ids = state
-        .execution_repo
-        .list_running()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+    let running_ids = state.list_running_executions().await?;
 
     let total = running_ids.len();
 
@@ -113,10 +109,8 @@ pub async fn list_executions_for_workflow(
     // JWT) but a tenant-crossing read the moment real multi-tenant auth
     // lands.
     let running_ids = state
-        .execution_repo
-        .list_running_for_workflow(workflow_id_parsed)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+        .list_running_executions_for_workflow(workflow_id_parsed)
+        .await?;
 
     let total = running_ids.len();
     let offset = params.offset();

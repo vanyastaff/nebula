@@ -6,7 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, scope::Principal};
+use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, id::ExecutionId, scope::Principal};
 use nebula_credential::PendingToken;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
@@ -201,6 +201,17 @@ pub struct AppState {
     pub control_queue: Option<Arc<dyn ControlQueue>>,
 }
 
+/// Fixed placeholder scope passed to scoped port handles.
+///
+/// `AppState`'s port handles are always wrapped in the
+/// `nebula-tenancy` decorator, which **substitutes** its bound
+/// (request-derived) tenant scope on every call and ignores the
+/// argument. The concrete value here is therefore immaterial to
+/// isolation — it only needs to be a valid [`Scope`].
+fn placeholder_scope() -> nebula_storage_port::Scope {
+    nebula_storage_port::Scope::new("nebula", "nebula")
+}
+
 impl AppState {
     /// Create new AppState with provided dependencies.
     ///
@@ -266,6 +277,58 @@ impl AppState {
     pub fn with_control_queue(mut self, control_queue: Arc<dyn ControlQueue>) -> Self {
         self.control_queue = Some(control_queue);
         self
+    }
+
+    /// List running execution ids. Dual-dispatch: the scoped
+    /// [`ExecutionStore`] port when wired, else the legacy
+    /// `ExecutionRepo`. The port path passes a fixed placeholder
+    /// scope — the `nebula-tenancy` decorator substitutes the bound
+    /// tenant scope, so the value here is immaterial to isolation.
+    pub(crate) async fn list_running_executions(&self) -> Result<Vec<ExecutionId>, ApiError> {
+        if let Some(store) = &self.execution_store {
+            let ids = store
+                .list_running(&placeholder_scope())
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+            return ids
+                .iter()
+                .map(|s| {
+                    ExecutionId::parse(s).map_err(|e| {
+                        ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
+                    })
+                })
+                .collect();
+        }
+        self.execution_repo
+            .list_running()
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
+    }
+
+    /// List running execution ids for one workflow. Same dual-dispatch
+    /// as [`Self::list_running_executions`].
+    pub(crate) async fn list_running_executions_for_workflow(
+        &self,
+        workflow_id: nebula_core::id::WorkflowId,
+    ) -> Result<Vec<ExecutionId>, ApiError> {
+        if let Some(store) = &self.execution_store {
+            let ids = store
+                .list_running_for_workflow(&placeholder_scope(), &workflow_id.to_string())
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+            return ids
+                .iter()
+                .map(|s| {
+                    ExecutionId::parse(s).map_err(|e| {
+                        ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
+                    })
+                })
+                .collect();
+        }
+        self.execution_repo
+            .list_running_for_workflow(workflow_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
     }
 
     /// Set the static API keys accepted via `X-API-Key` header.
