@@ -22,6 +22,22 @@ pub trait HasSchema {
     fn schema() -> ValidSchema;
 }
 
+/// Return the canonical [`ValidSchema`] for `T` without restating the
+/// trait-qualified `<T as HasSchema>::schema()` at every call site.
+///
+/// This is the ergonomic, free-function form of [`HasSchema::schema`] — the
+/// single way `Action` / `Credential` / `Resource` consumers reach a
+/// companion type's schema. The associated-type bound (e.g. `Action::Input`,
+/// `Credential::Properties`, `Resource::Config`) is the sole source of truth;
+/// there is no per-trait `*_schema()` method (ADR-0052 P3). The returned
+/// value is `Arc`-backed and cheap to clone; for derived types it is already
+/// memoized inside `#[derive(Schema)]`. Per ADR-0061 a caller may still wrap
+/// this in its own `OnceLock` if a `&'static` is required.
+#[must_use]
+pub fn schema_of<T: HasSchema>() -> ValidSchema {
+    T::schema()
+}
+
 /// Types that expose an ordered list of [`SelectOption`] values.
 ///
 /// Typically derived on `enum` types via `#[derive(EnumSelect)]`.
@@ -178,6 +194,18 @@ mod tests {
         let b = <serde_json::Value as HasSchema>::schema();
         // Same Arc — shared cache entry.
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn schema_of_equals_has_schema_schema() {
+        // schema_of::<T>() is exactly <T as HasSchema>::schema() — the free
+        // helper so call sites need not restate the trait-qualified path.
+        assert_eq!(schema_of::<Dummy>(), <Dummy as HasSchema>::schema());
+        assert_eq!(
+            schema_of::<()>(),
+            <() as HasSchema>::schema(),
+            "unit blanket impl routes through schema_of"
+        );
     }
 
     #[test]

@@ -155,6 +155,10 @@ pub use metrics::CredentialMetrics;
 pub use nebula_core::accessor::CredentialAccessor;
 // Domain identifiers — re-exported from nebula_core for discoverability.
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
+// Re-exported so `#[derive(Credential)]` can emit `::nebula_credential::schema_of`
+// without forcing plugin authors onto a direct `nebula-schema` dependency
+// (ADR-0052 P3: `Self::Properties: HasSchema` is the single source of truth).
+pub use nebula_schema::schema_of;
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has
