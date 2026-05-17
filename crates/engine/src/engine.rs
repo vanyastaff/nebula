@@ -1456,9 +1456,15 @@ impl WorkflowEngine {
                     EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
                 })?
                 .definition;
+            // Reload the raw per-node *outputs* (not the typed-result
+            // slot): the result slot stores the serialized `ActionResult`
+            // envelope, whereas successors consume the bare output payload
+            // — reading results here would feed a crash-resumed run a
+            // different value than a non-crashed run. This mirrors the
+            // legacy `ExecutionRepo::load_all_outputs` reload.
             let outputs = stores
                 .node_results
-                .load_all_results(&scope, &id)
+                .load_all_node_outputs(&scope, &id)
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
                 .into_iter()
@@ -5637,6 +5643,45 @@ mod tests {
                 .map(|e| e.payload)
                 .collect())
         }
+
+        /// Seed a crash-snapshot execution row directly (the port analog
+        /// of the legacy `ExecutionRepo::create(id, wf, state_json)`
+        /// state injection). The row is created at the port's baseline
+        /// version with the given opaque state, exactly what the resume
+        /// path reloads.
+        async fn inject_state(
+            &self,
+            id: ExecutionId,
+            workflow_id: WorkflowId,
+            state: serde_json::Value,
+        ) {
+            let scope = crate::store_seam::engine_scope();
+            self.execution
+                .create(&scope, &id.to_string(), &workflow_id.to_string(), state)
+                .await
+                .unwrap();
+        }
+
+        /// Seed a node's persisted output (the port analog of the legacy
+        /// `ExecutionRepo::save_node_output`) so the resume path observes
+        /// it as already produced.
+        async fn inject_node_output(
+            &self,
+            id: ExecutionId,
+            node: NodeKey,
+            output: serde_json::Value,
+        ) {
+            let scope = crate::store_seam::engine_scope();
+            self.node_results
+                .save_node_output(
+                    &scope,
+                    &id.to_string(),
+                    node.as_str(),
+                    crate::store_seam::node_output_record(output),
+                )
+                .await
+                .unwrap();
+        }
     }
 
     // -- Tests --
@@ -6668,7 +6713,7 @@ mod tests {
             EchoHandler,
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
 
         let n1 = node_key!("n1");
@@ -6685,7 +6730,7 @@ mod tests {
                 Connection::new(n2.clone(), n3.clone()),
             ],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        stores.save_workflow(&wf).await;
 
         // Manually build a partial execution state where n1 is Completed but
         // n2 and n3 are still Pending (simulating a crash after n1 finished).
@@ -6716,20 +6761,14 @@ mod tests {
             .unwrap();
 
         let state_json = serde_json::to_value(&exec_state).unwrap();
-        exec_repo
-            .create(execution_id, wf.id, state_json)
-            .await
-            .unwrap();
+        stores.inject_state(execution_id, wf.id, state_json).await;
 
         // Persist n1's output.
-        exec_repo
-            .save_node_output(execution_id, n1.clone(), 1, serde_json::json!("from_n1"))
-            .await
-            .unwrap();
+        stores
+            .inject_node_output(execution_id, n1.clone(), serde_json::json!("from_n1"))
+            .await;
 
-        let engine = engine
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine = stores.attach(engine);
 
         let result = engine.resume_execution(execution_id).await.unwrap();
 
@@ -7160,13 +7199,11 @@ mod tests {
                 ..WorkflowConfig::default()
             },
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let stores = TestStores::new();
+        stores.save_workflow(&wf).await;
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
-        let engine = engine
-            .with_execution_repo(repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine = stores.attach(engine);
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -7179,19 +7216,21 @@ mod tests {
             result.status
         );
 
-        let (version, final_state) = repo
+        let (version, final_state) = stores
             .get_state(result.execution_id)
             .await
             .unwrap()
             .expect("state must be persisted");
 
-        // Expected version bumps: create (v1) → IgnoreErrors recovery
-        // checkpoint (v2) → final (v3). Pre-fix path skips the recovery
-        // checkpoint and lands at v2. Using `>=` so later legitimate
-        // checkpoint additions do not break the signal.
+        // Expected commits past the port's v=0 create baseline:
+        // IgnoreErrors recovery checkpoint (v1) → final (v2). Pre-fix
+        // path skips the recovery checkpoint and lands at v1. (The
+        // legacy ExecutionRepo seeded create at v=1, so the legacy
+        // threshold was >=3; the port seeds at v=0.) Using `>=` so
+        // later legitimate checkpoint additions do not break the signal.
         assert!(
-            version >= 3,
-            "expected at least three version bumps: create + recovery \
+            version >= 2,
+            "expected at least two commits past create: recovery \
              checkpoint + final. Pre-fix path persists the recovered \
              state only at the final flush; got {version}"
         );

@@ -182,6 +182,22 @@ impl NodeResultStore for InMemoryNodeResultStore {
         Ok(out)
     }
 
+    async fn load_all_node_outputs(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+    ) -> Result<Vec<(String, NodeResultRecord)>, StorageError> {
+        let st = self.inner.lock();
+        let mut out = Vec::new();
+        for ((ws, org, exec, node), rec) in &st.outputs {
+            if ws == &scope.workspace_id && org == &scope.org_id && exec == execution_id {
+                guard_schema(rec)?;
+                out.push((node.clone(), rec.clone()));
+            }
+        }
+        Ok(out)
+    }
+
     async fn set_workflow_input(
         &self,
         scope: &Scope,

@@ -51,6 +51,18 @@ pub trait NodeResultStore: Send + Sync + std::fmt::Debug {
         execution_id: &str,
     ) -> Result<Vec<(String, NodeResultRecord)>, StorageError>;
 
+    /// Load all raw node *outputs* for an execution (the
+    /// `save_node_output` slot, not the typed-result slot). The resume
+    /// path repopulates the in-memory output map from this so a
+    /// crash-resumed run feeds successors the same raw payloads a
+    /// non-crashed run produced — the typed-result slot carries the
+    /// serialized `ActionResult` envelope and is not interchangeable.
+    async fn load_all_node_outputs(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+    ) -> Result<Vec<(String, NodeResultRecord)>, StorageError>;
+
     /// Persist the workflow-level input record.
     async fn set_workflow_input(
         &self,
