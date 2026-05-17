@@ -39,13 +39,16 @@ use nebula_core::{ResourceKey, ScopeLevel};
 ///
 /// Carries lifecycle phase only — never configuration, credential, or any
 /// other resource-supplied material (ADR-0028 §7). The `phase` string is a
-/// closed, stable vocabulary mirroring `nebula_resource`'s lifecycle
-/// phases; consumers match on it rather than re-deriving from internals.
+/// closed, stable vocabulary; consumers match on it rather than
+/// re-deriving from internals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceRuntimeStatus {
-    /// Lifecycle phase as a stable lowercase token: one of
-    /// `initializing`, `ready`, `reloading`, `draining`,
-    /// `shutting_down`, `failed`.
+    /// Lifecycle phase as a stable lowercase token. The recognised values
+    /// are exactly `nebula_resource::state::ResourcePhase`'s canonical
+    /// `Display` rendering (single source of truth — not re-enumerated
+    /// here), plus `"unknown"` for an unrecognised future variant this
+    /// build does not yet name. `project` is drift-pinned to that
+    /// `Display` for every known variant.
     pub phase: &'static str,
     /// `true` iff the resource is in a healthy, request-serving phase
     /// (`ready`). Reloading still accepts traffic but is not "healthy"
@@ -203,6 +206,39 @@ mod tests {
         ] {
             let s = project(p);
             assert!(!s.healthy, "{p:?} must not be healthy");
+            // `accepting` mirrors `ResourcePhase::is_accepting()` (only
+            // `Ready`/`Reloading`), so every phase in this loop must
+            // report not-accepting; `Ready`/`Reloading` are asserted
+            // accepting above.
+            assert!(!s.accepting, "{p:?} must not accept new work");
+        }
+    }
+
+    #[test]
+    fn projection_token_matches_canonical_display_for_every_known_phase() {
+        use nebula_resource::state::ResourcePhase;
+
+        // The projection in `project()` hand-maintains a `ResourcePhase →
+        // &'static str` table (kept as `&'static str`, not delegated to
+        // `to_string()`, by design). This pin makes that table's every
+        // KNOWN variant equal `nebula-resource`'s canonical `Display`, so
+        // a renamed token or a newly added `ResourcePhase` variant fails
+        // here instead of silently projecting as `"unknown"`.
+        for p in [
+            ResourcePhase::Initializing,
+            ResourcePhase::Ready,
+            ResourcePhase::Reloading,
+            ResourcePhase::Draining,
+            ResourcePhase::ShuttingDown,
+            ResourcePhase::Failed,
+        ] {
+            assert_eq!(
+                project(p).phase,
+                p.to_string(),
+                "projection token must equal nebula-resource's canonical \
+                 Display for {p:?}; a renamed token or a new ResourcePhase \
+                 variant must fail here, not silently become \"unknown\""
+            );
         }
     }
 }

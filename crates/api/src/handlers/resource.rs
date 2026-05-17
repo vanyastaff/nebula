@@ -103,6 +103,17 @@ async fn fetch_owned_resource(
         .ok_or_else(|| ApiError::NotFound(format!("Resource {res} not found")))
 }
 
+/// Canonical `res_<ULID>` echo for a path id already proven to exist by
+/// [`fetch_owned_resource`]. The parse here is on the success path — the
+/// only reachable error is an unparsable id, which [`fetch_owned_resource`]
+/// already mapped to 404, so this `?` is effectively unreachable. Single
+/// definition so the update/status echo paths cannot drift.
+fn canonical_res_id(res: &str) -> Result<String, ApiError> {
+    Ok(ResourceId::parse(res)
+        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?
+        .to_string())
+}
+
 /// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` — list workspace resources.
 ///
 /// Returns resource definitions scoped to the caller's workspace. Soft-deleted
@@ -511,13 +522,8 @@ pub async fn update_resource(
         .map_err(map_resource_update_storage_error)?;
 
     // Canonical `res_<ULID>` echo of the (already isolation-verified) path
-    // id. `fetch_owned_resource` parsed `res` successfully, so this parse
-    // is on the success path; the unreachable error maps to the *same*
-    // `NotFound`, so the response value is byte-identical to the prior
-    // `ResourceId::parse(&res)?.to_string()` with no new error edge.
-    let id = ResourceId::parse(&res)
-        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?
-        .to_string();
+    // id — single shared definition; see `canonical_res_id`.
+    let id = canonical_res_id(&res)?;
 
     Ok(Json(UpdateResourceResponse {
         id,
@@ -685,12 +691,8 @@ pub async fn get_resource_status(
     })?;
 
     // Canonical `res_<ULID>` echo of the (already isolation-verified)
-    // path id. `fetch_owned_resource` parsed `res` successfully, so this
-    // is on the success path; the unreachable error maps to the *same*
-    // 404 so the response value is byte-identical with no new error edge.
-    let id = ResourceId::parse(&res)
-        .map_err(|_| ApiError::NotFound(format!("Resource {res} not found")))?
-        .to_string();
+    // path id — single shared definition; see `canonical_res_id`.
+    let id = canonical_res_id(&res)?;
 
     // Project the read-only engine seam. `None` = the resource exists as
     // a definition but has no live runtime (never activated, or a
