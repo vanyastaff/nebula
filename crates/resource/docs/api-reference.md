@@ -2,12 +2,15 @@
 
 Public API reference for `nebula-resource`, copied verbatim from
 `crates/resource/src/`. The crate re-exports a curated slice of `nebula-core`
-and `nebula-credential` (per ADR-0036) so consumers do not need direct deps:
+and `nebula-credential` so consumers do not need direct deps:
 
 - From `nebula_core`: `ExecutionId`, `ResourceKey`, `ScopeLevel`, `WorkflowId`,
   `resource_key!`.
-- From `nebula_credential`: `Credential`, `CredentialContext`, `CredentialId`,
-  `NoCredential`, `NoCredentialState`, `SchemeGuard`.
+- From `nebula_credential`: `Credential`, `CredentialContext`, `CredentialId`.
+  Per ADR-0044 the singular `Resource::Credential` associated type and its
+  `NoCredential` opt-out are gone; `NoCredential` / `NoCredentialState` /
+  `SchemeGuard` are no longer re-exported. Credentials are declared via
+  `#[credential(key = "...")]` slot fields (see [Core Traits](#core-traits)).
 - From `nebula_resource_macros`: `ClassifyError`, `Resource` derives.
 
 For the event catalog see [`events.md`](events.md). For pool internals see
@@ -41,7 +44,7 @@ For the event catalog see [`events.md`](events.md). For pool internals see
 
 ### `Resource`
 
-Five associated types and six lifecycle methods. Uses return-position
+Four associated types and the lifecycle methods. Uses return-position
 `impl Future` (RPITIT) — no `Box<dyn Future>` per call.
 
 ```rust,ignore
@@ -50,31 +53,41 @@ pub trait Resource: Send + Sync + 'static {
     type Runtime: Send + Sync + 'static;
     type Lease: Send + Sync + 'static;
     type Error: std::error::Error + Send + Sync + Into<crate::Error> + 'static;
-    type Credential: Credential;        // ADR-0036 — `NoCredential` opts out
 
     fn key() -> ResourceKey;
 
+    // Credential slot cells declared via `#[credential(key = "...")]` are
+    // populated on `&self` by the framework before this call (ADR-0044).
+    // Read each resolved guard through the derive-emitted
+    // `self.<field>_slot()` accessor — never a `scheme` argument.
     fn create(
         &self,
         config: &Self::Config,
-        scheme: &<Self::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
-    fn on_credential_refresh<'a>(
+    // Called by the engine rotation fan-out *after* it has swapped the
+    // rotated credential into this resource's slot. `&self` (immutable
+    // descriptor) + the slot name that rotated + `&Self::Runtime` — act on
+    // the runtime's interior mutability. Default: no-op.
+    fn on_credential_refresh(
         &self,
-        new_scheme: SchemeGuard<'a, Self::Credential>,
-        ctx: &'a CredentialContext,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
-        let _ = (new_scheme, ctx);
+        slot_name: &str,
+        runtime: &Self::Runtime,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let _ = (slot_name, runtime);
         async { Ok(()) }
     }
 
+    // Called by the engine fan-out when a slot's credential is revoked.
+    // Post-invocation invariant: no further authenticated traffic on the
+    // revoked credential. Default: no-op.
     fn on_credential_revoke(
         &self,
-        credential_id: &CredentialId,
+        slot_name: &str,
+        runtime: &Self::Runtime,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let _ = credential_id;
+        let _ = (slot_name, runtime);
         async { Ok(()) }
     }
 
@@ -93,11 +106,16 @@ pub trait Resource: Send + Sync + 'static {
 **Lifecycle:** `create → check (periodic) → on_credential_refresh /
 on_credential_revoke (rotation) → shutdown → destroy`.
 
-`on_credential_refresh` and `on_credential_revoke` are default-no-op hooks per
-ADR-0036. Connection-bound resources (Pool, Service, Transport) override
-refresh with the blue-green pool swap (Tech Spec §15.7); revoke must guarantee
-no further authenticated traffic on the revoked credential. `SchemeGuard` is
-`ZeroizeOnDrop` and tied to the call lifetime — never retain it past the call.
+`on_credential_refresh` and `on_credential_revoke` are default-no-op hooks
+(ADR-0044, amended by ADR-0067). The framework binds a resolved
+`CredentialGuard<C>` into each `#[credential(key = "...")]` slot cell before
+`create`, and the engine rotation fan-out swaps a fresh guard in (then calls
+the hook with the affected `slot_name`) on rotation — the resource impl never
+receives or retains scheme material directly. Connection-bound resources
+(Pool, Service, Transport) override refresh with the blue-green pool swap
+acting on the runtime's interior mutability (e.g. an `ArcSwap<Pool>` rebuilt
+from `self.<field>_slot()`); revoke must guarantee no further authenticated
+traffic on the revoked credential.
 
 ### `ResourceConfig`
 
@@ -289,12 +307,16 @@ impl Manager {
 
 ### Register
 
-11 methods total: 1 full `register` plus 5 + 5 shorthands. `register` takes
-positional resilience / recovery_gate / credential_id / rotation timeout; the
-`register_*_with` shorthands consolidate those into `RegisterOptions`.
+One family of register methods — no `scheme` parameter and no credential-type
+bound on any of them (per ADR-0044 credentials are not threaded through
+registration; the `resource: R` value already carries resolved credentials in
+its `#[credential]` slot fields). 1 full `register`, plus `register_with_identity`
+(pins the registry row to a resolved per-slot identity), plus 5 + 5 topology
+shorthands. The `register_*_with` shorthands consolidate scope / resilience /
+recovery_gate / slot_identity into `RegisterOptions`.
 
 ```rust,ignore
-// Full — fully positional, supports any Credential type.
+// Full — fully positional. No credential_id / rotation-timeout params.
 pub fn register<R: Resource>(
     &self,
     resource: R,
@@ -303,69 +325,116 @@ pub fn register<R: Resource>(
     topology: TopologyRuntime<R>,
     resilience: Option<AcquireResilience>,
     recovery_gate: Option<Arc<RecoveryGate>>,
-    credential_id: Option<CredentialId>,
-    credential_rotation_timeout: Option<Duration>,
 ) -> Result<(), Error>;
 
-// 5 no-credential convenience methods (all bound `R::Credential = NoCredential`):
-pub fn register_pooled<R>(&self, resource: R, config: R::Config, pool_config: PoolConfig)         -> Result<(), Error>;
-pub fn register_resident<R>(&self, resource: R, config: R::Config, resident_config: ResidentConfig) -> Result<(), Error>;
-pub fn register_service<R>(&self, resource: R, config: R::Config, runtime: R::Runtime, service_config: ServiceConfig)         -> Result<(), Error>;
-pub fn register_transport<R>(&self, resource: R, config: R::Config, runtime: R::Runtime, transport_config: TransportConfig) -> Result<(), Error>;
-pub fn register_exclusive<R>(&self, resource: R, config: R::Config, runtime: R::Runtime, exclusive_config: ExclusiveConfig) -> Result<(), Error>;
+// As `register`, plus a resolved per-slot credential identity that pins the
+// registry row (the structural anti-bleed seam — two registrations of the
+// same `(key, scope)` with different `slot_identity` get distinct runtimes).
+pub fn register_with_identity<R: Resource>(
+    &self,
+    resource: R,
+    config: R::Config,
+    scope: ScopeLevel,
+    slot_identity: u64,
+    topology: TopologyRuntime<R>,
+    resilience: Option<AcquireResilience>,
+    recovery_gate: Option<Arc<RecoveryGate>>,
+) -> Result<(), Error>;
 
-// 5 _with shorthands taking RegisterOptions (also bound NoCredential today):
-pub fn register_pooled_with<R>(&self, resource: R, config: R::Config, pool_config: PoolConfig, options: RegisterOptions)         -> Result<(), Error>;
-pub fn register_resident_with<R>(&self, resource: R, config: R::Config, resident_config: ResidentConfig, options: RegisterOptions) -> Result<(), Error>;
-pub fn register_service_with<R>(&self, resource: R, config: R::Config, runtime: R::Runtime, service_config: ServiceConfig, options: RegisterOptions)         -> Result<(), Error>;
-pub fn register_transport_with<R>(&self, resource: R, config: R::Config, runtime: R::Runtime, transport_config: TransportConfig, options: RegisterOptions) -> Result<(), Error>;
-pub fn register_exclusive_with<R>(&self, resource: R, config: R::Config, runtime: R::Runtime, exclusive_config: ExclusiveConfig, options: RegisterOptions) -> Result<(), Error>;
+// 5 topology shorthands (Global scope, no resilience/gate):
+pub fn register_pooled<R: Resource>(&self, resource: R, config: R::Config, pool_config: PoolConfig)         -> Result<(), Error>;
+pub fn register_resident<R: Resource>(&self, resource: R, config: R::Config, resident_config: ResidentConfig) -> Result<(), Error>;
+pub fn register_service<R: Resource>(&self, resource: R, config: R::Config, runtime: R::Runtime, service_config: ServiceConfig)         -> Result<(), Error>;
+pub fn register_transport<R: Resource>(&self, resource: R, config: R::Config, runtime: R::Runtime, transport_config: TransportConfig) -> Result<(), Error>;
+pub fn register_exclusive<R: Resource>(&self, resource: R, config: R::Config, runtime: R::Runtime, exclusive_config: ExclusiveConfig) -> Result<(), Error>;
+
+// 5 _with shorthands taking RegisterOptions:
+pub fn register_pooled_with<R: Resource>(&self, resource: R, config: R::Config, pool_config: PoolConfig, options: RegisterOptions)         -> Result<(), Error>;
+pub fn register_resident_with<R: Resource>(&self, resource: R, config: R::Config, resident_config: ResidentConfig, options: RegisterOptions) -> Result<(), Error>;
+pub fn register_service_with<R: Resource>(&self, resource: R, config: R::Config, runtime: R::Runtime, service_config: ServiceConfig, options: RegisterOptions)         -> Result<(), Error>;
+pub fn register_transport_with<R: Resource>(&self, resource: R, config: R::Config, runtime: R::Runtime, transport_config: TransportConfig, options: RegisterOptions) -> Result<(), Error>;
+pub fn register_exclusive_with<R: Resource>(&self, resource: R, config: R::Config, runtime: R::Runtime, exclusive_config: ExclusiveConfig, options: RegisterOptions) -> Result<(), Error>;
 ```
 
-`register` validates the credential-binding contract before registry mutation:
-a credential-bearing resource (`R::Credential != NoCredential`) registered
-without a `credential_id` returns `Error::missing_credential_id` and the
-registry is not touched.
+`register` validates `config` before any registry mutation: if
+`ResourceConfig::validate` fails the registry is not touched. Credential
+binding is no longer a register-time contract — a resource declares its
+credential dependency structurally via `#[credential(key = "...")]` slot
+fields, and the engine resolves + binds those slots before `create`.
+
+### `register_from_value`
+
+The JSON/typed bridge for config-driven registration. Validates the supplied
+config JSON against `<R::Config as HasSchema>::schema()`, resolves any
+`{{ }}` expression templates via the provided `ExpressionEngine`, maps the
+declared slot bindings, and dispatches to typed `register`.
+
+```rust,ignore
+pub async fn register_from_value<R: Resource>(
+    &self,
+    config_json: serde_json::Value,
+    expr_engine: &nebula_expression::ExpressionEngine,
+    slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
+    resource: R,
+    scope: ScopeLevel,
+    topology: TopologyRuntime<R>,
+    /* + resilience / recovery_gate */
+) -> Result<(), Error>;
+```
 
 ### Acquire
 
-10 methods total: 5 full (require scheme material) plus 5 `_default`
-shorthands (only available for `R::Credential = NoCredential`).
+One acquire method per topology, plus a scoped `_for` variant that pins the
+acquire to a resolved per-slot identity (`slot_identity: u64`) for the
+multi-tenant case. **No `scheme` parameter; no `_default` / `_no_credential`
+variants** — credentials live in the resource's slot cells, not in an acquire
+argument.
 
 ```rust,ignore
 pub async fn acquire_pooled<R>(
     &self,
-    scheme: &<R::Credential as Credential>::Scheme,
     ctx: &ResourceContext,
     options: &AcquireOptions,
 ) -> Result<ResourceGuard<R>, Error>
 where R: Pooled + Clone + Send + Sync + 'static, /* + topology bounds */;
 
-pub async fn acquire_pooled_default<R>(&self, ctx: &ResourceContext, options: &AcquireOptions)
-    -> Result<ResourceGuard<R>, Error>
-where R: Pooled<Credential = NoCredential> + /* + topology bounds */;
+// Scoped variant — pins to a resolved per-slot credential identity.
+pub async fn acquire_pooled_for<R>(
+    &self,
+    ctx: &ResourceContext,
+    options: &AcquireOptions,
+    slot_identity: u64,
+) -> Result<ResourceGuard<R>, Error>
+where R: Pooled + Clone + Send + Sync + 'static, /* + topology bounds */;
 ```
 
-The other four topologies have the same shape, each with a `_default`
+The other four topologies have the same shape, each with a `_for`
 overload: `acquire_resident` / `acquire_service` / `acquire_transport` /
 `acquire_exclusive`.
 
-Non-blocking pool variants — `try_acquire_pooled(scheme, ctx, options)` and
-`try_acquire_pooled_default(ctx, options)` — return `ErrorKind::Backpressure`
-immediately when all `max_size` slots are in use, never queueing.
+Non-blocking pool variant — `try_acquire_pooled(ctx, options)` — returns
+`ErrorKind::Backpressure` immediately when all `max_size` slots are in use,
+never queueing.
 
 ### Pool warmup, stats, reload, remove, shutdown, lookup
 
 ```rust,ignore
-pub async fn warmup_pool<R>(&self, scheme, ctx) -> Result<usize, Error>;
-pub async fn warmup_pool_no_credential<R>(&self, ctx) -> Result<usize, Error>
-    where R: Pooled<Credential = NoCredential> + ...;
+pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
+    where R: Pooled + Clone + ...;
 
 pub async fn pool_stats<R>(&self, scope: &ScopeLevel) -> Option<PoolStats>
     where R: Pooled + ...;
 
 pub fn reload_config<R: Resource>(&self, new_config: R::Config, scope: &ScopeLevel) -> Result<ReloadOutcome, Error>;
 pub fn remove(&self, key: &ResourceKey) -> Result<(), Error>;
+
+// Engine-driven slot ops (ADR-0067 D1 port) — the engine rotation fan-out
+// calls these after it has swapped the rotated guard into the slot; they
+// invoke the resource's on_credential_refresh / on_credential_revoke hook.
+pub async fn refresh_slot(&self, key: &ResourceKey, scope: ScopeLevel, slot: &str) -> Result<(), Error>;
+pub async fn refresh_slot_for(&self, key: &ResourceKey, scope: ScopeLevel, slot: &str, slot_identity: u64) -> Result<(), Error>;
+pub async fn revoke_slot(&self, key: &ResourceKey, scope: ScopeLevel, slot: &str) -> Result<(), Error>;
+pub async fn revoke_slot_for(&self, key: &ResourceKey, scope: ScopeLevel, slot: &str, slot_identity: u64) -> Result<(), Error>;
 
 pub fn shutdown(&self);                                                              // immediate cancel
 pub async fn graceful_shutdown(&self, config: ShutdownConfig) -> Result<ShutdownReport, ShutdownError>;
@@ -383,17 +452,26 @@ pub fn is_shutdown(&self)     -> bool;
 ```
 
 Notes:
-- Two warmup methods by design (Tech Spec §5.2 / security amendment B-3): the
-  no-credential path passes `&()` directly — never calls `Scheme::default()`,
-  killing the "warm with empty credential → 401 storm" footgun.
+- `warmup_pool` pre-creates up to `min_size` instances by calling
+  `R::create(config, ctx)` directly. Credential slots are already bound on the
+  resource by the framework before warmup runs, so there is no scheme argument
+  and no empty-credential footgun.
 - `pool_stats` returns `None` when not registered or not Pool topology.
 - `reload_config` short-circuits on fingerprint match (`NoChange`); otherwise
   atomically swaps the config and bumps the generation counter. Pool topology
   also updates the pool fingerprint so stale idle instances evict on next
   acquire/release. Service topology returns `PendingDrain { old_generation }`;
   others return `SwappedImmediately`.
-- `remove` prunes the credential rotation reverse-index so future refresh /
-  revoke does not fan out to a removed resource.
+- `remove` deletes the registry row; a subsequent `refresh_slot` / `revoke_slot`
+  for that `(key, scope)` then returns `Error::not_found` rather than fanning
+  out to a removed resource. (The credential→resource rotation reverse-index
+  itself is engine-owned per ADR-0067 D1 — it is not part of this crate.)
+- `refresh_slot` / `revoke_slot` (and the `_for` slot-identity-pinned
+  variants) are the engine's port into the per-resource hook: they look up
+  the managed resource and invoke `on_credential_refresh` /
+  `on_credential_revoke` with the rotated `slot` name. An unknown slot or a
+  hook failure surfaces a typed `Error` and a `SlotRefreshFailed` /
+  `SlotRevokeFailed` event; success emits `SlotRefreshed` / `SlotRevoked`.
 - `graceful_shutdown` is CAS-guarded — second concurrent caller gets
   `ShutdownError::AlreadyShuttingDown`.
 - `lookup` rejects new acquires once shutdown begins
@@ -411,19 +489,24 @@ Notes:
 |-------|---------|---------|
 | `release_queue_workers: usize` | `2` | Background workers for async cleanup |
 | `metrics_registry: Option<Arc<MetricsRegistry>>` | `None` | Telemetry registry; `None` skips metrics with zero overhead |
-| `credential_rotation_timeout: Duration` | `30s` | Default per-resource FULL rotation dispatch budget (covers `SchemeFactory::acquire` + the resource hook). Overridable per-resource via `RegisterOptions`. |
 
-### `RegisterOptions` (`#[non_exhaustive]`)
+`ManagerConfig` is a two-field plain struct (no rotation-timeout field —
+credential rotation is no longer threaded through manager config; the engine
+owns the rotation dispatch budget per ADR-0067).
+
+### `RegisterOptions`
 
 | Field | Default | Purpose |
 |-------|---------|---------|
 | `scope: ScopeLevel` | `Global` | Scope key |
 | `resilience: Option<AcquireResilience>` | `None` | Timeout + retry policy on acquire |
 | `recovery_gate: Option<Arc<RecoveryGate>>` | `None` | Thundering-herd prevention |
-| `credential_id: Option<CredentialId>` | `None` | Required for credential-bearing resources; populates rotation reverse-index |
-| `credential_rotation_timeout: Option<Duration>` | `None` (falls back to `ManagerConfig`) | Per-resource budget override |
+| `slot_identity: u64` | `SLOT_IDENTITY_UNBOUND` | Stable hash over this registration's resolved per-slot credential bindings (per ADR-0044). Carries no secrets — it only keeps two resolved-credential registrations on separate registry rows so they cannot share one runtime (cross-tenant bleed). Compute via `nebula_resource::dedup::slot_identity`. |
 
-Builders: `with_credential_id(id) -> Self`, `with_rotation_timeout(timeout) -> Self`.
+Builders: `with_scope(scope)`, `with_resilience(r)`, `with_recovery_gate(g)`,
+`with_slot_identity(id)`. There is no `credential_id` field — credential
+binding is structural (`#[credential(key = "...")]` slot fields), not a
+register-option.
 
 ### `ShutdownConfig`, `DrainTimeoutPolicy`, `ShutdownReport`, `ShutdownError`
 
@@ -455,14 +538,15 @@ Builders: `with_drain_timeout`, `with_drain_timeout_policy`,
 Unified error carrying kind + scope + message + optional resource key +
 optional source. Constructors: `Error::new(kind, message)`, `transient`,
 `permanent`, `exhausted(message, retry_after: Option<Duration>)`,
-`backpressure`, `not_found(&ResourceKey)`, `cancelled`,
-`missing_credential_id(ResourceKey)`, `scheme_type_mismatch::<R>()`. Builders:
-`with_resource_key`, `with_source`, `with_scope`. Accessors: `kind()`,
-`scope()`, `resource_key()`, `is_retryable()`, `retry_after()`.
+`backpressure`, `not_found(&ResourceKey)`, `cancelled`, `revoked(message)`,
+`ambiguous(message)`, `unknown_credential_slot(ResourceKey, slot_name: &str)`.
+Builders: `with_resource_key`, `with_source`, `with_scope`. Accessors:
+`kind()`, `scope()`, `resource_key()`, `is_retryable()`, `retry_after()`.
 
-`is_retryable()` returns `true` for `Transient`, `Exhausted`, `Backpressure`.
-`retry_after()` returns the explicit hint for `Exhausted`, default `50ms` for
-`Backpressure`, otherwise `None`. Implements `nebula_error::Classify` so
+`is_retryable()` returns `true` for `Transient`, `Exhausted`, `Backpressure`,
+and `Revoked`. `retry_after()` returns the explicit hint for `Exhausted`,
+default `50ms` for `Backpressure`, `100ms` for `Revoked` (re-registration is
+operator-paced), otherwise `None`. Implements `nebula_error::Classify` so
 resource errors flow through the workspace error category / code / retry-hint
 pipeline.
 
@@ -474,6 +558,11 @@ pub enum ErrorKind {
     Transient, Permanent,
     Exhausted { retry_after: Option<Duration> },
     Backpressure, NotFound, Cancelled,
+    Revoked,    // resource tainted by a credential revoke — non-terminal,
+                // retryable after a short backoff (clears on re-registration)
+    Ambiguous,  // >1 resolved-credential registration matched (key, scope)
+                // and no slot identity to disambiguate — permanent caller
+                // fault, classified as a client conflict (not a 5xx)
 }
 
 #[non_exhaustive]
@@ -488,25 +577,19 @@ R-051 resolution since no consumer ever wired it. New variants land here
 when an engine surface genuinely needs them (the `#[non_exhaustive]`
 attribute keeps that addition non-breaking).
 
-### Rotation outcomes
+### Rotation dispatch outcome
 
-```rust,ignore
-pub enum RefreshOutcome { Ok, Failed(Error), TimedOut { budget: Duration } }
-pub enum RevokeOutcome  { Ok, Failed(Error), TimedOut { budget: Duration } }
-
-pub struct RotationOutcome {
-    pub ok: usize,
-    pub failed: usize,
-    pub timed_out: usize,
-}
-impl RotationOutcome {
-    pub fn total(&self) -> usize;
-    pub fn has_partial_failure(&self) -> bool;
-}
-```
-
-Produced one-per-resource by the rotation dispatcher and folded into
-`RotationOutcome` for `ResourceEvent::CredentialRefreshed` / `CredentialRevoked`.
+Credential rotation fan-out is engine-owned (ADR-0067 D1): the engine iterates
+the affected resources and calls `Manager::refresh_slot` / `revoke_slot` per
+`(resource, slot)`. Each per-resource dispatch resolves to one of three
+outcomes — success, hook-`Err`, or per-resource-timeout — recorded on the
+`outcome={success,failed,timed_out}` label series of the rotation/revoke
+attempts counters (see [Metrics](#metrics)) and surfaced individually as
+`ResourceEvent::SlotRefreshed` / `SlotRefreshFailed` (and the revoke
+equivalents). There is no crate-level `RotationOutcome` / `RefreshOutcome` /
+`RevokeOutcome` aggregate type and no aggregate `CredentialRefreshed` /
+`CredentialRevoked` event — the engine aggregates across resources on its
+side; this crate reports strictly per-resource.
 
 ### `ClassifyError` derive
 
@@ -671,17 +754,20 @@ Drop cancels the background task. `WatchdogConfig` defaults: `interval: 30s`,
 
 ## Events
 
-`ResourceEvent` is `#[non_exhaustive]` with **12 variants** today. Cheap to
-clone. See [`events.md`](events.md) for the canonical catalog (variant table,
-emission contracts, key recovery semantics).
+`ResourceEvent` is `#[non_exhaustive]` with **14 variants** today (10 generic
+lifecycle variants plus `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`,
+`SlotRevokeFailed`). Cheap to clone. See [`events.md`](events.md) for the
+canonical catalog (variant table, emission contracts, key semantics).
 
 ```rust,ignore
 pub fn Manager::subscribe_events(&self) -> tokio::sync::broadcast::Receiver<ResourceEvent>;
 
 impl ResourceEvent {
     pub fn key(&self) -> Option<&ResourceKey>;
-    // Some for the 10 per-resource variants;
-    // None for CredentialRefreshed / CredentialRevoked (use credential_id field).
+    // Some for every variant — all 14 carry a `ResourceKey`, including the
+    // four slot-rotation variants (`{ key, slot[, error] }`). Credential
+    // material never appears in any payload (the engine owns the
+    // credential→resource mapping).
 }
 ```
 
@@ -697,11 +783,12 @@ Construct via `ResourceOpsMetrics::new(&registry)` or implicitly through
 | `ResourceOpsSnapshot` field | Type |
 |------------------------------|------|
 | `acquire_total`, `acquire_errors`, `release_total`, `create_total`, `destroy_total` | `u64` |
-| `rotation_attempts`, `revoke_attempts`, `rotation_dispatch_latency_count` | `OutcomeCountersSnapshot` |
-| `credential_rotation_skipped` | `u64` |
+| `slot_refresh_outcomes`, `slot_revoke_outcomes` | `OutcomeCountersSnapshot` |
 
 `OutcomeCountersSnapshot` mirrors `nebula_metrics::naming::rotation_outcome`
-closed labels: `success`, `failed`, `timed_out` (each `u64`).
+closed labels: `success`, `failed`, `timed_out` (each `u64`). One increment
+per per-resource slot dispatch — the attempts total for a direction is
+`success + failed + timed_out`.
 
 ---
 

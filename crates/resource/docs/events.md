@@ -29,10 +29,13 @@ behind — see [Slow consumers](#slow-consumers) below.
 
 ## Event Catalog
 
-Twelve `#[non_exhaustive]` variants; new variants may be added in minor
-releases without a major bump.
+Fourteen `#[non_exhaustive]` variants; new variants may be added in minor
+releases without a major bump. Every variant carries a `ResourceKey` — this
+crate reports strictly per-resource (the engine owns cross-resource rotation
+aggregation, so there is no aggregate `CredentialRefreshed` /
+`CredentialRevoked` event and no `CredentialId` in any payload).
 
-### Per-resource variants (10)
+### Generic lifecycle variants (10)
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|
@@ -47,41 +50,40 @@ releases without a major bump.
 | `BackpressureDetected` | Pool backpressure was detected (semaphore full) | `key` |
 | `RecoveryGateChanged` | A recovery gate transitioned | `key`, `state: String` |
 
-### Aggregate (rotation cycle) variants (2)
+### Slot-rotation variants (4)
 
-Emitted by `Manager::on_credential_refreshed` / `_revoked` after every
-per-resource dispatch future has completed (see Tech Spec §6.2).
+Emitted per `(resource, slot)` by the engine-owned rotation fan-out through
+the `Manager::{refresh_slot, revoke_slot}` port (ADR-0067 D1), after the
+engine has swapped the rotated guard into the slot and invoked the
+resource's `on_credential_refresh` / `on_credential_revoke` hook. The
+`error` string is already redacted — it never carries credential material.
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|
-| `CredentialRefreshed` | One refresh-cycle fan-out completed | `credential_id: CredentialId`, `resources_affected: usize`, `outcome: RotationOutcome` |
-| `CredentialRevoked` | One revoke-cycle fan-out completed | `credential_id: CredentialId`, `resources_affected: usize`, `outcome: RotationOutcome` |
+| `SlotRefreshed` | A `#[credential]` slot was refreshed (hook returned `Ok`) | `key`, `slot: String` |
+| `SlotRevoked` | A slot's credential was revoked (hook returned `Ok`) | `key`, `slot: String` |
+| `SlotRefreshFailed` | The per-resource refresh hook failed or timed out | `key`, `slot: String`, `error: String` (redacted) |
+| `SlotRevokeFailed` | The per-resource revoke hook failed | `key`, `slot: String`, `error: String` (redacted) |
 
-`outcome.total()` always equals `resources_affected`. Per-resource
-revocation failures are also signalled inline as `HealthChanged { healthy:
-false }` (security amendment B-2 from cascade Phase 6 CP2 review), so
-subscribers that miss the aggregate event still see per-resource failure
-events.
-
-`RotationOutcome` is `nebula_resource::RotationOutcome` (re-export of
-`crate::error::RotationOutcome`) — see `RotationOutcome` for the `ok` /
-`failed` / `timed_out` count breakdown.
+Per-resource revocation failures are also signalled inline as
+`HealthChanged { healthy: false }`, so subscribers that filter slot events
+still see the failure surface.
 
 ---
 
 ## Reading the resource key
 
-Per-resource variants carry a `key: ResourceKey`; the aggregate rotation
-variants do not (they span multiple resources). Use the convenience
-accessor:
+Every variant carries a `key: ResourceKey` — including the four
+slot-rotation variants. The convenience accessor therefore always returns
+`Some`:
 
 ```rust,ignore
 fn key(&self) -> Option<&ResourceKey>
 ```
 
-Returns `Some(&key)` for the 10 per-resource variants; returns `None` for
-`CredentialRefreshed` and `CredentialRevoked` — for those, read the
-`credential_id` field directly to identify the rotation.
+(It is `Option`-typed for forward compatibility with any future
+non-resource-scoped variant, but every variant shipped today returns
+`Some(&key)`.)
 
 ---
 
@@ -125,26 +127,28 @@ match rx.recv().await {
 The broadcast channel drops oldest events on overflow — there is no
 back-pressure or retry mechanism inside the Manager.
 
-### Auditing rotation cycles
+### Auditing slot rotation
 
 ```rust,ignore
 match &event {
-    ResourceEvent::CredentialRefreshed { credential_id, outcome, .. }
-    | ResourceEvent::CredentialRevoked { credential_id, outcome, .. } => {
-        rotation_counter.increment(outcome.total() as u64);
-        if outcome.failed > 0 || outcome.timed_out > 0 {
-            tracing::warn!(
-                %credential_id,
-                ok = outcome.ok,
-                failed = outcome.failed,
-                timed_out = outcome.timed_out,
-                "rotation cycle had partial failures",
-            );
-        }
+    ResourceEvent::SlotRefreshed { key, slot }
+    | ResourceEvent::SlotRevoked { key, slot } => {
+        rotation_counter.increment(1);
+        tracing::info!(%key, %slot, "credential slot rotated");
+    }
+    ResourceEvent::SlotRefreshFailed { key, slot, error }
+    | ResourceEvent::SlotRevokeFailed { key, slot, error } => {
+        // `error` is already redacted — safe to log verbatim.
+        tracing::warn!(%key, %slot, %error, "slot rotation hook failed");
     }
     _ => {}
 }
 ```
+
+For a fleet-wide rotation roll-up, aggregate these per-resource events on
+the consumer side, or read the engine's rotation telemetry — this crate
+deliberately emits one event per `(resource, slot)` and no cycle-level
+aggregate.
 
 ---
 
