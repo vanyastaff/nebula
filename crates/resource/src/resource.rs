@@ -317,6 +317,35 @@ pub trait Resource: Send + Sync + 'static {
         async { Ok(()) }
     }
 
+    /// The highest `SlotCell` generation across **all** of this resource's
+    /// `#[credential]` slot fields — the resource's current *credential
+    /// epoch*.
+    ///
+    /// `0` means "no credential slot has ever been bound" (also the default
+    /// for resources with no credential slots). Each `SlotCell` transition
+    /// (`store` *or* `take`/clear) strictly advances its generation, so a
+    /// strictly-larger epoch observed after a runtime was built proves a
+    /// credential rotated/was revoked in between.
+    ///
+    /// `#[derive(Resource)]` emits the real implementation (the `max` over
+    /// every declared `#[credential]` field's
+    /// [`SlotCell::generation`](crate::SlotCell::generation)) — it is
+    /// derive-generated, not author-maintained, so a new slot field cannot
+    /// be silently omitted from the epoch. The default `0` keeps
+    /// hand-written impls (and slot-less resources) compiling; for such
+    /// impls the create-vs-rotate reconcile degrades to the
+    /// runtime-presence path only (it never *falsely* reports a stale
+    /// runtime, it just cannot prove staleness by epoch).
+    ///
+    /// Used by the per-slot rotation dispatch and the Resident create slow
+    /// path to close the create-vs-rotate lost-update race (ADR-0067
+    /// §Deferred): the Resident runtime records the epoch it was built
+    /// against and the dispatch reconciles a runtime built against an
+    /// older epoch instead of silently reporting success.
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
     /// Health-checks an existing runtime.
     ///
     /// The default implementation always succeeds.

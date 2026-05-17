@@ -173,18 +173,36 @@ impl<R: Resource> ManagedResource<R> {
     /// Exclusive) dispatch once against the shared runtime; Pool dispatches
     /// per idle instance (delegating to
     /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle),
-    /// which carries the same `refresh` selector). Resident before its
-    /// first acquire has no runtime yet — nothing to dispatch, so this is a
-    /// no-op `Ok(())`.
+    /// which carries the same `refresh` selector).
+    ///
+    /// **Topology audit of the `current() == None → Ok(())` stale-skip
+    /// (ADR-0067 §Deferred / #680).** Only **Resident** lazily builds its
+    /// runtime internally via `resource.create()` (under its `create_lock`,
+    /// with a `None`-cell window), so only Resident had the lost-update
+    /// where a rotation racing the first `create` could be recorded as a
+    /// success with the hook never delivered. Its dispatch now goes through
+    /// [`ResidentRuntime::dispatch_resident_hook`](super::resident::ResidentRuntime::dispatch_resident_hook),
+    /// which serialises against `create` on the same lock and reconciles a
+    /// runtime built against an older credential epoch instead of silently
+    /// succeeding. The other arms do **not** share the defect:
+    /// Service / Transport / Exclusive take a caller-supplied runtime at
+    /// register time (no `None` window — the hook is always delivered);
+    /// Pool dispatches over every idle entry and rebuilds fresh instances
+    /// against the current (lock-free) slot, so an empty idle queue masks
+    /// no stale-bound runtime.
     ///
     /// The `refresh` flag selects the hook exactly once per topology arm
     /// (mirroring the pool selector); both directions share identical
     /// per-topology runtime-borrow semantics.
     pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
         match &self.topology {
-            TopologyRuntime::Resident(rt) => match rt.current() {
-                Some(runtime) => self.invoke_slot_hook(slot, refresh, &runtime).await,
-                None => Ok(()),
+            // Reconcile-aware (ADR-0067 §Deferred / #680): serialises
+            // against the resident `create` slow path and re-delivers the
+            // hook to a runtime built against an older credential epoch
+            // rather than skipping with a false success.
+            TopologyRuntime::Resident(rt) => {
+                rt.dispatch_resident_hook(&self.resource, slot, refresh)
+                    .await
             },
             TopologyRuntime::Service(rt) => {
                 self.invoke_slot_hook(slot, refresh, rt.runtime()).await

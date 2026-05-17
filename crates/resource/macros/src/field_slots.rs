@@ -243,6 +243,33 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> T
     quote! { #(#calls)* }
 }
 
+/// Emit the body of `Resource::credential_slot_epoch` — the `max`
+/// generation across every declared `#[credential]` `SlotCell` field
+/// (ADR-0067 §Deferred create-vs-rotate reconcile).
+///
+/// Derive-generated so a newly-added credential slot is automatically
+/// folded into the epoch — an author cannot forget to include it (the
+/// structural alternative to a "remember to update the epoch" comment).
+/// With no slots the `max` chain is empty and the epoch is `0`
+/// ("never bound"), matching the trait default.
+pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
+    if slots.is_empty() {
+        return quote! { 0 };
+    }
+    let gens: Vec<TokenStream2> = slots
+        .iter()
+        .map(|slot| {
+            let field = &slot.field_ident;
+            quote! { self.#field.generation() }
+        })
+        .collect();
+    // `max` fold over every slot's generation; a single slot collapses to
+    // just that slot's generation.
+    quote! {
+        [ #(#gens),* ].into_iter().max().unwrap_or(0)
+    }
+}
+
 /// Per slot, emit a read accessor over the author-declared
 /// `SlotCell<CredentialGuard<C>>` field.
 ///

@@ -4,7 +4,13 @@
 //! runtime. On acquire, the runtime is cloned into an owned handle.
 //! If the runtime is missing or stale, it is (re)created.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -30,8 +36,25 @@ use crate::{
 pub struct ResidentRuntime<R: Resource> {
     cell: Cell<R::Runtime>,
     config: Config,
-    /// Serialises the create / recreate slow path.
+    /// Serialises the create / recreate slow path **and** the per-slot
+    /// rotation hook dispatch (see [`dispatch_resident_hook`]). The
+    /// rotation dispatch holding this same lock is what makes the
+    /// create-vs-rotate reconcile *exactly-once*: a `create` slow path
+    /// and a rotation dispatch can never interleave, so the freshly-built
+    /// runtime's epoch is either reconciled inside `create` (dispatch ran
+    /// first / sees the post-reconcile epoch) or by the dispatch (it sees
+    /// the stored runtime + its recorded epoch) — never both.
+    ///
+    /// [`dispatch_resident_hook`]: Self::dispatch_resident_hook
     create_lock: Mutex<()>,
+    /// The credential epoch ([`Resource::credential_slot_epoch`]) the
+    /// currently-stored runtime was built against. `0` when no runtime has
+    /// been created. Written only under `create_lock`; read under it by
+    /// the rotation dispatch. A stored runtime whose `built_epoch` is
+    /// *older* than the live slot epoch was bound to a pre-rotation
+    /// credential — the lost-update the dispatch must reconcile rather
+    /// than silently report success for (ADR-0067 §Deferred / #680).
+    built_epoch: AtomicU64,
 }
 
 impl<R: Resource> ResidentRuntime<R> {
@@ -41,6 +64,7 @@ impl<R: Resource> ResidentRuntime<R> {
             cell: Cell::new(),
             config,
             create_lock: Mutex::new(()),
+            built_epoch: AtomicU64::new(0),
         }
     }
 
@@ -54,14 +78,112 @@ impl<R: Resource> ResidentRuntime<R> {
         self.cell.is_some()
     }
 
-    /// Snapshots the current shared runtime, if one has been created.
+    /// Per-slot rotation hook dispatch for the Resident topology, with the
+    /// create-vs-rotate reconcile (ADR-0067 §Deferred / #680).
     ///
-    /// Used by the per-slot rotation dispatch to borrow the live runtime
-    /// and hand it to `Resource::on_credential_refresh` /
-    /// `on_credential_revoke`. `None` before the first acquire (nothing to
-    /// rotate yet).
-    pub(crate) fn current(&self) -> Option<Arc<R::Runtime>> {
-        self.cell.load()
+    /// Takes `create_lock` so it is **mutually excluded** with the
+    /// `create` slow path: a rotation dispatch and a first-acquire create
+    /// can never interleave, which is what makes the reconcile
+    /// exactly-once. Under the lock:
+    ///
+    /// - **Runtime present, built epoch ≥ slot epoch** — up to date: deliver
+    ///   the hook normally.
+    /// - **Runtime present, built epoch < slot epoch** — the runtime was
+    ///   bound to a pre-rotation credential (the lost-update): still deliver
+    ///   the hook (the resource's `&self` reaction rebinds against the now
+    ///   current slot) and, on success, advance the recorded epoch. This is
+    ///   the arm that *used to* silently `Ok(())` when `current() == None`
+    ///   raced the build; it is now an explicit, observable reconcile —
+    ///   never a skipped-but-success.
+    /// - **No runtime** — nothing live to refresh. Genuinely a no-op
+    ///   `Ok(())`: a never-created resident has no stale runtime to leave
+    ///   behind, and a create *racing* this dispatch is serialised by
+    ///   `create_lock` — it runs strictly before or after. If it runs
+    ///   after, it reads the post-rotation credential (correct by
+    ///   construction) and records that newer `built_epoch`; if it ran
+    ///   before, its older `built_epoch` makes *this* dispatch's next
+    ///   invocation (or the very acquire that materialised it) take the
+    ///   stale-reconcile arm. "Never created" vs "created against a stale
+    ///   epoch" is exactly the runtime-presence check here.
+    ///
+    /// `refresh = true` selects `on_credential_refresh`, `false`
+    /// `on_credential_revoke`. The revoke direction is symmetric: a runtime
+    /// built against an older epoch is still delivered the revoke hook (it
+    /// must stop emitting on the now-revoked credential); a never-created
+    /// resident has nothing emitting, so the no-op is correct there too.
+    pub(crate) async fn dispatch_resident_hook(
+        &self,
+        resource: &R,
+        slot: &str,
+        refresh: bool,
+    ) -> Result<(), Error> {
+        // Serialise against the create slow path: the reconcile must not
+        // interleave with a runtime being built / its epoch being
+        // published, so delivery is exactly-once.
+        let _guard = self.create_lock.lock().await;
+
+        let Some(runtime) = self.cell.load() else {
+            // No live runtime. Not a stale-skip: nothing is bound to a
+            // credential at all, and a concurrent first create is excluded
+            // by `create_lock` (it runs strictly before/after this and
+            // records its own `built_epoch`). A genuinely never-created,
+            // never-bound resident is a legitimate no-op.
+            tracing::debug!(
+                resource = %R::key(),
+                slot,
+                refresh,
+                "resident slot hook: no live runtime — legitimate no-op \
+                 (never created; not a stale-skip)"
+            );
+            return Ok(());
+        };
+
+        let slot_epoch = resource.credential_slot_epoch();
+        let built = self.built_epoch.load(Ordering::Acquire);
+        let stale = built < slot_epoch;
+        if stale {
+            // The lost-update: the live runtime was built against an older
+            // credential epoch than the slot now holds. This is the arm
+            // that previously could be skipped with a false success when it
+            // raced `current() == None`; it is now an explicit, observable
+            // reconcile — we still deliver the hook so the rotation
+            // actually takes effect. Carries no credential material.
+            tracing::warn!(
+                resource = %R::key(),
+                slot,
+                refresh,
+                built_epoch = built,
+                slot_epoch,
+                "resident slot hook: live runtime is stale (built against an \
+                 older credential epoch) — reconciling by delivering the hook"
+            );
+        }
+
+        let res = if refresh {
+            resource.on_credential_refresh(slot, &runtime).await
+        } else {
+            resource.on_credential_revoke(slot, &runtime).await
+        };
+
+        match res {
+            Ok(()) => {
+                if stale {
+                    // Reconciled: the runtime is now consistent with the
+                    // current slot epoch. Advance so a subsequent dispatch
+                    // does not treat it as stale again.
+                    self.built_epoch.store(slot_epoch, Ordering::Release);
+                }
+                Ok(())
+            },
+            Err(e) => {
+                // On a stale reconcile failure, deliberately do NOT advance
+                // `built_epoch`: the runtime is still bound to the old
+                // credential, so the next dispatch must re-attempt. The
+                // error propagates so the dispatch outcome is recorded as
+                // failed — never a skipped-because-stale success.
+                Err(e.into())
+            },
+        }
     }
 }
 
@@ -136,6 +258,26 @@ where
             }
         }
 
+        // Capture the credential epoch *immediately before* `create`
+        // reads the slot. `create` reads each `#[credential]` slot through
+        // its derive-emitted accessor; if a `SlotCell::store` (engine
+        // rotation fan-out, ADR-0067 D1) lands *after* this read but
+        // *before* we publish the runtime, the runtime is bound to the
+        // pre-rotation credential while a concurrent rotation dispatch
+        // would (pre-fix) see `current() == None`, record a false success,
+        // and the hook would never be delivered (#680 lost-update).
+        //
+        // Recording this epoch as the runtime's `built_epoch` is the
+        // structural reconcile: the rotation dispatch (serialised by the
+        // same `create_lock`) compares it against the live slot epoch and
+        // re-delivers the hook against this runtime if it is older. The
+        // dispatch — not this path — owns hook delivery, so the hook fires
+        // *exactly once* with the real slot name (a `create` reading the
+        // slot strictly after a `store` already builds against the fresh
+        // credential and needs no hook; a `create` reading it strictly
+        // before is detected here via a stale `built_epoch`).
+        let built_epoch = resource.credential_slot_epoch();
+
         // Create a new runtime.
         let runtime = match tokio::time::timeout(
             self.config.create_timeout,
@@ -150,6 +292,11 @@ where
 
         let lease: R::Lease = runtime.clone().into();
         self.cell.store(Arc::new(runtime));
+        // Publish the (runtime, built_epoch) pair. Both writes happen
+        // under `create_lock`; the rotation dispatch reads both under the
+        // same lock, so it never observes a stored runtime with a stale
+        // (un-updated) `built_epoch`.
+        self.built_epoch.store(built_epoch, Ordering::Release);
 
         Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident))
     }
