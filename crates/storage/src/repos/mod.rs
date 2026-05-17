@@ -66,7 +66,7 @@ pub use idempotency::{CachedRecord, IdempotencyStoreRepo, InMemoryIdempotencySto
 pub use journal::JournalRepo;
 pub use org::OrgRepo;
 pub use quota::QuotaRepo;
-pub use resource::ResourceRepo;
+pub use resource::{ResourceEntry, ResourceRepo};
 pub use trigger::TriggerRepo;
 pub use user::{PatRepo, SessionRepo, UserRepo};
 pub use webhook_activation::{InMemoryWebhookActivationRepo, WebhookActivationRepo};

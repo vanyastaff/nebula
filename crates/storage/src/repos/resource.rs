@@ -1,6 +1,6 @@
 //! Resource repository.
 
-use std::future::Future;
+use async_trait::async_trait;
 
 use crate::error::StorageError;
 
@@ -9,41 +9,42 @@ use crate::error::StorageError;
 /// Spec 16 layer 6. Resources are long-lived managed objects
 /// (connection pools, SDK clients). The engine owns lifecycle; this
 /// repo only stores definitions.
+///
+/// `#[async_trait]` is used for object-safe `dyn ResourceRepo` and to
+/// match the `#[async_trait]` repo ports (`ControlQueueRepo`,
+/// `WebhookActivationRepo`) that the API layer also holds as
+/// `Arc<dyn …>`. This is a deliberate convention-parity choice:
+/// `ResourceRepo` had no impls when converted, so it is non-breaking.
+/// (RPITIT-with-`+ Send` is also dyn-compatible here, as `WorkflowRepo`
+/// and `ExecutionRepo` show; `#[async_trait]` is chosen only for parity
+/// with the other `Arc<dyn>` port repos.)
+#[async_trait]
 pub trait ResourceRepo: Send + Sync {
     /// Insert a new resource definition.
-    fn create(
-        &self,
-        resource: &ResourceEntry,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn create(&self, resource: &ResourceEntry) -> Result<(), StorageError>;
 
     /// Fetch a resource by ID.
-    fn get(
-        &self,
-        id: &[u8],
-    ) -> impl Future<Output = Result<Option<ResourceEntry>, StorageError>> + Send;
+    async fn get(&self, id: &[u8]) -> Result<Option<ResourceEntry>, StorageError>;
 
     /// Fetch a resource by (workspace_id, slug).
-    fn get_by_slug(
+    async fn get_by_slug(
         &self,
         workspace_id: &[u8],
         slug: &str,
-    ) -> impl Future<Output = Result<Option<ResourceEntry>, StorageError>> + Send;
+    ) -> Result<Option<ResourceEntry>, StorageError>;
 
     /// Update a resource with CAS on `version`.
-    fn update(
+    async fn update(
         &self,
         resource: &ResourceEntry,
         expected_version: i64,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    ) -> Result<(), StorageError>;
 
     /// Soft-delete a resource.
-    fn soft_delete(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
 
     /// List all resources in a workspace.
-    fn list(
-        &self,
-        workspace_id: &[u8],
-    ) -> impl Future<Output = Result<Vec<ResourceEntry>, StorageError>> + Send;
+    async fn list(&self, workspace_id: &[u8]) -> Result<Vec<ResourceEntry>, StorageError>;
 }
 
 /// Resource row (in-repo type — the `resources` table is simple enough

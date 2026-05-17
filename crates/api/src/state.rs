@@ -178,6 +178,12 @@ pub struct AppState {
     /// Required for `POST /internal/v1/webhooks/reload`. When `None`,
     /// every request to `/internal/v1/...` returns 503.
     pub internal_shared_token: Option<Arc<str>>,
+
+    /// Optional resource repository for the resource catalog endpoints.
+    ///
+    /// When `None`, resource endpoints return 501 (stub per ADR-0047
+    /// Stub Endpoint Policy). Set via [`AppState::with_resource_repo`].
+    pub resource_repo: Option<Arc<dyn nebula_storage::repos::ResourceRepo>>,
 }
 
 impl AppState {
@@ -215,6 +221,7 @@ impl AppState {
             webhook_secret_resolver: None,
             webhook_ctx_factory: None,
             internal_shared_token: None,
+            resource_repo: None,
         }
     }
 
@@ -349,5 +356,109 @@ impl AppState {
     pub fn with_internal_shared_token(mut self, token: impl Into<Arc<str>>) -> Self {
         self.internal_shared_token = Some(token.into());
         self
+    }
+
+    /// Attach a resource repository for the resource catalog endpoints.
+    ///
+    /// When `None`, resource endpoints return 501 (stub per ADR-0047
+    /// Stub Endpoint Policy). Compose this in production with the
+    /// Postgres-backed implementation; leave `None` in tests that
+    /// exercise unrelated routes.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_repo(
+        mut self,
+        repo: Arc<dyn nebula_storage::repos::ResourceRepo>,
+    ) -> Self {
+        self.resource_repo = Some(repo);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nebula_storage::{
+        InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+    };
+
+    /// Minimal fake that satisfies `Arc<dyn ResourceRepo>` inside the test module.
+    /// Production code never touches this; it only proves the builder slot is wired.
+    struct FakeResourceRepo;
+
+    #[async_trait::async_trait]
+    impl nebula_storage::repos::ResourceRepo for FakeResourceRepo {
+        async fn create(
+            &self,
+            _resource: &nebula_storage::repos::ResourceEntry,
+        ) -> Result<(), nebula_storage::StorageError> {
+            Ok(())
+        }
+
+        async fn get(
+            &self,
+            _id: &[u8],
+        ) -> Result<Option<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+        {
+            Ok(None)
+        }
+
+        async fn get_by_slug(
+            &self,
+            _workspace_id: &[u8],
+            _slug: &str,
+        ) -> Result<Option<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+        {
+            Ok(None)
+        }
+
+        async fn update(
+            &self,
+            _resource: &nebula_storage::repos::ResourceEntry,
+            _expected_version: i64,
+        ) -> Result<(), nebula_storage::StorageError> {
+            Ok(())
+        }
+
+        async fn soft_delete(&self, _id: &[u8]) -> Result<(), nebula_storage::StorageError> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _workspace_id: &[u8],
+        ) -> Result<Vec<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+        {
+            Ok(vec![])
+        }
+    }
+
+    fn base_state() -> AppState {
+        let jwt = JwtSecret::new("test-secret-for-state-module-tests-0123456789")
+            .expect("static test secret is valid");
+        AppState::new(
+            Arc::new(InMemoryWorkflowRepo::new()),
+            Arc::new(InMemoryExecutionRepo::new()),
+            Arc::new(InMemoryControlQueueRepo::new()),
+            jwt,
+        )
+    }
+
+    #[test]
+    fn with_resource_repo_sets_field() {
+        let repo: Arc<dyn nebula_storage::repos::ResourceRepo> = Arc::new(FakeResourceRepo);
+        let st = base_state().with_resource_repo(Arc::clone(&repo));
+        assert!(
+            st.resource_repo.is_some(),
+            "resource_repo must be Some after with_resource_repo"
+        );
+    }
+
+    #[test]
+    fn resource_repo_defaults_to_none() {
+        let st = base_state();
+        assert!(
+            st.resource_repo.is_none(),
+            "resource_repo must default to None"
+        );
     }
 }
