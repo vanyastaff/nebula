@@ -859,3 +859,147 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
         .await
         .expect("tenant B must stay acquirable after an unrelated revoke on A");
 }
+
+/// #681 — phase 1 (`taint_slot`) is **synchronous**: the taint is fully
+/// applied the instant `taint_slot` returns, *before* any `.await`. Proven
+/// by acquiring on the row immediately after `taint_slot` returns and before
+/// `drain_and_revoke` is ever constructed — it must already be rejected.
+/// This is the property a dropped `tokio::time::timeout` future relied on:
+/// because the taint is not inside an async body it cannot be skipped by a
+/// timeout that fires before the first poll.
+#[tokio::test]
+async fn taint_slot_applies_taint_synchronously_before_any_await() {
+    use nebula_core::scope::Scope;
+    use nebula_error::{Classify, ErrorCategory};
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime (acquire+drop) so the phase-2 revoke hook
+    // has a live `&Runtime` to borrow — `dispatch_slot_hook` is a no-op
+    // `Ok(())` on a Resident whose runtime was never materialized.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("warm the resident runtime");
+        drop(g);
+    }
+
+    // Phase 1 only — a plain (non-`async`) call. No `.await` has run.
+    let tainted = mgr
+        .taint_slot(&key, ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered row");
+
+    // The row is already tainted: an acquire issued now — before
+    // `drain_and_revoke` is even built, let alone awaited — must be rejected.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let err = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect_err("acquire after synchronous taint_slot must be rejected");
+    assert_eq!(
+        err.category(),
+        ErrorCategory::Unavailable,
+        "synchronous taint must reject with Revoked/Unavailable, got: {err}"
+    );
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        0,
+        "phase 1 must NOT have run the revoke hook (that is phase 2's job)"
+    );
+
+    // Completing phase 2 still works and runs the hook exactly once.
+    mgr.drain_and_revoke(tainted)
+        .await
+        .expect("drain_and_revoke (phase 2) must succeed");
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        1,
+        "phase 2 runs the revoke hook exactly once"
+    );
+}
+
+/// #681 — cancellation-safety: dropping the `drain_and_revoke` future
+/// (phase 2) mid-flight — the exact effect of a `tokio::time::timeout`
+/// elapsing and dropping the wrapped future — must leave the row tainted,
+/// because the taint already ran in the synchronous phase 1. The credential
+/// is never silently un-revoked by a dropped timeout.
+///
+/// The drop is made *genuine*: a real in-flight guard is held so
+/// `drain_and_revoke` actually parks in the per-resource drain (it cannot
+/// complete on the first poll), and the future is then explicitly dropped
+/// while still pending.
+#[tokio::test]
+async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
+    use std::sync::Arc;
+
+    use nebula_core::scope::Scope;
+    use nebula_error::{Classify, ErrorCategory};
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+    let mgr = Arc::new(mgr);
+
+    // Hold a real in-flight guard so phase 2's per-resource drain genuinely
+    // blocks (counter stays at 1) — `drain_and_revoke` parks rather than
+    // completing on its first poll, making the subsequent drop a true
+    // mid-flight cancellation.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let in_flight = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    // Phase 1: synchronous taint.
+    let tainted = mgr
+        .taint_slot(&key, ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered row");
+
+    // Phase 2 constructed and polled enough to park in the drain, then
+    // explicitly DROPPED while still pending — models the engine fan-out's
+    // `tokio::time::timeout` elapsing and dropping the wrapped future.
+    {
+        let mut fut = Box::pin(mgr.drain_and_revoke(tainted));
+        // A bounded select that loses to a short timer: the drain future is
+        // polled (and parks on the held guard) but never completes, then is
+        // dropped at the end of this block.
+        let parked = tokio::time::timeout(std::time::Duration::from_millis(150), &mut fut).await;
+        assert!(
+            parked.is_err(),
+            "drain_and_revoke must still be parked in the per-resource drain \
+             while the in-flight guard is held"
+        );
+        drop(fut);
+    }
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        0,
+        "the dropped (never-completed) drain future must not have run the \
+         revoke hook"
+    );
+
+    // The decisive #681 assertion: the taint survived the dropped tail —
+    // every subsequent acquire is still rejected. The taint was applied
+    // synchronously in phase 1, so dropping the phase-2 future cannot roll
+    // it back; the credential is never silently un-revoked.
+    for i in 0..16 {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let err = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect_err(&format!(
+                "acquire #{i} after a dropped drain future must still be rejected (#681)"
+            ));
+        assert_eq!(
+            err.category(),
+            ErrorCategory::Unavailable,
+            "dropped-tail acquire must still hit the Revoked/Unavailable taint, got: {err}"
+        );
+    }
+
+    drop(in_flight);
+}

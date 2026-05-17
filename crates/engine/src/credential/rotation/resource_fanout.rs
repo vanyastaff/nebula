@@ -292,6 +292,23 @@ impl ResourceFanoutIndex {
     /// or timed-out row's future resolves on its own and cannot abort or
     /// fail a sibling — every row's outcome is recorded independently.
     ///
+    /// **Revoke is two-phase and cancellation-safe (ADR-0067 §Deferred).**
+    /// `Manager::revoke_slot_for` is *not* called inside the timeout: a Rust
+    /// `async fn` body is lazy, so a timeout future dropped before its first
+    /// poll would skip the synchronous taint and leave new acquires accepted
+    /// on a credential whose revoke "timed out". Instead the synchronous
+    /// `Manager::taint_slot_for` runs **first, outside and before** the
+    /// `tokio::time::timeout` (the taint is fully applied the instant it
+    /// returns), and **only** the cancellation-safe
+    /// `Manager::drain_and_revoke` tail is wrapped in the per-resource
+    /// timeout. A timed-out (or otherwise dropped) drain tail therefore
+    /// leaves the row tainted — recorded `timed_out`, never silently
+    /// un-revoked. A failed *taint* (resolution miss / shutting down) is the
+    /// row's terminal outcome (`failed`); the drain tail is then not entered.
+    /// Refresh has no pre-`await` state mutation (the engine already stored
+    /// the fresh material before this is called), so it stays a single
+    /// timeout-wrapped `refresh_slot_for` call.
+    ///
     /// Each row's `Bind` is moved into its own dispatch future (the snapshot
     /// from [`affected`](Self::affected) is already an owned `Vec`, so no
     /// clone is added over the snapshot), keeping every future self-contained
@@ -314,56 +331,107 @@ impl ResourceFanoutIndex {
 
         let op_name = op.as_str();
         let dispatches = rows.into_iter().map(|b| async move {
-            // The port future borrows `b`; it is constructed and awaited
-            // entirely inside this per-row future, which owns `b`, so no
-            // cross-future borrow and no clone beyond the owned snapshot.
-            let port = async {
-                match op {
-                    FanoutOp::Refresh => {
-                        mgr.refresh_slot_for(
-                            &b.resource_key,
-                            b.scope.clone(),
-                            &b.slot_name,
-                            b.slot_identity,
-                        )
-                        .await
-                    },
-                    FanoutOp::Revoke => {
-                        mgr.revoke_slot_for(
-                            &b.resource_key,
-                            b.scope.clone(),
-                            &b.slot_name,
-                            b.slot_identity,
-                        )
-                        .await
-                    },
-                }
-            };
-            match tokio::time::timeout(per_resource_timeout, port).await {
-                Ok(Ok(())) => RowOutcome::Success,
-                Ok(Err(err)) => {
-                    // Resource-crate errors are already credential-free
-                    // (key/slot/scope only); safe to log verbatim.
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %b.resource_key,
-                        slot = %b.slot_name,
-                        slot_identity = b.slot_identity,
-                        error = %err,
-                        "rotation fan-out: per-resource {op_name} failed; siblings unaffected",
+            match op {
+                FanoutOp::Refresh => {
+                    // Refresh has no pre-`await` state mutation, so the whole
+                    // call is safe to wrap in the per-resource timeout.
+                    let refresh = mgr.refresh_slot_for(
+                        &b.resource_key,
+                        b.scope.clone(),
+                        &b.slot_name,
+                        b.slot_identity,
                     );
-                    RowOutcome::Failed
+                    match tokio::time::timeout(per_resource_timeout, refresh).await {
+                        Ok(Ok(())) => RowOutcome::Success,
+                        Ok(Err(err)) => {
+                            // Resource-crate errors are already
+                            // credential-free (key/slot/scope only).
+                            tracing::warn!(
+                                credential_id = %cid,
+                                resource_key = %b.resource_key,
+                                slot = %b.slot_name,
+                                slot_identity = b.slot_identity,
+                                error = %err,
+                                "rotation fan-out: per-resource refresh failed; \
+                                 siblings unaffected",
+                            );
+                            RowOutcome::Failed
+                        },
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                credential_id = %cid,
+                                resource_key = %b.resource_key,
+                                slot = %b.slot_name,
+                                slot_identity = b.slot_identity,
+                                timeout_ms = per_resource_timeout.as_millis() as u64,
+                                "rotation fan-out: per-resource refresh timed out; \
+                                 siblings unaffected",
+                            );
+                            RowOutcome::TimedOut
+                        },
+                    }
                 },
-                Err(_elapsed) => {
-                    tracing::warn!(
-                        credential_id = %cid,
-                        resource_key = %b.resource_key,
-                        slot = %b.slot_name,
-                        slot_identity = b.slot_identity,
-                        timeout_ms = per_resource_timeout.as_millis() as u64,
-                        "rotation fan-out: per-resource {op_name} timed out; siblings unaffected",
-                    );
-                    RowOutcome::TimedOut
+                FanoutOp::Revoke => {
+                    // Phase 1 — SYNCHRONOUS taint, OUTSIDE the timeout. It is
+                    // fully applied before `taint_slot_for` returns, so a
+                    // subsequently-dropped timeout on the drain tail can
+                    // never skip it (ADR-0067 §Deferred). A taint failure
+                    // (resolution miss / manager shutting down) is this
+                    // row's terminal outcome — the drain tail is not entered.
+                    let tainted = match mgr.taint_slot_for(
+                        &b.resource_key,
+                        b.scope.clone(),
+                        &b.slot_name,
+                        b.slot_identity,
+                    ) {
+                        Ok(t) => t,
+                        Err(err) => {
+                            tracing::warn!(
+                                credential_id = %cid,
+                                resource_key = %b.resource_key,
+                                slot = %b.slot_name,
+                                slot_identity = b.slot_identity,
+                                error = %err,
+                                "rotation fan-out: per-resource revoke taint failed; \
+                                 siblings unaffected",
+                            );
+                            return RowOutcome::Failed;
+                        },
+                    };
+                    // Phase 2 — ONLY the cancellation-safe drain + revoke
+                    // hook is timeout-wrapped. The row is already tainted; a
+                    // timed-out or dropped tail leaves it tainted (new
+                    // acquires stay rejected) and is recorded `timed_out`,
+                    // never un-tainted.
+                    let drain = mgr.drain_and_revoke(tainted);
+                    match tokio::time::timeout(per_resource_timeout, drain).await {
+                        Ok(Ok(())) => RowOutcome::Success,
+                        Ok(Err(err)) => {
+                            tracing::warn!(
+                                credential_id = %cid,
+                                resource_key = %b.resource_key,
+                                slot = %b.slot_name,
+                                slot_identity = b.slot_identity,
+                                error = %err,
+                                "rotation fan-out: per-resource revoke hook failed \
+                                 (row stays tainted); siblings unaffected",
+                            );
+                            RowOutcome::Failed
+                        },
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                credential_id = %cid,
+                                resource_key = %b.resource_key,
+                                slot = %b.slot_name,
+                                slot_identity = b.slot_identity,
+                                timeout_ms = per_resource_timeout.as_millis() as u64,
+                                "rotation fan-out: per-resource revoke drain/hook timed \
+                                 out (row stays tainted, no new leases); siblings \
+                                 unaffected",
+                            );
+                            RowOutcome::TimedOut
+                        },
+                    }
                 },
             }
         });
@@ -400,8 +468,10 @@ enum FanoutOp {
     /// `Manager::refresh_slot_for` — credential rotated, fresh material
     /// already resolved and stored by the engine.
     Refresh,
-    /// `Manager::revoke_slot_for` — credential revoked (e.g. ADR-0051 lease
-    /// revoke); taint → drain → revoke hook.
+    /// Credential revoked (e.g. ADR-0051 lease revoke). Driven as the
+    /// two-phase port: synchronous `Manager::taint_slot_for` outside the
+    /// timeout, then the timeout-wrapped cancellation-safe
+    /// `Manager::drain_and_revoke` tail (ADR-0067 §Deferred).
     Revoke,
 }
 
@@ -710,7 +780,10 @@ mod tests {
         /// Register `identities.len()` distinct tenants under ONE
         /// `(key, scope)` (distinct `slot_identity`), warm each resident
         /// runtime, bind every row into a fresh index under `cid`, and
-        /// return `(index, manager, cid, scope, ledger)`.
+        /// return `(index, manager, cid, scope, org, ledger)`. `org` is the
+        /// `OrgId` backing `scope` so a caller can build an acquire
+        /// `ResourceContext` for the registered scope without re-deriving it
+        /// from `scope` (no destructure-or-panic at the call site).
         async fn setup(
             identities: &[u64],
         ) -> (
@@ -718,6 +791,7 @@ mod tests {
             Arc<Manager>,
             CredentialId,
             ScopeLevel,
+            OrgId,
             Ledger,
         ) {
             let ledger = Ledger::default();
@@ -763,7 +837,7 @@ mod tests {
                 idx.bind(cid, CtlResource::key(), scope.clone(), "db", id);
             }
 
-            (idx, mgr, cid, scope, ledger)
+            (idx, mgr, cid, scope, org, ledger)
         }
 
         /// Isolation invariant: one resource that times out must NOT abort
@@ -772,7 +846,7 @@ mod tests {
         #[tokio::test]
         async fn refresh_fanout_isolates_a_timed_out_resource() {
             let (a, b, c) = (0xAAAA_u64, 0xBBBB_u64, 0xCCCC_u64);
-            let (idx, mgr, cid, _scope, ledger) = setup(&[a, b, c]).await;
+            let (idx, mgr, cid, _scope, _org, ledger) = setup(&[a, b, c]).await;
             ledger.set(a, Behaviour::FastOk);
             ledger.set(b, Behaviour::Hang);
             ledger.set(c, Behaviour::FastOk);
@@ -807,7 +881,7 @@ mod tests {
         #[tokio::test]
         async fn refresh_fanout_mixed_outcomes_each_independent() {
             let (a, b, c, d) = (0x1_u64, 0x2_u64, 0x3_u64, 0x4_u64);
-            let (idx, mgr, cid, _scope, ledger) = setup(&[a, b, c, d]).await;
+            let (idx, mgr, cid, _scope, _org, ledger) = setup(&[a, b, c, d]).await;
             ledger.set(a, Behaviour::FastOk);
             ledger.set(b, Behaviour::FastErr);
             ledger.set(c, Behaviour::Hang);
@@ -832,7 +906,7 @@ mod tests {
         #[tokio::test]
         async fn revoke_fanout_isolates_a_timed_out_resource() {
             let (a, b, c) = (0xDEAD_u64, 0xBEEF_u64, 0xF00D_u64);
-            let (idx, mgr, cid, _scope, ledger) = setup(&[a, b, c]).await;
+            let (idx, mgr, cid, _scope, _org, ledger) = setup(&[a, b, c]).await;
             ledger.set(a, Behaviour::FastOk);
             ledger.set(b, Behaviour::Hang);
             ledger.set(c, Behaviour::FastOk);
@@ -857,11 +931,190 @@ mod tests {
             );
         }
 
+        /// Builds an acquire context for the registered Organization scope
+        /// without re-deriving it from a `ScopeLevel` (no destructure-or-
+        /// panic): `setup` hands back the `OrgId` directly.
+        fn ctx_for(org: OrgId) -> ResourceContext {
+            ResourceContext::minimal(
+                Scope {
+                    org_id: Some(org),
+                    ..Default::default()
+                },
+                CancellationToken::new(),
+            )
+        }
+
+        /// #681 — the cancellation-safety invariant of the two-phase port.
+        ///
+        /// A revoke whose `drain_and_revoke` tail times out (the revoke hook
+        /// hangs) MUST still have left the row **tainted**: the synchronous
+        /// `taint_slot_for` ran *outside* the per-resource timeout, so a
+        /// timed-out drain/hook cannot un-revoke the credential. Asserts both
+        /// that the fan-out records `timed_out` (not success, not dropped)
+        /// **and** that a fresh acquire on that exact resolved row is
+        /// rejected *after* the timed-out fan-out returned — proof the taint
+        /// survived the timeout.
+        #[tokio::test]
+        async fn revoke_fanout_timed_out_drain_still_left_row_tainted() {
+            use nebula_error::{Classify, ErrorCategory};
+            use nebula_resource::AcquireOptions;
+
+            let hung = 0x5151_u64;
+            let (idx, mgr, cid, _scope, org, ledger) = setup(&[hung]).await;
+            // The revoke hook never returns -> `drain_and_revoke` (the
+            // timeout-wrapped phase 2) times out.
+            ledger.set(hung, Behaviour::Hang);
+
+            let out = idx
+                .dispatch_revoke(cid, &mgr, Duration::from_millis(150))
+                .await;
+
+            assert_eq!(
+                out,
+                RotationOutcome {
+                    success: 0,
+                    failed: 0,
+                    timed_out: 1,
+                },
+                "a hung revoke hook must record timed_out — never success, never dropped",
+            );
+            assert_eq!(
+                ledger.revoke_entered.load(Ordering::SeqCst),
+                1,
+                "phase 2 (drain_and_revoke) did run and reached the hung hook",
+            );
+
+            // The decisive #681 assertion: the row is STILL tainted after the
+            // timed-out fan-out returned. If the taint had been inside the
+            // timeout future it would have been skipped/rolled back; here it
+            // ran synchronously *before* the timeout, so new acquires on this
+            // exact resolved row stay rejected.
+            let ctx = ctx_for(org);
+            let acquired = mgr
+                .acquire_resident_for::<CtlResource>(&ctx, &AcquireOptions::default(), hung)
+                .await;
+            let err = match acquired {
+                Err(e) => e,
+                Ok(_) => {
+                    // guard-justified: a live guard here is the exact #681
+                    // regression (taint lost across the timeout); fail the
+                    // test loudly with no salvage path.
+                    unreachable!(
+                        "acquire after a timed-out revoke must be rejected — \
+                         the row must stay tainted (#681)"
+                    )
+                },
+            };
+            assert_eq!(
+                err.category(),
+                ErrorCategory::Unavailable,
+                "post-timeout acquire must be the Revoked/Unavailable taint rejection, got: {err}",
+            );
+        }
+
+        /// #681 — cancellation: dropping the `drain_and_revoke` future the
+        /// instant after `taint_slot_for` returns must leave the row tainted.
+        ///
+        /// This drives the two-phase port directly (the exact split the
+        /// fan-out uses): synchronous `taint_slot_for` first, then *drop* the
+        /// still-pending `drain_and_revoke` future mid-flight (a
+        /// `tokio::time::timeout` elapsing and dropping the wrapped future is
+        /// the real-world trigger). A real in-flight guard is held so the
+        /// per-resource drain genuinely parks the future (it cannot complete
+        /// on its first poll). Because the taint already completed
+        /// synchronously in phase 1, no acquire on the row may succeed
+        /// afterward.
+        #[tokio::test]
+        async fn revoke_two_phase_dropping_drain_future_keeps_taint() {
+            use nebula_error::{Classify, ErrorCategory};
+            use nebula_resource::AcquireOptions;
+
+            let id = 0x7A1D_u64;
+            let (_idx, mgr, _cid, scope, org, ledger) = setup(&[id]).await;
+            // Even a hook that *would* succeed: we never let phase 2 run.
+            ledger.set(id, Behaviour::FastOk);
+
+            // Hold a real in-flight guard so phase 2's per-resource drain
+            // blocks (counter stays at 1) — `drain_and_revoke` parks instead
+            // of completing on its first poll, making the subsequent drop a
+            // true mid-flight cancellation.
+            let in_flight = match mgr
+                .acquire_resident_for::<CtlResource>(&ctx_for(org), &AcquireOptions::default(), id)
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => {
+                    // guard-justified: `setup` registered+warmed this row, so
+                    // an acquire on the un-tainted resource cannot fail here;
+                    // a failure is a broken-test invariant, not a real path.
+                    unreachable!("acquire on the freshly warmed row must succeed: {e}")
+                },
+            };
+
+            // Phase 1: synchronous taint, outside any timeout.
+            let tainted = match mgr.taint_slot_for(&CtlResource::key(), scope, "db", id) {
+                Ok(t) => t,
+                Err(e) => {
+                    // guard-justified: the row was just registered+warmed by
+                    // `setup`, so phase-1 resolution cannot fail here; a
+                    // failure is a broken-test invariant, not a runtime path.
+                    unreachable!("taint_slot_for must resolve the freshly bound row: {e}")
+                },
+            };
+
+            // Phase 2 constructed, polled until it parks in the per-resource
+            // drain (the held guard keeps the counter > 0), then explicitly
+            // DROPPED while still pending — models the fan-out's
+            // `tokio::time::timeout` elapsing and dropping the wrapped future.
+            {
+                let mut fut = Box::pin(mgr.drain_and_revoke(tainted));
+                let parked = tokio::time::timeout(Duration::from_millis(150), &mut fut).await;
+                assert!(
+                    parked.is_err(),
+                    "drain_and_revoke must still be parked in the per-resource \
+                     drain while the in-flight guard is held",
+                );
+                drop(fut);
+            }
+            assert_eq!(
+                ledger.revoke_entered.load(Ordering::SeqCst),
+                0,
+                "the dropped (never-completed) drain future must not have run \
+                 the revoke hook",
+            );
+
+            // Invariant: taint survived the dropped tail (it ran in phase 1).
+            // Drop the in-flight guard first so this fresh acquire is gated
+            // only by the taint, not by the still-held lease.
+            drop(in_flight);
+            let ctx = ctx_for(org);
+            let acquired = mgr
+                .acquire_resident_for::<CtlResource>(&ctx, &AcquireOptions::default(), id)
+                .await;
+            let err = match acquired {
+                Err(e) => e,
+                Ok(_) => {
+                    // guard-justified: a guard after a dropped drain future
+                    // means phase-1 taint did not stick — the exact #681
+                    // cancellation hole; fail loudly, no salvage.
+                    unreachable!(
+                        "no acquire may succeed after a dropped drain future — \
+                         the synchronous phase-1 taint already revoked the row (#681)"
+                    )
+                },
+            };
+            assert_eq!(
+                err.category(),
+                ErrorCategory::Unavailable,
+                "dropped-tail acquire must still hit the Revoked/Unavailable taint, got: {err}",
+            );
+        }
+
         /// All-OK fast path: every bound row refreshes, no failures/timeouts.
         #[tokio::test]
         async fn refresh_fanout_all_ok() {
             let ids = [10_u64, 20, 30];
-            let (idx, mgr, cid, _scope, ledger) = setup(&ids).await;
+            let (idx, mgr, cid, _scope, _org, ledger) = setup(&ids).await;
             for id in ids {
                 ledger.set(id, Behaviour::FastOk);
             }
