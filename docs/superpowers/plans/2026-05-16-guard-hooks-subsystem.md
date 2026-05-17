@@ -511,7 +511,7 @@ printf '{"impl_files_edited":[],"gate_green":[]}' >"$CG_P"
 chk "C blocks via git diff" 2 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_DIR"'","stop_hook_active":false}')"
 printf '{"impl_files_edited":[],"gate_green":["zzz"]}' >"$CG_P"
 chk "C allows git+green"   0 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_DIR"'","stop_hook_active":false}')"
-# Task6 constraint #2: renamed src file must still be detected (git status -> arrow stripped)
+# Renamed src file (git mv) must still be detected: the git-status rename arrow is stripped so C checks the NEW path
 ( cd "$CG_DIR" && git add -A && git -c user.email=t@t -c user.name=t commit -qm x && mkdir -p crates/yyy/src && git mv crates/zzz/src/a.rs crates/yyy/src/b.rs )
 printf '{"impl_files_edited":[],"gate_green":[]}' >"$CG_P"
 chk "C detects renamed src (#2)" 2 "$(cstop '{"session_id":"'"$CG_SID"'","cwd":"'"$CG_DIR"'","stop_hook_active":false}')"
