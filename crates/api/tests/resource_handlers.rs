@@ -198,7 +198,7 @@ impl ResourceRepo for FakeResourceRepo {
         &self,
         r: &ResourceEntry,
         expected: i64,
-    ) -> Result<(), nebula_storage::StorageError> {
+    ) -> Result<i64, nebula_storage::StorageError> {
         // Capture first (even on the conflict path): a CAS-conflict test
         // still asserts the handler reached `update` with the EXISTING
         // row's workspace_id, never a body-supplied one.
@@ -211,7 +211,9 @@ impl ResourceRepo for FakeResourceRepo {
                 "resource", "res", expected_v, actual_v,
             ));
         }
-        Ok(())
+        // The store owns the post-CAS increment; the fake mirrors the
+        // contract by returning the store-assigned `expected + 1`.
+        Ok(expected + 1)
     }
 
     async fn soft_delete(&self, id: &[u8]) -> Result<(), nebula_storage::StorageError> {
@@ -225,6 +227,8 @@ impl ResourceRepo for FakeResourceRepo {
     async fn list(
         &self,
         workspace_id: &[u8],
+        offset: u64,
+        limit: u64,
     ) -> Result<Vec<ResourceEntry>, nebula_storage::StorageError> {
         if let Some(expected) = &self.expect_list_ws {
             assert_eq!(
@@ -233,7 +237,18 @@ impl ResourceRepo for FakeResourceRepo {
                 "handler must scope list() to the tenant workspace id bytes"
             );
         }
-        Ok(self.list_rows.clone())
+        // Mirror a real store's windowing: slice [offset, offset+limit).
+        // The handler owns the soft-delete filter, so the fixture still
+        // returns tombstoned rows that fall in the window verbatim.
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        Ok(self
+            .list_rows
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect())
     }
 }
 

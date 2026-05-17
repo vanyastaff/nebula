@@ -485,9 +485,11 @@ mod tests {
         async fn update(
             &self,
             _resource: &nebula_storage::repos::ResourceEntry,
-            _expected_version: i64,
-        ) -> Result<(), nebula_storage::StorageError> {
-            Ok(())
+            expected_version: i64,
+        ) -> Result<i64, nebula_storage::StorageError> {
+            // The store owns the post-CAS increment; the fake mirrors the
+            // contract by returning `expected_version + 1`.
+            Ok(expected_version + 1)
         }
 
         async fn soft_delete(&self, _id: &[u8]) -> Result<(), nebula_storage::StorageError> {
@@ -497,6 +499,8 @@ mod tests {
         async fn list(
             &self,
             _workspace_id: &[u8],
+            _offset: u64,
+            _limit: u64,
         ) -> Result<Vec<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
         {
             Ok(vec![])

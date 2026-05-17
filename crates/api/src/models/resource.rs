@@ -116,11 +116,9 @@ pub struct UpdateResourceResponse {
     pub id: String,
     /// The row's new CAS version after the successful update.
     ///
-    /// **Provisional**: until a storage backend that owns the post-CAS
-    /// increment exists, this is the handler's predicted
-    /// `expected_version + 1`, not an authoritative store-assigned
-    /// value. A backend that owns the increment will return the real
-    /// post-CAS version here (see `ResourceRepo::update`).
+    /// Authoritative: this is the store-assigned post-CAS counter
+    /// returned by `ResourceRepo::update`, not a handler-side
+    /// prediction.
     pub version: i64,
 }
 

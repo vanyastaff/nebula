@@ -31,7 +31,7 @@
 
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use nebula_core::{Principal, ResourceId, ResourceKey, TenantContext};
@@ -40,6 +40,7 @@ use nebula_storage::repos::ResourceEntry;
 
 use crate::{
     errors::{ApiError, ApiResult, ProblemDetails},
+    handlers::workflow::PaginationParams,
     models::{
         CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourcePhase,
         ResourceStatusDto, ResourceSummary, UpdateResourceRequest, UpdateResourceResponse,
@@ -142,9 +143,13 @@ fn phase_from_seam(phase: &str) -> ResourcePhase {
 
 /// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` — list workspace resources.
 ///
-/// Returns resource definitions scoped to the caller's workspace. Soft-deleted
-/// rows are excluded. The raw `config` blob is never surfaced — only the
-/// non-secret summary fields (ADR-0028 §7).
+/// Returns resource definitions scoped to the caller's workspace,
+/// paginated with the shared `page`/`page_size` query convention (same
+/// extractor as `list_workflows`). Soft-deleted rows are excluded *after*
+/// the store returns the page (the store returns the raw window including
+/// tombstones; the handler owns the `deleted_at` filter). The raw
+/// `config` blob is never surfaced — only the non-secret summary fields
+/// (ADR-0028 §7).
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/resources",
@@ -153,6 +158,7 @@ fn phase_from_seam(phase: &str) -> ResourcePhase {
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        PaginationParams,
     ),
     responses(
         (status = 200, description = "Resource definitions for the workspace (no raw config).", body = ListResourcesResponse),
@@ -165,6 +171,7 @@ fn phase_from_seam(phase: &str) -> ResourcePhase {
 pub async fn list_resources(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
+    Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListResourcesResponse>> {
     // Workspace presence is guaranteed by the tenancy middleware for this
     // route; the explicit check keeps the handler honest if the route is
@@ -183,11 +190,20 @@ pub async fn list_resources(
         ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
     })?;
 
-    let entries = repo.list(ws_bytes.as_slice()).await?;
+    // Same pagination contract as `list_workflows`: `PaginationParams`
+    // already clamps `limit` to ≤ 100 and floors `offset` at 0. The repo
+    // signature mirrors `repos::WorkflowRepo::list` (`u64` offset/limit),
+    // so widen the clamped `usize` window without loss.
+    let offset = params.offset() as u64;
+    let limit = params.limit() as u64;
+
+    let entries = repo.list(ws_bytes.as_slice(), offset, limit).await?;
 
     let resources = entries
         .into_iter()
-        // Soft-deleted definitions are not part of the catalog view.
+        // Soft-deleted definitions are not part of the catalog view. The
+        // store returns the raw page (tombstones included); the handler
+        // owns this exclusion policy.
         .filter(|entry| entry.deleted_at.is_none())
         .map(entry_to_summary)
         .collect::<Result<Vec<_>, ApiError>>()?;
@@ -489,7 +505,7 @@ pub async fn create_resource(
     ),
     request_body = UpdateResourceRequest,
     responses(
-        (status = 200, description = "Resource updated. `version` is a provisional value (the handler's predicted post-CAS counter) until a storage backend that owns the post-CAS increment exists — it is NOT yet an authoritative store-assigned version.", body = UpdateResourceResponse),
+        (status = 200, description = "Resource updated. `version` is the authoritative store-assigned post-CAS counter returned by the storage backend.", body = UpdateResourceResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
@@ -557,7 +573,12 @@ pub async fn update_resource(
         deleted_at: None,
     };
 
-    repo.update(&updated, body.expected_version)
+    // The store owns the post-CAS increment and returns the
+    // authoritative new version; `next_version` above was only the row
+    // we asked it to persist. Surface the store's value, never the
+    // handler-side prediction.
+    let new_version = repo
+        .update(&updated, body.expected_version)
         .await
         .map_err(map_resource_update_storage_error)?;
 
@@ -567,7 +588,7 @@ pub async fn update_resource(
 
     Ok(Json(UpdateResourceResponse {
         id,
-        version: updated.version,
+        version: new_version,
     }))
 }
 

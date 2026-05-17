@@ -40,26 +40,38 @@ pub trait ResourceRepo: Send + Sync {
         slug: &str,
     ) -> Result<Option<ResourceEntry>, StorageError>;
 
-    /// Update a resource with CAS on `version`.
+    /// Update a resource with CAS on `version`, returning the
+    /// store-owned post-CAS version.
     ///
-    /// CAS is checked on `expected_version`. A concrete implementation
-    /// MUST set the persisted `version` to `actual + 1` (the post-CAS
-    /// value) — `resource.version` supplied by the caller is advisory only
-    /// and MUST NOT be trusted as the new value; this mirrors
-    /// `WorkflowRepo`'s store-owned increment. (Until a concrete impl
-    /// exists, `UpdateResourceResponse.version` is a provisional
-    /// handler-side prediction.)
+    /// CAS is checked on `expected_version`. The returned `i64` is the
+    /// **authoritative** new version the store assigned after the
+    /// compare-and-swap (the post-CAS value, i.e. `actual + 1`); it is
+    /// what callers must surface. `resource.version` supplied by the
+    /// caller is advisory only and MUST NOT be trusted as the new value;
+    /// this mirrors `WorkflowRepo`'s store-owned increment.
     async fn update(
         &self,
         resource: &ResourceEntry,
         expected_version: i64,
-    ) -> Result<(), StorageError>;
+    ) -> Result<i64, StorageError>;
 
     /// Soft-delete a resource.
     async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
 
-    /// List all resources in a workspace.
-    async fn list(&self, workspace_id: &[u8]) -> Result<Vec<ResourceEntry>, StorageError>;
+    /// List resources in a workspace with pagination.
+    ///
+    /// `offset`/`limit` page the workspace window (mirrors
+    /// [`WorkflowRepo::list`](super::WorkflowRepo::list)). An
+    /// implementation MUST return **all** matching rows in that window
+    /// **including soft-deleted ones** — the `deleted_at` filter is the
+    /// caller's responsibility (the catalog handler owns the
+    /// tombstone-exclusion policy), so the store must not pre-filter.
+    async fn list(
+        &self,
+        workspace_id: &[u8],
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<ResourceEntry>, StorageError>;
 }
 
 /// Resource row (in-repo type — the `resources` table is simple enough
