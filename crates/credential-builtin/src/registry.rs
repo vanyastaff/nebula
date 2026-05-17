@@ -47,12 +47,31 @@ mod tests {
     }
 
     #[test]
-    fn register_builtins_is_idempotent_safe_on_fresh_registry() {
+    fn register_builtins_succeeds_on_independent_fresh_registries() {
         let mut a = CredentialRegistry::new();
         let mut b = CredentialRegistry::new();
         register_builtins(&mut a).expect("a ok");
         register_builtins(&mut b).expect("b ok");
         assert_eq!(a.len(), 3);
         assert_eq!(b.len(), 3);
+    }
+
+    #[test]
+    fn register_builtins_twice_on_same_registry_is_fail_closed() {
+        // `register_builtins` is NOT idempotent: it is fail-closed on a
+        // duplicate KEY (Tech Spec §15.6). The second call on the *same*
+        // registry must reject with `DuplicateKey` (first-wins is an
+        // error the caller handles, not a silent no-op).
+        let mut reg = CredentialRegistry::new();
+        register_builtins(&mut reg).expect("first registration ok");
+        let err = register_builtins(&mut reg)
+            .expect_err("second registration on the same registry must be rejected");
+        assert!(matches!(
+            err,
+            nebula_credential::contract::registry::RegisterError::DuplicateKey { .. }
+        ));
+        // The collision is on the *first* re-registered KEY; the registry
+        // is otherwise unchanged (the three originals remain).
+        assert_eq!(reg.len(), 3);
     }
 }
