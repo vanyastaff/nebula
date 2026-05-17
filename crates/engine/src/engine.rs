@@ -183,6 +183,22 @@ pub struct WorkflowEngine {
     /// [`nebula_credential_rotation_index_bind`]: crate::credential::rotation::ResourceFanoutIndex::bind
     #[cfg(feature = "rotation")]
     resource_fanout_index: Arc<crate::credential::rotation::ResourceFanoutIndex>,
+    /// Single-shot guard for
+    /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout).
+    ///
+    /// The driver subscribes the credential/lease buses; spawning it
+    /// twice would subscribe twice and **double-dispatch every
+    /// refresh/revoke** to the resource fan-out (non-idempotent hooks
+    /// fire 2×, `RotationOutcome` metrics inflated). The composition root
+    /// owns the single spawn, but a defensive structural guard (not a
+    /// "remember to call it once" convention) makes a second call a
+    /// no-op `None` rather than a silent double-subscribe. An
+    /// `AtomicBool` (flipped via `compare_exchange`) so the `&self`
+    /// method is single-shot even under a concurrent double-call.
+    ///
+    /// Feature-gated with the index itself (`rotation`).
+    #[cfg(feature = "rotation")]
+    resource_fanout_spawned: std::sync::atomic::AtomicBool,
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
     /// Optional resource manager for providing resources to actions.
@@ -343,6 +359,8 @@ impl WorkflowEngine {
             resource_registrars: ResourceRegistrarRegistry::new(),
             #[cfg(feature = "rotation")]
             resource_fanout_index: Arc::new(crate::credential::rotation::ResourceFanoutIndex::new()),
+            #[cfg(feature = "rotation")]
+            resource_fanout_spawned: std::sync::atomic::AtomicBool::new(false),
             resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
             execution_repo: None,
@@ -486,9 +504,24 @@ impl WorkflowEngine {
     ///
     /// Returns a [`ResourceFanoutDriver`](crate::credential::rotation::ResourceFanoutDriver)
     /// handle; **hold it** for as long as fan-out should run — dropping
-    /// it aborts the driver task. Returns `None` (a no-op — there is
-    /// nothing to fan rotations *to*) when no resource manager was wired
-    /// via [`with_resource_manager`](Self::with_resource_manager).
+    /// it aborts the driver task.
+    ///
+    /// Returns `None` (spawning nothing) when either:
+    ///
+    /// - no resource manager was wired via
+    ///   [`with_resource_manager`](Self::with_resource_manager) (there is
+    ///   nothing to fan rotations *to*); or
+    /// - the driver was **already spawned** by a prior call. This method
+    ///   is **single-shot / idempotent**: each spawn subscribes the
+    ///   credential + lease buses, so spawning twice would subscribe
+    ///   twice and double-dispatch every refresh/revoke to the resource
+    ///   fan-out. The first call that has a manager spawns and returns
+    ///   `Some(driver)`; every later call is a no-op `None` and does
+    ///   **not** subscribe again (the guard is claimed atomically, so a
+    ///   concurrent double-call still yields exactly one driver). A
+    ///   no-manager call spawns nothing and does **not** consume the
+    ///   single-shot — a later call once a manager is wired can still
+    ///   spawn.
     ///
     /// No `nebula-resource → nebula-engine` edge: the index lives in
     /// `nebula-engine` and the rotation signal arrives via
@@ -501,7 +534,30 @@ impl WorkflowEngine {
         credential_bus: Arc<nebula_eventbus::EventBus<nebula_credential::CredentialEvent>>,
         lease_bus: Option<Arc<nebula_eventbus::EventBus<nebula_credential::LeaseEvent>>>,
     ) -> Option<crate::credential::rotation::ResourceFanoutDriver> {
+        use std::sync::atomic::Ordering;
+
+        // Only a deployment with a resource manager has anything to fan
+        // rotations to. Resolve it *before* claiming the single-shot so a
+        // no-manager call does not burn the guard.
         let manager = Arc::clone(self.resource_manager.as_ref()?);
+
+        // Single-shot: claim the guard atomically. If it was already set,
+        // the driver is already running on its own subscriber pair —
+        // spawning again would double-subscribe and double-dispatch every
+        // event, so return `None` and subscribe nothing.
+        if self
+            .resource_fanout_spawned
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            tracing::debug!(
+                target: "nebula_engine::credential::rotation",
+                "spawn_resource_rotation_fanout called again; fan-out driver \
+                 already running — no second subscriber spawned (idempotent)"
+            );
+            return None;
+        }
+
         Some(crate::credential::rotation::ResourceFanoutDriver::spawn(
             Arc::clone(&self.resource_fanout_index),
             manager,

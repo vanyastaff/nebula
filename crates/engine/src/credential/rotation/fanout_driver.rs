@@ -71,14 +71,97 @@
 //! already guarantee no credential/secret material reaches any span
 //! (ADR-0030 §4); this driver adds only key-free counts.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_eventbus::EventBus;
 use nebula_resource::Manager;
 
 use super::resource_fanout::{ResourceFanoutIndex, RotationOutcome};
+
+/// Time window in which a second revoke for the same `CredentialId` is
+/// treated as a duplicate of the first and skipped.
+///
+/// **Why this exists.** A single logical credential revoke surfaces on
+/// *two* independent buses. `CredentialService::revoke` first calls
+/// `LeaseLifecycle::revoke_for_credential`, which makes the lease
+/// scheduler emit one [`LeaseEvent::LeaseRevoked`] **per released lease**,
+/// and *then* the facade emits one [`CredentialEvent::Revoked`]. The
+/// driver subscribes both, so without dedupe a single revoke would invoke
+/// [`ResourceFanoutIndex::dispatch_revoke`] (and therefore every bound
+/// resource's `on_credential_revoke` hook) two-or-more times for one
+/// logical event: non-idempotent hooks double-fire and the
+/// [`RotationOutcome`] metrics are inflated.
+///
+/// The window is a few seconds — comfortably longer than the gap between
+/// the lease-scheduler `LeaseRevoked` emission(s) and the facade
+/// `CredentialEvent::Revoked` for the *same* revoke (both happen inline
+/// inside one `CredentialService::revoke` call), yet short enough that a
+/// genuinely *new* revoke of the same credential after re-registration is
+/// not suppressed. Taint is idempotent and a re-revoke after the window
+/// is harmless, so erring slightly long is safe; erring short would
+/// re-introduce the double-fire. Refresh is **not** deduped — a refresh
+/// arrives on one bus only (`CredentialEvent::Refreshed`) and a real
+/// re-refresh must always fan out.
+const REVOKE_DEDUPE_WINDOW: Duration = Duration::from_secs(5);
+
+/// Bounded last-seen set of recently-dispatched credential revokes, used
+/// to collapse the lease-bus + credential-bus double-emission of one
+/// logical revoke (see [`REVOKE_DEDUPE_WINDOW`]).
+///
+/// A small FIFO of `(CredentialId, dispatched_at)`: every revoke prunes
+/// entries older than the window, then either observes its `cid` already
+/// present (a duplicate — skipped) or records it and proceeds. Capacity
+/// is bounded so a long-lived driver under heavy revoke churn cannot grow
+/// it without limit; the oldest entry is evicted past the cap (it is
+/// necessarily the least likely to still be inside the window).
+#[derive(Debug)]
+struct RevokeDedupe {
+    seen: VecDeque<(CredentialId, Instant)>,
+}
+
+impl RevokeDedupe {
+    /// Hard cap on retained entries. The window is seconds-long and the
+    /// duplicate pair arrives back-to-back, so a handful of slots covers
+    /// the realistic concurrent-revoke fan-in; the cap only bounds a
+    /// pathological burst.
+    const MAX_ENTRIES: usize = 256;
+
+    fn new() -> Self {
+        Self {
+            seen: VecDeque::new(),
+        }
+    }
+
+    /// Records a revoke dispatch for `cid` at `now` and returns whether
+    /// it should be **dispatched** (`true`) or **skipped as a duplicate**
+    /// (`false`).
+    ///
+    /// Prunes entries older than [`REVOKE_DEDUPE_WINDOW`] first so the
+    /// check is strictly time-bounded, then: if `cid` is still present it
+    /// is a duplicate of an in-window dispatch (skip, do not refresh the
+    /// timestamp — the window is anchored at the *first* dispatch); else
+    /// it is recorded and dispatched.
+    fn admit(&mut self, cid: CredentialId, now: Instant) -> bool {
+        while let Some(&(_, ts)) = self.seen.front() {
+            if now.duration_since(ts) >= REVOKE_DEDUPE_WINDOW {
+                self.seen.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.seen.iter().any(|&(seen_cid, _)| seen_cid == cid) {
+            return false;
+        }
+        self.seen.push_back((cid, now));
+        if self.seen.len() > Self::MAX_ENTRIES {
+            self.seen.pop_front();
+        }
+        true
+    }
+}
 
 /// Per-resource fan-out timeout budget applied to every resolved
 /// resource row by [`ResourceFanoutIndex::dispatch_refresh`] /
@@ -138,32 +221,60 @@ impl ResourceFanoutDriver {
         let mut credential_sub = credential_bus.subscribe();
         let mut lease_sub = lease_bus.map(|bus| bus.subscribe());
         let handle = tokio::spawn(async move {
+            // Per-driver revoke dedupe: one logical credential revoke
+            // double-emits (lease bus `LeaseRevoked`(s) + facade
+            // `CredentialEvent::Revoked`); this collapses them within
+            // `REVOKE_DEDUPE_WINDOW`. Owned by the loop task so it needs
+            // no lock.
+            let mut revoke_dedupe = RevokeDedupe::new();
             loop {
-                // A `None` from either subscriber means the bus was
-                // dropped (the credential-runtime composition root went
-                // away) — no further rotation signals can arrive, so
-                // the driver retires. `tokio::select!` over both so a
-                // refresh and a lease-revoke are both observed promptly.
+                // `tokio::select!` over both subscribers so a refresh and
+                // a lease-revoke are both observed promptly. The two
+                // buses are independent `Arc`s (credential-runtime
+                // `EventMetricObserver::{event_bus, lease_bus}`): a
+                // closed *lease* bus does not imply the *credential* bus
+                // is gone, so it degrades to credential-only rather than
+                // retiring the whole driver (mirrors the no-lease-bus
+                // deployment path below). Only the credential bus closing
+                // (the composition root went away — no further rotation
+                // signals possible) retires the driver.
                 match &mut lease_sub {
                     Some(lsub) => {
                         tokio::select! {
                             ev = credential_sub.recv() => match ev {
                                 Some(ev) => {
-                                    Self::on_credential_event(&index, &manager, ev).await;
+                                    Self::on_credential_event(
+                                        &index, &manager, &mut revoke_dedupe, ev,
+                                    ).await;
                                 },
                                 None => break,
                             },
-                            ev = lsub.recv() => match ev {
-                                Some(ev) => {
-                                    Self::on_lease_event(&index, &manager, ev).await;
-                                },
-                                None => break,
+                            ev = lsub.recv() => if let Some(ev) = ev {
+                                Self::on_lease_event(
+                                    &index, &manager, &mut revoke_dedupe, ev,
+                                ).await;
+                            } else {
+                                // Lease bus closed but the credential bus
+                                // is a separate live `Arc` — degrade to
+                                // credential-only instead of retiring (a
+                                // credential-level `CredentialEvent::Revoked`
+                                // still drives revoke fan-out, exactly the
+                                // no-lease-bus deployment path).
+                                lease_sub = None;
+                                tracing::debug!(
+                                    target: "nebula_engine::credential::rotation",
+                                    "resource rotation fan-out driver: lease signal \
+                                     bus closed; degrading to credential-only \
+                                     (CredentialEvent::Revoked still fans out revoke)"
+                                );
+                                continue;
                             },
                         }
                     },
                     None => match credential_sub.recv().await {
                         Some(ev) => {
-                            Self::on_credential_event(&index, &manager, ev).await;
+                            Self::on_credential_event(&index, &manager, &mut revoke_dedupe, ev)
+                                .await;
                         },
                         None => break,
                     },
@@ -178,26 +289,33 @@ impl ResourceFanoutDriver {
     }
 
     /// Route a `CredentialEvent`: `Refreshed` → refresh fan-out,
-    /// `Revoked` → revoke fan-out. `ReauthRequired` (and any future
-    /// additive variant) is not a rotation/revoke of stored material, so
-    /// it is intentionally not fanned out.
+    /// `Revoked` → (deduped) revoke fan-out. `ReauthRequired` (and any
+    /// future additive variant) is not a rotation/revoke of stored
+    /// material, so it is intentionally not fanned out.
     async fn on_credential_event(
         index: &ResourceFanoutIndex,
         manager: &Manager,
+        revoke_dedupe: &mut RevokeDedupe,
         ev: CredentialEvent,
     ) {
         match ev {
             CredentialEvent::Refreshed { credential_id } => {
+                // Refresh is intentionally NOT deduped: it arrives on one
+                // bus only and a real re-refresh must always fan out.
                 let outcome = index
                     .dispatch_refresh(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
                     .await;
                 Self::record(credential_id, "refresh", outcome);
             },
             CredentialEvent::Revoked { credential_id } => {
-                let outcome = index
-                    .dispatch_revoke(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
-                    .await;
-                Self::record(credential_id, "revoke", outcome);
+                Self::dispatch_revoke_deduped(
+                    index,
+                    manager,
+                    revoke_dedupe,
+                    credential_id,
+                    "credential bus",
+                )
+                .await;
             },
             // Not a rotation of stored material — the sentinel/reauth
             // surface is consumed elsewhere; nothing to fan out.
@@ -210,18 +328,21 @@ impl ResourceFanoutDriver {
     }
 
     /// Route a `LeaseEvent`: only `LeaseRevoked` with an attributed
-    /// `credential_id` drives a revoke fan-out. Renew/expiry/failure
-    /// variants do not revoke stored credential material, and an orphan
-    /// lease (`credential_id == None`) cannot address a reverse-index
-    /// row.
-    async fn on_lease_event(index: &ResourceFanoutIndex, manager: &Manager, ev: LeaseEvent) {
+    /// `credential_id` drives a (deduped) revoke fan-out. Renew/expiry/
+    /// failure variants do not revoke stored credential material, and an
+    /// orphan lease (`credential_id == None`) cannot address a
+    /// reverse-index row.
+    async fn on_lease_event(
+        index: &ResourceFanoutIndex,
+        manager: &Manager,
+        revoke_dedupe: &mut RevokeDedupe,
+        ev: LeaseEvent,
+    ) {
         if let LeaseEvent::LeaseRevoked { credential_id, .. } = ev {
             match credential_id {
                 Some(cid) => {
-                    let outcome = index
-                        .dispatch_revoke(cid, manager, PER_RESOURCE_ROTATION_TIMEOUT)
+                    Self::dispatch_revoke_deduped(index, manager, revoke_dedupe, cid, "lease bus")
                         .await;
-                    Self::record(cid, "revoke", outcome);
                 },
                 None => {
                     // Orphan lease with no nebula credential record — no
@@ -235,6 +356,40 @@ impl ResourceFanoutDriver {
                 },
             }
         }
+    }
+
+    /// Revoke fan-out with the per-credential dedupe window applied.
+    ///
+    /// A single logical credential revoke surfaces on both buses
+    /// (`LeaseEvent::LeaseRevoked` × N released leases, then
+    /// `CredentialEvent::Revoked`). The first arrival within
+    /// [`REVOKE_DEDUPE_WINDOW`] dispatches; later arrivals for the same
+    /// `CredentialId` inside the window are skipped (debug-logged, the
+    /// taint they would re-apply is already applied and idempotent). This
+    /// keeps non-idempotent `on_credential_revoke` hooks single-fire and
+    /// the [`RotationOutcome`] metrics un-inflated per logical revoke.
+    async fn dispatch_revoke_deduped(
+        index: &ResourceFanoutIndex,
+        manager: &Manager,
+        revoke_dedupe: &mut RevokeDedupe,
+        credential_id: CredentialId,
+        source: &'static str,
+    ) {
+        if !revoke_dedupe.admit(credential_id, Instant::now()) {
+            tracing::debug!(
+                target: "nebula_engine::credential::rotation",
+                %credential_id,
+                source,
+                "resource rotation fan-out: duplicate revoke within dedupe window \
+                 (lease-bus + credential-bus double-emission of one logical revoke); \
+                 skipped — first dispatch already tainted/drained the bound rows"
+            );
+            return;
+        }
+        let outcome = index
+            .dispatch_revoke(credential_id, manager, PER_RESOURCE_ROTATION_TIMEOUT)
+            .await;
+        Self::record(credential_id, "revoke", outcome);
     }
 
     /// Consume the [`RotationOutcome`] — **never silently dropped**
@@ -298,5 +453,102 @@ impl Drop for ResourceFanoutDriver {
         // Cancel the spawned task so the driver never outlives the
         // engine that started it (mirrors `ReclaimSweepHandle`).
         self.handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lease-bus + credential-bus double-emission of one logical
+    /// revoke (`LeaseRevoked` then `CredentialEvent::Revoked` for the same
+    /// `CredentialId`, back-to-back) must collapse to a single dispatch
+    /// inside the window. This is the pure-logic core of the
+    /// `dispatch_revoke_deduped` guard the driver applies.
+    #[test]
+    fn second_revoke_same_credential_within_window_is_skipped() {
+        let mut d = RevokeDedupe::new();
+        let cid = CredentialId::new();
+        let t0 = Instant::now();
+
+        // First (e.g. the lease-bus `LeaseRevoked`): dispatch.
+        assert!(d.admit(cid, t0), "first revoke must dispatch");
+        // The facade `CredentialEvent::Revoked` arrives back-to-back for
+        // the SAME credential — a duplicate of one logical revoke: skip.
+        assert!(
+            !d.admit(cid, t0 + Duration::from_millis(1)),
+            "the back-to-back second revoke for the same credential must be \
+             skipped as a duplicate"
+        );
+        // A third in-window arrival (e.g. a second released lease's
+        // `LeaseRevoked`) is also a duplicate.
+        assert!(
+            !d.admit(cid, t0 + Duration::from_millis(2)),
+            "further in-window revokes for the same credential are duplicates"
+        );
+    }
+
+    /// A different credential is never suppressed by another credential's
+    /// in-window dispatch (the dedupe is strictly per-`CredentialId`).
+    #[test]
+    fn distinct_credentials_do_not_dedupe_each_other() {
+        let mut d = RevokeDedupe::new();
+        let a = CredentialId::new();
+        let b = CredentialId::new();
+        let t0 = Instant::now();
+        assert!(d.admit(a, t0));
+        assert!(
+            d.admit(b, t0 + Duration::from_millis(1)),
+            "a different credential's revoke must dispatch even within \
+             another credential's window"
+        );
+    }
+
+    /// A genuinely new revoke of the same credential *after* the window
+    /// has elapsed (e.g. re-registered then revoked again) must dispatch —
+    /// the dedupe collapses a double-emission, not a real later revoke.
+    #[test]
+    fn revoke_after_window_elapsed_dispatches_again() {
+        let mut d = RevokeDedupe::new();
+        let cid = CredentialId::new();
+        let t0 = Instant::now();
+        assert!(d.admit(cid, t0));
+        assert!(
+            !d.admit(cid, t0 + Duration::from_millis(10)),
+            "still inside the window — duplicate"
+        );
+        assert!(
+            d.admit(cid, t0 + REVOKE_DEDUPE_WINDOW + Duration::from_millis(1)),
+            "a new revoke strictly after the dedupe window must dispatch"
+        );
+    }
+
+    /// Pruning is time-bounded: stale entries are evicted on the next
+    /// `admit`, so the set never retains entries older than the window
+    /// and stays bounded under churn.
+    #[test]
+    fn stale_entries_are_pruned_on_admit() {
+        let mut d = RevokeDedupe::new();
+        let t0 = Instant::now();
+        let first = CredentialId::new();
+        assert!(d.admit(first, t0));
+        // Many distinct revokes after the window — each prunes the now
+        // stale older entries; the set cannot grow unbounded.
+        for i in 1..32u64 {
+            let cid = CredentialId::new();
+            let t = t0 + REVOKE_DEDUPE_WINDOW + Duration::from_millis(i);
+            assert!(d.admit(cid, t), "post-window distinct revoke dispatches");
+        }
+        assert!(
+            d.seen.len() <= RevokeDedupe::MAX_ENTRIES,
+            "the dedupe set must stay bounded"
+        );
+        assert!(
+            d.seen.iter().all(|&(_, ts)| {
+                let now = t0 + REVOKE_DEDUPE_WINDOW + Duration::from_millis(31);
+                now.duration_since(ts) < REVOKE_DEDUPE_WINDOW
+            }),
+            "no retained entry may be older than the dedupe window"
+        );
     }
 }

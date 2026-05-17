@@ -398,15 +398,22 @@ impl ResourceFanoutIndex {
                             return RowOutcome::Failed;
                         },
                     };
-                    // Phase 2 — ONLY the cancellation-safe drain + revoke
-                    // hook is timeout-wrapped. The row is already tainted; a
-                    // timed-out or dropped tail leaves it tainted (new
-                    // acquires stay rejected) and is recorded `timed_out`,
-                    // never un-tainted.
-                    let drain = mgr.drain_and_revoke(tainted);
-                    match tokio::time::timeout(per_resource_timeout, drain).await {
-                        Ok(Ok(())) => RowOutcome::Success,
-                        Ok(Err(err)) => {
+                    // Phase 2 — the cancellation-safe drain + revoke hook.
+                    // `drain_and_revoke` is the SINGLE owner of the
+                    // per-resource budget: it bounds the drain (best-effort
+                    // — a timed-out drain still runs the hook) and the hook
+                    // itself (a wedged hook is the only thing the budget
+                    // cuts). It is therefore called WITHOUT an outer
+                    // `tokio::time::timeout` wrapper — that wrapper used to
+                    // be able to elapse on a slow drain and drop the whole
+                    // future *before the hook ran*, silently skipping the
+                    // documented "hook still runs after a timed-out drain"
+                    // guarantee (ADR-0067 §Deferred / #690 review). The row
+                    // is already tainted (phase 1); every tail outcome
+                    // leaves it tainted.
+                    match mgr.drain_and_revoke(tainted, per_resource_timeout).await {
+                        nebula_resource::RevokeTail::Done => RowOutcome::Success,
+                        nebula_resource::RevokeTail::HookFailed(err) => {
                             tracing::warn!(
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
@@ -418,16 +425,16 @@ impl ResourceFanoutIndex {
                             );
                             RowOutcome::Failed
                         },
-                        Err(_elapsed) => {
+                        nebula_resource::RevokeTail::HookTimedOut => {
                             tracing::warn!(
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
                                 slot_identity = b.slot_identity,
                                 timeout_ms = per_resource_timeout.as_millis() as u64,
-                                "rotation fan-out: per-resource revoke drain/hook timed \
-                                 out (row stays tainted, no new leases); siblings \
-                                 unaffected",
+                                "rotation fan-out: per-resource revoke hook timed out \
+                                 (drain already completed or also timed out; row stays \
+                                 tainted, no new leases); siblings unaffected",
                             );
                             RowOutcome::TimedOut
                         },
@@ -1064,10 +1071,12 @@ mod tests {
 
             // Phase 2 constructed, polled until it parks in the per-resource
             // drain (the held guard keeps the counter > 0), then explicitly
-            // DROPPED while still pending — models the fan-out's
-            // `tokio::time::timeout` elapsing and dropping the wrapped future.
+            // DROPPED while still pending — models a generic task-abort /
+            // runtime-shutdown cancellation of the awaiting task (post-#690
+            // the fan-out no longer wraps this in an outer timeout; the
+            // synchronous-phase-1 taint must still survive any such drop).
             {
-                let mut fut = Box::pin(mgr.drain_and_revoke(tainted));
+                let mut fut = Box::pin(mgr.drain_and_revoke(tainted, Duration::from_secs(30)));
                 let parked = tokio::time::timeout(Duration::from_millis(150), &mut fut).await;
                 assert!(
                     parked.is_err(),
