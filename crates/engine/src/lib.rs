@@ -72,7 +72,7 @@ pub mod error;
 pub mod event;
 pub mod node_output;
 pub(crate) mod resolver;
-// pub(crate) mod resource;
+pub mod resource;
 pub mod resource_accessor;
 pub mod result;
 pub mod runtime;
@@ -101,6 +101,10 @@ pub use event::ExecutionEvent;
 // Re-export plugin types for convenience.
 pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin};
 pub use node_output::NodeOutput;
+pub use resource::{
+    ErasedResourceRegistrar, RegisterRequest, RegistrarError, ResourceRegistrarRegistry,
+    TypedResourceRegistrar,
+};
 pub use resource_accessor::EngineResourceAccessor;
 pub use result::ExecutionResult;
 pub use runtime::{
