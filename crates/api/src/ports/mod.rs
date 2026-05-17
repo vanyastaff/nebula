@@ -6,3 +6,4 @@
 //! of lower-layer types in its DTOs (ADR-0047 Cross-Layer Schema Strategy).
 
 pub mod credential_schema;
+pub mod credential_schema_registry;

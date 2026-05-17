@@ -24,6 +24,14 @@ nebula-engine = { path = "../engine" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
 nebula-credential = { path = "../credential" }
+# ADR-0052 P4: production dep (with `schemars`) for the concrete
+# `CredentialSchemaPort` impl (`ValidSchema::validate` / `json_schema()`).
+# `nebula-schema` is Core (freely importable — no deny.toml change; deny
+# `ignored = ["schemars"]`). DTOs still carry only `serde_json::Value` —
+# no `ValidSchema` type crosses into any DTO (ADR-0047 DTO-purity rule
+# intact; the informal "api never imports nebula-schema" prose is
+# relaxed, recorded in the ADR-0052 P4 / ADR-0047 amendments).
+nebula-schema = { path = "../schema", features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
 
 opentelemetry = { workspace = true }
@@ -101,7 +109,6 @@ oas3 = { workspace = true }
 # `deny.toml` wrappers for the same reason. `InProcessSandbox` is re-exported
 # through `nebula-engine` so we don't need a direct `nebula-sandbox` dep.
 nebula-engine = { path = "../engine" }
-nebula-schema = { path = "../schema" }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }
