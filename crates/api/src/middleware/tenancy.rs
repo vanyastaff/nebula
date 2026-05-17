@@ -90,7 +90,15 @@ async fn resolve_path_ids(state: &AppState, path: &str) -> Result<Option<Resolve
                 "executions" => {
                     ids.execution_id = Some(resolve_typed_id::<ExecutionId>(segments[7])?);
                 },
-                "credentials" => {
+                // `/credentials/resolve` and
+                // `/credentials/resolve/continue` are literal acquisition
+                // sub-routes, not a `{cred}` path parameter. The guard
+                // skips this arm for the literal `resolve` (otherwise
+                // parsing it as a `CredentialId` fails ULID validation and
+                // 404s the route before its handler runs — a route-shadow).
+                // The genuine `/credentials/{cred}` position still parses
+                // and is strictly validated here.
+                "credentials" if segments[7] != "resolve" => {
                     ids.credential_id = Some(resolve_typed_id::<CredentialId>(segments[7])?);
                 },
                 _ => {},

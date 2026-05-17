@@ -586,18 +586,19 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         );
     }
 
-    // `resolve` / `resolve/continue` are **structurally unreachable**
-    // behind the tenancy middleware: it parses the path segment after
-    // `credentials` as a `CredentialId`, and the literal `resolve`
-    // segment fails ULID parsing → a flat **404 before any handler
-    // runs** (see `crates/api/src/middleware/tenancy.rs`
-    // `resolve_path_ids`). This is a pre-existing route-ordering
-    // condition, not a Phase-4 regression (the prior 503 stub was
-    // equally unreachable). It is still §4.5-honest — the caller
-    // cannot obtain a fake credential; they get a hard 404. The
-    // generic-resolve handler itself stays an honest 503 (asserted by
-    // the transport unit test); the route fix is tracked separately.
-    let post_404: &[(&str, String, serde_json::Value)] = &[
+    // `resolve` / `resolve/continue` reach the handler. The tenancy
+    // middleware special-cases the literal `resolve` sub-route so it is
+    // NOT parsed as a `{cred}` `CredentialId` (see
+    // `crates/api/src/middleware/tenancy.rs` `resolve_path_ids`).
+    // Without that guard the literal `resolve` segment failed ULID
+    // parsing and every acquisition request was a flat 404 before any
+    // handler ran — a route-shadow that made these endpoints
+    // structurally unreachable. They now hit the handler, which returns
+    // the honest engine-owned 503 (generic `Credential::resolve`
+    // dispatch is not wired into this API build); the genuine `{cred}`
+    // position stays strictly ULID-validated. Regression guard for the
+    // route-shadow.
+    let resolve_503: &[(&str, String, serde_json::Value)] = &[
         (
             "POST",
             ws_path("/credentials/resolve"),
@@ -610,7 +611,7 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         ),
     ];
 
-    for (method, path, body) in post_404 {
+    for (method, path, body) in resolve_503 {
         let app = app::build_app(state.clone(), &config);
         let resp = app
             .oneshot(auth_json(method, path, &token, body))
@@ -618,14 +619,15 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
             .unwrap();
         assert_eq!(
             resp.status(),
-            StatusCode::NOT_FOUND,
-            "{method} {path} is shadowed by the tenancy `{{cred}}` matcher → \
-             honest 404 (no false capability; pre-existing route condition)"
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {path} must reach the handler and return the honest \
+             engine-owned 503 — NOT a pre-handler 404 (that is the tenancy \
+             route-shadow this guards against)"
         );
         let problem = body_string(resp).await;
         assert!(
             !problem.contains(SECRET_TOKEN),
-            "404 body must never carry a secret: {problem}"
+            "503 body must never carry a secret: {problem}"
         );
     }
 
