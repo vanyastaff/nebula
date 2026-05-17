@@ -20,3 +20,4 @@ pub mod dto;
 pub mod handler;
 pub mod oauth;
 pub mod routes;
+pub mod schema_projection;

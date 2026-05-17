@@ -260,3 +260,30 @@ Rejected. M3.2 is one of four 1.0 API blockers. Third-party integrators cannot s
 - AppState: `crates/api/src/state.rs`
 - Pitfalls — type-enforced boundaries: `docs/pitfalls.md` (`nebula-expression` builtin re-entry case)
 - Feedback memories applied: `feedback_adr_ecosystem_evidence.md`, `feedback_type_enforce_not_discipline.md`, `feedback_observability_as_completion.md`, `feedback_boundary_erosion.md`
+
+## Amendment (2026-05-17) — ADR-0052 P4 credential-schema seam
+
+ADR-0052 P4 populates `CredentialTypeInfo.schema` from
+`ValidSchema::json_schema()` (produced behind an api-owned
+`CredentialSchemaPort`), and validates the credential `data` request body
+against the resolved `ValidSchema` before persist; the `data` request
+body stays `serde_json::Value` (this ADR's "Cross-Layer Schema Strategy"
+table already sanctions `Value` for credential `data`). A
+`nebula-api`-owned mapper strips `x-nebula-root-rules` + predicate
+operands from the public catalog schema (cross-field predicate logic must
+not leak to unauthenticated clients). **Clarification to the Cross-Layer
+Schema Strategy:** that section's binding rule is *"API DTOs MUST NOT
+embed types from `nebula-core`/`-storage`/`-engine`/`-credential`"* — a
+**DTO-type** rule, which P4 fully honors (the port and every catalog DTO
+carry only `serde_json::Value` / api-owned structs; **no `ValidSchema`
+type appears in any DTO**). To keep ADR-0052's harder "zero `deny.toml`
+change" constraint feasible post-PR #671 (composition root is now a
+separate `nebula-server` crate not in `nebula-credential`'s wrapper
+allowlist), the concrete port impl lives in `nebula-api`, which therefore
+takes a `nebula-schema` **production** dependency + the `schemars`
+feature. `nebula-schema` is Core-tier with no `deny.toml` wrapper rule
+(freely importable; **no `deny.toml` change** required). The informal
+"`nebula-api` never imports `nebula-schema`" prose preference is
+**relaxed** to "no `nebula-schema` *type* crosses into a DTO" — the
+load-bearing layer guarantee (DTO purity, public-contract stability,
+implementation hiding) is unchanged. Seam: `crates/api/tests/seam_credential_*`.

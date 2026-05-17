@@ -71,6 +71,7 @@ pub mod error;
 pub mod extractors;
 pub mod middleware;
 pub mod openapi;
+pub mod ports;
 pub mod state;
 pub mod telemetry_init;
 mod trace_capture;

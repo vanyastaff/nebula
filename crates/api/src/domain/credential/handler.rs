@@ -72,8 +72,11 @@ pub async fn list_credentials(
 /// POST /orgs/{org}/workspaces/{ws}/credentials — Create a new credential.
 ///
 /// Validates the request body, then delegates to the credential store
-/// for persistence. The `data` field is validated against the credential
-/// type's schema before encryption and storage.
+/// for persistence. When a credential-schema port is configured
+/// (ADR-0052 P4), `data` is validated against the credential type's
+/// resolved schema before encryption and storage; if no validator is
+/// configured the request is rejected with 503 — `data` is never
+/// persisted unvalidated.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials",
@@ -86,9 +89,10 @@ pub async fn list_credentials(
     request_body = CreateCredentialRequest,
     responses(
         (status = 200, description = "Credential created.", body = CredentialResponse),
-        (status = 400, description = "Validation error (key, name, or data shape).", body = ProblemDetails),
+        (status = 400, description = "Validation error: `data` failed the credential type's schema, or key/name shape invalid.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured: `data` cannot be validated, so it is not persisted (ADR-0052 P4, canon §4.5 fail-closed).", body = ProblemDetails),
     ),
 )]
 pub async fn create_credential(
@@ -156,11 +160,12 @@ pub async fn get_credential(
     request_body = UpdateCredentialRequest,
     responses(
         (status = 200, description = "Credential updated.", body = CredentialResponse),
-        (status = 400, description = "Validation error or no fields provided for update.", body = ProblemDetails),
+        (status = 400, description = "Validation error: supplied `data` failed the credential type's schema, or no fields provided.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
         (status = 409, description = "Optimistic-concurrency version mismatch.", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured: supplied `data` cannot be validated, so it is not persisted (ADR-0052 P4, canon §4.5 fail-closed).", body = ProblemDetails),
     ),
 )]
 pub async fn update_credential(
@@ -439,6 +444,7 @@ pub async fn continue_resolve_credential(
     responses(
         (status = 200, description = "Registered credential types with capability flags and input schema.", body = ListCredentialTypesResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured (ADR-0052 P4, honest §4.5 stub).", body = ProblemDetails),
     ),
 )]
 pub async fn list_credential_types(
@@ -465,6 +471,7 @@ pub async fn list_credential_types(
         (status = 400, description = "Invalid credential type key.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 404, description = "Credential type not registered.", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured (ADR-0052 P4, honest §4.5 stub).", body = ProblemDetails),
     ),
 )]
 pub async fn get_credential_type(

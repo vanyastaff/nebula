@@ -11,6 +11,9 @@ use std::sync::Arc;
 use nebula_api::{
     ApiConfig, AppState,
     error::ApiError,
+    ports::credential_schema::{
+        CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
+    },
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, WorkspaceId};
@@ -142,8 +145,39 @@ pub(crate) fn create_test_jwt() -> String {
 
 // ── AppState builders ─────────────────────────────────────────────────────────
 
+/// Permissive [`CredentialSchemaPort`] test double: accepts any `data`,
+/// exposes no catalog types. Wired by default into [`create_state_with_queue`]
+/// so credential happy-path tests keep their pre-ADR-0052-P4 behavior
+/// (the old fail-open persisted unvalidated; the correct test default is
+/// "a validator is present and permissive"). The reject / no-port cases
+/// are exercised explicitly by `tests/seam_credential_write_path_validation.rs`.
+pub(crate) struct PermissiveCredentialSchemaPort;
+
+impl CredentialSchemaPort for PermissiveCredentialSchemaPort {
+    fn validate_data(
+        &self,
+        _credential_key: &str,
+        _data: &serde_json::Value,
+    ) -> Result<(), Vec<CredentialFieldError>> {
+        Ok(())
+    }
+
+    fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
+        Vec::new()
+    }
+
+    fn get_type(&self, _credential_key: &str) -> Option<CredentialTypeDescriptor> {
+        None
+    }
+}
+
 /// Create an `AppState` with fully functional in-memory repos; return both the
 /// state and a typed reference to the control queue so tests can inspect it.
+///
+/// A permissive [`CredentialSchemaPort`] is wired so credential write-path
+/// tests keep returning 200 (ADR-0052 P4 closed the unvalidated-persist
+/// fail-open: with **no** port the write path now returns 503 by design;
+/// the explicit None/reject behavior is covered by the P4 seam test).
 pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
@@ -160,7 +194,8 @@ pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQ
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    .with_credential_schema(Arc::new(PermissiveCredentialSchemaPort));
 
     (state, control_queue_repo)
 }
@@ -169,6 +204,26 @@ pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQ
 /// `integration_tests.rs` callers so no test body needs to change.
 pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
     create_state_with_queue().await
+}
+
+/// Same as [`create_state_with_queue`] but with **no** credential-schema
+/// port wired — for the ADR-0052 P4 seam test that asserts the
+/// unconfigured write path returns 503 (never persists unvalidated).
+pub(crate) async fn create_state_with_queue_no_credential_port()
+-> (AppState, Arc<InMemoryControlQueueRepo>) {
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let api_config = ApiConfig::for_test();
+    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
+        Arc::clone(&control_queue_repo) as _;
+    let state = AppState::new(
+        Arc::new(InMemoryWorkflowRepo::new()),
+        Arc::new(InMemoryExecutionRepo::new()),
+        control_queue_dyn,
+        api_config.jwt_secret,
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    (state, control_queue_repo)
 }
 
 // ── `me/*` end-to-end harness (Phase 2) ──────────────────────────────────────

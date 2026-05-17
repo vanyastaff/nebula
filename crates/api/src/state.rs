@@ -242,6 +242,11 @@ pub struct AppState {
     /// When `None`, the `GET /plugins` endpoints return 503.
     pub plugin_registry: Option<Arc<RwLock<PluginRegistry>>>,
 
+    /// Optional credential-schema port (ADR-0052 P4). When `None`, the
+    /// credential write path and credential-type catalog return 503
+    /// (honest §4.5 stub, mirroring `action_registry`).
+    pub credential_schema: Option<Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>>,
+
     /// Optional webhook HTTP transport. When `None`, no `/webhooks/*`
     /// routes are mounted on the app; webhook-style `WebhookAction`
     /// triggers registered via `ActionRegistry::register_webhook`
@@ -345,6 +350,7 @@ impl AppState {
             metrics_registry: None,
             action_registry: None,
             plugin_registry: None,
+            credential_schema: None,
             webhook_transport: None,
             oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
             oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
@@ -390,6 +396,18 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_plugin_registry(mut self, registry: Arc<RwLock<PluginRegistry>>) -> Self {
         self.plugin_registry = Some(registry);
+        self
+    }
+
+    /// Attach the credential-schema port (ADR-0052 P4) used to validate
+    /// credential `data` before persist and to populate the credential-type
+    /// catalog. When absent, those endpoints return an honest 503.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_credential_schema(
+        mut self,
+        port: Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>,
+    ) -> Self {
+        self.credential_schema = Some(port);
         self
     }
 

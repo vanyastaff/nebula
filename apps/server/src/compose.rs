@@ -78,6 +78,12 @@ pub enum TransportInitError {
         /// What is missing for that backend to work.
         requirement: &'static str,
     },
+    /// The credential-schema port could not be built (ADR-0052 P4 —
+    /// first-party credential registration failed; a composition bug).
+    /// Carried as a `String` so this crate needs no `nebula-credential`
+    /// dependency (the typed `RegisterError` stays inside `nebula-api`).
+    #[error("credential-schema port init failed: {0}")]
+    CredentialSchemaInit(String),
 }
 
 /// Start a server binary for a selected transport profile.
@@ -173,6 +179,16 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
     // documented in `crates/api/README.md` ("Org membership durability")
     // and `nebula_api::domain::org` module docs (canon §11.6).
 
+    // ADR-0052 P4: wire the credential-schema port (first-party types
+    // registered) so the write path validates `data` before persist and
+    // the catalog exposes `json_schema()`. The concrete impl lives in
+    // `nebula-api` (deny.toml-allow-listed `nebula-credential` consumer),
+    // so this composition crate needs no `nebula-credential`/
+    // `nebula-schema` dep — just the api constructor.
+    let credential_schema =
+        nebula_api::ports::credential_schema_registry::try_default_registry_port()
+            .map_err(|e| TransportInitError::CredentialSchemaInit(e.to_string()))?;
+
     Ok(AppState::new(
         workflow_repo,
         execution_repo,
@@ -180,7 +196,8 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
         api_config.jwt_secret.clone(),
     )
     .with_api_keys(api_config.api_keys.clone())
-    .with_auth_backend(auth_backend))
+    .with_auth_backend(auth_backend)
+    .with_credential_schema(credential_schema))
 }
 
 /// Construct the idempotency store from `api_config.idempotency`.
