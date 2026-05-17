@@ -153,12 +153,15 @@ impl WebhookActivationStore for PgWebhookActivationStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.map(|r| WebhookActivationRecord {
-            trigger_id: r.try_get("trigger_id").unwrap_or_default(),
-            scope: scope.clone(),
-            slug: slug.to_string(),
-            active: true,
-        }))
+        row.map(|r| {
+            Ok(WebhookActivationRecord {
+                trigger_id: r.try_get("trigger_id").map_err(conn_err)?,
+                scope: scope.clone(),
+                slug: slug.to_string(),
+                active: true,
+            })
+        })
+        .transpose()
     }
 
     async fn deactivate(&self, scope: &Scope, trigger_id: &str) -> Result<(), StorageError> {

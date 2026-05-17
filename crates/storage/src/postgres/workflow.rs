@@ -74,13 +74,16 @@ impl WorkflowStore for PgWorkflowStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.map(|r| WorkflowRecord {
-            id: id.to_string(),
-            scope: scope.clone(),
-            version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
-            slug: r.try_get("slug").unwrap_or_default(),
-            deleted: false,
-        }))
+        row.map(|r| {
+            Ok(WorkflowRecord {
+                id: id.to_string(),
+                scope: scope.clone(),
+                version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+                slug: r.try_get("slug").map_err(conn_err)?,
+                deleted: false,
+            })
+        })
+        .transpose()
     }
 
     async fn get_by_slug(
@@ -98,13 +101,16 @@ impl WorkflowStore for PgWorkflowStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.map(|r| WorkflowRecord {
-            id: r.try_get("id").unwrap_or_default(),
-            scope: scope.clone(),
-            version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
-            slug: slug.to_string(),
-            deleted: false,
-        }))
+        row.map(|r| {
+            Ok(WorkflowRecord {
+                id: r.try_get("id").map_err(conn_err)?,
+                scope: scope.clone(),
+                version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+                slug: slug.to_string(),
+                deleted: false,
+            })
+        })
+        .transpose()
     }
 
     async fn update(
@@ -300,16 +306,17 @@ impl WorkflowStore for PgWorkflowStore {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| WorkflowRecord {
-                id: r.try_get("id").unwrap_or_default(),
-                scope: scope.clone(),
-                version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
-                slug: r.try_get("slug").unwrap_or_default(),
-                deleted: false,
+        rows.into_iter()
+            .map(|r| {
+                Ok(WorkflowRecord {
+                    id: r.try_get("id").map_err(conn_err)?,
+                    scope: scope.clone(),
+                    version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+                    slug: r.try_get("slug").map_err(conn_err)?,
+                    deleted: false,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
