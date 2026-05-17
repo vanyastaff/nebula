@@ -4,8 +4,9 @@ alwaysApply: true
 
 # Nebula Agent Workflow
 
-Use `AGENTS.md` as the source of truth for project layout, architecture, Git
-workflow, and coding rules.
+Use [`CLAUDE.md`](../../CLAUDE.md) as the canonical source of truth for project
+layout, architecture, Git workflow, and coding rules. (`AGENTS.md` is only a
+thin pointer to it.)
 
 For persistent task branches, create worktrees through the repository wrapper:
 

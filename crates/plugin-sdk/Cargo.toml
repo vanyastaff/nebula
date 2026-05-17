@@ -50,5 +50,9 @@ path = "src/bin/counter_fixture.rs"
 name = "nebula-plugin-schema-fixture"
 path = "src/bin/schema_fixture.rs"
 
+[[bin]]
+name = "nebula-plugin-resend-fixture"
+path = "src/bin/resend_fixture.rs"
+
 [lints]
 workspace = true

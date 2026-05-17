@@ -300,8 +300,8 @@ impl PendingState for OAuth2Pending {
 /// "credential type does not support revocation / testing."
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
-/// via [`OAuth2Credential::properties_schema`] and extracted from
-/// [`FieldValues`] when the OAuth2 flow is initiated.
+/// via `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3) and
+/// extracted from [`FieldValues`] when the OAuth2 flow is initiated.
 ///
 /// # Grant types and entry points
 ///
@@ -329,8 +329,9 @@ pub struct OAuth2Credential;
 /// Typed shape of the `oauth2` credential setup form (Phase 5 — replaces
 /// the legacy `OAuth2Input`).
 ///
-/// `#[derive(Schema)]` emits the `HasSchema` impl that
-/// [`Credential::properties_schema`] reads. Secret fields use `String`
+/// `#[derive(Schema)]` emits the `HasSchema` impl read via
+/// `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3). Secret
+/// fields use `String`
 /// here so that the universal Schema derivation applies; `resolve()` and
 /// the OAuth2 kickoff helpers wrap them into [`SecretString`] before they
 /// leave this module.
@@ -393,7 +394,7 @@ impl Credential for OAuth2Credential {
             .key(nebula_core::credential_key!("oauth2"))
             .name("OAuth2")
             .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(crate::AuthPattern::OAuth2)
             .icon("oauth2")
             .build()
@@ -872,7 +873,7 @@ mod tests {
 
     #[test]
     fn parameters_has_all_fields() {
-        let params = OAuth2Credential::properties_schema();
+        let params = nebula_schema::schema_of::<<OAuth2Credential as Credential>::Properties>();
         let has = |k: &str| params.fields().iter().any(|f| f.key().as_str() == k);
         assert!(has("client_id"));
         assert!(has("client_secret"));

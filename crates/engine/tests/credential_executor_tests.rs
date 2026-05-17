@@ -94,7 +94,7 @@ impl Credential for BaseResolvePendingCredential {
             nebula_core::credential_key!("base_resolve_pending_test"),
             "Base Resolve Pending Test",
             "Fixture credential exercising the §15.4 base-resolve-Pending rejection path",
-            Self::properties_schema(),
+            nebula_credential::schema_of::<Self::Properties>(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

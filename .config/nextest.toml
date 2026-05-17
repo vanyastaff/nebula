@@ -28,6 +28,18 @@ success-output = "never"
 fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# trybuild UI tests (the `*compile_fail*` binaries across the workspace,
+# plus the validator `ui` binary) shell out to `cargo`/`rustc` to
+# compile each probe fixture. On a cold target dir the first invocation
+# must build the whole fixture dependency closure, which exceeds the
+# tight default agent slow-timeout above and is killed as a false
+# TIMEOUT — the probes themselves are correct and pass once the cache
+# is warm. Give just those binaries cold-compile headroom (agent
+# profile only; `ci` already allows 180s and runs against a warm cache).
+[[profile.agent.overrides]]
+filter = 'binary(/compile_fail/) | (package(=nebula-validator) & binary(=ui))'
+slow-timeout = { period = "120s", terminate-after = 4 }
+
 [profile.chaos]
 # Long-running chaos profile (e.g. nightly-chaos.yml).
 # Inherits nothing from `ci` — the chaos-full plane intentionally runs

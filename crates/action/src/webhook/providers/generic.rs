@@ -11,7 +11,6 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use http::{HeaderName, Method, StatusCode};
 use nebula_core::{Dependencies, action_key};
-use nebula_schema::{HasSchema, ValidSchema};
 use subtle::ConstantTimeEq;
 use tracing::debug;
 
@@ -115,16 +114,6 @@ impl Action for GenericWebhookAction {
                 "Provider-agnostic HMAC-signed webhook trigger.",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {

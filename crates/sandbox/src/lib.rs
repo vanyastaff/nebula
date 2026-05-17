@@ -1,55 +1,55 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # nebula-sandbox — Process Sandboxing (Correctness Boundary)
+//! # nebula-sandbox — Process Sandbox Transport (Correctness Boundary)
 //!
-//! Provides two execution modes and the plugin discovery / capability model.
+//! The host side of the duplex plugin transport (ADR 0006). A leaf crate:
+//! it spawns a plugin binary, dials its announced socket, and round-trips
+//! JSON envelopes with a per-call timeout + cancellation race.
 //!
 //! **This is not a security boundary against malicious native code.**
-//! Canon §12.6 is the normative statement: in-process execution provides
-//! correctness and cooperative cancellation; child-process execution provides
-//! OS-namespace separation via a duplex JSON envelope over UDS / Named Pipe
-//! (ADR 0006). WASM / WASI is an explicit non-goal (§12.6).
+//! Canon §12.6 is the normative statement: child-process execution provides
+//! OS-namespace separation via a duplex JSON envelope over UDS / Named Pipe.
+//! WASM / WASI is an explicit non-goal (§12.6). There is **no** per-plugin
+//! capability/scope model here — egress, credential, and filesystem
+//! mediation is the broker's responsibility (ADR-0025), not this crate.
+//!
+//! Discovery, the `RemoteAction`/`ProcessSandboxHandler` registry adapters,
+//! and the `SandboxError` → `ActionError` mapping live in `nebula-plugin`
+//! (host-registry population belongs with the registry). The
+//! `SandboxRunner` runner abstraction lives in `nebula-engine` (the
+//! dispatcher that owns it). This crate has no Business-tier dependency.
 //!
 //! ## Key types
 //!
-//! - `InProcessSandbox` — trusted in-process dispatch; no isolation.
-//! - `ProcessSandbox` — child-process execution via JSON envelope (ADR 0006).
-//! - `ProcessSandboxHandler` — bridge into `ActionRegistry`.
-//! - `SandboxRunner`, `ActionExecutor`, `SandboxedContext` — runner abstraction.
-//! - `capabilities::PluginCapabilities` — iOS-style capability declarations. Currently unenforced
-//!   (discovery TODO — see README Appendix).
-//! - `discovery` — scan directories for plugin binaries via `plugin.toml`.
-//! - `os_sandbox` — OS-level hardening primitives (best-effort, partial).
-//! - `SandboxError` — typed error.
+//! - `ProcessSandbox` — child-process execution via JSON envelope (ADR 0006). Transport methods
+//!   return `SandboxError`.
+//! - `os_sandbox` — Linux Landlock + rlimit child hardening (fixed system
+//!   paths; no per-plugin grant).
+//! - `SandboxError` — typed transport error.
+//! - `scope::{ScopeHash, scope_hash}` — pure credential-scope identity
+//!   (ADR-0025 §2). Computed from caller-supplied slot-name strings only;
+//!   the engine owns the process pool that keys on it.
 //!
 //! ## Canon
 //!
-//! - §4.5 operational honesty: capability allowlist is a false capability until the discovery
-//!   wiring TODO is closed.
-//! - §7.1 plugin packaging: this crate is the host side of the duplex broker; `nebula-plugin-sdk`
-//!   is the plugin side.
-//! - §12.6 isolation honesty: correctness boundary, not attacker-grade.
+//! - §7.1 plugin packaging: this crate is the host side of the duplex transport;
+//!   `nebula-plugin-sdk` is the plugin side.
+//! - §12.6 isolation honesty: correctness boundary, not attacker-grade; no
+//!   false-capability surface is advertised.
 //!
 //! See `crates/sandbox/README.md` for the real isolation roadmap and ADR 0006
 //! status.
 
-pub mod capabilities;
-pub mod discovered_plugin;
-pub mod discovery;
 pub mod error;
-mod handler;
-mod in_process;
 pub mod os_sandbox;
-pub mod plugin_toml;
-mod process;
-mod remote_action;
-mod runner;
+pub mod scope;
 
-pub use discovered_plugin::DiscoveredPlugin;
+mod codec;
+mod dispatch;
+mod handshake;
+mod spawn;
+
+pub use dispatch::ProcessSandbox;
 pub use error::SandboxError;
-pub use handler::ProcessSandboxHandler;
-pub use in_process::InProcessSandbox;
-pub use process::ProcessSandbox;
-pub use remote_action::{RemoteAction, RemoteActionFactory};
-pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};
+pub use scope::{ScopeHash, scope_hash};

@@ -19,7 +19,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use nebula_core::UserId;
 use serde::{Deserialize, Serialize};
 
-use crate::{auth::PAT_PREFIX as AUTH_PAT_PREFIX, state::AppState};
+use crate::{domain::auth::backend::PAT_PREFIX as AUTH_PAT_PREFIX, state::AppState};
 
 /// The canonical prefix for Nebula API keys.
 pub const API_KEY_PREFIX: &str = "nbl_sk_";
@@ -27,7 +27,7 @@ pub const API_KEY_PREFIX: &str = "nbl_sk_";
 /// The canonical prefix for personal access tokens.
 ///
 /// Re-exported for the auth middleware; the authoritative definition lives
-/// in [`crate::auth::PAT_PREFIX`].
+/// in [`crate::domain::auth::backend::PAT_PREFIX`].
 pub const PAT_PREFIX: &str = AUTH_PAT_PREFIX;
 
 /// Cookie name for session-based authentication.
@@ -100,7 +100,7 @@ pub enum AuthMethod {
 /// Both [`AuthenticatedUser`] (legacy) and [`AuthContext`] are inserted into
 /// request extensions on success.
 ///
-/// [`AuthBackend`]: crate::auth::AuthBackend
+/// [`AuthBackend`]: crate::domain::auth::backend::AuthBackend
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,

@@ -565,7 +565,7 @@ async fn create_resource_without_repo_is_503() {
 /// regress into honoring a body-supplied tenant.
 #[tokio::test]
 async fn create_resource_request_body_cannot_set_workspace() {
-    use nebula_api::models::CreateResourceRequest;
+    use nebula_api::domain::resource::dto::CreateResourceRequest;
 
     // A body that tries to smuggle a foreign workspace + owner. These
     // extra keys are not part of `CreateResourceRequest`, so serde drops
@@ -1141,7 +1141,7 @@ async fn update_resource_without_repo_is_503() {
 /// `workspace_id` is always the existing row's (== caller ws, verified).
 #[tokio::test]
 async fn update_resource_request_body_cannot_set_workspace() {
-    use nebula_api::models::UpdateResourceRequest;
+    use nebula_api::domain::resource::dto::UpdateResourceRequest;
 
     let smuggled = serde_json::json!({
         "display_name": "Evil Rename",

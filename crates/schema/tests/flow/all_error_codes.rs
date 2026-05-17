@@ -6,9 +6,14 @@
 //! - `ValidSchema::validate` (proof-token pipeline)
 //! - `SchemaBuilder::build` (lint/build time via `lint_tree`)
 //!
-//! As of Phase 1 (Task 26), validator codes are translated in `run_rules` via
-//! `translate_validator_code` before being stored in `ValidationReport`.
-//! So `"min_length"` → `"length.min"`, `"max_length"` → `"length.max"`, etc.
+//! Rule-failure codes flow through from `nebula-validator` verbatim — the
+//! schema crate performs no namespace remap. So a too-short string surfaces
+//! the validator-native `"min_length"`, a numeric lower-bound failure
+//! `"min"`, and the format rules (pattern / email / url) all surface
+//! `"invalid_format"` disambiguated by their `pattern` / `expected` params.
+//! Schema-owned structural codes (`type_mismatch`, `items.*`, `option.*`,
+//! `mode.*`, `expression.*`, `required`) are emitted by the schema crate and
+//! unchanged. See ADR-0052 (P2 amendment).
 //!
 //! # Loader-family codes
 //!
@@ -97,10 +102,10 @@ fn emits_type_mismatch_boolean() {
     assert!(has_code(&err, "type_mismatch"));
 }
 
-// ── String length codes (translated: min_length → length.min, max_length → length.max) ──
+// ── String length codes (validator-native: min_length / max_length) ─────────
 
 #[test]
-fn emits_length_min() {
+fn emits_min_length() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).min_length(5))
         .build()
@@ -108,14 +113,14 @@ fn emits_length_min() {
     let vs = FieldValues::from_json(json!({"x": "hi"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "length.min"),
-        "expected length.min, got: {:?}",
+        has_code(&err, "min_length"),
+        "expected min_length, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_length_max() {
+fn emits_max_length() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).max_length(3))
         .build()
@@ -123,16 +128,16 @@ fn emits_length_max() {
     let vs = FieldValues::from_json(json!({"x": "abcdef"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "length.max"),
-        "expected length.max, got: {:?}",
+        has_code(&err, "max_length"),
+        "expected max_length, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
-// ── Numeric range codes (translated: min → range.min, max → range.max) ──────
+// ── Numeric range codes (validator-native: min / max) ───────────────────────
 
 #[test]
-fn emits_range_min() {
+fn emits_min() {
     let schema = Schema::builder()
         .add(Field::number(field_key!("x")).min(10))
         .build()
@@ -140,14 +145,14 @@ fn emits_range_min() {
     let vs = FieldValues::from_json(json!({"x": 3})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "range.min"),
-        "expected range.min, got: {:?}",
+        has_code(&err, "min"),
+        "expected min, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_range_max() {
+fn emits_max() {
     let schema = Schema::builder()
         .add(Field::number(field_key!("x")).max(10))
         .build()
@@ -155,16 +160,19 @@ fn emits_range_max() {
     let vs = FieldValues::from_json(json!({"x": 99})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "range.max"),
-        "expected range.max, got: {:?}",
+        has_code(&err, "max"),
+        "expected max, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
-// ── Pattern / URL / email codes (translated from invalid_format) ─────────────
+// ── Format codes — pattern / url / email all surface the validator-native
+//    `invalid_format` (the schema crate no longer remaps to a per-rule
+//    namespace; the merge is verbatim). Each is exercised separately so a
+//    regression in any one rule's wiring through the single crossing fails. ──
 
 #[test]
-fn emits_pattern() {
+fn emits_invalid_format_for_pattern() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).pattern("^[a-z]+$"))
         .build()
@@ -172,14 +180,14 @@ fn emits_pattern() {
     let vs = FieldValues::from_json(json!({"x": "HI"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "pattern"),
-        "expected pattern, got: {:?}",
+        has_code(&err, "invalid_format"),
+        "expected invalid_format from pattern rule, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_url() {
+fn emits_invalid_format_for_url() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).url())
         .build()
@@ -187,14 +195,14 @@ fn emits_url() {
     let vs = FieldValues::from_json(json!({"x": "not-a-url"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "url"),
-        "expected url, got: {:?}",
+        has_code(&err, "invalid_format"),
+        "expected invalid_format from url rule, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_email() {
+fn emits_invalid_format_for_email() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).email())
         .build()
@@ -202,8 +210,8 @@ fn emits_email() {
     let vs = FieldValues::from_json(json!({"x": "not-an-email"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        has_code(&err, "email"),
-        "expected email, got: {:?}",
+        has_code(&err, "invalid_format"),
+        "expected invalid_format from email rule, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
@@ -423,11 +431,6 @@ async fn emits_expression_type_mismatch() {
     assert!(
         has_code(&report, "expression.type_mismatch"),
         "expected expression.type_mismatch, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
-    );
-    assert!(
-        !report.errors().any(|e| e.code == "type_mismatch"),
-        "raw type_mismatch should have been remapped, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }

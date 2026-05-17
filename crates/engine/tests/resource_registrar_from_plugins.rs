@@ -240,16 +240,6 @@ impl Action for NoopHandler {
         static M: OnceLock<ActionMetadata> = OnceLock::new();
         M.get_or_init(|| ActionMetadata::new(action_key!("test.noop.static"), "Noop", "static"))
     }
-    fn input_schema() -> &'static nebula_schema::ValidSchema {
-        use std::sync::OnceLock;
-        static S: OnceLock<nebula_schema::ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static nebula_schema::ValidSchema {
-        use std::sync::OnceLock;
-        static S: OnceLock<nebula_schema::ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;
         static D: OnceLock<Dependencies> = OnceLock::new();

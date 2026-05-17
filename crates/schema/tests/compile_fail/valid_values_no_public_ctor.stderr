@@ -1,0 +1,5 @@
+error[E0599]: no function or associated item named `new` found for struct `ValidValues` in the current scope
+ --> tests/compile_fail/valid_values_no_public_ctor.rs:4:41
+  |
+4 |     let _ = nebula_schema::ValidValues::new();
+  |                                         ^^^ function or associated item not found in `ValidValues`
