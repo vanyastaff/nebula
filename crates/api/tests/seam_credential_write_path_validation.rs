@@ -63,6 +63,17 @@ fn auth_json(method: &str, uri: &str, token: &str, body: &serde_json::Value) -> 
         .unwrap()
 }
 
+fn auth_get(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-csrf-token", TEST_CSRF_TOKEN)
+        .header("cookie", TEST_CSRF_COOKIE)
+        .body(Body::empty())
+        .unwrap()
+}
+
 async fn body_string(resp: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
@@ -139,14 +150,14 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
     let (state, _q) = create_state_with_queue_no_credential_port().await;
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
-    let app = app::build_app(state, &config);
 
     let body = serde_json::json!({
         "credential_key": "api_key",
-        "name": "x",
+        "name": "never-persist-probe",
         "data": { "api_key": "k", "leaky": NEVER_LEAK },
         "tags": {}
     });
+    let app = app::build_app(state.clone(), &config);
     let resp = app
         .oneshot(auth_json("POST", &ws_path("/credentials"), &token, &body))
         .await
@@ -160,6 +171,20 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
     assert!(
         !text.contains(NEVER_LEAK),
         "503 body must not echo submitted data; got: {text}"
+    );
+
+    // Prove the "never persists" guarantee (not just the 503 status):
+    // the rejected create must have written nothing to the store.
+    let app = app::build_app(state, &config);
+    let list = app
+        .oneshot(auth_get(&ws_path("/credentials"), &token))
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK, "list must be reachable");
+    let listed = body_string(list).await;
+    assert!(
+        !listed.contains("never-persist-probe") && !listed.contains(NEVER_LEAK),
+        "rejected create must persist nothing — credential absent from list; got: {listed}"
     );
 }
 
@@ -210,7 +235,8 @@ async fn update_credential_rejects_invalid_data_secret_safe() {
     );
     let text = body_string(resp).await;
     assert!(
-        text.contains("/api_key") && !text.contains(NEVER_LEAK),
-        "update 400 must be secret-safe (path/code only, no value); got: {text}"
+        text.contains("/api_key") && text.contains("required") && !text.contains(NEVER_LEAK),
+        "update 400 must carry path+code and echo no value (symmetric with the \
+         create-path contract); got: {text}"
     );
 }
