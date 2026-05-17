@@ -53,7 +53,7 @@ fn entry(
         created_at: chrono::Utc::now(),
         created_by: vec![0u8; 16],
         version,
-        deleted_at: deleted.then(chrono::Utc::now),
+        deleted_at: deleted.then_some(chrono::Utc::now()),
     }
 }
 
@@ -109,18 +109,17 @@ impl ResourceRepo for FakeResourceRepo {
     }
 }
 
-async fn state_with_resource_repo() -> AppState {
+async fn state_with_resource_repo(api_config: &ApiConfig) -> AppState {
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
     let repo: Arc<dyn ResourceRepo> = Arc::new(FakeResourceRepo);
 
     AppState::new(
         workflow_repo,
         execution_repo,
         control_queue_repo,
-        api_config.jwt_secret,
+        api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
@@ -129,8 +128,8 @@ async fn state_with_resource_repo() -> AppState {
 
 #[tokio::test]
 async fn list_resources_returns_200_with_mapped_summaries() {
-    let state = state_with_resource_repo().await;
     let api_config = ApiConfig::for_test();
+    let state = state_with_resource_repo(&api_config).await;
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -214,12 +213,11 @@ async fn list_resources_without_repo_is_service_unavailable() {
         workflow_repo,
         execution_repo,
         control_queue_repo,
-        api_config.jwt_secret,
+        api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
 
-    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
