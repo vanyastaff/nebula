@@ -5288,6 +5288,10 @@ mod tests {
     use nebula_core::{Dependencies, action_key};
     use nebula_schema::{HasSchema, ValidSchema};
     use nebula_storage::{ExecutionRepo, WorkflowRepo};
+    use nebula_storage_port::StorageError;
+    use nebula_storage_port::store::{
+        ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowVersionStore,
+    };
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
@@ -5483,6 +5487,156 @@ mod tests {
 
         let engine = WorkflowEngine::new(runtime, metrics.clone()).unwrap();
         (engine, metrics)
+    }
+
+    /// Test-only bundle of the spec-16 in-memory adapters.
+    ///
+    /// Wires one `InMemoryExecutionStore` (plus the journal reader sharing
+    /// its core), node-result, checkpoint, idempotency, workflow, and
+    /// workflow-version adapters into the engine's [`ExecutionStores`] /
+    /// [`WorkflowStores`] bundles. It additionally exposes legacy-shaped
+    /// read accessors (`get_state` / `load_node_output` / `load_all_outputs`
+    /// / `get_journal`) so existing post-execution assertions read the
+    /// durable state the same way they did against the old
+    /// `ExecutionRepo`, mirroring the production port path's
+    /// scope/record semantics (the engine always passes
+    /// [`crate::store_seam::engine_scope`]).
+    ///
+    /// This is test scaffolding, not a production shim: the bundle's
+    /// fields are the same port traits production consumes; only the
+    /// legacy-shaped accessors are test-local conveniences.
+    //
+    // The first wiring sites are migrated incrementally; until enough
+    // land, some accessors have no caller. The allow is removed once the
+    // legacy `with_execution_repo` test sites are fully ported.
+    #[allow(
+        dead_code,
+        reason = "incremental port migration: accessors gain callers as test sites move off the legacy ExecutionRepo"
+    )]
+    #[derive(Clone)]
+    struct TestStores {
+        execution: Arc<nebula_storage::InMemoryExecutionStore>,
+        journal: Arc<nebula_storage::InMemoryJournalReader>,
+        node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
+        checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
+        idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
+        workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
+        versions: Arc<nebula_storage::InMemoryWorkflowVersionStore>,
+    }
+
+    #[allow(
+        dead_code,
+        reason = "incremental port migration: accessors gain callers as test sites move off the legacy ExecutionRepo"
+    )]
+    impl TestStores {
+        fn new() -> Self {
+            let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+            let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
+            Self {
+                execution,
+                journal,
+                node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+                idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+                workflow: Arc::new(nebula_storage::InMemoryWorkflowStore::new()),
+                versions: Arc::new(nebula_storage::InMemoryWorkflowVersionStore::new()),
+            }
+        }
+
+        /// The engine's execution-store bundle over these adapters.
+        fn execution_stores(&self) -> crate::store_seam::ExecutionStores {
+            crate::store_seam::ExecutionStores {
+                execution: self.execution.clone(),
+                journal: self.journal.clone(),
+                node_results: self.node_results.clone(),
+                checkpoints: self.checkpoints.clone(),
+                idempotency: self.idempotency.clone(),
+            }
+        }
+
+        /// The engine's workflow-store bundle over these adapters.
+        fn workflow_stores(&self) -> crate::store_seam::WorkflowStores {
+            crate::store_seam::WorkflowStores {
+                workflow: self.workflow.clone(),
+                versions: self.versions.clone(),
+            }
+        }
+
+        /// Attach both bundles to `engine` (mirrors the production
+        /// composition root, minus the tenancy decorator — every engine
+        /// call uses the same placeholder scope so the raw adapters
+        /// behave as one coherent tenant).
+        fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
+            engine
+                .with_execution_stores(self.execution_stores())
+                .with_workflow_stores(self.workflow_stores())
+        }
+
+        /// Persist a workflow definition as the published version 0 so the
+        /// resume path's `get_published` lookup resolves it. Port analog of
+        /// the legacy `save_workflow_to_repo` helper.
+        async fn save_workflow(&self, wf: &WorkflowDefinition) {
+            let scope = crate::store_seam::engine_scope();
+            let definition = serde_json::to_value(wf).unwrap();
+            self.versions
+                .create(
+                    &scope,
+                    nebula_storage_port::dto::WorkflowVersionRecord {
+                        workflow_id: wf.id.to_string(),
+                        number: 0,
+                        published: true,
+                        pinned: false,
+                        definition,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        /// Legacy-shaped `(version, state)` read. Mirrors the production
+        /// port path (`ExecutionStore::get`, scoped to the engine
+        /// placeholder).
+        async fn get_state(
+            &self,
+            id: ExecutionId,
+        ) -> Result<Option<(u64, serde_json::Value)>, StorageError> {
+            let scope = crate::store_seam::engine_scope();
+            Ok(self
+                .execution
+                .get(&scope, &id.to_string())
+                .await?
+                .map(|r| (r.version, r.state)))
+        }
+
+        /// Legacy-shaped single-node output read (the raw payload the
+        /// engine persisted via `save_node_output`).
+        async fn load_node_output(
+            &self,
+            id: ExecutionId,
+            node: NodeKey,
+        ) -> Result<Option<serde_json::Value>, StorageError> {
+            let scope = crate::store_seam::engine_scope();
+            Ok(self
+                .node_results
+                .load_node_output(&scope, &id.to_string(), node.as_str())
+                .await?
+                .map(|r| r.json))
+        }
+
+        /// Legacy-shaped journal read.
+        async fn get_journal(
+            &self,
+            id: ExecutionId,
+        ) -> Result<Vec<serde_json::Value>, StorageError> {
+            let scope = crate::store_seam::engine_scope();
+            Ok(self
+                .journal
+                .get_journal(&scope, &id.to_string())
+                .await?
+                .into_iter()
+                .map(|e| e.payload)
+                .collect())
+        }
     }
 
     // -- Tests --
@@ -6760,17 +6914,20 @@ mod tests {
 
     // -- Crash-window regression tests for #297 / D2 --
 
-    /// Wraps an inner [`ExecutionRepo`] and returns `Err` on the Nth
-    /// `transition()` call (1-indexed). All other trait methods delegate.
-    /// Used to simulate a storage failure during `checkpoint_node`.
-    struct FailAtTransitionN {
-        inner: Arc<nebula_storage::InMemoryExecutionRepo>,
+    /// Wraps an inner [`ExecutionStore`] and returns `Err` on the Nth
+    /// `commit()` call (1-indexed). All other trait methods delegate.
+    /// Used to simulate a storage failure during `checkpoint_node`'s
+    /// fencing-gated transition commit (the port analog of the legacy
+    /// `transition()` failure point).
+    #[derive(Debug)]
+    struct FailAtCommitN {
+        inner: Arc<nebula_storage::InMemoryExecutionStore>,
         fail_on: u32,
         calls: AtomicU32,
     }
 
-    impl FailAtTransitionN {
-        fn new(inner: Arc<nebula_storage::InMemoryExecutionRepo>, fail_on: u32) -> Self {
+    impl FailAtCommitN {
+        fn new(inner: Arc<nebula_storage::InMemoryExecutionStore>, fail_on: u32) -> Self {
             Self {
                 inner,
                 fail_on,
@@ -6780,181 +6937,92 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ExecutionRepo for FailAtTransitionN {
-        async fn get_state(
+    impl ExecutionStore for FailAtCommitN {
+        async fn create(
             &self,
-            id: ExecutionId,
-        ) -> Result<Option<(u64, serde_json::Value)>, nebula_storage::ExecutionRepoError> {
-            self.inner.get_state(id).await
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            workflow_id: &str,
+            initial_state: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .create(scope, id, workflow_id, initial_state)
+                .await
         }
 
-        async fn transition(
+        async fn get(
             &self,
-            id: ExecutionId,
-            expected_version: u64,
-            new_state: serde_json::Value,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+        ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+            self.inner.get(scope, id).await
+        }
+
+        async fn commit(
+            &self,
+            batch: nebula_storage_port::TransitionBatch,
+        ) -> Result<nebula_storage_port::TransitionOutcome, StorageError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.fail_on {
-                return Err(nebula_storage::ExecutionRepoError::Connection(format!(
-                    "injected transition failure at call #{n}"
+                return Err(StorageError::Connection(format!(
+                    "injected commit failure at call #{n}"
                 )));
             }
-            self.inner.transition(id, expected_version, new_state).await
-        }
-
-        async fn get_journal(
-            &self,
-            id: ExecutionId,
-        ) -> Result<Vec<serde_json::Value>, nebula_storage::ExecutionRepoError> {
-            self.inner.get_journal(id).await
-        }
-
-        async fn append_journal(
-            &self,
-            id: ExecutionId,
-            entry: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner.append_journal(id, entry).await
+            self.inner.commit(batch).await
         }
 
         async fn acquire_lease(
             &self,
-            id: ExecutionId,
-            holder: String,
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            holder: &str,
             ttl: Duration,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.acquire_lease(id, holder, ttl).await
+        ) -> Result<Option<nebula_storage_port::FencingToken>, StorageError> {
+            self.inner.acquire_lease(scope, id, holder, ttl).await
         }
 
         async fn renew_lease(
             &self,
-            id: ExecutionId,
-            holder: &str,
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            token: nebula_storage_port::FencingToken,
             ttl: Duration,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.renew_lease(id, holder, ttl).await
+        ) -> Result<bool, StorageError> {
+            self.inner.renew_lease(scope, id, token, ttl).await
         }
 
         async fn release_lease(
             &self,
-            id: ExecutionId,
-            holder: &str,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.release_lease(id, holder).await
-        }
-
-        async fn create(
-            &self,
-            id: ExecutionId,
-            workflow_id: WorkflowId,
-            state: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner.create(id, workflow_id, state).await
-        }
-
-        async fn save_node_output(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-            output: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .save_node_output(execution_id, node_key, attempt, output)
-                .await
-        }
-
-        async fn load_node_output(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-        ) -> Result<Option<serde_json::Value>, nebula_storage::ExecutionRepoError> {
-            self.inner.load_node_output(execution_id, node_key).await
-        }
-
-        async fn load_all_outputs(
-            &self,
-            execution_id: ExecutionId,
-        ) -> Result<HashMap<NodeKey, serde_json::Value>, nebula_storage::ExecutionRepoError>
-        {
-            self.inner.load_all_outputs(execution_id).await
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            token: nebula_storage_port::FencingToken,
+        ) -> Result<bool, StorageError> {
+            self.inner.release_lease(scope, id, token).await
         }
 
         async fn list_running(
             &self,
-        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
-            self.inner.list_running().await
+            scope: &nebula_storage_port::Scope,
+        ) -> Result<Vec<String>, StorageError> {
+            self.inner.list_running(scope).await
         }
 
         async fn list_running_for_workflow(
             &self,
-            workflow_id: WorkflowId,
-        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
-            self.inner.list_running_for_workflow(workflow_id).await
+            scope: &nebula_storage_port::Scope,
+            workflow_id: &str,
+        ) -> Result<Vec<String>, StorageError> {
+            self.inner
+                .list_running_for_workflow(scope, workflow_id)
+                .await
         }
 
         async fn count(
             &self,
-            workflow_id: Option<WorkflowId>,
-        ) -> Result<u64, nebula_storage::ExecutionRepoError> {
-            self.inner.count(workflow_id).await
-        }
-
-        async fn check_idempotency(
-            &self,
-            key: &str,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.check_idempotency(key).await
-        }
-
-        async fn mark_idempotent(
-            &self,
-            key: &str,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .mark_idempotent(key, execution_id, node_key)
-                .await
-        }
-
-        async fn save_stateful_checkpoint(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-            iteration: u32,
-            state: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .save_stateful_checkpoint(execution_id, node_key, attempt, iteration, state)
-                .await
-        }
-
-        async fn load_stateful_checkpoint(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-        ) -> Result<
-            Option<nebula_storage::StatefulCheckpointRecord>,
-            nebula_storage::ExecutionRepoError,
-        > {
-            self.inner
-                .load_stateful_checkpoint(execution_id, node_key, attempt)
-                .await
-        }
-
-        async fn delete_stateful_checkpoint(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .delete_stateful_checkpoint(execution_id, node_key, attempt)
-                .await
+            scope: &nebula_storage_port::Scope,
+            workflow_id: Option<&str>,
+        ) -> Result<u64, StorageError> {
+            self.inner.count(scope, workflow_id).await
         }
     }
 
@@ -6997,19 +7065,28 @@ mod tests {
                 ..WorkflowConfig::default()
             },
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let stores = TestStores::new();
+        stores.save_workflow(&wf).await;
 
-        // First transition() call corresponds to the checkpoint_node
-        // invocation after A's runtime failure. Fail it.
-        let base = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
+        // First commit() call corresponds to the checkpoint_node
+        // invocation after A's runtime failure (`create` is not a
+        // commit). Fail it.
+        let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+        let failing = Arc::new(FailAtCommitN::new(base, 1));
+        let execution_stores = crate::store_seam::ExecutionStores {
+            execution: failing,
+            journal: stores.journal.clone(),
+            node_results: stores.node_results.clone(),
+            checkpoints: stores.checkpoints.clone(),
+            idempotency: stores.idempotency.clone(),
+        };
 
         let (engine, _) = make_engine(registry);
         let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
         let mut event_rx = event_bus.subscribe();
         let engine = engine
-            .with_execution_repo(failing_repo)
-            .with_workflow_repo(workflow_repo)
+            .with_execution_stores(execution_stores)
+            .with_workflow_stores(stores.workflow_stores())
             .with_event_bus(event_bus);
 
         let _ = engine
@@ -7156,17 +7233,25 @@ mod tests {
                 ..WorkflowConfig::default()
             },
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let stores = TestStores::new();
+        stores.save_workflow(&wf).await;
 
-        let base = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
+        let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+        let failing = Arc::new(FailAtCommitN::new(base, 1));
+        let execution_stores = crate::store_seam::ExecutionStores {
+            execution: failing,
+            journal: stores.journal.clone(),
+            node_results: stores.node_results.clone(),
+            checkpoints: stores.checkpoints.clone(),
+            idempotency: stores.idempotency.clone(),
+        };
 
         let (engine, _) = make_engine(registry);
         let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
         let mut event_rx = event_bus.subscribe();
         let engine = engine
-            .with_execution_repo(failing_repo)
-            .with_workflow_repo(workflow_repo)
+            .with_execution_stores(execution_stores)
+            .with_workflow_stores(stores.workflow_stores())
             .with_event_bus(event_bus);
 
         let _ = engine
@@ -8838,16 +8923,19 @@ mod tests {
 
     // -- Regression tests for #333 (CAS-conflict reconciliation) --
 
-    /// Wraps an inner [`ExecutionRepo`] and injects a single external
-    /// "concurrent" transition BEFORE the Nth `transition()` call from
-    /// the engine — bumping the version and optionally rewriting the
-    /// status to simulate an API cancel / admin mutation / sibling
-    /// runner. Subsequent engine transitions hit a version mismatch.
+    /// Wraps an inner [`ExecutionStore`] and injects a single external
+    /// "concurrent" commit BEFORE the Nth `commit()` call from the engine
+    /// — bumping the version and optionally rewriting the status to
+    /// simulate an API cancel / admin mutation / sibling runner.
+    /// Subsequent engine commits hit a version mismatch.
     ///
-    /// Used to reproduce the pre-fix #333 failure mode where the engine
-    /// silently overwrote external state on CAS mismatch.
+    /// The injected commit reuses the row's current fencing generation
+    /// (read via `get`), so it is *not* a fencing race — it is a pure CAS
+    /// race, exactly the pre-fix #333 failure mode where the engine
+    /// silently overwrote external state on a version mismatch.
+    #[derive(Debug)]
     struct ExternalMutateBeforeN {
-        inner: Arc<nebula_storage::InMemoryExecutionRepo>,
+        inner: Arc<nebula_storage::InMemoryExecutionStore>,
         mutate_before: u32,
         new_status: Option<String>,
         calls: AtomicU32,
@@ -8856,7 +8944,7 @@ mod tests {
 
     impl ExternalMutateBeforeN {
         fn new(
-            inner: Arc<nebula_storage::InMemoryExecutionRepo>,
+            inner: Arc<nebula_storage::InMemoryExecutionStore>,
             mutate_before: u32,
             new_status: Option<&str>,
         ) -> Self {
@@ -8871,197 +8959,117 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ExecutionRepo for ExternalMutateBeforeN {
-        async fn get_state(
+    impl ExecutionStore for ExternalMutateBeforeN {
+        async fn create(
             &self,
-            id: ExecutionId,
-        ) -> Result<Option<(u64, serde_json::Value)>, nebula_storage::ExecutionRepoError> {
-            self.inner.get_state(id).await
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            workflow_id: &str,
+            initial_state: serde_json::Value,
+        ) -> Result<(), StorageError> {
+            self.inner
+                .create(scope, id, workflow_id, initial_state)
+                .await
         }
 
-        async fn transition(
+        async fn get(
             &self,
-            id: ExecutionId,
-            expected_version: u64,
-            new_state: serde_json::Value,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+        ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, StorageError> {
+            self.inner.get(scope, id).await
+        }
+
+        async fn commit(
+            &self,
+            batch: nebula_storage_port::TransitionBatch,
+        ) -> Result<nebula_storage_port::TransitionOutcome, StorageError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.mutate_before
                 && !self.injected.swap(true, Ordering::SeqCst)
-                && let Ok(Some((current_version, mut current_state))) =
-                    self.inner.get_state(id).await
+                && let Ok(Some(record)) = self.inner.get(batch.scope(), batch.execution_id()).await
             {
+                let mut state = record.state.clone();
                 if let Some(status) = &self.new_status
-                    && let Some(obj) = current_state.as_object_mut()
+                    && let Some(obj) = state.as_object_mut()
                 {
                     obj.insert(
                         "status".to_owned(),
                         serde_json::Value::String(status.clone()),
                     );
                 }
-                // Perform the external transition via the inner repo at
-                // the version the engine believes is current, bumping it
+                // External commit at the version the engine believes is
+                // current, reusing the live fencing generation so this is
+                // a pure CAS race (not a fencing race). Bumps the version
                 // beneath the engine's feet.
-                let _ = self
-                    .inner
-                    .transition(id, current_version, current_state)
-                    .await;
+                if let Ok(external) = nebula_storage_port::TransitionBatch::builder()
+                    .scope(record.scope.clone())
+                    .execution_id(record.id.clone())
+                    .expected_version(record.version)
+                    .fencing(nebula_storage_port::FencingToken::from_generation(
+                        record.fencing.unwrap_or(0),
+                    ))
+                    .new_state(state)
+                    .build()
+                {
+                    let _ = self.inner.commit(external).await;
+                }
             }
-            self.inner.transition(id, expected_version, new_state).await
-        }
-
-        async fn get_journal(
-            &self,
-            id: ExecutionId,
-        ) -> Result<Vec<serde_json::Value>, nebula_storage::ExecutionRepoError> {
-            self.inner.get_journal(id).await
-        }
-
-        async fn append_journal(
-            &self,
-            id: ExecutionId,
-            entry: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner.append_journal(id, entry).await
+            self.inner.commit(batch).await
         }
 
         async fn acquire_lease(
             &self,
-            id: ExecutionId,
-            holder: String,
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            holder: &str,
             ttl: Duration,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.acquire_lease(id, holder, ttl).await
+        ) -> Result<Option<nebula_storage_port::FencingToken>, StorageError> {
+            self.inner.acquire_lease(scope, id, holder, ttl).await
         }
 
         async fn renew_lease(
             &self,
-            id: ExecutionId,
-            holder: &str,
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            token: nebula_storage_port::FencingToken,
             ttl: Duration,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.renew_lease(id, holder, ttl).await
+        ) -> Result<bool, StorageError> {
+            self.inner.renew_lease(scope, id, token, ttl).await
         }
 
         async fn release_lease(
             &self,
-            id: ExecutionId,
-            holder: &str,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.release_lease(id, holder).await
-        }
-
-        async fn create(
-            &self,
-            id: ExecutionId,
-            workflow_id: WorkflowId,
-            state: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner.create(id, workflow_id, state).await
-        }
-
-        async fn save_node_output(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-            output: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .save_node_output(execution_id, node_key, attempt, output)
-                .await
-        }
-
-        async fn load_node_output(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-        ) -> Result<Option<serde_json::Value>, nebula_storage::ExecutionRepoError> {
-            self.inner.load_node_output(execution_id, node_key).await
-        }
-
-        async fn load_all_outputs(
-            &self,
-            execution_id: ExecutionId,
-        ) -> Result<HashMap<NodeKey, serde_json::Value>, nebula_storage::ExecutionRepoError>
-        {
-            self.inner.load_all_outputs(execution_id).await
+            scope: &nebula_storage_port::Scope,
+            id: &str,
+            token: nebula_storage_port::FencingToken,
+        ) -> Result<bool, StorageError> {
+            self.inner.release_lease(scope, id, token).await
         }
 
         async fn list_running(
             &self,
-        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
-            self.inner.list_running().await
+            scope: &nebula_storage_port::Scope,
+        ) -> Result<Vec<String>, StorageError> {
+            self.inner.list_running(scope).await
         }
 
         async fn list_running_for_workflow(
             &self,
-            workflow_id: WorkflowId,
-        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
-            self.inner.list_running_for_workflow(workflow_id).await
+            scope: &nebula_storage_port::Scope,
+            workflow_id: &str,
+        ) -> Result<Vec<String>, StorageError> {
+            self.inner
+                .list_running_for_workflow(scope, workflow_id)
+                .await
         }
 
         async fn count(
             &self,
-            workflow_id: Option<WorkflowId>,
-        ) -> Result<u64, nebula_storage::ExecutionRepoError> {
-            self.inner.count(workflow_id).await
-        }
-
-        async fn check_idempotency(
-            &self,
-            key: &str,
-        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            self.inner.check_idempotency(key).await
-        }
-
-        async fn mark_idempotent(
-            &self,
-            key: &str,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .mark_idempotent(key, execution_id, node_key)
-                .await
-        }
-
-        async fn save_stateful_checkpoint(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-            iteration: u32,
-            state: serde_json::Value,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .save_stateful_checkpoint(execution_id, node_key, attempt, iteration, state)
-                .await
-        }
-
-        async fn load_stateful_checkpoint(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-        ) -> Result<
-            Option<nebula_storage::StatefulCheckpointRecord>,
-            nebula_storage::ExecutionRepoError,
-        > {
-            self.inner
-                .load_stateful_checkpoint(execution_id, node_key, attempt)
-                .await
-        }
-
-        async fn delete_stateful_checkpoint(
-            &self,
-            execution_id: ExecutionId,
-            node_key: NodeKey,
-            attempt: u32,
-        ) -> Result<(), nebula_storage::ExecutionRepoError> {
-            self.inner
-                .delete_stateful_checkpoint(execution_id, node_key, attempt)
-                .await
+            scope: &nebula_storage_port::Scope,
+            workflow_id: Option<&str>,
+        ) -> Result<u64, StorageError> {
+            self.inner.count(scope, workflow_id).await
         }
     }
 
@@ -9089,24 +9097,32 @@ mod tests {
             vec![NodeDefinition::new(a.clone(), "A", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let stores = TestStores::new();
+        stores.save_workflow(&wf).await;
 
-        // `create()` seeds version=1 without a transition() call.
-        // The engine then issues two transition() calls: #1 is the
-        // node checkpoint (v=1 → v=2) and #2 is the final state
-        // write (v=2 → v=3). Inject the external mutation before
-        // call #2 so the FINAL CAS misses.
-        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        let mutating_repo = Arc::new(ExternalMutateBeforeN::new(
+        // `create()` seeds version=0 without a commit() call. The engine
+        // then issues two commit() calls: #1 is the node checkpoint
+        // (v=0 → v=1) and #2 is the final state write (v=1 → v=2).
+        // Inject the external mutation before call #2 so the FINAL CAS
+        // misses.
+        let inner = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+        let mutating = Arc::new(ExternalMutateBeforeN::new(
             inner.clone(),
             2,
             Some("cancelled"),
         ));
+        let execution_stores = crate::store_seam::ExecutionStores {
+            execution: mutating,
+            journal: stores.journal.clone(),
+            node_results: stores.node_results.clone(),
+            checkpoints: stores.checkpoints.clone(),
+            idempotency: stores.idempotency.clone(),
+        };
 
         let (engine, _) = make_engine(registry);
         let engine = engine
-            .with_execution_repo(mutating_repo)
-            .with_workflow_repo(workflow_repo);
+            .with_execution_stores(execution_stores)
+            .with_workflow_stores(stores.workflow_stores());
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -9127,13 +9143,14 @@ mod tests {
 
         // The persisted row must carry `cancelled` — the engine must
         // NOT have overwritten it with its own `completed`.
-        let (_v, final_state) = inner
-            .get_state(result.execution_id)
+        let scope = crate::store_seam::engine_scope();
+        let record = inner
+            .get(&scope, &result.execution_id.to_string())
             .await
             .unwrap()
             .expect("persisted state must exist");
         assert_eq!(
-            final_state.get("status").and_then(|v| v.as_str()),
+            record.state.get("status").and_then(|v| v.as_str()),
             Some("cancelled"),
             "persisted row must retain the external Cancelled status; \
              engine must not overwrite a concurrent terminal transition \
@@ -9163,24 +9180,32 @@ mod tests {
             vec![NodeDefinition::new(a.clone(), "A", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let stores = TestStores::new();
+        stores.save_workflow(&wf).await;
 
-        // Inject the external mutation before transition #1 — the
-        // first call after `create()` is the node-level checkpoint
-        // (v=1 → v=2 expected). The external bump flips status to
-        // `cancelling` and moves the row to v=2 so the engine's
+        // Inject the external mutation before commit #1 — the first
+        // call after `create()` is the node-level checkpoint
+        // (v=0 → v=1 expected). The external bump flips status to
+        // `cancelling` and moves the row to v=1 so the engine's
         // checkpoint_node CAS lands stale.
-        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        let mutating_repo = Arc::new(ExternalMutateBeforeN::new(
+        let inner = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+        let mutating = Arc::new(ExternalMutateBeforeN::new(
             inner.clone(),
             1,
             Some("cancelling"),
         ));
+        let execution_stores = crate::store_seam::ExecutionStores {
+            execution: mutating,
+            journal: stores.journal.clone(),
+            node_results: stores.node_results.clone(),
+            checkpoints: stores.checkpoints.clone(),
+            idempotency: stores.idempotency.clone(),
+        };
 
         let (engine, _) = make_engine(registry);
         let engine = engine
-            .with_execution_repo(mutating_repo)
-            .with_workflow_repo(workflow_repo);
+            .with_execution_stores(execution_stores)
+            .with_workflow_stores(stores.workflow_stores());
 
         // The final result is not the focus here — what matters is
         // that the persisted row shows the engine observed the
@@ -9215,9 +9240,13 @@ mod tests {
         // `cancelling` status — never overwritten. The engine's own
         // writes after CAS miss MUST NOT land.
         if let Some(execution_id) = execution_id_opt {
-            let state_opt = inner.get_state(execution_id).await.unwrap_or(None);
-            if let Some((_v, final_state)) = state_opt {
-                let status = final_state.get("status").and_then(|v| v.as_str());
+            let scope = crate::store_seam::engine_scope();
+            let record = inner
+                .get(&scope, &execution_id.to_string())
+                .await
+                .unwrap_or(None);
+            if let Some(record) = record {
+                let status = record.state.get("status").and_then(|v| v.as_str());
                 assert_ne!(
                     status,
                     Some("completed"),

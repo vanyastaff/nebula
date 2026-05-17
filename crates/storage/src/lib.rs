@@ -111,4 +111,10 @@ pub use execution_repo::{
     NodeResultRecord, StatefulCheckpointRecord,
 };
 pub use format::StorageFormat;
+pub use inmem::{
+    InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
+    InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
+    InMemoryNodeResultStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
+    InMemoryWorkflowVersionStore,
+};
 pub use workflow_repo::{InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError};
