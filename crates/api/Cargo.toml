@@ -27,6 +27,10 @@ path = "src/bin/nebula-realtime.rs"
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-storage-port = { path = "../storage-port" }
+# Composition-root dependency: `AppState`/`default_state` wrap the storage
+# port's in-memory adapters in the scoping decorators (the Business-tier
+# multi-tenancy security boundary). Allowlisted in `deny.toml` `[wrappers]`.
+nebula-tenancy = { path = "../tenancy" }
 nebula-core = { path = "../core" }
 nebula-execution = { path = "../execution" }
 nebula-validator = { path = "../validator" }
@@ -122,11 +126,6 @@ oas3 = { workspace = true }
 # through `nebula-engine` so we don't need a direct `nebula-sandbox` dep.
 nebula-engine = { path = "../engine" }
 nebula-schema = { path = "../schema" }
-# Dev-only: the Slice-D port-backed knife harness wires the spec-16
-# InMemory adapters behind the `nebula-tenancy` decorators to prove the
-# §13 knife is behaviourally equivalent through the scoped port. Listed
-# in `deny.toml` wrappers (api is a composition root for the decorator).
-nebula-tenancy = { path = "../tenancy" }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }

@@ -17,20 +17,20 @@
 //! Roadmap: §M3.4 Idempotency-Key dedup — fourth box (end-to-end test
 //! against the real `build_app`).
 
+mod common;
+
 use std::sync::Arc;
 
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use common::create_state_with_queue;
 use nebula_api::{
     ApiConfig, AppState, app,
     middleware::idempotency::{
         IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER, InMemoryIdempotencyStore,
     },
-};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
 };
 use tower::ServiceExt;
 
@@ -42,20 +42,9 @@ const X_REQUEST_ID: &str = "x-request-id";
 /// the auth/RBAC layers — those run inside `build_app` but the test
 /// echo route lives outside the OpenAPI router and is not subject to
 /// them.
-fn state_with_idempotency() -> AppState {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-    let store = Arc::new(InMemoryIdempotencyStore::new());
-
-    AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret,
-    )
-    .with_idempotency_store(store)
+async fn state_with_idempotency() -> AppState {
+    let (state, _queue) = create_state_with_queue().await;
+    state.with_idempotency_store(Arc::new(InMemoryIdempotencyStore::new()))
 }
 
 fn post_with_key(uri: &str, key: &str, body: &'static str) -> Request<Body> {
@@ -75,7 +64,7 @@ async fn body_string(response: axum::response::Response) -> String {
 
 #[tokio::test]
 async fn replay_returns_cached_body_through_full_stack() {
-    let state = state_with_idempotency();
+    let state = state_with_idempotency().await;
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
@@ -130,7 +119,7 @@ async fn replay_returns_cached_body_through_full_stack() {
 
 #[tokio::test]
 async fn body_mismatch_returns_422_through_full_stack() {
-    let state = state_with_idempotency();
+    let state = state_with_idempotency().await;
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
@@ -166,7 +155,7 @@ async fn body_mismatch_returns_422_through_full_stack() {
 
 #[tokio::test]
 async fn fivexx_response_is_not_cached_through_full_stack() {
-    let state = state_with_idempotency();
+    let state = state_with_idempotency().await;
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
@@ -195,7 +184,7 @@ async fn fivexx_response_is_not_cached_through_full_stack() {
 
 #[tokio::test]
 async fn per_principal_scope_through_full_stack() {
-    let state = state_with_idempotency();
+    let state = state_with_idempotency().await;
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
@@ -234,7 +223,7 @@ async fn per_principal_scope_through_full_stack() {
 
 #[tokio::test]
 async fn cors_allows_idempotency_key_in_preflight() {
-    let state = state_with_idempotency();
+    let state = state_with_idempotency().await;
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 
@@ -273,7 +262,7 @@ async fn cors_exposes_idempotent_replay_header() {
     // any non-listed response header before `fetch().headers` sees it. So
     // assert against a real POST with an `Origin` header rather than the
     // OPTIONS preflight.
-    let state = state_with_idempotency();
+    let state = state_with_idempotency().await;
     let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
 

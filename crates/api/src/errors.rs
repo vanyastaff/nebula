@@ -147,17 +147,7 @@ pub enum ApiError {
     /// Storage error
     #[classify(category = "internal", code = "API:STORAGE")]
     #[error("Storage error: {0}")]
-    Storage(#[from] nebula_storage::StorageError),
-
-    /// Workflow repository error
-    #[classify(category = "internal", code = "API:WORKFLOW_REPO")]
-    #[error("Workflow repository error: {0}")]
-    WorkflowRepo(#[from] nebula_storage::WorkflowRepoError),
-
-    /// Execution repository error
-    #[classify(category = "internal", code = "API:EXECUTION_REPO")]
-    #[error("Execution repository error: {0}")]
-    ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
+    Storage(#[from] nebula_storage_port::StorageError),
 
     /// Invalid workflow definition — structurally valid JSON but semantically
     /// invalid per `nebula_workflow::validate_workflow` (RFC 9457 **422**).
@@ -480,28 +470,6 @@ impl ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ProblemDetails::new(
                         "https://nebula.dev/problems/storage-error",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
-            },
-            ApiError::WorkflowRepo(err) => {
-                tracing::error!("Workflow repository error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "https://nebula.dev/problems/workflow-repo-error",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
-            },
-            ApiError::ExecutionRepo(err) => {
-                tracing::error!("Execution repository error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "https://nebula.dev/problems/execution-repo-error",
                         "Internal Server Error",
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),

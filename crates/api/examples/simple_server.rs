@@ -17,12 +17,10 @@
 use std::{sync::Arc, time::Duration};
 
 use nebula_api::{
-    ApiConfig, AppState, app,
+    ApiConfig, app,
     config::IdempotencyBackend,
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
-};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+    server::default_state,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -30,26 +28,23 @@ use tokio_util::sync::CancellationToken;
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
 
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     // DEMO ONLY — does not honor start / cancel (canon §12.2, ADR-0008 §4).
     //
     // ADR-0008 A2 + A3 landed `nebula_engine::EngineControlDispatch` with
     // full Start / Resume / Restart / Cancel / Terminate dispatch wired into
-    // the engine, so a production composition root can now drop this file's
-    // repos into an `AppState` and spawn a real `ControlConsumer` bound to a
-    // `WorkflowEngine`. This `simple_server.rs` intentionally does not pull
-    // in the full engine stack (plugin registry, action runtime, sandbox,
+    // the engine, so a production composition root can now spawn a real
+    // `ControlConsumer` bound to a `WorkflowEngine` over this state's port
+    // stores. This `simple_server.rs` intentionally does not pull in the
+    // full engine stack (plugin registry, action runtime, sandbox,
     // metrics, credential / resource managers) — the dedicated `apps/server`
     // composition root is still tracked as a separate follow-up. Until then
     // this example stays DEMO ONLY: `POST /executions` persists the row and
     // enqueues `Start`, but with no consumer wired here the row never
     // transitions to `Running`. `crates/api/tests/knife.rs` exercises the
     // full producer → consumer → engine path end-to-end for both Start
-    // (step 3) and Cancel (step 5) regression coverage.
-    // `InMemoryControlQueueRepo` also does not persist across restarts; a
-    // real deployment additionally requires a Postgres-backed repo.
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    // (step 3) and Cancel (step 5) regression coverage. The in-memory port
+    // adapters do not persist across restarts; a real deployment
+    // additionally requires the Postgres-backed port adapters.
     let api_config = ApiConfig::from_env()?;
 
     // Wire the idempotency-store backend per ADR-0048. The cancellation
@@ -59,15 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (idempotency_store, sweep_handle) =
         build_idempotency(&api_config, shutdown_token.clone()).await?;
 
-    // Wire api_keys from ApiConfig so X-API-Key auth is honoured.
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_api_keys(api_config.api_keys.clone())
-    .with_idempotency_store(idempotency_store);
+    // Wire api_keys from ApiConfig so X-API-Key auth is honoured. The
+    // execution / workflow / control-queue surface is the scoped storage
+    // port (in-memory adapters behind the tenancy decorators), wired by
+    // the shared `default_state` composition root.
+    let state = default_state(&api_config)?
+        .with_api_keys(api_config.api_keys.clone())
+        .with_idempotency_store(idempotency_store);
     let bind_address = api_config.bind_address;
     let app = app::build_app(state, &api_config);
 

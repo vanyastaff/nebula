@@ -273,7 +273,18 @@ pub async fn create_workflow(
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
     // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    //
+    // The stored definition must round-trip as a `WorkflowDefinition`
+    // (its `created_at`/`updated_at` are `DateTime<Utc>`, which serde
+    // encodes as RFC 3339 strings). Writing raw Unix-seconds integers
+    // here produces a JSON object that *looks* like a workflow but fails
+    // `serde_json::from_str::<WorkflowDefinition>` — the parse the
+    // activate path performs before flipping the active flag. Persist the
+    // RFC 3339 form; the `WorkflowResponse` API field stays Unix seconds
+    // and is derived from the same instant.
+    let now = Utc::now();
+    let now_secs = now.timestamp();
+    let now_rfc3339 = now.to_rfc3339();
 
     // Build workflow definition by merging request definition with metadata
     let mut definition = payload.definition.clone();
@@ -282,15 +293,15 @@ pub async fn create_workflow(
         if let Some(desc) = &payload.description {
             obj.insert("description".to_string(), serde_json::json!(desc));
         }
-        obj.insert("created_at".to_string(), serde_json::json!(now));
-        obj.insert("updated_at".to_string(), serde_json::json!(now));
+        obj.insert("created_at".to_string(), serde_json::json!(now_rfc3339));
+        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
     } else {
         // If definition is not an object, wrap it with metadata
         definition = serde_json::json!({
             "name": payload.name,
             "description": payload.description,
-            "created_at": now,
-            "updated_at": now,
+            "created_at": now_rfc3339,
+            "updated_at": now_rfc3339,
             "definition": definition,
         });
     }
@@ -305,8 +316,8 @@ pub async fn create_workflow(
         id: workflow_id.to_string(),
         name: payload.name,
         description: payload.description,
-        created_at: now,
-        updated_at: now,
+        created_at: now_secs,
+        updated_at: now_secs,
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -353,8 +364,12 @@ pub async fn update_workflow(
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
-    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`. Persist the
+    // RFC 3339 form so the stored definition stays a parseable
+    // `WorkflowDefinition` (see `create_workflow` for the rationale);
+    // the response timestamp is derived via `extract_timestamp`, which
+    // accepts both encodings.
+    let now_rfc3339 = Utc::now().to_rfc3339();
 
     // Update definition with new values
     if let Some(obj) = definition.as_object_mut() {
@@ -396,7 +411,7 @@ pub async fn update_workflow(
         }
 
         // Update the updated_at timestamp
-        obj.insert("updated_at".to_string(), serde_json::json!(now));
+        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
     } else {
         return Err(ApiError::Internal(
             "Invalid workflow definition format".to_string(),
@@ -547,13 +562,16 @@ pub async fn activate_workflow(
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
-    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`. Persist the
+    // RFC 3339 form so the re-saved definition stays a parseable
+    // `WorkflowDefinition` for the next activate/validate round-trip
+    // (see `create_workflow`).
+    let now_rfc3339 = Utc::now().to_rfc3339();
 
     // Update definition to set active flag
     if let Some(obj) = definition.as_object_mut() {
         obj.insert("active".to_string(), serde_json::json!(true));
-        obj.insert("updated_at".to_string(), serde_json::json!(now));
+        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
     } else {
         return Err(ApiError::Internal(
             "Invalid workflow definition format".to_string(),

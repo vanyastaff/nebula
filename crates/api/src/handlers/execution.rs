@@ -7,7 +7,7 @@ use axum::{
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::{ExecutionState, ExecutionStatus};
-use nebula_storage::repos::ControlCommand;
+use nebula_storage_port::dto::ControlCommand;
 
 use crate::{
     errors::{ApiError, ApiResult, ProblemDetails},

@@ -135,110 +135,128 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::http::StatusCode;
-    use nebula_core::WorkflowId;
-    use nebula_storage::{
-        InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError,
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_storage_port::{Scope, StorageError, dto::WorkflowRecord, store::WorkflowStore};
+    use nebula_tenancy::{
+        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
     };
 
     use super::*;
     use crate::{ApiConfig, state::AppState};
 
-    /// Workflow repo that always fails `count()` — used to simulate a
-    /// database outage in readiness probes (#291).
-    struct AlwaysFailWorkflowRepo;
+    /// `WorkflowStore` whose `list()` always fails — used to simulate a
+    /// database outage in readiness probes (#291). The probe path is
+    /// `AppState::workflow_count` → `WorkflowStore::list`, so failing
+    /// `list` is the exact surface the readiness check exercises.
+    #[derive(Debug)]
+    struct AlwaysFailWorkflowStore;
 
     #[async_trait]
-    impl WorkflowRepo for AlwaysFailWorkflowRepo {
-        async fn get_with_version(
+    impl WorkflowStore for AlwaysFailWorkflowStore {
+        async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn get_by_slug(
             &self,
-            _id: WorkflowId,
-        ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+            _: &Scope,
+            _: &str,
+        ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn save(
-            &self,
-            _id: WorkflowId,
-            _version: u64,
-            _definition: serde_json::Value,
-        ) -> Result<(), WorkflowRepoError> {
+        async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn list(
-            &self,
-            _offset: usize,
-            _limit: usize,
-        ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
-            unimplemented!("not exercised by readiness tests")
-        }
-
-        async fn count(&self) -> Result<usize, WorkflowRepoError> {
-            Err(WorkflowRepoError::Connection("db offline".to_string()))
+        async fn list(&self, _: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
+            Err(StorageError::Connection("db offline".to_string()))
         }
     }
 
-    /// Workflow repo whose `count()` sleeps for longer than `PROBE_TIMEOUT` —
-    /// used to force the `Err(_)` timeout branch in `probe_database` (#291
-    /// review). Pair with `#[tokio::test(start_paused = true)]` so the sleep
-    /// is virtual and the test does not block for real seconds.
-    struct SlowWorkflowRepo;
+    /// `WorkflowStore` whose `list()` sleeps for longer than
+    /// `PROBE_TIMEOUT` — forces the `Err(_)` timeout branch in
+    /// `probe_database` (#291 review). Pair with
+    /// `#[tokio::test(start_paused = true)]` so the sleep is virtual and
+    /// the test does not block for real seconds.
+    #[derive(Debug)]
+    struct SlowWorkflowStore;
 
     #[async_trait]
-    impl WorkflowRepo for SlowWorkflowRepo {
-        async fn get_with_version(
+    impl WorkflowStore for SlowWorkflowStore {
+        async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn get_by_slug(
             &self,
-            _id: WorkflowId,
-        ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+            _: &Scope,
+            _: &str,
+        ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn save(
-            &self,
-            _id: WorkflowId,
-            _version: u64,
-            _definition: serde_json::Value,
-        ) -> Result<(), WorkflowRepoError> {
+        async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn list(
-            &self,
-            _offset: usize,
-            _limit: usize,
-        ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
-            unimplemented!("not exercised by readiness tests")
-        }
-
-        async fn count(&self) -> Result<usize, WorkflowRepoError> {
+        async fn list(&self, _: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
             // Far longer than PROBE_TIMEOUT (2s). Under paused time, the
             // runtime auto-advances to whichever timer fires first — that's
             // the timeout, so this sleep gets cancelled and never elapses
             // in wall-clock time.
             tokio::time::sleep(Duration::from_mins(1)).await;
-            Ok(0)
+            Ok(Vec::new())
         }
     }
 
-    fn app_state_with_repo(repo: Arc<dyn WorkflowRepo>) -> AppState {
-        let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-        let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-            Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
+    /// Build an `AppState` whose `WorkflowStore` is the supplied (possibly
+    /// failing) port store, with real in-memory adapters for the rest —
+    /// all behind the tenancy decorators, the canonical composition-root
+    /// wiring (mirrors `server::default_state`).
+    fn app_state_with_workflow_store(workflow_store: Arc<dyn WorkflowStore>) -> AppState {
         let config = ApiConfig::for_test();
-        AppState::new(repo, execution_repo, control_queue_repo, config.jwt_secret)
+        let scope = Scope::new("nebula", "nebula");
+        let exec_store = InMemoryExecutionStore::new();
+        let control_queue = InMemoryControlQueue::new(&exec_store);
+        let journal = InMemoryJournalReader::new(&exec_store);
+
+        AppState::new(
+            Arc::new(ScopedWorkflowStore::new(workflow_store, scope.clone())),
+            Arc::new(ScopedWorkflowVersionStore::new(
+                Arc::new(InMemoryWorkflowVersionStore::new()),
+                scope.clone(),
+            )),
+            Arc::new(ScopedExecutionStore::new(
+                Arc::new(exec_store),
+                scope.clone(),
+            )),
+            Arc::new(ScopedNodeResultStore::new(
+                Arc::new(InMemoryNodeResultStore::new()),
+                scope.clone(),
+            )),
+            Arc::new(ScopedExecutionJournalReader::new(
+                Arc::new(journal),
+                scope.clone(),
+            )),
+            Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+            config.jwt_secret,
+        )
     }
 
     #[tokio::test]
     async fn readiness_reports_ok_when_database_responds() {
-        let state = app_state_with_repo(Arc::new(InMemoryWorkflowRepo::new()));
+        let state = app_state_with_workflow_store(Arc::new(InMemoryWorkflowStore::new()));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.ready);
@@ -247,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn readiness_returns_503_when_database_probe_fails() {
-        let state = app_state_with_repo(Arc::new(AlwaysFailWorkflowRepo));
+        let state = app_state_with_workflow_store(Arc::new(AlwaysFailWorkflowStore));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!body.ready);
@@ -261,7 +279,7 @@ mod tests {
     /// virtual microseconds rather than waiting 2 real seconds.
     #[tokio::test(start_paused = true)]
     async fn readiness_returns_503_when_database_probe_times_out() {
-        let state = app_state_with_repo(Arc::new(SlowWorkflowRepo));
+        let state = app_state_with_workflow_store(Arc::new(SlowWorkflowStore));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!body.ready);

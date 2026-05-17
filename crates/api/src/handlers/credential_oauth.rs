@@ -407,25 +407,53 @@ mod tests {
     use std::sync::Arc;
 
     use nebula_credential::{CredentialStore, PendingStateStore};
-    use nebula_storage::{
-        InMemoryExecutionRepo, InMemoryWorkflowRepo,
-        repos::{ControlQueueRepo, InMemoryControlQueueRepo},
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_tenancy::{
+        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
     };
 
     use super::*;
     use crate::config::JwtSecret;
 
     fn test_app_state() -> AppState {
-        let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-        let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-        let control_queue_repo: Arc<dyn ControlQueueRepo> =
-            Arc::new(InMemoryControlQueueRepo::new());
         let jwt_secret =
             JwtSecret::new("test-jwt-secret-1234567890-abcdef").expect("valid test secret");
+
+        // Scoped storage-port wiring (mirrors `server::default_state`):
+        // in-memory adapters behind the tenancy decorators bound to the
+        // placeholder scope, with a shared execution core so the control
+        // queue / journal observe a `commit`'s rows.
+        let scope = nebula_storage_port::Scope::new("nebula", "nebula");
+        let exec_store = InMemoryExecutionStore::new();
+        let control_queue = InMemoryControlQueue::new(&exec_store);
+        let journal = InMemoryJournalReader::new(&exec_store);
+
         AppState::new(
-            workflow_repo,
-            execution_repo,
-            control_queue_repo,
+            Arc::new(ScopedWorkflowStore::new(
+                Arc::new(InMemoryWorkflowStore::new()),
+                scope.clone(),
+            )),
+            Arc::new(ScopedWorkflowVersionStore::new(
+                Arc::new(InMemoryWorkflowVersionStore::new()),
+                scope.clone(),
+            )),
+            Arc::new(ScopedExecutionStore::new(
+                Arc::new(exec_store),
+                scope.clone(),
+            )),
+            Arc::new(ScopedNodeResultStore::new(
+                Arc::new(InMemoryNodeResultStore::new()),
+                scope.clone(),
+            )),
+            Arc::new(ScopedExecutionJournalReader::new(
+                Arc::new(journal),
+                scope.clone(),
+            )),
+            Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
             jwt_secret,
         )
     }

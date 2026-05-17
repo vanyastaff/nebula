@@ -189,18 +189,60 @@ impl<F: AppContextFactory> ServerRuntime<F> {
 
 /// Build default local-first state used by transport binaries.
 ///
+/// The execution / workflow / control-queue surface is the scoped
+/// storage port: the in-memory adapters wrapped in the `nebula-tenancy`
+/// scoping decorators bound to the local-first placeholder scope. One
+/// shared execution-store core backs the control queue and journal so a
+/// `commit`/`enqueue` is observable through every reader (the same
+/// wiring contract the conformance harness uses). A single
+/// workflow-version store instance is shared between the workflow-CRUD
+/// path and the resume/definition path so a version published via the
+/// workflow handlers is readable through the execution accessor.
+///
 /// The idempotency store is **not** attached here — it is wired
 /// asynchronously by [`ServerRuntime::run_transport`] so the PG-backed
 /// path can `await` the sqlx pool construction.
 pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitError> {
-    let workflow_repo = Arc::new(nebula_storage::InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_tenancy::{
+        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    };
+
+    let scope = nebula_storage_port::Scope::new("nebula", "nebula");
+
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_store = InMemoryWorkflowStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
 
     Ok(AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
+        Arc::new(ScopedWorkflowStore::new(
+            Arc::new(workflow_store),
+            scope.clone(),
+        )),
+        Arc::new(ScopedWorkflowVersionStore::new(
+            Arc::new(workflow_versions),
+            scope.clone(),
+        )),
+        Arc::new(ScopedExecutionStore::new(
+            Arc::new(exec_store),
+            scope.clone(),
+        )),
+        Arc::new(ScopedNodeResultStore::new(
+            Arc::new(node_results),
+            scope.clone(),
+        )),
+        Arc::new(ScopedExecutionJournalReader::new(
+            Arc::new(journal),
+            scope.clone(),
+        )),
+        Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
         api_config.jwt_secret.clone(),
     )
     .with_api_keys(api_config.api_keys.clone()))

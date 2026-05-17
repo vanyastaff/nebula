@@ -14,9 +14,8 @@ use nebula_api::{
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, WorkspaceId};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-};
+use nebula_storage::inmem::{InMemoryControlQueue, InMemoryExecutionStore};
+use nebula_storage_port::Scope;
 
 // ── Shared constants ─────────────────────────────────────────────────────────
 
@@ -142,107 +141,181 @@ pub(crate) fn create_test_jwt() -> String {
 
 // ── AppState builders ─────────────────────────────────────────────────────────
 
-/// Create an `AppState` with fully functional in-memory repos; return both the
-/// state and a typed reference to the control queue so tests can inspect it.
-pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-
-    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::clone(&control_queue_repo) as _;
-
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_dyn,
-        api_config.jwt_secret,
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
-
-    (state, control_queue_repo)
-}
-
-/// Alias for [`create_state_with_queue`], preserving the name used by
-/// `integration_tests.rs` callers so no test body needs to change.
-pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
-    create_state_with_queue().await
-}
-
-/// Create an `AppState` whose execution / workflow / control-queue
-/// surface is the **spec-16 scoped port**, wired exactly as the
-/// composition root would: the InMemory port adapters wrapped in the
-/// `nebula-tenancy` decorators (bound to the placeholder scope), then
-/// attached via [`AppState::with_execution_store`] /
-/// [`AppState::with_workflow_store`] / [`AppState::with_control_queue`].
+/// Build an `AppState` whose execution / workflow / control-queue
+/// surface is the scoped storage port, wired exactly as the composition
+/// root does: the in-memory port adapters wrapped in the
+/// `nebula-tenancy` scoping decorators (bound to the placeholder scope)
+/// and passed straight to [`AppState::new`].
 ///
-/// The legacy repos passed to [`AppState::new`] stay present (the
-/// not-yet-migrated fields still need them — expand-contract), but every
-/// accessor the knife exercises now prefers the port. This lets the §13
-/// knife run end-to-end through the port and proves it is
-/// behaviourally equivalent to the legacy path. The returned
-/// `InMemoryControlQueue` shares the execution store's core, so its
-/// non-consuming `snapshot()` observes a `commit`'s / `enqueue`'s outbox
-/// rows — the port analogue of `InMemoryControlQueueRepo::snapshot()`.
-pub(crate) async fn create_state_with_port_queue()
--> (AppState, nebula_storage::inmem::InMemoryControlQueue) {
+/// Returns the state plus the raw (undecorated) `InMemoryControlQueue`
+/// and `InMemoryExecutionStore` handles. Both port stores are `Clone`
+/// over an `Arc<Mutex<…>>`, so the returned handles share state with the
+/// decorated ones inside `AppState`: a test can seed an execution row
+/// directly through the returned `InMemoryExecutionStore` and observe
+/// the durable outbox through the returned `InMemoryControlQueue`'s
+/// non-consuming `snapshot()`. One shared execution-store core backs the
+/// control queue and journal so a `commit`/`enqueue` is visible through
+/// every reader; one workflow-version store instance is shared between
+/// the workflow-CRUD path and the resume/definition path so a version
+/// published via the workflow handlers is readable through the
+/// execution accessor.
+/// Raw (undecorated) in-memory port store handles that share state with
+/// the scoping-decorated stores inside the returned [`AppState`].
+///
+/// Every port store is `Clone` over an `Arc<Mutex<…>>`, so these handles
+/// observe (and can seed) exactly the rows the API sees through the
+/// tenancy decorators. The seed/read helpers below wrap the port-store
+/// API with the ergonomics the pre-port `state.execution_repo` /
+/// `state.workflow_repo` calls had, so a test body is a one-line change.
+pub(crate) struct PortHandles {
+    /// Durable control-queue outbox (non-consuming `snapshot()` for
+    /// asserting enqueued Start/Cancel rows).
+    pub control_queue: InMemoryControlQueue,
+    exec_store: InMemoryExecutionStore,
+    journal: nebula_storage::inmem::InMemoryJournalReader,
+    workflow_store: nebula_storage::inmem::InMemoryWorkflowStore,
+    workflow_versions: nebula_storage::inmem::InMemoryWorkflowVersionStore,
+}
+
+/// The fixed placeholder scope every handle (and the `AppState` tenancy
+/// decorators) bind to — mirrors `AppState::placeholder_scope`. A row
+/// seeded under this scope is visible through the decorated stores.
+fn port_scope() -> Scope {
+    Scope::new("nebula", "nebula")
+}
+
+impl PortHandles {
+    /// Seed an execution row directly (port equivalent of the old
+    /// `state.execution_repo.create(id, workflow_id, state_json)`).
+    pub(crate) async fn seed_execution(
+        &self,
+        execution_id: nebula_core::ExecutionId,
+        workflow_id: nebula_core::WorkflowId,
+        state_json: serde_json::Value,
+    ) {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::create(
+            &self.exec_store,
+            &port_scope(),
+            &execution_id.to_string(),
+            &workflow_id.to_string(),
+            state_json,
+        )
+        .await
+        .expect("seed_execution: port create must succeed");
+    }
+
+    /// Seed a workflow definition directly (port equivalent of the old
+    /// `state.workflow_repo.save(id, 0, definition)`): a workflow row at
+    /// version 1 plus a published version record #1 — exactly what
+    /// `AppState::workflow_save(version == 0)` performs, so the activate
+    /// / get-by-id handlers resolve the definition identically.
+    pub(crate) async fn seed_workflow(
+        &self,
+        workflow_id: nebula_core::WorkflowId,
+        definition: serde_json::Value,
+    ) {
+        use nebula_storage_port::store::{WorkflowStore, WorkflowVersionStore};
+        let scope = port_scope();
+        let id_str = workflow_id.to_string();
+        WorkflowStore::create(
+            &self.workflow_store,
+            &scope,
+            nebula_storage_port::dto::WorkflowRecord {
+                id: id_str.clone(),
+                scope: scope.clone(),
+                version: 1,
+                slug: id_str.clone(),
+                deleted: false,
+            },
+        )
+        .await
+        .expect("seed_workflow: port workflow create must succeed");
+        WorkflowVersionStore::create(
+            &self.workflow_versions,
+            &scope,
+            nebula_storage_port::dto::WorkflowVersionRecord {
+                workflow_id: id_str,
+                number: 1,
+                published: true,
+                pinned: false,
+                definition,
+            },
+        )
+        .await
+        .expect("seed_workflow: port version create must succeed");
+    }
+
+    /// Read the persisted `(version, state_json)` for an execution (port
+    /// equivalent of the old `state.execution_repo.get_state(id)`).
+    pub(crate) async fn execution_state(
+        &self,
+        execution_id: nebula_core::ExecutionId,
+    ) -> Option<(u64, serde_json::Value)> {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::get(&self.exec_store, &port_scope(), &execution_id.to_string())
+            .await
+            .expect("execution_state: port get must not error")
+            .map(|r| (r.version, r.state))
+    }
+
+    /// List running execution ids as opaque strings (port equivalent of
+    /// the old `state.execution_repo.list_running()`; the port id form is
+    /// the canonical string, not a typed `ExecutionId`).
+    pub(crate) async fn running_executions(&self) -> Vec<String> {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::list_running(&self.exec_store, &port_scope())
+            .await
+            .expect("running_executions: port list_running must not error")
+    }
+}
+
+/// Build an `AppState` whose execution / workflow / control-queue
+/// surface is the scoped storage port, wired exactly as the composition
+/// root does: the in-memory port adapters wrapped in the
+/// `nebula-tenancy` scoping decorators (bound to the placeholder scope)
+/// and passed straight to [`AppState::new`].
+///
+/// Returns the state plus a [`PortHandles`] bundle of raw (undecorated)
+/// store handles that share state with the decorated ones inside
+/// `AppState`. One shared execution-store core backs the control queue
+/// and journal so a `commit`/`enqueue` is visible through every reader;
+/// one workflow-version store instance is shared between the
+/// workflow-CRUD path and the resume/definition path so a version
+/// published via the workflow handlers is readable through the
+/// execution accessor.
+async fn build_port_state() -> (AppState, PortHandles) {
     use nebula_storage::inmem::{
-        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
+        InMemoryWorkflowVersionStore,
     };
     use nebula_tenancy::{
         ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
         ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
     };
 
-    // Fixed placeholder scope: the tenancy decorator substitutes its
-    // bound scope on every call, so the concrete value is immaterial to
-    // isolation — it only has to be a valid `Scope` (mirrors
-    // `AppState`'s own `placeholder_scope`).
-    let scope = nebula_storage_port::Scope::new("nebula", "nebula");
+    let scope = port_scope();
 
-    // One shared execution-store core so the control queue + journal
-    // observe the rows a `commit`/`enqueue` writes (same wiring contract
-    // the conformance harness uses).
     let exec_store = InMemoryExecutionStore::new();
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_store = InMemoryWorkflowStore::new();
-    // ONE workflow-version store instance shared between the
-    // workflow-CRUD path (`with_workflow_store`) and the
-    // resume/definition path (`with_execution_store`). Both InMemory
-    // stores are `Clone` over an `Arc<Mutex<…>>`, so cloning shares
-    // state — a version published via the workflow handlers must be
-    // readable through the execution/resume accessor (otherwise a
-    // workflow created in step 1 would be invisible to step 3's start).
     let workflow_versions = InMemoryWorkflowVersionStore::new();
 
     let api_config = ApiConfig::for_test();
 
-    // Legacy repos remain for the not-yet-migrated `AppState` fields.
-    let legacy_workflow = Arc::new(InMemoryWorkflowRepo::new());
-    let legacy_execution = Arc::new(InMemoryExecutionRepo::new());
-    let legacy_control: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::new(InMemoryControlQueueRepo::new());
-
     let state = AppState::new(
-        legacy_workflow,
-        legacy_execution,
-        legacy_control,
-        api_config.jwt_secret,
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
-    .with_execution_store(
-        Arc::new(ScopedExecutionStore::new(
-            Arc::new(exec_store),
+        Arc::new(ScopedWorkflowStore::new(
+            Arc::new(workflow_store.clone()),
             scope.clone(),
         )),
         Arc::new(ScopedWorkflowVersionStore::new(
             Arc::new(workflow_versions.clone()),
+            scope.clone(),
+        )),
+        Arc::new(ScopedExecutionStore::new(
+            Arc::new(exec_store.clone()),
             scope.clone(),
         )),
         Arc::new(ScopedNodeResultStore::new(
@@ -250,24 +323,55 @@ pub(crate) async fn create_state_with_port_queue()
             scope.clone(),
         )),
         Arc::new(ScopedExecutionJournalReader::new(
-            Arc::new(journal),
+            Arc::new(journal.clone()),
             scope.clone(),
         )),
+        Arc::new(ScopedControlQueue::new(
+            Arc::new(control_queue.clone()),
+            scope,
+        )),
+        api_config.jwt_secret,
     )
-    .with_workflow_store(
-        Arc::new(ScopedWorkflowStore::new(
-            Arc::new(workflow_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedWorkflowVersionStore::new(
-            Arc::new(workflow_versions),
-            scope.clone(),
-        )),
-    )
-    .with_control_queue(Arc::new(ScopedControlQueue::new(
-        Arc::new(control_queue.clone()),
-        scope,
-    )));
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
 
-    (state, control_queue)
+    (
+        state,
+        PortHandles {
+            control_queue,
+            exec_store,
+            journal,
+            workflow_store,
+            workflow_versions,
+        },
+    )
+}
+
+/// Create an `AppState` plus a handle to the durable control queue so
+/// tests can inspect the outbox via its non-consuming `snapshot()`.
+pub(crate) async fn create_state_with_queue() -> (AppState, InMemoryControlQueue) {
+    let (state, handles) = build_port_state().await;
+    (state, handles.control_queue)
+}
+
+/// Alias for [`create_state_with_queue`], preserving the name used by
+/// `integration_tests.rs` callers so no test body needs to change.
+pub(crate) async fn create_test_state_with_queue() -> (AppState, InMemoryControlQueue) {
+    create_state_with_queue().await
+}
+
+/// Like [`create_state_with_queue`] but also returns the [`PortHandles`]
+/// bundle so a test can seed execution / workflow rows directly (the
+/// port equivalent of the old `state.execution_repo` /
+/// `state.workflow_repo` direct access).
+pub(crate) async fn create_state_with_port_handles() -> (AppState, PortHandles) {
+    build_port_state().await
+}
+
+/// Create an `AppState` wired through the scoped storage port, returning
+/// the state and the raw `InMemoryControlQueue` handle. This is the
+/// canonical §13-knife wiring; the asserted invariants are unchanged
+/// from the pre-port path (see this file's header).
+pub(crate) async fn create_state_with_port_queue() -> (AppState, InMemoryControlQueue) {
+    create_state_with_queue().await
 }

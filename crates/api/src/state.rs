@@ -12,9 +12,8 @@ use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
 use nebula_storage::{
-    ExecutionRepo, WorkflowRepo,
     credential::{InMemoryPendingStore, InMemoryStore},
-    repos::{ControlQueueRepo, WebhookActivationRepo},
+    repos::WebhookActivationRepo,
 };
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowStore,
@@ -77,19 +76,6 @@ pub struct AppState {
     /// Each key must use the `nbl_sk_` prefix. Compared in constant time.
     /// An empty `Vec` means API key auth is disabled for this route group.
     pub api_keys: Arc<Vec<String>>,
-
-    /// Workflow Repository (port/trait)
-    pub workflow_repo: Arc<dyn WorkflowRepo>,
-
-    /// Execution Repository (port/trait)
-    pub execution_repo: Arc<dyn ExecutionRepo>,
-
-    /// Execution control queue (durable outbox — canon §12.2).
-    ///
-    /// Every cancel signal is enqueued here in the same logical operation as
-    /// the corresponding state transition. The engine dispatcher drains this
-    /// queue to deliver signals to running executions.
-    pub control_queue_repo: Arc<dyn ControlQueueRepo>,
 
     /// Optional metrics registry for Prometheus export.
     /// When `None`, the `GET /metrics` endpoint returns 503.
@@ -183,44 +169,35 @@ pub struct AppState {
     /// every request to `/internal/v1/...` returns 503.
     pub internal_shared_token: Option<Arc<str>>,
 
-    /// Optional spec-16 scoped execution-store port handle.
+    /// Spec-16 scoped execution-store port handle.
     ///
-    /// When set (via [`Self::with_execution_store`]), handlers read /
-    /// transition execution state through this already-scoped port
-    /// instead of [`Self::execution_repo`]. The composition root wraps
-    /// the raw adapter in the `nebula-tenancy` decorator so the handle
-    /// is tenant-bound before it reaches `AppState`.
-    pub execution_store: Option<Arc<dyn ExecutionStore>>,
+    /// Handlers read / transition execution state through this
+    /// already-scoped port. The composition root wraps the raw adapter
+    /// in the `nebula-tenancy` decorator so the handle is tenant-bound
+    /// before it reaches `AppState`.
+    pub execution_store: Arc<dyn ExecutionStore>,
 
-    /// Optional spec-16 scoped workflow-version port handle (resume /
-    /// definition lookup). Wired alongside [`Self::execution_store`].
-    pub workflow_version_store: Option<Arc<dyn WorkflowVersionStore>>,
+    /// Spec-16 scoped workflow-version port handle (resume / definition
+    /// lookup — the split model stores the definition here).
+    pub workflow_version_store: Arc<dyn WorkflowVersionStore>,
 
-    /// Optional spec-16 scoped workflow-row port handle.
-    ///
-    /// When set (via [`Self::with_workflow_store`]), the workflow CRUD
-    /// handlers read / mutate the workflow row + its versions through
-    /// this already-scoped port pair instead of the legacy
-    /// [`Self::workflow_repo`]. The spec-16 split stores the definition
-    /// on version records, so this handle is always wired together with
-    /// [`Self::workflow_version_store`].
-    pub workflow_store: Option<Arc<dyn WorkflowStore>>,
+    /// Spec-16 scoped workflow-row port handle. Workflow CRUD reads /
+    /// mutates the workflow row + its versions through this scoped port
+    /// pair; the spec-16 split stores the definition on version records,
+    /// so this is always wired with [`Self::workflow_version_store`].
+    pub workflow_store: Arc<dyn WorkflowStore>,
 
-    /// Optional spec-16 scoped control-queue port handle.
-    ///
-    /// When set (via [`Self::with_control_queue`]), the cancel / start
-    /// enqueue path uses this scoped port instead of
-    /// [`Self::control_queue_repo`].
-    pub control_queue: Option<Arc<dyn ControlQueue>>,
+    /// Spec-16 scoped control-queue port handle (the cancel / start
+    /// enqueue durable outbox — canon §12.2). Every control signal is
+    /// enqueued here; the engine dispatcher drains it.
+    pub control_queue: Arc<dyn ControlQueue>,
 
-    /// Optional spec-16 scoped node-result port handle (per-node
-    /// output reads on the outputs endpoint). Wired alongside
-    /// [`Self::execution_store`] via [`Self::with_execution_store`].
-    pub node_result_store: Option<Arc<dyn NodeResultStore>>,
+    /// Spec-16 scoped node-result port handle (per-node output reads on
+    /// the outputs endpoint).
+    pub node_result_store: Arc<dyn NodeResultStore>,
 
-    /// Optional spec-16 scoped journal-reader port handle (execution
-    /// log reads). Wired alongside [`Self::execution_store`].
-    pub journal_reader: Option<Arc<dyn ExecutionJournalReader>>,
+    /// Spec-16 scoped journal-reader port handle (execution log reads).
+    pub journal_reader: Arc<dyn ExecutionJournalReader>,
 }
 
 /// Fixed placeholder scope passed to scoped port handles.
@@ -240,18 +217,23 @@ impl AppState {
     /// `jwt_secret` is a validated [`JwtSecret`]. Obtain one from
     /// [`crate::config::ApiConfig::from_env`] (production) or
     /// `ApiConfig::for_test` (tests with the `test-util` feature).
+    /// All six handles MUST already be wrapped in the `nebula-tenancy`
+    /// scope-enforcing decorator (tenant-bound) by the composition root —
+    /// `AppState` never sees a raw adapter. The spec-16 split stores a
+    /// workflow's definition on its version records, so `workflow_store`
+    /// and `workflow_version_store` are always wired together.
     pub fn new(
-        workflow_repo: Arc<dyn WorkflowRepo>,
-        execution_repo: Arc<dyn ExecutionRepo>,
-        control_queue_repo: Arc<dyn ControlQueueRepo>,
+        workflow_store: Arc<dyn WorkflowStore>,
+        workflow_version_store: Arc<dyn WorkflowVersionStore>,
+        execution_store: Arc<dyn ExecutionStore>,
+        node_result_store: Arc<dyn NodeResultStore>,
+        journal_reader: Arc<dyn ExecutionJournalReader>,
+        control_queue: Arc<dyn ControlQueue>,
         jwt_secret: JwtSecret,
     ) -> Self {
         Self {
             jwt_secret,
             api_keys: Arc::new(Vec::new()),
-            workflow_repo,
-            execution_repo,
-            control_queue_repo,
             metrics_registry: None,
             action_registry: None,
             plugin_registry: None,
@@ -269,61 +251,13 @@ impl AppState {
             webhook_secret_resolver: None,
             webhook_ctx_factory: None,
             internal_shared_token: None,
-            execution_store: None,
-            workflow_version_store: None,
-            workflow_store: None,
-            control_queue: None,
-            node_result_store: None,
-            journal_reader: None,
+            execution_store,
+            workflow_version_store,
+            workflow_store,
+            control_queue,
+            node_result_store,
+            journal_reader,
         }
-    }
-
-    /// Attach the spec-16 scoped execution-state port handles
-    /// (execution store + workflow-version + node-result + journal
-    /// reader — all the read/transition surface the execution handlers
-    /// touch).
-    ///
-    /// The composition root MUST pass handles already wrapped in the
-    /// `nebula-tenancy` decorator (tenant-bound); `AppState` never sees
-    /// the raw adapter. When set, handlers prefer these over the legacy
-    /// [`Self::execution_repo`] / [`Self::workflow_repo`].
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_execution_store(
-        mut self,
-        execution: Arc<dyn ExecutionStore>,
-        workflow_version: Arc<dyn WorkflowVersionStore>,
-        node_results: Arc<dyn NodeResultStore>,
-        journal: Arc<dyn ExecutionJournalReader>,
-    ) -> Self {
-        self.execution_store = Some(execution);
-        self.workflow_version_store = Some(workflow_version);
-        self.node_result_store = Some(node_results);
-        self.journal_reader = Some(journal);
-        self
-    }
-
-    /// Attach the spec-16 scoped control-queue port handle (tenant-
-    /// bound via the `nebula-tenancy` decorator).
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_control_queue(mut self, control_queue: Arc<dyn ControlQueue>) -> Self {
-        self.control_queue = Some(control_queue);
-        self
-    }
-
-    /// Attach the spec-16 scoped workflow-row + workflow-version port
-    /// handles (tenant-bound via the `nebula-tenancy` decorator). When
-    /// set, the workflow CRUD handlers prefer these over the legacy
-    /// [`Self::workflow_repo`]. The split stores the definition on
-    /// version records, so both handles are wired together.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_workflow_store(
-        mut self,
-        workflow: Arc<dyn WorkflowStore>,
-        workflow_version: Arc<dyn WorkflowVersionStore>,
-    ) -> Self {
-        self.workflow_store = Some(workflow);
-        self.workflow_version_store = Some(workflow_version);
-        self
     }
 
     /// Read a workflow's stored definition, or `None` if absent.
@@ -353,26 +287,22 @@ impl AppState {
         &self,
         id: nebula_core::id::WorkflowId,
     ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
-        if let (Some(rows), Some(versions)) = (&self.workflow_store, &self.workflow_version_store) {
-            let scope = placeholder_scope();
-            let id_str = id.to_string();
-            let Some(row) = rows
-                .get(&scope, &id_str)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
-            else {
-                return Ok(None);
-            };
-            let published = versions
-                .get_published(&scope, &id_str)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
-            return Ok(published.map(|v| (row.version, v.definition)));
-        }
-        self.workflow_repo
-            .get_with_version(id)
+        let scope = placeholder_scope();
+        let id_str = id.to_string();
+        let Some(row) = self
+            .workflow_store
+            .get(&scope, &id_str)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))
+            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        else {
+            return Ok(None);
+        };
+        let published = self
+            .workflow_version_store
+            .get_published(&scope, &id_str)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
+        Ok(published.map(|v| (row.version, v.definition)))
     }
 
     /// Persist a workflow definition with optimistic concurrency.
@@ -388,19 +318,19 @@ impl AppState {
         version: u64,
         definition: serde_json::Value,
     ) -> Result<(), ApiError> {
-        if let (Some(rows), Some(versions)) = (&self.workflow_store, &self.workflow_version_store) {
-            let scope = placeholder_scope();
-            let id_str = id.to_string();
-            let conflict =
-                || ApiError::Conflict("Workflow was modified by another request".to_string());
+        let scope = placeholder_scope();
+        let id_str = id.to_string();
+        let conflict =
+            || ApiError::Conflict("Workflow was modified by another request".to_string());
 
-            if version == 0 {
-                // New workflow: row at version 1 + first version record
-                // (number 1, published). The row slug is the workflow id
-                // string — unique per tenant among active rows, which is
-                // all the partial-unique index requires (this legacy-
-                // compat surface has no author-facing slug concept).
-                rows.create(
+        if version == 0 {
+            // New workflow: row at version 1 + first version record
+            // (number 1, published). The row slug is the workflow id
+            // string — unique per tenant among active rows, which is all
+            // the partial-unique index requires (this REST surface has
+            // no author-facing slug concept).
+            self.workflow_store
+                .create(
                     &scope,
                     nebula_storage_port::dto::WorkflowRecord {
                         id: id_str.clone(),
@@ -415,30 +345,30 @@ impl AppState {
                     nebula_storage_port::StorageError::Duplicate { .. } => conflict(),
                     other => ApiError::Internal(format!("Failed to create workflow: {other}")),
                 })?;
-                versions
-                    .create(
-                        &scope,
-                        nebula_storage_port::dto::WorkflowVersionRecord {
-                            workflow_id: id_str,
-                            number: 1,
-                            published: true,
-                            pinned: false,
-                            definition,
-                        },
-                    )
-                    .await
-                    .map_err(|e| {
-                        ApiError::Internal(format!("Failed to create workflow version: {e}"))
-                    })?;
-                return Ok(());
-            }
+            self.workflow_version_store
+                .create(
+                    &scope,
+                    nebula_storage_port::dto::WorkflowVersionRecord {
+                        workflow_id: id_str,
+                        number: 1,
+                        published: true,
+                        pinned: false,
+                        definition,
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to create workflow version: {e}"))
+                })?;
+            return Ok(());
+        }
 
-            // Existing workflow: CAS the row counter forward and append
-            // the next published version record. `version` is the
-            // caller's expected current counter; the new counter is
-            // `version + 1` (legacy `save` semantics).
-            let next = version + 1;
-            rows.update(
+        // Existing workflow: CAS the row counter forward and append the
+        // next published version record. `version` is the caller's
+        // expected current counter; the new counter is `version + 1`.
+        let next = version + 1;
+        self.workflow_store
+            .update(
                 &scope,
                 nebula_storage_port::dto::WorkflowRecord {
                     id: id_str.clone(),
@@ -455,68 +385,43 @@ impl AppState {
                 | nebula_storage_port::StorageError::NotFound { .. } => conflict(),
                 other => ApiError::Internal(format!("Failed to update workflow: {other}")),
             })?;
-            versions
-                .create(
-                    &scope,
-                    nebula_storage_port::dto::WorkflowVersionRecord {
-                        workflow_id: id_str,
-                        number: u32::try_from(next).unwrap_or(u32::MAX),
-                        published: true,
-                        pinned: false,
-                        definition,
-                    },
-                )
-                .await
-                .map_err(|e| {
-                    ApiError::Internal(format!("Failed to create workflow version: {e}"))
-                })?;
-            return Ok(());
-        }
-        self.workflow_repo
-            .save(id, version, definition)
+        self.workflow_version_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowVersionRecord {
+                    workflow_id: id_str,
+                    number: u32::try_from(next).unwrap_or(u32::MAX),
+                    published: true,
+                    pinned: false,
+                    definition,
+                },
+            )
             .await
-            .map_err(|e| {
-                use nebula_storage::WorkflowRepoError;
-                match e {
-                    WorkflowRepoError::Conflict { .. } => {
-                        ApiError::Conflict("Workflow was modified by another request".to_string())
-                    },
-                    other => ApiError::Internal(format!("Failed to save workflow: {other}")),
-                }
-            })
+            .map_err(|e| ApiError::Internal(format!("Failed to create workflow version: {e}")))?;
+        Ok(())
     }
 
-    /// Soft-delete a workflow. Dual-dispatch: the spec-16
-    /// `WorkflowStore::soft_delete` (a missing row ⇒ `false`) when the
-    /// port is wired, else the legacy `WorkflowRepo::delete`. Returns
-    /// `true` iff a row existed and was removed.
+    /// Soft-delete a workflow via `WorkflowStore::soft_delete` (a missing
+    /// row ⇒ `false`). Returns `true` iff a row existed and was removed.
     pub(crate) async fn workflow_delete(
         &self,
         id: nebula_core::id::WorkflowId,
     ) -> Result<bool, ApiError> {
-        if let Some(rows) = &self.workflow_store {
-            return match rows
-                .soft_delete(&placeholder_scope(), &id.to_string())
-                .await
-            {
-                Ok(()) => Ok(true),
-                Err(nebula_storage_port::StorageError::NotFound { .. }) => Ok(false),
-                Err(e) => Err(ApiError::Internal(format!(
-                    "Failed to delete workflow: {e}"
-                ))),
-            };
-        }
-        self.workflow_repo
-            .delete(id)
+        match self
+            .workflow_store
+            .soft_delete(&placeholder_scope(), &id.to_string())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to delete workflow: {e}")))
+        {
+            Ok(()) => Ok(true),
+            Err(nebula_storage_port::StorageError::NotFound { .. }) => Ok(false),
+            Err(e) => Err(ApiError::Internal(format!(
+                "Failed to delete workflow: {e}"
+            ))),
+        }
     }
 
-    /// List workflows with pagination, preserving the legacy
-    /// `(created_at, id)` ordering. Dual-dispatch: the spec-16
-    /// `WorkflowStore::list` joined to each row's published definition
-    /// when the port is wired, else the legacy `WorkflowRepo::list`. The
-    /// split has no `created_at` column, so the legacy ordering is
+    /// List workflows with pagination, ordered by `(created_at, id)`.
+    /// The spec-16 split has no `created_at` column, so the ordering is
     /// reconstructed from the definition JSON's `created_at` (the
     /// handler writes it there), falling back to id order.
     pub(crate) async fn workflow_list(
@@ -524,162 +429,127 @@ impl AppState {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<(nebula_core::id::WorkflowId, serde_json::Value)>, ApiError> {
-        if let (Some(rows), Some(versions)) = (&self.workflow_store, &self.workflow_version_store) {
-            let scope = placeholder_scope();
-            let listed = rows
-                .list(&scope)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?;
-            let mut out: Vec<(nebula_core::id::WorkflowId, i64, serde_json::Value)> =
-                Vec::with_capacity(listed.len());
-            for row in listed {
-                let Some(published) = versions
-                    .get_published(&scope, &row.id)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?
-                else {
-                    // A row with no published version has no definition
-                    // to surface (mirrors `workflow_with_version`).
-                    continue;
-                };
-                let wid = nebula_core::id::WorkflowId::parse(&row.id).map_err(|e| {
-                    ApiError::Internal(format!("stored workflow id {:?} invalid: {e}", row.id))
-                })?;
-                let created = published
-                    .definition
-                    .get("created_at")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(0);
-                out.push((wid, created, published.definition));
-            }
-            // Legacy contract: ORDER BY created_at, id.
-            out.sort_by(|a, b| {
-                a.1.cmp(&b.1)
-                    .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-            });
-            return Ok(out
-                .into_iter()
-                .skip(offset)
-                .take(limit)
-                .map(|(id, _, def)| (id, def))
-                .collect());
-        }
-        self.workflow_repo
-            .list(offset, limit)
+        let scope = placeholder_scope();
+        let listed = self
+            .workflow_store
+            .list(&scope)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))
+            .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?;
+        let mut out: Vec<(nebula_core::id::WorkflowId, i64, serde_json::Value)> =
+            Vec::with_capacity(listed.len());
+        for row in listed {
+            let Some(published) = self
+                .workflow_version_store
+                .get_published(&scope, &row.id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?
+            else {
+                // A row with no published version has no definition to
+                // surface (mirrors `workflow_with_version`).
+                continue;
+            };
+            let wid = nebula_core::id::WorkflowId::parse(&row.id).map_err(|e| {
+                ApiError::Internal(format!("stored workflow id {:?} invalid: {e}", row.id))
+            })?;
+            let created = published
+                .definition
+                .get("created_at")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            out.push((wid, created, published.definition));
+        }
+        // Contract: ORDER BY created_at, id.
+        out.sort_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+        });
+        Ok(out
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|(id, _, def)| (id, def))
+            .collect())
     }
 
     /// Total workflow count (matches [`Self::workflow_list`]'s filter
-    /// scope). Dual-dispatch: the spec-16 `WorkflowStore::list` length
-    /// when the port is wired, else the legacy `WorkflowRepo::count`.
+    /// scope) — the `WorkflowStore::list` length.
     pub(crate) async fn workflow_count(&self) -> Result<usize, ApiError> {
-        if let Some(rows) = &self.workflow_store {
-            return rows
-                .list(&placeholder_scope())
-                .await
-                .map(|v| v.len())
-                .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")));
-        }
-        self.workflow_repo
-            .count()
+        self.workflow_store
+            .list(&placeholder_scope())
             .await
+            .map(|v| v.len())
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 
-    /// List running execution ids. Dual-dispatch: the scoped
-    /// [`ExecutionStore`] port when wired, else the legacy
-    /// `ExecutionRepo`. The port path passes a fixed placeholder
-    /// scope — the `nebula-tenancy` decorator substitutes the bound
-    /// tenant scope, so the value here is immaterial to isolation.
+    /// List running execution ids through the scoped [`ExecutionStore`]
+    /// port. The fixed placeholder scope is substituted by the
+    /// `nebula-tenancy` decorator, so its value is immaterial to
+    /// isolation.
     pub(crate) async fn list_running_executions(&self) -> Result<Vec<ExecutionId>, ApiError> {
-        if let Some(store) = &self.execution_store {
-            let ids = store
-                .list_running(&placeholder_scope())
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
-            return ids
-                .iter()
-                .map(|s| {
-                    ExecutionId::parse(s).map_err(|e| {
-                        ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
-                    })
-                })
-                .collect();
-        }
-        self.execution_repo
-            .list_running()
+        let ids = self
+            .execution_store
+            .list_running(&placeholder_scope())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
+            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+        ids.iter()
+            .map(|s| {
+                ExecutionId::parse(s).map_err(|e| {
+                    ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
+                })
+            })
+            .collect()
     }
 
-    /// List running execution ids for one workflow. Same dual-dispatch
-    /// as [`Self::list_running_executions`].
+    /// List running execution ids for one workflow (same scoped port as
+    /// [`Self::list_running_executions`]).
     pub(crate) async fn list_running_executions_for_workflow(
         &self,
         workflow_id: nebula_core::id::WorkflowId,
     ) -> Result<Vec<ExecutionId>, ApiError> {
-        if let Some(store) = &self.execution_store {
-            let ids = store
-                .list_running_for_workflow(&placeholder_scope(), &workflow_id.to_string())
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
-            return ids
-                .iter()
-                .map(|s| {
-                    ExecutionId::parse(s).map_err(|e| {
-                        ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
-                    })
-                })
-                .collect();
-        }
-        self.execution_repo
-            .list_running_for_workflow(workflow_id)
+        let ids = self
+            .execution_store
+            .list_running_for_workflow(&placeholder_scope(), &workflow_id.to_string())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
+            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+        ids.iter()
+            .map(|s| {
+                ExecutionId::parse(s).map_err(|e| {
+                    ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
+                })
+            })
+            .collect()
     }
 
     /// Read an execution's persisted `(version, state-json)`, or `None`
-    /// if absent. Dual-dispatch: the scoped [`ExecutionStore`] port
-    /// (`get` → `(record.version, record.state)`) when wired, else the
-    /// legacy `ExecutionRepo::get_state`. `context` labels the error
+    /// if absent, via the scoped [`ExecutionStore`] port (`get` →
+    /// `(record.version, record.state)`). `context` labels the error
     /// (callers used distinct wording: "check" / "get" / …).
     pub(crate) async fn execution_state(
         &self,
         execution_id: ExecutionId,
         context: &str,
     ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
-        if let Some(store) = &self.execution_store {
-            return store
-                .get(&placeholder_scope(), &execution_id.to_string())
-                .await
-                .map(|opt| opt.map(|r| (r.version, r.state)))
-                .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")));
-        }
-        self.execution_repo
-            .get_state(execution_id)
+        self.execution_store
+            .get(&placeholder_scope(), &execution_id.to_string())
             .await
+            .map(|opt| opt.map(|r| (r.version, r.state)))
             .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
     }
 
-    /// Enqueue a control command onto the durable outbox. Dual-dispatch:
-    /// the scoped [`ControlQueue`] port (typed 16-byte id, opaque
-    /// `execution_id` string, `traceparent` string — no UTF-8-of-ULID
-    /// encoding) when wired, else the legacy `ControlQueueRepo`. The
+    /// Enqueue a control command onto the durable outbox via the scoped
+    /// [`ControlQueue`] port (typed 16-byte id, opaque `execution_id`
+    /// string, `traceparent` string — no UTF-8-of-ULID encoding). The
     /// §13-step-6 503-vs-500 error policy is centralized here so both
     /// enqueue sites stay identical.
     pub(crate) async fn enqueue_control(
         &self,
-        command: nebula_storage::repos::ControlCommand,
+        command: nebula_storage_port::dto::ControlCommand,
         execution_id: ExecutionId,
         w3c: Option<nebula_core::W3cTraceContext>,
     ) -> Result<(), ApiError> {
         // §13 step 6: a backend that is intentionally absent or
         // unreachable (`Internal`/`Connection`) is a 503 (infra down,
-        // not a logic bug); any other write failure is a 500. The two
-        // backends have distinct `StorageError` types, so each arm
-        // classifies its own error into `(is_unavailable, detail)` and
-        // this mapper centralizes the message + status policy.
+        // not a logic bug); any other write failure is a 500.
         let to_api_err = |is_unavailable: bool, detail: String| {
             if is_unavailable {
                 ApiError::ServiceUnavailable(format!(
@@ -695,197 +565,125 @@ impl AppState {
             }
         };
 
-        if let Some(queue) = &self.control_queue {
-            let port_command = match command {
-                nebula_storage::repos::ControlCommand::Start => {
-                    nebula_storage_port::dto::ControlCommand::Start
-                },
-                nebula_storage::repos::ControlCommand::Cancel => {
-                    nebula_storage_port::dto::ControlCommand::Cancel
-                },
-                nebula_storage::repos::ControlCommand::Terminate => {
-                    nebula_storage_port::dto::ControlCommand::Terminate
-                },
-                nebula_storage::repos::ControlCommand::Resume => {
-                    nebula_storage_port::dto::ControlCommand::Resume
-                },
-                nebula_storage::repos::ControlCommand::Restart => {
-                    nebula_storage_port::dto::ControlCommand::Restart
-                },
-            };
-            let msg = nebula_storage_port::dto::ControlMsg {
-                id: *uuid::Uuid::new_v4().as_bytes(),
-                execution_id: execution_id.to_string(),
-                command: port_command,
-                scope: placeholder_scope(),
-                w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
-                reclaim_count: 0,
-            };
-            return queue.enqueue(&msg).await.map_err(|e| {
-                use nebula_storage_port::StorageError;
-                let unavailable =
-                    matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
-                to_api_err(unavailable, e.to_string())
-            });
-        }
-
-        let entry = nebula_storage::repos::ControlQueueEntry {
-            id: uuid::Uuid::new_v4().as_bytes().to_vec(),
-            execution_id: execution_id.to_string().into_bytes(),
+        let msg = nebula_storage_port::dto::ControlMsg {
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            execution_id: execution_id.to_string(),
             command,
-            issued_by: None,
-            issued_at: chrono::Utc::now(),
-            status: "Pending".to_string(),
-            processed_by: None,
-            processed_at: None,
-            error_message: None,
+            scope: placeholder_scope(),
+            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
-            w3c_trace_context: w3c,
         };
-        self.control_queue_repo.enqueue(&entry).await.map_err(|e| {
-            use nebula_storage::StorageError;
+        self.control_queue.enqueue(&msg).await.map_err(|e| {
+            use nebula_storage_port::StorageError;
             let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
             to_api_err(unavailable, e.to_string())
         })
     }
 
-    /// Create a fresh execution row. Dual-dispatch: the scoped
-    /// [`ExecutionStore`] port `create` when wired, else the legacy
-    /// `ExecutionRepo::create`.
+    /// Create a fresh execution row via the scoped [`ExecutionStore`]
+    /// port `create`.
     pub(crate) async fn create_execution(
         &self,
         execution_id: ExecutionId,
         workflow_id: nebula_core::id::WorkflowId,
         state_json: serde_json::Value,
     ) -> Result<(), ApiError> {
-        if let Some(store) = &self.execution_store {
-            return store
-                .create(
-                    &placeholder_scope(),
-                    &execution_id.to_string(),
-                    &workflow_id.to_string(),
-                    state_json,
-                )
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")));
-        }
-        self.execution_repo
-            .create(execution_id, workflow_id, state_json)
+        self.execution_store
+            .create(
+                &placeholder_scope(),
+                &execution_id.to_string(),
+                &workflow_id.to_string(),
+                state_json,
+            )
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
     }
 
     /// CAS-update an execution's state, returning `false` on a
-    /// version/fencing conflict (caller maps that to 409). Dual-dispatch:
-    /// the scoped [`ExecutionStore`] port `commit` when wired, else the
-    /// legacy `ExecutionRepo::transition`.
+    /// version/fencing conflict (caller maps that to 409), via the
+    /// scoped [`ExecutionStore`] port `commit`.
     ///
-    /// The API is an *external* mutator (no held lease), so the port
-    /// path reads the row's current fencing generation and commits at
-    /// it. If a runner concurrently takes over (bumping the generation)
-    /// the commit returns `FencedOut`, which maps to the same
-    /// `Ok(false)` (retry) the legacy CAS produced on a version miss —
-    /// the engine's reconciliation honors a concurrent terminal write
-    /// (§11.5, #333).
+    /// The API is an *external* mutator (no held lease), so it reads the
+    /// row's current fencing generation and commits at it. If a runner
+    /// concurrently takes over (bumping the generation) the commit
+    /// returns `FencedOut`, which maps to the same `Ok(false)` (retry) a
+    /// version miss produces — the engine's reconciliation honors a
+    /// concurrent terminal write (§11.5, #333).
     pub(crate) async fn cas_transition(
         &self,
         execution_id: ExecutionId,
         expected_version: u64,
         new_state: serde_json::Value,
     ) -> Result<bool, ApiError> {
-        if let Some(store) = &self.execution_store {
-            let scope = placeholder_scope();
-            let id = execution_id.to_string();
-            let current = store
-                .get(&scope, &id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
-            let Some(record) = current else {
-                // No row: a CAS that can never match — caller treats
-                // `false` as a 409 / refetch, same as the legacy path.
-                return Ok(false);
-            };
-            let fencing =
-                nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
-            let batch = nebula_storage_port::TransitionBatch::builder()
-                .scope(scope)
-                .execution_id(&id)
-                .expected_version(expected_version)
-                .fencing(fencing)
-                .new_state(new_state)
-                .build()
-                .map_err(|e| {
-                    ApiError::Internal(format!("Failed to build cancel transition: {e}"))
-                })?;
-            return match store.commit(batch).await {
-                Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
-                Ok(
-                    nebula_storage_port::TransitionOutcome::VersionConflict { .. }
-                    | nebula_storage_port::TransitionOutcome::FencedOut,
-                ) => Ok(false),
-                Err(e) => Err(ApiError::Internal(format!(
-                    "Failed to cancel execution: {e}"
-                ))),
-            };
-        }
-        self.execution_repo
-            .transition(execution_id, expected_version, new_state)
+        let scope = placeholder_scope();
+        let id = execution_id.to_string();
+        let current = self
+            .execution_store
+            .get(&scope, &id)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))
+            .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
+        let Some(record) = current else {
+            // No row: a CAS that can never match — caller treats
+            // `false` as a 409 / refetch.
+            return Ok(false);
+        };
+        let fencing =
+            nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
+        let batch = nebula_storage_port::TransitionBatch::builder()
+            .scope(scope)
+            .execution_id(&id)
+            .expected_version(expected_version)
+            .fencing(fencing)
+            .new_state(new_state)
+            .build()
+            .map_err(|e| ApiError::Internal(format!("Failed to build cancel transition: {e}")))?;
+        match self.execution_store.commit(batch).await {
+            Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
+            Ok(
+                nebula_storage_port::TransitionOutcome::VersionConflict { .. }
+                | nebula_storage_port::TransitionOutcome::FencedOut,
+            ) => Ok(false),
+            Err(e) => Err(ApiError::Internal(format!(
+                "Failed to cancel execution: {e}"
+            ))),
+        }
     }
 
-    /// Load all persisted per-node *outputs* for an execution. Dual-
-    /// dispatch: the scoped [`NodeResultStore`] port
-    /// `load_all_node_outputs` (mapping `record.json`) when wired, else
-    /// the legacy `ExecutionRepo::load_all_outputs`. Returns
-    /// `Vec<(NodeKey, Value)>` (order-independent — callers re-key).
+    /// Load all persisted per-node *outputs* for an execution via the
+    /// scoped [`NodeResultStore`] port `load_all_node_outputs` (mapping
+    /// `record.json`). Returns `Vec<(NodeKey, Value)>` (order-independent
+    /// — callers re-key).
     pub(crate) async fn execution_node_outputs(
         &self,
         execution_id: ExecutionId,
     ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
-        if let Some(store) = &self.node_result_store {
-            let rows = store
-                .load_all_node_outputs(&placeholder_scope(), &execution_id.to_string())
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
-            return rows
-                .into_iter()
-                .map(|(node_id, rec)| {
-                    nebula_core::NodeKey::new(&node_id)
-                        .map(|k| (k, rec.json))
-                        .map_err(|e| {
-                            ApiError::Internal(format!("stored node id {node_id:?} invalid: {e}"))
-                        })
-                })
-                .collect();
-        }
-        Ok(self
-            .execution_repo
-            .load_all_outputs(execution_id)
+        let rows = self
+            .node_result_store
+            .load_all_node_outputs(&placeholder_scope(), &execution_id.to_string())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?
-            .into_iter()
-            .collect())
+            .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
+        rows.into_iter()
+            .map(|(node_id, rec)| {
+                nebula_core::NodeKey::new(&node_id)
+                    .map(|k| (k, rec.json))
+                    .map_err(|e| {
+                        ApiError::Internal(format!("stored node id {node_id:?} invalid: {e}"))
+                    })
+            })
+            .collect()
     }
 
-    /// Load an execution's journal entries (opaque payloads). Dual-
-    /// dispatch: the scoped [`ExecutionJournalReader`] port `get_journal`
-    /// (mapping `entry.payload`) when wired, else the legacy
-    /// `ExecutionRepo::get_journal`.
+    /// Load an execution's journal entries (opaque payloads) via the
+    /// scoped [`ExecutionJournalReader`] port `get_journal` (mapping
+    /// `entry.payload`).
     pub(crate) async fn execution_journal(
         &self,
         execution_id: ExecutionId,
     ) -> Result<Vec<serde_json::Value>, ApiError> {
-        if let Some(reader) = &self.journal_reader {
-            return reader
-                .get_journal(&placeholder_scope(), &execution_id.to_string())
-                .await
-                .map(|entries| entries.into_iter().map(|e| e.payload).collect())
-                .map_err(|e| ApiError::Internal(format!("Failed to load logs: {e}")));
-        }
-        self.execution_repo
-            .get_journal(execution_id)
+        self.journal_reader
+            .get_journal(&placeholder_scope(), &execution_id.to_string())
             .await
+            .map(|entries| entries.into_iter().map(|e| e.payload).collect())
             .map_err(|e| ApiError::Internal(format!("Failed to load logs: {e}")))
     }
 
