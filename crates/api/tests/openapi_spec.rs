@@ -197,6 +197,16 @@ async fn drift_smoke_known_paths_are_present() {
         "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
         "/api/v1/orgs/{org}/workspaces/{ws}/executions",
         "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
+        "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+        // The resource runtime-status read is the ONLY `{res}`
+        // sub-route, and it is GET-only: resource lifecycle
+        // (acquire/release/drain/reload) is engine-owned and
+        // deliberately never exposed over HTTP (INTEGRATION_MODEL
+        // §13.1). Pinning the status path here makes that
+        // "observe-only, no lifecycle verbs" boundary drift-detected —
+        // if a mutating `{res}` sub-route is ever added, the contract
+        // change is visible against this list.
+        "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status",
         // Webhooks: `POST /api/v1/hooks/{org}/{ws}/{trigger_slug}` is
         // mounted directly by `WebhookTransport::router()` (a plain
         // axum Router, not an OpenApiRouter) so it does not appear in
