@@ -5298,11 +5298,8 @@ mod tests {
     };
     use nebula_core::{Dependencies, action_key};
     use nebula_schema::{HasSchema, ValidSchema};
-    use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_storage_port::StorageError;
-    use nebula_storage_port::store::{
-        ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowVersionStore,
-    };
+    use nebula_storage_port::store::{ExecutionStore, NodeResultStore, WorkflowVersionStore};
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
@@ -5506,24 +5503,17 @@ mod tests {
     /// its core), node-result, checkpoint, idempotency, workflow, and
     /// workflow-version adapters into the engine's [`ExecutionStores`] /
     /// [`WorkflowStores`] bundles. It additionally exposes legacy-shaped
-    /// read accessors (`get_state` / `load_node_output` / `load_all_outputs`
-    /// / `get_journal`) so existing post-execution assertions read the
-    /// durable state the same way they did against the old
-    /// `ExecutionRepo`, mirroring the production port path's
-    /// scope/record semantics (the engine always passes
-    /// [`crate::store_seam::engine_scope`]).
+    /// read/seed accessors (`get_state` / `load_node_output` /
+    /// `load_node_result` / `acquire_lease` / `is_idempotency_marked` /
+    /// `inject_state` / `inject_node_output` / `save_workflow`) so
+    /// post-execution assertions read the durable state the same way
+    /// they did against the old execution repo, mirroring the
+    /// production port path's scope/record semantics (the engine always
+    /// passes [`crate::store_seam::engine_scope`]).
     ///
     /// This is test scaffolding, not a production shim: the bundle's
     /// fields are the same port traits production consumes; only the
     /// legacy-shaped accessors are test-local conveniences.
-    //
-    // The first wiring sites are migrated incrementally; until enough
-    // land, some accessors have no caller. The allow is removed once the
-    // legacy `with_execution_repo` test sites are fully ported.
-    #[allow(
-        dead_code,
-        reason = "incremental port migration: accessors gain callers as test sites move off the legacy ExecutionRepo"
-    )]
     #[derive(Clone)]
     struct TestStores {
         execution: Arc<nebula_storage::InMemoryExecutionStore>,
@@ -5535,10 +5525,6 @@ mod tests {
         versions: Arc<nebula_storage::InMemoryWorkflowVersionStore>,
     }
 
-    #[allow(
-        dead_code,
-        reason = "incremental port migration: accessors gain callers as test sites move off the legacy ExecutionRepo"
-    )]
     impl TestStores {
         fn new() -> Self {
             let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
@@ -5634,21 +5620,6 @@ mod tests {
                 .map(|r| r.json))
         }
 
-        /// Legacy-shaped journal read.
-        async fn get_journal(
-            &self,
-            id: ExecutionId,
-        ) -> Result<Vec<serde_json::Value>, StorageError> {
-            let scope = crate::store_seam::engine_scope();
-            Ok(self
-                .journal
-                .get_journal(&scope, &id.to_string())
-                .await?
-                .into_iter()
-                .map(|e| e.payload)
-                .collect())
-        }
-
         /// Seed a crash-snapshot execution row directly (the port analog
         /// of the legacy `ExecutionRepo::create(id, wf, state_json)`
         /// state injection). The row is created at the port's baseline
@@ -5702,6 +5673,25 @@ mod tests {
             self.node_results
                 .load_node_result(&scope, &id.to_string(), node.as_str())
                 .await
+        }
+
+        /// Legacy-shaped lease acquire. Mirrors the production port path
+        /// (`ExecutionStore::acquire_lease`, scoped to the engine
+        /// placeholder); returns `true` when a fencing token was
+        /// granted — the port analog of the legacy
+        /// `ExecutionRepo::acquire_lease` `bool`.
+        async fn acquire_lease(
+            &self,
+            id: ExecutionId,
+            holder: &str,
+            ttl: std::time::Duration,
+        ) -> Result<bool, StorageError> {
+            let scope = crate::store_seam::engine_scope();
+            Ok(self
+                .execution
+                .acquire_lease(&scope, &id.to_string(), holder, ttl)
+                .await?
+                .is_some())
         }
 
         /// Non-mutating dedup-state read. Mirrors the production path's
@@ -6632,16 +6622,6 @@ mod tests {
     }
 
     // -- resume_execution tests --
-
-    /// Helper: build an InMemoryWorkflowRepo and save a workflow definition.
-    async fn save_workflow_to_repo(
-        wf: &WorkflowDefinition,
-    ) -> Arc<nebula_storage::InMemoryWorkflowRepo> {
-        let repo = Arc::new(nebula_storage::InMemoryWorkflowRepo::new());
-        let json = serde_json::to_value(wf).unwrap();
-        repo.save(wf.id, 0, json).await.unwrap();
-        repo
-    }
 
     #[tokio::test]
     async fn resume_requires_execution_repo() {
@@ -9569,34 +9549,27 @@ mod tests {
             },
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n.clone(), "Slow", "slow").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        stores.save_workflow(&wf).await;
 
         // Seed a non-terminal execution row the two runners will target.
         let execution_id = ExecutionId::new();
         let node_ids = vec![n.clone()];
         let exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
         let state_json = serde_json::to_value(&exec_state).unwrap();
-        exec_repo
-            .create(execution_id, wf.id, state_json)
-            .await
-            .unwrap();
+        stores.inject_state(execution_id, wf.id, state_json).await;
 
         // Two independent engines, each with its own InstanceId, sharing
         // the same storage. One of them should win the lease.
         let (engine_a, _) = make_engine(registry.clone());
-        let engine_a = engine_a
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo.clone());
+        let engine_a = stores.attach(engine_a);
         let (engine_b, _) = make_engine(registry);
-        let engine_b = engine_b
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine_b = stores.attach(engine_b);
 
         assert_ne!(
             engine_a.instance_id(),
@@ -9674,36 +9647,31 @@ mod tests {
             },
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n.clone(), "Slow", "slow").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        stores.save_workflow(&wf).await;
 
         let execution_id = ExecutionId::new();
         let node_ids = vec![n.clone()];
         let exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
-        exec_repo
-            .create(
+        stores
+            .inject_state(
                 execution_id,
                 wf.id,
                 serde_json::to_value(&exec_state).unwrap(),
             )
-            .await
-            .unwrap();
+            .await;
 
         // Single engine, so both calls share the same `running` registry —
         // this is the path the Copilot review flagged. Wrap in `Arc` so we
         // can drive the second call from a background task and still
         // observe the registry from the test thread.
         let (engine, _) = make_engine(registry);
-        let engine = Arc::new(
-            engine
-                .with_execution_repo(exec_repo.clone())
-                .with_workflow_repo(workflow_repo),
-        );
+        let engine = Arc::new(stores.attach(engine));
 
         // Winner: drive the workflow in the background. Its frontier loop
         // will be live (500ms sleep) long enough for the loser to race.
@@ -9778,17 +9746,15 @@ mod tests {
             EchoHandler,
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
-        let engine = engine
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        stores.save_workflow(&wf).await;
+        let engine = stores.attach(engine);
 
         // First run acquires + releases the lease on completion.
         let first = engine
@@ -9799,8 +9765,8 @@ mod tests {
 
         // Lease must be free immediately — a brand-new acquire with a
         // fresh holder should succeed without waiting for TTL.
-        let acquired = exec_repo
-            .acquire_lease(first.execution_id, "probe".into(), Duration::from_secs(5))
+        let acquired = stores
+            .acquire_lease(first.execution_id, "probe", Duration::from_secs(5))
             .await
             .unwrap();
         assert!(
@@ -9822,17 +9788,15 @@ mod tests {
             EchoHandler,
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
-        let engine = engine
-            .with_execution_repo(exec_repo)
-            .with_workflow_repo(workflow_repo);
+        stores.save_workflow(&wf).await;
+        let engine = stores.attach(engine);
 
         let first = engine
             .execute_workflow(&wf, serde_json::json!("v1"), ExecutionBudget::default())

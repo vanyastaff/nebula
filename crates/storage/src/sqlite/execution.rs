@@ -274,19 +274,30 @@ impl ExecutionStore for SqliteExecutionStore {
             tx.rollback().await.map_err(conn_err)?;
             return Err(StorageError::not_found("execution", id));
         };
-        let cur_holder: Option<String> = row.try_get("lease_holder").map_err(conn_err)?;
         let cur_exp: Option<i64> = row.try_get("lease_expires_at_ms").map_err(conn_err)?;
         let cur_gen = row
             .try_get::<i64, _>("fencing_generation")
             .map_err(conn_err)? as u64;
         let now = now_ms();
         let live = matches!(cur_exp, Some(exp) if exp >= now);
-        if live && cur_holder.as_deref() != Some(holder) {
+        if live {
+            // A live lease blocks acquisition outright — including a
+            // second acquire by the *same* holder. Renewal is the
+            // dedicated `renew_lease` op (fencing-token gated); a
+            // second `acquire_lease` while the lease is live is
+            // contention, not a silent renew (§12.2 zombie-runner
+            // closure, ADR-0008 — two concurrent runners must see
+            // exactly one winner).
             tx.rollback().await.map_err(conn_err)?;
             return Ok(None);
         }
-        let taking_over = cur_holder.as_deref() != Some(holder);
-        let new_gen = if taking_over { cur_gen + 1 } else { cur_gen };
+        // Every successful acquire bumps the fencing generation, so
+        // every previously issued token is dead — including one held
+        // by the *same* holder string (a crashed-then-restarted runner
+        // reusing its `instance_id` is a zombie w.r.t. its pre-crash
+        // token). Generation 0 therefore universally means "no lease
+        // ever issued / stale".
+        let new_gen = cur_gen + 1;
         let exp_ms = now + ttl.as_millis() as i64;
         sqlx::query(
             "UPDATE port_executions \

@@ -22,8 +22,8 @@ use harness::{
     assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_idempotency_first_writer_wins, assert_idempotency_store_first_writer_and_scope,
-    assert_journal_visibility_and_scope, assert_stale_fencing_is_fenced_out,
-    assert_webhook_activation_and_scope, skip_reason,
+    assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
+    assert_stale_fencing_is_fenced_out, assert_webhook_activation_and_scope, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -73,6 +73,7 @@ matrix!(
     stale_fencing_is_fenced_out,
     assert_stale_fencing_is_fenced_out
 );
+matrix!(live_lease_blocks_acquire, assert_live_lease_blocks_acquire);
 matrix!(atomic_triple_all_or_nothing, assert_atomic_triple);
 matrix!(
     idempotency_first_writer_wins,
@@ -143,6 +144,10 @@ scoped_matrix!(scoped_cas_conflict_returns_actual, assert_cas_conflict);
 scoped_matrix!(
     scoped_stale_fencing_is_fenced_out,
     assert_stale_fencing_is_fenced_out
+);
+scoped_matrix!(
+    scoped_live_lease_blocks_acquire,
+    assert_live_lease_blocks_acquire
 );
 scoped_matrix!(scoped_atomic_triple_all_or_nothing, assert_atomic_triple);
 scoped_matrix!(

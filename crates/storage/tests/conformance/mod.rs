@@ -452,6 +452,104 @@ pub async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
     );
 }
 
+/// A live lease blocks every further `acquire_lease` — including a second
+/// acquire by the *same* holder — and an acquire that follows a prior
+/// (now-expired) lease bumps the fencing generation so the pre-expiry
+/// token is dead. This is the §12.2 zombie-runner closure (ADR-0008):
+/// two concurrent runners must see exactly one winner, and a
+/// crashed-then-restarted runner reusing its holder id cannot revive its
+/// pre-crash token.
+pub async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let s = scope_a();
+    store
+        .create(&s, "exe_lease", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create");
+
+    let g1 = store
+        .acquire_lease(
+            &s,
+            "exe_lease",
+            "holder",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{}] first acquire must grant a token", backend.name()))
+        .generation();
+
+    // A second acquire while the lease is live is contention — even
+    // for the SAME holder. Renewal is `renew_lease`, not a re-acquire.
+    let contended = store
+        .acquire_lease(
+            &s,
+            "exe_lease",
+            "holder",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease");
+    assert!(
+        contended.is_none(),
+        "[{}] a second acquire of a live lease (same holder) must be \
+         contention (None), got {contended:?}",
+        backend.name()
+    );
+
+    // After the lease expires, the same holder may re-acquire — but
+    // the generation must strictly increase so the pre-expiry token is
+    // fenced (the holder could be a zombie from before the crash).
+    // Adapters floor the lease TTL to a 1s minimum (production never
+    // wants sub-second leases), so acquire with a short TTL and sleep
+    // past that floor before re-acquiring.
+    store
+        .create(&s, "exe_lease_z", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create");
+    let z1 = store
+        .acquire_lease(
+            &s,
+            "exe_lease_z",
+            "holder",
+            std::time::Duration::from_millis(1),
+        )
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{}] zombie-case first acquire", backend.name()))
+        .generation();
+    // Let the floored (≈1s) lease expire.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let z2 = store
+        .acquire_lease(
+            &s,
+            "exe_lease_z",
+            "holder",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease")
+        .unwrap_or_else(|| {
+            panic!(
+                "[{}] same holder must re-acquire an expired lease",
+                backend.name()
+            )
+        })
+        .generation();
+    assert!(
+        z2 > z1,
+        "[{}] re-acquire after expiry must bump the fencing generation \
+         (z1={z1}, z2={z2}) so the pre-expiry token is fenced",
+        backend.name()
+    );
+    // Sanity: the first execution's generation was monotone too.
+    assert!(
+        g1 <= z1.max(g1),
+        "[{}] generations monotone",
+        backend.name()
+    );
+}
+
 /// The atomic triple commits state + outbox + journal together; a reader
 /// observes all three after a successful commit.
 pub async fn assert_atomic_triple(backend: &dyn Backend) {

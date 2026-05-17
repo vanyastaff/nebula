@@ -239,17 +239,23 @@ impl ExecutionStore for InMemoryExecutionStore {
         }
         let now = Instant::now();
         let live = matches!(row.lease_expires_at, Some(exp) if exp >= now);
-        if live && row.lease_holder.as_deref() != Some(holder) {
-            // Another holder owns a live lease.
+        if live {
+            // A live lease blocks acquisition outright — including a
+            // second acquire by the *same* holder. Renewal is the
+            // dedicated `renew_lease` op (fencing-token gated); a second
+            // `acquire_lease` while the lease is live is contention, not
+            // a silent renew (§12.2 zombie-runner closure, ADR-0008 —
+            // two concurrent runners must see exactly one winner).
             return Ok(None);
         }
-        // Acquire (or re-acquire by the same holder). A takeover from an
-        // expired/absent holder bumps the fencing generation so the prior
-        // holder's token is dead.
-        let taking_over = row.lease_holder.as_deref() != Some(holder);
-        if taking_over {
-            row.fencing_generation += 1;
-        }
+        // No live lease: acquire it. Every successful acquire bumps the
+        // fencing generation, so every previously issued token is dead
+        // — including one held by the *same* holder string (a
+        // crashed-then-restarted runner reusing its `instance_id` is a
+        // zombie w.r.t. its pre-crash token). Generation 0 therefore
+        // universally means "no lease ever issued / stale" (§12.2
+        // zombie-runner closure, ADR-0008).
+        row.fencing_generation += 1;
         row.lease_holder = Some(holder.to_string());
         row.lease_expires_at = Some(now.checked_add(ttl).unwrap_or(now));
         let token = FencingToken::from_generation(row.fencing_generation);
