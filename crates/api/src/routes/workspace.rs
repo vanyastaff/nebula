@@ -42,7 +42,10 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::execution::terminate_execution))
         .routes(routes!(handlers::execution::restart_execution))
         // Resources
-        .routes(routes!(handlers::resource::list_resources))
+        .routes(routes!(
+            handlers::resource::list_resources,
+            handlers::resource::create_resource
+        ))
         .routes(routes!(handlers::resource::get_resource))
         // Credentials (Plane B — ADR-0031). Literal paths first, then
         // collection, then parameterized `{cred}`, then sub-resources.

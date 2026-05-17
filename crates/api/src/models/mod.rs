@@ -38,7 +38,9 @@ pub use org::{
     ServiceAccountsResponse, UpdateOrgRequest,
 };
 pub use pagination::{CursorParams, CursorPayload, PaginatedResponse};
-pub use resource::{ListResourcesResponse, ResourceSummary};
+pub use resource::{
+    CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourceSummary,
+};
 pub use system::AckResponse;
 pub use workflow::{
     CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowResponse,

@@ -133,15 +133,10 @@ impl FakeResourceRepo {
 
     /// The `ResourceEntry` the handler passed to `create`, if any.
     ///
-    /// Capture-inspection accessor for the mutation handlers. The
+    /// Capture-inspection accessor used by the create tests. The
     /// `last_update` / `last_soft_delete` siblings are populated by the
     /// same fixture; their accessors are added alongside the handlers
     /// that exercise them.
-    #[allow(
-        dead_code,
-        reason = "shared mutation-capture fixture; the create path is the first consumer, \
-                  update/soft_delete read the sibling captures"
-    )]
     fn created(&self) -> Option<ResourceEntry> {
         self.last_create
             .lock()
@@ -374,6 +369,193 @@ async fn list_resources_without_repo_is_service_unavailable() {
         response.status(),
         StatusCode::SERVICE_UNAVAILABLE,
         "an unconfigured resource repo must be 503 (not the retired 501 stub)"
+    );
+}
+
+// ── create_resource ──────────────────────────────────────────────────────────
+//
+// The schema/closed-set validation *logic* (schema-valid ⇒ ok,
+// schema-invalid ⇒ Register, secret-shaped field ⇒ Register without
+// leaking the value, unknown kind ⇒ UnknownKind, NO Manager mutation) is
+// pinned at the engine layer in
+// `crates/engine/tests/resource_registrar_validate.rs` — that is where
+// `ResourceRegistrarRegistry::validate` can be driven against a real
+// `R::Config` schema. The API layer must not depend on `nebula-resource`
+// (deny.toml `[[wrappers]]`: "no upward deps from API"), so it cannot
+// build a populated registrar here. These tests therefore pin the
+// *handler's HTTP contract and tenant isolation* over every path
+// reachable without a concrete resource type: unknown-kind → 409,
+// no-validation-backend → 422 (fail closed), no-repo → 503, and the
+// structural impossibility of a client-supplied owning workspace.
+
+/// POST a create body to the resources collection.
+async fn create_resource_request(
+    app: axum::Router,
+    body: serde_json::Value,
+) -> axum::http::Response<Body> {
+    let token = create_test_jwt();
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(ws_path("/resources"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+/// A well-formed create body for an arbitrary kind.
+fn create_body(kind: &str) -> serde_json::Value {
+    serde_json::json!({
+        "slug": "my-pool",
+        "display_name": "My Pool",
+        "kind": kind,
+        "config": { "base_url": "https://api.example.com" },
+    })
+}
+
+/// An empty closed allowlist rejects *every* kind as `UnknownKind`,
+/// which the handler maps to **409 Conflict** (the codebase's Conflict
+/// status — `RegistrarError::UnknownKind` → `ErrorCategory::Conflict`).
+/// Crucially the row is NOT persisted: validation gates persistence.
+#[tokio::test]
+async fn create_resource_unknown_kind_is_409_and_not_persisted() {
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::default());
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response = create_resource_request(app, create_body("never_registered_kind")).await;
+    let status = response.status();
+    let raw = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .expect("body is utf-8");
+
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "an unknown resource kind must be 409 (RegistrarError::UnknownKind \
+         → Conflict), got {status}, body: {raw}"
+    );
+    assert!(
+        repo.created().is_none(),
+        "a config whose kind failed validation must NOT be persisted"
+    );
+}
+
+/// With no validation backend wired, the handler fails **closed**: 422,
+/// and nothing is persisted. Persisting an unvalidated config (which
+/// could carry an inlined secret) is never acceptable (ADR-0028 §7).
+#[tokio::test]
+async fn create_resource_without_validation_backend_is_422_fail_closed() {
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::default());
+    // `.with_resource_registrars(...)` deliberately NOT called.
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>);
+    let app = app::build_app(state, &api_config);
+
+    let response = create_resource_request(app, create_body("http_pool")).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "no validation backend ⇒ fail closed with 422, never persist unvalidated"
+    );
+    assert!(
+        repo.created().is_none(),
+        "an unvalidated config must NEVER be persisted"
+    );
+}
+
+/// No resource repo configured ⇒ 503 (same convention as the read
+/// endpoints), checked before any validation work.
+#[tokio::test]
+async fn create_resource_without_repo_is_503() {
+    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let api_config = ApiConfig::for_test();
+    let state = AppState::new(
+        workflow_repo,
+        execution_repo,
+        control_queue_repo,
+        api_config.jwt_secret.clone(),
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let app = app::build_app(state, &api_config);
+
+    let response = create_resource_request(app, create_body("http_pool")).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unconfigured resource repo must be 503"
+    );
+}
+
+/// SECURITY (tenant isolation / confused-deputy): the create body has
+/// **no** workspace/owner field, so a client cannot target another
+/// tenant's workspace. A request that *attempts* to smuggle a
+/// `workspace_id` (and even a foreign-looking one) is accepted as the
+/// `CreateResourceRequest` shape with that extra key ignored — and since
+/// the kind here is unknown the request is rejected (409) and nothing is
+/// persisted, so no foreign-workspace row can ever be written. The DTO
+/// shape itself is the structural guarantee; this pins it cannot
+/// regress into honoring a body-supplied tenant.
+#[tokio::test]
+async fn create_resource_request_body_cannot_set_workspace() {
+    use nebula_api::models::CreateResourceRequest;
+
+    // A body that tries to smuggle a foreign workspace + owner. These
+    // extra keys are not part of `CreateResourceRequest`, so serde drops
+    // them: the deserialized request carries only slug/display_name/
+    // kind/config — there is no field through which a caller could pick
+    // the owning workspace.
+    let smuggled = serde_json::json!({
+        "slug": "evil",
+        "display_name": "Evil Pool",
+        "kind": "http_pool",
+        "config": { "base_url": "https://x.test" },
+        "workspace_id": "ws_99999999999999999999999999",
+        "created_by": "usr_99999999999999999999999999",
+    });
+    let parsed: CreateResourceRequest =
+        serde_json::from_value(smuggled.clone()).expect("extra keys are ignored by the DTO");
+    assert_eq!(parsed.slug, "evil");
+    assert_eq!(parsed.kind, "http_pool");
+    // (Compile-time guarantee: `CreateResourceRequest` has no
+    // `workspace_id` / owner field at all — the only way to express
+    // "which workspace" is the authenticated path context.)
+
+    // End to end: even attempting the smuggle cannot persist a foreign
+    // row — the (unknown) kind fails validation first (409), so the
+    // create never reaches the repo regardless of the body.
+    let api_config = ApiConfig::for_test();
+    let repo = Arc::new(FakeResourceRepo::default());
+    let registrars = Arc::new(nebula_engine::ResourceRegistrarRegistry::new());
+    let state = state_with_repo(&api_config, Arc::clone(&repo) as Arc<dyn ResourceRepo>)
+        .with_resource_registrars(registrars);
+    let app = app::build_app(state, &api_config);
+
+    let response = create_resource_request(app, smuggled).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CONFLICT,
+        "unknown kind is still rejected; a smuggled workspace_id changes nothing"
+    );
+    assert!(
+        repo.created().is_none(),
+        "no row — and therefore no foreign-workspace row — may be persisted"
     );
 }
 

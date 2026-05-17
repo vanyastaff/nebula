@@ -181,9 +181,22 @@ pub struct AppState {
 
     /// Optional resource repository for the resource catalog endpoints.
     ///
-    /// When `None`, resource endpoints return 501 (stub per ADR-0047
-    /// Stub Endpoint Policy). Set via [`AppState::with_resource_repo`].
+    /// When `None`, the resource catalog endpoints report `503 Service
+    /// Unavailable`. Set via [`AppState::with_resource_repo`].
     pub resource_repo: Option<Arc<dyn nebula_storage::repos::ResourceRepo>>,
+
+    /// Optional closed `kind → registrar` allowlist used to **validate**
+    /// a resource config before it is persisted (`POST .../resources`).
+    ///
+    /// This is the config-CRUD validation seam, not engine activation:
+    /// [`ResourceRegistrarRegistry::validate`](nebula_engine::ResourceRegistrarRegistry::validate)
+    /// runs the kind's `R::Config` schema + closed-set guard with **no**
+    /// `nebula_resource::Manager` mutation — live registration stays an
+    /// engine-activation concern (INTEGRATION_MODEL §13.1). When `None`,
+    /// `create_resource` fails closed (422) rather than persist an
+    /// unvalidated config. Set via
+    /// [`AppState::with_resource_registrars`].
+    pub resource_registrars: Option<Arc<nebula_engine::ResourceRegistrarRegistry>>,
 }
 
 impl AppState {
@@ -222,6 +235,7 @@ impl AppState {
             webhook_ctx_factory: None,
             internal_shared_token: None,
             resource_repo: None,
+            resource_registrars: None,
         }
     }
 
@@ -360,16 +374,35 @@ impl AppState {
 
     /// Attach a resource repository for the resource catalog endpoints.
     ///
-    /// When `None`, resource endpoints return 501 (stub per ADR-0047
-    /// Stub Endpoint Policy). Compose this in production with the
-    /// Postgres-backed implementation; leave `None` in tests that
-    /// exercise unrelated routes.
+    /// When `None`, the resource catalog endpoints report `503 Service
+    /// Unavailable`. Compose this in production with the Postgres-backed
+    /// implementation; leave `None` in tests that exercise unrelated
+    /// routes.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_repo(
         mut self,
         repo: Arc<dyn nebula_storage::repos::ResourceRepo>,
     ) -> Self {
         self.resource_repo = Some(repo);
+        self
+    }
+
+    /// Attach the closed `kind → registrar` allowlist used to validate a
+    /// resource config before persistence.
+    ///
+    /// This is the config-CRUD validation seam (schema + closed-kind),
+    /// **not** engine activation: it never live-registers into a
+    /// `nebula_resource::Manager` (INTEGRATION_MODEL §13.1). Compose this
+    /// in production from the same registry the engine is built with
+    /// ([`WorkflowEngine::resource_registrars`](nebula_engine::WorkflowEngine::resource_registrars));
+    /// when left `None`, `create_resource` fails closed (422) rather than
+    /// persist an unvalidated config.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_registrars(
+        mut self,
+        registrars: Arc<nebula_engine::ResourceRegistrarRegistry>,
+    ) -> Self {
+        self.resource_registrars = Some(registrars);
         self
     }
 }

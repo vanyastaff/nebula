@@ -623,6 +623,103 @@ impl Manager {
         )
     }
 
+    /// Schema-validate an **already-resolved** config JSON tree against
+    /// `<R::Config as HasSchema>::schema()` *without* registering anything.
+    ///
+    /// This is the pure validation core shared with
+    /// [`register_from_value`](Self::register_from_value): it runs exactly
+    /// the schema pass, the closed-set guard, and the `R::Config`
+    /// deserialize step that the live path runs *after* template
+    /// resolution — but performs **no** `{{ … }}` resolution, **no**
+    /// `Manager` mutation, and constructs **no** `resource: R` /
+    /// `TopologyRuntime<R>`. It is the seam a config-CRUD writer uses to
+    /// reject a bad `ResourceEntry.config` *before* persistence, keeping
+    /// config validation strictly separate from engine-activation live
+    /// registration (INTEGRATION_MODEL §13.1 — live registration happens
+    /// at engine activation, never at config-create time).
+    ///
+    /// Template resolution is deliberately excluded: `{{ … }}` is resolved
+    /// against the engine's expression context at activation, which does
+    /// not exist at config-create time. A stored config may legitimately
+    /// still carry unresolved templates; validating the *post-resolution*
+    /// shape is an activation-time concern.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::permanent`] when the JSON is not a field tree, fails the
+    ///   `R::Config` schema (missing/invalid declared fields, `#[validate]`
+    ///   rules), or fails to deserialize into `R::Config`.
+    /// - [`Error::permanent`] when the config carries a top-level field the
+    ///   `R::Config` schema does not declare (closed-set guard):
+    ///   `ResourceConfig` must carry no secrets, so an inlined
+    ///   secret-shaped field is rejected here rather than silently ignored
+    ///   (PRODUCT_CANON §3.5). The error names only the offending key,
+    ///   never its value.
+    pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<(), Error>
+    where
+        R: Resource,
+        R::Config: serde::de::DeserializeOwned,
+    {
+        // Schema-validate against <R::Config as HasSchema>::schema(). This is
+        // independent of serde::Deserialize: it surfaces missing/invalid fields a
+        // serde default impl would silently accept, and runs the schema's
+        // `#[validate(...)]` rules (length, pattern, …). Schema check runs FIRST so
+        // structural errors are reported as schema violations rather than
+        // confusingly re-routed through serde.
+        let schema = <R::Config as nebula_schema::HasSchema>::schema();
+        let field_values =
+            nebula_schema::FieldValues::from_json(config_json.clone()).map_err(|e| {
+                Error::permanent(format!("validate_config_value: invalid field tree: {e}"))
+            })?;
+        if let Err(report) = schema.validate(&field_values) {
+            return Err(Error::permanent(format!(
+                "validate_config_value: schema validation failed: {report:?}"
+            )));
+        }
+
+        // Closed-set guard: reject any config key the typed `R::Config` schema does
+        // not declare. `nebula_schema::Schema::validate` only checks *declared*
+        // fields and silently ignores unknown ones, so without this an operator
+        // could inline a secret-shaped field (e.g. `password`) into
+        // `ResourceConfig` and get no signal — `ResourceConfig` must carry no
+        // secrets; secrets reach a resource ONLY via typed credential slots
+        // (PRODUCT_CANON §3.5; ADR-0044 slot model; ADR-0030 redaction; ADR-0036
+        // isolation). The error names only the offending KEY, never its value, so
+        // a mis-wired secret can never leak through the rejection message.
+        //
+        // Skipped when the schema declares no fields: an empty `ValidSchema` is
+        // the "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a
+        // closed set over zero fields would reject every config — that gate
+        // belongs to types that have opted into a real schema.
+        let declared = schema.fields();
+        if !declared.is_empty()
+            && let Some((unknown, _)) = field_values
+                .iter()
+                .find(|(k, _)| !declared.iter().any(|f| f.key() == *k))
+        {
+            return Err(Error::permanent(format!(
+                "validate_config_value: config field `{unknown}` is not declared by \
+                 the `{ty}` schema; secrets must not be inlined into ResourceConfig \
+                 — bind them through a typed credential slot instead \
+                 (PRODUCT_CANON §3.5)",
+                unknown = unknown.as_str(),
+                ty = std::any::type_name::<R::Config>(),
+            )));
+        }
+
+        // Deserialize R::Config from the JSON to surface any residual
+        // type-shape mismatch the structural schema pass did not (the live
+        // path deserializes here too, before constructing the runtime).
+        serde_json::from_value::<R::Config>(config_json).map_err(|e| {
+            Error::permanent(format!(
+                "validate_config_value: failed to deserialize {ty} config from JSON: {e}",
+                ty = std::any::type_name::<R::Config>()
+            ))
+        })?;
+
+        Ok(())
+    }
+
     /// JSON-driven registration with `{{ ... }}` template resolution + schema validation (Phase 9
     /// of M6 / closes the tail deferred from Phase 4).
     ///
@@ -715,51 +812,18 @@ impl Manager {
         let ctx = nebula_expression::EvaluationContext::new();
         let resolved = resolve_json_templates(config_json, expr_engine, &ctx)?;
 
-        // 2. Schema-validate the resolved JSON against <R::Config as HasSchema>::schema(). This is
-        //    independent of serde::Deserialize: it surfaces missing/invalid fields a serde default
-        //    impl would silently accept, and runs the schema's `#[validate(...)]` rules (length,
-        //    pattern, …). Schema check runs FIRST so structural errors are reported as schema
-        //    violations rather than confusingly re-routed through serde.
-        let schema = <R::Config as nebula_schema::HasSchema>::schema();
-        let field_values =
-            nebula_schema::FieldValues::from_json(resolved.clone()).map_err(|e| {
-                Error::permanent(format!("register_from_value: invalid field tree: {e}"))
-            })?;
-        if let Err(report) = schema.validate(&field_values) {
-            return Err(Error::permanent(format!(
-                "register_from_value: schema validation failed: {report:?}"
-            )));
-        }
+        // 2/2b/3. Schema pass + closed-set guard + `R::Config` deserialize.
+        //    Shared verbatim with the config-CRUD validate seam via
+        //    [`validate_config_value`](Self::validate_config_value) so the
+        //    two paths cannot drift: the only difference is that the live
+        //    path validates the *post-template-resolution* JSON (step 1
+        //    above) whereas the config-CRUD seam validates the stored shape
+        //    directly (no expression context at config-create time).
+        Self::validate_config_value::<R>(resolved.clone())?;
 
-        // 2b. Closed-set guard: reject any config key the typed `R::Config` schema does not
-        //     declare. `nebula_schema::Schema::validate` only checks *declared* fields and
-        //     silently ignores unknown ones, so without this an operator could inline a
-        //     secret-shaped field (e.g. `password`) into `ResourceConfig` and get no signal —
-        //     `ResourceConfig` must carry no secrets; secrets reach a resource ONLY via typed
-        //     credential slots (PRODUCT_CANON §3.5; ADR-0044 slot model; ADR-0030 redaction;
-        //     ADR-0036 isolation). The error names only the offending KEY, never its value, so
-        //     a mis-wired secret can never leak through the rejection message.
-        //
-        //     Skipped when the schema declares no fields: an empty `ValidSchema` is the
-        //     "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a closed set
-        //     over zero fields would reject every config — that gate belongs to types that
-        //     have opted into a real schema.
-        let declared = schema.fields();
-        if !declared.is_empty()
-            && let Some((unknown, _)) = field_values
-                .iter()
-                .find(|(k, _)| !declared.iter().any(|f| f.key() == *k))
-        {
-            return Err(Error::permanent(format!(
-                "register_from_value: config field `{unknown}` is not declared by the \
-                 `{ty}` schema; secrets must not be inlined into ResourceConfig — bind \
-                 them through a typed credential slot instead (PRODUCT_CANON §3.5)",
-                unknown = unknown.as_str(),
-                ty = std::any::type_name::<R::Config>(),
-            )));
-        }
-
-        // 3. Deserialize R::Config from the resolved JSON.
+        // Re-deserialize for the typed dispatch below. `validate_config_value`
+        // only proves the config is well-formed; the typed `register` path
+        // consumes an owned `R::Config`.
         let config: R::Config = serde_json::from_value(resolved).map_err(|e| {
             Error::permanent(format!(
                 "register_from_value: failed to deserialize {ty} config from JSON: {e}",

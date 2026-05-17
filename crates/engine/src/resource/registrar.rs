@@ -219,6 +219,31 @@ pub trait ErasedResourceRegistrar: Send + Sync {
         manager: &'a Manager,
         request: RegisterRequest<'a>,
     ) -> BoxFut<'a, Result<(), nebula_resource::Error>>;
+
+    /// Validate `config_json` against this kind's `R::Config` schema
+    /// **without registering anything**.
+    ///
+    /// Runs the schema pass + closed-set guard + `R::Config` deserialize
+    /// (the validation core shared with the live `register` path via
+    /// [`Manager::validate_config_value`]), but performs **no** `Manager`
+    /// mutation, constructs **no** `resource: R` / `TopologyRuntime<R>`,
+    /// and does **no** `{{ … }}` template resolution. This is the seam a
+    /// config-CRUD writer uses to reject a bad resource config *before*
+    /// persistence — config validation is strictly separate from
+    /// engine-activation live registration (INTEGRATION_MODEL §13.1).
+    ///
+    /// Synchronous: validation is pure (schema + serde, no I/O), so unlike
+    /// [`register`](Self::register) it needs no boxed future.
+    ///
+    /// # Errors
+    ///
+    /// Returns the inner [`nebula_resource::Error`] verbatim if the config
+    /// is not a field tree, fails the `R::Config` schema, carries an
+    /// undeclared (e.g. secret-shaped) field, or fails to deserialize. The
+    /// registry wraps it in [`RegistrarError::Register`]; the
+    /// closed-allowlist `UnknownKind` check happens in
+    /// [`ResourceRegistrarRegistry::validate`] before this is ever called.
+    fn validate(&self, config_json: serde_json::Value) -> Result<(), nebula_resource::Error>;
 }
 
 /// Per-`R` [`ErasedResourceRegistrar`] that closes over the two pieces
@@ -291,6 +316,14 @@ where
                 )
                 .await
         })
+    }
+
+    fn validate(&self, config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
+        // No `resource_factory` / `topology_factory` are invoked: validation
+        // is purely a function of the config JSON and the monomorphized
+        // `R::Config` schema — exactly the live path's pre-register checks,
+        // minus template resolution and the typed-runtime construction.
+        Manager::validate_config_value::<R>(config_json)
     }
 }
 
@@ -376,6 +409,49 @@ impl ResourceRegistrarRegistry {
         registrar
             .register(manager, request)
             .await
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })
+    }
+
+    /// Resolves `kind` through the closed allowlist and validates
+    /// `config_json` against that kind's `R::Config` schema **without
+    /// registering anything**.
+    ///
+    /// This is the config-CRUD seam: a writer persisting a resource
+    /// definition validates the config here *before* the row is stored.
+    /// Validation runs the same schema pass + closed-set guard + deserialize
+    /// the live [`register`](Self::register) path runs (shared via
+    /// [`Manager::validate_config_value`]), but mutates **no** `Manager`,
+    /// builds **no** runtime, and resolves **no** `{{ … }}` templates —
+    /// live registration stays an engine-activation concern
+    /// (INTEGRATION_MODEL §13.1), distinct from config validation.
+    ///
+    /// The closed-allowlist lookup is identical to `register`'s: an unknown
+    /// `kind` is rejected *before* any typed call, so it can never touch a
+    /// resource type (closed dependency graph — INTEGRATION_MODEL §114-120;
+    /// the type-confusion abuse).
+    ///
+    /// # Errors
+    ///
+    /// - [`RegistrarError::UnknownKind`] if `kind` is not in the allowlist
+    ///   — a caller/wiring fault, non-retryable, classified as a client
+    ///   conflict (not a 5xx).
+    /// - [`RegistrarError::Register`] if the config fails the `R::Config`
+    ///   schema, carries an undeclared (e.g. secret-shaped) field, or fails
+    ///   to deserialize; classification delegates to the inner error.
+    pub fn validate(
+        &self,
+        kind: &str,
+        config_json: serde_json::Value,
+    ) -> Result<(), RegistrarError> {
+        let registrar = self
+            .registrars
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        registrar
+            .validate(config_json)
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
