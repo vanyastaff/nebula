@@ -243,15 +243,34 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> T
     quote! { #(#calls)* }
 }
 
-/// Emit the body of `Resource::credential_slot_epoch` — the `max`
-/// generation across every declared `#[credential]` `SlotCell` field
-/// (ADR-0067 §Deferred create-vs-rotate reconcile).
+/// Emit the body of `Resource::credential_slot_epoch` — an
+/// **order-sensitive positional fold** over every declared
+/// `#[credential]` `SlotCell` field's generation (ADR-0067 §Deferred
+/// create-vs-rotate reconcile).
 ///
 /// Derive-generated so a newly-added credential slot is automatically
 /// folded into the epoch — an author cannot forget to include it (the
 /// structural alternative to a "remember to update the epoch" comment).
-/// With no slots the `max` chain is empty and the epoch is `0`
-/// ("never bound"), matching the trait default.
+/// With no slots the fold is empty and the epoch is `0` ("never bound"),
+/// matching the trait default.
+///
+/// **Why a positional fold, not `max`.** The epoch's load-bearing
+/// contract (#680) is "the value changes whenever *any* slot's
+/// generation changes" — the resident create-vs-rotate reconcile
+/// compares the epoch a runtime was built against with the live epoch
+/// and only re-delivers the hook when they differ. `max` violates that:
+/// a runtime built at `(slot_a=5, slot_b=10)` then rotated `slot_a→6`
+/// still folds to `max=10`, so the reconcile would miss the stale
+/// runtime entirely and silently report a rotation success while the
+/// runtime keeps serving the pre-rotation credential. A position-weighted
+/// fold `acc = acc * K + gen` (fixed odd `K`) changes on **every** slot
+/// transition regardless of which slot moved or whether another slot's
+/// generation happens to be larger. `wrapping_mul`/`wrapping_add` keep it
+/// total (it is an opaque change-token, never compared by magnitude — the
+/// reconcile only does `built != live`), and the per-slot
+/// [`SlotCell::generation`](crate::SlotCell::generation) is itself
+/// strictly monotone, so no real rotation sequence aliases back to a
+/// prior epoch in practice.
 pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
     if slots.is_empty() {
         return quote! { 0 };
@@ -263,10 +282,23 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
             quote! { self.#field.generation() }
         })
         .collect();
-    // `max` fold over every slot's generation; a single slot collapses to
-    // just that slot's generation.
+    // Position-weighted fold so EVERY slot transition changes the epoch
+    // (not just the max-bearing one): `acc = acc * K + gen`. `K` is a
+    // fixed odd constant (the 64-bit FNV-1a prime) for good dispersion;
+    // wrapping arithmetic keeps the fold total — the epoch is an opaque
+    // change-token compared only for equality by the create-vs-rotate
+    // reconcile, never by magnitude. A single slot folds to
+    // `0 * K + gen == gen` (unchanged from the prior single-slot
+    // behaviour). Empty slot list returned `0` above ("never bound").
     quote! {
-        [ #(#gens),* ].into_iter().max().unwrap_or(0)
+        {
+            const __NEBULA_SLOT_EPOCH_K: u64 = 0x0000_0100_0000_01b3;
+            [ #(#gens),* ]
+                .into_iter()
+                .fold(0u64, |acc, slot_gen| {
+                    acc.wrapping_mul(__NEBULA_SLOT_EPOCH_K).wrapping_add(slot_gen)
+                })
+        }
     }
 }
 

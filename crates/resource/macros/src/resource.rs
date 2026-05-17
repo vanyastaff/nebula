@@ -89,8 +89,10 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 }
             }
 
-            // ADR-0067 §Deferred: the `max` `SlotCell` generation across
-            // every declared `#[credential]` field. Derive-emitted so a
+            // ADR-0067 §Deferred: an order-sensitive positional fold over
+            // every declared `#[credential]` `SlotCell` field's
+            // generation (NOT `max` — `max` misses a rotation of a
+            // non-max slot, #690 review / #680). Derive-emitted so a
             // newly-added slot is folded in automatically (no author
             // discipline). Closes the create-vs-rotate lost-update race
             // when paired with the Resident build-epoch reconcile.
