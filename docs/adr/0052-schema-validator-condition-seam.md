@@ -183,3 +183,77 @@ Seam anchors landed in the P3 PR:
 P4 (API write-path validation V2 / catalog `json_schema()` V3 / public
 OpenAPI DTO `x-nebula-root-rules` strip / ADR-0047 amendment) is the
 remaining cascade phase, out of P3 scope.
+
+## Amendment (2026-05-17) — P4: API write-path validation + catalog json_schema() + public projection (cascade close-out)
+
+P4 closes the cascade. An api-owned, object-safe `CredentialSchemaPort`
+(`crates/api/src/ports/credential_schema.rs`; api-safe types only —
+`serde_json::Value` + api-owned structs, **no `ValidSchema` in any DTO**)
+is added to `AppState` as `Option<Arc<dyn …>>`, mirroring the
+`action_registry` precedent (absent ⇒ honest 503, canon §4.5). The
+concrete `RegistryCredentialSchema`
+(`crates/api/src/ports/credential_schema_registry.rs`) resolves
+`credential_key → CredentialMetadata.base.schema` via a
+`nebula_credential::CredentialRegistry`, runs `FieldValues::from_json` +
+`ValidSchema::validate` (authority = validator; **never `.resolve()`** —
+canon §12.5: credential `data` must not be expression-resolved against
+workflow state; INTEGRATION_MODEL §29/§33 proof-token custody unchanged),
+and exports `ValidSchema::json_schema()` for the catalog.
+
+- **V2 (write-path).** `create_credential`/`update_credential` validate
+  `data` against the type's resolved schema before persist. **This closed
+  a verified live fail-open**: the path persisted `data` unvalidated while
+  the handler docstring claimed it was validated (§4.5 [L1] + §10 [L2]).
+  No port ⇒ 503 (never silent unvalidated persist). Rejection ⇒ the
+  api-wide validation status (400) carrying only RFC-6901 path + validator
+  code + static message — never a submitted value (ADR-0034; secret-safe
+  by construction, P2's value-free `ValidationReport`).
+- **V3 (catalog).** `list_credential_types`/`get_credential_type` are
+  port-backed (no longer engine-owned-503): populated 200 when wired,
+  honest 503 when not, 404 for an unknown (public) type key.
+- **#6 (public projection).** An api-owned recursive mapper
+  (`crates/api/src/domain/credential/schema_projection.rs`) strips
+  `x-nebula-root-rules` + the predicate-bearing
+  `x-nebula-{required,visibility}-mode` family from the catalog schema;
+  standard JSON-Schema keywords and non-predicate structural hints are
+  kept. Not a raw `json_schema()` passthrough.
+
+**Six pre-#671 spec premises were false and are corrected here** (the
+verify-first discipline, same as P1–P3): (1) the write path persisted
+`data` unvalidated while documenting otherwise (a live fail-open, not a
+benign TODO); (2) `schemars` was enabled by no crate; (3)
+`crates/api`'s `nebula-schema` was a dev-dep only; (4) no
+credential-registry port existed in `AppState` (`list/get_credential_type`
+were honest 503s); (5) no `json_schema()`-over-a-port precedent (the
+action catalog uses hand-wrapped `ToSchema` DTOs); (6) **"zero deny.toml
+change" was infeasible as written** — post-#671 the composition root is a
+separate `nebula-server` crate not in `nebula-credential`'s wrapper
+allowlist. The user adjudicated #6: keep the harder "zero deny.toml
+change" constraint and host the concrete impl in `nebula-api` (already an
+allow-listed `nebula-credential` consumer; `nebula-schema` is Core —
+freely importable, no deny change; deny `ignored = ["schemars"]`).
+Consequence: `nebula-api` takes a `nebula-schema` **production** dep +
+the `schemars` feature. ADR-0047's actual DTO-purity rule (no lower-layer
+**types in DTOs**) remains intact — the port returns only
+`serde_json::Value`/api-owned structs; only ADR-0047's informal "api
+never imports `nebula-schema`" prose is relaxed (amended in-place in
+ADR-0047). Zero new crates; zero `deny.toml` change.
+
+Seam anchors (this PR): `crates/api/tests/seam_credential_schema_port.rs`
+(port object-safe + `Option`/builder), `…/seam_credential_write_path_validation.rs`
+(V2: reject⇒400 secret-safe, valid⇒200, no-port⇒503-never-persist),
+`…/seam_credential_catalog_schema.rs` (V3 populated + #6 strip + 404 +
+no-port⇒503), `credential_schema::tests` projection unit tests,
+`credential_schema_registry::tests` (validate reject/accept/unknown +
+default port registers the first-party set). OpenAPI honesty tests
+reconciled faithfully (type-discovery 503→200/404 reflects the new honest
+reality — port present ⇒ truthful catalog; no-port⇒503 retained in the
+seam test — never silenced).
+
+**The ADR-0052 cascade (P1 #670 / P2 #672 / P3 #676 / P4 this PR) is
+COMPLETE. There is no P5.** **Non-goal still OPEN:** the `slot_bindings`
+confused-deputy — credential/resource resolution still has no
+owner/tenant/workspace authorization; a crafted workflow JSON can resolve
+any credential id. Credential resolution remains confused-deputy-exposed
+after P4. "Cascade complete" is **NOT** "that is closed"; it is a
+broader engine-authorization refactor tracked separately.
