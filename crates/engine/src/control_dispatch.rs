@@ -51,6 +51,7 @@ use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
 use nebula_storage::ExecutionRepo;
+use nebula_storage_port::store::ExecutionStore;
 
 use crate::{
     WorkflowEngine,
@@ -58,25 +59,39 @@ use crate::{
     error::EngineError,
 };
 
+/// Backend the idempotency status read goes through. Dual-dispatch: the
+/// spec-16 [`ExecutionStore`] port when wired, else the legacy
+/// `ExecutionRepo`. Both yield the opaque state JSON the `status` field
+/// is parsed from.
+#[derive(Clone)]
+enum StatusBackend {
+    /// Scoped spec-16 port handle (the engine always reads at
+    /// [`crate::store_seam::engine_scope`]).
+    Port(Arc<dyn ExecutionStore>),
+    /// Legacy per-repo handle.
+    Legacy(Arc<dyn ExecutionRepo>),
+}
+
 /// Engine-owned [`ControlDispatch`] implementation.
 ///
-/// Holds a shared [`WorkflowEngine`] plus a handle to the execution repo so
-/// the dispatch methods can read the current status for the idempotency
+/// Holds a shared [`WorkflowEngine`] plus a status-read handle so the
+/// dispatch methods can read the current status for the idempotency
 /// check without entering the engine's lease scope on a re-delivered
-/// command. Construction mirrors how a composition root wires the API and
-/// engine together — they share the same `ExecutionRepo` so status reads
-/// from either side agree.
+/// command. Construction mirrors how a composition root wires the API
+/// and engine together — they share the same execution store/repo so
+/// status reads from either side agree.
 ///
 /// See the module docs for the idempotency contract and ADR-0008 §5 for the
 /// canon rules this impl honors.
 #[derive(Clone)]
 pub struct EngineControlDispatch {
     engine: Arc<WorkflowEngine>,
-    execution_repo: Arc<dyn ExecutionRepo>,
+    status: StatusBackend,
 }
 
 impl EngineControlDispatch {
-    /// Build a new dispatch bound to the given engine and execution repo.
+    /// Build a new dispatch bound to the given engine and legacy
+    /// execution repo.
     ///
     /// The caller MUST pass the same `execution_repo` the engine was
     /// configured with via [`WorkflowEngine::with_execution_repo`]; otherwise
@@ -88,7 +103,24 @@ impl EngineControlDispatch {
     pub fn new(engine: Arc<WorkflowEngine>, execution_repo: Arc<dyn ExecutionRepo>) -> Self {
         Self {
             engine,
-            execution_repo,
+            status: StatusBackend::Legacy(execution_repo),
+        }
+    }
+
+    /// Build a new dispatch reading status through the spec-16
+    /// [`ExecutionStore`] port.
+    ///
+    /// The caller MUST pass the same scoped store the engine was
+    /// configured with via [`WorkflowEngine::with_execution_stores`] so
+    /// the idempotency read and the engine's internal CAS observe the
+    /// same row.
+    ///
+    /// [`WorkflowEngine::with_execution_stores`]: crate::WorkflowEngine::with_execution_stores
+    #[must_use]
+    pub fn new_port(engine: Arc<WorkflowEngine>, execution: Arc<dyn ExecutionStore>) -> Self {
+        Self {
+            engine,
+            status: StatusBackend::Port(execution),
         }
     }
 
@@ -98,18 +130,32 @@ impl EngineControlDispatch {
         &self,
         execution_id: ExecutionId,
     ) -> Result<Option<ExecutionStatus>, ControlDispatchError> {
-        let state = self
-            .execution_repo
-            .get_state(execution_id)
-            .await
-            .map_err(|e| {
-                ControlDispatchError::Internal(format!(
-                    "read execution state for idempotency guard: {e}"
-                ))
-            })?;
-        match state {
+        let json = match &self.status {
+            StatusBackend::Port(store) => {
+                let scope = crate::store_seam::engine_scope();
+                store
+                    .get(&scope, &execution_id.to_string())
+                    .await
+                    .map_err(|e| {
+                        ControlDispatchError::Internal(format!(
+                            "read execution state for idempotency guard: {e}"
+                        ))
+                    })?
+                    .map(|record| record.state)
+            },
+            StatusBackend::Legacy(repo) => repo
+                .get_state(execution_id)
+                .await
+                .map_err(|e| {
+                    ControlDispatchError::Internal(format!(
+                        "read execution state for idempotency guard: {e}"
+                    ))
+                })?
+                .map(|(_version, json)| json),
+        };
+        match json {
             None => Ok(None),
-            Some((_version, json)) => match json.get("status") {
+            Some(json) => match json.get("status") {
                 Some(s) => serde_json::from_value::<ExecutionStatus>(s.clone())
                     .map(Some)
                     .map_err(|e| {

@@ -5570,8 +5570,7 @@ mod tests {
         }
 
         /// Persist a workflow definition as the published version 0 so the
-        /// resume path's `get_published` lookup resolves it. Port analog of
-        /// the legacy `save_workflow_to_repo` helper.
+        /// resume path's `get_published` lookup resolves it.
         async fn save_workflow(&self, wf: &WorkflowDefinition) {
             let scope = crate::store_seam::engine_scope();
             let definition = serde_json::to_value(wf).unwrap();
