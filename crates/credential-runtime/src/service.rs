@@ -887,12 +887,23 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod test_support {
-    //! One-call in-memory `CredentialService` for tests / Plan-3 wiring:
-    //! `StaticKeyProvider` + `InMemoryStore` + `InMemoryPendingStore` +
-    //! a no-op `AuditSink` + the three first-party builtins registered
-    //! into the registry/dispatch/ops + `NoopObserver`.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support {
+    //! In-memory `CredentialService` wiring for unit tests, the
+    //! adversarial integration suite, and Plan-3 consumers. One call
+    //! assembles a `StaticKeyProvider`, an `InMemoryStore`, an
+    //! `InMemoryPendingStore`, an `AuditSink` (no-op by default), the
+    //! three first-party builtins registered into the
+    //! registry/dispatch/ops, and a `NoopObserver`.
+    //!
+    //! # ADR-0023
+    //!
+    //! This module is gated `cfg(any(test, feature = "test-util"))`. The
+    //! `test-util` feature MUST NOT be enabled in a release/production
+    //! build: it forwards the storage in-memory test backends and wires
+    //! a `StaticKeyProvider` (fixed key) over a non-durable
+    //! `InMemoryStore`. `unwrap`/`expect` below is acceptable —
+    //! `test_support` is test-support code, never a release path.
 
     use std::sync::Arc;
 
@@ -925,8 +936,23 @@ pub(crate) mod test_support {
     }
 
     /// Build an in-memory service with the three first-party builtins
-    /// wired through registry + dispatch + ops.
-    pub(crate) fn in_memory_service() -> CredentialService<InMemoryStore, InMemoryPendingStore> {
+    /// wired through registry + dispatch + ops, accepting an arbitrary
+    /// [`AuditSink`], **and** return a `Clone` of the raw `InMemoryStore`
+    /// that shares the service's backing map.
+    ///
+    /// The raw handle is a structural read-back seam for the audit
+    /// fail-closed invariant (spec §6 #8): with a refusing sink every
+    /// store op through the layered stack also fails closed, so the row
+    /// cannot be observed through the facade — the raw handle bypasses
+    /// the poisoned `AuditLayer` to prove the write did not partially
+    /// land. The secure layered composition is unchanged; only the audit
+    /// sink varies and the inner store is observable for assertions.
+    pub fn service_and_raw_store_with_audit_sink(
+        audit_sink: Arc<dyn AuditSink>,
+    ) -> (
+        CredentialService<InMemoryStore, InMemoryPendingStore>,
+        InMemoryStore,
+    ) {
         let mut registry = CredentialRegistry::new();
         register_builtins(&mut registry).expect("register_builtins");
 
@@ -948,11 +974,14 @@ pub(crate) mod test_support {
         register_all_builtin_ops::<InMemoryStore, InMemoryPendingStore>(&mut ops)
             .expect("builtin ops");
 
+        // `InMemoryStore` is `Arc<RwLock<..>>`-backed: the clone shares
+        // the same map the layered stack writes through.
+        let raw_store = InMemoryStore::new();
         let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
-        CredentialServiceBuilder::new(
-            InMemoryStore::new(),
+        let svc = CredentialServiceBuilder::new(
+            raw_store.clone(),
             Arc::new(StaticKeyProvider::new(key)),
-            Arc::new(NoopAuditSink),
+            audit_sink,
             CacheConfig::default(),
             InMemoryPendingStore::new(),
             Arc::new(registry),
@@ -962,7 +991,24 @@ pub(crate) mod test_support {
             LeaseLifecycleConfig::default(),
             CancellationToken::new(),
         )
-        .build()
+        .build();
+        (svc, raw_store)
+    }
+
+    /// Build an in-memory service with an arbitrary [`AuditSink`],
+    /// discarding the raw-store handle. Convenience over
+    /// [`service_and_raw_store_with_audit_sink`] for tests that do not
+    /// need to inspect the inner store.
+    pub fn service_with_audit_sink(
+        audit_sink: Arc<dyn AuditSink>,
+    ) -> CredentialService<InMemoryStore, InMemoryPendingStore> {
+        service_and_raw_store_with_audit_sink(audit_sink).0
+    }
+
+    /// Build an in-memory service with a no-op audit sink — the default
+    /// fixture for tests / Plan-3 wiring.
+    pub fn in_memory_service() -> CredentialService<InMemoryStore, InMemoryPendingStore> {
+        service_with_audit_sink(Arc::new(NoopAuditSink))
     }
 }
 

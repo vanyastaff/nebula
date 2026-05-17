@@ -36,3 +36,9 @@ pub use service::{
     Acquisition, CredentialService, CredentialTypeInfo, TestReport, TypeCapabilities,
 };
 pub use state_source::StateSource;
+
+/// In-memory `CredentialService` test-support seam. Gated
+/// `cfg(any(test, feature = "test-util"))`; ADR-0023 forbids `test-util`
+/// in a release build (see [`service::test_support`] for the rationale).
+#[cfg(any(test, feature = "test-util"))]
+pub use service::test_support;
