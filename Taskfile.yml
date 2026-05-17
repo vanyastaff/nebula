@@ -161,7 +161,7 @@ tasks:
   hooks:test:
     desc: Run guard-hook test harness (bash)
     cmds:
-      - bash scripts/guard/test/run.sh
+      - bash .claude/hooks/test/run.sh
 
   # ── Benchmarks ────────────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-# scripts/guard/_lib.sh — shared helpers for Nebula guard hooks. Source, don't exec.
+# .claude/hooks/_lib.sh — shared helpers for Nebula guard hooks. Source, don't exec.
 # Blocking convention: deny() => stderr + exit 2. allow() => exit 0.
 guard_input=""
 read_input() { guard_input="$(cat)"; }

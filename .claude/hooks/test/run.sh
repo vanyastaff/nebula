@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/guard/test/run.sh — guard-hook test harness. Exit 1 if any case fails.
+# .claude/hooks/test/run.sh — guard-hook test harness. Exit 1 if any case fails.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$HERE/_lib.sh"

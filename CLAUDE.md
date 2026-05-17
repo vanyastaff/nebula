@@ -18,7 +18,7 @@
 
 ## Enforced Discipline (guard hooks)
 
-Mechanically enforced by `scripts/guard/*.sh` (committed in `.claude/settings.json`),
+Mechanically enforced by `.claude/hooks/*.sh` (committed in `.claude/settings.json`),
 not advisory. `task hooks:test` proves each guard. **The no-cheat guarantee is
 structural (D10): B (edit-guard) + A2 (clean-gate recorder) + C (Stop-gate) +
 lefthook/CI.** Hook A is a **fail-open advisory tripwire**, not a security
