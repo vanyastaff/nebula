@@ -122,7 +122,7 @@ impl ChaosParams {
     #[cfg(feature = "chaos-full")]
     fn ci() -> Self {
         Self {
-            duration: Duration::from_secs(60 * 10),
+            duration: Duration::from_mins(10),
             credentials: 100,
             replicas: 3,
             workers_per_replica: 8,
