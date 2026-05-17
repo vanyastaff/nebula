@@ -13,12 +13,19 @@ use utoipa::ToSchema;
 pub struct ResourceSummary {
     /// `res_<ULID>` identifier.
     pub id: String,
+    /// Stable, workspace-unique, non-secret slug. Assigned at create and
+    /// immutable thereafter (a PUT preserves it), so it is a durable
+    /// client-side handle for the resource within its workspace.
+    #[schema(example = "primary-http-pool")]
+    pub slug: String,
     /// Caller-chosen display name.
     pub name: String,
     /// Resource type key (e.g. `"http_pool"`, `"redis_cache"`).
     pub kind: String,
-    /// Resource-type semver version (e.g. `"1.0"`).
-    pub version: String,
+    /// Monotonic CAS row version (the optimistic-concurrency token; a
+    /// caller echoes it back as `expected_version` on a PUT). Non-secret
+    /// concurrency metadata, not a resource-type semver.
+    pub version: i64,
     /// IDs of workflows that currently reference this resource.
     ///
     /// Always empty for now: the resource store does not yet track
@@ -108,7 +115,42 @@ pub struct UpdateResourceResponse {
     /// `res_<ULID>` identifier of the updated resource.
     pub id: String,
     /// The row's new CAS version after the successful update.
-    pub version: String,
+    ///
+    /// **Provisional**: until a storage backend that owns the post-CAS
+    /// increment exists, this is the handler's predicted
+    /// `expected_version + 1`, not an authoritative store-assigned
+    /// value. A backend that owns the increment will return the real
+    /// post-CAS version here (see `ResourceRepo::update`).
+    pub version: i64,
+}
+
+/// Closed runtime-phase vocabulary for [`ResourceStatusDto::phase`].
+///
+/// Serialised as a stable lowercase token. The first seven mirror the
+/// engine's read-only status seam projection; `Inactive` is the
+/// API-side phase for a resource that exists as a definition but has no
+/// live runtime (configured, never activated). `Unknown` is the
+/// fail-safe for an unrecognised future engine phase — never a panic or
+/// a guessed label (the engine seam is `#[non_exhaustive]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourcePhase {
+    /// Runtime is being constructed.
+    Initializing,
+    /// Healthy and serving requests.
+    Ready,
+    /// Reloading (e.g. blue-green); may still accept.
+    Reloading,
+    /// Draining in-flight work; not accepting new acquires.
+    Draining,
+    /// Shutting down.
+    ShuttingDown,
+    /// Entered a failed state.
+    Failed,
+    /// Unrecognised future engine phase (fail-safe, not fabricated).
+    Unknown,
+    /// Configured as a definition but no live runtime exists yet.
+    Inactive,
 }
 
 /// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status`
@@ -129,11 +171,9 @@ pub struct UpdateResourceResponse {
 pub struct ResourceStatusDto {
     /// `res_<ULID>` identifier of the resource the status is for.
     pub id: String,
-    /// Lifecycle phase as a stable lowercase token: one of
-    /// `initializing`, `ready`, `reloading`, `draining`,
-    /// `shutting_down`, `failed`, `unknown`, or `inactive`
-    /// (configured but no live runtime).
-    pub phase: String,
+    /// Lifecycle phase, drawn from the closed [`ResourcePhase`]
+    /// vocabulary (serialised as a stable lowercase token).
+    pub phase: ResourcePhase,
     /// `true` iff the resource is in a healthy, request-serving phase
     /// (`ready`). A configured-but-inactive resource is not healthy.
     pub healthy: bool,

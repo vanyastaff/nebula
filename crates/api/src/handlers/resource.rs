@@ -41,8 +41,8 @@ use nebula_storage::repos::ResourceEntry;
 use crate::{
     errors::{ApiError, ApiResult, ProblemDetails},
     models::{
-        CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourceStatusDto,
-        ResourceSummary, UpdateResourceRequest, UpdateResourceResponse,
+        CreateResourceRequest, CreateResourceResponse, ListResourcesResponse, ResourcePhase,
+        ResourceStatusDto, ResourceSummary, UpdateResourceRequest, UpdateResourceResponse,
     },
     state::AppState,
 };
@@ -61,9 +61,13 @@ fn entry_to_summary(entry: ResourceEntry) -> Result<ResourceSummary, ApiError> {
         .map_err(ApiError::from)?;
     Ok(ResourceSummary {
         id,
+        slug: entry.slug,
         name: entry.display_name,
         kind: entry.kind,
-        version: entry.version.to_string(),
+        // Raw CAS row version (non-secret optimistic-concurrency
+        // metadata) — surfaced as the `i64` the store holds, not a
+        // stringified semver.
+        version: entry.version,
         // Workflow attachment is not tracked by the resource store yet;
         // advertised honestly as empty rather than fabricated.
         attached_to_workflows: Vec::new(),
@@ -114,6 +118,28 @@ fn canonical_res_id(res: &str) -> Result<String, ApiError> {
         .to_string())
 }
 
+/// Map the engine status seam's lowercase phase token onto the closed
+/// [`ResourcePhase`] vocabulary.
+///
+/// The seam (`nebula_engine`'s read-only status projection) emits a
+/// fixed set of `&'static str` tokens. Any token outside that set is an
+/// unrecognised future engine phase: it maps to
+/// [`ResourcePhase::Unknown`] — the same fail-safe the seam itself uses
+/// for a `#[non_exhaustive]` phase — never a panic or a guessed label.
+/// `inactive` is intentionally NOT produced here; it is the handler's
+/// no-live-runtime phase, set on the `None` arm only.
+fn phase_from_seam(phase: &str) -> ResourcePhase {
+    match phase {
+        "initializing" => ResourcePhase::Initializing,
+        "ready" => ResourcePhase::Ready,
+        "reloading" => ResourcePhase::Reloading,
+        "draining" => ResourcePhase::Draining,
+        "shutting_down" => ResourcePhase::ShuttingDown,
+        "failed" => ResourcePhase::Failed,
+        _ => ResourcePhase::Unknown,
+    }
+}
+
 /// `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` — list workspace resources.
 ///
 /// Returns resource definitions scoped to the caller's workspace. Soft-deleted
@@ -148,12 +174,16 @@ pub async fn list_resources(
     let workspace_id = tenant
         .require_workspace()
         .map_err(|_| ApiError::Forbidden("workspace context required".to_string()))?;
+    // Mirror the by-id handlers' isolation-audit shape: a single named
+    // `ws_bytes` is the workspace-scoping value, so the listing query is
+    // visibly scoped to exactly the caller's authenticated workspace.
+    let ws_bytes = workspace_id.as_bytes();
 
     let repo = state.resource_repo.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("Resource catalog backend not configured".into())
     })?;
 
-    let entries = repo.list(workspace_id.as_bytes().as_slice()).await?;
+    let entries = repo.list(ws_bytes.as_slice()).await?;
 
     let resources = entries
         .into_iter()
@@ -459,7 +489,7 @@ pub async fn create_resource(
     ),
     request_body = UpdateResourceRequest,
     responses(
-        (status = 200, description = "Resource updated; returns the new CAS version.", body = UpdateResourceResponse),
+        (status = 200, description = "Resource updated. `version` is a provisional value (the handler's predicted post-CAS counter) until a storage backend that owns the post-CAS increment exists — it is NOT yet an authoritative store-assigned version.", body = UpdateResourceResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Resource does not exist (also returned for a resource in another workspace, a soft-deleted resource, or an unparsable id — no cross-tenant leak).", body = ProblemDetails),
@@ -496,6 +526,18 @@ pub async fn update_resource(
     // rules as create). A PUT must not bypass create-time validation.
     validate_resource_config(&state, &body.kind, body.config.clone())?;
 
+    // The CAS contract increments the stored counter on a successful
+    // compare-and-swap against `expected_version`. A *saturating* add
+    // would silently pin at `i64::MAX` and defeat CAS (every subsequent
+    // update would compare-and-swap against the same ceiling), so a
+    // would-overflow `expected_version` is rejected as a conflict
+    // instead — re-read and retry. (`i64::MAX` row versions are not
+    // reachable in practice; this is a correctness guard, not a hot
+    // path.)
+    let next_version = body.expected_version.checked_add(1).ok_or_else(|| {
+        ApiError::Conflict("resource version is at its maximum; re-read and retry".to_string())
+    })?;
+
     // Build the row to persist from the *fetched* row: `id`,
     // `workspace_id` (== caller ws, just verified — NEVER from the body;
     // the DTO has no such field), `created_at`/`created_by` are
@@ -511,9 +553,7 @@ pub async fn update_resource(
         config: body.config,
         created_at: existing.created_at,
         created_by: existing.created_by,
-        // The CAS contract increments the stored counter on a successful
-        // compare-and-swap against `expected_version`.
-        version: body.expected_version.saturating_add(1),
+        version: next_version,
         deleted_at: None,
     };
 
@@ -527,7 +567,7 @@ pub async fn update_resource(
 
     Ok(Json(UpdateResourceResponse {
         id,
-        version: updated.version.to_string(),
+        version: updated.version,
     }))
 }
 
@@ -702,13 +742,13 @@ pub async fn get_resource_status(
     let dto = match status_port.runtime_status(&key) {
         Some(s) => ResourceStatusDto {
             id,
-            phase: s.phase.to_owned(),
+            phase: phase_from_seam(s.phase),
             healthy: s.healthy,
             accepting: s.accepting,
         },
         None => ResourceStatusDto {
             id,
-            phase: "inactive".to_owned(),
+            phase: ResourcePhase::Inactive,
             healthy: false,
             accepting: false,
         },

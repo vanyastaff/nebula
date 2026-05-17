@@ -344,9 +344,13 @@ async fn list_resources_returns_200_with_mapped_summaries() {
         id.starts_with("res_"),
         "id must be the prefixed `res_<ULID>` encoding, got {id}"
     );
+    assert_eq!(first["slug"], "http-pool", "slug must be the stored slug");
     assert_eq!(first["name"], "HTTP Pool", "name must be display_name");
     assert_eq!(first["kind"], "http_pool");
-    assert_eq!(first["version"], "3", "version must render the i64 version");
+    assert_eq!(
+        first["version"], 3,
+        "version must render as the raw i64, not a string"
+    );
     assert_eq!(
         first["attached_to_workflows"]
             .as_array()
@@ -357,9 +361,10 @@ async fn list_resources_returns_200_with_mapped_summaries() {
     );
 
     let second = &resources[1];
+    assert_eq!(second["slug"], "redis", "slug must be the stored slug");
     assert_eq!(second["name"], "Redis Cache");
     assert_eq!(second["kind"], "redis_cache");
-    assert_eq!(second["version"], "1");
+    assert_eq!(second["version"], 1);
 }
 
 #[tokio::test]
@@ -674,9 +679,13 @@ async fn get_resource_returns_200_with_mapped_summary() {
         returned_id.starts_with("res_"),
         "id must be the prefixed `res_<ULID>` encoding, got {returned_id}"
     );
+    assert_eq!(json["slug"], "the-slug", "slug must be the stored slug");
     assert_eq!(json["name"], "HTTP Pool", "name must be display_name");
     assert_eq!(json["kind"], "http_pool");
-    assert_eq!(json["version"], "3", "version must render the i64 version");
+    assert_eq!(
+        json["version"], 3,
+        "version must render as the raw i64, not a string"
+    );
     assert_eq!(
         json["attached_to_workflows"]
             .as_array()

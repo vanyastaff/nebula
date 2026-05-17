@@ -198,6 +198,11 @@ async fn drift_smoke_known_paths_are_present() {
         "/api/v1/orgs/{org}/workspaces/{ws}/executions",
         "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
         "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+        // The single-resource config path: GET (read) / PUT
+        // (CAS update) / DELETE (soft-delete). Pinned so the
+        // config-CRUD surface is drift-detected alongside the
+        // collection and status paths.
+        "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}",
         // The resource runtime-status read is the ONLY `{res}`
         // sub-route, and it is GET-only: resource lifecycle
         // (acquire/release/drain/reload) is engine-owned and
