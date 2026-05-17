@@ -71,10 +71,21 @@ on a runtime built from the OLD credential and the hook is never delivered.
 - New integration tests: rotation event → fan-out → `Manager::refresh_slot_for` → hook;
   `LeaseEvent::LeaseRevoked` → `dispatch_revoke` → taint→drain→revoke hook; redaction gate
   end-to-end through the wired path.
-- Flip the honest claims now true: ADR-0067 §Status → §M11.5/§M12.4 **closed end-to-end**;
-  abuse-case row 2 → satisfied (per-resource drain landed); parent `MATURITY.md`
-  nebula-resource Engine-integration → drop the "fan-out unwired" caveat (save-only,
-  parent tree non-git).
+- Honest close-out (matches the shipped ADR-0067 §Status — **not** a blanket "closed
+  end-to-end"): the rotation/lease-revoke **dispatch path is wired and proven e2e**
+  (engine `ResourceFanoutDriver` subscribes the credential/lease buses → `dispatch_*` →
+  `Manager` slot ports → resource hook) and the three latent items it made live are fixed
+  (#679 per-resource drain + post-taint re-check, #681 two-phase cancellation-safe revoke,
+  #680 epoch-reconcile). **Still deferred:** *bind-population* — populating the
+  reverse-index when a credential resolves into a `#[credential]` slot in production —
+  which depends on the deferred resource-activation path (plugin-driven registrar
+  auto-population / a production `ResourceRepo`); the bind seam (`register_and_bind`) is
+  implemented and ready but has no production caller yet. Net: §M11.5's rotation
+  **orchestration + correctness** are closed; §M12.4 is **NOT** closed and
+  `nebula-resource` stays **`frontier`** in `MATURITY.md` (full §M11.5/§M12.4
+  `frontier→stable` closure additionally requires the deferred bind-population). ADR-0067
+  §Status / abuse-case register / parent `MATURITY.md` reflect exactly this (save-only,
+  parent tree non-git) — no "drop the fan-out caveat" flip.
 - `task dev:check` / per-crate clippy+nextest green for touched crates (resource, engine).
 - Close #679 / #680 / #681 with the landing commit refs.
 
