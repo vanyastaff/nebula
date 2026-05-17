@@ -1,0 +1,62 @@
+[package]
+name = "nebula-credential-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Credential management runtime: the CredentialService facade, type registry, state-source resolution, and observability seam (Exec tier)."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nebula-error = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+nebula-credential = { path = "../credential" }
+nebula-credential-builtin = { path = "../credential-builtin" }
+# Production deps use only the unconditionally-public storage layer
+# types (EncryptionLayer/CacheLayer/AuditLayer/KeyProvider/AuditSink).
+# The `credential-in-memory` / `test-util` features (InMemoryStore,
+# StaticKeyProvider) are dev-only — ADR-0023 forbids test-util in a
+# release build, so they live under [dev-dependencies], not here.
+nebula-storage = { path = "../storage" }
+nebula-engine = { path = "../engine" }
+nebula-core = { path = "../core" }
+nebula-schema = { path = "../schema" }
+nebula-eventbus = { path = "../eventbus" }
+nebula-resilience = { path = "../resilience" }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+zeroize = { version = "1.8.2" }
+
+[dev-dependencies]
+# ADR-0023: test-util / credential-in-memory are confined to the test
+# build (test_support uses InMemoryStore + StaticKeyProvider).
+nebula-storage = { path = "../storage", features = ["credential-in-memory", "test-util"] }
+# Self dev-dependency with `test-util` so `tests/` integration tests can
+# reach `nebula_credential_runtime::test_support::in_memory_service`
+# (established pattern: `crates/api` dev-depends on itself with
+# `test-util`). Confined to the test build per ADR-0023.
+nebula-credential-runtime = { path = ".", features = ["test-util"] }
+pretty_assertions = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+trybuild = "1.0"
+
+[features]
+default = []
+# ADR-0023: a test-support seam, never a release path. Enabling
+# `test-util` forwards the storage in-memory test backends
+# (`InMemoryStore` + `StaticKeyProvider`) so `test_support` and `tests/`
+# can build an in-memory `CredentialService`. It MUST NOT be enabled in
+# a release/production build: `StaticKeyProvider` ships a fixed key and
+# `InMemoryStore` is non-durable + unencrypted-at-rest. The default
+# build keeps `[dependencies] nebula-storage` featureless, so a
+# production dependency tree never reaches these symbols.
+test-util = ["nebula-storage/credential-in-memory", "nebula-storage/test-util"]
+
+[lints]
+workspace = true
