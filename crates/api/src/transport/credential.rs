@@ -21,15 +21,16 @@
 //! §4.5 false capability (the worst class for a credential surface).
 //!
 //! Note: the generic `resolve_credential` / `continue_resolve`
-//! functions are honest-503 at the function boundary, but their routes
-//! are additionally **shadowed by the tenancy `{cred}` path matcher**
-//! (`crate::middleware::tenancy::resolve_path_ids` parses the segment
-//! after `credentials` as a `CredentialId`; the literal `resolve` fails
-//! ULID parsing → a flat 404 before the handler). This is a
-//! pre-existing route-ordering condition, not introduced by Phase 4,
-//! and is still §4.5-honest (no false success — the caller cannot
-//! obtain a fake credential). The honest-503 at the function is pinned
-//! by the unit test below regardless of the route shadow.
+//! functions are honest-503 at the function boundary, and their routes
+//! **reach the handler**: `crate::middleware::tenancy::resolve_path_ids`
+//! special-cases the literal `resolve` sub-route so it is not parsed as
+//! a `{cred}` `CredentialId` (an earlier route-shadow returned a flat
+//! 404 *before* the handler — fixed). A request to
+//! `…/credentials/resolve[/continue]` therefore surfaces this honest
+//! **503** (no false success — the caller cannot obtain a fake
+//! credential); the genuine `…/credentials/{cred}` position stays
+//! strictly ULID-validated. The honest-503 is pinned by the unit test
+//! below and the `credential_e2e` route-reachability regression guard.
 //!
 //! ## §12.5 secret handling
 //!

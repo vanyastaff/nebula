@@ -645,3 +645,53 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
         );
     }
 }
+
+/// Guard-precision regression (Copilot review, PR #674): the
+/// `"credentials" if segments[7] != "resolve"` tenancy match guard must
+/// keep rejecting a **non-`resolve`, non-ULID** `{cred}` segment
+/// *before* the handler. Locks the other half of the contract so a
+/// future broadening of the guard cannot silently weaken `{cred}` ULID
+/// validation — the route-shadow fix only carves out the literal
+/// `resolve`, nothing else.
+#[tokio::test]
+async fn tenancy_still_rejects_non_ulid_cred_segment_before_handler() {
+    let (state, _q) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // "not-a-valid-ulid" is neither the literal `resolve` sub-route nor a
+    // `cred_<ULID>` → the tenancy `{cred}` matcher must 404 before any
+    // handler runs (bare `{cred}` GET, and the `{cred}/test` POST
+    // sub-route — both put the bad segment at the `{cred}` position).
+    let bad = "not-a-valid-ulid";
+
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_get(&ws_path(&format!("/credentials/{bad}")), &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "GET /credentials/{bad}: a non-`resolve`, non-ULID `{{cred}}` segment \
+         must be rejected by tenancy ULID validation *before* the handler — \
+         the route-shadow guard must not weaken `{{cred}}` validation"
+    );
+
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_json(
+            "POST",
+            &ws_path(&format!("/credentials/{bad}/test")),
+            &token,
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "POST /credentials/{bad}/test: the `{{cred}}` segment is still strictly \
+         ULID-validated by tenancy before the handler"
+    );
+}
