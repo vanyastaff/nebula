@@ -29,7 +29,7 @@ use nebula_engine::{
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
 use nebula_schema::{HasSchema, ValidSchema};
-use nebula_storage::ExecutionRepo;
+use nebula_storage_port::store::ExecutionStore;
 use nebula_workflow::{NodeDefinition, RetryConfig, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
@@ -451,8 +451,19 @@ async fn idempotency_key_differentiates_attempts() {
         },
     );
 
-    let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-    let engine = make_engine(registry).with_execution_repo(exec_repo.clone());
+    // Spec-16 port bundle (the engine always reads/commits at the
+    // fixed `engine_scope()` placeholder; this test inspects the same
+    // scope directly).
+    let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
+    let stores = nebula_engine::ExecutionStores {
+        execution: execution.clone(),
+        journal,
+        node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+    };
+    let engine = make_engine(registry).with_execution_stores(stores);
 
     let n = node_key!("idem");
     let mut node = NodeDefinition::new(n.clone(), "idem_node", "flaky_idem").unwrap();
@@ -468,12 +479,15 @@ async fn idempotency_key_differentiates_attempts() {
     assert_eq!(invocations.load(Ordering::SeqCst), 2);
 
     // Pull the persisted state and inspect the attempts.
-    let (_, state_json) = exec_repo
-        .get_state(result.execution_id)
+    let record = execution
+        .get(
+            &nebula_engine::store_seam::engine_scope(),
+            &result.execution_id.to_string(),
+        )
         .await
         .unwrap()
         .expect("state must be persisted");
-    let state_str = serde_json::to_string(&state_json).unwrap();
+    let state_str = serde_json::to_string(&record.state).unwrap();
     let exec_state: nebula_execution::state::ExecutionState =
         serde_json::from_str(&state_str).unwrap();
     let ns = exec_state.node_state(n).unwrap();
