@@ -1355,7 +1355,7 @@ fn storage_cas_conflict_maps_to_409_other_storage_errors_stay_500() {
 }
 
 /// End-to-end interplay: a successful soft-delete followed by a GET of
-/// the same id is 404 — the C3 get filter already excludes
+/// the same id is 404 — the get-by-id filter already excludes
 /// `deleted_at.is_some()`, so a deleted resource is indistinguishable
 /// from a missing one. Modelled with two repos (the fake is stateless):
 /// delete succeeds (204) on a live row; a GET against a fixture whose row
@@ -1383,7 +1383,7 @@ async fn delete_then_get_same_id_is_404() {
     );
 
     // 2) Post-delete the row is a tombstone; GET of the same id → 404
-    //    (C3's get filter excludes `deleted_at.is_some()`).
+    //    (the get-by-id filter excludes `deleted_at.is_some()`).
     let tombstone = get_entry(id, test_ws_bytes(), "My Pool", "http_pool", 3, true);
     let get_app = app::build_app(get_state(&api_config, Some(tombstone)), &api_config);
     let get_resp = get_resource_request(get_app, &id.to_string()).await;
@@ -1712,8 +1712,8 @@ async fn get_resource_status_owned_but_not_active_is_200_inactive() {
 }
 
 /// No status backend configured ⇒ the honest non-faked path: **503**
-/// (the C2/C4 None-convention — an absent optional backend is 503, never
-/// a fabricated status). Ownership is still verified first (the row is
+/// (the absent-optional-backend convention — a missing optional backend
+/// is 503, never a fabricated status). Ownership is still verified first (the row is
 /// owned), so a 503 here is specifically "status backend missing", not
 /// an isolation outcome.
 #[tokio::test]
@@ -1761,8 +1761,8 @@ async fn get_resource_status_without_repo_is_503() {
     );
 }
 
-/// D3 GUARANTEE — resource lifecycle is NOT exposed over HTTP
-/// (INTEGRATION_MODEL §13.1). There is deliberately **no**
+/// Resource lifecycle is NOT exposed over HTTP (INTEGRATION_MODEL
+/// §13.1). There is deliberately **no**
 /// `POST .../resources/{res}/acquire` route (nor release/drain): the only
 /// `{res}/...` sub-route is the read-only `{res}/status` GET.
 ///
@@ -1775,16 +1775,16 @@ async fn get_resource_status_without_repo_is_503() {
 /// configured, 503 without — an artifact of the internal-route
 /// subsystem, unrelated to resources and pre-existing this endpoint). A
 /// brittle literal-404 assertion would therefore be testing that
-/// unrelated fallback, not D3.
+/// unrelated fallback, not the no-lifecycle guarantee.
 ///
-/// So D3 is proven structurally: `POST .../{res}/acquire` returns the
+/// So the guarantee is proven structurally: `POST .../{res}/acquire` returns the
 /// **same** response as `POST .../{res}/<a definitely-nonexistent
 /// sub-segment>` (equivalence-to-nonexistent — there is no special
 /// acquire handling), and that response is **not** a 2xx (no lifecycle
 /// route handled it). A faked status or a lifecycle mutation over HTTP
 /// would both be worse than this honest absence.
 #[tokio::test]
-async fn post_resource_acquire_route_does_not_exist_d3_guarantee() {
+async fn post_resource_acquire_route_does_not_exist() {
     let api_config = ApiConfig::for_test();
     let id = ResourceId::new();
     let row = get_entry(id, test_ws_bytes(), "HTTP Pool", "http_pool", 3, false);
@@ -1828,7 +1828,7 @@ async fn post_resource_acquire_route_does_not_exist_d3_guarantee() {
     )
     .await;
 
-    // D3: `acquire` is handled identically to a path that names no route
+    // `acquire` is handled identically to a path that names no route
     // — there is no acquire/release/drain route, so it is rejected purely
     // as "no such route", never specially.
     assert_eq!(

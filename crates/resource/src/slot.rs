@@ -2,8 +2,9 @@
 //!
 //! A resource declares `#[credential]` slots; the engine resolves each into a
 //! `CredentialGuard<C>` and stores it here before `Resource::create`. On
-//! rotation the engine swaps a fresh guard in without `&mut` on the resource
-//! (D2 of the finalization spec). Lock-free via `arc-swap`.
+//! rotation the engine swaps a fresh guard in without `&mut` on the
+//! resource (the `&self` refresh-hook model, ADR-0067). Lock-free via
+//! `arc-swap`.
 
 use arc_swap::ArcSwapOption;
 use std::sync::Arc;

@@ -234,6 +234,31 @@ stale Strategy-§6.4 term — the live taxonomy is `frontier`/`stable`).
 Implementation-discovered deferrals (recorded here so they are not lost
 behind the plan):
 
+- **Rotation fan-out is implemented but unwired.** The engine-side
+  reverse index + dispatch port
+  (`ResourceFanoutIndex::{bind,dispatch_refresh,dispatch_revoke}`,
+  `RotationOutcome` aggregation) is fully implemented and unit-tested,
+  but **no production credential-rotation or lease-revoke path invokes
+  it yet** — every current call site is a `#[cfg(test)]` test. The
+  rotation scheduler (ADR-0030) and lease-revoke (ADR-0051) do not yet
+  call `bind` on slot resolution or fan a `dispatch_refresh` /
+  `dispatch_revoke` on a rotation/revoke event; that engine wiring is
+  the remaining work. Consequently the per-resource-drain correctness
+  items below become **live only when that wiring lands** and must be
+  fixed as part of it — they cannot be exercised end-to-end before then.
+  Trigger: the rotation scheduler / lease-revoke handler is wired to
+  call the fan-out port.
+- **Revoke drains the manager-wide tracker, not per-resource.**
+  `Manager::revoke_slot{,_for}` currently taints the target row then
+  awaits the *manager-wide* `drain_tracker` (the same primitive
+  `graceful_shutdown` uses), so an unrelated busy resource can delay a
+  revoke's drain phase and the post-taint re-check is not per-resource.
+  This is acceptable while the fan-out is unwired (no production caller),
+  but draining must move to a **per-resource counter with a post-taint
+  re-check** before or together with the fan-out wiring above — a
+  revoke must not block on traffic to a sibling resource. Trigger: the
+  fan-out wiring lands (same trigger as above; the two are sequenced
+  together).
 - **Plugin-driven registrar auto-population.** The engine holds a
   closed `ResourceRegistrarRegistry`, but it is fed by the composition
   root, not auto-populated from `PluginRegistry::resources()`. Wiring a
