@@ -659,24 +659,60 @@ pub async fn continue_resolve(
 /// requires a `CredentialRegistry`; none is wired into `AppState`.
 /// Returning a hand-rolled catalog would misrepresent what is actually
 /// registered (§4.5).
-pub async fn list_credential_types(_state: &AppState) -> ApiResult<ListCredentialTypesResponse> {
-    Err(ApiError::ServiceUnavailable(
-        "credential type discovery requires a CredentialRegistry which is \
-         not wired into this API build"
-            .into(),
-    ))
+/// Map a port [`CredentialTypeDescriptor`] to the wire DTO, applying the
+/// api-owned public projection to the schema (ADR-0052 P4 V3 + #6 — the
+/// raw `json_schema()` export's `x-nebula-root-rules` / predicate operands
+/// are stripped before the unauthenticated wire).
+fn credential_type_info_from_descriptor(
+    d: crate::ports::credential_schema::CredentialTypeDescriptor,
+) -> CredentialTypeInfo {
+    CredentialTypeInfo {
+        key: d.key,
+        name: d.name,
+        description: d.description,
+        auth_pattern: d.auth_pattern,
+        capabilities: CredentialCapabilities {
+            interactive: d.capabilities.interactive,
+            refreshable: d.capabilities.refreshable,
+            testable: d.capabilities.testable,
+            revocable: d.capabilities.revocable,
+        },
+        schema: crate::domain::credential::schema_projection::project_public_schema(d.schema_json),
+        icon: d.icon,
+        documentation_url: d.documentation_url,
+    }
 }
 
-/// Get metadata and schema for a specific credential type by key.
-///
-/// **Honest 503.** Same as [`list_credential_types`] — a registry
-/// lookup by key with no registry wired.
-pub async fn get_credential_type(_state: &AppState, _key: &str) -> ApiResult<CredentialTypeInfo> {
-    Err(ApiError::ServiceUnavailable(
-        "credential type discovery requires a CredentialRegistry which is \
-         not wired into this API build"
-            .into(),
-    ))
+const NO_CRED_SCHEMA_PORT: &str =
+    "credential type discovery unavailable: no credential-schema port configured";
+
+/// ADR-0052 P4 (V3): list registered credential types with their
+/// public-projected input schema. No port ⇒ honest 503 (§4.5).
+pub async fn list_credential_types(state: &AppState) -> ApiResult<ListCredentialTypesResponse> {
+    let port = state
+        .credential_schema
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable(NO_CRED_SCHEMA_PORT.to_owned()))?;
+    let types = port
+        .list_types()
+        .into_iter()
+        .map(credential_type_info_from_descriptor)
+        .collect();
+    Ok(ListCredentialTypesResponse { types })
+}
+
+/// ADR-0052 P4 (V3): one credential type by key. No port ⇒ honest 503;
+/// unknown key ⇒ 404 (credential *types* are public catalog info, so
+/// non-existence disclosure is non-sensitive — unlike credential
+/// *instances*, which are flat-404 per IDOR rules).
+pub async fn get_credential_type(state: &AppState, key: &str) -> ApiResult<CredentialTypeInfo> {
+    let port = state
+        .credential_schema
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable(NO_CRED_SCHEMA_PORT.to_owned()))?;
+    port.get_type(key)
+        .map(credential_type_info_from_descriptor)
+        .ok_or_else(|| ApiError::NotFound(format!("unknown credential type: {key}")))
 }
 
 #[cfg(test)]
@@ -794,14 +830,11 @@ mod tests {
             .await,
             Err(ApiError::ServiceUnavailable(_))
         ));
-        assert!(matches!(
-            list_credential_types(&s).await,
-            Err(ApiError::ServiceUnavailable(_))
-        ));
-        assert!(matches!(
-            get_credential_type(&s, "api_key").await,
-            Err(ApiError::ServiceUnavailable(_))
-        ));
+        // ADR-0052 P4 V3: `list_credential_types`/`get_credential_type`
+        // are no longer engine-owned-503 — they are port-backed (a
+        // permissive port is wired in `test_state()`). Their no-port → 503
+        // behavior is covered by
+        // `tests/seam_credential_catalog_schema.rs::catalog_503_when_port_unconfigured`.
     }
 
     /// CRUD over the wired in-memory store: create → get → list →

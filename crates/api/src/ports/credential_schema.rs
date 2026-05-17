@@ -25,9 +25,24 @@ pub struct CredentialFieldError {
     pub message: String,
 }
 
-/// Catalog descriptor for one credential type. `schema_json` is the
-/// public-projected JSON Schema (`x-nebula-root-rules` and predicate
-/// operands already stripped by the api-owned projection).
+/// API-safe capability flags for a credential type (no lower-layer
+/// `Capabilities` type crosses the seam).
+#[derive(Debug, Clone, Copy, Default, Serialize, ToSchema)]
+pub struct CredentialCapabilityFlags {
+    /// Multi-step user interaction (OAuth redirect, device code).
+    pub interactive: bool,
+    /// Token refresh (OAuth2 `refresh_token`).
+    pub refreshable: bool,
+    /// Connection testing.
+    pub testable: bool,
+    /// Explicit revocation.
+    pub revocable: bool,
+}
+
+/// Catalog descriptor for one credential type. `schema_json` is the raw
+/// `ValidSchema::json_schema()` export; the api applies the public
+/// projection (strips `x-nebula-root-rules` + predicate operands) before
+/// it reaches the wire.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CredentialTypeDescriptor {
     /// Stable type key (e.g. `api_key`, `oauth2`).
@@ -38,6 +53,8 @@ pub struct CredentialTypeDescriptor {
     pub description: String,
     /// Authentication-pattern classification (stringified).
     pub auth_pattern: String,
+    /// Capability flags.
+    pub capabilities: CredentialCapabilityFlags,
     /// Optional icon identifier or URL.
     pub icon: Option<String>,
     /// Optional documentation link.

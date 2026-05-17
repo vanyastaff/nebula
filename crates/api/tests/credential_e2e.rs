@@ -645,18 +645,40 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
     }
 
     // Type-discovery endpoints (system-level, not workspace-scoped).
-    for path in [
-        "/api/v1/credentials/types".to_owned(),
-        "/api/v1/credentials/types/api_key".to_owned(),
-    ] {
-        let app = app::build_app(state.clone(), &config);
-        let resp = app.oneshot(auth_get(&path, &token)).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "{path} type discovery must stay an honest 503 (no CredentialRegistry)"
-        );
-    }
+    // ADR-0052 P4 V3: these are now port-backed. The shared harness wires
+    // a permissive port (zero registered types), so the *honest* result is
+    // 200 with an empty `types` list (the endpoint truthfully reports the
+    // registered set) and 404 for an unknown key — not a §4.5 false
+    // capability. The genuine no-port → 503 path is covered by
+    // `tests/seam_credential_catalog_schema.rs::catalog_503_when_port_unconfigured`.
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_get("/api/v1/credentials/types", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "type listing is port-backed (200, possibly-empty) — honest, not a 503 stub"
+    );
+    let listed: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    assert_eq!(
+        listed["types"].as_array().map(Vec::len),
+        Some(0),
+        "permissive harness port registers zero types — honest empty catalog"
+    );
+
+    let app = app::build_app(state.clone(), &config);
+    let resp = app
+        .oneshot(auth_get("/api/v1/credentials/types/api_key", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "unknown credential type ⇒ 404 (types are public catalog info; \
+         non-existence disclosure is non-sensitive — unlike credential instances)"
+    );
 }
 
 /// Guard-precision regression (Copilot review, PR #674): the
