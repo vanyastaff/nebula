@@ -247,7 +247,8 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     /// (`R::key()`) of the concrete resource this registrar registers.
     ///
     /// The erased boundary hides `R`, but the rotation reverse index
-    /// ([`ResourceFanoutIndex`](crate::credential::rotation::ResourceFanoutIndex))
+    /// (`ResourceFanoutIndex`, the `rotation`-feature-gated reverse
+    /// index in `crate::credential::rotation`)
     /// keys a bound row by `(ResourceKey, ScopeLevel, slot_identity)`.
     /// Without `R` the registry cannot name the row it just registered,
     /// so the erased registrar exposes the key explicitly (the same
@@ -427,9 +428,9 @@ impl ResourceRegistrarRegistry {
     /// Resolves `kind` through the closed allowlist and dispatches into
     /// its typed registrar.
     ///
-    /// Equivalent to [`register_and_bind`](Self::register_and_bind) with
-    /// no rotation fan-out index — registration only, no reverse-index
-    /// row recorded.
+    /// Equivalent to `register_and_bind` (the `rotation`-feature-gated
+    /// variant) with no rotation fan-out index — registration only, no
+    /// reverse-index row recorded.
     ///
     /// # Errors
     ///
