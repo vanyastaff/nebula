@@ -404,10 +404,7 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
                 keepalive_interval: None,
                 acquire_timeout: Duration::from_secs(1),
             },
-            RegisterOptions {
-                recovery_gate: Some(gate.clone()),
-                ..RegisterOptions::default()
-            },
+            RegisterOptions::default().with_recovery_gate(gate.clone()),
         )
         .expect("register_transport_with");
 
@@ -453,10 +450,7 @@ async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
                 keepalive_interval: None,
                 acquire_timeout: Duration::from_secs(1),
             },
-            RegisterOptions {
-                resilience: Some(resilience),
-                ..RegisterOptions::default()
-            },
+            RegisterOptions::default().with_resilience(resilience),
         )
         .expect("register_transport_with");
 
@@ -653,10 +647,7 @@ async fn register_transport_with_custom_scope() {
                 keepalive_interval: None,
                 acquire_timeout: Duration::from_secs(1),
             },
-            RegisterOptions {
-                scope: ScopeLevel::Workflow(workflow_id),
-                ..RegisterOptions::default()
-            },
+            RegisterOptions::default().with_scope(ScopeLevel::Workflow(workflow_id)),
         )
         .expect("register_transport_with");
 

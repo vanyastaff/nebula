@@ -123,7 +123,13 @@ impl Default for ManagerConfig {
 /// registrations on **separate rows** so they cannot share one runtime
 /// (cross-tenant bleed). Compute it with
 /// [`slot_identity`](crate::dedup::slot_identity).
+///
+/// `#[non_exhaustive]`: like the sibling [`ShutdownConfig`] /
+/// [`DrainTimeoutPolicy`], new tuning fields must be additive without a
+/// breaking struct-literal change. Construct via
+/// [`RegisterOptions::default`] then the `with_*` setters.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RegisterOptions {
     /// Scope level for the resource (default: `Global`).
     pub scope: ScopeLevel,

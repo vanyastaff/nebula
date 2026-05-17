@@ -14,8 +14,9 @@
 //! `MakeWriter` harness from `crates/credential/tests/redaction.rs`: a
 //! thread-local subscriber records **every** span and event on the
 //! calling thread at `TRACE`, so both the resource-side
-//! `nebula.resource.slot_refresh` span (and its `error = %e` warn) and the
-//! fan-out `nebula.credential.rotation.fanout_*` spans are captured. On top
+//! `nebula.resource.slot_{refresh,revoke}` span (and its `error = %e` warn)
+//! and the fan-out `nebula.credential.rotation.fanout_*` spans are
+//! captured. On top
 //! of the log buffer this test also drains the `ResourceEvent` broadcast
 //! sink (Debug + Display of every emitted slot event) and renders the full
 //! Prometheus text exposition (every `*_ATTEMPTS_TOTAL{outcome=…}` series
@@ -480,17 +481,25 @@ async fn run_redaction_gate(want_revoke: bool) {
     // worthless. Prove every inspected surface is genuinely non-empty
     // and carries the rotation signal before asserting absence.
     // Assert the EXACT fan-out span for the direction under test (or the
-    // resource-side slot_refresh span), so a one-sided rename of either
-    // fan-out span is caught instead of being masked by the other.
-    let expected_fanout_span = if want_revoke {
-        "nebula.credential.rotation.fanout_revoke"
+    // matching resource-side slot span — `slot_revoke` for revoke,
+    // `slot_refresh` for refresh), so a one-sided rename of either
+    // direction's span is caught instead of being masked by the other.
+    let (expected_fanout_span, expected_resource_span) = if want_revoke {
+        (
+            "nebula.credential.rotation.fanout_revoke",
+            "nebula.resource.slot_revoke",
+        )
     } else {
-        "nebula.credential.rotation.fanout_refresh"
+        (
+            "nebula.credential.rotation.fanout_refresh",
+            "nebula.resource.slot_refresh",
+        )
     };
     assert!(
-        logs.contains(expected_fanout_span) || logs.contains("nebula.resource.slot_refresh"),
+        logs.contains(expected_fanout_span) || logs.contains(expected_resource_span),
         "expected rotation span `{expected_fanout_span}` (or the resource-side \
-         slot_refresh span) in captured logs — capture-is-real guard, got:\n{logs}"
+         `{expected_resource_span}` span) in captured logs — capture-is-real \
+         guard, got:\n{logs}"
     );
     assert!(
         events.count >= 1,

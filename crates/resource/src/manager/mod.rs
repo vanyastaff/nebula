@@ -1146,7 +1146,7 @@ impl Manager {
     /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
     #[tracing::instrument(
         level = "debug",
-        name = "nebula.resource.slot_refresh",
+        name = "nebula.resource.slot_revoke",
         skip(self),
         fields(key = %key, slot = %slot, topology, duration_ms, op = "revoke")
     )]
@@ -1182,7 +1182,7 @@ impl Manager {
     /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
     #[tracing::instrument(
         level = "debug",
-        name = "nebula.resource.slot_refresh",
+        name = "nebula.resource.slot_revoke",
         skip(self),
         fields(key = %key, slot = %slot, slot_identity, topology, duration_ms, op = "revoke")
     )]
