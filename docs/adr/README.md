@@ -18,6 +18,7 @@ The repository's full ADR archive lives at the parent project's `docs/adr/` (e.g
 | [0050](./0050-m3-5-w3c-trace-context-propagation.md) | M3.5 W3C Trace Context propagation (HTTP → control queue → engine) | accepted (2026-05-11) | observability, tracing, api, engine, m3, m9 |
 | [0052](./0052-schema-validator-condition-seam.md) | Field visibility/required condition evaluation moves to nebula-validator | accepted (2026-05-15) | schema, validator, seam, visibility, required, m11 |
 | [0066](./0066-credential-runtime-crate.md) | Credential management runtime crate (`nebula-credential-runtime`) | accepted (2026-05-15) | credential, runtime, layer-boundary, breaking, m11 |
+| [0067](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Engine-owned per-slot rotation fan-out + `&self` refresh hook | accepted (2026-05-17) | resource, engine, credential, rotation, api, m11, m12, supersession |
 
 ## Supersession
 
@@ -25,6 +26,7 @@ The repository's full ADR archive lives at the parent project's `docs/adr/` (e.g
 |---|---|---|
 | 0036 (`resource-credential-adoption-auth-retirement`, external `C:/Users/vanya/RustroverProjects/docs/adr/0036-*.md`) | [0044](./0044-supersede-0036-resource-credential-singular.md) | Singular `Resource::Credential` associated type → typed credential slot fields via `#[credential(key = …)]`. Per-slot rotation hook replaces the singular `on_credential_refresh` signature. |
 | Canon `[L1-§3.10]` (in `crates/telemetry/README.md`) | [0046](./0046-metrics-telemetry-boundary.md) | The "primitives below, naming/policy/export above" cross-crate invariant is replaced by intra-crate module discipline (`mod` boundaries + `pub`/`pub(crate)`) in the merged `nebula-metrics`. Implementation deferred to follow-up `/aif-plan` iteration. |
+| 0044 — **hook signature + slot-field/migration shape only** (core slot-binding declaration model stands) | [0067](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | `on_credential_refresh(&mut self, slot_name)` → `(&self, slot_name, &Self::Runtime)` + paired `on_credential_revoke`; `#[credential]` field type `CredentialGuard<C>` → `SlotCell<CredentialGuard<C>>` + derive-generated `<field>_slot()` accessor. Also overrides the `PHASE4_BLOCKED.md §1` "re-add rotation orchestration to `resource::Manager`" candidate — orchestration stays engine-owned (ADR-0030). |
 | `0030` facade slice (`engine-owns-credential-orchestration`, external `C:/Users/vanya/RustroverProjects/docs/adr/0030-*.md`) | [0066](./0066-credential-runtime-crate.md) | Management facade ownership moves to `nebula-credential-runtime` (Exec). ADR-0030's low-level mechanism (resolver/RefreshCoordinator/claim-repo) stays in `nebula-engine`. ADR-0041/0051 untouched. |
 
 ## Related plan

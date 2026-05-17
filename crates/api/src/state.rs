@@ -327,6 +327,43 @@ pub struct AppState {
     /// Required for `POST /internal/v1/webhooks/reload`. When `None`,
     /// every request to `/internal/v1/...` returns 503.
     pub internal_shared_token: Option<Arc<str>>,
+
+    /// Optional resource repository for the resource catalog endpoints.
+    ///
+    /// When `None`, the resource catalog endpoints report `503 Service
+    /// Unavailable`. Set via [`AppState::with_resource_repo`].
+    pub resource_repo: Option<Arc<dyn nebula_storage::repos::ResourceRepo>>,
+
+    /// Optional closed `kind → registrar` allowlist used to **validate**
+    /// a resource config before it is persisted (`POST .../resources`).
+    ///
+    /// This is the config-CRUD validation seam, not engine activation:
+    /// [`ResourceRegistrarRegistry::validate`](nebula_engine::ResourceRegistrarRegistry::validate)
+    /// runs the kind's `R::Config` schema + closed-set guard with **no**
+    /// `nebula_resource::Manager` mutation — live registration stays an
+    /// engine-activation concern (INTEGRATION_MODEL §13.1). When `None`,
+    /// `create_resource` fails closed (422) rather than persist an
+    /// unvalidated config. Set via
+    /// [`AppState::with_resource_registrars`].
+    pub resource_registrars: Option<Arc<nebula_engine::ResourceRegistrarRegistry>>,
+
+    /// Optional **read-only** resource runtime-status port.
+    ///
+    /// Projects a live resource's lifecycle phase in api-safe types
+    /// ([`EngineResourceStatus`](nebula_engine::EngineResourceStatus) →
+    /// [`ResourceRuntimeStatus`](nebula_engine::ResourceRuntimeStatus)) so
+    /// the resource-status endpoint never imports `nebula-resource`
+    /// (deny.toml `[[wrappers]]`: no upward deps from API). This is the
+    /// status counterpart of the engine's resource accessor: it observes
+    /// a phase and **cannot** mutate a resource — there is no
+    /// acquire/release/drain seam here (resource lifecycle is
+    /// engine-owned, INTEGRATION_MODEL §13.1). When `None`, the
+    /// `GET .../resources/{res}/status` endpoint reports `503 Service
+    /// Unavailable` (the catalog None-convention — never a fabricated
+    /// status). Set via [`AppState::with_resource_status`]; compose in
+    /// production from the same `nebula_resource::Manager` the engine is
+    /// built with.
+    pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
 }
 
 impl AppState {
@@ -365,6 +402,9 @@ impl AppState {
             webhook_secret_resolver: None,
             webhook_ctx_factory: None,
             internal_shared_token: None,
+            resource_repo: None,
+            resource_registrars: None,
+            resource_status: None,
         }
     }
 
@@ -511,5 +551,151 @@ impl AppState {
     pub fn with_internal_shared_token(mut self, token: impl Into<Arc<str>>) -> Self {
         self.internal_shared_token = Some(token.into());
         self
+    }
+
+    /// Attach a resource repository for the resource catalog endpoints.
+    ///
+    /// When `None`, the resource catalog endpoints report `503 Service
+    /// Unavailable`. Compose this in production with the Postgres-backed
+    /// implementation; leave `None` in tests that exercise unrelated
+    /// routes.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_repo(
+        mut self,
+        repo: Arc<dyn nebula_storage::repos::ResourceRepo>,
+    ) -> Self {
+        self.resource_repo = Some(repo);
+        self
+    }
+
+    /// Attach the closed `kind → registrar` allowlist used to validate a
+    /// resource config before persistence.
+    ///
+    /// This is the config-CRUD validation seam (schema + closed-kind),
+    /// **not** engine activation: it never live-registers into a
+    /// `nebula_resource::Manager` (INTEGRATION_MODEL §13.1). Compose this
+    /// in production from the same registry the engine is built with
+    /// ([`WorkflowEngine::resource_registrars`](nebula_engine::WorkflowEngine::resource_registrars));
+    /// when left `None`, `create_resource` fails closed (422) rather than
+    /// persist an unvalidated config.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_registrars(
+        mut self,
+        registrars: Arc<nebula_engine::ResourceRegistrarRegistry>,
+    ) -> Self {
+        self.resource_registrars = Some(registrars);
+        self
+    }
+
+    /// Attach the **read-only** resource runtime-status port backing
+    /// `GET .../resources/{res}/status`.
+    ///
+    /// Projects a live resource's lifecycle phase in api-safe types — it
+    /// observes a phase and cannot mutate a resource (no
+    /// acquire/release/drain; resource lifecycle is engine-owned,
+    /// INTEGRATION_MODEL §13.1). Compose this in production from the same
+    /// `nebula_resource::Manager` the engine is built with (via
+    /// `nebula_engine::EngineManagerResourceStatus`). When left `None`
+    /// the status endpoint reports `503` rather than fabricate a status.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_resource_status(
+        mut self,
+        status: Arc<dyn nebula_engine::EngineResourceStatus>,
+    ) -> Self {
+        self.resource_status = Some(status);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nebula_storage::{
+        InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+    };
+
+    /// Minimal fake that satisfies `Arc<dyn ResourceRepo>` inside the test module.
+    /// Production code never touches this; it only proves the builder slot is wired.
+    struct FakeResourceRepo;
+
+    #[async_trait::async_trait]
+    impl nebula_storage::repos::ResourceRepo for FakeResourceRepo {
+        async fn create(
+            &self,
+            _resource: &nebula_storage::repos::ResourceEntry,
+        ) -> Result<(), nebula_storage::StorageError> {
+            Ok(())
+        }
+
+        async fn get(
+            &self,
+            _id: &[u8],
+        ) -> Result<Option<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+        {
+            Ok(None)
+        }
+
+        async fn get_by_slug(
+            &self,
+            _workspace_id: &[u8],
+            _slug: &str,
+        ) -> Result<Option<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+        {
+            Ok(None)
+        }
+
+        async fn update(
+            &self,
+            _resource: &nebula_storage::repos::ResourceEntry,
+            expected_version: i64,
+        ) -> Result<i64, nebula_storage::StorageError> {
+            // The store owns the post-CAS increment; the fake mirrors the
+            // contract by returning `expected_version + 1`.
+            Ok(expected_version + 1)
+        }
+
+        async fn soft_delete(&self, _id: &[u8]) -> Result<(), nebula_storage::StorageError> {
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            _workspace_id: &[u8],
+            _offset: u64,
+            _limit: u64,
+        ) -> Result<Vec<nebula_storage::repos::ResourceEntry>, nebula_storage::StorageError>
+        {
+            Ok(vec![])
+        }
+    }
+
+    fn base_state() -> AppState {
+        let jwt = JwtSecret::new("test-secret-for-state-module-tests-0123456789")
+            .expect("static test secret is valid");
+        AppState::new(
+            Arc::new(InMemoryWorkflowRepo::new()),
+            Arc::new(InMemoryExecutionRepo::new()),
+            Arc::new(InMemoryControlQueueRepo::new()),
+            jwt,
+        )
+    }
+
+    #[test]
+    fn with_resource_repo_sets_field() {
+        let repo: Arc<dyn nebula_storage::repos::ResourceRepo> = Arc::new(FakeResourceRepo);
+        let st = base_state().with_resource_repo(Arc::clone(&repo));
+        assert!(
+            st.resource_repo.is_some(),
+            "resource_repo must be Some after with_resource_repo"
+        );
+    }
+
+    #[test]
+    fn resource_repo_defaults_to_none() {
+        let st = base_state();
+        assert!(
+            st.resource_repo.is_none(),
+            "resource_repo must default to None"
+        );
     }
 }

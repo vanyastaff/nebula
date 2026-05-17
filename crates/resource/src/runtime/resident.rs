@@ -53,6 +53,16 @@ impl<R: Resource> ResidentRuntime<R> {
     pub fn is_initialized(&self) -> bool {
         self.cell.is_some()
     }
+
+    /// Snapshots the current shared runtime, if one has been created.
+    ///
+    /// Used by the per-slot rotation dispatch to borrow the live runtime
+    /// and hand it to `Resource::on_credential_refresh` /
+    /// `on_credential_revoke`. `None` before the first acquire (nothing to
+    /// rotate yet).
+    pub(crate) fn current(&self) -> Option<Arc<R::Runtime>> {
+        self.cell.load()
+    }
 }
 
 impl<R> ResidentRuntime<R>

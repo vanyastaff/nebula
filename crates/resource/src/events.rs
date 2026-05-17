@@ -86,6 +86,40 @@ pub enum ResourceEvent {
         /// Human-readable description of the new gate state.
         state: String,
     },
+    /// A `#[credential]` slot was refreshed on this resource (engine fan-out).
+    SlotRefreshed {
+        /// The key of the resource whose slot was refreshed.
+        key: ResourceKey,
+        /// The slot name that was refreshed.
+        slot: String,
+    },
+    /// A `#[credential]` slot's credential was revoked.
+    SlotRevoked {
+        /// The key of the resource whose slot was revoked.
+        key: ResourceKey,
+        /// The slot name that was revoked.
+        slot: String,
+    },
+    /// The per-resource refresh hook failed or timed out. `error` is an
+    /// already-redacted string (NEVER credential material).
+    SlotRefreshFailed {
+        /// The key of the resource whose slot refresh failed.
+        key: ResourceKey,
+        /// The slot name whose refresh failed.
+        slot: String,
+        /// Already-redacted error description.
+        error: String,
+    },
+    /// The per-resource revoke hook failed. `error` is an already-redacted
+    /// string (NEVER credential material).
+    SlotRevokeFailed {
+        /// The key of the resource whose slot revoke failed.
+        key: ResourceKey,
+        /// The slot name whose revoke failed.
+        slot: String,
+        /// Already-redacted error description.
+        error: String,
+    },
 }
 
 impl ResourceEvent {
@@ -101,7 +135,55 @@ impl ResourceEvent {
             | Self::ConfigReloaded { key }
             | Self::RetryAttempt { key, .. }
             | Self::BackpressureDetected { key }
-            | Self::RecoveryGateChanged { key, .. } => Some(key),
+            | Self::RecoveryGateChanged { key, .. }
+            | Self::SlotRefreshed { key, .. }
+            | Self::SlotRevoked { key, .. }
+            | Self::SlotRefreshFailed { key, .. }
+            | Self::SlotRevokeFailed { key, .. } => Some(key),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slot_events_carry_no_credential_data() {
+        let k = ResourceKey::new("k").expect("valid key");
+
+        let refreshed = ResourceEvent::SlotRefreshed {
+            key: k.clone(),
+            slot: "db".into(),
+        };
+        assert_eq!(refreshed.key().map(ResourceKey::as_str), Some("k"));
+
+        let revoked = ResourceEvent::SlotRevoked {
+            key: k.clone(),
+            slot: "db".into(),
+        };
+        assert_eq!(revoked.key().map(ResourceKey::as_str), Some("k"));
+
+        let failed = ResourceEvent::SlotRefreshFailed {
+            key: k.clone(),
+            slot: "db".into(),
+            error: "transient: upstream 503".into(),
+        };
+        assert_eq!(failed.key().map(ResourceKey::as_str), Some("k"));
+        let ResourceEvent::SlotRefreshFailed { error, .. } = &failed else {
+            unreachable!()
+        };
+        assert!(!error.contains("secret"), "error must be redacted");
+
+        let revoke_failed = ResourceEvent::SlotRevokeFailed {
+            key: k,
+            slot: "db".into(),
+            error: "transient: upstream 503".into(),
+        };
+        assert_eq!(revoke_failed.key().map(ResourceKey::as_str), Some("k"));
+        let ResourceEvent::SlotRevokeFailed { error, .. } = &revoke_failed else {
+            unreachable!()
+        };
+        assert!(!error.contains("secret"), "error must be redacted");
     }
 }

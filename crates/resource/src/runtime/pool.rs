@@ -155,6 +155,70 @@ impl<R: Resource> PoolRuntime<R> {
         self.idle.lock().await.len()
     }
 
+    /// Invokes a per-slot credential rotation hook against every idle
+    /// pooled runtime instance, in order.
+    ///
+    /// Used by the per-slot rotation dispatch: each idle instance is handed
+    /// to `Resource::on_credential_refresh` / `on_credential_revoke` so a
+    /// connection-bound pool can rebuild against the rotated credential.
+    /// Checked-out instances are owned by their `ResourceGuard`; the slot
+    /// cell is lock-free on `&self`, so the rotated credential is already
+    /// visible to them and they re-read it on their own release/recycle
+    /// path. The idle-queue lock is held across the awaited hooks so an
+    /// instance cannot be checked out mid-rotation and miss the hook.
+    ///
+    /// `refresh = true` selects `on_credential_refresh`, `false` selects
+    /// `on_credential_revoke`. The hook is called inline (not via a
+    /// borrowing closure) so the per-entry `&R::Runtime` never escapes the
+    /// idle lock. The first hook error is returned; remaining idle
+    /// instances are still visited so one bad instance doesn't skip the
+    /// rest.
+    ///
+    /// Tradeoff: because the idle lock spans every entry's hook `.await`,
+    /// a slow hook blocks concurrent idle checkouts for the full rotation
+    /// duration (head-of-line blocking). New-instance creation is
+    /// unaffected — that path does not take this lock. This is tolerated
+    /// because rotation is rare (not a hot path); note the external
+    /// timeout the dispatch caller may apply bounds the *whole*
+    /// refresh/revoke dispatch, **not** each idle-entry hook — a single
+    /// pathologically slow hook can still hold the idle lock for that
+    /// hook's full (unbounded) duration. Per-entry hook timeouts are a
+    /// tracked deferred design item, not implemented here. Do not
+    /// "optimize" by dropping and reacquiring the lock between entries:
+    /// that reopens the window for an instance to be checked out
+    /// mid-rotation and miss its hook, violating the post-revoke
+    /// invariant guaranteed here (ADR-0036). If rotation ever moves onto
+    /// a hot path, or hook latency becomes unbounded, revisit this only
+    /// via a snapshot-with-epoch-reconcile design (capture the idle set
+    /// under a brief lock, run hooks lock-free, then reconcile against
+    /// the epoch on release) — never by simply widening the unlocked
+    /// window.
+    pub(crate) async fn dispatch_slot_hook_over_idle(
+        &self,
+        resource: &R,
+        slot: &str,
+        refresh: bool,
+    ) -> Result<(), R::Error> {
+        let idle = self.idle.lock().await;
+        let mut first_err: Option<R::Error> = None;
+        for entry in &*idle {
+            let res = if refresh {
+                resource.on_credential_refresh(slot, &entry.runtime).await
+            } else {
+                resource.on_credential_revoke(slot, &entry.runtime).await
+            };
+            if let Err(e) = res
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// Returns a snapshot of current pool utilization.
     ///
     /// `idle` is sampled under the idle queue lock; `available_permits` is

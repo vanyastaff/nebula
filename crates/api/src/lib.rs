@@ -79,6 +79,9 @@ pub mod transport;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
+pub use domain::resource::handler::{
+    map_resource_create_storage_error, map_resource_update_storage_error,
+};
 pub use domain::shared::{CursorParams, PaginatedResponse};
 pub use error::{ApiError, ApiResult, ProblemDetails};
 pub use state::AppState;
