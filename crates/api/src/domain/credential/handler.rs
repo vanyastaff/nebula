@@ -72,8 +72,11 @@ pub async fn list_credentials(
 /// POST /orgs/{org}/workspaces/{ws}/credentials — Create a new credential.
 ///
 /// Validates the request body, then delegates to the credential store
-/// for persistence. The `data` field is validated against the credential
-/// type's schema before encryption and storage.
+/// for persistence. When a credential-schema port is configured
+/// (ADR-0052 P4), `data` is validated against the credential type's
+/// resolved schema before encryption and storage; if no validator is
+/// configured the request is rejected with 503 — `data` is never
+/// persisted unvalidated.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials",

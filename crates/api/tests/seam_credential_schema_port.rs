@@ -35,10 +35,13 @@ async fn appstate_credential_schema_defaults_none_and_builder_sets_it() {
     // Object-safety: the trait must be usable as `dyn`.
     fn _assert_object_safe(_: &dyn CredentialSchemaPort) {}
 
-    let (state, _q) = common::create_state_with_queue().await;
+    // The shared harness wires a permissive port by default (ADR-0052 P4
+    // closed the unvalidated-persist fail-open); the *AppState default*
+    // (no builder call) is None — assert via the no-port helper.
+    let (state, _q) = common::create_state_with_queue_no_credential_port().await;
     assert!(
         state.credential_schema.is_none(),
-        "credential_schema must default to None (honest-503 stub, like action_registry)"
+        "AppState default must be None (honest-503 stub, like action_registry)"
     );
 
     let state = state.with_credential_schema(Arc::new(StubPort));
