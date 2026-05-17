@@ -216,7 +216,7 @@ pub use field::{
     ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, SecretField,
     SelectField, StringField,
 };
-pub use has_schema::{HasSchema, HasSelectOptions};
+pub use has_schema::{HasSchema, HasSelectOptions, schema_of};
 pub use input_hint::InputHint;
 #[cfg(feature = "schemars")]
 pub use json_schema::JsonSchemaExportError;

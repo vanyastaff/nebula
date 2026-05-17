@@ -52,7 +52,6 @@ use nebula_resource::{
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
-use nebula_schema::{HasSchema, ValidSchema};
 use nebula_workflow::{NodeDefinition, ParamValue, Version, WorkflowConfig, WorkflowDefinition};
 
 // ── Action handler ─────────────────────────────────────────────────────────
@@ -76,16 +75,6 @@ impl Action for PipelineWitness {
                 "Phase 9 e2e pipeline witness",
             )
         })
-    }
-
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
 
     fn dependencies() -> &'static Dependencies {

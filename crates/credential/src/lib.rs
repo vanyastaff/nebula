@@ -18,12 +18,13 @@
 //!
 //! ## Key types
 //!
-//! - `Credential` — base trait: `resolve()`, `project()`, `properties_schema()`. Capability methods
+//! - `Credential` — base trait: `resolve()`, `project()`. Capability methods
 //!   (`continue_resolve`, `refresh`, `revoke`, `test`, `release`) live on dedicated sub-traits per
 //!   Tech Spec §15.4 — `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic`. Phase 5 of
 //!   the M6 redesign renamed `Credential::Input` → `Credential::Properties` to mirror
-//!   `Action::Input` / `Resource::Config` and shifted schema ownership from instance metadata to
-//!   the type-level properties struct (see `Credential::properties_schema`).
+//!   `Action::Input` / `Resource::Config`; the `Properties: HasSchema` bound is the single
+//!   source of truth, read via `nebula_schema::schema_of::<C::Properties>()` (ADR-0052 P3 — no
+//!   per-trait schema method).
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
@@ -155,6 +156,10 @@ pub use metrics::CredentialMetrics;
 pub use nebula_core::accessor::CredentialAccessor;
 // Domain identifiers — re-exported from nebula_core for discoverability.
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
+// Re-exported so `#[derive(Credential)]` can emit `::nebula_credential::schema_of`
+// without forcing plugin authors onto a direct `nebula-schema` dependency
+// (ADR-0052 P3: `Self::Properties: HasSchema` is the single source of truth).
+pub use nebula_schema::schema_of;
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has

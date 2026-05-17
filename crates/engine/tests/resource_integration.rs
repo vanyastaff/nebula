@@ -24,7 +24,6 @@ use nebula_engine::{
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::Manager;
-use nebula_schema::{HasSchema, ValidSchema};
 use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
@@ -51,14 +50,6 @@ impl Action for ResourceConsumerHandler {
                 "static",
             )
         })
-    }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -102,14 +93,6 @@ impl Action for ResourceProbeHandler {
                 "static",
             )
         })
-    }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();

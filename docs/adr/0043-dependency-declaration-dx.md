@@ -119,9 +119,11 @@ pub trait Action: Sized + Send + Sync + 'static {
     type Output: HasSchema + Serialize + Send + Sync;
 
     fn metadata() -> &'static ActionMetadata;
-    fn input_schema() -> &'static ValidSchema;     // = Self::Input::schema()
-    fn output_schema() -> &'static ValidSchema;    // = Self::Output::schema()
     fn dependencies() -> &'static Dependencies;    // slot fields
+    // NOTE: input_schema()/output_schema() were removed by ADR-0052 P3
+    // (2026-05-17). They were pure redundancy (= Self::Input/Output::schema()).
+    // The `Input`/`Output: HasSchema` bound is the single source of truth;
+    // consumers use `nebula_schema::schema_of::<T>()`.
 }
 
 pub trait StatelessAction: Action { /* execute(&self, input, ctx) */ }

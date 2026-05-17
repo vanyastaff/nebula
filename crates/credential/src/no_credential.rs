@@ -73,7 +73,7 @@ impl Credential for NoCredential {
             .key(nebula_core::credential_key!("no_credential"))
             .name("No credential")
             .description("Opt-out marker for resources without an authenticated binding.")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(AuthPattern::NoAuth)
             .build()
             .expect("NoCredential metadata is statically valid")

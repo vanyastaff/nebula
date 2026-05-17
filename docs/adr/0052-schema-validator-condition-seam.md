@@ -134,3 +134,52 @@ non-secret nested root predicate still fires; secret plaintext unreadable),
 the `root_value_predicate_on_*` lint anchors, `valid_values_only_minted_by_validate`,
 a symbol-level single-crossing assertion, and the rewritten
 `flow/all_error_codes.rs`.
+
+## Amendment (2026-05-17) — P3: HasSchema convergence (Action/Credential ISP fold)
+
+P3 of the recorded cascade converges the three business traits onto one
+schema-access shape. `Action::input_schema()` / `output_schema()` (required
+methods — ISP fat-interface redundancy: every in-tree body was an `OnceLock`
+wrapping `<Self::Input as HasSchema>::schema()`, with zero custom overrides
+and zero production callers; the real consumer `ActionMetadata::for_*::<A>`
+already used the associated type directly) and `Credential::properties_schema()`
+(a provided method whose body already was `<Self::Properties as
+HasSchema>::schema()`) are **deleted, not deprecated** (no-shim discipline).
+The `type Input` / `Output` / `Properties: HasSchema` associated-type bound
+is the sole source of truth; `Resource` already had this clean shape and is
+untouched (the convergence reference). A free
+`nebula_schema::schema_of::<T: HasSchema>() -> ValidSchema` helper (ratified
+shape per ADR-0061: owned, no object-safe companion) lets call sites avoid
+restating the trait-qualified path; it is re-exported from `nebula-credential`
+so `#[derive(Credential)]` emits a path resolvable without forcing plugin
+authors onto a direct `nebula-schema` dependency. Behaviorally lossless (the
+deleted bodies were pure redundancy); signature-invisible to the
+`ValidSchema → ValidValues → ResolvedValues` proof-token pipeline
+(INTEGRATION_MODEL §29/§33 unchanged). Object safety unaffected: `Action` is
+`Sized` (never `dyn`; the erased path is `ErasedAction`/`ActionFactory` and
+does not call the removed methods), and every `Credential` method is
+`where Self: Sized` (outside any vtable). Breaking: the public trait surface
+of `nebula-action` and `nebula-credential` loses three methods — canon-legal
+because both are `frontier` / pre-1.0 (no UPGRADE_COMPAT contract); ships `!`
+with the seam tests in the same PR. This amends ADR-0043 §4 (which defined
+`input_schema` / `output_schema` as `= Self::Input::schema()`); a truthful
+forward-pointer is added there. Zero new crates, zero `deny.toml` change
+(`HasSchema` / `schema_of` stay in `nebula-schema` Core, already importable
+by the three Business crates).
+
+Seam anchors landed in the P3 PR:
+`crates/action/tests/probes/action_input_schema_removed.rs` +
+`crates/action/tests/seam_action_schema_method_removed.rs` (trybuild:
+`<Probe as Action>::input_schema()` no longer resolves — `E0576`),
+`crates/credential/tests/probes/credential_properties_schema_removed.rs` +
+`compile_fail_credential_properties_schema_removed.rs` (trybuild:
+`<NoCredential as Credential>::properties_schema()` no longer resolves —
+`E0576`), the runtime convergence guards
+`derive_action::input_schema_derives_from_input_via_schema_of` and
+`properties_pipeline::metadata_schema_is_schema_of_properties`
+(metadata schema == `schema_of::<Properties>()`), and the
+`nebula-schema` `schema_of_equals_has_schema_schema` unit anchor.
+
+P4 (API write-path validation V2 / catalog `json_schema()` V3 / public
+OpenAPI DTO `x-nebula-root-rules` strip / ADR-0047 amendment) is the
+remaining cascade phase, out of P3 scope.

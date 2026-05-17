@@ -127,7 +127,7 @@ impl Credential for TwoTierCredential {
             nebula_core::credential_key!("two_tier_test"),
             "Two-tier test",
             "Test credential for two-tier coalesce wiring",
-            Self::properties_schema(),
+            nebula_credential::schema_of::<Self::Properties>(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

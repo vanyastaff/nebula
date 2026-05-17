@@ -1,8 +1,8 @@
 //! `#[derive(Action)]` macro implementation — Variant A (ADR-0043 §6).
 //!
 //! Emits:
-//! - `impl Action for Foo` with static `metadata`, `input_schema`, `output_schema`, `dependencies`
-//!   functions.
+//! - `impl Action for Foo` with static `metadata` and `dependencies` functions (no schema
+//!   methods — the `Input`/`Output: HasSchema` bound is the single source of truth, ADR-0052 P3).
 //! - `impl FromWorkflowNode for Foo` (when the struct has at least one `#[resource]` /
 //!   `#[credential]` field, or when the struct is a unit struct — in that case a no-op factory).
 //!
@@ -78,22 +78,6 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 static METADATA: ::std::sync::OnceLock<::nebula_action::ActionMetadata> =
                     ::std::sync::OnceLock::new();
                 METADATA.get_or_init(|| #metadata_init)
-            }
-
-            fn input_schema() -> &'static ::nebula_action::ValidSchema {
-                static SCHEMA: ::std::sync::OnceLock<::nebula_action::ValidSchema> =
-                    ::std::sync::OnceLock::new();
-                SCHEMA.get_or_init(|| {
-                    <#input_ty as ::nebula_schema::HasSchema>::schema()
-                })
-            }
-
-            fn output_schema() -> &'static ::nebula_action::ValidSchema {
-                static SCHEMA: ::std::sync::OnceLock<::nebula_action::ValidSchema> =
-                    ::std::sync::OnceLock::new();
-                SCHEMA.get_or_init(|| {
-                    <#output_ty as ::nebula_schema::HasSchema>::schema()
-                })
             }
 
             fn dependencies() -> &'static ::nebula_core::Dependencies {

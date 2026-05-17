@@ -610,16 +610,6 @@ mod tests {
                 )
             })
         }
-        fn input_schema() -> &'static nebula_schema::ValidSchema {
-            use std::sync::OnceLock;
-            static S: OnceLock<nebula_schema::ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as nebula_schema::HasSchema>::schema)
-        }
-        fn output_schema() -> &'static nebula_schema::ValidSchema {
-            use std::sync::OnceLock;
-            static S: OnceLock<nebula_schema::ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as nebula_schema::HasSchema>::schema)
-        }
         fn dependencies() -> &'static nebula_core::Dependencies {
             use std::sync::OnceLock;
             static D: OnceLock<nebula_core::Dependencies> = OnceLock::new();

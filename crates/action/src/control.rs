@@ -541,7 +541,6 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_core::{Dependencies, action_key};
-    use nebula_schema::{HasSchema, ValidSchema};
 
     use super::*;
     use crate::{
@@ -769,14 +768,6 @@ mod tests {
                     .with_outputs(vec![OutputPort::flow("true"), OutputPort::flow("false")])
             })
         }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as HasSchema>::schema)
-        }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
             D.get_or_init(Dependencies::new)
@@ -817,14 +808,6 @@ mod tests {
                 ActionMetadata::new(action_key!("test.stop"), "TestStop", "Terminate")
                     .with_outputs(Vec::new())
             })
-        }
-        fn input_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as HasSchema>::schema)
-        }
-        fn output_schema() -> &'static ValidSchema {
-            static S: OnceLock<ValidSchema> = OnceLock::new();
-            S.get_or_init(<Value as HasSchema>::schema)
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();

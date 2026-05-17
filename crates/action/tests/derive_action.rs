@@ -37,12 +37,13 @@ fn metadata_key_matches_attribute() {
 }
 
 #[test]
-fn input_schema_matches_input_type() {
-    let schema = NoCredAction::input_schema();
+fn input_schema_derives_from_input_via_schema_of() {
+    // ADR-0052 P3: there is no `Action::input_schema()` method. The action's
+    // input schema is reached through the `Input: HasSchema` associated-type
+    // bound via `nebula_schema::schema_of` — the single source of truth.
+    let schema = nebula_schema::schema_of::<<NoCredAction as Action>::Input>();
     let direct = <serde_json::Value as HasSchema>::schema();
-    // Both schemas come from the same HasSchema impl — pointers may differ
-    // but shape must match.
-    assert_eq!(format!("{schema:?}"), format!("{direct:?}"));
+    assert_eq!(schema, direct);
 }
 
 // -- Default name + description (omitted attrs) ----------------------------

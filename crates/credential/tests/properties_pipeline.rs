@@ -3,8 +3,9 @@
 //! Exercises the validation half of the action pipeline against the `<Name>Properties` companion
 //! struct that Phase 5 attached to every `Credential` impl. The test pins:
 //!
-//!   1. `<C as Credential>::properties_schema()` returns the schema of `<C::Properties as
-//!      HasSchema>::schema()`.
+//!   1. The credential's metadata schema (the converged consumer path) equals
+//!      `nebula_schema::schema_of::<C::Properties>()` (ADR-0052 P3 — there is no
+//!      per-trait schema method).
 //!   2. JSON properties → `FieldValues::from_json` → `schema.validate` →
 //!      `serde_json::from_value::<C::Properties>`. The two passes (schema and serde) are
 //!      independent.
@@ -24,19 +25,27 @@ use serde_json::json;
 // ── Pipeline happy path on built-in ApiKeyCredential ───────────────────────
 
 #[test]
-fn properties_schema_matches_companion_struct() {
-    let from_credential = ApiKeyCredential::properties_schema();
-    let from_companion = <<ApiKeyCredential as Credential>::Properties as HasSchema>::schema();
+fn metadata_schema_is_schema_of_properties() {
+    // ADR-0052 P3 seam: the converged path. `Credential::properties_schema()`
+    // is removed; the metadata schema is sourced from
+    // `nebula_schema::schema_of::<C::Properties>()` (the `Properties: HasSchema`
+    // associated-type bound is the single source of truth).
+    let from_metadata = ApiKeyCredential::metadata().base.schema;
+    let from_schema_of = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
     assert_eq!(
-        format!("{from_credential:?}"),
-        format!("{from_companion:?}"),
-        "Credential::properties_schema() must equal <Properties as HasSchema>::schema()"
+        from_metadata, from_schema_of,
+        "credential metadata schema must equal schema_of::<Properties>()"
+    );
+    // schema_of is exactly the trait-qualified form.
+    assert_eq!(
+        from_schema_of,
+        <<ApiKeyCredential as Credential>::Properties as HasSchema>::schema()
     );
 }
 
 #[test]
 fn properties_pipeline_accepts_well_formed_json() {
-    let schema = ApiKeyCredential::properties_schema();
+    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
     let raw = json!({
         "server": "https://api.example.com",
         "api_key": "sk-test-12345",
@@ -57,7 +66,7 @@ fn properties_pipeline_accepts_well_formed_json() {
 
 #[test]
 fn properties_pipeline_rejects_missing_required_api_key() {
-    let schema = ApiKeyCredential::properties_schema();
+    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
     let raw = json!({
         "server": "https://api.example.com",
         // `api_key` omitted — it carries `#[validate(required)]`.
@@ -111,7 +120,7 @@ fn expressions_in_properties_fail_serde_deserialize() {
     });
 
     // Schema validate — passes because ExpressionMode is Allowed by default.
-    let schema = ApiKeyCredential::properties_schema();
+    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
     let values = FieldValues::from_json(raw.clone()).expect("ingest");
     let validated = schema.validate(&values).expect("validate must pass");
 
@@ -144,7 +153,7 @@ fn expressions_in_optional_property_field_also_fail_serde() {
         "api_key": "sk-real-secret",
     });
 
-    let schema = ApiKeyCredential::properties_schema();
+    let schema = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
     let values = FieldValues::from_json(raw.clone()).expect("ingest");
     schema.validate(&values).expect("validate passes");
 

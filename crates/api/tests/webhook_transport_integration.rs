@@ -33,7 +33,6 @@ use nebula_action::{
 };
 use nebula_api::transport::webhook::{WebhookTransport, WebhookTransportConfig};
 use nebula_core::Dependencies;
-use nebula_schema::{HasSchema, ValidSchema};
 use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -70,14 +69,6 @@ impl Action for GitHubLikeWebhook {
                 "Integration test webhook",
             )
         })
-    }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -428,14 +419,6 @@ impl Action for HangingWebhook {
             )
         })
     }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -647,14 +630,6 @@ impl Action for UnsignedWebhook {
             )
         })
     }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
         D.get_or_init(Dependencies::new)
@@ -704,14 +679,6 @@ impl Action for DefaultConfigWebhook {
                 "static",
             )
         })
-    }
-    fn input_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
-    }
-    fn output_schema() -> &'static ValidSchema {
-        static S: OnceLock<ValidSchema> = OnceLock::new();
-        S.get_or_init(<serde_json::Value as HasSchema>::schema)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
