@@ -331,6 +331,29 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
     }
 
+    /// Read an execution's persisted `(version, state-json)`, or `None`
+    /// if absent. Dual-dispatch: the scoped [`ExecutionStore`] port
+    /// (`get` → `(record.version, record.state)`) when wired, else the
+    /// legacy `ExecutionRepo::get_state`. `context` labels the error
+    /// (callers used distinct wording: "check" / "get" / …).
+    pub(crate) async fn execution_state(
+        &self,
+        execution_id: ExecutionId,
+        context: &str,
+    ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
+        if let Some(store) = &self.execution_store {
+            return store
+                .get(&placeholder_scope(), &execution_id.to_string())
+                .await
+                .map(|opt| opt.map(|r| (r.version, r.state)))
+                .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")));
+        }
+        self.execution_repo
+            .get_state(execution_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
+    }
+
     /// Set the static API keys accepted via `X-API-Key` header.
     ///
     /// Each key should use the `nbl_sk_` prefix. Keys are compared in constant

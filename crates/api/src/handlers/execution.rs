@@ -150,10 +150,8 @@ pub async fn get_execution_outputs(
 
     // Verify the execution exists before loading outputs.
     state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {e}")))?
+        .execution_state(execution_id, "check")
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     let outputs = state
@@ -206,13 +204,9 @@ pub async fn get_execution(
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
     // Fetch execution state from repository
-    let state_result = state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
+    let state_result = state.execution_state(execution_id, "get").await?;
 
-    // Check if execution exists (get_state returns Option<(version, state)>)
+    // Check if execution exists (returns Option<(version, state)>)
     let (_version, execution_state) =
         state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
@@ -469,11 +463,7 @@ pub async fn cancel_execution(
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
     // Fetch current execution state from repository
-    let state_result = state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
+    let state_result = state.execution_state(execution_id, "get").await?;
 
     // Check if execution exists
     let (version, mut execution_state) =
@@ -666,10 +656,8 @@ pub async fn get_execution_logs(
 
     // Verify the execution exists before loading the journal.
     state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {e}")))?
+        .execution_state(execution_id, "check")
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     let logs = state
