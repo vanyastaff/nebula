@@ -132,9 +132,11 @@ impl nebula_error::Classify for RegistrarError {
             // subsystem's `ErrorKind::Ambiguous → Conflict` precedent for
             // "caller asked for something the resolver cannot satisfy".
             Self::UnknownKind(_) => nebula_error::ErrorCategory::Conflict,
-            // Preserve the inner resource error's category (deserialize/
-            // schema → validation, slot mismatch → internal, …) instead
-            // of flattening it.
+            // Preserve the inner resource error's category instead of
+            // flattening it. (Today every register_from_value failure is
+            // Error::permanent => Internal — deserialize, schema, and
+            // slot-binding mismatch all land there; delegation keeps this
+            // honest if the resource crate later differentiates those.)
             Self::Register { source, .. } => nebula_error::Classify::category(source),
         }
     }
