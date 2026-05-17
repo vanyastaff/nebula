@@ -37,7 +37,7 @@ p="$(turn_state_path "$sid" "$cwd")"; st="$(load_state "$p")"
 if [ "$is_gate" = 2 ]; then
   st="$(printf '%s' "$st" | jq -c '.gate_green = (.gate_green + ["*workspace*"] | unique)')"
 else
-  crate="$(printf '%s' "$core" | grep -oE -- '-p[[:space:]]+(nebula-)?[A-Za-z0-9_-]+' | head -1 | sed -E 's/^-p[[:space:]]+(nebula-)?//')"
+  crate="$(printf '%s' "$core" | grep -oE -- '(-p[[:space:]]+|--package[[:space:]]+|--package=)(nebula-)?[A-Za-z0-9_-]+' | head -1 | sed -E 's/^(-p[[:space:]]+|--package[[:space:]]+|--package=)(nebula-)?//')"
   [ -n "$crate" ] && st="$(printf '%s' "$st" | jq -c --arg c "$crate" '.gate_green = (.gate_green + [$c] | unique)')"
 fi
 save_state "$p" "$st"

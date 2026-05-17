@@ -38,7 +38,7 @@ chk "A allows gh pr create"         0 "$(adeny "$(mk 'gh pr create --title \"Add
 chk "A allows grep literal"         0 "$(adeny "$(mk 'grep -rn \"TODO\" crates/')")"
 chk "A allows normal nextest"       0 "$(adeny "$(mk 'cargo nextest run -p nebula-engine')")"
 chk "A allows push no force"        0 "$(adeny "$(mk 'git push origin main')")"
-chk "A fail-open on subshell"       0 "$(adeny "$(mk 'cargo \$(echo test)')")"
+chk "A fail-open on subshell"       0 "$(adeny "$(mk 'cargo $(echo test)')")"
 chk "A fail-open on non-Bash"       0 "$(printf '{"tool_name":"Edit"}' | bash "$HERE/bash-deny.sh" >/dev/null 2>&1; echo $?)"
 
 # A2 record (D10: canonical-clean-form allowlist; structured tool_response;
@@ -70,6 +70,10 @@ chk "A2 records clean clippy" '["aaa","core","engine"]' "$(jq -c '.gate_green' "
 # documented CI contract — must NOT count as a green gate.
 rr 'cargo clippy -p nebula-ddd -- -D clippy::all'
 chk "A2 rejects -D non-warnings (#673)" '["aaa","core","engine"]' "$(jq -c '.gate_green' "$R_P")"
+# PR #673 (CodeRabbit): --package / --package= are valid cargo forms; a clean
+# run with them must record gate_green (else honest agents are false-blocked).
+rr 'cargo clippy --package nebula-eee -- -D warnings'
+chk "A2 records --package form (#673)" '["aaa","core","eee","engine"]' "$(jq -c '.gate_green' "$R_P")"
 
 # B edit-guard
 bdeny() { printf '%s' "$1" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1; echo $?; }

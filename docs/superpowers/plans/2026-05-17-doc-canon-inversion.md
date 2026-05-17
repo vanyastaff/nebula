@@ -137,7 +137,7 @@ Run via `task <name>`. See `task --list` for the full catalog.
 Top-level structure (run `ls` for the full listing; crate inventory is in
 the Layered Dependency Map below):
 
-```
+```text
 nebula/
 ├── Cargo.toml          # workspace members + pinned deps + [workspace.lints]
 ├── Taskfile.yml        # task runner — see Common Commands above
