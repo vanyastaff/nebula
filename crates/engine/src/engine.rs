@@ -8638,13 +8638,13 @@ mod tests {
         // persist it, then resume on a fresh "engine B" that has never
         // seen the budget in-memory. The persisted row is the only
         // channel for the budget to reach the resumed run.
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let n1 = node_key!("n1");
         let wf = make_workflow(
             vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        stores.save_workflow(&wf).await;
 
         let configured = ExecutionBudget::default()
             .with_max_concurrent_nodes(3)
@@ -8663,17 +8663,12 @@ mod tests {
             .unwrap();
         exec_state.set_budget(configured.clone());
         let state_json = serde_json::to_value(&exec_state).unwrap();
-        exec_repo
-            .create(execution_id, wf.id, state_json)
-            .await
-            .unwrap();
+        stores.inject_state(execution_id, wf.id, state_json).await;
 
         // Resume on a fresh engine ("engine B" — new runner, new
         // instance, no memory of the original budget).
         let (engine, _) = make_engine(registry);
-        let engine = engine
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine = stores.attach(engine);
         let result = engine.resume_execution(execution_id).await.unwrap();
         assert!(result.is_success());
 
@@ -8685,7 +8680,7 @@ mod tests {
         // because `ExecutionState::node_states` uses `NodeKey` which
         // has a borrowed-string `Deserialize` impl incompatible with
         // `from_value` (docs/pitfalls — serde MapAccess).
-        let (_v, state_after) = exec_repo.get_state(execution_id).await.unwrap().unwrap();
+        let (_v, state_after) = stores.get_state(execution_id).await.unwrap().unwrap();
         let state_after_str = serde_json::to_string(&state_after).unwrap();
         let round_tripped: ExecutionState = serde_json::from_str(&state_after_str).unwrap();
         let restored = round_tripped
@@ -8717,13 +8712,13 @@ mod tests {
             EchoHandler,
         );
 
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let n1 = node_key!("n1");
         let wf = make_workflow(
             vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
+        stores.save_workflow(&wf).await;
 
         // Build a state snapshot with NO `budget` field — simulates a
         // pre-#289 row. We build the state normally, serialize it,
@@ -8742,15 +8737,10 @@ mod tests {
         if let Some(obj) = state_json.as_object_mut() {
             obj.remove("budget");
         }
-        exec_repo
-            .create(execution_id, wf.id, state_json)
-            .await
-            .unwrap();
+        stores.inject_state(execution_id, wf.id, state_json).await;
 
         let (engine, _) = make_engine(registry);
-        let engine = engine
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine = stores.attach(engine);
 
         // Resume must succeed despite the missing budget — the engine
         // logs a warning and falls back to the default.
