@@ -3485,7 +3485,6 @@ dependencies = [
 name = "nebula-credential-runtime"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "chrono",
  "nebula-core",
  "nebula-credential",

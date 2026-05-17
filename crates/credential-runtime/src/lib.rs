@@ -23,6 +23,12 @@ pub mod scope;
 pub mod service;
 pub mod state_source;
 
+/// Test-only credential fixtures (a refreshable type the static builtins
+/// cannot provide). Gated `cfg(any(test, feature = "test-util"))`;
+/// ADR-0023 forbids `test-util` in a release build.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_fixtures;
+
 pub use builder::CredentialServiceBuilder;
 pub use dispatch::{CredentialDispatch, DispatchError};
 pub use error::CredentialServiceError;

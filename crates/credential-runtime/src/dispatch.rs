@@ -24,6 +24,17 @@ pub enum DispatchError {
         /// The colliding key.
         key: &'static str,
     },
+
+    /// A capability registrar (`register_testable_ops` /
+    /// `register_refreshable_ops` / `register_revocable_ops` /
+    /// `register_interactive_ops`) ran before the base ops for `key` were
+    /// registered. Capability closures attach onto an existing base
+    /// entry, so the base `register_runtime_ops` must run first.
+    #[error("base credential ops absent for key '{key}'; register the base ops first")]
+    BaseOpsMissing {
+        /// The key whose base entry was missing.
+        key: &'static str,
+    },
 }
 
 /// One credential type's capability surface. The actual erased

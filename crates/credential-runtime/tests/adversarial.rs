@@ -189,11 +189,35 @@ async fn abuse4_static_type_capability_ops_are_unsupported() {
         }
     }
 
-    // continue_resolve on a non-interactive type: the type is registered
-    // but has no continuation closure → CapabilityUnsupported("interactive").
-    let cont = svc
+    // continue_resolve is gated session-first: a session-less scope is
+    // refused with SessionRequired *before* the capability check — the
+    // pending-store (kind, owner, session, token) binding makes a
+    // continuation structurally impossible without a session, so the gap
+    // is surfaced explicitly rather than collapsing into a misleading
+    // ValidationFailed deep in the executor.
+    let no_session = svc
         .continue_resolve(
             &scope,
+            "bearer_token",
+            "irrelevant-token",
+            nebula_credential::resolve::UserInput::Poll,
+        )
+        .await
+        .expect_err("session-less continue must be refused");
+    assert!(
+        matches!(
+            no_session,
+            CredentialServiceError::SessionRequired { capability } if capability == "continue"
+        ),
+        "expected SessionRequired(continue), got {no_session:?}"
+    );
+
+    // With a session the session gate is passed; the non-interactive
+    // builtin then fails the capability gate (no continuation closure).
+    let with_session = scope.clone().with_session("sess-cap");
+    let cont = svc
+        .continue_resolve(
+            &with_session,
             "bearer_token",
             "irrelevant-token",
             nebula_credential::resolve::UserInput::Poll,
@@ -245,28 +269,53 @@ async fn abuse5_cross_tenant_revoke_is_not_found_before_lease_scan() {
 /// The general `PendingStateStore` inherits the OAuth pending-token
 /// guarantees: unguessable + single-use + TTL + bound to the 4-D
 /// `(kind, owner, session, token)` tuple in `PendingStateStore::consume`
-/// (covered by nebula-credential / storage tests). At the facade level the
-/// three builtins are non-interactive, so the provable slice is: a forged
-/// / garbage continuation token never resolves — it is rejected before any
-/// state is produced. (For a non-interactive type the refusal is
-/// `CapabilityUnsupported`; for an interactive type a bad token would be
-/// `ValidationFailed`/`PendingExpired`. The invariant under test is "a
-/// forged token never yields an `Acquisition::Complete`".)
+/// (covered by nebula-credential / storage tests). The invariant under
+/// test at the facade is: **a forged continuation token never yields an
+/// `Acquisition::Complete`**, on both sides of the session gate —
+///
+/// - session-less scope → refused with `SessionRequired` *before* the
+///   token is ever consulted (the continuation is structurally
+///   impossible without the session half of the 4-D binding);
+/// - with a session, for the non-interactive builtin the next gate is
+///   `CapabilityUnsupported` (no continuation closure) — still never a
+///   `Complete`. (A forged token reaching a genuinely interactive type's
+///   `PendingStateStore::consume` is rejected one layer down.)
 #[tokio::test]
 async fn abuse6_forged_pending_token_never_resolves() {
     let svc = in_memory_service();
-    let scope = TenantScope::new("org1", "ws1");
+    let no_session = TenantScope::new("org1", "ws1");
+    let with_session = no_session.clone().with_session("sess-6");
 
     for forged in ["", "garbage", "{\"not\":\"a token\"}", "../../etc/passwd"] {
-        let outcome = svc
+        // Session-less: the session gate refuses before the token matters.
+        match svc
             .continue_resolve(
-                &scope,
+                &no_session,
                 "bearer_token",
                 forged,
                 nebula_credential::resolve::UserInput::Poll,
             )
-            .await;
-        match outcome {
+            .await
+        {
+            Err(CredentialServiceError::SessionRequired { capability }) => {
+                assert_eq!(capability, "continue");
+            },
+            Ok(acq) => panic!("forged token {forged:?} must never resolve, got {acq:?}"),
+            other => panic!("session-less forged {forged:?}: expected SessionRequired, {other:?}"),
+        }
+
+        // With a session: past the session gate, the non-interactive
+        // builtin has no continuation closure → CapabilityUnsupported.
+        // Either way, never an `Acquisition::Complete`.
+        match svc
+            .continue_resolve(
+                &with_session,
+                "bearer_token",
+                forged,
+                nebula_credential::resolve::UserInput::Poll,
+            )
+            .await
+        {
             Err(
                 CredentialServiceError::CapabilityUnsupported { .. }
                 | CredentialServiceError::ValidationFailed { .. }

@@ -121,14 +121,35 @@ type TestFuture<'a> =
 /// invokes [`dispatch_test`] for the captured `C: Testable`.
 type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<'a> + Send + Sync>;
 
-/// Boxed future for the erased `refresh` closure. Yields the freshly
-/// serialized state bytes so the service re-persists them.
+/// Result of a `refresh` closure. Distinguishes "this replica refreshed
+/// — re-persist these bytes" from "another replica already refreshed —
+/// do **not** re-write, re-read from the store instead".
+///
+/// Re-writing the un-mutated local copy on the coalesced path either
+/// spuriously `VersionConflict`s or clobbers the fresher state another
+/// replica just wrote (canon §13.2): the upstream
+/// [`RefreshOutcome::CoalescedByOtherReplica`](nebula_credential::RefreshOutcome)
+/// contract says the caller must re-read, not re-write.
+pub(crate) enum RefreshOutcomeKind {
+    /// This caller refreshed; `data` is the freshly serialized state for
+    /// the service to CAS-persist.
+    Rewrote(Zeroizing<Vec<u8>>),
+    /// Another replica refreshed while this caller waited on the
+    /// cross-replica claim. The service must skip the write and re-read
+    /// the now-fresher state from the store.
+    CoalescedReRead,
+}
+
+/// Boxed future for the erased `refresh` closure. Yields a
+/// [`RefreshOutcomeKind`] so the service can distinguish the re-persist
+/// path from the re-read (coalesced) path.
 type RefreshFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, CredentialServiceError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<RefreshOutcomeKind, CredentialServiceError>> + Send + 'a>>;
 
 /// Erased `refresh`: deserializes stored state, runs
-/// `<C as Refreshable>::refresh`, and returns the re-serialized state for
-/// the service to overwrite. Only registered for `C: Refreshable`.
+/// `<C as Refreshable>::refresh`, and returns either the re-serialized
+/// state for the service to CAS-persist or the coalesced re-read signal.
+/// Only registered for `C: Refreshable`.
 type RefreshFn =
     Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RefreshFuture<'a> + Send + Sync>;
 
@@ -391,8 +412,9 @@ impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
         test_fn(data, ctx).await
     }
 
-    /// Refresh the stored state for the type at `key`, returning the
-    /// re-serialized state bytes for the service to overwrite.
+    /// Refresh the stored state for the type at `key`. Returns a
+    /// [`RefreshOutcomeKind`] so the caller can re-persist on
+    /// `Rewrote` or re-read (skip the write) on `CoalescedReRead`.
     ///
     /// # Errors
     ///
@@ -404,7 +426,7 @@ impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
         key: &str,
         data: &[u8],
         ctx: &CredentialContext,
-    ) -> Result<Zeroizing<Vec<u8>>, CredentialServiceError> {
+    ) -> Result<RefreshOutcomeKind, CredentialServiceError> {
         let entry = self
             .entries
             .get(key)
@@ -624,9 +646,8 @@ where
 ///
 /// # Errors
 ///
-/// [`DispatchError::DuplicateKey`] (reused as the "base ops absent for
-/// this key" signal) when `C::KEY` has no base entry — the capability
-/// registration must follow the base registration.
+/// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry —
+/// the capability registration must follow the base registration.
 pub fn register_testable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
 where
     C: Testable,
@@ -638,7 +659,7 @@ where
     let entry = ops
         .entries
         .get_mut(key)
-        .ok_or(DispatchError::DuplicateKey { key })?;
+        .ok_or(DispatchError::BaseOpsMissing { key })?;
     let test_fn: TestFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
         Box::pin(async move {
             let state: C::State = serde_json::from_slice(data).map_err(|e| {
@@ -662,7 +683,7 @@ where
 ///
 /// # Errors
 ///
-/// [`DispatchError::DuplicateKey`] when `C::KEY` has no base entry.
+/// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
 pub fn register_refreshable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
 where
     C: Refreshable,
@@ -674,15 +695,14 @@ where
     let entry = ops
         .entries
         .get_mut(key)
-        .ok_or(DispatchError::DuplicateKey { key })?;
+        .ok_or(DispatchError::BaseOpsMissing { key })?;
     let refresh_fn: RefreshFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
         Box::pin(async move {
             // Forced refresh: invoke the capability trait method directly
             // (the same call the engine's internal `perform_refresh`
             // makes — there is no public engine forced-`dispatch_refresh`;
             // `resolve_with_refresh` is early-window-gated). The service
-            // wraps this in `retry_with` and re-persists the returned
-            // bytes with `PutMode::Overwrite`.
+            // re-persists the `Rewrote` bytes under compare-and-swap.
             let mut state: C::State = serde_json::from_slice(data).map_err(|e| {
                 CredentialServiceError::Internal(format!(
                     "stored state deserialization failed: {e}"
@@ -694,29 +714,37 @@ where
                     CredentialServiceError::Provider(format!("credential refresh failed: {e}"))
                 })?;
             match outcome {
-                nebula_credential::RefreshOutcome::Refreshed
-                | nebula_credential::RefreshOutcome::CoalescedByOtherReplica => {},
+                nebula_credential::RefreshOutcome::Refreshed => {
+                    let bytes = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
+                        CredentialServiceError::Internal(format!(
+                            "refreshed state serialization failed: {e}"
+                        ))
+                    })?);
+                    Ok(RefreshOutcomeKind::Rewrote(bytes))
+                },
+                // Another replica already refreshed while this caller
+                // waited on the cross-replica claim. The local `state` is
+                // the *un-mutated* pre-refresh copy: re-writing it would
+                // either spuriously `VersionConflict` or clobber the
+                // fresher state the other replica just persisted (the
+                // canon §13.2 bug). Signal the service to skip the write
+                // and re-read instead.
+                nebula_credential::RefreshOutcome::CoalescedByOtherReplica => {
+                    Ok(RefreshOutcomeKind::CoalescedReRead)
+                },
                 nebula_credential::RefreshOutcome::ReauthRequired(reason) => {
-                    return Err(CredentialServiceError::Provider(format!(
+                    Err(CredentialServiceError::Provider(format!(
                         "credential refresh requires re-authentication: {reason:?}"
-                    )));
+                    )))
                 },
                 // `RefreshOutcome` is `#[non_exhaustive]`; an unknown
                 // future outcome is not provably a success — fail closed
                 // rather than overwrite stored state on an unrecognized
                 // result.
-                other => {
-                    return Err(CredentialServiceError::Provider(format!(
-                        "credential refresh returned an unrecognized outcome: {other:?}"
-                    )));
-                },
+                other => Err(CredentialServiceError::Provider(format!(
+                    "credential refresh returned an unrecognized outcome: {other:?}"
+                ))),
             }
-            let bytes = Zeroizing::new(serde_json::to_vec(&state).map_err(|e| {
-                CredentialServiceError::Internal(format!(
-                    "refreshed state serialization failed: {e}"
-                ))
-            })?);
-            Ok(bytes)
         }) as RefreshFuture<'_>
     });
     entry.refresh_fn = Some(refresh_fn);
@@ -732,7 +760,7 @@ where
 ///
 /// # Errors
 ///
-/// [`DispatchError::DuplicateKey`] when `C::KEY` has no base entry.
+/// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
 pub fn register_revocable_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
 where
     C: Revocable,
@@ -744,7 +772,7 @@ where
     let entry = ops
         .entries
         .get_mut(key)
-        .ok_or(DispatchError::DuplicateKey { key })?;
+        .ok_or(DispatchError::BaseOpsMissing { key })?;
     let revoke_fn: RevokeFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
         Box::pin(async move {
             let mut state: C::State = serde_json::from_slice(data).map_err(|e| {
@@ -768,7 +796,7 @@ where
 ///
 /// # Errors
 ///
-/// [`DispatchError::DuplicateKey`] when `C::KEY` has no base entry.
+/// [`DispatchError::BaseOpsMissing`] when `C::KEY` has no base entry.
 pub fn register_interactive_ops<C, B, PS>(ops: &mut DispatchOps<B, PS>) -> Result<(), DispatchError>
 where
     C: Interactive,
@@ -780,7 +808,7 @@ where
     let entry = ops
         .entries
         .get_mut(key)
-        .ok_or(DispatchError::DuplicateKey { key })?;
+        .ok_or(DispatchError::BaseOpsMissing { key })?;
     let continue_fn: ContinueFn<PS> = Arc::new(
         |token: &PendingToken, input: &UserInput, ctx: &CredentialContext, pending: &PS| {
             Box::pin(async move {

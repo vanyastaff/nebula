@@ -67,6 +67,20 @@ pub enum CredentialServiceError {
     #[error("pending acquisition expired or already consumed")]
     PendingExpired,
 
+    /// An interactive capability was invoked without a session on the
+    /// [`TenantScope`](crate::scope::TenantScope). The pending store binds
+    /// on `(kind, owner, session, token)`, so an interactive
+    /// acquisition/continuation is structurally impossible without one —
+    /// surfaced explicitly here rather than collapsing into a misleading
+    /// validation failure deeper in the engine.
+    #[classify(category = "validation", code = "CREDENTIAL_SERVICE:SESSION_REQUIRED")]
+    #[error("credential capability '{capability}' requires a session on the tenant scope")]
+    SessionRequired {
+        /// The interactive capability that needs a session
+        /// (`resolve` / `continue`).
+        capability: &'static str,
+    },
+
     /// An external secret provider failed.
     #[classify(category = "external", code = "CREDENTIAL_SERVICE:PROVIDER")]
     #[error("external provider error: {0}")]

@@ -183,7 +183,11 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         }
     }
 
-    /// Active dynamic-lease count (smoke accessor).
+    /// Active dynamic-lease count — a test-only smoke accessor. Gated
+    /// `cfg(any(test, feature = "test-util"))` so it is **not** part of
+    /// the stable public surface of this security-critical facade
+    /// (lease-count introspection is a test affordance, not an API).
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn active_lease_count(&self) -> usize {
         self.lease.active_lease_count().await
     }
@@ -231,7 +235,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         })?;
 
         let id = CredentialId::new();
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
 
         let resolved = self
             .ops
@@ -320,6 +324,19 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// List credential ids visible to `scope` (rows whose stored
     /// `owner_id` matches).
     ///
+    /// # Performance contract
+    ///
+    /// This is **O(N) in the global credential count**, not in the
+    /// caller's tenant size: it enumerates every stored id and does one
+    /// `get` (one decrypt) per row to read the `owner_id` stamp, because
+    /// the build-once layered stack omits the storage `ScopeLayer` and
+    /// tenancy is enforced at the operation level. That is acceptable for
+    /// the non-durable in-memory backend (the only backend that ships
+    /// with this facade today). Owner-scoped listing for the durable
+    /// backends belongs in the **store layer** (an indexed,
+    /// owner-filtered query), not a facade-side scan — a conscious
+    /// deferral, not an oversight.
+    ///
     /// # Errors
     ///
     /// [`CredentialServiceError::Store`] on a backend failure.
@@ -371,7 +388,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             }
         })?;
 
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
         let resolved = self
             .ops
             .resolve(&existing.credential_key, &values, &ctx, &self.pending)
@@ -453,7 +470,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 key: stored.credential_key.clone(),
             });
         }
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
         let result = self
             .ops
             .test(&stored.credential_key, &stored.data, &ctx)
@@ -483,13 +500,17 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     ///
     /// Owner-checked first. The refresh runs through
     /// [`nebula_resilience::retry_with`] (3 attempts, exponential
-    /// backoff); the resulting state is written back under
-    /// compare-and-swap on the version observed at load. A concurrent
-    /// refresh/update wins and this attempt fails explicitly with
-    /// [`CredentialServiceError::VersionConflict`] — canon §13.2: refresh
-    /// must never silently strand a concurrent write. On success
-    /// [`CredentialObserver::on_refresh`] fires and the fresh secret-free
-    /// snapshot is returned.
+    /// backoff). If this caller performed the refresh the resulting state
+    /// is written back under compare-and-swap on the version observed at
+    /// load; a concurrent refresh/update wins and this attempt fails
+    /// explicitly with [`CredentialServiceError::VersionConflict`] —
+    /// canon §13.2: refresh must never silently strand a concurrent
+    /// write. If another replica coalesced the refresh
+    /// (`RefreshOutcome::CoalescedByOtherReplica`) the write is **skipped
+    /// entirely** and the now-fresher state is re-read from the store
+    /// instead of clobbering it with the un-mutated local copy. On
+    /// success (either path) [`CredentialObserver::on_refresh`] fires and
+    /// the fresh secret-free snapshot is returned.
     ///
     /// # Errors
     ///
@@ -510,7 +531,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 key: stored.credential_key.clone(),
             });
         }
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
 
         let config = RetryConfig::<CredentialServiceError>::new(3)
             .map_err(|e| CredentialServiceError::Internal(format!("retry config invalid: {e}")))?
@@ -520,7 +541,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 max: Duration::from_secs(5),
             });
 
-        let refreshed = retry_with(config, || async {
+        let outcome = retry_with(config, || async {
             self.ops
                 .refresh(&stored.credential_key, &stored.data, &ctx)
                 .await
@@ -532,6 +553,28 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 CredentialServiceError::Provider(format!("credential refresh failed: {other}"))
             },
         })?;
+
+        let refreshed = match outcome {
+            crate::ops::RefreshOutcomeKind::Rewrote(bytes) => bytes,
+            // Another replica already refreshed and persisted fresher
+            // state. Re-writing the un-mutated local copy here would
+            // either spuriously `VersionConflict` or clobber that fresher
+            // state (canon §13.2). Skip the write entirely and return the
+            // store's current (post-coalesce) snapshot.
+            crate::ops::RefreshOutcomeKind::CoalescedReRead => {
+                let credential_id = CredentialId::parse(&stored.id).map_err(|e| {
+                    CredentialServiceError::Internal(format!(
+                        "stored credential id unparsable: {e}"
+                    ))
+                })?;
+                self.observer.on_refresh(&credential_id);
+                tracing::info!(
+                    credential.id = %id,
+                    "credential refresh coalesced by another replica; re-reading without re-writing"
+                );
+                return self.snapshot_from_store(scope, id).await;
+            },
+        };
 
         let now = chrono::Utc::now();
         let state_kind = stored.state_kind.clone();
@@ -600,7 +643,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 key: stored.credential_key.clone(),
             });
         }
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
         self.ops
             .revoke(&stored.credential_key, &stored.data, &ctx)
             .await?;
@@ -647,6 +690,9 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     ///
     /// - [`CredentialServiceError::TypeUnknown`] — key not registered.
     /// - [`CredentialServiceError::ValidationFailed`] — schema / typed-deserialize / resolve.
+    /// - [`CredentialServiceError::SessionRequired`] — the resolution
+    ///   went `Pending` (interactive kickoff) but `scope` carries no
+    ///   session, so the issued token could never be redeemed.
     /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
     pub async fn resolve(
         &self,
@@ -665,7 +711,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 reason: format!("property ingest failed: {e}"),
             }
         })?;
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
         let outcome = self
             .ops
             .acquire(credential_key, &values, &ctx, &self.pending)
@@ -686,6 +732,9 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// # Errors
     ///
     /// - [`CredentialServiceError::TypeUnknown`] — key not registered.
+    /// - [`CredentialServiceError::SessionRequired`] — `scope` carries no
+    ///   session; the pending-store binding makes a continuation
+    ///   structurally impossible without one.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Interactive`.
     /// - [`CredentialServiceError::ValidationFailed`] — continuation failed.
     /// - [`CredentialServiceError::Store`] — persistence failure on the `Complete` path.
@@ -701,6 +750,17 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 key: credential_key.to_owned(),
             });
         }
+        // A continuation is structurally dead without a session: the
+        // engine's `execute_continue` requires `ctx.session_id()` and the
+        // `PendingStateStore` binds the pending on
+        // `(kind, owner, session, token)`. Surface that explicitly here
+        // rather than letting it collapse into a misleading
+        // `ValidationFailed` deep inside the executor.
+        if scope.session_id().is_none() {
+            return Err(CredentialServiceError::SessionRequired {
+                capability: "continue",
+            });
+        }
         // `PendingToken` has no public string constructor; its
         // documented wire form is a bare JSON string (see its
         // serde round-trip contract), so reconstruct the client-returned
@@ -709,7 +769,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             .map_err(|_| CredentialServiceError::ValidationFailed {
             reason: "malformed pending acquisition token".to_owned(),
         })?;
-        let ctx = Self::owner_context(scope.owner_id());
+        let ctx = Self::owner_context(scope);
         let outcome = self
             .ops
             .continue_resolve(credential_key, &token, &user_input, &ctx, &self.pending)
@@ -741,6 +801,17 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                 Ok(Acquisition::Complete { snapshot })
             },
             crate::ops::AcquireOutcome::Pending { token, interaction } => {
+                // The interaction can only be completed through
+                // `continue_resolve`, which the engine binds on
+                // `(kind, owner, session, token)`. Without a session on
+                // the scope the issued token is unusable, so refuse the
+                // kickoff explicitly instead of handing back a token that
+                // can never be redeemed.
+                if scope.session_id().is_none() {
+                    return Err(CredentialServiceError::SessionRequired {
+                        capability: "resolve",
+                    });
+                }
                 Ok(Acquisition::Pending {
                     token: token.as_str().to_owned(),
                     interaction,
@@ -842,7 +913,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     }
 
     /// Build the minimal owner-scoped [`CredentialContext`] the resolve
-    /// pipeline needs for `create` / `update`.
+    /// pipeline needs.
     ///
     /// `CredentialContext::for_test` is the upstream `pub` constructor
     /// that assembles exactly this shape (default credential/resource
@@ -853,8 +924,19 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// plugin credentials that consult them) is a follow-up; routing
     /// every call through this one helper keeps that migration to a
     /// single site.
-    fn owner_context(owner_id: &str) -> CredentialContext {
-        CredentialContext::for_test(owner_id)
+    ///
+    /// When the scope carries a session it is threaded onto the context
+    /// via `with_session_id`: the engine's `execute_continue` (and the
+    /// `PendingStateStore` `(kind, owner, session, token)` binding) reads
+    /// `ctx.session_id()`, so without this the interactive paths would
+    /// always fail `MissingSessionId`. CRUD passes a session-less scope
+    /// and the accessors ignore the (absent) session.
+    fn owner_context(scope: &TenantScope) -> CredentialContext {
+        let ctx = CredentialContext::for_test(scope.owner_id());
+        match scope.session_id() {
+            Some(session) => ctx.with_session_id(session),
+            None => ctx,
+        }
     }
 
     /// Map a [`StoreError`] into a [`CredentialServiceError`] without ever
@@ -906,13 +988,19 @@ pub mod test_support {
     //! `test_support` is test-support code, never a release path.
 
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use nebula_core::accessor::MetricsEmitter;
+    use nebula_credential::provider::LeaseEvent;
     use nebula_credential::store::StoreError;
-    use nebula_credential::{CredentialRegistry, EncryptionKey, InMemoryPendingStore};
+    use nebula_credential::{
+        CredentialEvent, CredentialId, CredentialRegistry, EncryptionKey, InMemoryPendingStore,
+    };
     use nebula_credential_builtin::{
         BearerTokenCredential, SharedKeyCredential, SigningKeyCredential, register_builtins,
     };
     use nebula_engine::credential::LeaseLifecycleConfig;
+    use nebula_eventbus::EventBus;
     use nebula_storage::credential::{
         AuditEvent, AuditSink, CacheConfig, InMemoryStore, StaticKeyProvider,
     };
@@ -921,8 +1009,11 @@ pub mod test_support {
     use super::CredentialService;
     use crate::builder::CredentialServiceBuilder;
     use crate::dispatch::CredentialDispatch;
-    use crate::observer::NoopObserver;
-    use crate::ops::{DispatchOps, register_all_builtin_ops};
+    use crate::observer::{CredentialObserver, NoopObserver};
+    use crate::ops::{
+        DispatchOps, register_all_builtin_ops, register_refreshable_ops, register_runtime_ops,
+    };
+    use crate::test_fixtures::RefreshableFixtureCredential;
 
     /// No-op audit sink — accepts every event (tests assert behavior via
     /// the store, not the audit trail).
@@ -1009,6 +1100,110 @@ pub mod test_support {
     /// fixture for tests / Plan-3 wiring.
     pub fn in_memory_service() -> CredentialService<InMemoryStore, InMemoryPendingStore> {
         service_with_audit_sink(Arc::new(NoopAuditSink))
+    }
+
+    /// Observer that counts `on_refresh` invocations so a test can prove
+    /// the facade fired the refresh hook on the success path. Event/lease
+    /// buses are inert (a real `CredentialResolver` still needs a bus, so
+    /// one is provided, but nothing subscribes).
+    #[derive(Debug, Default)]
+    struct CountingObserver {
+        refreshes: Arc<AtomicUsize>,
+    }
+
+    impl CredentialObserver for CountingObserver {
+        fn event_bus(&self) -> Arc<EventBus<CredentialEvent>> {
+            Arc::new(EventBus::new(1))
+        }
+        fn lease_bus(&self) -> Option<Arc<EventBus<LeaseEvent>>> {
+            None
+        }
+        fn metrics(&self) -> Option<Arc<dyn MetricsEmitter>> {
+            None
+        }
+        fn on_resolve(&self, _credential_id: &CredentialId) {}
+        fn on_refresh(&self, _credential_id: &CredentialId) {
+            self.refreshes.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_revoke(&self, _credential_id: &CredentialId) {}
+    }
+
+    /// Build an in-memory service with the three static builtins **plus**
+    /// the [`RefreshableFixtureCredential`] wired through registry +
+    /// dispatch (`mark_refreshable`) + ops (`register_runtime_ops` then
+    /// `register_refreshable_ops`). Returns the service alongside an
+    /// `Arc<AtomicUsize>` that counts `on_refresh` calls, so a test can
+    /// prove the success path fired the observer hook.
+    ///
+    /// The static builtins cannot exercise any positive capability path
+    /// (refresh CAS + retry, the coalesced re-read branch, the §13.2
+    /// version-conflict branch); this fixture-enabled variant does.
+    pub fn in_memory_service_with_fixtures() -> (
+        CredentialService<InMemoryStore, InMemoryPendingStore>,
+        Arc<AtomicUsize>,
+    ) {
+        let mut registry = CredentialRegistry::new();
+        register_builtins(&mut registry).expect("register_builtins");
+        registry
+            .register(RefreshableFixtureCredential, "nebula-credential-runtime")
+            .expect("register fixture");
+
+        let mut dispatch = CredentialDispatch::new();
+        dispatch
+            .register::<BearerTokenCredential>()
+            .expect("dispatch bearer");
+        dispatch
+            .register::<SharedKeyCredential>()
+            .expect("dispatch shared");
+        dispatch
+            .register::<SigningKeyCredential>()
+            .expect("dispatch signing");
+        dispatch
+            .register::<RefreshableFixtureCredential>()
+            .expect("dispatch fixture");
+        // Closure presence *is* the capability; the dispatch flag mirrors
+        // it so `is_refreshable` agrees with the registered ops.
+        dispatch.mark_refreshable::<RefreshableFixtureCredential>();
+
+        let mut ops = DispatchOps::<InMemoryStore, InMemoryPendingStore>::new();
+        register_all_builtin_ops::<InMemoryStore, InMemoryPendingStore>(&mut ops)
+            .expect("builtin ops");
+        // Base ops first, then the refresh capability closure (the
+        // ordering `register_refreshable_ops` enforces via
+        // `DispatchError::BaseOpsMissing`).
+        register_runtime_ops::<RefreshableFixtureCredential, InMemoryStore, InMemoryPendingStore>(
+            &mut ops,
+        )
+        .expect("fixture base ops");
+        register_refreshable_ops::<
+            RefreshableFixtureCredential,
+            InMemoryStore,
+            InMemoryPendingStore,
+        >(&mut ops)
+        .expect("fixture refreshable ops");
+
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let observer = CountingObserver {
+            refreshes: Arc::clone(&refreshes),
+        };
+
+        let raw_store = InMemoryStore::new();
+        let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
+        let svc = CredentialServiceBuilder::new(
+            raw_store,
+            Arc::new(StaticKeyProvider::new(key)),
+            Arc::new(NoopAuditSink),
+            CacheConfig::default(),
+            InMemoryPendingStore::new(),
+            Arc::new(registry),
+            Arc::new(dispatch),
+            Arc::new(ops),
+            Arc::new(observer),
+            LeaseLifecycleConfig::default(),
+            CancellationToken::new(),
+        )
+        .build();
+        (svc, refreshes)
     }
 }
 
@@ -1288,7 +1483,9 @@ mod tests {
     #[tokio::test]
     async fn continue_resolve_on_non_interactive_is_unsupported() {
         let svc = in_memory_service();
-        let scope = TenantScope::new("org1", "ws1");
+        // A session is present so the path reaches the capability gate
+        // (the session check runs first; see the dedicated test below).
+        let scope = TenantScope::new("org1", "ws1").with_session("sess-1");
         // bearer_token is non-interactive: no continuation closure is
         // registered, so the continuation path refuses with a clear
         // capability error rather than a confusing pending-store miss.
@@ -1306,5 +1503,154 @@ mod tests {
             CredentialServiceError::CapabilityUnsupported { ref capability, .. }
                 if capability == "interactive"
         ));
+    }
+
+    /// Without a session, `continue_resolve` must fail `SessionRequired`
+    /// *before* the dispatch/capability gate: the pending-store
+    /// `(kind, owner, session, token)` binding makes a continuation
+    /// structurally impossible without one, and the bare session-less
+    /// path would otherwise collapse into a silent `ValidationFailed`
+    /// inside the engine's `execute_continue`.
+    #[tokio::test]
+    async fn continue_resolve_without_session_is_session_required() {
+        let svc = in_memory_service();
+        let scope = TenantScope::new("org1", "ws1"); // no .with_session
+        let err = svc
+            .continue_resolve(
+                &scope,
+                "bearer_token",
+                "irrelevant-token",
+                nebula_credential::resolve::UserInput::Poll,
+            )
+            .await
+            .expect_err("no session");
+        assert!(
+            matches!(
+                err,
+                CredentialServiceError::SessionRequired { capability } if capability == "continue"
+            ),
+            "expected SessionRequired(continue), got {err:?}"
+        );
+    }
+
+    /// `owner_context` threads the scope's session onto the
+    /// `CredentialContext` (so the engine's `execute_continue`, which
+    /// reads `ctx.session_id()`, is not structurally dead), and leaves it
+    /// `None` for a session-less CRUD scope.
+    #[test]
+    fn owner_context_threads_session_when_scope_carries_one() {
+        use super::CredentialService;
+        use nebula_credential::InMemoryPendingStore;
+        use nebula_storage::credential::InMemoryStore;
+
+        type Svc = CredentialService<InMemoryStore, InMemoryPendingStore>;
+
+        let with = TenantScope::new("org1", "ws1").with_session("sess-xyz");
+        let ctx = Svc::owner_context(&with);
+        assert_eq!(ctx.session_id(), Some("sess-xyz"));
+        assert_eq!(ctx.owner_id(), "org1/ws1");
+
+        let without = TenantScope::new("org1", "ws1");
+        let ctx_none = Svc::owner_context(&without);
+        assert_eq!(ctx_none.session_id(), None);
+    }
+
+    /// Positive refresh path on the refreshable fixture: `refresh()`
+    /// succeeds, the *mutated* (token-rotated, counter-bumped) state is
+    /// re-persisted under CAS, and the `on_refresh` observer hook fires
+    /// exactly once. The static builtins cannot reach this path (none is
+    /// `Refreshable`), so the fixture is the only coverage for it.
+    #[tokio::test]
+    async fn fixture_refresh_succeeds_repersists_and_fires_on_refresh() {
+        let (svc, refreshes) = super::test_support::in_memory_service_with_fixtures();
+        let scope = TenantScope::new("org1", "ws1");
+
+        svc.create(
+            &scope,
+            "refreshable_fixture",
+            serde_json::json!({ "token": "tok-base" }),
+        )
+        .await
+        .expect("create fixture ok");
+        let id = svc.list(&scope).await.expect("list")[0].clone();
+
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let snap = svc.refresh(&scope, &id).await.expect("refresh ok");
+        assert_eq!(snap.kind(), "refreshable_fixture");
+        // on_refresh fired exactly once on the success path.
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // The re-persisted state is the *mutated* one: a second refresh
+        // observes the first rotation (counter is 2 → token `tok-base-r2`),
+        // proving the CAS write stored the refreshed bytes, not the
+        // pre-refresh copy.
+        let snap2 = svc.refresh(&scope, &id).await.expect("second refresh ok");
+        assert_eq!(snap2.kind(), "refreshable_fixture");
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Still retrievable and correctly projected post-refresh.
+        let got = svc.get(&scope, &id).await.expect("get ok");
+        assert_eq!(got.kind(), "refreshable_fixture");
+    }
+
+    /// A concurrent version bump landing between refresh's internal load
+    /// and its compare-and-swap re-persist makes `refresh()` fail
+    /// *explicitly* with `VersionConflict` rather than silently
+    /// clobbering the racing write (the canon §13.2 contract).
+    ///
+    /// Determinism: the fixture's `refresh` parks on a 2-party rendezvous
+    /// barrier *after* mutating its local state but *before* the service
+    /// performs the CAS. The concurrent writer lands a successful
+    /// `update` (bumping the stored version out from under the version
+    /// `refresh` loaded) and only then releases the barrier, so the CAS
+    /// is guaranteed to observe a stale version on every run.
+    #[tokio::test]
+    async fn fixture_refresh_loses_cas_to_concurrent_write_is_version_conflict() {
+        use crate::test_fixtures::set_refresh_rendezvous;
+        use std::sync::Arc;
+
+        let (svc, _refreshes) = super::test_support::in_memory_service_with_fixtures();
+        let scope = TenantScope::new("org1", "ws1");
+
+        svc.create(
+            &scope,
+            "refreshable_fixture",
+            serde_json::json!({ "token": "tok-race" }),
+        )
+        .await
+        .expect("create ok");
+        let id = svc.list(&scope).await.expect("list")[0].clone();
+
+        // 2 parties: the fixture's parked `refresh` and the writer below.
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        set_refresh_rendezvous(Some(Arc::clone(&barrier)));
+
+        let svc_ref = &svc;
+        let scope_ref = &scope;
+        let id_ref = &id;
+        let (refresh_res, upd_res) =
+            tokio::join!(async { svc_ref.refresh(scope_ref, id_ref).await }, async {
+                // The credential is created at stored version 1. Bump it
+                // (1 -> 2) while `refresh` is parked at the rendezvous,
+                // then release the barrier so refresh proceeds to its CAS
+                // on the now-stale version it loaded (1).
+                let r = svc_ref
+                    .update(
+                        scope_ref,
+                        id_ref,
+                        serde_json::json!({ "token": "tok-race-concurrent" }),
+                        1,
+                    )
+                    .await;
+                barrier.wait().await;
+                r
+            });
+        set_refresh_rendezvous(None);
+
+        upd_res.expect("concurrent update (version 1 -> 2) must succeed");
+        let err = refresh_res.expect_err("refresh lost the CAS race");
+        assert!(
+            matches!(err, CredentialServiceError::VersionConflict { .. }),
+            "a refresh that lost the CAS race must be VersionConflict, got {err:?}"
+        );
     }
 }
