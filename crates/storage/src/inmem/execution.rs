@@ -161,11 +161,13 @@ impl ExecutionStore for InMemoryExecutionStore {
             return Ok(TransitionOutcome::VersionConflict { actual: 0 });
         };
         // Cross-scope commit: the row is invisible to this tenant. Surface
-        // it as a conflict, never an Apply, never a leak.
+        // it exactly like the unknown-id path above (`actual: 0`), never
+        // an Apply. Echoing the real `row.version` here would be a
+        // cross-tenant version oracle — a caller in scope B could probe
+        // scope A's row by observing the conflict's `actual` counter. A
+        // cross-tenant row must be indistinguishable from a missing one.
         if &row.scope != batch.scope() {
-            return Ok(TransitionOutcome::VersionConflict {
-                actual: row.version,
-            });
+            return Ok(TransitionOutcome::VersionConflict { actual: 0 });
         }
         // Fencing gate: a superseded/older generation is rejected even if
         // the version matches (closes the zombie-runner hole, spec §4.1).

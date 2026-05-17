@@ -733,12 +733,25 @@ pub async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
     // Any of VersionConflict / FencedOut / NotFound (Err) is an acceptable
     // rejection; the only forbidden outcome is a successful cross-tenant
     // Apply.
-    let applied = matches!(outcome, Ok(TransitionOutcome::Applied { .. }));
+    let applied = matches!(&outcome, Ok(TransitionOutcome::Applied { .. }));
     assert!(
         !applied,
         "[{}] cross-tenant commit must NEVER Apply",
         backend.name()
     );
+    // No cross-tenant version oracle: a `VersionConflict` from a
+    // cross-scope probe must report `actual: 0` (indistinguishable from a
+    // missing row), never echo the victim row's real counter. The victim
+    // was created at version 1, so a leak would surface as `actual: 1`.
+    if let Ok(TransitionOutcome::VersionConflict { actual }) = &outcome {
+        assert_eq!(
+            *actual,
+            0,
+            "[{}] cross-scope conflict leaked the victim's version counter \
+             (got actual={actual}); it must be 0",
+            backend.name()
+        );
+    }
 }
 
 /// The spec-16 workflow split contract: a workflow row round-trips by id
