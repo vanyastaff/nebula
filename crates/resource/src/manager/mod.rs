@@ -655,6 +655,10 @@ impl Manager {
     ///
     /// - [`Error::permanent`] when expression resolution, JSON deserialization, or schema
     ///   validation fails.
+    /// - [`Error::permanent`] when the config carries a top-level field the `R::Config` schema
+    ///   does not declare (closed-set guard): `ResourceConfig` must carry no secrets, so an
+    ///   inlined secret-shaped field is rejected here rather than silently ignored
+    ///   (PRODUCT_CANON §3.5). The error names only the offending key, never its value.
     /// - [`Error::permanent`] when a `slot_bindings` key does not correspond to a declared
     ///   credential slot on `R`.
     /// - Any [`Error`](Error) returned by the underlying typed [`register`](Self::register).
@@ -724,6 +728,34 @@ impl Manager {
         if let Err(report) = schema.validate(&field_values) {
             return Err(Error::permanent(format!(
                 "register_from_value: schema validation failed: {report:?}"
+            )));
+        }
+
+        // 2b. Closed-set guard: reject any config key the typed `R::Config` schema does not
+        //     declare. `nebula_schema::Schema::validate` only checks *declared* fields and
+        //     silently ignores unknown ones, so without this an operator could inline a
+        //     secret-shaped field (e.g. `password`) into `ResourceConfig` and get no signal —
+        //     `ResourceConfig` must carry no secrets; secrets reach a resource ONLY via typed
+        //     credential slots (PRODUCT_CANON §3.5; ADR-0044 slot model; ADR-0030 redaction;
+        //     ADR-0036 isolation). The error names only the offending KEY, never its value, so
+        //     a mis-wired secret can never leak through the rejection message.
+        //
+        //     Skipped when the schema declares no fields: an empty `ValidSchema` is the
+        //     "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a closed set
+        //     over zero fields would reject every config — that gate belongs to types that
+        //     have opted into a real schema.
+        let declared = schema.fields();
+        if !declared.is_empty()
+            && let Some((unknown, _)) = field_values
+                .iter()
+                .find(|(k, _)| !declared.iter().any(|f| f.key().as_str() == k.as_str()))
+        {
+            return Err(Error::permanent(format!(
+                "register_from_value: config field `{unknown}` is not declared by the \
+                 `{ty}` schema; secrets must not be inlined into ResourceConfig — bind \
+                 them through a typed credential slot instead (PRODUCT_CANON §3.5)",
+                unknown = unknown.as_str(),
+                ty = std::any::type_name::<R::Config>(),
             )));
         }
 
