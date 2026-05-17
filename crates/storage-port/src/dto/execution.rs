@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 /// interprets execution state — the execution FSM lives in
 /// `nebula-execution`. `fencing` is the lease generation that last wrote the
 /// row (`None` before any lease is acquired).
-// `state` is `serde_json::Value`, which is not `Eq` (it can hold a
-// float). `Eq` is therefore not derivable; the clippy hint is a false
-// positive for any DTO carrying an opaque JSON payload.
+// guard-justified: `state` is `serde_json::Value`, which is not `Eq`
+// (it can hold a float). `Eq` is therefore not derivable; the clippy
+// hint is a false positive for any DTO carrying an opaque JSON payload.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionRecord {

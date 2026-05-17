@@ -194,6 +194,10 @@ impl ExecutionStore for InMemoryExecutionStore {
 
         let mut seq = st.next_seq.get(&id).copied().unwrap_or(1);
         {
+            // guard-justified: the row's presence was asserted earlier in
+            // this same function under the *same* `st` lock guard (the CAS
+            // + fencing check above borrows `row`); the lock is never
+            // released between, so the entry cannot vanish here.
             let row = st
                 .rows
                 .get_mut(&id)

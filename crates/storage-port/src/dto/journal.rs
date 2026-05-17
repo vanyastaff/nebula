@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 /// `seq` is assigned by the backend on append (`None` when the caller hands
 /// an entry to `commit` and lets the store stamp the sequence). `payload` is
 /// opaque to the port.
-// `payload` is `serde_json::Value`, which is not `Eq` (it can hold a
-// float). `Eq` is therefore not derivable; the clippy hint is a false
-// positive for any DTO carrying an opaque JSON payload.
+// guard-justified: `payload` is `serde_json::Value`, which is not `Eq`
+// (it can hold a float). `Eq` is therefore not derivable; the clippy
+// hint is a false positive for any DTO carrying an opaque JSON payload.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JournalEntry {

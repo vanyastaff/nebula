@@ -21,9 +21,10 @@ pub struct WorkflowRecord {
 ///
 /// `definition` is opaque to the port (the workflow compiler owns its
 /// shape). `pinned` prevents automatic version GC.
-// `definition` is `serde_json::Value`, which is not `Eq` (it can hold a
-// float). `Eq` is therefore not derivable; the clippy hint is a false
-// positive for any DTO carrying an opaque JSON payload.
+// guard-justified: `definition` is `serde_json::Value`, which is not
+// `Eq` (it can hold a float). `Eq` is therefore not derivable; the
+// clippy hint is a false positive for any DTO carrying an opaque JSON
+// payload.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowVersionRecord {

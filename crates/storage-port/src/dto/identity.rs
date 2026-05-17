@@ -41,8 +41,9 @@ pub struct UserRow {
 }
 
 /// `orgs` row (migration 0003).
-// `settings` is `serde_json::Value` (not `Eq` — can hold a float); the
-// clippy `Eq`-derivable hint is a false positive for JSON-bearing rows.
+// guard-justified: `settings` is `serde_json::Value` (not `Eq` — can
+// hold a float); the clippy `Eq`-derivable hint is a false positive for
+// JSON-bearing rows.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OrgRow {
@@ -69,8 +70,9 @@ pub struct OrgRow {
 }
 
 /// `workspaces` row (migration 0004).
-// `settings` is `serde_json::Value` (not `Eq` — can hold a float); the
-// clippy `Eq`-derivable hint is a false positive for JSON-bearing rows.
+// guard-justified: `settings` is `serde_json::Value` (not `Eq` — can
+// hold a float); the clippy `Eq`-derivable hint is a false positive for
+// JSON-bearing rows.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceRow {
@@ -122,8 +124,9 @@ pub struct MembershipRow {
 }
 
 /// `resources` row (migration 0009).
-// `config` is `serde_json::Value` (not `Eq` — can hold a float); the
-// clippy `Eq`-derivable hint is a false positive for JSON-bearing rows.
+// guard-justified: `config` is `serde_json::Value` (not `Eq` — can
+// hold a float); the clippy `Eq`-derivable hint is a false positive for
+// JSON-bearing rows.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceRow {
@@ -150,8 +153,9 @@ pub struct ResourceRow {
 }
 
 /// `triggers` row (migrations 0010 + 0018 webhook_path).
-// `config` is `serde_json::Value` (not `Eq` — can hold a float); the
-// clippy `Eq`-derivable hint is a false positive for JSON-bearing rows.
+// guard-justified: `config` is `serde_json::Value` (not `Eq` — can
+// hold a float); the clippy `Eq`-derivable hint is a false positive for
+// JSON-bearing rows.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriggerRow {
@@ -210,8 +214,9 @@ pub struct QuotaRow {
 }
 
 /// `audit_log` row (migration 0015).
-// `details` is `Option<serde_json::Value>` (not `Eq` — can hold a float);
-// the clippy `Eq`-derivable hint is a false positive for JSON-bearing rows.
+// guard-justified: `details` is `Option<serde_json::Value>` (not `Eq`
+// — can hold a float); the clippy `Eq`-derivable hint is a false
+// positive for JSON-bearing rows.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuditLogRow {
@@ -242,8 +247,9 @@ pub struct AuditLogRow {
 }
 
 /// `blobs` row (migration 0019).
-// `metadata` is `Option<serde_json::Value>` (not `Eq` — can hold a float);
-// the clippy `Eq`-derivable hint is a false positive for JSON-bearing rows.
+// guard-justified: `metadata` is `Option<serde_json::Value>` (not `Eq`
+// — can hold a float); the clippy `Eq`-derivable hint is a false
+// positive for JSON-bearing rows.
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BlobRow {
