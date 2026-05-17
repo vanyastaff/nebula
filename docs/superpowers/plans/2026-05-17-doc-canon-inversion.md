@@ -487,13 +487,15 @@ Expected: every line `ok`, ending `D8 ACCEPTANCE PASSED`, exit 0 — including t
 
 - [ ] **Step 2: Repo-wide residual sweep for stale canon wording**
 
+Step 1's gate is the **authoritative** acceptance check (its negative assertion is AGENTS.md-anchored: it fails only if some file still claims *AGENTS.md* is the source of truth). This step is a secondary belt for stale `@AGENTS.md` imports / "shim" wording / AGENTS-as-canon pointers anywhere else in the repo. The regex MUST stay anchored on `AGENTS.md` — a generic `source of truth for (project|repository)` match is wrong: post-inversion that phrase legitimately describes **CLAUDE.md** (`.cursor`, `.github`, `CLAUDE.md` all correctly say "Use `CLAUDE.md` as the canonical source of truth for project/repository …").
+
 Run:
 
 ```bash
-git grep -nE 'source of truth for (project|repository)|shim that imports|@AGENTS\.md|point(s)? (back )?to `?AGENTS\.md`?' -- ':!docs/superpowers' ':!.ai-factory'
+git grep -nE '@AGENTS\.md|shim that imports|(Treat|Use) `?AGENTS\.md`? as (the )?(canonical )?source|`?AGENTS\.md`? (is|as) the (canonical )?source of truth|points? (back )?to `?AGENTS\.md`? (as|for) (the )?(source|canon|truth|rules|map)' -- ':!docs/superpowers' ':!.ai-factory'
 ```
 
-Expected: **no output**. Any hit outside `docs/superpowers` (this plan/spec, which legitimately discuss the inversion) and `.ai-factory` (AI-Factory-managed, out of scope — Plan 3) is a residual: fix it to the post-inversion wording using the same patterns as Tasks 1–3 (name `CLAUDE.md` canonical; `AGENTS.md` = thin pointer), then re-run Step 1.
+Expected: **no output**. Any hit outside `docs/superpowers` (this plan/spec, which legitimately discuss the inversion) and `.ai-factory` (AI-Factory-managed, out of scope — Plan 3) is a genuine residual: fix it to the post-inversion wording using the same patterns as Tasks 1–3 (name `CLAUDE.md` canonical; `AGENTS.md` = thin pointer), then re-run Step 1.
 
 - [ ] **Step 3: Report (do NOT edit) any `.ai-factory` canon mention**
 
