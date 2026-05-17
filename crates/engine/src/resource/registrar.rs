@@ -488,6 +488,33 @@ impl ResourceRegistrarRegistry {
     /// `fanout_index = None` (or an empty `credential_ids`) skips the
     /// bind entirely — registration is unchanged.
     ///
+    /// # Ordering contract — caller must quiesce fan-out during activation
+    ///
+    /// `register(...).await` makes the `Manager` row **discoverable**
+    /// before this method records the reverse-index bind. Those two
+    /// steps are deliberately **not** atomic (atomicity would require a
+    /// transactional `Manager::register_from_value` "register-then-
+    /// publish" surface — a heavy Manager API change with no production
+    /// consumer yet). There is therefore a window in which the Manager
+    /// row exists but the reverse-index row does not: a credential
+    /// rotation / lease-revoke for this row that the fan-out driver
+    /// processes *inside that window* would fan to zero rows (a silent
+    /// miss for this row) even though the row is live.
+    ///
+    /// **The caller MUST ensure the rotation fan-out is quiescent for
+    /// the credentials being bound while it activates a row through this
+    /// seam** (e.g. activate before the driver is spawned, or serialise
+    /// activation against rotation for the affected credentials). This
+    /// is a documented contract, not an enforced invariant, because the
+    /// seam has **no production caller today**: *bind-population* (the
+    /// production credential→slot resolution that would call this) is the
+    /// deferred resource-activation path (ADR-0067 §Deferred — *bind-
+    /// population producer*). The driver cannot observe a row that
+    /// nothing activated, so the window is not reachable in production
+    /// until that deferred producer lands; when it does, it must honour
+    /// this contract (or the seam must first gain a transactional
+    /// register+bind surface).
+    ///
     /// # Errors
     ///
     /// Same as [`register`](Self::register): the bind step runs only on

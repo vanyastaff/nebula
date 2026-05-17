@@ -28,8 +28,13 @@ use std::time::Duration;
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
-use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
+use nebula_engine::{
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+    WorkflowEngine,
+    credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex},
+};
 use nebula_eventbus::EventBus;
+use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
     ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
@@ -456,5 +461,208 @@ async fn rotation_after_resource_removed_fans_to_zero_rows() {
         "after the resource was removed, a rotation must NOT deliver its \
          hook again (fans to a now-dead row, recorded failed — not a \
          second hook call)"
+    );
+}
+
+/// #690 review (P1, comment 3255603311 / 3255606374) — one logical
+/// credential revoke double-emits across the two buses
+/// (`LeaseEvent::LeaseRevoked` then the facade `CredentialEvent::Revoked`,
+/// back-to-back inside one `CredentialService::revoke`). The driver's
+/// per-credential dedupe window must collapse them so
+/// `on_credential_revoke` fans out **exactly once** per logical revoke
+/// (non-idempotent hooks must not double-fire).
+#[tokio::test]
+async fn duplicate_revoke_across_both_buses_fans_out_once() {
+    let w = wire(Behaviour::Ok).await;
+
+    // Lease bus first (the lease scheduler emits LeaseRevoked for the
+    // released lease) ...
+    w.lease_bus.emit(LeaseEvent::LeaseRevoked {
+        credential_id: Some(w.cid),
+        lease_id: "lease-dup".to_owned(),
+        provider: std::borrow::Cow::Borrowed("vault"),
+    });
+    // ... then the facade emits CredentialEvent::Revoked for the SAME
+    // credential — the second surfacing of one logical revoke.
+    w.cred_bus.emit(CredentialEvent::Revoked {
+        credential_id: w.cid,
+    });
+
+    // The first revoke is delivered.
+    eventually("first revoke hook delivered", || {
+        w.rec.revoke.load(Ordering::SeqCst) == 1
+    })
+    .await;
+
+    // Drive a refresh afterwards and wait for it: the driver processes
+    // events in order on its single task, so once the refresh is
+    // observed the duplicate revoke (emitted before it) has definitely
+    // been processed too — and must have been skipped by the dedupe.
+    w.cred_bus.emit(CredentialEvent::Refreshed {
+        credential_id: w.cid,
+    });
+    eventually("post-duplicate refresh delivered", || {
+        w.rec.refresh.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(
+        w.rec.revoke.load(Ordering::SeqCst),
+        1,
+        "the lease-bus + credential-bus double-emission of ONE logical \
+         revoke must fan out the revoke hook exactly once (deduped)"
+    );
+}
+
+/// #690 review (CodeRabbit nitpick, fix J) — a `LeaseRevoked` carrying a
+/// `credential_id` that was **never bound** (a real credential id, but no
+/// reverse-index row for it) exercises the "lookup succeeds, zero binds"
+/// branch — distinct from the "no credential id" orphan branch
+/// ([`orphan_lease_revoked_is_noop`]). Processing must continue and the
+/// revoke hook count must stay 0 (nothing bound that credential).
+#[tokio::test]
+async fn lease_revoked_for_never_bound_credential_is_zero_binds_noop() {
+    let w = wire(Behaviour::Ok).await;
+
+    // A real, attributed credential id — but one that no resource row
+    // ever bound (distinct from `w.cid`, which is the bound one). The
+    // reverse-index lookup succeeds yet yields zero rows.
+    let never_bound = CredentialId::new();
+    assert_ne!(never_bound, w.cid, "must be a different credential id");
+    w.lease_bus.emit(LeaseEvent::LeaseRevoked {
+        credential_id: Some(never_bound),
+        lease_id: "lease-unbound".to_owned(),
+        provider: std::borrow::Cow::Borrowed("vault"),
+    });
+
+    // Prove the driver is still alive and processing after the
+    // zero-binds revoke: a real refresh for the BOUND credential is
+    // still delivered.
+    w.cred_bus.emit(CredentialEvent::Refreshed {
+        credential_id: w.cid,
+    });
+    eventually("post-zero-binds refresh delivered", || {
+        w.rec.refresh.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(
+        w.rec.revoke.load(Ordering::SeqCst),
+        0,
+        "a LeaseRevoked for a never-bound credential must fan to zero rows \
+         — no revoke hook delivered (lookup-succeeds-zero-binds branch)"
+    );
+}
+
+// ── Fix D: idempotent engine driver spawn ───────────────────────────
+
+/// No-op action executor — the engine under test never dispatches a
+/// workflow; it only exercises `spawn_resource_rotation_fanout`.
+fn noop_engine_with_manager(manager: Arc<Manager>) -> WorkflowEngine {
+    let registry = Arc::new(ActionRegistry::new());
+    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+        Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
+    });
+    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let metrics = MetricsRegistry::new();
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .expect("ActionRuntime::try_new"),
+    );
+    WorkflowEngine::new(runtime, metrics)
+        .expect("WorkflowEngine::new")
+        .with_resource_manager(manager)
+}
+
+/// #690 review (Major, comment 3255607651) —
+/// `WorkflowEngine::spawn_resource_rotation_fanout` must be **single-shot**:
+/// a second call must NOT spawn a second subscriber pair (which would
+/// double-dispatch every refresh/revoke). The second call returns `None`,
+/// and a single emitted refresh is delivered to the bound resource hook
+/// **exactly once** (a second subscriber would deliver it twice).
+#[tokio::test]
+async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
+    let rec = Recorder::default();
+    let org = OrgId::new();
+    let scope = ScopeLevel::Organization(org);
+    let mgr = Arc::new(Manager::new());
+    let cid = CredentialId::new();
+    let slot_identity: u64 = 0xD1D1_D1D1;
+
+    mgr.register_resident_with(
+        Recording {
+            behaviour: Behaviour::Ok,
+            rec: rec.clone(),
+        },
+        NoCfg,
+        ResidentConfig::default(),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_identity(slot_identity),
+    )
+    .expect("register resolved-credential row");
+
+    let ctx = ResourceContext::minimal(
+        Scope {
+            org_id: Some(org),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
+    let _g = mgr
+        .acquire_resident_for::<Recording>(&ctx, &AcquireOptions::default(), slot_identity)
+        .await
+        .expect("warm resident runtime");
+    drop(_g);
+
+    let engine = noop_engine_with_manager(Arc::clone(&mgr));
+    // Bind the resolved row into the engine-owned reverse index so a
+    // rotation has a row to fan to.
+    engine
+        .resource_fanout_index()
+        .bind(cid, Recording::key(), scope.clone(), "db", slot_identity);
+
+    let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
+    let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));
+
+    // First spawn: succeeds.
+    let _driver = engine
+        .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+        .expect("first spawn must return a driver");
+
+    // Second spawn: idempotent — must NOT spawn a second subscriber.
+    let second =
+        engine.spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)));
+    assert!(
+        second.is_none(),
+        "a second spawn_resource_rotation_fanout must return None (driver \
+         already running) — no second subscriber"
+    );
+
+    // One refresh emitted. With a single subscriber the bound resource
+    // hook fires exactly once; a leaked second subscriber would fire it
+    // twice.
+    cred_bus.emit(CredentialEvent::Refreshed { credential_id: cid });
+
+    // Wait for the hook, then drain extra scheduler turns and assert the
+    // count never exceeds 1 (the double-subscribe regression).
+    for _ in 0..2000 {
+        if rec.refresh.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        rec.refresh.load(Ordering::SeqCst),
+        1,
+        "exactly one refresh-hook delivery — a second spawn must not have \
+         created a second subscriber that double-dispatches"
     );
 }
