@@ -6264,9 +6264,9 @@ mod tests {
             EchoHandler,
         );
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(repo.clone());
+        let engine = stores.attach(engine);
 
         let n = node_key!("n");
         let wf = make_workflow(
@@ -6282,7 +6282,7 @@ mod tests {
         assert!(result.is_success());
 
         // Verify state was persisted
-        let entry = repo.get_state(result.execution_id).await.unwrap();
+        let entry = stores.get_state(result.execution_id).await.unwrap();
         assert!(entry.is_some(), "execution state should be persisted");
         let (version, state) = entry.unwrap();
         assert!(version >= 2, "repo version should have been bumped");
@@ -6292,7 +6292,10 @@ mod tests {
         );
 
         // Verify node output was saved
-        let node_output = repo.load_node_output(result.execution_id, n).await.unwrap();
+        let node_output = stores
+            .load_node_output(result.execution_id, n)
+            .await
+            .unwrap();
         assert_eq!(node_output, Some(serde_json::json!("hello")));
     }
 
@@ -6304,9 +6307,9 @@ mod tests {
             FailHandler,
         );
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(repo.clone());
+        let engine = stores.attach(engine);
 
         let n = node_key!("n");
         let wf = make_workflow(
@@ -6322,7 +6325,7 @@ mod tests {
         assert!(result.is_failure());
 
         // Verify final state was persisted as failed
-        let entry = repo.get_state(result.execution_id).await.unwrap();
+        let entry = stores.get_state(result.execution_id).await.unwrap();
         assert!(entry.is_some(), "execution state should be persisted");
         let (_version, state) = entry.unwrap();
         assert_eq!(state.get("status").and_then(|s| s.as_str()), Some("failed"));
@@ -6336,9 +6339,9 @@ mod tests {
             EchoHandler,
         );
 
-        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
-        let engine = engine.with_execution_repo(repo.clone());
+        let engine = stores.attach(engine);
 
         let n1 = node_key!("n1");
         let n2 = node_key!("n2");
@@ -6357,11 +6360,19 @@ mod tests {
 
         assert!(result.is_success());
 
-        // Both node outputs should be persisted
-        let all_outputs = repo.load_all_outputs(result.execution_id).await.unwrap();
-        assert_eq!(all_outputs.len(), 2);
-        assert_eq!(all_outputs[&n1], serde_json::json!(42));
-        assert_eq!(all_outputs[&n2], serde_json::json!(42));
+        // Both node outputs should be persisted (the port NodeResultStore
+        // is ISP-segregated with no bulk-output enumerator, so each node
+        // is checked individually — the workflow has exactly these two).
+        let out1 = stores
+            .load_node_output(result.execution_id, n1)
+            .await
+            .unwrap();
+        let out2 = stores
+            .load_node_output(result.execution_id, n2)
+            .await
+            .unwrap();
+        assert_eq!(out1, Some(serde_json::json!(42)));
+        assert_eq!(out2, Some(serde_json::json!(42)));
     }
 
     // -- Budget enforcement tests --
@@ -6592,16 +6603,14 @@ mod tests {
     async fn resume_returns_error_for_missing_execution() {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
-        let engine = engine
-            .with_execution_repo(exec_repo)
-            .with_workflow_repo(workflow_repo);
+        stores.save_workflow(&wf).await;
+        let engine = stores.attach(engine);
 
         let err = engine
             .resume_execution(ExecutionId::new())
@@ -6620,17 +6629,15 @@ mod tests {
             ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
             EchoHandler,
         );
-        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores = TestStores::new();
         let (engine, _) = make_engine(registry);
         let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
             vec![],
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
-        let engine = engine
-            .with_execution_repo(exec_repo.clone())
-            .with_workflow_repo(workflow_repo);
+        stores.save_workflow(&wf).await;
+        let engine = stores.attach(engine);
 
         // Run to completion first.
         let result = engine
