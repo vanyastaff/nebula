@@ -44,10 +44,9 @@ pub trait Credential: Send + Sync + 'static {
     const KEY: &'static str;
 
     fn metadata() -> CredentialMetadata;
-
-    fn properties_schema() -> ValidSchema {
-        <Self::Properties as HasSchema>::schema()  // default — derived from companion
-    }
+    // No schema method — `Properties: HasSchema` is the single source of
+    // truth; read it via `nebula_schema::schema_of::<Self::Properties>()`
+    // (ADR-0052 P3).
 
     fn project(state: &Self::State) -> Self::Scheme;
 
@@ -152,7 +151,7 @@ Capabilities are not const flags — they are **sub-traits**. A credential opts 
 The Phase 5 break renames `type Input` → `type Properties` and shifts schema ownership from instance metadata to a typed companion struct. Migration:
 
 1. **Extract a `<Name>Properties` struct** from the previous in-metadata schema definition. Annotate with `#[derive(Schema, Deserialize)]` and per-field `#[field(...)]` / `#[validate(...)]` attributes (Phase 2 namespace).
-2. **Rename `type Input = …` → `type Properties = …`** on the `Credential` impl. The default `Credential::properties_schema()` body reads `<Self::Properties as HasSchema>::schema()`.
+2. **Rename `type Input = …` → `type Properties = …`** on the `Credential` impl. The schema is read via `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3 — no per-trait schema method; the `Properties: HasSchema` bound is the single source of truth).
 3. **Drop `CredentialMetadata.properties: ValidSchema`** in builder calls; the schema is now derived from the type, not baked into the metadata struct.
 4. **For capability traits**, ensure each declared capability has a matching `impl <Capability> for <Cred>`. Pre-§15.4 const flags are gone — declared-but-not-implemented capability is a compile error now.
 5. **For `#[derive(Credential)]`** (new), parse `#[credential(key, name, scheme, properties|protocol, capabilities(...))]`. Two modes: `properties = TypePath` (user supplies `resolve` + `project`) or `protocol = TypePath` (derive auto-emits `resolve` delegating to `StaticProtocol`).
@@ -175,7 +174,7 @@ The Phase 5 break renames `type Input` → `type Properties` and shifts schema o
 - Not a secret manager (Vault, AWS Secrets Manager) — this is the domain contract layer, not a storage backend.
 - Not responsible for secret storage backends — composable layers (`EncryptionLayer`, etc.) wrap any `CredentialStore`.
 - Not an OAuth2 server — PKCE and device-code flows are client-side helpers; the OAuth2 authorization endpoint is external.
-- Not the schema system — field definitions use `nebula-schema`. Phase 5: schema lives on `Self::Properties` (a `#[derive(Schema)]` companion struct) rather than baked into `CredentialMetadata`; the engine reads it via `Credential::properties_schema()`.
+- Not the schema system — field definitions use `nebula-schema`. Phase 5: schema lives on `Self::Properties` (a `#[derive(Schema)]` companion struct) rather than baked into `CredentialMetadata`; the engine reads it via `nebula_schema::schema_of::<C::Properties>()` (ADR-0052 P3).
 
 ## П1 trait shape (2026-04-26)
 

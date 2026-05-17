@@ -15,8 +15,9 @@ use crate::{
 /// Typed shape of the `basic_auth` credential setup form (Phase 5 — replaces
 /// the legacy `BasicAuthInput`).
 ///
-/// `#[derive(Schema)]` provides the `HasSchema` impl that
-/// [`Credential::properties_schema`] reads. The plaintext password lives
+/// `#[derive(Schema)]` provides the `HasSchema` impl read via
+/// `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3). The
+/// plaintext password lives
 /// in a `String` here for schema derivation and is wrapped into
 /// [`SecretString`] inside [`Credential::resolve`] before it leaves the
 /// resolver.
@@ -54,7 +55,7 @@ impl Credential for BasicAuthCredential {
             .key(nebula_core::credential_key!("basic_auth"))
             .name("Basic Auth")
             .description("HTTP Basic authentication (username + password).")
-            .schema(Self::properties_schema())
+            .schema(nebula_schema::schema_of::<Self::Properties>())
             .pattern(crate::AuthPattern::IdentityPassword)
             .icon("lock")
             .build()
