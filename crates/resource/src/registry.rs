@@ -91,6 +91,22 @@ pub trait AnyManagedResource: Send + Sync + 'static {
         &'a self,
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+
+    /// Type-erased bounded drain of **this resource's own** in-flight
+    /// acquires.
+    ///
+    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
+    /// it drains through the erased view. Forwards to
+    /// `ManagedResource::wait_for_in_flight_drain`, which waits on this
+    /// row's per-resource counter — *not* the manager-wide `drain_tracker`
+    /// — so a revoke is isolated from in-flight traffic to unrelated
+    /// resources (ADR-0067 §Deferred). Boxed for the same `dyn`-safety
+    /// reason as the dispatch hooks. `Err(outstanding)` carries the counter
+    /// snapshot at the moment the timer fired.
+    fn wait_for_in_flight_drain_erased<'a>(
+        &'a self,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>>;
 }
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
@@ -138,6 +154,13 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
         slot: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(self.dispatch_slot_hook(slot, false))
+    }
+
+    fn wait_for_in_flight_drain_erased<'a>(
+        &'a self,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+        Box::pin(self.wait_for_in_flight_drain(timeout))
     }
 }
 
@@ -509,6 +532,12 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
             unit_dispatch()
         }
+        fn wait_for_in_flight_drain_erased<'a>(
+            &'a self,
+            _timeout: std::time::Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     impl AnyManagedResource for FakeB {
@@ -541,6 +570,12 @@ mod tests {
             _slot: &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
             unit_dispatch()
+        }
+        fn wait_for_in_flight_drain_erased<'a>(
+            &'a self,
+            _timeout: std::time::Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
         }
     }
 
