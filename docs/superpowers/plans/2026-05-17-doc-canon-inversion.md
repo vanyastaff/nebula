@@ -291,8 +291,9 @@ follow these branch/commit rules — CI and lefthook are the gate.
 - This file (`CLAUDE.md`) is the canonical source of truth for project rules;
   `AGENTS.md` only points here.
 - Daily commands go through `task` (see Common Commands above). Don't
-  call raw `cargo` for fmt/lint — `task fmt` requires nightly rustfmt and
-  `task clippy` runs with `-D warnings`. Note: `task test` / `task test:crate`
+  call raw `cargo` for fmt/lint — `task fmt` runs `cargo fmt --all` on the
+  pinned stable toolchain (per `rustfmt.toml`) and `task clippy` runs with
+  `-D warnings`. Note: `task test` / `task test:crate`
   use plain `cargo test`; the workspace pre-PR gate (`task dev:check`) runs
   nextest. For nextest on a single crate: `cargo nextest run -p <crate>`.
 - For persistent Nebula task branches, create worktrees with

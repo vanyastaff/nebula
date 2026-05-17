@@ -26,7 +26,7 @@ ecount=$(printf '%s' "$added" | grep -oE '#\[[[:space:]]*allow[[:space:]]*\(|(^|
 
 if is_lib_rust "$file" && [ "$is_test" -eq 0 ]; then
   if printf '%s' "$added" | grep -qE '\.[[:space:]]*unwrap[[:space:]]*(::<[^>]*>)?[[:space:]]*\(\)|\.[[:space:]]*expect[[:space:]]*\(|(^|[^A-Za-z_])panic![[:space:]]*\(|(Option|Result)[[:space:]]*::[[:space:]]*(unwrap|expect)[[:space:]]*\('; then
-    [ "${jcount:-0}" -ge 1 ] || deny "New unwrap()/expect()/panic!() in library code is forbidden (AGENTS.md). Use a typed thiserror variant, or justify with '// guard-justified: <reason>'."
+    deny "unwrap()/expect()/panic!() in library code is forbidden — NO escape, not even '// guard-justified:' (CLAUDE.md Enforced Discipline). Use a typed thiserror error; unwrap/expect/panic! belong only in tests, const, or binaries."
   fi
   [ "${ecount:-0}" -gt "${jcount:-0}" ] \
     && deny "allow/todo!/unimplemented!/unreachable! is a path-of-least-work escape — each needs its own '// guard-justified: <reason>' ($ecount escape(s), $jcount justification(s))."

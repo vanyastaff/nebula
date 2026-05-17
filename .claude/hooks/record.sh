@@ -27,7 +27,7 @@ case "$cmd" in
 esac
 core="$(printf '%s' "$cmd" | sed -E 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//')"
 is_gate=0
-if   [[ "$core" =~ ^cargo([[:space:]]+\+[^[:space:]]+)?[[:space:]]+clippy([[:space:]]|$) ]] && [[ "$core" =~ (^|[[:space:]])-D([[:space:]]|$) ]]; then is_gate=1
+if   [[ "$core" =~ ^cargo([[:space:]]+\+[^[:space:]]+)?[[:space:]]+clippy([[:space:]]|$) ]] && [[ "$core" =~ (^|[[:space:]])-D[[:space:]]+warnings([[:space:]]|$) ]]; then is_gate=1
 elif [[ "$core" =~ ^cargo([[:space:]]+\+[^[:space:]]+)?[[:space:]]+nextest[[:space:]]+run([[:space:]]|$) ]]; then is_gate=1
 elif [[ "$core" =~ ^task[[:space:]]+dev:check([[:space:]]|$) ]]; then is_gate=2
 fi

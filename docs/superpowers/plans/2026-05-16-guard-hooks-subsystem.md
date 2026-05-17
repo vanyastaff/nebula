@@ -798,7 +798,7 @@ git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" commit 
 
 **2. Placeholder scan:** No TBD/TODO-as-instruction; every step has complete runnable code/commands with expected output. Literal `TODO`/`HACK` appear only as guard regex content.
 
-**3. Consistency:** `_lib.sh` defines `read_input, jqg, have_jq, deny, allow, git_common_dir, turn_state_path, load_state, save_state, crate_of, is_lib_rust, normalize_argv0`; every hook sources `_lib.sh` and uses those exact names. Turn-state shape `{session,started_at,impl_files_edited[],gate_green[]}` written by A0, mutated by A2/B, read by C; `*workspace*` sentinel set by A2 (`task dev:check`) honored by C. `# HOOKMARK` insertion point is stable across Tasks 2–10. Blocking is uniformly `exit 2`; D never blocks.
+**3. Consistency:** `_lib.sh` defines `read_input, jqg, have_jq, deny, allow, git_common_dir, turn_state_path, load_state, save_state, crate_of, is_lib_rust` (the pre-D9 draft's `normalize_argv0`/`resolve_cmd` were deleted per D10, consistent with this block's own note above); every hook sources `_lib.sh` and uses those exact names. Turn-state shape `{session,started_at,impl_files_edited[],gate_green[]}` written by A0, mutated by A2/B, read by C; `*workspace*` sentinel set by A2 (`task dev:check`) honored by C. `# HOOKMARK` insertion point is stable across Tasks 2–10. Blocking is uniformly `exit 2`; D never blocks.
 
 ---
 

@@ -17,6 +17,6 @@ if g '(^|[[:space:]])cargo([[:space:]]|$)' && g '(^|[[:space:]])fmt([[:space:]]|
   deny "cargo fmt --all trips Windows os-error-206 / false green. Use bash scripts/pre-commit-fmt-check.sh or cargo fmt -p <crate>."
 fi
 if g 'git[[:space:]]+push' && g '(--force([[:space:]]|=|$)|--force-with-lease|(^|[[:space:]])-f([[:space:]]|$))' && [ "${NEBULA_ALLOW_FORCE:-}" != "1" ]; then
-  deny "Force-push to shared history blocked (AGENTS.md). Set NEBULA_ALLOW_FORCE=1 to override."
+  deny "Force-push to shared history blocked (CLAUDE.md). Set NEBULA_ALLOW_FORCE=1 to override."
 fi
 allow

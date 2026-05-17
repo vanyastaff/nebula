@@ -3,7 +3,11 @@
 guard_input=""
 read_input() { guard_input="$(cat)"; }
 have_jq() { command -v jq >/dev/null 2>&1; }
-jqg() { printf '%s' "$guard_input" | jq -r "$1" 2>/dev/null || true; }
+# jq -r prints the literal "null" for a missing/null field; callers treat that
+# as a real value (e.g. git -C null, turn-null.json). Map a lone "null" to "".
+# NOT `($1) // empty`: jq's // is falsy on boolean `false`, which would corrupt
+# `.tool_response.success` reads in record.sh. This preserves false/true.
+jqg() { local o; o="$(printf '%s' "$guard_input" | jq -r "$1" 2>/dev/null || true)"; [ "$o" = "null" ] && o=""; printf '%s' "$o"; }
 
 deny()  { printf 'guard: %s\n' "$1" >&2; exit 2; }
 allow() { exit 0; }
