@@ -1,7 +1,8 @@
 //! Unified error types for the resource subsystem.
 //!
 //! Every resource error carries an [`ErrorKind`] (what happened) and an
-//! [`ErrorScope`] (resource-wide vs. target-specific). The framework uses
+//! [`ErrorScope`] (currently resource-wide only — see the [`ErrorScope`]
+//! type docs for why it is single-variant). The framework uses
 //! `ErrorKind` to decide whether to retry, back off, or propagate.
 
 use std::{fmt, time::Duration};
