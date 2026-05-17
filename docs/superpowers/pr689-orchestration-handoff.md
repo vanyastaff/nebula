@@ -50,9 +50,76 @@ inherit the in-progress merge).
   - Verified: nebula-api 366/366 (1 pg-gated skip), storage+tenancy+
     storage-port 272/272, touched crates fmt + clippy -D warnings clean,
     lefthook green.
-- **REMAINING: (D) only** — work the VERIFIED REVIEW TRIAGE below
-  (FIX/ADOPT/PUSHBACK; some items discharged by da216ca4 — verify with
-  `git show da216ca4 --stat` before redoing). Then per-crate gates →
+- **(D) group 1 — done&verified.** `3a9cccb0` guard-justified marker
+  batch (coderabbit 3255514546/47/48/49 + dto/workflow.rs +
+  inmem/execution.rs unreachable). storage-port+storage clippy/fmt green.
+- **(D) group 2 — done&verified.** Postgres `unwrap_or_default()` →
+  `Result` propagation: `028ae7e0` (workflow.rs get/get_by_slug/list +
+  idempotency_store.rs trigger_id — coderabbit 3255514593, 3255514586)
+  and `d6d3333b` (identity.rs all 9 `*_from_row` helpers + 15 call sites
+  — coderabbit 3255514589). storage 230/230, clippy/fmt green.
+- **`14be0dec` — done&verified.** Cross-tenant version oracle
+  (coderabbit 3255514561): inmem/execution.rs cross-scope commit
+  returned `actual: row.version` (victim's counter); now `actual: 0`.
+  Strengthened `assert_cross_scope_commit_is_rejected` to assert the
+  oracle stays closed across all backends. storage 230/230, clippy/fmt
+  green.
+
+### 3255514540 — VERIFIED diagnosis (largest item; dedicated session)
+
+**Hole is REAL (FIX verdict command-confirmed).** Mechanism, verified
+by reading the code:
+- `crates/tenancy/src/decorator/*.rs`: every `Scoped*` decorator
+  (`ScopedWorkflowStore` line 34 etc.) takes `scope: Scope` at
+  `::new(inner, scope)` and **ignores the per-call `_scope` arg** (all
+  trait methods take `_scope: &Scope`, underscore-bound). It always
+  substitutes `self.scope`.
+- `crates/api/src/state.rs` `AppState::in_memory` (and the production
+  `default_state` it mirrors, which lives OUT of this crate in
+  `apps/server/src/compose.rs`) constructs each `Scoped*` **once at
+  AppState-build with the fixed `placeholder_scope()` =
+  `Scope::new("nebula","nebula")`** — never per-request.
+- Every workflow/execution handler already receives
+  `Extension(_tenant): Extension<TenantContext>` but **underscore-
+  discards it**. `TenantContext` (crates/core/src/tenancy.rs:15) carries
+  `org_id: OrgId` + `workspace_id: Option<WorkspaceId>` — exactly what
+  `nebula_storage_port::Scope::new(workspace_id, org_id)` needs.
+- Net: ALL tenants collapse to one shared scope; org A's
+  workflows/executions are visible to org B. The `placeholder_scope`
+  doc-comment claiming the decorator "substitutes its bound
+  (request-derived) tenant scope" is FALSE — the bound scope is the
+  static placeholder.
+
+**Fix surface (structural, type-enforced; no shims):**
+1. Add `TenantContext -> nebula_storage_port::Scope` derivation (org_id
+   + workspace_id → Scope; decide workspace-absent policy — likely
+   org-only scope or 400). Put it where api can reach core+storage-port.
+2. Make the `Scoped*` decorators **honor the per-call `&Scope`** (drop
+   the bound-scope substitution; the decorator becomes a pass-through
+   that the caller scopes) OR construct request-scoped stores per call.
+   Decision needed: per-call-scope is the structurally-correct option
+   (one wired store, scope flows from the handler). Update all 7
+   decorator files + their tests.
+3. Add `scope: &Scope` param to the ~17 `AppState` methods that call
+   port handles (workflow_save/list/with_version/delete/count,
+   execution get/list_running/*, node-output, journal, …); remove
+   `placeholder_scope()`.
+4. Every workflow/execution/etc. handler: bind `tenant` (un-underscore),
+   derive the request `Scope`, thread it into the `AppState` call.
+5. Re-verify cross-scope conformance + nebula-api integration tests
+   (the harness `port_scope()` must now flow as the request scope).
+- This is a multi-commit refactor of the port-scoping contract — too
+  large to fold into the (D) sweep. Execute in a dedicated focused
+  session; everything needed to start is above (no re-investigation).
+
+- **REMAINING after the smaller (D) items:** `3255514540` (above,
+  dedicated session) + the remaining mid-size FIX items (3255514542
+  workflow_count O(1) — NOT discharged by da216ca4 despite its commit
+  message claim; 3255514543 engine processor-id `[u8;16]`; 3255514559
+  pg-0027 column drift; 3255514577/79 inmem/identity uniqueness+evict;
+  3255514595 pg workflow update deleted=FALSE; 3255514598 sqlite
+  control_queue claim; 2 outside-diff workflow.rs from_str/strip) +
+  ADOPT items + PUSHBACK reply (3255514555). Then per-crate gates →
   `git push` (no force) → per-comment_id factual replies + resolve.
 
 ## Finish sequence (strict order)
