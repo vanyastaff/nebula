@@ -302,7 +302,13 @@ mod tests {
 
     #[tokio::test]
     async fn readiness_reports_ok_when_database_responds() {
-        let state = app_state_with_workflow_store(Arc::new(InMemoryWorkflowStore::new()));
+        // `readiness_check` only probes `workflow_count()` (the row store);
+        // it never reads the version store, so the paired version map is
+        // immaterial here — construct the canonical pair anyway so the
+        // store is wired exactly as production builds it.
+        let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+        let state = app_state_with_workflow_store(Arc::new(workflow_store));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.ready);

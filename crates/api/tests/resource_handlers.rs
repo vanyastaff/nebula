@@ -273,8 +273,8 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
     let control_queue = nebula_storage::InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
-    let workflow_store = InMemoryWorkflowStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
     AppState::new(
         Arc::new(ScopedWorkflowStore::new(

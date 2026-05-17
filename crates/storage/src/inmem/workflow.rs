@@ -49,33 +49,28 @@ fn wf_ver_key(scope: &Scope, workflow_id: &str, number: u32) -> WfVerKey {
 type SharedVersions = Arc<Mutex<HashMap<WfVerKey, WorkflowVersionRecord>>>;
 
 /// In-memory workflow-row store.
+///
+/// Constructed **only** from its paired [`InMemoryWorkflowVersionStore`]
+/// via [`Self::new_with_versions`], so the version map is *always* shared
+/// between the two. There is deliberately no parameterless constructor:
+/// [`WorkflowStore::save_with_published_version`] writes the published
+/// version into [`Self::versions`], and a private unshared map would make
+/// that write invisible to every `WorkflowVersionStore` reader (a
+/// just-created workflow would 404). This mirrors
+/// [`super::InMemoryControlQueue`] / [`super::InMemoryJournalReader`],
+/// which are likewise built *from* the shared [`super::InMemoryExecutionStore`]
+/// core and have no standalone constructor — sharing is structural, not a
+/// caller discipline.
 #[derive(Debug, Clone)]
 pub struct InMemoryWorkflowStore {
     inner: Arc<Mutex<HashMap<WfKey, WorkflowRecord>>>,
-    /// Same map the paired [`InMemoryWorkflowVersionStore`] reads/writes.
-    /// For a store built via [`Self::new`] this is a private map (the
-    /// atomic save is still both-or-neither over its own pair); for one
-    /// built via [`Self::new_with_versions`] it is the *shared* version
-    /// map, so the atomic save and the version store observe one state.
+    /// The *same* map the paired [`InMemoryWorkflowVersionStore`]
+    /// reads/writes (an `Arc` clone of its `inner`), so the atomic save
+    /// and the version-read path observe one state.
     versions: SharedVersions,
 }
 
-impl Default for InMemoryWorkflowStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl InMemoryWorkflowStore {
-    /// Create an empty store with a private (unshared) version map.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(HashMap::new())),
-            versions: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
     /// Create a workflow-row store that shares its version map with
     /// `versions`, so [`WorkflowStore::save_with_published_version`]
     /// commits the row and the version atomically and the paired

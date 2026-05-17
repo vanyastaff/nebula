@@ -5132,14 +5132,19 @@ mod tests {
         fn new() -> Self {
             let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
             let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
+            // The workflow-row store shares the version store's map so
+            // `save_with_published_version` commits the pair atomically
+            // and the version-read path observes the same data.
+            let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
+            let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
             Self {
                 execution,
                 journal,
                 node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
                 checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-                workflow: Arc::new(nebula_storage::InMemoryWorkflowStore::new()),
-                versions: Arc::new(nebula_storage::InMemoryWorkflowVersionStore::new()),
+                workflow: Arc::new(workflow),
+                versions: Arc::new(versions),
             }
         }
 

@@ -662,8 +662,11 @@ impl AppState {
 
     /// List workflows with pagination, ordered by `(created_at, id)`.
     /// The spec-16 split has no `created_at` column, so the ordering is
-    /// reconstructed from the definition JSON's `created_at` (the
-    /// handler writes it there), falling back to id order.
+    /// reconstructed from the definition JSON's `created_at` via the
+    /// dual-format [`extract_timestamp`] helper (RFC3339 string or legacy
+    /// i64), falling back to id order when absent or unparseable.
+    ///
+    /// [`extract_timestamp`]: crate::domain::workflow::handler::extract_timestamp
     pub(crate) async fn workflow_list(
         &self,
         offset: usize,
@@ -691,11 +694,17 @@ impl AppState {
             let wid = nebula_core::id::WorkflowId::parse(&row.id).map_err(|e| {
                 ApiError::Internal(format!("stored workflow id {:?} invalid: {e}", row.id))
             })?;
-            let created = published
-                .definition
-                .get("created_at")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0);
+            // The definition JSON stores `created_at` as an RFC3339 string
+            // (canonical `DateTime<Utc>` serialization), while the legacy
+            // write path used a raw i64. `extract_timestamp` accepts both,
+            // so the `(created_at, id)` ordering stays stable across either
+            // shape — a plain `as_i64` would coerce every RFC3339 row to 0
+            // and collapse the sort to id-only.
+            let created = crate::domain::workflow::handler::extract_timestamp(
+                &published.definition,
+                "created_at",
+            )
+            .unwrap_or(0);
             out.push((wid, created, published.definition));
         }
         // Contract: ORDER BY created_at, id.
@@ -1204,13 +1213,15 @@ mod tests {
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
+        let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
         AppState::new(
             Arc::new(ScopedWorkflowStore::new(
-                Arc::new(InMemoryWorkflowStore::new()),
+                Arc::new(workflow_store),
                 scope.clone(),
             )),
             Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(InMemoryWorkflowVersionStore::new()),
+                Arc::new(workflow_versions),
                 scope.clone(),
             )),
             Arc::new(ScopedExecutionStore::new(

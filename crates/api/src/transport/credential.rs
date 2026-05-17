@@ -766,13 +766,15 @@ mod tests {
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
         let jwt = crate::config::ApiConfig::for_test().jwt_secret;
+        let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
         AppState::new(
             Arc::new(ScopedWorkflowStore::new(
-                Arc::new(InMemoryWorkflowStore::new()),
+                Arc::new(workflow_store),
                 scope.clone(),
             )),
             Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(InMemoryWorkflowVersionStore::new()),
+                Arc::new(workflow_versions),
                 scope.clone(),
             )),
             Arc::new(ScopedExecutionStore::new(

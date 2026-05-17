@@ -431,14 +431,16 @@ mod tests {
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
+        let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
         AppState::new(
             Arc::new(ScopedWorkflowStore::new(
-                Arc::new(InMemoryWorkflowStore::new()),
+                Arc::new(workflow_store),
                 scope.clone(),
             )),
             Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(InMemoryWorkflowVersionStore::new()),
+                Arc::new(workflow_versions),
                 scope.clone(),
             )),
             Arc::new(ScopedExecutionStore::new(

@@ -82,14 +82,16 @@ impl LeaseStores {
     fn new() -> Self {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
+        let versions = InMemoryWorkflowVersionStore::new();
+        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(nebula_storage::InMemoryWorkflowStore::new()),
-            versions: Arc::new(InMemoryWorkflowVersionStore::new()),
+            workflow: Arc::new(workflow),
+            versions: Arc::new(versions),
         }
     }
 

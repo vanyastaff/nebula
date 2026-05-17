@@ -335,8 +335,8 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
-    let workflow_store = InMemoryWorkflowStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
     let api_config = ApiConfig::for_test();
 
@@ -421,8 +421,8 @@ pub(crate) fn build_me_state() -> AppState {
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
-    let workflow_store = InMemoryWorkflowStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
     let api_config = ApiConfig::for_test();
 
@@ -815,8 +815,8 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
     let exec_store = InMemoryExecutionStore::new();
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
-    let workflow_store = InMemoryWorkflowStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
     let api_config = ApiConfig::for_test();
 

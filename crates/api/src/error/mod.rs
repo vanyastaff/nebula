@@ -199,10 +199,45 @@ impl From<nebula_storage::StorageError> for ApiError {
                 Self::Conflict(format!("duplicate {entity}: {detail}"))
             },
             // Lease / timeout / serialization / connection / configuration /
-            // internal are genuine backend faults — opaque 500, no internal
-            // detail leaked to the client (ADR-0028 §7).
-            other => Self::Internal(format!("storage error: {other}")),
+            // internal are genuine backend faults — the opaque
+            // `Self::Storage` arm (still a 500 with no internal detail
+            // leaked to the client per ADR-0028 §7). Mapped through the
+            // port `StorageError` so the variant is preserved end-to-end
+            // (`map_resource_create_storage_error`'s contract: a
+            // non-caller fault stays the opaque `Storage` variant, never
+            // a catch-all `Internal`).
+            other => Self::Storage(storage_fault_to_port(other)),
         }
+    }
+}
+
+/// Map a non-caller [`nebula_storage::StorageError`] fault onto the
+/// equivalent port [`nebula_storage_port::StorageError`] so
+/// [`ApiError::Storage`] carries the original failure class.
+///
+/// Only the genuine-backend-fault variants reach this — caller-conflict
+/// variants (`NotFound` / `Conflict` / `Duplicate`) are handled by the
+/// `From` arms above and never get here. The message text is
+/// store-authored (no submitted payload), so it is safe to carry; the
+/// HTTP surface still collapses every `Storage` to a detail-free 500.
+fn storage_fault_to_port(err: nebula_storage::StorageError) -> nebula_storage_port::StorageError {
+    use nebula_storage::StorageError as Se;
+    use nebula_storage_port::StorageError as Pe;
+    match err {
+        Se::LeaseUnavailable { entity, id } => Pe::LeaseUnavailable { entity, id },
+        Se::Timeout {
+            operation,
+            duration,
+        } => Pe::Timeout {
+            operation,
+            duration,
+        },
+        Se::Serialization(detail) => Pe::Serialization(detail),
+        Se::Connection(detail) => Pe::Connection(detail),
+        Se::Configuration(detail) => Pe::Configuration(detail),
+        // `Se::Internal` and any future non-caller variant fold into the
+        // port `Internal` — fail-closed, never silently dropped.
+        other => Pe::Internal(other.to_string()),
     }
 }
 
