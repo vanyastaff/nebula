@@ -6837,22 +6837,19 @@ mod tests {
                 ..WorkflowConfig::default()
             },
         );
-        let workflow_repo = save_workflow_to_repo(&wf).await;
-
         // Part 1: run the workflow and observe the extra checkpoint via
         // the repo-version counter.
-        let repo1 = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let stores1 = TestStores::new();
+        stores1.save_workflow(&wf).await;
         let (engine1, _) = make_engine(registry.clone());
-        let engine1 = engine1
-            .with_execution_repo(repo1.clone())
-            .with_workflow_repo(workflow_repo.clone());
+        let engine1 = stores1.attach(engine1);
 
         let result = engine1
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
             .await
             .unwrap();
 
-        let (version, final_state) = repo1
+        let (version, final_state) = stores1
             .get_state(result.execution_id)
             .await
             .unwrap()
@@ -6860,13 +6857,15 @@ mod tests {
         // Using `>=` rather than `==` so a future legitimate mid-execution
         // checkpoint (e.g. a per-status-transition persist) does not break
         // this test. The regression signal is preserved either way: the
-        // pre-fix path lands at v2 (create + final only), which always
-        // fails `>= 3`.
+        // pre-fix path lands one commit short (create + final only). The
+        // port seeds create at v=0 (the legacy ExecutionRepo seeded v=1,
+        // so the legacy threshold was >=3); the setup-failure checkpoint
+        // + final are two commits past create.
         assert!(
-            version >= 3,
-            "expected at least three version bumps: create (v1) + \
-             setup-failure checkpoint (v2 — the fix) + final (v3). Pre-fix \
-             path skips the setup-failure checkpoint and lands at v2; got \
+            version >= 2,
+            "expected at least two commits past the port's v=0 create: \
+             setup-failure checkpoint (the fix) + final. Pre-fix path \
+             skips the setup-failure checkpoint and lands at v1; got \
              {version}"
         );
         assert_eq!(
@@ -6904,20 +6903,18 @@ mod tests {
             ns.error_message = Some("parameter resolution failed: template parse error".into());
         }
 
-        let repo2 = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        repo2
-            .create(
+        let stores2 = TestStores::new();
+        stores2.save_workflow(&wf).await;
+        stores2
+            .inject_state(
                 execution_id,
                 wf.id,
                 serde_json::to_value(&crashed_state).unwrap(),
             )
-            .await
-            .unwrap();
+            .await;
 
         let (engine2, _) = make_engine(registry);
-        let engine2 = engine2
-            .with_execution_repo(repo2.clone())
-            .with_workflow_repo(workflow_repo);
+        let engine2 = stores2.attach(engine2);
         let resumed = engine2.resume_execution(execution_id).await.unwrap();
 
         // Resume must land in a terminal status — the Failed node is
@@ -6932,7 +6929,7 @@ mod tests {
         // terminal nodes untouched (engine.rs §resume_execution step 7).
         // If B had been re-dispatched, its attempts vector would grow or
         // the error message would be overwritten by a new failure.
-        let persisted = repo2
+        let persisted = stores2
             .get_state(execution_id)
             .await
             .unwrap()
