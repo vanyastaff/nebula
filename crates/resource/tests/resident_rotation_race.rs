@@ -350,7 +350,10 @@ async fn resident_revoke_during_first_acquire_does_not_serve_revoked_credential(
 
     let revoke_task = {
         let mgr = Arc::clone(&mgr);
-        tokio::spawn(async move { mgr.drain_and_revoke(tainted).await })
+        tokio::spawn(async move {
+            mgr.drain_and_revoke(tainted, std::time::Duration::from_secs(30))
+                .await
+        })
     };
 
     // The drain+revoke tail must be parked while the first build is in
@@ -380,10 +383,11 @@ async fn resident_revoke_during_first_acquire_does_not_serve_revoked_credential(
     let bound_cred = Arc::clone(&guard.bound_cred);
     drop(guard);
 
-    revoke_task
-        .await
-        .expect("revoke task must not panic")
-        .expect("drain_and_revoke must succeed (the revoke hook ran)");
+    let tail = revoke_task.await.expect("revoke task must not panic");
+    assert!(
+        matches!(tail, nebula_resource::RevokeTail::Done),
+        "drain_and_revoke must complete the revoke hook, got: {tail:?}"
+    );
 
     assert_eq!(
         bound_cred.load(Ordering::SeqCst),

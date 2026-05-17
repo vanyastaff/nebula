@@ -496,3 +496,56 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
         .await
         .expect("tenant B must remain acquirable after tenant A's revoke");
 }
+
+/// #690 review (CodeRabbit, CRITICAL) — `warmup_pool` must NOT create
+/// fresh pool entries on a credential a concurrent revoke tainted after
+/// the pre-lookup gate. `warmup` runs `R::create` against the resolved
+/// credential, so it is acquire-like and must enforce the same
+/// revoke-vs-acquire post-taint re-check the `run_*_acquire` pipelines
+/// got in #679.
+///
+/// Deterministic model of the race: `taint_slot` applies the taint
+/// **synchronously** (phase 1) — exactly the state a concurrent
+/// `revoke_slot` establishes by the time warmup would proceed. With the
+/// resource tainted, `warmup_pool` must reject (Revoked/Unavailable) and
+/// `R::create` must run **zero** times — no fresh pool instance is ever
+/// minted on the revoked credential.
+#[tokio::test]
+async fn warmup_pool_rejected_after_revoke_taint_creates_no_entries() {
+    use nebula_error::{Classify, ErrorCategory};
+
+    let create_counter = Arc::new(AtomicU64::new(0));
+    let manager = Manager::new();
+    manager
+        .register_pooled(
+            PoolRes {
+                create_counter: Arc::clone(&create_counter),
+            },
+            CountingConfig,
+            pool_cfg(),
+        )
+        .expect("register pooled (Global) must succeed");
+
+    // Phase-1 synchronous taint — the exact state a racing `revoke_slot`
+    // leaves the row in before `warmup_pool` could call `rt.warmup`.
+    let _tainted = manager
+        .taint_slot(&PoolRes::key(), ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered pooled row");
+
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let err = manager
+        .warmup_pool::<PoolRes>(&ctx)
+        .await
+        .expect_err("warmup_pool on a revoke-tainted resource must be rejected");
+    assert_eq!(
+        err.category(),
+        ErrorCategory::Unavailable,
+        "tainted warmup must reject with Revoked/Unavailable, got: {err}"
+    );
+    assert_eq!(
+        create_counter.load(Ordering::SeqCst),
+        0,
+        "warmup_pool must create ZERO fresh pool instances on a revoked \
+         credential (post-taint re-check, #679 pattern applied to warmup)"
+    );
+}

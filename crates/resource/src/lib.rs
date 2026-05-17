@@ -68,7 +68,7 @@ pub use guard::ResourceGuard;
 pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot,
-    ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
+    RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};

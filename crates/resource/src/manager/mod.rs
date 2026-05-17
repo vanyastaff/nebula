@@ -132,6 +132,60 @@ impl std::fmt::Debug for TaintedSlot {
     }
 }
 
+/// Outcome of the cancellation-safe revoke tail
+/// ([`Manager::drain_and_revoke`]).
+///
+/// The tail has exactly one owner of the per-resource time budget (the
+/// `drain_timeout` argument): the drain wait is bounded by it
+/// (best-effort — a timed-out drain still proceeds to the hook), and the
+/// revoke hook is *separately* bounded by it. There is **no** caller-side
+/// `tokio::time::timeout` wrapping the whole tail — that wrapper used to
+/// be able to drop the future *before the hook ran* when the drain was
+/// slow, contradicting the "hook still runs after a timed-out drain"
+/// contract (ADR-0067 §Deferred). So the three terminal states are
+/// reported here rather than inferred from a dropped outer future:
+///
+/// - [`Done`](Self::Done) — the revoke hook completed `Ok`.
+/// - [`HookFailed`](Self::HookFailed) — the hook returned `Err` (carried
+///   verbatim).
+/// - [`HookTimedOut`](Self::HookTimedOut) — the hook itself did not
+///   complete within the budget. The row stays tainted (the taint ran in
+///   the synchronous phase-1); only a *hung hook* is bounded, never the
+///   taint, and never at the cost of skipping a hook after a slow drain.
+#[derive(Debug)]
+#[must_use = "the revoke tail outcome must be recorded (it is not a silent success)"]
+pub enum RevokeTail {
+    /// Drain + revoke hook completed; the hook returned `Ok`. (A
+    /// best-effort drain timeout that still reached a successful hook is
+    /// still `Done` — the drain timeout is non-fatal.)
+    Done,
+    /// The revoke hook returned an error. The row stays tainted; the
+    /// inner error is preserved for the caller's outcome accounting.
+    HookFailed(Error),
+    /// The revoke hook did not complete within the per-resource budget
+    /// (a wedged `on_credential_revoke`). The row stays tainted; this is
+    /// the only thing the budget bounds.
+    HookTimedOut,
+}
+
+impl RevokeTail {
+    /// Adapts the tail outcome to `Result<(), Error>` for the back-compat
+    /// convenience callers ([`Manager::revoke_slot`] /
+    /// [`Manager::revoke_slot_for`]) that run taint+tail back-to-back and
+    /// only need pass/fail. A hook timeout becomes a retryable transient
+    /// error (the row is tainted; a later retry is meaningful), distinct
+    /// from a hook failure which carries the hook's own error.
+    fn into_result(self) -> Result<(), Error> {
+        match self {
+            RevokeTail::Done => Ok(()),
+            RevokeTail::HookFailed(e) => Err(e),
+            RevokeTail::HookTimedOut => Err(Error::transient(
+                "revoke hook timed out — row stays tainted, no new leases",
+            )),
+        }
+    }
+}
+
 /// Central registry and lifecycle manager for all resources.
 ///
 /// Owns the [`ReleaseQueue`] internally — callers never need to create,
@@ -1316,6 +1370,19 @@ impl Manager {
         }
     }
 
+    /// Default per-resource revoke budget for the back-compat
+    /// back-to-back convenience callers ([`revoke_slot`](Self::revoke_slot)
+    /// / [`revoke_slot_for`](Self::revoke_slot_for)).
+    ///
+    /// 30 s — the same budget the manager-wide `graceful_shutdown` drain
+    /// uses and the value [`drain_and_revoke`](Self::drain_and_revoke)
+    /// previously hard-coded for the drain wait. The engine rotation
+    /// fan-out does **not** use this: it passes its own per-resource
+    /// rotation budget so the timeout has one owner end-to-end (ADR-0067
+    /// §Deferred / #690 review).
+    pub const DEFAULT_REVOKE_DRAIN_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(30);
+
     /// **Phase 2 of the revoke port — the cancellation-safe awaited tail.**
     /// Consumes a [`TaintedSlot`] from [`taint_slot`](Self::taint_slot) /
     /// [`taint_slot_for`](Self::taint_slot_for) (whose taint already ran
@@ -1327,20 +1394,34 @@ impl Manager {
     /// 2. **Dispatch** [`Resource::on_credential_revoke`] against the live runtime per topology.
     /// 3. Emit [`ResourceEvent::SlotRevoked`] / `SlotRevokeFailed`.
     ///
-    /// **Cancellation-safety.** The taint is *not* in this future — it ran in
-    /// the synchronous [`taint_slot_for`](Self::taint_slot_for) phase. So if
-    /// this future is dropped (e.g. the engine fan-out's
-    /// `tokio::time::timeout` elapses), the row stays tainted and consistent:
-    /// new acquires are still rejected, the credential is never silently
-    /// un-revoked. The drain itself is best-effort bounded — a long-held
-    /// handle should not wedge revoke forever, so a bounded wait is used and
-    /// a timeout still proceeds to the revoke hook (the taint already stops
-    /// *new* leases; the hook makes the resource stop emitting on the old
-    /// credential).
+    /// **Single budget owner (ADR-0067 §Deferred / #690 review).** The
+    /// `drain_timeout` argument is the caller's per-resource budget and is
+    /// the *only* timeout governing this tail. It bounds **two** waits
+    /// independently:
     ///
-    /// # Errors
+    /// - the per-resource **drain** — *best-effort*: a drain timeout is
+    ///   non-fatal, it records the `TimedOut` outcome metric and the tail
+    ///   **still proceeds to the revoke hook** (the taint already stops
+    ///   *new* leases; the hook makes the resource stop emitting on the
+    ///   old credential);
+    /// - the **revoke hook** itself — a *wedged* `on_credential_revoke`
+    ///   is the only thing the budget actually cuts short
+    ///   ([`RevokeTail::HookTimedOut`]).
     ///
-    /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
+    /// The caller **must not** wrap this call in its own
+    /// `tokio::time::timeout`. The previous design did, and a slow drain
+    /// could make that outer timeout elapse and **drop the whole future
+    /// before the hook ran** — silently skipping the documented
+    /// "hook still runs after a timed-out drain" guarantee. Bounding both
+    /// waits *inside* this method (one owner, no outer wrapper) means a
+    /// timed-out drain can never skip the hook, and only a hung hook is
+    /// bounded — never the taint.
+    ///
+    /// **Cancellation-safety.** The taint is *not* in this future — it
+    /// ran in the synchronous [`taint_slot_for`](Self::taint_slot_for)
+    /// phase. So if this future *is* dropped anyway (an outer abort, task
+    /// cancel), the row stays tainted and consistent: new acquires are
+    /// still rejected, the credential is never silently un-revoked.
     #[tracing::instrument(
         level = "debug",
         name = "nebula.resource.slot_drain_revoke",
@@ -1353,7 +1434,11 @@ impl Manager {
             op = "revoke",
         )
     )]
-    pub async fn drain_and_revoke(&self, tainted: TaintedSlot) -> Result<(), Error> {
+    pub async fn drain_and_revoke(
+        &self,
+        tainted: TaintedSlot,
+        drain_timeout: std::time::Duration,
+    ) -> RevokeTail {
         let TaintedSlot {
             key,
             slot,
@@ -1365,19 +1450,19 @@ impl Manager {
         //    §Deferred): a revoke on resource A must not block on in-flight
         //    traffic to an unrelated resource B, so this awaits the row's
         //    own per-resource counter — not the manager-wide `drain_tracker`
-        //    (which stays the `graceful_shutdown` primitive). Bounded so a
-        //    stuck handle on *this* resource cannot wedge revoke; the taint
-        //    (already applied synchronously in the phase-1 function) already
-        //    stops new leases.
+        //    (which stays the `graceful_shutdown` primitive). Bounded by the
+        //    caller's per-resource budget so a stuck handle on *this*
+        //    resource cannot wedge revoke; the taint (already applied
+        //    synchronously in the phase-1 function) already stops new
+        //    leases.
         //
         //    A drain timeout is *terminal* for this dispatch's outcome
         //    metric: it records `TimedOut` and the subsequent hook
         //    success/failure does NOT record a second outcome (one dispatch
         //    = exactly one outcome). The hook still runs and its event /
-        //    returned `Result` are unaffected.
-        let drain_result = managed
-            .wait_for_in_flight_drain_erased(std::time::Duration::from_secs(30))
-            .await;
+        //    returned outcome are unaffected — this is the contract the
+        //    removed outer `tokio::time::timeout` wrapper used to break.
+        let drain_result = managed.wait_for_in_flight_drain_erased(drain_timeout).await;
         let drain_timed_out = drain_result.is_err();
         if let Err(outstanding) = &drain_result {
             if let Some(m) = &self.metrics {
@@ -1390,12 +1475,18 @@ impl Manager {
             );
         }
 
-        // 2. Dispatch the revoke hook against the live runtime.
-        let result = managed.dispatch_on_revoke_erased(&slot).await;
+        // 2. Dispatch the revoke hook against the live runtime, bounded by
+        //    the SAME per-resource budget. This is the only place the
+        //    budget can cut the tail short: a wedged `on_credential_revoke`
+        //    must not pin the fan-out row forever. A timed-out drain (above)
+        //    has *already* consumed the metric outcome, so a hook that then
+        //    also times out does not double-record.
+        let hook_outcome =
+            tokio::time::timeout(drain_timeout, managed.dispatch_on_revoke_erased(&slot)).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
-        match &result {
-            Ok(()) => {
+        match hook_outcome {
+            Ok(Ok(())) => {
                 // Only record Success when the drain did not already record
                 // the terminal TimedOut outcome for this dispatch.
                 if !drain_timed_out && let Some(m) = &self.metrics {
@@ -1406,8 +1497,9 @@ impl Manager {
                     slot: slot.clone(),
                 });
                 tracing::debug!("slot revoke hook completed");
+                RevokeTail::Done
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 if !drain_timed_out && let Some(m) = &self.metrics {
                     m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::Failed);
                 }
@@ -1417,9 +1509,27 @@ impl Manager {
                     error: e.to_string(),
                 });
                 tracing::warn!(error = %e, "slot revoke hook failed");
+                RevokeTail::HookFailed(e)
+            },
+            Err(_elapsed) => {
+                // The hook itself wedged. The row stays tainted (phase 1).
+                // Record `TimedOut` unless the drain already did (one
+                // dispatch = exactly one outcome).
+                if !drain_timed_out && let Some(m) = &self.metrics {
+                    m.record_slot_revoke_outcome(crate::metrics::SlotDispatchOutcome::TimedOut);
+                }
+                self.emit(ResourceEvent::SlotRevokeFailed {
+                    key,
+                    slot,
+                    error: "revoke hook timed out".to_owned(),
+                });
+                tracing::warn!(
+                    timeout_ms = drain_timeout.as_millis() as u64,
+                    "slot revoke hook timed out (row stays tainted, no new leases)"
+                );
+                RevokeTail::HookTimedOut
             },
         }
-        result
     }
 
     /// Notifies a registered resource that one of its `#[credential]` slots
@@ -1451,7 +1561,9 @@ impl Manager {
         slot: &str,
     ) -> Result<(), Error> {
         let tainted = self.taint_slot(key, scope, slot)?;
-        self.drain_and_revoke(tainted).await
+        self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+            .await
+            .into_result()
     }
 
     /// [`revoke_slot`](Self::revoke_slot) pinned to a resolved per-slot
@@ -1481,7 +1593,9 @@ impl Manager {
         slot_identity: u64,
     ) -> Result<(), Error> {
         let tainted = self.taint_slot_for(key, scope, slot, slot_identity)?;
-        self.drain_and_revoke(tainted).await
+        self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
+            .await
+            .into_result()
     }
 
     /// Type-erased `(key, scope)` → live `ManagedResource` resolution for
@@ -2307,6 +2421,24 @@ impl Manager {
         let config = managed.config();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {
+                // `warmup` runs `R::create` against the resolved credential
+                // to materialize fresh pool instances — it is acquire-like
+                // and must observe the SAME revoke-vs-acquire TOCTOU close
+                // the `run_*_acquire` pipelines use (#679 / ADR-0044/0036).
+                // The `lookup_for_acquire` taint gate above ran *before*
+                // this in-flight increment, leaving a window where a
+                // concurrent `revoke_slot` could taint after the gate yet
+                // before warmup creates entries. Pre-count this work in the
+                // resource's own in-flight counter (the exact counter
+                // `revoke_slot` drains), then re-check the taint: either we
+                // observe the taint here and reject, or our increment is
+                // visible to the revoke's drain — so no fresh pool entry is
+                // ever created on a just-revoked credential. The counter is
+                // held for the whole `warmup` await (RAII drop on every
+                // exit path).
+                let _in_flight =
+                    InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
+                Self::reject_if_tainted_post_count::<R>(&managed)?;
                 let count = rt.warmup(&managed.resource, &config, ctx).await;
                 Ok(count)
             },

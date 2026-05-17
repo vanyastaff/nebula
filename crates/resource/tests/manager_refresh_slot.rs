@@ -912,9 +912,14 @@ async fn taint_slot_applies_taint_synchronously_before_any_await() {
     );
 
     // Completing phase 2 still works and runs the hook exactly once.
-    mgr.drain_and_revoke(tainted)
-        .await
-        .expect("drain_and_revoke (phase 2) must succeed");
+    assert!(
+        matches!(
+            mgr.drain_and_revoke(tainted, std::time::Duration::from_secs(5))
+                .await,
+            nebula_resource::RevokeTail::Done
+        ),
+        "drain_and_revoke (phase 2) must complete the revoke hook"
+    );
     assert_eq!(
         ledger.revoke_calls.load(Ordering::SeqCst),
         1,
@@ -923,10 +928,13 @@ async fn taint_slot_applies_taint_synchronously_before_any_await() {
 }
 
 /// #681 — cancellation-safety: dropping the `drain_and_revoke` future
-/// (phase 2) mid-flight — the exact effect of a `tokio::time::timeout`
-/// elapsing and dropping the wrapped future — must leave the row tainted,
-/// because the taint already ran in the synchronous phase 1. The credential
-/// is never silently un-revoked by a dropped timeout.
+/// (phase 2) mid-flight — e.g. a task abort or runtime shutdown
+/// cancelling the awaiting task — must leave the row tainted, because the
+/// taint already ran in the synchronous phase 1. The credential is never
+/// silently un-revoked by a dropped tail. (Post-#690 the engine fan-out
+/// no longer wraps this in an outer `tokio::time::timeout`; the
+/// drop-safety invariant still holds for any other cancellation and is
+/// still load-bearing.)
 ///
 /// The drop is made *genuine*: a real in-flight guard is held so
 /// `drain_and_revoke` actually parks in the per-resource drain (it cannot
@@ -960,10 +968,12 @@ async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
         .expect("taint_slot must resolve the registered row");
 
     // Phase 2 constructed and polled enough to park in the drain, then
-    // explicitly DROPPED while still pending — models the engine fan-out's
-    // `tokio::time::timeout` elapsing and dropping the wrapped future.
+    // explicitly DROPPED while still pending — models a task abort /
+    // runtime shutdown cancelling the awaiting task mid-tail (a generic
+    // cancellation; the engine fan-out no longer wraps this in an outer
+    // timeout post-#690, but the drop-safety invariant is unchanged).
     {
-        let mut fut = Box::pin(mgr.drain_and_revoke(tainted));
+        let mut fut = Box::pin(mgr.drain_and_revoke(tainted, std::time::Duration::from_secs(30)));
         // A bounded select that loses to a short timer: the drain future is
         // polled (and parks on the held guard) but never completes, then is
         // dropped at the end of this block.
@@ -1000,6 +1010,64 @@ async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
             "dropped-tail acquire must still hit the Revoked/Unavailable taint, got: {err}"
         );
     }
+
+    drop(in_flight);
+}
+
+/// #690 review — single-owner budget: a **timed-out drain still runs the
+/// revoke hook**. `drain_and_revoke` is the sole owner of the
+/// per-resource budget — it bounds the drain *best-effort* (a drain
+/// timeout is non-fatal and proceeds to the hook) and there is no outer
+/// `tokio::time::timeout` wrapper that could elapse on the slow drain and
+/// drop the whole future before the hook ran. A real in-flight guard is
+/// held so the per-resource drain genuinely times out against a short
+/// budget; the hook must still fire exactly once and the row stay
+/// tainted. Pre-fix the engine fan-out wrapped the whole call in a 30 s
+/// timeout that, on a slow drain, dropped the future and silently skipped
+/// the hook.
+#[tokio::test]
+async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use nebula_core::scope::Scope;
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+    let mgr = Arc::new(mgr);
+
+    // Hold a real in-flight guard so the per-resource drain cannot
+    // early-return (counter stays at 1) — with a short budget the drain
+    // genuinely times out.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let in_flight = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    // Phase 1: synchronous taint.
+    let tainted = mgr
+        .taint_slot(&key, ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered row");
+
+    // Phase 2 with a SHORT per-resource budget: the held guard makes the
+    // drain exceed it. The hook (`CountingResource::on_credential_revoke`
+    // returns immediately) must STILL run — proof the timed-out drain did
+    // not drop the tail before the hook.
+    let tail = mgr
+        .drain_and_revoke(tainted, Duration::from_millis(50))
+        .await;
+    assert!(
+        matches!(tail, nebula_resource::RevokeTail::Done),
+        "a timed-out DRAIN must still complete the revoke hook (single \
+         budget owner; no outer wrapper drops the post-drain hook), got: {tail:?}"
+    );
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        1,
+        "the revoke hook must run exactly once even though the drain timed out"
+    );
 
     drop(in_flight);
 }
