@@ -18,7 +18,7 @@ tags: [resource, credential, action, engine, m6, m11, contract]
 related:
   - docs/INTEGRATION_MODEL.md
   - docs/PRODUCT_CANON.md
-  - docs/adr/0030-engine-owned-credential-orchestration.md
+  - docs/adr/HISTORICAL.md  # ADR-0030 engine-owned credential orchestration (historical)
 ---
 
 # 0081. M6 resource & credential integration (contract ADR)

@@ -1,12 +1,12 @@
 # ADRs 0001–0041 (index)
 
-**Agents:** Do not bulk-read every `docs/adr/0*.md` file. Open a specific ADR
-only when code or an in-repo ADR cites it. For new work, prefer **0042+**
+**Agents:** This is a title/status index only — the 0001–0041 ADR bodies were
+evicted from the tree 2026-05-18. For new work, prefer the live ADRs
 (see [`README.md`](./README.md)).
 
-Full text for each row lives at `docs/adr/<file>` in this repo (hidden from
-Cursor index via `.cursorignore`). Alternate numbering `0042-tool-provider`
-is archive-only.
+Full decision text is **git-history-only**: `git log -- docs/adr/<file>` (or
+the external archive named in [`../ARCHIVE.md`](../ARCHIVE.md)). Alternate
+numbering `0042-tool-provider` is archive-only.
 
 | # | Title | Status |
 |---|-------|--------|
@@ -45,7 +45,7 @@ is archive-only.
 | 0033 | Integration credentials (Plane B) | accepted |
 | 0034 | `SecretValue` / credential seam | accepted |
 | 0035 | Phantom-shim capability pattern | proposed |
-| 0036 | Resource credential adoption | accepted — **superseded by [0044](./0044-supersede-0036-resource-credential-singular.md)** |
+| 0036 | Resource credential adoption | superseded by ADR-0044 (consolidated into contract 0081) |
 | 0037 | Daemon + EventSource engine fold | accepted |
 | 0038 | Action trait shape (`#[action]`) | accepted |
 | 0039 | Action macro emission | accepted |

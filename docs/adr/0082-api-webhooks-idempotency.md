@@ -11,7 +11,7 @@ superseded_by: []
 tags: [api, openapi, webhook, idempotency, m3, contract]
 related:
   - docs/INTEGRATION_MODEL.md
-  - docs/adr/0022-webhook-signature-policy.md
+  - docs/adr/HISTORICAL.md  # ADR-0022 webhook signature policy (historical)
 ---
 
 # 0082. API edge contracts — OpenAPI, idempotency, webhooks (contract ADR)
