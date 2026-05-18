@@ -100,7 +100,12 @@ structural guarantee. Layer-2 has two tiers, in cost order:
 Both tiers block the turn via the existing `deny()` exit-2 contract (C's
 mechanism). Enforcement is **structural gating** (user-selected); the design
 carries the false-block and infinite-loop mitigations that make hard gating
-safe. Scope: main-thread `Stop` plus `implement-worker` `SubagentStop`.
+safe. Scope: main-thread `Stop` plus the **implementation-worker
+`SubagentStop`** — defined by *role* (the subagent that executes plan tasks),
+not by a fixed ecosystem name. Today that is the AI-Factory `implement-worker`;
+the deterministic core gates on git/clippy/nextest and is **skill-ecosystem-
+agnostic**, so the AI-Factory → `ce-*` migration (a separate sequenced
+workstream, below) only re-points the named integration hooks, never the core.
 
 Recorded as a decision because it changes the enforced-discipline contract
 (adds gates that can block completion), reconciles an intentional
@@ -121,8 +126,9 @@ reasoning that removed `resolve_cmd` from `_lib.sh`).
 ### Components
 
 1. **`.claude/hooks/intent-gate.sh`** — command hook on `Stop` and
-   `SubagentStop` (matcher `implement-worker`), ordered **after**
-   `stop-gate.sh`.
+   `SubagentStop` (matcher = the current implementation-worker subagent;
+   `implement-worker` today, re-pointed by the `ce-*` migration workstream),
+   ordered **after** `stop-gate.sh`.
    - Loop guard: `stop_hook_active == true` → `allow` (mirrors
      `stop-gate.sh:8`); plus a turn-state `intent_attempts` counter — after
      **N = 2** blocks, `allow` and log an `escalation` record. Failing toward
@@ -185,8 +191,10 @@ reasoning that removed `resolve_cmd` from `_lib.sh`).
    stricter-than-tests rejections). Returns `{verdict, confidence,
    violations[] with file:line}`.
 
-5. **Inoculation + abstention-as-success** — in `implement-worker.md` and the
-   `loop-producer` / plan subagent prompts: *"If a task is hard, implement it
+5. **Inoculation + abstention-as-success** — in the **implementation and
+   producer subagent prompts** (by role: whichever subagents write or produce
+   code — the AI-Factory worker/`loop-producer`/plan agents today, the `ce-*`
+   equivalents after migration): *"If a task is hard, implement it
    correctly — do not make the gate pass by fitting tests or adding
    unrequested scaffolding; surfacing that this is tempting is acceptable,
    doing it is not. Concluding that no change is needed (issue already fixed,
@@ -212,7 +220,8 @@ tier only on flagged-ambiguous-high-risk (rare). Bounded retry caps worst case.
 ### Wiring & invariants
 
 - `settings.json` `Stop`: `stop-gate.sh` first, `intent-gate.sh` second; new
-  `SubagentStop` entry matching `implement-worker`.
+  `SubagentStop` entry matching the current implementation-worker subagent
+  name (one string the `ce-*` migration workstream re-points).
 - `task hooks:test` gains proofs (repo invariant): block-on-unambiguous-fake,
   allow-on-honest-green, allow-on-justified-abstention, net-LoC-budget-block,
   duplicate-symbol-block, budget-justified-escape, loop-bound-after-N,
@@ -242,6 +251,9 @@ tier only on flagged-ambiguous-high-risk (rare). Bounded retry caps worst case.
   workspace-wide churn that justified it (diff-scoped enforcement only).
 - Agent-prompt baseline changes; subagent edits must keep the inoculation +
   abstention lines.
+- The deterministic core is **skill-ecosystem-agnostic** (gates git / clippy /
+  nextest only); the AI-Factory → `ce-*` migration re-points named integration
+  hooks but cannot weaken or bypass the core.
 
 ## Follow-up workstream (sequenced, not part of this ADR)
 
@@ -251,17 +263,26 @@ complexity/duplication debt accumulate with no observable gate. Therefore:
 
 1. **0083 lands first** — the binding structural-budget + semantic gate is
    installed and proven (`task hooks:test`).
-2. **Then** a separate **legacy structural-debt burn-down** workstream gets its
-   own spec → plan → impl cycle. Shape, grounded in cleanup-loop practice
-   (Propel, Fowler net-negative): a background cleanup loop on a fixed cadence
-   producing **net-negative**, evidence-carrying (lint/structure deltas) small
-   PRs, prioritised by churn (files touched in >30 % of recent PRs first),
-   reconciling the `QUALITY_GATES.md` `cognitive_complexity` / `too_many_lines`
-   allowance crate-by-crate. The 0083 gate runs the whole time, so cleaned
-   crates cannot re-accrue the debt and the burn-down slope cannot reverse.
+2. **Legacy structural-debt burn-down** (own spec → plan → impl cycle). Shape,
+   grounded in cleanup-loop practice (Propel, Fowler net-negative): a
+   background cleanup loop on a fixed cadence producing **net-negative**,
+   evidence-carrying (lint/structure deltas) small PRs, prioritised by churn
+   (files touched in >30 % of recent PRs first), reconciling the
+   `QUALITY_GATES.md` `cognitive_complexity` / `too_many_lines` allowance
+   crate-by-crate. The 0083 gate runs throughout, so cleaned crates cannot
+   re-accrue debt and the slope cannot reverse.
+3. **AI-Factory removal / `ce-*` default** (own spec → plan → impl cycle).
+   `aif-*` skills and the AI-Factory subagent fleet are retired
+   (`project_ai_factory_abandoned` already froze curation); `ce-*` becomes the
+   default skill set. This workstream owns re-pointing 0083's *named*
+   integration hooks (the `SubagentStop` matcher string and the role-based
+   inoculation targets) to the `ce-*` equivalents. The 0083 deterministic
+   core needs **no change** — it never references a skill ecosystem. No shim
+   or aif↔ce bridge: the wrong thing is replaced directly.
 
-This ADR does **not** design that workstream; it only fixes the order
-(gate before burn-down) so the burn-down is durable.
+Items 2 and 3 are sequenced **after** 0083 and are independent of each other.
+This ADR does **not** design either; it only fixes the order so both are
+durable and migration-safe.
 
 ## Supersession
 
