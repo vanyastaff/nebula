@@ -23,7 +23,9 @@ Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — s
 
 ### Architecture cleanup status
 
-The [credential architecture cleanup design](../../docs/superpowers/specs/2026-04-20-credential-architecture-cleanup-design.md) phased resolver/registry/executor and rotation **orchestration** into `nebula-engine`, persistence layers into `nebula-storage`, and OAuth **HTTP ceremony** into `nebula-api` — see ADR-0028–0031 and [`ADR-0033`](../../docs/adr/0033-integration-credentials-plane-b.md) (Plane B).
+Resolver/registry/executor and rotation **orchestration** live in `nebula-engine`;
+persistence in `nebula-storage`; OAuth **HTTP ceremony** in `nebula-api` — see
+ADR-0028–0031 and [`ADR-0033`](../../docs/adr/0033-integration-credentials-plane-b.md) (Plane B).
 
 **ADR-0032** keeps the `CredentialStore` **trait** in this crate (avoiding a `credential → storage` dependency cycle). Production in-memory stores should use `nebula_storage::credential::InMemoryStore`; `store_memory` remains as a cycle-safe shim.
 

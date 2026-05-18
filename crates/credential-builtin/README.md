@@ -1,9 +1,8 @@
 # nebula-credential-builtin
 
-Built-in concrete credential types for Nebula. Plugin authors depend on
-`nebula-credential` (the contract crate); first-party concrete types
-(`SlackOAuth2`, `BitbucketOAuth2`, `BitbucketPat`, `BitbucketAppPassword`,
-`AnthropicApiKey`, `AwsSigV4`, ...) live here.
+First-party **concrete** credential types for Nebula workflows. Plugin authors depend on
+`nebula-credential` (the contract crate) only; this crate holds built-in implementations
+once the integrator catalog lands (see `docs/INTEGRATION_MODEL.md` § Credential).
 
 ## Why split
 
@@ -19,7 +18,7 @@ Per Strategy §2.4 (frozen Checkpoint 1, commit `4316a292`):
 ## Plugin-author onboarding
 
 1. Depend on `nebula-credential` (contract). Do **not** depend on
-   `nebula-credential-builtin`.
+   `nebula-credential-builtin` unless you intentionally reuse a first-party type.
 2. Declare your own `mod sealed_caps { pub trait MyCapSealed {} }` at
    crate root, one inner trait per capability you introduce. See
    ADR-0035 §3.
@@ -33,7 +32,9 @@ Per Strategy §2.4 (frozen Checkpoint 1, commit `4316a292`):
 5. The contract's `nebula-credential::sealed::Sealed` is emitted by
    `#[plugin_credential]`; do not impl by hand.
 
-## What's here
+## What's here today
 
-П1 ships the empty scaffold. Concrete types land in П3. See the
-phase plan at `docs/superpowers/plans/2026-04-26-credential-p1-trait-scaffolding.md`.
+**Scaffold only** — no vendor-specific concrete types are registered yet. Generic auth
+shapes (`OAuth2Credential`, `ApiKeyCredential`, …) live in `nebula-credential` until
+catalog work adds first-party wrappers here. See ADR-0028–0032 and
+`docs/INTEGRATION_MODEL.md`.
