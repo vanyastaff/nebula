@@ -208,6 +208,10 @@ impl ControlQueue for PgControlQueue {
     }
 
     async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
+        // Terminal rows are pruned by the consumer's retention sweep;
+        // there is no enqueue timestamp column in the port-scoped schema,
+        // so age-based pruning is a deliberate no-op here (parity with the
+        // sqlite and in-memory backends — not an unimplemented stub).
         Ok(0)
     }
 }

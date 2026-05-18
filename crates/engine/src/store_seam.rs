@@ -54,11 +54,25 @@ pub fn node_output_record(json: serde_json::Value) -> NodeResultRecord {
 /// so idempotent replay can reconstruct exact routing semantics.
 #[must_use]
 pub fn node_result_record(json: serde_json::Value) -> NodeResultRecord {
-    let kind_tag = json
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("Unknown")
-        .to_owned();
+    let kind_tag = if let Some(tag) = json.get("type").and_then(serde_json::Value::as_str) {
+        tag.to_owned()
+    } else {
+        // A serialized `ActionResult` must carry its `type`
+        // discriminant; a missing one means malformed JSON and
+        // idempotent replay cannot reconstruct routing. Surface it
+        // (observability DoD) and fail loud in debug rather than
+        // silently persisting an unroutable `"Unknown"`.
+        debug_assert!(
+            false,
+            "node_result_record: ActionResult JSON has no `type` discriminant"
+        );
+        tracing::warn!(
+            target: "nebula_engine::store_seam",
+            "node result JSON missing `type` discriminant; \
+             persisting kind_tag=\"Unknown\" (replay routing degraded)"
+        );
+        "Unknown".to_owned()
+    };
     NodeResultRecord {
         kind_tag,
         json,

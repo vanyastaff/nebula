@@ -245,10 +245,27 @@ impl RawClaimed {
                 m.execution_id
             )
         })?;
-        let w3c = m
-            .w3c_traceparent
-            .as_deref()
-            .and_then(|s| nebula_core::W3cTraceContext::from_traceparent_str(s).ok());
+        let w3c = match m.w3c_traceparent.as_deref() {
+            None => None,
+            Some(s) => match nebula_core::W3cTraceContext::from_traceparent_str(s) {
+                Ok(ctx) => Some(ctx),
+                Err(e) => {
+                    // A malformed carrier means this command's span is
+                    // orphaned from its enqueuing trace — operationally
+                    // significant (distributed-trace gap), so surface it
+                    // rather than silently dropping (observability DoD).
+                    // The stable target makes it log-metric countable.
+                    tracing::warn!(
+                        target: "nebula_engine::control_consumer",
+                        row_id = ?m.id,
+                        error = %e,
+                        "control queue row has a malformed w3c traceparent; \
+                         dispatching without trace linkage"
+                    );
+                    None
+                },
+            },
+        };
         Ok(ClaimedRow {
             id: m.id,
             execution_id,

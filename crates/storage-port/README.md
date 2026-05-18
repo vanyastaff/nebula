@@ -24,7 +24,7 @@ does **not** implement any backend.
 
 ## Layering
 
-```
+```text
 engine / api / core  ──depends on──▶  nebula-storage-port  (this crate)
                                              ▲
 nebula-storage (adapters: InMemory/SQLite/Postgres)  ──implements──┘
