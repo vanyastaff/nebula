@@ -1,10 +1,10 @@
 ---
 title: "refactor: Rust code — reduce ADR/canon citation noise in comments"
 type: refactor
-status: draft
+status: active
 date: 2026-05-18
 origin: docs/brainstorms/2026-05-18-001-docs-stack-contract-consolidation-requirements.md
-blocked-by: docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md
+unblocked-by: Wave B complete (plan 001 U10)
 ---
 
 # refactor: Rust code — reduce ADR/canon citation noise in comments
