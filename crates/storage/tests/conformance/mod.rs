@@ -1283,16 +1283,13 @@ pub async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     );
 }
 
-/// The durable idempotent-replay cache is first-writer-wins (a second
-/// `put` on the same key keeps the original record + fingerprint) and
-/// tenant-isolated: a probe under a different scope-namespaced key is a
-/// miss, so tenant A can neither read nor poison tenant B's entry.
-pub async fn assert_idempotency_store_first_writer_and_scope(backend: &dyn Backend) {
+/// The durable idempotent-replay cache is first-writer-wins: a second
+/// `put` on the same key keeps the original record + fingerprint (replay
+/// race). Purely within `scope_a`, so it is decorator-transparent and runs
+/// in both the raw and scoped matrices.
+pub async fn assert_idempotency_store_first_writer(backend: &dyn Backend) {
     let store = backend.idempotency_store().await;
-    // The caller scope-namespaces the key (`{ws}:{org}:{key}`); the
-    // store treats it opaquely.
-    let key_a = "ws_a:org_a:POST /x:idem-1".to_string();
-    let key_b = "ws_b:org_b:POST /x:idem-1".to_string();
+    let raw_key = "POST /x:idem-1".to_string();
     let first = CachedRecord {
         status: 200,
         headers: b"h1".to_vec(),
@@ -1309,18 +1306,24 @@ pub async fn assert_idempotency_store_first_writer_and_scope(backend: &dyn Backe
     };
     store
         .put(
-            key_a.clone(),
+            &scope_a(),
+            raw_key.clone(),
             first.clone(),
             std::time::Duration::from_mins(1),
         )
         .await
         .expect("put #1");
     store
-        .put(key_a.clone(), second, std::time::Duration::from_mins(1))
+        .put(
+            &scope_a(),
+            raw_key.clone(),
+            second,
+            std::time::Duration::from_mins(1),
+        )
         .await
         .expect("put #2 (must be a no-op)");
     let got = store
-        .get(&key_a)
+        .get(&scope_a(), &raw_key)
         .await
         .expect("get")
         .unwrap_or_else(|| panic!("[{}] cached record must be present", backend.name()));
@@ -1336,10 +1339,45 @@ pub async fn assert_idempotency_store_first_writer_and_scope(backend: &dyn Backe
         "[{}] the original fingerprint must survive (replay-mismatch detection)",
         backend.name()
     );
+}
 
-    // A different tenant's scope-namespaced key is a clean miss — never
-    // tenant A's record (replay-oracle mitigation, §6.1).
-    let cross = store.get(&key_b).await.expect("get cross-scope key");
+/// Tenant isolation of the durable replay cache: the store folds the scope
+/// into the stored key, so the *same raw key* under a different scope is a
+/// clean miss — tenant A can neither read nor poison tenant B's entry
+/// (replay-oracle mitigation, §6.1).
+///
+/// This passes an explicit foreign scope to probe the adapter's raw
+/// scope-fold, so — like the other `cross_scope_*` assertions — it runs
+/// only in the raw matrix. The decorator substitutes the per-call scope
+/// away by design, so decorator-level cross-tenant denial is proven in
+/// `cross_tenant_denial.rs` instead.
+pub async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend) {
+    let store = backend.idempotency_store().await;
+    let raw_key = "POST /x:idem-1".to_string();
+    let record = CachedRecord {
+        status: 200,
+        headers: b"h1".to_vec(),
+        body: b"a-only".to_vec(),
+        fingerprint: b"fp-a".to_vec(),
+        expires_at: "2999-01-01T00:00:00Z".into(),
+    };
+    store
+        .put(
+            &scope_a(),
+            raw_key.clone(),
+            record,
+            std::time::Duration::from_mins(1),
+        )
+        .await
+        .expect("put under scope A");
+
+    // A different tenant probing the *same raw key* is a clean miss — the
+    // store-side scope fold makes it a different stored key, never tenant
+    // A's record.
+    let cross = store
+        .get(&scope_b(), &raw_key)
+        .await
+        .expect("get cross-scope key");
     assert!(
         cross.is_none(),
         "[{}] a cross-tenant cache key must not resolve to another tenant's record",

@@ -2,7 +2,8 @@
 //! `WebhookActivationStore` (ADR-0049).
 //!
 //! Both share-nothing (their own `Arc<Mutex<…>>`): the cache is keyed by
-//! the caller-supplied, already-scope-namespaced `cache_key`; webhook
+//! `{workspace_id}:{org_id}:{cache_key}` (the store folds the scope in, so
+//! tenant A can neither probe nor poison tenant B's dedup entry); webhook
 //! activations are keyed by `(scope, slug)` so resolution never crosses a
 //! tenant boundary.
 
@@ -39,15 +40,27 @@ fn expires_at_ms(rfc3339: &str) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
+/// Fold the scope into the cache key so two tenants' keyspaces are
+/// disjoint: `{workspace_id}:{org_id}:{cache_key}`. A raw key from one
+/// tenant can never collide with another's (§6.1 replay-oracle).
+fn namespaced(scope: &Scope, cache_key: &str) -> String {
+    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
+}
+
 #[async_trait::async_trait]
 impl IdempotencyStore for InMemoryIdempotencyStore {
-    async fn get(&self, cache_key: &str) -> Result<Option<CachedRecord>, StorageError> {
+    async fn get(
+        &self,
+        scope: &Scope,
+        cache_key: &str,
+    ) -> Result<Option<CachedRecord>, StorageError> {
         let map = self.inner.lock();
-        Ok(map.get(cache_key).cloned())
+        Ok(map.get(&namespaced(scope, cache_key)).cloned())
     }
 
     async fn put(
         &self,
+        scope: &Scope,
         cache_key: String,
         record: CachedRecord,
         _ttl: Duration,
@@ -55,7 +68,7 @@ impl IdempotencyStore for InMemoryIdempotencyStore {
         // First-writer-wins: only insert when absent (the existing record
         // — and its fingerprint — must survive a replay race).
         let mut map = self.inner.lock();
-        map.entry(cache_key).or_insert(record);
+        map.entry(namespaced(scope, &cache_key)).or_insert(record);
         Ok(())
     }
 

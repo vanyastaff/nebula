@@ -22,10 +22,10 @@ use harness::{
     assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_get_published_is_highest_numbered, assert_idempotency_first_writer_wins,
-    assert_idempotency_store_first_writer_and_scope, assert_journal_visibility_and_scope,
-    assert_live_lease_blocks_acquire, assert_save_with_published_version_is_atomic,
-    assert_stale_fencing_is_fenced_out, assert_webhook_activation_and_scope,
-    assert_workflow_store_contract, skip_reason,
+    assert_idempotency_store_cross_scope_isolated, assert_idempotency_store_first_writer,
+    assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
+    assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
+    assert_webhook_activation_and_scope, assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -95,8 +95,12 @@ matrix!(
     assert_journal_visibility_and_scope
 );
 matrix!(
-    idempotency_store_first_writer_and_scope,
-    assert_idempotency_store_first_writer_and_scope
+    idempotency_store_first_writer,
+    assert_idempotency_store_first_writer
+);
+matrix!(
+    idempotency_store_cross_scope_isolated,
+    assert_idempotency_store_cross_scope_isolated
 );
 matrix!(
     webhook_activation_and_scope,
@@ -170,8 +174,8 @@ scoped_matrix!(
     assert_control_queue_outbox_and_fencing
 );
 scoped_matrix!(
-    scoped_idempotency_store_first_writer_and_scope,
-    assert_idempotency_store_first_writer_and_scope
+    scoped_idempotency_store_first_writer,
+    assert_idempotency_store_first_writer
 );
 scoped_matrix!(
     scoped_workflow_store_contract,

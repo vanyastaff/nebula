@@ -7,15 +7,6 @@ use nebula_storage_port::dto::CachedRecord;
 use nebula_storage_port::store::{IdempotencyGuard, IdempotencyStore};
 use nebula_storage_port::{Scope, StorageError};
 
-/// Tenant-namespace a raw cache key: `{workspace_id}:{org_id}:{key}`.
-///
-/// This is the replay-oracle mitigation: tenant A's keyspace and tenant
-/// B's keyspace are disjoint, so A can neither probe whether B has a
-/// dedup entry nor poison B's by pre-claiming a key (§6.1 point 2).
-fn namespaced(bound: &Scope, key: &str) -> String {
-    format!("{}:{}:{}", bound.workspace_id, bound.org_id, key)
-}
-
 /// Wraps an [`IdempotencyGuard`] and forces `check_and_mark` into the
 /// bound [`Scope`].
 #[derive(Clone)]
@@ -58,11 +49,12 @@ impl IdempotencyGuard for ScopedIdempotencyGuard {
     }
 }
 
-/// Wraps an [`IdempotencyStore`] and tenant-namespaces every cache key.
-///
-/// The port trait takes an already-namespaced `cache_key`; this decorator
-/// is the component that performs the namespacing, so a raw key handed in
-/// by one tenant can never collide with another tenant's.
+/// Wraps an [`IdempotencyStore`] and forces every call into the bound
+/// [`Scope`]. The port trait now takes `&Scope` explicitly and the
+/// backend folds it into the stored key, so this decorator simply
+/// substitutes its bound scope (mirroring every other `Scoped*`
+/// decorator and `ScopedIdempotencyGuard`); a raw key from one tenant
+/// can never collide with another tenant's because the scope differs.
 #[derive(Clone)]
 pub struct ScopedIdempotencyStore {
     inner: Arc<dyn IdempotencyStore>,
@@ -90,19 +82,22 @@ impl ScopedIdempotencyStore {
 
 #[async_trait::async_trait]
 impl IdempotencyStore for ScopedIdempotencyStore {
-    async fn get(&self, cache_key: &str) -> Result<Option<CachedRecord>, StorageError> {
-        self.inner.get(&namespaced(&self.bound, cache_key)).await
+    async fn get(
+        &self,
+        _scope: &Scope,
+        cache_key: &str,
+    ) -> Result<Option<CachedRecord>, StorageError> {
+        self.inner.get(&self.bound, cache_key).await
     }
 
     async fn put(
         &self,
+        _scope: &Scope,
         cache_key: String,
         record: CachedRecord,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        self.inner
-            .put(namespaced(&self.bound, &cache_key), record, ttl)
-            .await
+        self.inner.put(&self.bound, cache_key, record, ttl).await
     }
 
     async fn evict_expired(&self) -> Result<u64, StorageError> {

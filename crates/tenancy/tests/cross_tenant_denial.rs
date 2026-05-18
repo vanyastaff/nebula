@@ -168,8 +168,9 @@ impl ExecutionStore for MockExecStore {
 }
 
 // ── Mock idempotency store ────────────────────────────────────────────────
-// Opaque string-keyed map. The decorator namespaces the key by tenant
-// before it reaches here, so two tenants' keyspaces are disjoint.
+// Keyed by `{ws}:{org}:{cache_key}` like the real backends: the store
+// folds the scope in, and the decorator substitutes its bound scope before
+// the call lands here, so two tenants' keyspaces are disjoint.
 
 #[derive(Default)]
 struct MockIdemStore {
@@ -182,14 +183,28 @@ impl std::fmt::Debug for MockIdemStore {
     }
 }
 
+fn idem_key(scope: &Scope, cache_key: &str) -> String {
+    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
+}
+
 #[async_trait::async_trait]
 impl IdempotencyStore for MockIdemStore {
-    async fn get(&self, cache_key: &str) -> Result<Option<CachedRecord>, StorageError> {
-        Ok(self.rows.lock().expect("mock lock").get(cache_key).cloned())
+    async fn get(
+        &self,
+        scope: &Scope,
+        cache_key: &str,
+    ) -> Result<Option<CachedRecord>, StorageError> {
+        Ok(self
+            .rows
+            .lock()
+            .expect("mock lock")
+            .get(&idem_key(scope, cache_key))
+            .cloned())
     }
 
     async fn put(
         &self,
+        scope: &Scope,
         cache_key: String,
         record: CachedRecord,
         _ttl: Duration,
@@ -198,7 +213,7 @@ impl IdempotencyStore for MockIdemStore {
         self.rows
             .lock()
             .expect("mock lock")
-            .entry(cache_key)
+            .entry(idem_key(scope, &cache_key))
             .or_insert(record);
         Ok(())
     }
@@ -356,10 +371,12 @@ async fn cross_tenant_idempotency_keys_are_isolated() {
     let tenant_a = ScopedIdempotencyStore::new(mock.clone(), scope_a());
     let tenant_b = ScopedIdempotencyStore::new(mock.clone(), scope_b());
 
-    // Both tenants use the *same raw key*. The decorator namespaces by
-    // tenant, so the stored keys differ.
+    // Both tenants use the *same raw key*, and each passes the *other
+    // tenant's* scope as the per-call arg — proving the decorator ignores
+    // it and substitutes its bound scope, so the stored keys still differ.
     tenant_a
         .put(
+            &scope_b(),
             "POST /pay:idem-1".into(),
             cached(b"A-response"),
             Duration::from_mins(1),
@@ -369,7 +386,7 @@ async fn cross_tenant_idempotency_keys_are_isolated() {
 
     // B probes the same raw key: must be a clean miss (no replay oracle).
     let probe = tenant_b
-        .get("POST /pay:idem-1")
+        .get(&scope_a(), "POST /pay:idem-1")
         .await
         .expect("B get must not error");
     assert!(
@@ -381,6 +398,7 @@ async fn cross_tenant_idempotency_keys_are_isolated() {
     // survive untouched (no cross-tenant poisoning).
     tenant_b
         .put(
+            &scope_a(),
             "POST /pay:idem-1".into(),
             cached(b"B-poison"),
             Duration::from_mins(1),
@@ -388,7 +406,7 @@ async fn cross_tenant_idempotency_keys_are_isolated() {
         .await
         .expect("B put");
     let a_entry = tenant_a
-        .get("POST /pay:idem-1")
+        .get(&scope_b(), "POST /pay:idem-1")
         .await
         .expect("A get")
         .expect("A entry present");

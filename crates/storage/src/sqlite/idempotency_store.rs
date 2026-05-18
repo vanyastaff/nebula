@@ -1,10 +1,11 @@
 //! SQLite `IdempotencyStore` (ADR-0048 durable-replay cache) +
 //! `WebhookActivationStore` (ADR-0049) over the port-scoped schema.
 //!
-//! The cache is keyed by the caller-supplied, already-scope-namespaced
-//! `cache_key` (first-writer-wins via INSERT OR IGNORE). Webhook
-//! activations are keyed by `(workspace, org, slug)` so resolution never
-//! crosses a tenant boundary.
+//! The cache is keyed by `{workspace_id}:{org_id}:{cache_key}` (the store
+//! folds the scope into the key, so tenant A can neither probe nor poison
+//! tenant B's dedup entry; first-writer-wins via INSERT OR IGNORE).
+//! Webhook activations are keyed by `(workspace, org, slug)` so resolution
+//! never crosses a tenant boundary.
 
 use std::time::Duration;
 
@@ -24,6 +25,13 @@ fn expires_at_ms(rfc3339: &str) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
+/// Fold the scope into the cache key (`{workspace_id}:{org_id}:{cache_key}`)
+/// so two tenants' keyspaces are disjoint — a raw key from one tenant can
+/// never collide with another's (§6.1 replay-oracle).
+fn namespaced(scope: &Scope, cache_key: &str) -> String {
+    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
+}
+
 /// SQLite-backed durable idempotent-replay cache.
 #[derive(Clone, Debug)]
 pub struct SqliteIdempotencyStore {
@@ -40,12 +48,16 @@ impl SqliteIdempotencyStore {
 
 #[async_trait::async_trait]
 impl IdempotencyStore for SqliteIdempotencyStore {
-    async fn get(&self, cache_key: &str) -> Result<Option<CachedRecord>, StorageError> {
+    async fn get(
+        &self,
+        scope: &Scope,
+        cache_key: &str,
+    ) -> Result<Option<CachedRecord>, StorageError> {
         let row = sqlx::query(
             "SELECT status, headers, body, fingerprint, expires_at \
              FROM port_idempotency_cache WHERE cache_key = ?",
         )
-        .bind(cache_key)
+        .bind(namespaced(scope, cache_key))
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -63,6 +75,7 @@ impl IdempotencyStore for SqliteIdempotencyStore {
 
     async fn put(
         &self,
+        scope: &Scope,
         cache_key: String,
         record: CachedRecord,
         _ttl: Duration,
@@ -75,7 +88,7 @@ impl IdempotencyStore for SqliteIdempotencyStore {
               expires_at_ms) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&cache_key)
+        .bind(namespaced(scope, &cache_key))
         .bind(i64::from(record.status))
         .bind(&record.headers)
         .bind(&record.body)
