@@ -438,6 +438,32 @@ async fn credential_created_in_one_workspace_is_404_from_another_workspace() {
         StatusCode::NOT_FOUND,
         "credential IDs must not resolve across workspace scopes"
     );
+    let probe_body = body_string(probe).await;
+    let problem: serde_json::Value = serde_json::from_str(&probe_body).expect("404 problem json");
+    assert_eq!(problem["title"], "Not Found");
+    assert_eq!(problem["detail"], "credential not found");
+    let problem_obj = problem.as_object().expect("problem object");
+    assert!(
+        !problem_obj.contains_key("id"),
+        "404 problem must not expose a credential id: {probe_body}"
+    );
+    assert!(
+        !problem_obj.contains_key("name"),
+        "404 problem must not expose a credential name: {probe_body}"
+    );
+    for forbidden in [
+        id,
+        "scoped credential",
+        common::TEST_ORG,
+        OTHER_WS,
+        SECRET_TOKEN,
+        "another workspace",
+    ] {
+        assert!(
+            !probe_body.contains(forbidden),
+            "cross-workspace 404 disclosed {forbidden:?}: {probe_body}"
+        );
+    }
 }
 
 // ── Abuse: secret never reaches logs across the full lifecycle ────────────────

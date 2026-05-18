@@ -98,6 +98,14 @@ async fn tenant_routes_without_membership_store_fail_closed() {
         StatusCode::SERVICE_UNAVAILABLE,
         "tenant routes must fail closed when no MembershipStore is configured"
     );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        problem["detail"], "membership store not configured; tenant routes are disabled",
+        "fail-closed must come from RBAC membership-store guard"
+    );
 }
 
 #[tokio::test]

@@ -48,7 +48,7 @@ pub async fn rbac_middleware(
     // Load org role
     let org_role = match &state.membership_store {
         Some(store) => store.get_org_role(org_id, &auth_ctx.principal).await?,
-        None if state.allow_insecure_tenant_rbac_bypass => None,
+        None if state.allow_insecure_tenant_rbac_bypass() => None,
         None => {
             return Err(ApiError::ServiceUnavailable(
                 "membership store not configured; tenant routes are disabled".to_string(),
@@ -57,7 +57,7 @@ pub async fn rbac_middleware(
     };
 
     // If user has no org role at all, return 404 (enumeration prevention).
-    if org_role.is_none() && !state.allow_insecure_tenant_rbac_bypass {
+    if org_role.is_none() && !state.allow_insecure_tenant_rbac_bypass() {
         return Err(ApiError::NotFound("not found".to_string()));
     }
 
@@ -65,7 +65,7 @@ pub async fn rbac_middleware(
     let workspace_role = if let Some(ws_id) = resolved.workspace_id {
         let explicit_role = match &state.membership_store {
             Some(store) => store.get_workspace_role(ws_id, &auth_ctx.principal).await?,
-            None if state.allow_insecure_tenant_rbac_bypass => None,
+            None if state.allow_insecure_tenant_rbac_bypass() => None,
             None => {
                 return Err(ApiError::ServiceUnavailable(
                     "membership store not configured; tenant routes are disabled".to_string(),
@@ -75,7 +75,7 @@ pub async fn rbac_middleware(
         let effective = effective_workspace_role(org_role, explicit_role);
 
         // If user has org access but no effective workspace role, return 404
-        if effective.is_none() && !state.allow_insecure_tenant_rbac_bypass {
+        if effective.is_none() && !state.allow_insecure_tenant_rbac_bypass() {
             return Err(ApiError::NotFound("not found".to_string()));
         }
         effective

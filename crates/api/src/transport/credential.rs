@@ -303,11 +303,10 @@ fn to_summary(stored: &StoredCredential) -> ApiResult<CredentialSummary> {
 ///
 /// Cross-workspace / unknown ids collapse to `404` with **no existence
 /// disclosure** (mirrors the Phase-2 owner-scoped pattern). The error
-/// string never contains secret material — only the opaque credential
-/// id, which is already client-supplied.
+/// string never contains secret material or credential identifiers.
 fn map_store_err(err: StoreError, cred: &str) -> ApiError {
     match err {
-        StoreError::NotFound { .. } => ApiError::NotFound(format!("credential {cred} not found")),
+        StoreError::NotFound { .. } => ApiError::NotFound("credential not found".to_owned()),
         StoreError::AlreadyExists { .. } => {
             ApiError::Conflict(format!("credential {cred} already exists"))
         },

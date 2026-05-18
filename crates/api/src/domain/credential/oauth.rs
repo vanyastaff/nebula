@@ -262,6 +262,32 @@ where
             ApiError::Unauthorized("oauth state not found or already consumed".to_owned())
         })?;
 
+    let pending_for_owner_check = state
+        .oauth_pending_store
+        .get_bound::<OAuthPendingExchange>(
+            "oauth2",
+            &pending_token,
+            &user.user_id,
+            &payload.csrf_token,
+        )
+        .await;
+    let pending_for_owner_check = match pending_for_owner_check {
+        Ok(p) => p,
+        Err(e) => {
+            if should_drop_oauth_state_map_entry(&e) {
+                state.oauth_state_tokens.write().await.remove(&signed_state);
+            }
+            return Err(ApiError::Unauthorized(format!(
+                "oauth pending consume failed: {e}"
+            )));
+        },
+    };
+    if pending_for_owner_check.owner_id.as_deref() != owner_id.as_deref() {
+        return Err(ApiError::Unauthorized(
+            "oauth pending state tenant mismatch".to_owned(),
+        ));
+    }
+
     let consume_result = state
         .oauth_pending_store
         .consume::<OAuthPendingExchange>(
@@ -283,11 +309,6 @@ where
             )));
         },
     };
-    if pending.owner_id.as_deref() != owner_id.as_deref() {
-        return Err(ApiError::Unauthorized(
-            "oauth pending state tenant mismatch".to_owned(),
-        ));
-    }
 
     state.oauth_state_tokens.write().await.remove(&signed_state);
 
@@ -770,5 +791,68 @@ mod tests {
             "new-refresh-token"
         );
         assert_eq!(persisted_state.scopes, vec!["new-scope-a", "new-scope-b"]);
+    }
+
+    #[tokio::test]
+    async fn tenant_mismatch_does_not_consume_pending_state() {
+        let state = test_app_state();
+        let credential_id = "cred-tenant-mismatch";
+        let user = AuthenticatedUser {
+            user_id: "user-tenant-mismatch".to_owned(),
+        };
+
+        let csrf = generate_random_state();
+        let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
+        let (signed_state, payload) =
+            build_signed_state(&signer, credential_id, csrf).expect("signed state");
+        let mut pending = test_pending_exchange();
+        pending.owner_id = Some("org-a:ws-a".to_owned());
+        let pending_token = state
+            .oauth_pending_store
+            .put("oauth2", &user.user_id, &payload.csrf_token, pending)
+            .await
+            .expect("pending store put");
+        let pending_token_for_assert = pending_token.clone();
+        state
+            .oauth_state_tokens
+            .write()
+            .await
+            .insert(signed_state.clone(), pending_token);
+
+        let err = handle_callback_with_exchange(
+            credential_id,
+            &state,
+            &user,
+            "auth-code".to_owned(),
+            signed_state.clone(),
+            Some("org-b:ws-b".to_owned()),
+            |_req| async { Err::<serde_json::Value, String>("exchange should not run".to_owned()) },
+        )
+        .await
+        .expect_err("tenant mismatch must fail");
+        assert!(
+            matches!(err, ApiError::Unauthorized(ref message) if message == "oauth pending state tenant mismatch"),
+            "expected tenant mismatch, got: {err:?}"
+        );
+
+        let still_pending = state
+            .oauth_pending_store
+            .get_bound::<OAuthPendingExchange>(
+                "oauth2",
+                &pending_token_for_assert,
+                &user.user_id,
+                &payload.csrf_token,
+            )
+            .await
+            .expect("tenant mismatch must leave pending state retryable");
+        assert_eq!(still_pending.owner_id.as_deref(), Some("org-a:ws-a"));
+        assert!(
+            state
+                .oauth_state_tokens
+                .read()
+                .await
+                .contains_key(&signed_state),
+            "tenant mismatch must leave signed state mapping retryable"
+        );
     }
 }

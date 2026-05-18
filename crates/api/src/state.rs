@@ -280,7 +280,7 @@ pub struct AppState {
     /// Test-only escape hatch for harnesses that exercise tenant routes
     /// without modeling memberships. Production composition leaves this
     /// false so missing RBAC state disables tenant routes fail-closed.
-    pub allow_insecure_tenant_rbac_bypass: bool,
+    allow_insecure_tenant_rbac_bypass: bool,
 
     /// Optional idempotency store backing [`crate::middleware::IdempotencyLayer`].
     ///
@@ -1037,6 +1037,11 @@ impl AppState {
     pub fn with_membership_store(mut self, store: Arc<dyn MembershipStore>) -> Self {
         self.membership_store = Some(store);
         self
+    }
+
+    /// Whether tenant RBAC is explicitly bypassed for test harnesses.
+    pub(crate) const fn allow_insecure_tenant_rbac_bypass(&self) -> bool {
+        self.allow_insecure_tenant_rbac_bypass
     }
 
     /// Allow tenant routes to pass RBAC without a membership store.
