@@ -317,6 +317,47 @@ pub trait Resource: Send + Sync + 'static {
         async { Ok(()) }
     }
 
+    /// An opaque change-token over **all** of this resource's
+    /// `#[credential]` slot field generations — the resource's current
+    /// *credential epoch*.
+    ///
+    /// **Contract:** the returned value **changes whenever ANY slot's
+    /// generation changes** — not just the slot with the largest
+    /// generation. It is compared **only for equality** by the
+    /// create-vs-rotate reconcile (built-epoch vs live-epoch), never by
+    /// magnitude, so it is a change-token rather than a monotone counter.
+    ///
+    /// `0` means "no credential slot has ever been bound" (also the default
+    /// for resources with no credential slots). Each `SlotCell` transition
+    /// (`store` *or* `take`/clear) strictly advances its per-slot
+    /// generation, so any post-build slot transition yields a different
+    /// epoch — proving a credential rotated/was revoked in between.
+    ///
+    /// `#[derive(Resource)]` emits the real implementation: an
+    /// order-sensitive positional fold
+    /// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every
+    /// declared `#[credential]` field's
+    /// [`SlotCell::generation`](crate::SlotCell::generation). A plain
+    /// `max` would be wrong here — a runtime built at
+    /// `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still maxes to
+    /// `10`, so the reconcile would miss the now-stale runtime; the
+    /// positional fold changes on every slot transition regardless of
+    /// which slot moved. It is derive-generated, not author-maintained,
+    /// so a new slot field cannot be silently omitted from the epoch. The
+    /// default `0` keeps hand-written impls (and slot-less resources)
+    /// compiling; for such impls the create-vs-rotate reconcile degrades
+    /// to the runtime-presence path only (it never *falsely* reports a
+    /// stale runtime, it just cannot prove staleness by epoch).
+    ///
+    /// Used by the per-slot rotation dispatch and the Resident create slow
+    /// path to close the create-vs-rotate lost-update race (ADR-0067
+    /// §Deferred): the Resident runtime records the epoch it was built
+    /// against and the dispatch reconciles a runtime built against an
+    /// older epoch instead of silently reporting success.
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
     /// Health-checks an existing runtime.
     ///
     /// The default implementation always succeeds.

@@ -7,7 +7,7 @@ name: Auto-close linked issues on merge
 # `fix(scope): subject (#issue, #issue) (#PR)` — GitHub's keyword parser does
 # not recognize bare `(#N)` references, so the issues remain OPEN after merge.
 # Three manual-sweep passes in one week (2026-04-12, 2026-04-15, 2026-04-18)
-# triggered this hook; see `docs/superpowers/specs/2026-04-18-stale-issue-audit-and-real-bugs.md`.
+# triggered this hook; stale-issue audit spec archived — see docs/ARCHIVE.md.
 
 on:
   push:

@@ -15,17 +15,17 @@ A durable workflow engine needs a persistence seam that the engine and API can d
 coupling to a specific database. More critically, it needs a place where optimistic CAS state
 transitions, journal appends, and outbox writes can share the same logical operation — the
 "two truths" anti-pattern (canon §14) forbids splitting those writes across separate
-transactions. `nebula-storage` is that seam: it exposes `ExecutionRepo` and `WorkflowRepo` as
-the production persistence interfaces for execution state, the append-only journal, idempotency
-keys, checkpoints, leases, and the durable `execution_control_queue` outbox — all backed by
-SQLite (dev / test) or PostgreSQL (production).
+transactions. `nebula-storage` is that seam: it implements the spec-16 storage port for
+execution state, workflow definitions and versions, the append-only journal, idempotency keys,
+checkpoints, leases, identity stores, and the durable control-queue outbox — all backed by
+InMemory, SQLite (dev / test), or PostgreSQL (production).
 
 ## Role
 
-*Storage Port.* Implements the Repository pattern (DDD) with Optimistic Concurrency Control
-(DDIA ch 7) on `ExecutionRepo::transition` and a Transactional Outbox (EIP "Guaranteed
-Delivery", DDIA ch 11) via `execution_control_queue`. Provides the single persistence layer
-the knife scenario (canon §13) exercises end-to-end.
+*Storage Port.* Implements the object-safe `nebula-storage-port` traits with Optimistic
+Concurrency Control (DDIA ch 7) on `ExecutionStore::commit` and a Transactional Outbox (EIP
+"Guaranteed Delivery", DDIA ch 11) via `TransitionBatch` + `ControlQueue`. Provides the
+single persistence layer the knife scenario (canon §13) exercises end-to-end.
 
 ## Public API
 
@@ -54,14 +54,7 @@ provides the adapters:
 
 Execution / workflow persistence goes through the port adapters; the
 legacy `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` surface and the
-never-implemented spec-16 trait placeholders were deleted (ADR-0068).
-
-Layer 2 — planned / experimental (`repos` module):
-
-- `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo` — **implemented**; produced by
-  the API cancel path and consumed by `nebula_engine::ControlConsumer` (skeleton — dispatch
-  lands with ADR-0008 follow-ups A2 / A3). All other `repos::*` traits are spec-16 design
-  placeholders with no implementations — see Appendix.
+never-implemented spec-16 trait placeholders were deleted (ADR-0072).
 
 Credential coordination — durable refresh claim (П2 / ADR-0041):
 
@@ -73,7 +66,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   reclaim sweep can detect mid-refresh crashes; `record_sentinel_event` +
   `count_sentinel_events_in_window` back the engine's N=3-in-1h `ReauthRequired`
   escalation per sub-spec
-  [`2026-04-24-credential-refresh-coordination.md`](../../docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md)
+  credential refresh coordination design (archived; see [`docs/ARCHIVE.md`](../../docs/ARCHIVE.md))
   §3.4-§3.6.
 - `RefreshClaim`, `ClaimAttempt`, `ClaimToken`, `RepoError`, `HeartbeatError`,
   `ReclaimedClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at
@@ -87,18 +80,21 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 
 ## Contract
 
-- **[L2-§11.1]** `ExecutionRepo::transition` is the **single source of truth** for execution
-  state. Applies CAS on `version`. If persistence is unavailable, the operation fails — it does
-  not silently mutate in-memory state. Seam: `crates/storage/src/execution_repo.rs`.
+- **[L2-§11.1]** `ExecutionStore::commit` is the **single source of truth** for execution
+  state. Applies CAS on `version` and gates every transition with the lease `FencingToken`.
+  If persistence is unavailable, the operation fails — it does not silently mutate in-memory
+  state. Seam: `crates/storage-port/src/store/execution.rs`.
 
-- **[L2-§11.3]** Idempotency enforcement (check-and-mark) lives here via
-  `ExecutionRepo`. Key shape `{execution_id}:{node_id}:{attempt}` is defined in
-  `nebula-execution`. Seam: `crates/storage/src/execution_repo.rs`.
+- **[L2-§11.3]** Idempotency enforcement lives here via the port `IdempotencyGuard` /
+  `IdempotencyStore`. Key shape `{execution_id}:{node_id}:{attempt}` is defined in
+  `nebula-execution`; the adapter folds scope into storage so callers cannot share keys across
+  tenants. Seam: `crates/storage-port/src/store/idempotency.rs`.
 
-- **[L2-§11.5]** `ExecutionRepo::append_journal` backs the durable `execution_journal`
-  (append-only, replayable). `ExecutionRepo::save_stateful_checkpoint` is **best-effort**: a
-  checkpoint write failure may log and not abort execution; work since the last checkpoint may
-  be replayed or lost. Seam: `crates/storage/src/execution_repo.rs`.
+- **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
+  (append-only, replayable) and is committed with the state transition. `CheckpointStore`
+  remains **best-effort**: a checkpoint write failure may log and not abort execution; work
+  since the last checkpoint may be replayed or lost. Seams:
+  `crates/storage-port/src/batch.rs` and `crates/storage-port/src/store/checkpoint.rs`.
 
 - **[ADR-0009]** Resume-persistence schema foundation. `ExecutionRepo::set_workflow_input` /
   `get_workflow_input` persist the workflow trigger payload alongside the execution row
@@ -130,7 +126,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 ## Non-goals
 
 - Not the execution state machine — see `nebula-execution` (state types, transition legality).
-- Not the engine orchestrator — see `nebula-engine` (drives `ExecutionRepo`).
+- Not the engine orchestrator — see `nebula-engine` (drives the port `ExecutionStore`).
 - Not an action dispatcher — see `nebula-runtime`.
 - Not a KV cache (Redis) as a production execution backend — Redis feature is KV only, not
   execution state.
@@ -142,12 +138,12 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - API stability: `stable` — the single architecture is the spec-16
   storage **port** (`nebula-storage-port`), implemented here for
   InMemory + SQLite + Postgres and rewired through `engine` / `api`
-  (ADR-0068). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
+  (ADR-0072). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
   deleted.
 - Lease fencing is **enforced**: `acquire_lease` returns a monotone
   `FencingToken` that gates every committed `TransitionBatch`, so a
   superseded holder is rejected even on a matching CAS version (the
-  zombie-runner hole; ADR-0068). Verified by
+  zombie-runner hole; ADR-0072). Verified by
   `crates/engine/tests/lease_takeover.rs`, the lease-handoff loom probe
   at `crates/storage-loom-probe/src/lease_handoff.rs`, and the
   conformance matrix's lease cases.
@@ -160,7 +156,7 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - Postgres adapter + identity stores are compile-verified and structurally
   identical to the runtime-verified SQLite tree, but Postgres runtime
   coverage is `DATABASE_URL`-gated and skip-clean — not claimed as
-  pg-verified (ADR-0068 "Verification status").
+  pg-verified (ADR-0072 "Verification status").
 
 ## Database migrations
 
@@ -185,7 +181,7 @@ migration — it destroys all local dev data.
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.3, §11.5, §12.2, §12.3.
 - Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
-- ADR: `docs/adr/0068-nebula-storage-spec16-port-adapter-tenancy.md`
+- ADR: `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`
   (port / adapter / tenancy decision, supersession, the three
   correctness bugs, the migration-gap history).
 - Glossary: `docs/GLOSSARY.md` §2 (`execution_journal`,
@@ -197,7 +193,7 @@ migration — it destroys all local dev data.
 
 ## Appendix
 
-### Single storage architecture — the spec-16 port (ADR-0068)
+### Single storage architecture — the spec-16 port (ADR-0072)
 
 There is one architecture: the spec-16 storage **port**
 (`nebula-storage-port`, Core tier — ISP-segregated object-safe traits,
@@ -223,7 +219,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | `port_execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state |
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
 | stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
-| lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0068) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
+| lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
 | idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 

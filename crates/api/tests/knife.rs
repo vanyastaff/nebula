@@ -533,7 +533,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     // `AppState` stores **raw** port handles and applies the per-request
     // tenant scope in its accessors; the engine still calls its handles
     // with the internal `engine_scope()` placeholder (a separate, tracked
-    // follow-up — see ADR-0068 "Known follow-up: engine per-execution
+    // follow-up — see ADR-0072 "Known follow-up: engine per-execution
     // tenant scoping"). Wrap the engine-side handles in `nebula-tenancy`
     // decorators bound to `knife_scope()` (= `port_scope()`, the scope
     // the API derives and this test seeded the workflow/execution under)

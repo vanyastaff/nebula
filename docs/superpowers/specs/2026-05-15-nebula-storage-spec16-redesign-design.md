@@ -1,7 +1,7 @@
 # nebula-storage — spec-16 adoption + port/adapter/tenancy redesign
 
 **Status:** Drafted 2026-05-15. Supersedes the "Sprint E — adopt spec-16 row
-model" deferral. Ratified by ADR-0068 (companion, this wave).
+model" deferral. Ratified by ADR-0072 (companion, this wave).
 
 **Authority:** brainstorming-led adversarial panel (Rust 1.95 language
 engineer, distributed-systems/durability, DDD/boundaries, migrations/sqlx,
@@ -349,7 +349,7 @@ SQL backends so the conformance suite proves cross-tenant denial uniformly.
   parallelizable across implement-workers; does **not** block P4.
 - **P6 — Migration consolidation.** Delete flat legacy tree; structured
   per-backend trees canonical; runner rewired; `task db:reset` documented.
-- **P7 — Docs/ADR.** ADR-0068 (supersede the deferral; record §2 decisions),
+- **P7 — Docs/ADR.** ADR-0072 (supersede the deferral; record §2 decisions),
   README, MATURITY.md, ENGINE_GUARANTEES.md, AGENTS.md layer map, deny.toml
   comments, `pool.rs` removed if still unused.
 
@@ -361,7 +361,7 @@ agents where repos are independent.
 
 **Assumptions:** no deployed prod DB (clean migration cutover; dev DB
 destroyed, `task db:reset`); the spec-review gate was delegated to the
-implementer (rigorous self-review substitutes; ADR-0068 records this);
+implementer (rigorous self-review substitutes; ADR-0072 records this);
 `nebula-core` ID newtypes are stable and reused (port does not re-define IDs).
 
 **Non-goals:** not the execution state machine (`nebula-execution` owns FSM
@@ -373,7 +373,7 @@ canonical end-to-end wiring).
 
 ## 13. Companion ADR & doc updates
 
-- **ADR-0068** — `docs/adr/0068-nebula-storage-spec16-port-adapter-tenancy.md`:
+- **ADR-0072** — `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`:
   supersedes the "Sprint E deferred" stance; records object-safe trait-shape
   decision + rationale, crate split + layer-map/deny.toml deltas, data-vs-policy
   multi-tenancy, `TransitionBatch` unit-of-work + lease fencing, migration

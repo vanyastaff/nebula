@@ -214,9 +214,55 @@ mod counting {
 
         (mgr, CountingResource::key(), ledger, registry)
     }
+
+    /// Slot identities for the two-tenant isolation fixture. Two distinct
+    /// resolved-credential identities at the same `(key, Global)` occupy two
+    /// distinct registry rows — each its own `ManagedResource` with its own
+    /// per-resource in-flight counter (ADR-0067 §Deferred).
+    pub const SLOT_A: u64 = 0xA;
+    pub const SLOT_B: u64 = 0xB;
+
+    /// Registers `CountingResource` twice as Resident at `SLOT_A` / `SLOT_B`
+    /// so a revoke on one row can be proven isolated from in-flight traffic
+    /// to the other. Returns the manager and per-row ledgers.
+    pub async fn registered_two_tenant() -> (Arc<Manager>, ResourceKey, Ledger, Ledger) {
+        use nebula_resource::RegisterOptions;
+
+        let ledger_a = Ledger::default();
+        let ledger_b = Ledger::default();
+
+        let slot_a: SlotCell<CredentialGuard<FakeCred>> = SlotCell::empty();
+        slot_a.store(Arc::new(CredentialGuard::new(FakeCred(1))));
+        let slot_b: SlotCell<CredentialGuard<FakeCred>> = SlotCell::empty();
+        slot_b.store(Arc::new(CredentialGuard::new(FakeCred(2))));
+
+        let mgr = Manager::new();
+        mgr.register_resident_with(
+            CountingResource {
+                ledger: ledger_a.clone(),
+                db: Arc::new(slot_a),
+            },
+            CountingConfig,
+            ResidentConfig::default(),
+            RegisterOptions::default().with_slot_identity(SLOT_A),
+        )
+        .expect("register_resident_with (A) must succeed");
+        mgr.register_resident_with(
+            CountingResource {
+                ledger: ledger_b.clone(),
+                db: Arc::new(slot_b),
+            },
+            CountingConfig,
+            ResidentConfig::default(),
+            RegisterOptions::default().with_slot_identity(SLOT_B),
+        )
+        .expect("register_resident_with (B) must succeed");
+
+        (Arc::new(mgr), CountingResource::key(), ledger_a, ledger_b)
+    }
 }
 
-use counting::{registered, registered_with_metrics};
+use counting::{registered, registered_two_tenant, registered_with_metrics};
 
 #[tokio::test]
 async fn refresh_slot_invokes_hook_with_runtime() {
@@ -523,4 +569,505 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
         saw_revoke_failed,
         "a failed revoke must emit ResourceEvent::SlotRevokeFailed"
     );
+}
+
+/// ADR-0044/0036 "no authenticated traffic on a revoked credential
+/// post-revoke" — the revoke-vs-acquire TOCTOU close.
+///
+/// The acquire-side taint *gate* runs before the in-flight counter is
+/// incremented, so a concurrent revoke that taints in that window would, in
+/// the old code, still let the acquire complete and hand out a live guard on
+/// the just-revoked credential. The fix re-checks the taint *after* the
+/// per-resource in-flight increment (the same counter `revoke_slot` drains).
+///
+/// Deterministic proof of the re-check: a real in-flight guard is held so
+/// `revoke_slot` taints and then parks in the per-resource drain. While it is
+/// parked (taint already set, revoke NOT yet returned) a burst of fresh
+/// acquires is fired — every one passes the gate's predecessor work but MUST
+/// be rejected by the post-count re-check, never returning a guard.
+#[tokio::test]
+async fn revoke_vs_acquire_post_taint_recheck_rejects_late_acquire() {
+    use std::sync::Arc;
+
+    use nebula_core::scope::Scope;
+    use nebula_error::{Classify, ErrorCategory};
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, _ledger) = registered().await;
+    let mgr = Arc::new(mgr);
+
+    // Hold a real in-flight guard so the per-resource drain inside
+    // `revoke_slot` genuinely blocks (counter stays at 1) — this parks the
+    // revoke *after* it has tainted but *before* it returns.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let held = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    let revoke_handle = {
+        let mgr = Arc::clone(&mgr);
+        let key = key.clone();
+        tokio::spawn(async move { mgr.revoke_slot(&key, ScopeLevel::Global, "db").await })
+    };
+
+    // Let the revoke task reach the taint + per-resource-drain park point.
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    let mut revoke_handle = revoke_handle;
+    // Sanity: the revoke is genuinely still pending (parked on our guard).
+    let pending =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut revoke_handle).await;
+    assert!(
+        pending.is_err(),
+        "revoke must still be parked in the per-resource drain while the guard is held"
+    );
+
+    // Burst of acquires that all start *after* the taint but *while the
+    // revoke has not returned*. Every one must be rejected by the post-count
+    // re-check — none may return a live guard on the revoked credential.
+    for i in 0..64 {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let outcome = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await;
+        let err = outcome.expect_err(&format!(
+            "acquire #{i} during in-flight revoke must be rejected, not return a guard"
+        ));
+        assert_eq!(
+            err.category(),
+            ErrorCategory::Unavailable,
+            "post-taint re-check must reject with Unavailable, got: {err}"
+        );
+    }
+
+    // Release the held guard → per-resource drain completes → revoke returns.
+    drop(held);
+    revoke_handle
+        .await
+        .expect("revoke task must not panic")
+        .expect("revoke_slot must succeed once the held guard drops");
+
+    // And it stays revoked.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let post = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect_err("acquire after revoke must still be rejected");
+    assert_eq!(post.category(), ErrorCategory::Unavailable);
+}
+
+/// Multi-threaded revoke-vs-acquire stress: many acquire loops race a single
+/// `revoke_slot` on a `multi_thread` runtime. The binding invariant
+/// (ADR-0044/0036): **no acquire may return a live guard once `revoke_slot`
+/// has returned** — a guard handed out on the revoked credential after the
+/// revoke completed is exactly the bug. A per-acquire flag, set the instant
+/// the revoke future resolves, makes "this guard was issued after revoke
+/// completed" observable and is asserted to never happen.
+///
+/// Robustness: the precondition that acquire works *before* the revoke is
+/// proven deterministically by a guard taken on the main task (independent of
+/// worker scheduling). The race window is then established by a bounded
+/// *barrier* — the revoke is issued only once enough workers have each landed
+/// a real successful acquire — rather than a fixed yield budget that starves
+/// under heavy parallel test load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoke_vs_acquire_multithread_no_guard_after_revoke() {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
+
+    use nebula_core::scope::Scope;
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, _ledger) = registered().await;
+    let mgr = Arc::new(mgr);
+
+    // Deterministic precondition: acquire works on the *unrevoked* resource.
+    // Proven here on the main task so the test never depends on a spawned
+    // worker getting scheduler time before the revoke (the prior flake).
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire on the unrevoked resource must succeed (precondition)");
+        drop(g);
+    }
+
+    let revoke_done = Arc::new(AtomicBool::new(false));
+    let guards_after_revoke = Arc::new(AtomicU64::new(0));
+    let attempts_after_revoke = Arc::new(AtomicU64::new(0));
+    // Per-worker "I have landed ≥1 successful acquire" tally — drives the
+    // pre-revoke barrier without a timing guess.
+    let ok_before_revoke = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    const WORKERS: u64 = 8;
+    let mut workers = Vec::new();
+    for _ in 0..WORKERS {
+        let mgr = Arc::clone(&mgr);
+        let revoke_done = Arc::clone(&revoke_done);
+        let guards_after_revoke = Arc::clone(&guards_after_revoke);
+        let attempts_after_revoke = Arc::clone(&attempts_after_revoke);
+        let ok_before_revoke = Arc::clone(&ok_before_revoke);
+        let stop = Arc::clone(&stop);
+        workers.push(tokio::spawn(async move {
+            let mut counted_ok = false;
+            while !stop.load(Ordering::Acquire) {
+                let after = revoke_done.load(Ordering::Acquire);
+                let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+                let outcome = mgr
+                    .acquire_resident::<counting::CountingResource>(
+                        &ctx,
+                        &AcquireOptions::default(),
+                    )
+                    .await;
+                if after {
+                    attempts_after_revoke.fetch_add(1, Ordering::AcqRel);
+                }
+                if let Ok(guard) = outcome {
+                    if !counted_ok {
+                        counted_ok = true;
+                        ok_before_revoke.fetch_add(1, Ordering::AcqRel);
+                    }
+                    // A live guard observed after the revoke future resolved
+                    // is the exact ADR-0044/0036 violation.
+                    if revoke_done.load(Ordering::Acquire) {
+                        guards_after_revoke.fetch_add(1, Ordering::AcqRel);
+                    }
+                    drop(guard);
+                }
+                tokio::task::yield_now().await;
+            }
+        }));
+    }
+
+    // Barrier: issue the revoke only once a majority of workers have each
+    // landed a real successful acquire — a genuine, scheduler-independent
+    // race window. Bounded so a hang fails loudly instead of looping.
+    let barrier = tokio::time::timeout(Duration::from_secs(10), async {
+        while ok_before_revoke.load(Ordering::Acquire) < WORKERS / 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        barrier.is_ok(),
+        "workers failed to establish the pre-revoke acquire window in time"
+    );
+
+    mgr.revoke_slot(&key, ScopeLevel::Global, "db")
+        .await
+        .expect("revoke_slot must succeed");
+    // Mark the boundary the instant the revoke future resolved.
+    revoke_done.store(true, Ordering::Release);
+
+    // Establish a real *post*-revoke window: wait until workers have made a
+    // healthy number of acquire attempts strictly after the boundary (every
+    // one of which must be rejected by the fix), bounded so it fails loudly.
+    let post = tokio::time::timeout(Duration::from_secs(10), async {
+        while attempts_after_revoke.load(Ordering::Acquire) < WORKERS * 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        post.is_ok(),
+        "workers failed to exercise a post-revoke acquire window in time"
+    );
+
+    stop.store(true, Ordering::Release);
+    for w in workers {
+        w.await.expect("worker must not panic");
+    }
+
+    assert!(
+        ok_before_revoke.load(Ordering::Acquire) >= WORKERS / 2,
+        "sanity: the pre-revoke acquire window must have been real"
+    );
+    assert_eq!(
+        guards_after_revoke.load(Ordering::Acquire),
+        0,
+        "a guard on the revoked credential was handed out AFTER revoke_slot \
+         returned — revoke-vs-acquire TOCTOU is not closed"
+    );
+}
+
+/// ADR-0067 §Deferred: a revoke on one resource must NOT block on in-flight
+/// traffic to an *unrelated* resource. Two tenants (`SLOT_A` / `SLOT_B`) of
+/// the same resource type occupy two distinct registry rows, each with its
+/// own per-resource in-flight counter. With a long-lived lease held on B,
+/// `revoke_slot_for(A)` must drain only A's (empty) counter and return
+/// promptly — *well* under the manager-wide 30 s budget — never parking on
+/// B's held guard. B stays acquirable throughout.
+#[tokio::test]
+async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
+    use std::time::{Duration, Instant};
+
+    use nebula_core::scope::Scope;
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, _ledger_a, _ledger_b) = registered_two_tenant().await;
+
+    // Hold a long-lived lease on tenant B. If the revoke on A wrongly drained
+    // the manager-wide tracker, this would wedge A's revoke for the full 30 s.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let b_guard = mgr
+        .acquire_resident_for::<counting::CountingResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            counting::SLOT_B,
+        )
+        .await
+        .expect("acquire on tenant B must succeed");
+
+    // Revoke tenant A while B's lease is still held. A's per-resource counter
+    // is empty, so this must return promptly.
+    let started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        mgr.revoke_slot_for(&key, ScopeLevel::Global, "db", counting::SLOT_A),
+    )
+    .await
+    .expect("revoke_slot_for(A) must NOT block on tenant B's held lease (would hit 30s)")
+    .expect("revoke_slot_for(A) must succeed");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "revoke on A must complete promptly with B's lease held (per-resource \
+         drain isolation); took {elapsed:?}"
+    );
+
+    // B's lease was never disturbed and B stays acquirable (only A tainted).
+    drop(b_guard);
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let _b_again = mgr
+        .acquire_resident_for::<counting::CountingResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            counting::SLOT_B,
+        )
+        .await
+        .expect("tenant B must stay acquirable after an unrelated revoke on A");
+}
+
+/// #681 — phase 1 (`taint_slot`) is **synchronous**: the taint is fully
+/// applied the instant `taint_slot` returns, *before* any `.await`. Proven
+/// by acquiring on the row immediately after `taint_slot` returns and before
+/// `drain_and_revoke` is ever constructed — it must already be rejected.
+/// This is the property a dropped `tokio::time::timeout` future relied on:
+/// because the taint is not inside an async body it cannot be skipped by a
+/// timeout that fires before the first poll.
+#[tokio::test]
+async fn taint_slot_applies_taint_synchronously_before_any_await() {
+    use nebula_core::scope::Scope;
+    use nebula_error::{Classify, ErrorCategory};
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+
+    // Warm the resident runtime (acquire+drop) so the phase-2 revoke hook
+    // has a live `&Runtime` to borrow — `dispatch_slot_hook` is a no-op
+    // `Ok(())` on a Resident whose runtime was never materialized.
+    {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let g = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("warm the resident runtime");
+        drop(g);
+    }
+
+    // Phase 1 only — a plain (non-`async`) call. No `.await` has run.
+    let tainted = mgr
+        .taint_slot(&key, ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered row");
+
+    // The row is already tainted: an acquire issued now — before
+    // `drain_and_revoke` is even built, let alone awaited — must be rejected.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let err = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect_err("acquire after synchronous taint_slot must be rejected");
+    assert_eq!(
+        err.category(),
+        ErrorCategory::Unavailable,
+        "synchronous taint must reject with Revoked/Unavailable, got: {err}"
+    );
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        0,
+        "phase 1 must NOT have run the revoke hook (that is phase 2's job)"
+    );
+
+    // Completing phase 2 still works and runs the hook exactly once.
+    assert!(
+        matches!(
+            mgr.drain_and_revoke(tainted, std::time::Duration::from_secs(5))
+                .await,
+            nebula_resource::RevokeTail::Done
+        ),
+        "drain_and_revoke (phase 2) must complete the revoke hook"
+    );
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        1,
+        "phase 2 runs the revoke hook exactly once"
+    );
+}
+
+/// #681 — cancellation-safety: dropping the `drain_and_revoke` future
+/// (phase 2) mid-flight — e.g. a task abort or runtime shutdown
+/// cancelling the awaiting task — must leave the row tainted, because the
+/// taint already ran in the synchronous phase 1. The credential is never
+/// silently un-revoked by a dropped tail. (Post-#690 the engine fan-out
+/// no longer wraps this in an outer `tokio::time::timeout`; the
+/// drop-safety invariant still holds for any other cancellation and is
+/// still load-bearing.)
+///
+/// The drop is made *genuine*: a real in-flight guard is held so
+/// `drain_and_revoke` actually parks in the per-resource drain (it cannot
+/// complete on the first poll), and the future is then explicitly dropped
+/// while still pending.
+#[tokio::test]
+async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
+    use std::sync::Arc;
+
+    use nebula_core::scope::Scope;
+    use nebula_error::{Classify, ErrorCategory};
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+    let mgr = Arc::new(mgr);
+
+    // Hold a real in-flight guard so phase 2's per-resource drain genuinely
+    // blocks (counter stays at 1) — `drain_and_revoke` parks rather than
+    // completing on its first poll, making the subsequent drop a true
+    // mid-flight cancellation.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let in_flight = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    // Phase 1: synchronous taint.
+    let tainted = mgr
+        .taint_slot(&key, ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered row");
+
+    // Phase 2 constructed and polled enough to park in the drain, then
+    // explicitly DROPPED while still pending — models a task abort /
+    // runtime shutdown cancelling the awaiting task mid-tail (a generic
+    // cancellation; the engine fan-out no longer wraps this in an outer
+    // timeout post-#690, but the drop-safety invariant is unchanged).
+    {
+        let mut fut = Box::pin(mgr.drain_and_revoke(tainted, std::time::Duration::from_secs(30)));
+        // A bounded select that loses to a short timer: the drain future is
+        // polled (and parks on the held guard) but never completes, then is
+        // dropped at the end of this block.
+        let parked = tokio::time::timeout(std::time::Duration::from_millis(150), &mut fut).await;
+        assert!(
+            parked.is_err(),
+            "drain_and_revoke must still be parked in the per-resource drain \
+             while the in-flight guard is held"
+        );
+        drop(fut);
+    }
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        0,
+        "the dropped (never-completed) drain future must not have run the \
+         revoke hook"
+    );
+
+    // The decisive #681 assertion: the taint survived the dropped tail —
+    // every subsequent acquire is still rejected. The taint was applied
+    // synchronously in phase 1, so dropping the phase-2 future cannot roll
+    // it back; the credential is never silently un-revoked.
+    for i in 0..16 {
+        let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+        let err = mgr
+            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect_err(&format!(
+                "acquire #{i} after a dropped drain future must still be rejected (#681)"
+            ));
+        assert_eq!(
+            err.category(),
+            ErrorCategory::Unavailable,
+            "dropped-tail acquire must still hit the Revoked/Unavailable taint, got: {err}"
+        );
+    }
+
+    drop(in_flight);
+}
+
+/// #690 review — single-owner budget: a **timed-out drain still runs the
+/// revoke hook**. `drain_and_revoke` is the sole owner of the
+/// per-resource budget — it bounds the drain *best-effort* (a drain
+/// timeout is non-fatal and proceeds to the hook) and there is no outer
+/// `tokio::time::timeout` wrapper that could elapse on the slow drain and
+/// drop the whole future before the hook ran. A real in-flight guard is
+/// held so the per-resource drain genuinely times out against a short
+/// budget; the hook must still fire exactly once and the row stay
+/// tainted. Pre-fix the engine fan-out wrapped the whole call in a 30 s
+/// timeout that, on a slow drain, dropped the future and silently skipped
+/// the hook.
+#[tokio::test]
+async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use nebula_core::scope::Scope;
+    use nebula_resource::AcquireOptions;
+    use tokio_util::sync::CancellationToken;
+
+    let (mgr, key, ledger) = registered().await;
+    let mgr = Arc::new(mgr);
+
+    // Hold a real in-flight guard so the per-resource drain cannot
+    // early-return (counter stays at 1) — with a short budget the drain
+    // genuinely times out.
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let in_flight = mgr
+        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("initial acquire must succeed");
+
+    // Phase 1: synchronous taint.
+    let tainted = mgr
+        .taint_slot(&key, ScopeLevel::Global, "db")
+        .expect("taint_slot must resolve the registered row");
+
+    // Phase 2 with a SHORT per-resource budget: the held guard makes the
+    // drain exceed it. The hook (`CountingResource::on_credential_revoke`
+    // returns immediately) must STILL run — proof the timed-out drain did
+    // not drop the tail before the hook.
+    let tail = mgr
+        .drain_and_revoke(tainted, Duration::from_millis(50))
+        .await;
+    assert!(
+        matches!(tail, nebula_resource::RevokeTail::Done),
+        "a timed-out DRAIN must still complete the revoke hook (single \
+         budget owner; no outer wrapper drops the post-drain hook), got: {tail:?}"
+    );
+    assert_eq!(
+        ledger.revoke_calls.load(Ordering::SeqCst),
+        1,
+        "the revoke hook must run exactly once even though the drain timed out"
+    );
+
+    drop(in_flight);
 }

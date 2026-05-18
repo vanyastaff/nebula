@@ -219,7 +219,7 @@ pub(crate) struct PortHandles {
 /// tuple. The engine's internal `engine_scope()` placeholder is
 /// substituted by the request-scope-bound decorator the seam wraps the
 /// stores in (engine per-execution scoping is a separate, tracked
-/// follow-up — see ADR-0068 "Known follow-up").
+/// follow-up — see ADR-0072 "Known follow-up").
 pub(crate) fn port_scope() -> Scope {
     Scope::new(TEST_WS, TEST_ORG)
 }
@@ -1026,7 +1026,7 @@ pub(crate) mod engine_seam {
         // per-request tenant scope in its accessors; the engine, by
         // contrast, still calls its store handles with the internal
         // `engine_scope()` placeholder (a separate, tracked follow-up —
-        // see ADR-0068 "Known follow-up: engine per-execution tenant
+        // see ADR-0072 "Known follow-up: engine per-execution tenant
         // scoping"). To keep the seam coherent the engine-side handles
         // are wrapped here in `nebula-tenancy` decorators bound to
         // `port_scope()` — the request scope the API derives and the

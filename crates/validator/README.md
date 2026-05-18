@@ -76,7 +76,7 @@ temporal (`DateTime`, `Uuid`).
 See `docs/MATURITY.md` row for `nebula-validator`.
 
 - API stability: `frontier` — the `Rule` type just moved from a flat 30-variant enum to the
-  typed sum-of-sums above (commit landed; `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`).
+  typed sum-of-sums above (commit landed; see ADR-0052 schema-validator seam).
   The programmatic validator API (`Validate<T>`, `ValidateExt`, `Validated<T>`,
   `ValidationError`) is stable and unchanged. Wire format for `Rule` JSON has changed
   (externally-tagged tuple-compact encoding); consumers must re-serialize any stored
@@ -88,7 +88,7 @@ See `docs/MATURITY.md` row for `nebula-validator`.
 - Canon: `docs/PRODUCT_CANON.md` §3.5, §4.5.
 - Glossary: `docs/GLOSSARY.md` §5 (`Rule`, `ValidValues`, `ResolvedValues`).
 - Siblings: `nebula-schema` (consumes `Rule`), `nebula-error` (error taxonomy).
-- Spec: `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md` — Rule type split (Refactor 1).
+- ADR: `docs/adr/0052-schema-validator-condition-seam.md` — condition evaluation seam.
 
 ## Appendix
 

@@ -174,7 +174,7 @@ pub enum ApiError {
 /// ([`nebula_storage_port::StorageError`]) — the canonical surface every
 /// port-migrated path returns. The resource-catalog path is the one
 /// surface still on the **retained legacy** `nebula_storage::repos::ResourceRepo`
-/// (deliberately not migrated to the row-model port — ADR-0068), which
+/// (deliberately not migrated to the row-model port — ADR-0072), which
 /// returns the legacy `nebula_storage::StorageError`. This is the seam
 /// adapter for that single path: a direct legacy→`ApiError` classification
 /// (NotFound → 404, Conflict/Duplicate → 409, everything else → opaque

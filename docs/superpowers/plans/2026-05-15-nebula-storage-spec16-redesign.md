@@ -610,12 +610,12 @@ Implement the port for three backends + the behavioral conformance matrix. **Par
 
 ## Phase P7 — Docs / ADR / governance
 
-### Task 23: ADR-0068 + doc updates
+### Task 23: ADR-0072 + doc updates
 
-**Files:** Create `docs/adr/0068-nebula-storage-spec16-port-adapter-tenancy.md`; Modify `docs/adr/README.md`, `crates/storage/README.md`, `crates/storage-port/README.md`, `crates/tenancy/README.md`, `docs/MATURITY.md`, `docs/ENGINE_GUARANTEES.md`, `AGENTS.md`, `deny.toml` (comment accuracy), remove `crates/storage/src/pool.rs` if still unused.
+**Files:** Create `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`; Modify `docs/adr/README.md`, `crates/storage/README.md`, `crates/storage-port/README.md`, `crates/tenancy/README.md`, `docs/MATURITY.md`, `docs/ENGINE_GUARANTEES.md`, `AGENTS.md`, `deny.toml` (comment accuracy), remove `crates/storage/src/pool.rs` if still unused.
 
-- [ ] ADR-0068 records every spec §2 decision (object-safe shape + rationale, crate split + layer-map/deny deltas, data-vs-policy tenancy, `TransitionBatch`+fencing, migration cutover assumption, SQLite parity boundary, delegated-review note) and **supersedes the Sprint E deferral**; cross-link from `README.md` ADR index. MATURITY: storage row → `stable`; add `nebula-storage-port`, `nebula-tenancy` rows. ENGINE_GUARANTEES durability matrix: SQLite now first-class for the core. AGENTS.md layer map + workspace layout updated. Verify no plan IDs leaked into code (`rg -n "P[1-7]\b|Phase [A-Z]|spec-16 task" crates/`).
-- [ ] Commit `docs(storage): ADR-0068 + MATURITY/ENGINE_GUARANTEES/AGENTS/README updates`.
+- [ ] ADR-0072 records every spec §2 decision (object-safe shape + rationale, crate split + layer-map/deny deltas, data-vs-policy tenancy, `TransitionBatch`+fencing, migration cutover assumption, SQLite parity boundary, delegated-review note) and **supersedes the Sprint E deferral**; cross-link from `README.md` ADR index. MATURITY: storage row → `stable`; add `nebula-storage-port`, `nebula-tenancy` rows. ENGINE_GUARANTEES durability matrix: SQLite now first-class for the core. AGENTS.md layer map + workspace layout updated. Verify no plan IDs leaked into code (`rg -n "P[1-7]\b|Phase [A-Z]|spec-16 task" crates/`).
+- [ ] Commit `docs(storage): ADR-0072 + MATURITY/ENGINE_GUARANTEES/AGENTS/README updates`.
 - [ ] **Final gate:** per-crate `cargo fmt`/`cargo clippy -- -D warnings`/`cargo nextest run` for storage-port, storage, tenancy, engine, api, storage-loom-probe; `cargo deny check wrappers`; knife + loom green; conformance matrix green (InMemory+SQLite always; Postgres iff `DATABASE_URL`). Report per-crate results faithfully (no workspace `dev:check` claim from this worktree).
 
 ---

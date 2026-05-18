@@ -582,7 +582,7 @@ composition root before it reaches `AppState` — never a raw legacy
 `ExecutionRepo` / `WorkflowRepo`. Consult `apps/server/src/compose.rs`
 for the authoritative, current shape rather than duplicating it here
 (this README intentionally does not inline a startup snippet that would
-drift from the composition root — ADR-0068).
+drift from the composition root — ADR-0072).
 
 ### Transport binaries
 

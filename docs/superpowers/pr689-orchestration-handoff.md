@@ -279,7 +279,7 @@ Sequenced (each step workspace+lefthook-green → its own commit):
   PR-#689 review comment, orthogonal to spec-16 and to the api
   `state.rs` fix. Belongs in its OWN follow-up issue/PR (≈20-site engine
   refactor = scope-creep into a merge-blocked PR). Recorded in
-  ADR-0068 "Known follow-up (out of scope): engine per-execution tenant
+  ADR-0072 "Known follow-up (out of scope): engine per-execution tenant
   scoping" and to be noted in the 3255514540 reply + final PR report.
   The PR "tenancy security boundary" wording is scoped to the
   api/port/tenancy surface; engine per-execution scoping is the tracked
@@ -351,7 +351,7 @@ by reading the code:
   resurrect). HEAD's spec-16 port imports win where legacy repos were deleted;
   verify no origin/main #678/#688 logic dropped by auto-merge (e.g.
   `resource_registrars` present — already verified). ADR renumber DONE:
-  storage ADR is `docs/adr/0068-nebula-storage-spec16-port-adapter-tenancy.md`
+  storage ADR is `docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`
   (0066=credential-runtime #678, 0067=resource #688 from main); cross-refs
   updated. Last conflicted file: `crates/api/tests/knife.rs` (re-express the
   §13 harness + origin's net-new step3/step5 onto port:

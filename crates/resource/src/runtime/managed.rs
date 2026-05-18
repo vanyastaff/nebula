@@ -4,12 +4,16 @@
 //! resource. It bundles the resource implementation, hot-swappable config,
 //! topology runtime, release queue, and lifecycle metadata.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use arc_swap::ArcSwap;
+use tokio::sync::Notify;
 
 use super::TopologyRuntime;
 use crate::{
@@ -56,6 +60,20 @@ pub struct ManagedResource<R: Resource> {
     /// and the manager-wide `shutting_down` flag — one shared mechanism,
     /// not a parallel one.
     pub(crate) tainted: AtomicBool,
+    /// Per-resource in-flight acquire counter `(active, notify)`.
+    ///
+    /// Every `acquire_*` against *this* row pre-counts here (alongside the
+    /// manager-wide `Manager::drain_tracker`) and the resulting
+    /// [`ResourceGuard`](crate::guard::ResourceGuard) decrements + notifies
+    /// it on drop. `Manager::revoke_slot` drains **only this** counter
+    /// (ADR-0067 §Deferred): a revoke on resource A must not block on
+    /// in-flight traffic to an unrelated resource B, and the
+    /// taint→increment→post-taint-recheck ordering against this same counter
+    /// is what closes the revoke-vs-acquire TOCTOU that ADR-0044/ADR-0036
+    /// "no authenticated traffic on a revoked credential post-revoke"
+    /// requires. The manager-wide tracker stays the `graceful_shutdown`
+    /// drain primitive and is untouched here.
+    pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
 }
 
 impl<R: Resource> ManagedResource<R> {
@@ -122,6 +140,31 @@ impl<R: Resource> ManagedResource<R> {
         self.tainted.load(Ordering::Acquire)
     }
 
+    /// Returns a clone of this resource's per-resource in-flight tracker so
+    /// an acquire pipeline can pre-count against it (and hand it to the
+    /// resulting guard). Distinct from the manager-wide `drain_tracker`:
+    /// `Manager::revoke_slot` drains *this* counter only (ADR-0067
+    /// §Deferred), so a revoke never blocks on a sibling resource's
+    /// in-flight work.
+    pub(crate) fn in_flight_tracker(&self) -> Arc<(AtomicU64, Notify)> {
+        Arc::clone(&self.in_flight)
+    }
+
+    /// Drains *this* resource's in-flight acquires (bounded by `timeout`).
+    ///
+    /// The per-resource analogue of `Manager::wait_for_drain`: it waits on
+    /// this row's own counter, not the manager-wide one, so a revoke on this
+    /// resource is isolated from in-flight traffic to unrelated resources
+    /// (ADR-0067 §Deferred). Reuses the exact lost-wakeup-safe ordering of
+    /// the shared shutdown drain helper. Returns `Ok(())` once drained, or
+    /// `Err(outstanding)` with the counter snapshot at the moment the timer
+    /// fired (the caller — `revoke_resolved` — keeps the taint and proceeds
+    /// to the revoke hook regardless; the timeout is best-effort because the
+    /// taint already stops *new* leases).
+    pub(crate) async fn wait_for_in_flight_drain(&self, timeout: Duration) -> Result<(), u64> {
+        crate::manager::shutdown::wait_for_tracker_drain(&self.in_flight, timeout).await
+    }
+
     /// Borrows the live runtime(s) for this topology and invokes the
     /// per-slot credential hook — [`Resource::on_credential_refresh`] when
     /// `refresh` is `true`, [`Resource::on_credential_revoke`] otherwise.
@@ -130,18 +173,36 @@ impl<R: Resource> ManagedResource<R> {
     /// Exclusive) dispatch once against the shared runtime; Pool dispatches
     /// per idle instance (delegating to
     /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle),
-    /// which carries the same `refresh` selector). Resident before its
-    /// first acquire has no runtime yet — nothing to dispatch, so this is a
-    /// no-op `Ok(())`.
+    /// which carries the same `refresh` selector).
+    ///
+    /// **Topology audit of the `current() == None → Ok(())` stale-skip
+    /// (ADR-0067 §Deferred / #680).** Only **Resident** lazily builds its
+    /// runtime internally via `resource.create()` (under its `create_lock`,
+    /// with a `None`-cell window), so only Resident had the lost-update
+    /// where a rotation racing the first `create` could be recorded as a
+    /// success with the hook never delivered. Its dispatch now goes through
+    /// [`ResidentRuntime::dispatch_resident_hook`](super::resident::ResidentRuntime::dispatch_resident_hook),
+    /// which serialises against `create` on the same lock and reconciles a
+    /// runtime built against an older credential epoch instead of silently
+    /// succeeding. The other arms do **not** share the defect:
+    /// Service / Transport / Exclusive take a caller-supplied runtime at
+    /// register time (no `None` window — the hook is always delivered);
+    /// Pool dispatches over every idle entry and rebuilds fresh instances
+    /// against the current (lock-free) slot, so an empty idle queue masks
+    /// no stale-bound runtime.
     ///
     /// The `refresh` flag selects the hook exactly once per topology arm
     /// (mirroring the pool selector); both directions share identical
     /// per-topology runtime-borrow semantics.
     pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
         match &self.topology {
-            TopologyRuntime::Resident(rt) => match rt.current() {
-                Some(runtime) => self.invoke_slot_hook(slot, refresh, &runtime).await,
-                None => Ok(()),
+            // Reconcile-aware (ADR-0067 §Deferred / #680): serialises
+            // against the resident `create` slow path and re-delivers the
+            // hook to a runtime built against an older credential epoch
+            // rather than skipping with a false success.
+            TopologyRuntime::Resident(rt) => {
+                rt.dispatch_resident_hook(&self.resource, slot, refresh)
+                    .await
             },
             TopologyRuntime::Service(rt) => {
                 self.invoke_slot_hook(slot, refresh, rt.runtime()).await

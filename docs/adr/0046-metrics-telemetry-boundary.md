@@ -168,4 +168,4 @@ Until that follow-up plan lands, **no code changes ship**: this branch is docume
 - [crates/metrics/src/lib.rs](../../crates/metrics/src/lib.rs) — the re-export layer that becomes the merged crate's natural surface.
 - [crates/metrics/src/adapter.rs](../../crates/metrics/src/adapter.rs) — `TelemetryAdapter` (deleted by the implementation plan).
 - [.ai-factory/ROADMAP.md](../../.ai-factory/ROADMAP.md) §M9 — Observability + DoD audit pass.
-- ADR-0042 (`docs/adr/0042-layered-retry.md`) — format and rigor reference for this ADR.
+- ADR-0068 (`docs/adr/0068-layered-retry.md`) — format and rigor reference for this ADR.

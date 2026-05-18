@@ -53,6 +53,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let slots = field_slots::parse_credential_slot_fields(fields)?;
     let slot_registrations = field_slots::emit_slot_field_registrations(&slots);
     let slot_accessors = field_slots::emit_slot_accessors(&slots);
+    let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
 
     let key_lit = &attrs.key;
     let config_ty = &attrs.config;
@@ -86,6 +87,17 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                         ::std::stringify!(#struct_name),
                     )
                 }
+            }
+
+            // ADR-0067 §Deferred: an order-sensitive positional fold over
+            // every declared `#[credential]` `SlotCell` field's
+            // generation (NOT `max` — `max` misses a rotation of a
+            // non-max slot, #690 review / #680). Derive-emitted so a
+            // newly-added slot is folded in automatically (no author
+            // discipline). Closes the create-vs-rotate lost-update race
+            // when paired with the Resident build-epoch reconcile.
+            fn credential_slot_epoch(&self) -> u64 {
+                #credential_slot_epoch_body
             }
         }
     };
