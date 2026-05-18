@@ -335,13 +335,6 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
         InMemoryWorkflowVersionStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
-
-    let scope = port_scope();
-
     let exec_store = InMemoryExecutionStore::new();
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
@@ -351,31 +344,17 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
 
     let api_config = ApiConfig::for_test();
 
+    // Raw (undecorated) port handles: the `AppState` accessors apply the
+    // per-request tenant scope at call time. `PortHandles` keeps clones of
+    // the same raw stores so `seed_*` writes are visible through the
+    // accessors (the engine seam + direct seeds all use `port_scope()`).
     let state = AppState::new(
-        Arc::new(ScopedWorkflowStore::new(
-            Arc::new(workflow_store.clone()),
-            scope.clone(),
-        )),
-        Arc::new(ScopedWorkflowVersionStore::new(
-            Arc::new(workflow_versions.clone()),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionStore::new(
-            Arc::new(exec_store.clone()),
-            scope.clone(),
-        )),
-        Arc::new(ScopedNodeResultStore::new(
-            Arc::new(node_results),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionJournalReader::new(
-            Arc::new(journal.clone()),
-            scope.clone(),
-        )),
-        Arc::new(ScopedControlQueue::new(
-            Arc::new(control_queue.clone()),
-            scope,
-        )),
+        Arc::new(workflow_store.clone()),
+        Arc::new(workflow_versions.clone()),
+        Arc::new(exec_store.clone()),
+        Arc::new(node_results),
+        Arc::new(journal.clone()),
+        Arc::new(control_queue.clone()),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
@@ -421,13 +400,6 @@ pub(crate) fn build_me_state() -> AppState {
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
         InMemoryWorkflowVersionStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
-
-    let scope = port_scope();
-
     let exec_store = InMemoryExecutionStore::new();
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
@@ -437,28 +409,15 @@ pub(crate) fn build_me_state() -> AppState {
 
     let api_config = ApiConfig::for_test();
 
+    // Raw (undecorated) port handles — the `AppState` accessors apply the
+    // per-request tenant scope at call time.
     AppState::new(
-        Arc::new(ScopedWorkflowStore::new(
-            Arc::new(workflow_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedWorkflowVersionStore::new(
-            Arc::new(workflow_versions),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionStore::new(
-            Arc::new(exec_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedNodeResultStore::new(
-            Arc::new(node_results),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionJournalReader::new(
-            Arc::new(journal),
-            scope.clone(),
-        )),
-        Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(control_queue),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
@@ -816,13 +775,6 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
         InMemoryWorkflowVersionStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
-
-    let scope = port_scope();
-
     let exec_store = InMemoryExecutionStore::new();
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
@@ -831,31 +783,16 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
 
     let api_config = ApiConfig::for_test();
 
+    // Raw (undecorated) port handles; the always-failing control queue is
+    // wired directly so the enqueue-fails-503 path is asserted regardless
+    // of the per-request scope the `AppState` accessors apply.
     let state = AppState::new(
-        Arc::new(ScopedWorkflowStore::new(
-            Arc::new(workflow_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedWorkflowVersionStore::new(
-            Arc::new(workflow_versions),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionStore::new(
-            Arc::new(exec_store.clone()),
-            scope.clone(),
-        )),
-        Arc::new(ScopedNodeResultStore::new(
-            Arc::new(node_results),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionJournalReader::new(
-            Arc::new(journal),
-            scope.clone(),
-        )),
-        Arc::new(ScopedControlQueue::new(
-            Arc::new(AlwaysFailControlQueue),
-            scope,
-        )),
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store.clone()),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(AlwaysFailControlQueue),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))

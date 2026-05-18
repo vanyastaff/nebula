@@ -262,13 +262,6 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
         InMemoryExecutionStore, InMemoryJournalReader, InMemoryNodeResultStore,
         InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
-
-    let scope = port_scope();
-
     let exec_store = InMemoryExecutionStore::new();
     let control_queue = nebula_storage::InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
@@ -276,28 +269,15 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
+    // Raw (undecorated) port handles — the `AppState` accessors apply the
+    // per-request tenant scope at call time.
     AppState::new(
-        Arc::new(ScopedWorkflowStore::new(
-            Arc::new(workflow_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedWorkflowVersionStore::new(
-            Arc::new(workflow_versions),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionStore::new(
-            Arc::new(exec_store),
-            scope.clone(),
-        )),
-        Arc::new(ScopedNodeResultStore::new(
-            Arc::new(node_results),
-            scope.clone(),
-        )),
-        Arc::new(ScopedExecutionJournalReader::new(
-            Arc::new(journal),
-            scope.clone(),
-        )),
-        Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(control_queue),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(TestOrgResolver))

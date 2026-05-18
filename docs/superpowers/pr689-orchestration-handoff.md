@@ -195,18 +195,37 @@ structural fix — the decorator stays the security primitive, it is just
 bound correctly (request scope) instead of to a static placeholder.
 
 Sequenced (each step workspace+lefthook-green → its own commit):
-- **1a ADDITIVE (done-marker below when committed):** `From<nebula_tenancy::TenancyError>
-  for ApiError`; `request_scope(&TenantContext) -> Result<Scope, ApiError>`
-  in `crates/api/src/middleware/tenancy.rs` (builds `nebula_tenancy::Principal`
-  from `TenantContext.{principal,org_id,workspace_id}` → `BindingScopeResolver`).
-  Purely additive, `#[allow(dead_code)]` + `// guard-justified:` until wired.
-- **1b BATCHES:** AppState holds the raw *inner* (undecorated) port stores +
-  the resolver; add per-request `scoped_*` accessors that build a freshly
-  bound decorator from a passed `&Scope`; add NEW `*_scoped` AppState methods
-  taking `scope: &Scope` alongside the placeholder ones. Migrate handlers a
-  few files per commit: bind `tenant`, `let scope = request_scope(&tenant)?;`
-  call the scoped method. Un-migrated handlers keep the placeholder methods →
-  green per batch.
+- **1a ADDITIVE — done&verified (`91d0c6cb`).** `nebula_tenancy::request_scope`
+  (resolver.rs; re-exported lib.rs) + `From<nebula_tenancy::TenancyError> for
+  ApiError` (MissingWorkspace→404, Unauthorized→403, §6.1-coarse) +
+  `api::middleware::tenancy::request_scope` thin wrapper (`#[allow(dead_code)]`
+  + guard-justified, unwired). Reconciled a prior-agent duplicate
+  `request_scope` (kept the 404/403 `From`-backed one; deleted the 500-Internal
+  one — same-condition status consistency with the tenancy middleware's opaque
+  not-found). Purely additive: no placeholder method/caller touched. Verified
+  check/fmt/clippy -D (api+tenancy) clean; nextest tenancy 26/26
+  (cross_tenant_denial intact), api 366/366 (1 pg-gated skip); lefthook green
+  (per-crate clippy/fmt config).
+- **1b-i RAW-HANDLE MIGRATION — done&verified (commit below).** All 8
+  `AppState::new` construction sites (`AppState::in_memory`, `base_state`,
+  oauth/health/credential test states, 3× `tests/common/mod.rs`,
+  `tests/resource_handlers.rs`) now pass **raw undecorated** `InMemory*`
+  handles instead of `Scoped*::new(.., placeholder)`. Behavior-preserving:
+  `placeholder_scope()` == engine `engine_scope()` == harness `port_scope()`
+  == `("nebula","nebula")`, and a `ScopedX::new(raw, S).op(&_, ..)` is exactly
+  `raw.op(&S, ..)`, so collapsing the no-op decorator is byte-identical for the
+  single-tenant local-first + engine-seam + harness paths. `placeholder_scope()`
+  doc + `AppState::new`/`in_memory` docs corrected (no longer claim decorator
+  wrapping). `cross_tenant_denial.rs` untouched (constructs decorators directly,
+  not via AppState — its contract is unaffected). Verified fmt + clippy
+  --all-targets --all-features -D (nebula-api) clean; nextest nebula-api 366/366
+  (1 pg-gated skip) incl. knife step5 + execution_terminate e2e (engine↔API
+  row-share through raw handles); lefthook green.
+- **1b-ii BATCHES (next):** add per-request `*_scoped(&Scope, …)` AppState
+  methods (build a freshly bound `ScopedX::new(self.raw.clone(), scope)` per
+  call) alongside the placeholder ones; migrate handlers a few files per
+  commit (bind `tenant`, `let scope = request_scope(&tenant)?;`). Un-migrated
+  handlers keep the placeholder methods → green per batch.
 - **1c CONTRACT:** when `rg placeholder_scope crates/`==0 delete
   `placeholder_scope()` + every placeholder method + the placeholder-bound
   `AppState::new` decorator construction; flip `common/mod.rs` `port_scope`

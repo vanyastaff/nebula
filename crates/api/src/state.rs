@@ -386,13 +386,19 @@ pub struct AppState {
     pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
 }
 
-/// Fixed placeholder scope passed to scoped port handles.
+/// Transitional fixed scope used by the not-yet-migrated `AppState`
+/// accessors.
 ///
-/// `AppState`'s port handles are always wrapped in the
-/// `nebula-tenancy` decorator, which **substitutes** its bound
-/// (request-derived) tenant scope on every call and ignores the
-/// argument. The concrete value here is therefore immaterial to
-/// isolation — it only needs to be a valid [`Scope`].
+/// `AppState` now stores **raw, undecorated** port handles; the
+/// per-request tenant `Scope` is meant to be applied by each accessor
+/// at call time. The accessors still carrying this constant are the
+/// un-migrated remainder — they pass it straight to the raw store. It
+/// matches the engine's `engine_scope()` and the test harness
+/// `port_scope()` (all `("nebula", "nebula")`), so the single-tenant
+/// local-first / engine-seam paths stay byte-identical while the
+/// per-request scoping is threaded through call site by call site.
+/// Removed once every accessor takes a `&Scope` (see the scoped
+/// accessor pair below).
 fn placeholder_scope() -> nebula_storage_port::Scope {
     nebula_storage_port::Scope::new("nebula", "nebula")
 }
@@ -403,11 +409,14 @@ impl AppState {
     /// `jwt_secret` is a validated [`JwtSecret`]. Obtain one from
     /// [`crate::config::ApiConfig::from_env`] (production) or
     /// `ApiConfig::for_test` (tests with the `test-util` feature).
-    /// All six handles MUST already be wrapped in the `nebula-tenancy`
-    /// scope-enforcing decorator (tenant-bound) by the composition root —
-    /// `AppState` never sees a raw adapter. The spec-16 split stores a
-    /// workflow's definition on its version records, so `workflow_store`
-    /// and `workflow_version_store` are always wired together.
+    /// The six handles are the **raw, undecorated** port adapters: the
+    /// per-request tenant `Scope` is applied by the `AppState` accessors
+    /// at call time (a fresh request-scoped `nebula-tenancy` decorator
+    /// per call), not baked in once here — binding a fixed scope at
+    /// construction is exactly what collapsed every tenant into one
+    /// shared bucket. The spec-16 split stores a workflow's definition on
+    /// its version records, so `workflow_store` and
+    /// `workflow_version_store` are always wired together.
     pub fn new(
         workflow_store: Arc<dyn WorkflowStore>,
         workflow_version_store: Arc<dyn WorkflowVersionStore>,
@@ -451,20 +460,25 @@ impl AppState {
     }
 
     /// Build an `AppState` whose execution / workflow / control-queue
-    /// surface is the **in-memory storage port**: the
-    /// [`nebula_storage::inmem`] adapters wrapped in the `nebula-tenancy`
-    /// scoping decorators, bound to the local-first placeholder scope.
+    /// surface is the **in-memory storage port**: the raw
+    /// [`nebula_storage::inmem`] adapters, stored undecorated.
     ///
     /// This is the single source of truth for the local-first port
     /// wiring (the composition root's `default_state` and the runnable
     /// `api_simple_server` example both build on it, instead of each
-    /// re-deriving the six-handle decorator stack). One shared
-    /// execution-store core backs the control queue and journal so a
-    /// `commit`/`enqueue` is observable through every reader; one
-    /// workflow-version store instance is shared between the
-    /// workflow-CRUD path and the resume/definition path so a version
-    /// published via the workflow handlers is readable through the
-    /// execution accessor.
+    /// re-deriving the six-handle stack). One shared execution-store core
+    /// backs the control queue and journal so a `commit`/`enqueue` is
+    /// observable through every reader; one workflow-version store
+    /// instance is shared between the workflow-CRUD path and the
+    /// resume/definition path so a version published via the workflow
+    /// handlers is readable through the execution accessor.
+    ///
+    /// The handles are stored **without** a `nebula-tenancy` scope
+    /// decorator: the per-request tenant `Scope` is applied by the
+    /// `AppState` accessors at call time (a fresh request-scoped
+    /// decorator per call), not baked in once at construction — the
+    /// previous "bind a fixed placeholder scope here" wiring collapsed
+    /// every tenant into one shared bucket.
     ///
     /// `jwt_secret` is a validated [`JwtSecret`] — this constructor adds
     /// **no** auth bypass (it is not behind `test-util`); it only owns
@@ -478,12 +492,6 @@ impl AppState {
             InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
             InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
         };
-        use nebula_tenancy::{
-            ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-            ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-        };
-
-        let scope = placeholder_scope();
 
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
@@ -498,27 +506,12 @@ impl AppState {
         let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
         Self::new(
-            Arc::new(ScopedWorkflowStore::new(
-                Arc::new(workflow_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(workflow_versions),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionStore::new(
-                Arc::new(exec_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedNodeResultStore::new(
-                Arc::new(node_results),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionJournalReader::new(
-                Arc::new(journal),
-                scope.clone(),
-            )),
-            Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+            Arc::new(workflow_store),
+            Arc::new(workflow_versions),
+            Arc::new(exec_store),
+            Arc::new(node_results),
+            Arc::new(journal),
+            Arc::new(control_queue),
             jwt_secret,
         )
     }
@@ -1143,10 +1136,6 @@ mod tests {
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
 
     use super::*;
 
@@ -1208,37 +1197,21 @@ mod tests {
     fn base_state() -> AppState {
         let jwt = JwtSecret::new("test-secret-for-state-module-tests-0123456789")
             .expect("static test secret is valid");
-        // These tests only assert builder-slot wiring (no storage rows), so
-        // fresh in-memory port adapters behind the tenancy scoping
-        // decorators — exactly the production composition shape — suffice.
-        let scope = placeholder_scope();
+        // These tests only assert builder-slot wiring (no storage rows),
+        // so fresh raw in-memory port adapters — exactly the production
+        // composition shape post-decorator-removal — suffice.
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
         let workflow_versions = InMemoryWorkflowVersionStore::new();
         let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
         AppState::new(
-            Arc::new(ScopedWorkflowStore::new(
-                Arc::new(workflow_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(workflow_versions),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionStore::new(
-                Arc::new(exec_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedNodeResultStore::new(
-                Arc::new(InMemoryNodeResultStore::new()),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionJournalReader::new(
-                Arc::new(journal),
-                scope.clone(),
-            )),
-            Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+            Arc::new(workflow_store),
+            Arc::new(workflow_versions),
+            Arc::new(exec_store),
+            Arc::new(InMemoryNodeResultStore::new()),
+            Arc::new(journal),
+            Arc::new(control_queue),
             jwt,
         )
     }

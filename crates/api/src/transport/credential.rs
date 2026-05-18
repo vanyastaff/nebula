@@ -721,16 +721,11 @@ pub async fn get_credential_type(state: &AppState, key: &str) -> ApiResult<Crede
 mod tests {
     use std::sync::Arc;
 
+    use super::*;
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
-
-    use super::*;
 
     /// Permissive port so the CRUD/secret-projection unit tests still
     /// exercise persistence after ADR-0052 P4 closed the
@@ -757,11 +752,10 @@ mod tests {
     }
 
     fn test_state() -> AppState {
-        // Fresh in-memory port adapters behind the tenancy scoping
-        // decorators (the production composition shape); these tests only
-        // exercise the credential write path, never storage rows, so the
-        // placeholder scope mirrors `AppState::placeholder_scope`.
-        let scope = nebula_storage_port::Scope::new("nebula", "nebula");
+        // Fresh raw (undecorated) in-memory port adapters — the production
+        // composition shape post-decorator-removal. These tests only
+        // exercise the credential write path, never storage rows; the
+        // per-request tenant scope is applied by the `AppState` accessors.
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
@@ -769,27 +763,12 @@ mod tests {
         let workflow_versions = InMemoryWorkflowVersionStore::new();
         let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
         AppState::new(
-            Arc::new(ScopedWorkflowStore::new(
-                Arc::new(workflow_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(workflow_versions),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionStore::new(
-                Arc::new(exec_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedNodeResultStore::new(
-                Arc::new(InMemoryNodeResultStore::new()),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionJournalReader::new(
-                Arc::new(journal),
-                scope.clone(),
-            )),
-            Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+            Arc::new(workflow_store),
+            Arc::new(workflow_versions),
+            Arc::new(exec_store),
+            Arc::new(InMemoryNodeResultStore::new()),
+            Arc::new(journal),
+            Arc::new(control_queue),
             jwt,
         )
         .with_credential_schema(Arc::new(PermissivePort))

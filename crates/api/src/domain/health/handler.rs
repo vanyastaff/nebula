@@ -133,6 +133,8 @@ async fn probe_database(state: &AppState) -> bool {
 mod tests {
     use std::sync::Arc;
 
+    use super::*;
+    use crate::{ApiConfig, state::AppState};
     use async_trait::async_trait;
     use axum::http::StatusCode;
     use nebula_storage::inmem::{
@@ -144,13 +146,6 @@ mod tests {
         dto::{WorkflowRecord, WorkflowVersionRecord},
         store::WorkflowStore,
     };
-    use nebula_tenancy::{
-        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
-    };
-
-    use super::*;
-    use crate::{ApiConfig, state::AppState};
 
     /// `WorkflowStore` whose `list()` always fails — used to simulate a
     /// database outage in readiness probes (#291). The probe path is
@@ -278,34 +273,22 @@ mod tests {
 
     /// Build an `AppState` whose `WorkflowStore` is the supplied (possibly
     /// failing) port store, with real in-memory adapters for the rest —
-    /// all behind the tenancy decorators, the canonical composition-root
-    /// wiring (mirrors `server::default_state`).
+    /// all stored raw (undecorated), the canonical composition-root wiring
+    /// (mirrors `server::default_state`). The per-request tenant scope is
+    /// applied by the `AppState` accessors, not baked in here.
     fn app_state_with_workflow_store(workflow_store: Arc<dyn WorkflowStore>) -> AppState {
         let config = ApiConfig::for_test();
-        let scope = Scope::new("nebula", "nebula");
         let exec_store = InMemoryExecutionStore::new();
         let control_queue = InMemoryControlQueue::new(&exec_store);
         let journal = InMemoryJournalReader::new(&exec_store);
 
         AppState::new(
-            Arc::new(ScopedWorkflowStore::new(workflow_store, scope.clone())),
-            Arc::new(ScopedWorkflowVersionStore::new(
-                Arc::new(InMemoryWorkflowVersionStore::new()),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionStore::new(
-                Arc::new(exec_store),
-                scope.clone(),
-            )),
-            Arc::new(ScopedNodeResultStore::new(
-                Arc::new(InMemoryNodeResultStore::new()),
-                scope.clone(),
-            )),
-            Arc::new(ScopedExecutionJournalReader::new(
-                Arc::new(journal),
-                scope.clone(),
-            )),
-            Arc::new(ScopedControlQueue::new(Arc::new(control_queue), scope)),
+            workflow_store,
+            Arc::new(InMemoryWorkflowVersionStore::new()),
+            Arc::new(exec_store),
+            Arc::new(InMemoryNodeResultStore::new()),
+            Arc::new(journal),
+            Arc::new(control_queue),
             config.jwt_secret,
         )
     }
