@@ -241,6 +241,26 @@ tier only on flagged-ambiguous-high-risk (rare). Bounded retry caps worst case.
 - Agent-prompt baseline changes; subagent edits must keep the inoculation +
   abstention lines.
 
+## Follow-up workstream (sequenced, not part of this ADR)
+
+The diff-scoped / legacy-grandfathered choice is deliberate **ordering**, not a
+permanent exemption. The recurring mistake this program prevents is letting
+complexity/duplication debt accumulate with no observable gate. Therefore:
+
+1. **0083 lands first** — the binding structural-budget + semantic gate is
+   installed and proven (`task hooks:test`).
+2. **Then** a separate **legacy structural-debt burn-down** workstream gets its
+   own spec → plan → impl cycle. Shape, grounded in cleanup-loop practice
+   (Propel, Fowler net-negative): a background cleanup loop on a fixed cadence
+   producing **net-negative**, evidence-carrying (lint/structure deltas) small
+   PRs, prioritised by churn (files touched in >30 % of recent PRs first),
+   reconciling the `QUALITY_GATES.md` `cognitive_complexity` / `too_many_lines`
+   allowance crate-by-crate. The 0083 gate runs the whole time, so cleaned
+   crates cannot re-accrue the debt and the burn-down slope cannot reverse.
+
+This ADR does **not** design that workstream; it only fixes the order
+(gate before burn-down) so the burn-down is durable.
+
 ## Supersession
 
 None. Pure addition above D10; supersedes no prior ADR.
