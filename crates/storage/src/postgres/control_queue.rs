@@ -83,20 +83,26 @@ impl ControlQueue for PgControlQueue {
     ) -> Result<Vec<ControlMsg>, StorageError> {
         // FOR UPDATE SKIP LOCKED: concurrent consumers each grab a
         // disjoint set of pending rows without blocking each other.
+        // `processed_at_ms` is epoch-millis (`BIGINT`), the same
+        // representation the SQLite backend uses — bind the instant from
+        // Rust (`now()` SQL would be `TIMESTAMPTZ`) so both dialects
+        // stamp and compare the reclaim clock identically.
+        let now_ms = Utc::now().timestamp_millis();
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
-                    processed_by = $1, processed_at = now() \
+                    processed_by = $1, processed_at_ms = $2 \
              WHERE id IN ( \
                  SELECT id FROM port_control_queue \
                  WHERE status = 'Pending' \
                  ORDER BY id \
-                 LIMIT $2 \
+                 LIMIT $3 \
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
                        w3c_traceparent, reclaim_count",
         )
         .bind(processor.as_slice())
+        .bind(now_ms)
         .bind(i64::from(batch_size))
         .fetch_all(&self.pool)
         .await
@@ -163,17 +169,20 @@ impl ControlQueue for PgControlQueue {
         reclaim_after: Duration,
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        let cutoff = Utc::now()
-            - chrono::Duration::from_std(reclaim_after)
-                .unwrap_or_else(|_| chrono::Duration::seconds(i64::MAX / 1000));
+        // `processed_at_ms` is epoch-millis (`BIGINT`) — the same
+        // representation and cutoff arithmetic the SQLite backend uses,
+        // so reclaim fires at the identical instant on both dialects.
+        let cutoff_ms = Utc::now()
+            .timestamp_millis()
+            .saturating_sub(reclaim_after.as_millis() as i64);
         let exhausted = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', \
                  error_message = 'reclaim exhausted: presumed dead' \
-             WHERE status = 'Processing' AND processed_at < $1 \
+             WHERE status = 'Processing' AND processed_at_ms < $1 \
                AND reclaim_count >= $2",
         )
-        .bind(cutoff)
+        .bind(cutoff_ms)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
@@ -182,11 +191,11 @@ impl ControlQueue for PgControlQueue {
         let reclaimed = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \
-                 processed_by = NULL, processed_at = NULL \
-             WHERE status = 'Processing' AND processed_at < $1 \
+                 processed_by = NULL, processed_at_ms = NULL \
+             WHERE status = 'Processing' AND processed_at_ms < $1 \
                AND reclaim_count < $2",
         )
-        .bind(cutoff)
+        .bind(cutoff_ms)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await

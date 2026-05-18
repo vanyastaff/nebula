@@ -16,13 +16,16 @@ use sqlx::{PgPool, Row};
 
 use super::execution::conn_err;
 
-/// Parse an RFC 3339 expiry. A malformed timestamp maps to the unix epoch
-/// (fail-closed: an unparsable expiry is treated as already-expired so a
-/// record we cannot prove fresh is never served and is swept promptly).
-fn parse_expiry(rfc3339: &str) -> DateTime<Utc> {
+/// Parse an RFC 3339 expiry into epoch milliseconds. A malformed
+/// timestamp maps to `i64::MIN` (fail-closed: an unparsable expiry is
+/// treated as already-expired so a record we cannot prove fresh is never
+/// served and is swept promptly). Mirrors the SQLite backend's
+/// `expires_at_ms` so `expires_at_ms BIGINT` is the cross-dialect sweep
+/// predicate (no `TIMESTAMPTZ` drift).
+fn expires_at_ms(rfc3339: &str) -> i64 {
     DateTime::parse_from_rfc3339(rfc3339)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(i64::MIN)
 }
 
 /// Postgres-backed durable idempotent-replay cache.
@@ -53,13 +56,15 @@ impl IdempotencyStore for PgIdempotencyStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        let exp: DateTime<Utc> = row.try_get("expires_at").map_err(conn_err)?;
         Ok(Some(CachedRecord {
             status: row.try_get::<i32, _>("status").map_err(conn_err)? as u16,
             headers: row.try_get("headers").map_err(conn_err)?,
             body: row.try_get("body").map_err(conn_err)?,
             fingerprint: row.try_get("fingerprint").map_err(conn_err)?,
-            expires_at: exp.to_rfc3339(),
+            // `expires_at` is the RFC 3339 text stored verbatim (same as
+            // the SQLite backend), returned unchanged — not reconstructed
+            // from a `TIMESTAMPTZ` round-trip.
+            expires_at: row.try_get("expires_at").map_err(conn_err)?,
         }))
     }
 
@@ -73,8 +78,9 @@ impl IdempotencyStore for PgIdempotencyStore {
         // record (and its fingerprint) on a replay race.
         sqlx::query(
             "INSERT INTO port_idempotency_cache \
-             (cache_key, status, headers, body, fingerprint, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             (cache_key, status, headers, body, fingerprint, expires_at, \
+              expires_at_ms) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (cache_key) DO NOTHING",
         )
         .bind(&cache_key)
@@ -82,7 +88,8 @@ impl IdempotencyStore for PgIdempotencyStore {
         .bind(&record.headers)
         .bind(&record.body)
         .bind(&record.fingerprint)
-        .bind(parse_expiry(&record.expires_at))
+        .bind(&record.expires_at)
+        .bind(expires_at_ms(&record.expires_at))
         .execute(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -90,7 +97,13 @@ impl IdempotencyStore for PgIdempotencyStore {
     }
 
     async fn evict_expired(&self) -> Result<u64, StorageError> {
-        let res = sqlx::query("DELETE FROM port_idempotency_cache WHERE expires_at <= now()")
+        // Sweep on `expires_at_ms` (epoch-millis `BIGINT`) against a
+        // Rust-supplied `now` — identical predicate and clock source to
+        // the SQLite backend, so eviction fires at the same instant on
+        // both dialects.
+        let now_ms = Utc::now().timestamp_millis();
+        let res = sqlx::query("DELETE FROM port_idempotency_cache WHERE expires_at_ms <= $1")
+            .bind(now_ms)
             .execute(&self.pool)
             .await
             .map_err(conn_err)?;

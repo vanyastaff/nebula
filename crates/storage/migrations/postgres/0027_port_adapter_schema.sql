@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS port_executions (
     state               JSONB NOT NULL,
     version             BIGINT NOT NULL DEFAULT 0,
     lease_holder        TEXT,
-    lease_expires_at    TIMESTAMPTZ,
+    lease_expires_at_ms BIGINT,                    -- ms since epoch, NULL = no lease
     fencing_generation  BIGINT NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ NOT NULL,
     updated_at          TIMESTAMPTZ NOT NULL
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS port_control_queue (
     w3c_traceparent TEXT,
     reclaim_count   INTEGER NOT NULL DEFAULT 0,
     processed_by    BYTEA,
-    processed_at    TIMESTAMPTZ,
+    processed_at_ms BIGINT,                       -- ms since epoch, reclaim cutoff predicate
     error_message   TEXT
 );
 
@@ -65,18 +65,19 @@ CREATE TABLE IF NOT EXISTS port_idempotency_marks (
 
 -- Durable idempotent-replay response cache (ADR-0048). `cache_key` is
 -- already tenant-namespaced by the caller; first writer wins via
--- INSERT ... ON CONFLICT DO NOTHING. `expires_at` drives the sweep.
+-- INSERT ... ON CONFLICT DO NOTHING. `expires_at_ms` drives the sweep.
 CREATE TABLE IF NOT EXISTS port_idempotency_cache (
-    cache_key   TEXT PRIMARY KEY,
-    status      INTEGER NOT NULL,
-    headers     BYTEA NOT NULL,
-    body        BYTEA NOT NULL,
-    fingerprint BYTEA NOT NULL,
-    expires_at  TIMESTAMPTZ NOT NULL
+    cache_key     TEXT PRIMARY KEY,
+    status        INTEGER NOT NULL,
+    headers       BYTEA NOT NULL,
+    body          BYTEA NOT NULL,
+    fingerprint   BYTEA NOT NULL,
+    expires_at    TEXT NOT NULL,            -- RFC 3339, returned verbatim
+    expires_at_ms BIGINT NOT NULL           -- ms since epoch, sweep predicate
 );
 
 CREATE INDEX IF NOT EXISTS idx_port_idempotency_cache_expiry
-    ON port_idempotency_cache (expires_at);
+    ON port_idempotency_cache (expires_at_ms);
 
 -- Webhook activation lookup (ADR-0049): incoming POST /hooks/{slug} →
 -- owning trigger. Scoped: a slug is unique per tenant, so resolution

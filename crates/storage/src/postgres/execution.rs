@@ -41,11 +41,17 @@ fn normalized_ttl(ttl: Duration) -> Duration {
     Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0))
 }
 
-fn ttl_chrono(ttl: Duration) -> chrono::Duration {
-    // `normalized_ttl` caps at 24h, well within chrono's range; the
-    // fallback keeps this total instead of panicking.
-    chrono::Duration::from_std(normalized_ttl(ttl))
-        .unwrap_or_else(|_| chrono::Duration::seconds(86_400))
+/// Current wall clock as epoch milliseconds — the lease / reclaim time
+/// representation shared with the SQLite backend (`*_ms BIGINT`), so the
+/// two dialects compare instants identically under the conformance
+/// matrix (no `TIMESTAMPTZ`-vs-`BIGINT` drift).
+fn now_ms() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+/// `now_ms()` plus a (24h-capped) TTL, as epoch milliseconds.
+fn expiry_ms(ttl: Duration) -> i64 {
+    now_ms().saturating_add(normalized_ttl(ttl).as_millis() as i64)
 }
 
 #[async_trait::async_trait]
@@ -248,7 +254,7 @@ impl ExecutionStore for PgExecutionStore {
     ) -> Result<Option<FencingToken>, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let row = sqlx::query(
-            "SELECT lease_holder, lease_expires_at, fencing_generation \
+            "SELECT lease_holder, lease_expires_at_ms, fencing_generation \
              FROM port_executions \
              WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE",
         )
@@ -262,12 +268,12 @@ impl ExecutionStore for PgExecutionStore {
             tx.rollback().await.map_err(conn_err)?;
             return Err(StorageError::not_found("execution", id));
         };
-        let cur_exp: Option<DateTime<Utc>> = row.try_get("lease_expires_at").map_err(conn_err)?;
+        let cur_exp_ms: Option<i64> = row.try_get("lease_expires_at_ms").map_err(conn_err)?;
         let cur_gen = row
             .try_get::<i64, _>("fencing_generation")
             .map_err(conn_err)? as u64;
-        let now = Utc::now();
-        let live = matches!(cur_exp, Some(exp) if exp >= now);
+        let now = now_ms();
+        let live = matches!(cur_exp_ms, Some(exp) if exp >= now);
         if live {
             // A live lease blocks acquisition outright — including a
             // second acquire by the *same* holder. Renewal is the
@@ -286,14 +292,14 @@ impl ExecutionStore for PgExecutionStore {
         // token). Generation 0 therefore universally means "no lease
         // ever issued / stale".
         let new_gen = cur_gen + 1;
-        let new_exp = now + ttl_chrono(ttl);
+        let new_exp_ms = expiry_ms(ttl);
         sqlx::query(
             "UPDATE port_executions \
-             SET lease_holder = $1, lease_expires_at = $2, fencing_generation = $3 \
+             SET lease_holder = $1, lease_expires_at_ms = $2, fencing_generation = $3 \
              WHERE id = $4 AND workspace_id = $5 AND org_id = $6",
         )
         .bind(holder)
-        .bind(new_exp)
+        .bind(new_exp_ms)
         .bind(new_gen as i64)
         .bind(id)
         .bind(&scope.workspace_id)
@@ -319,13 +325,13 @@ impl ExecutionStore for PgExecutionStore {
         token: FencingToken,
         ttl: Duration,
     ) -> Result<bool, StorageError> {
-        let new_exp = Utc::now() + ttl_chrono(ttl);
+        let new_exp_ms = expiry_ms(ttl);
         let res = sqlx::query(
-            "UPDATE port_executions SET lease_expires_at = $1 \
+            "UPDATE port_executions SET lease_expires_at_ms = $1 \
              WHERE id = $2 AND workspace_id = $3 AND org_id = $4 \
                AND fencing_generation = $5",
         )
-        .bind(new_exp)
+        .bind(new_exp_ms)
         .bind(id)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)
@@ -344,7 +350,7 @@ impl ExecutionStore for PgExecutionStore {
     ) -> Result<bool, StorageError> {
         let res = sqlx::query(
             "UPDATE port_executions \
-             SET lease_holder = NULL, lease_expires_at = NULL \
+             SET lease_holder = NULL, lease_expires_at_ms = NULL \
              WHERE id = $1 AND workspace_id = $2 AND org_id = $3 \
                AND fencing_generation = $4",
         )
