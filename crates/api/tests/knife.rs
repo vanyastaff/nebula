@@ -530,34 +530,57 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         .unwrap(),
     );
 
-    // The echo node never checkpoints or replays, so a fresh in-memory
-    // checkpoint/idempotency pair is sufficient for the two
-    // `ExecutionStores` fields `AppState` does not expose; execution /
-    // journal / node-result / workflow / version are the SAME scoped port
-    // handles the API enqueued the `Start` against.
+    // `AppState` stores **raw** port handles and applies the per-request
+    // tenant scope in its accessors; the engine still calls its handles
+    // with the internal `engine_scope()` placeholder (a separate, tracked
+    // follow-up — see ADR-0068 "Known follow-up: engine per-execution
+    // tenant scoping"). Wrap the engine-side handles in `nebula-tenancy`
+    // decorators bound to `knife_scope()` (= `port_scope()`, the scope
+    // the API derives and this test seeded the workflow/execution under)
+    // so the decorator substitutes the engine's scope and engine reads,
+    // the API-enqueued `Start`, and the seeded rows all key on the same
+    // tenant. The echo node never checkpoints or replays, so a fresh
+    // in-memory checkpoint/idempotency pair suffices for the two
+    // `ExecutionStores` fields `AppState` does not expose.
+    let s = knife_scope();
+    let scoped_exec: Arc<dyn nebula_storage_port::store::ExecutionStore> = Arc::new(
+        nebula_tenancy::ScopedExecutionStore::new(Arc::clone(&state.execution_store), s.clone()),
+    );
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)
             .unwrap()
             .with_execution_stores(ExecutionStores {
-                execution: Arc::clone(&state.execution_store),
-                journal: Arc::clone(&state.journal_reader),
-                node_results: Arc::clone(&state.node_result_store),
+                execution: Arc::clone(&scoped_exec),
+                journal: Arc::new(nebula_tenancy::ScopedExecutionJournalReader::new(
+                    Arc::clone(&state.journal_reader),
+                    s.clone(),
+                )),
+                node_results: Arc::new(nebula_tenancy::ScopedNodeResultStore::new(
+                    Arc::clone(&state.node_result_store),
+                    s.clone(),
+                )),
                 checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
             })
             .with_workflow_stores(WorkflowStores {
-                workflow: Arc::clone(&state.workflow_store),
-                versions: Arc::clone(&state.workflow_version_store),
+                workflow: Arc::new(nebula_tenancy::ScopedWorkflowStore::new(
+                    Arc::clone(&state.workflow_store),
+                    s.clone(),
+                )),
+                versions: Arc::new(nebula_tenancy::ScopedWorkflowVersionStore::new(
+                    Arc::clone(&state.workflow_version_store),
+                    s.clone(),
+                )),
             }),
     );
 
     // ── Spawn the consumer so `Start` rows are drained continuously ──────────
-    let dispatch = Arc::new(EngineControlDispatch::new(
-        engine,
-        Arc::clone(&state.execution_store),
-    ));
+    let dispatch = Arc::new(EngineControlDispatch::new(engine, Arc::clone(&scoped_exec)));
     let consumer = ControlConsumer::new(
-        Arc::clone(&state.control_queue),
+        Arc::new(nebula_tenancy::ScopedControlQueue::new(
+            Arc::clone(&state.control_queue),
+            s,
+        )),
         dispatch,
         proc16(b"knife-a2"),
     )

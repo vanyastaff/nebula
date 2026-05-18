@@ -106,23 +106,26 @@ pub async fn readiness_check(
 
 /// Probe the workflow store with a bounded timeout.
 ///
-/// `workflow_count()` is the cheapest read surface and dual-dispatches
-/// (scoped spec-16 store when wired, else the legacy `WorkflowRepo`), so
-/// the probe stays correct under both backends without widening any
-/// public API. A timeout OR an error maps to "not ready" — readiness is
-/// a binary signal, callers do not need to distinguish transport from
-/// timeout.
+/// Uses [`WorkflowStore::is_reachable`] — the tenant-agnostic
+/// infrastructure-liveness round-trip (`SELECT 1` on the SQL backends).
+/// The readiness probe is unauthenticated infrastructure with no tenant,
+/// so it deliberately does **not** construct a [`Scope`] or read tenant
+/// rows: it only answers "is the store reachable?". A timeout OR an
+/// error maps to "not ready" — readiness is a binary signal, callers do
+/// not need to distinguish transport from timeout.
+///
+/// [`Scope`]: nebula_storage_port::Scope
 async fn probe_database(state: &AppState) -> bool {
-    match tokio::time::timeout(PROBE_TIMEOUT, state.workflow_count()).await {
-        Ok(Ok(_)) => true,
+    match tokio::time::timeout(PROBE_TIMEOUT, state.workflow_store.is_reachable()).await {
+        Ok(Ok(())) => true,
         Ok(Err(err)) => {
-            tracing::warn!(error = %err, "readiness probe: workflow count() failed");
+            tracing::warn!(error = %err, "readiness probe: workflow store unreachable");
             false
         },
         Err(_) => {
             tracing::warn!(
                 timeout_secs = PROBE_TIMEOUT.as_secs(),
-                "readiness probe: workflow count() timed out",
+                "readiness probe: workflow store reachability timed out",
             );
             false
         },
@@ -147,27 +150,27 @@ mod tests {
         store::WorkflowStore,
     };
 
-    /// `WorkflowStore` whose `list()` always fails — used to simulate a
+    /// `WorkflowStore` whose `is_reachable()` always fails — simulates a
     /// database outage in readiness probes (#291). The probe path is
-    /// `AppState::workflow_count` → `WorkflowStore::list`, so failing
-    /// `list` is the exact surface the readiness check exercises.
+    /// `probe_database` → `WorkflowStore::is_reachable`, so failing
+    /// `is_reachable` is the exact surface the readiness check exercises.
     #[derive(Debug)]
     struct AlwaysFailWorkflowStore;
 
     #[async_trait]
     impl WorkflowStore for AlwaysFailWorkflowStore {
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn get_by_slug(
             &self,
             _: &Scope,
@@ -175,13 +178,13 @@ mod tests {
         ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn save_with_published_version(
             &self,
             _: &Scope,
@@ -191,22 +194,27 @@ mod tests {
         ) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn list(&self, _: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn count(&self, _: &Scope) -> Result<u64, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn is_reachable(&self) -> Result<(), StorageError> {
             Err(StorageError::Connection("db offline".to_string()))
         }
     }
 
-    /// `WorkflowStore` whose `list()` sleeps for longer than
+    /// `WorkflowStore` whose `is_reachable()` sleeps for longer than
     /// `PROBE_TIMEOUT` — forces the `Err(_)` timeout branch in
     /// `probe_database` (#291 review). Pair with
     /// `#[tokio::test(start_paused = true)]` so the sleep is virtual and
@@ -216,18 +224,18 @@ mod tests {
 
     #[async_trait]
     impl WorkflowStore for SlowWorkflowStore {
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn get_by_slug(
             &self,
             _: &Scope,
@@ -235,13 +243,13 @@ mod tests {
         ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn save_with_published_version(
             &self,
             _: &Scope,
@@ -251,23 +259,28 @@ mod tests {
         ) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-        // guard-justified: readiness probe only calls `count`; this op
-        // is unreachable on the probe path.
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn list(&self, _: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
         async fn count(&self, _: &Scope) -> Result<u64, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn is_reachable(&self) -> Result<(), StorageError> {
             // Far longer than PROBE_TIMEOUT (2s). Under paused time, the
             // runtime auto-advances to whichever timer fires first — that's
             // the timeout, so this sleep gets cancelled and never elapses
             // in wall-clock time.
             tokio::time::sleep(Duration::from_mins(1)).await;
-            Ok(0)
+            Ok(())
         }
     }
 
@@ -295,10 +308,11 @@ mod tests {
 
     #[tokio::test]
     async fn readiness_reports_ok_when_database_responds() {
-        // `readiness_check` only probes `workflow_count()` (the row store);
-        // it never reads the version store, so the paired version map is
-        // immaterial here — construct the canonical pair anyway so the
-        // store is wired exactly as production builds it.
+        // `readiness_check` only probes `WorkflowStore::is_reachable()`
+        // (the row store); it never reads the version store, so the
+        // paired version map is immaterial here — construct the canonical
+        // pair anyway so the store is wired exactly as production builds
+        // it.
         let workflow_versions = InMemoryWorkflowVersionStore::new();
         let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
         let state = app_state_with_workflow_store(Arc::new(workflow_store));

@@ -391,23 +391,6 @@ pub struct AppState {
     pub resource_status: Option<Arc<dyn nebula_engine::EngineResourceStatus>>,
 }
 
-/// Transitional fixed scope used by the not-yet-migrated `AppState`
-/// accessors.
-///
-/// `AppState` now stores **raw, undecorated** port handles; the
-/// per-request tenant `Scope` is meant to be applied by each accessor
-/// at call time. The accessors still carrying this constant are the
-/// un-migrated remainder — they pass it straight to the raw store. It
-/// matches the engine's `engine_scope()` and the test harness
-/// `port_scope()` (all `("nebula", "nebula")`), so the single-tenant
-/// local-first / engine-seam paths stay byte-identical while the
-/// per-request scoping is threaded through call site by call site.
-/// Removed once every accessor takes a `&Scope` (see the scoped
-/// accessor pair below).
-fn placeholder_scope() -> Scope {
-    Scope::new("nebula", "nebula")
-}
-
 impl AppState {
     /// Create new AppState with provided dependencies.
     ///
@@ -521,20 +504,10 @@ impl AppState {
         )
     }
 
-    /// Read a workflow's stored definition, or `None` if absent.
-    /// Dual-dispatch: the scoped spec-16 workflow stores (row +
-    /// highest-numbered published version's `definition`) when wired,
-    /// else the legacy `WorkflowRepo::get`. The definition lives on the
-    /// version record in the split model.
-    pub(crate) async fn workflow_definition(
-        &self,
-        id: nebula_core::id::WorkflowId,
-    ) -> Result<Option<serde_json::Value>, ApiError> {
-        self.workflow_definition_scoped(&placeholder_scope(), id)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::workflow_definition`].
+    /// Read a workflow's stored definition for the caller's tenant, or
+    /// `None` if absent. The spec-16 split stores the definition on the
+    /// highest-numbered published version record, read through a freshly
+    /// bound decorator pair keyed by `scope`.
     pub(crate) async fn workflow_definition_scoped(
         &self,
         scope: &Scope,
@@ -546,28 +519,14 @@ impl AppState {
             .map(|(_, definition)| definition))
     }
 
-    /// Read a workflow's `(version, definition)`, or `None` if absent.
-    /// Dual-dispatch: the spec-16 workflow-row `version` paired with its
-    /// published version's `definition` when the port is wired, else the
-    /// legacy `WorkflowRepo::get_with_version`. The workflow row carries
-    /// no definition (spec-16 split), so a row with no published version
-    /// is treated as absent — the legacy single-store always had a
-    /// definition alongside its counter, so this preserves the
+    /// Read a workflow's `(version, definition)`, or `None` if absent,
+    /// scoped to the caller's tenant. The workflow row + its published
+    /// version's definition are read through a freshly bound
+    /// `nebula-tenancy` decorator pair keyed by `scope` (the
+    /// confused-deputy boundary is the decorator, bound per request). The
+    /// row carries no definition (spec-16 split), so a row with no
+    /// published version is treated as absent — preserving the
     /// caller-visible "exists ⇒ has a definition" invariant.
-    pub(crate) async fn workflow_with_version(
-        &self,
-        id: nebula_core::id::WorkflowId,
-    ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
-        self.workflow_with_version_scoped(&placeholder_scope(), id)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::workflow_with_version`]: the workflow
-    /// row + its published version's definition are read through a
-    /// freshly bound `nebula-tenancy` decorator pair, so the lookup is
-    /// keyed by the caller's real tenant `scope` (the confused-deputy
-    /// boundary is the decorator, bound per request — not a static
-    /// placeholder).
     pub(crate) async fn workflow_with_version_scoped(
         &self,
         scope: &Scope,
@@ -595,37 +554,25 @@ impl AppState {
 
     /// Persist a workflow definition with optimistic concurrency, as a
     /// **single atomic unit of work** via
-    /// [`WorkflowStore::save_with_published_version`].
+    /// [`WorkflowStore::save_with_published_version`], scoped to the
+    /// caller's tenant.
     ///
     /// Spec-16 splits the workflow row from its version records and a
     /// row's definition lives on its published version — so a row without
     /// a published version is invisible to every reader ("the workflow
-    /// vanished"). The previous two-await sequence (row write, then
-    /// version write) left exactly that orphan window on any partial
-    /// failure. This now commits the row and its published version
+    /// vanished"). This commits the row and its published version
     /// together (one DB transaction per SQL backend, one mutex-guarded
-    /// section in-memory) — both land or neither does.
+    /// section in-memory) — both land or neither does. The atomic unit
+    /// runs through a freshly bound `ScopedWorkflowStore`, so it commits
+    /// into the caller's real tenant `scope` and the decorator rebinds
+    /// the embedded record scope to it (a forged cross-tenant record
+    /// cannot escape the bound tenant).
     ///
     /// `version == 0` creates the workflow row at version 1 plus version
     /// record #1; otherwise it CAS-bumps the row counter to `version + 1`
     /// and appends the new published version record. A CAS miss maps to
     /// [`ApiError::Conflict`] with the exact message the legacy handler
     /// produced, so callers stay byte-identical.
-    pub(crate) async fn workflow_save(
-        &self,
-        id: nebula_core::id::WorkflowId,
-        version: u64,
-        definition: serde_json::Value,
-    ) -> Result<(), ApiError> {
-        self.workflow_save_scoped(&placeholder_scope(), id, version, definition)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::workflow_save`]: the atomic
-    /// row+published-version unit of work runs through a freshly bound
-    /// `ScopedWorkflowStore`, so it commits into the caller's real tenant
-    /// `scope` and the decorator rebinds the embedded record scope to it
-    /// (a forged cross-tenant record cannot escape the bound tenant).
     pub(crate) async fn workflow_save_scoped(
         &self,
         scope: &Scope,
@@ -681,16 +628,9 @@ impl AppState {
         })
     }
 
-    /// Soft-delete a workflow via `WorkflowStore::soft_delete` (a missing
-    /// row ⇒ `false`). Returns `true` iff a row existed and was removed.
-    pub(crate) async fn workflow_delete(
-        &self,
-        id: nebula_core::id::WorkflowId,
-    ) -> Result<bool, ApiError> {
-        self.workflow_delete_scoped(&placeholder_scope(), id).await
-    }
-
-    /// Per-request-scoped [`Self::workflow_delete`].
+    /// Soft-delete a workflow scoped to the caller's tenant via
+    /// `WorkflowStore::soft_delete` (a missing row ⇒ `false`). Returns
+    /// `true` iff a row existed in the tenant and was removed.
     pub(crate) async fn workflow_delete_scoped(
         &self,
         scope: &Scope,
@@ -706,25 +646,16 @@ impl AppState {
         }
     }
 
-    /// List workflows with pagination, ordered by `(created_at, id)`.
-    /// The spec-16 split has no `created_at` column, so the ordering is
-    /// reconstructed from the definition JSON's `created_at` via the
-    /// dual-format [`extract_timestamp`] helper (RFC3339 string or legacy
-    /// i64), falling back to id order when absent or unparseable.
+    /// List workflows for the caller's tenant with pagination, ordered
+    /// by `(created_at, id)`. Rows + each row's published definition are
+    /// read through a freshly bound decorator pair, so the listing is the
+    /// caller's tenant only. The spec-16 split has no `created_at` column,
+    /// so the ordering is reconstructed from the definition JSON's
+    /// `created_at` via the dual-format [`extract_timestamp`] helper
+    /// (RFC3339 string or legacy i64), falling back to id order when
+    /// absent or unparseable.
     ///
     /// [`extract_timestamp`]: crate::domain::workflow::handler::extract_timestamp
-    pub(crate) async fn workflow_list(
-        &self,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<(nebula_core::id::WorkflowId, serde_json::Value)>, ApiError> {
-        self.workflow_list_scoped(&placeholder_scope(), offset, limit)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::workflow_list`]: rows + each row's
-    /// published definition are read through a freshly bound decorator
-    /// pair, so the listing is the caller's tenant only.
     pub(crate) async fn workflow_list_scoped(
         &self,
         scope: &Scope,
@@ -781,17 +712,11 @@ impl AppState {
             .collect())
     }
 
-    /// Total workflow count (matches [`Self::workflow_list`]'s filter
-    /// scope) via the `WorkflowStore::count` port — a `SELECT COUNT(*)`
-    /// on the SQL backends, not an `O(n)` `list().len()` (the readiness
-    /// probe and pagination total are on the hot path).
-    pub(crate) async fn workflow_count(&self) -> Result<usize, ApiError> {
-        self.workflow_count_scoped(&placeholder_scope()).await
-    }
-
-    /// Per-request-scoped [`Self::workflow_count`]: `SELECT COUNT(*)`
-    /// through a freshly bound decorator, so the total is the caller's
-    /// tenant only.
+    /// Total workflow count for the caller's tenant (matches
+    /// [`Self::workflow_list_scoped`]'s filter scope) via the
+    /// `WorkflowStore::count` port — a `SELECT COUNT(*)` through a
+    /// freshly bound decorator on the SQL backends, not an `O(n)`
+    /// `list().len()` (pagination totals are on the hot path).
     pub(crate) async fn workflow_count_scoped(&self, scope: &Scope) -> Result<usize, ApiError> {
         let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
         rows.count(scope)
@@ -800,16 +725,9 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 
-    /// List running execution ids (delegates to the per-request-scoped
-    /// sibling with the transitional placeholder scope).
-    pub(crate) async fn list_running_executions(&self) -> Result<Vec<ExecutionId>, ApiError> {
-        self.list_running_executions_scoped(&placeholder_scope())
-            .await
-    }
-
-    /// Per-request-scoped [`Self::list_running_executions`]: running ids
-    /// read through a freshly bound `ScopedExecutionStore`, so the listing
-    /// is the caller's tenant only.
+    /// List running execution ids for the caller's tenant — read
+    /// through a freshly bound `ScopedExecutionStore`, so the listing is
+    /// that tenant only.
     pub(crate) async fn list_running_executions_scoped(
         &self,
         scope: &Scope,
@@ -828,17 +746,9 @@ impl AppState {
             .collect()
     }
 
-    /// List running execution ids for one workflow (delegates to the
-    /// per-request-scoped sibling with the transitional placeholder scope).
-    pub(crate) async fn list_running_executions_for_workflow(
-        &self,
-        workflow_id: nebula_core::id::WorkflowId,
-    ) -> Result<Vec<ExecutionId>, ApiError> {
-        self.list_running_executions_for_workflow_scoped(&placeholder_scope(), workflow_id)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::list_running_executions_for_workflow`].
+    /// List running execution ids for one workflow within the caller's
+    /// tenant (same per-request-scoped `ExecutionStore` as
+    /// [`Self::list_running_executions_scoped`]).
     pub(crate) async fn list_running_executions_for_workflow_scoped(
         &self,
         scope: &Scope,
@@ -858,21 +768,10 @@ impl AppState {
             .collect()
     }
 
-    /// Read an execution's persisted `(version, state-json)` (delegates to
-    /// the per-request-scoped sibling with the transitional placeholder
-    /// scope). `context` labels the error.
-    pub(crate) async fn execution_state(
-        &self,
-        execution_id: ExecutionId,
-        context: &str,
-    ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
-        self.execution_state_scoped(&placeholder_scope(), execution_id, context)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::execution_state`]: the row is read
-    /// through a freshly bound `ScopedExecutionStore`, so a cross-tenant
-    /// id resolves to `None` (never another tenant's state).
+    /// Read an execution's persisted `(version, state-json)` for the
+    /// caller's tenant, or `None` if absent. Read through a freshly bound
+    /// `ScopedExecutionStore`, so a cross-tenant id resolves to `None`
+    /// (never another tenant's state). `context` labels the error.
     pub(crate) async fn execution_state_scoped(
         &self,
         scope: &Scope,
@@ -887,23 +786,12 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
     }
 
-    /// Enqueue a control command onto the durable outbox (delegates to the
-    /// per-request-scoped sibling with the transitional placeholder scope).
-    pub(crate) async fn enqueue_control(
-        &self,
-        command: nebula_storage_port::dto::ControlCommand,
-        execution_id: ExecutionId,
-        w3c: Option<nebula_core::W3cTraceContext>,
-    ) -> Result<(), ApiError> {
-        self.enqueue_control_scoped(&placeholder_scope(), command, execution_id, w3c)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::enqueue_control`]: the control message
-    /// is enqueued through a freshly bound `ScopedControlQueue`, so the
-    /// row is stamped with the caller's tenant scope (a forged `scope`
-    /// field on the message is rebound to the bound tenant). The
-    /// §13-step-6 503-vs-500 error policy stays centralized here.
+    /// Enqueue a control command onto the durable outbox for the
+    /// caller's tenant. The control message is enqueued through a freshly
+    /// bound `ScopedControlQueue`, so the row is stamped with that tenant
+    /// scope (a forged `scope` field on the message is rebound to the
+    /// bound tenant). The §13-step-6 503-vs-500 error policy is
+    /// centralized here.
     pub(crate) async fn enqueue_control_scoped(
         &self,
         scope: &Scope,
@@ -945,21 +833,9 @@ impl AppState {
         })
     }
 
-    /// Create a fresh execution row (delegates to the per-request-scoped
-    /// sibling with the transitional placeholder scope).
-    pub(crate) async fn create_execution(
-        &self,
-        execution_id: ExecutionId,
-        workflow_id: nebula_core::id::WorkflowId,
-        state_json: serde_json::Value,
-    ) -> Result<(), ApiError> {
-        self.create_execution_scoped(&placeholder_scope(), execution_id, workflow_id, state_json)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::create_execution`]: the row is created
-    /// through a freshly bound `ScopedExecutionStore`, so it lands in the
-    /// caller's tenant.
+    /// Create a fresh execution row for the caller's tenant — created
+    /// through a freshly bound `ScopedExecutionStore`, so it lands in
+    /// that tenant.
     pub(crate) async fn create_execution_scoped(
         &self,
         scope: &Scope,
@@ -979,26 +855,9 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
     }
 
-    /// CAS-update an execution's state (delegates to the
-    /// per-request-scoped sibling with the transitional placeholder scope).
-    pub(crate) async fn cas_transition(
-        &self,
-        execution_id: ExecutionId,
-        expected_version: u64,
-        new_state: serde_json::Value,
-    ) -> Result<bool, ApiError> {
-        self.cas_transition_scoped(
-            &placeholder_scope(),
-            execution_id,
-            expected_version,
-            new_state,
-        )
-        .await
-    }
-
-    /// Per-request-scoped [`Self::cas_transition`]: the read + commit run
-    /// through a freshly bound `ScopedExecutionStore`, so the CAS is
-    /// confined to the caller's tenant.
+    /// CAS-update an execution's state for the caller's tenant. The
+    /// read-then-commit pair runs through a freshly bound
+    /// `ScopedExecutionStore`, so the CAS is confined to that tenant.
     ///
     /// The API is an *external* mutator (no held lease), so it reads the
     /// row's current fencing generation and commits at it. If a runner
@@ -1046,20 +905,9 @@ impl AppState {
         }
     }
 
-    /// Load all persisted per-node *outputs* for an execution (delegates
-    /// to the per-request-scoped sibling with the transitional placeholder
-    /// scope).
-    pub(crate) async fn execution_node_outputs(
-        &self,
-        execution_id: ExecutionId,
-    ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
-        self.execution_node_outputs_scoped(&placeholder_scope(), execution_id)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::execution_node_outputs`]: outputs read
-    /// through a freshly bound `ScopedNodeResultStore`, so a cross-tenant
-    /// id yields nothing.
+    /// Load all persisted per-node *outputs* for an execution within the
+    /// caller's tenant — read through a freshly bound
+    /// `ScopedNodeResultStore`, so a cross-tenant id yields nothing.
     pub(crate) async fn execution_node_outputs_scoped(
         &self,
         scope: &Scope,
@@ -1081,19 +929,9 @@ impl AppState {
             .collect()
     }
 
-    /// Load an execution's journal entries (delegates to the
-    /// per-request-scoped sibling with the transitional placeholder scope).
-    pub(crate) async fn execution_journal(
-        &self,
-        execution_id: ExecutionId,
-    ) -> Result<Vec<serde_json::Value>, ApiError> {
-        self.execution_journal_scoped(&placeholder_scope(), execution_id)
-            .await
-    }
-
-    /// Per-request-scoped [`Self::execution_journal`]: entries read
-    /// through a freshly bound `ScopedExecutionJournalReader`, confined to
-    /// the caller's tenant.
+    /// Load an execution's journal entries for the caller's tenant —
+    /// read through a freshly bound `ScopedExecutionJournalReader`,
+    /// confined to that tenant.
     pub(crate) async fn execution_journal_scoped(
         &self,
         scope: &Scope,

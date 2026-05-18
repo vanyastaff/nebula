@@ -62,10 +62,23 @@ pub trait WorkflowStore: Send + Sync + std::fmt::Debug {
     ///
     /// Semantically equivalent to `list(scope).await?.len()` but the SQL
     /// backends answer it with a `SELECT COUNT(*)` rather than
-    /// materializing every row — the readiness probe and pagination
-    /// totals call it on the hot path, so it must not be `O(n)` in the
-    /// row count.
+    /// materializing every row — pagination totals call it on the hot
+    /// path, so it must not be `O(n)` in the row count.
     async fn count(&self, scope: &Scope) -> Result<u64, StorageError>;
+
+    /// Tenant-agnostic backend-reachability probe for the readiness
+    /// endpoint.
+    ///
+    /// This is **infrastructure liveness only**, not a tenant data read:
+    /// it answers "can the workflow store be reached?" with the cheapest
+    /// possible round-trip (`SELECT 1` on the SQL backends, an
+    /// always-`Ok` acknowledgement for the in-memory store) and
+    /// deliberately takes **no [`Scope`]** — the readiness probe is
+    /// unauthenticated infrastructure and has no tenant. A scoping
+    /// decorator forwards it unchanged (there is nothing to scope), so
+    /// `is_reachable` can never observe or leak tenant rows. `Ok(())`
+    /// means the store responded; any `Err` means "not ready".
+    async fn is_reachable(&self) -> Result<(), StorageError>;
 }
 
 /// Workflow-version aggregate.

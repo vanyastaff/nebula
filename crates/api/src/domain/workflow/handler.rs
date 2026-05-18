@@ -20,7 +20,7 @@ use crate::{
     domain::{
         execution::{
             dto::{ExecutionResponse, StartExecutionRequest},
-            handler::enqueue_start,
+            handler::enqueue_start_scoped,
         },
         shared::PaginationParams,
         workflow::dto::{
@@ -96,17 +96,18 @@ pub(crate) fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
 )]
 pub async fn list_workflows(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListWorkflowsResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let offset = params.offset();
     let limit = params.limit();
 
-    // Fetch workflows via the workflow accessor (dual-dispatch: scoped
-    // spec-16 stores when wired, else the legacy `WorkflowRepo`).
-    let workflows = state.workflow_list(offset, limit).await?;
+    // Fetch workflows scoped to the caller's tenant (a freshly bound
+    // tenancy decorator keyed by the request scope).
+    let workflows = state.workflow_list_scoped(&scope, offset, limit).await?;
 
-    let total = state.workflow_count().await?;
+    let total = state.workflow_count_scoped(&scope).await?;
 
     // Map to response DTOs
     let workflow_responses: Vec<WorkflowResponse> = workflows
@@ -168,16 +169,17 @@ pub async fn list_workflows(
 )]
 pub async fn get_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Fetch workflow via the workflow accessor (dual-dispatch).
+    // Fetch the workflow scoped to the caller's tenant.
     let definition = state
-        .workflow_definition(workflow_id)
+        .workflow_definition_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
@@ -227,9 +229,10 @@ pub async fn get_workflow(
 )]
 pub async fn create_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Json(payload): Json<CreateWorkflowRequest>,
 ) -> ApiResult<(StatusCode, Json<WorkflowResponse>)> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Validate workflow name
     if payload.name.trim().is_empty() {
         return Err(ApiError::validation_message(
@@ -299,9 +302,9 @@ pub async fn create_workflow(
         });
     }
 
-    // Save workflow with version 0 (new workflow) via the accessor.
+    // Save workflow with version 0 (new workflow) scoped to the tenant.
     state
-        .workflow_save(workflow_id, 0, definition.clone())
+        .workflow_save_scoped(&scope, workflow_id, 0, definition.clone())
         .await?;
 
     // Build response
@@ -341,17 +344,18 @@ pub async fn create_workflow(
 )]
 pub async fn update_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
     Json(payload): Json<UpdateWorkflowRequest>,
 ) -> ApiResult<Json<WorkflowResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Get current workflow with version via the accessor.
+    // Get current workflow with version, scoped to the tenant.
     let (version, mut definition) = state
-        .workflow_with_version(workflow_id)
+        .workflow_with_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
@@ -414,7 +418,7 @@ pub async fn update_workflow(
     // Save with optimistic concurrency control via the accessor (a CAS
     // miss is mapped to the same 409 message the legacy path produced).
     state
-        .workflow_save(workflow_id, version, definition.clone())
+        .workflow_save_scoped(&scope, workflow_id, version, definition.clone())
         .await?;
 
     // Extract fields for response
@@ -464,15 +468,16 @@ pub async fn update_workflow(
 )]
 pub async fn delete_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Delete workflow via the accessor (dual-dispatch; missing ⇒ false).
-    let existed = state.workflow_delete(workflow_id).await?;
+    // Delete the workflow scoped to the tenant (missing ⇒ false).
+    let existed = state.workflow_delete_scoped(&scope, workflow_id).await?;
 
     // Return 404 if workflow didn't exist, 204 No Content if it was deleted
     if existed {
@@ -507,17 +512,18 @@ pub async fn delete_workflow(
 )]
 pub async fn activate_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
     // Get current workflow with version for optimistic concurrency,
-    // via the accessor (dual-dispatch).
+    // scoped to the tenant.
     let (version, mut definition) = state
-        .workflow_with_version(workflow_id)
+        .workflow_with_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
@@ -574,7 +580,7 @@ pub async fn activate_workflow(
     // Save with optimistic concurrency control via the accessor (a CAS
     // miss is mapped to the same 409 message the legacy path produced).
     state
-        .workflow_save(workflow_id, version, definition.clone())
+        .workflow_save_scoped(&scope, workflow_id, version, definition.clone())
         .await?;
 
     // Extract fields for response
@@ -626,17 +632,18 @@ pub async fn activate_workflow(
 )]
 pub async fn execute_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify workflow exists via the accessor (dual-dispatch).
+    // Verify the workflow exists in the caller's tenant.
     state
-        .workflow_definition(workflow_id)
+        .workflow_definition_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
@@ -657,22 +664,20 @@ pub async fn execute_workflow(
     let state_json = serde_json::to_value(&exec_state)
         .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
 
-    // Create execution record via the accessor (dual-dispatch: scoped
-    // `ExecutionStore::create` when wired, else the legacy
-    // `ExecutionRepo::create`). `transition` is a CAS UPDATE and would
-    // hit zero rows for a brand-new id, so this is `create`, not a
-    // transition.
+    // Create the execution record scoped to the caller's tenant.
+    // `transition` is a CAS UPDATE and would hit zero rows for a
+    // brand-new id, so this is `create`, not a transition.
     state
-        .create_execution(execution_id, workflow_id, state_json)
+        .create_execution_scoped(&scope, execution_id, workflow_id, state_json)
         .await?;
 
     // Enqueue the Start signal on the durable control queue — closes the
     // §4.5 gap where the API advertised dispatch but never reached the
-    // engine (#332). Shared with `start_execution` via the `enqueue_start`
-    // helper so the create + enqueue contract lives in one place. M3.5:
-    // `enqueue_start` stamps optional W3C trace context on the row when the
-    // HTTP span is OTel-linked.
-    enqueue_start(&state, execution_id).await?;
+    // engine (#332). Shared with `start_execution` via the
+    // `enqueue_start_scoped` helper so the create + enqueue contract lives
+    // in one place. M3.5: it stamps optional W3C trace context on the row
+    // when the HTTP span is OTel-linked.
+    enqueue_start_scoped(&state, &scope, execution_id).await?;
 
     // Report `created_at` as the observable timestamp — the engine has not
     // transitioned `started_at` yet (that happens at dispatch time). See
@@ -728,14 +733,15 @@ pub async fn execute_workflow(
 )]
 pub async fn validate_workflow_handler(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowValidateResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
     let definition = state
-        .workflow_definition(workflow_id)
+        .workflow_definition_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 

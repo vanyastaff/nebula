@@ -338,6 +338,17 @@ impl WorkflowStore for SqliteWorkflowStore {
         .map_err(conn_err)?;
         Ok(n.max(0) as u64)
     }
+
+    async fn is_reachable(&self) -> Result<(), StorageError> {
+        // Cheapest possible liveness round-trip: no table touched, no
+        // tenant predicate. Any pool/transport error maps to the
+        // `StorageError` the readiness probe treats as "not ready".
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(conn_err)?;
+        Ok(())
+    }
 }
 
 /// SQLite-backed workflow-version store.

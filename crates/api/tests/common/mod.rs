@@ -206,11 +206,22 @@ pub(crate) struct PortHandles {
     workflow_versions: nebula_storage::inmem::InMemoryWorkflowVersionStore,
 }
 
-/// The fixed placeholder scope every handle (and the `AppState` tenancy
-/// decorators) bind to — mirrors `AppState::placeholder_scope`. A row
-/// seeded under this scope is visible through the decorated stores.
+/// The single tenant scope this harness operates under — exactly the
+/// scope the API derives from a request to `/orgs/{TEST_ORG}/
+/// workspaces/{TEST_WS}/…`.
+///
+/// `AppState` stores raw, undecorated port handles and each accessor
+/// applies the per-request `&Scope` that `request_scope(&TenantContext)`
+/// projects, i.e. `Scope::new(workspace_id, org_id)`. Tests seed rows
+/// directly under this scope (`seed_*`) and the engine seam binds its
+/// store handles to it (see `engine_seam`), so harness writes, engine
+/// writes, and API reads all key on the same `(TEST_WS, TEST_ORG)`
+/// tuple. The engine's internal `engine_scope()` placeholder is
+/// substituted by the request-scope-bound decorator the seam wraps the
+/// stores in (engine per-execution scoping is a separate, tracked
+/// follow-up — see ADR-0068 "Known follow-up").
 pub(crate) fn port_scope() -> Scope {
-    Scope::new("nebula", "nebula")
+    Scope::new(TEST_WS, TEST_ORG)
 }
 
 /// Widen a short test label into the fixed 16-byte `ControlConsumer`
@@ -830,6 +841,10 @@ pub(crate) mod engine_seam {
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
         EngineControlDispatch, InProcessSandbox, WorkflowEngine,
     };
+    use nebula_tenancy::{
+        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    };
     use nebula_workflow::{
         Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
@@ -1007,35 +1022,60 @@ pub(crate) mod engine_seam {
             .unwrap(),
         );
 
-        // The slow-node seam never checkpoints or replays, so a fresh
-        // in-memory checkpoint/idempotency pair is sufficient for the two
-        // `ExecutionStores` fields `AppState` does not expose; the
-        // execution / journal / node-result / workflow / version handles
-        // are the SAME scoped port handles the API writes through, so the
-        // consumer drains `Start` then `Cancel`/`Terminate` against the
-        // rows the producer half created.
+        // `AppState` now stores **raw** port handles and applies the
+        // per-request tenant scope in its accessors; the engine, by
+        // contrast, still calls its store handles with the internal
+        // `engine_scope()` placeholder (a separate, tracked follow-up —
+        // see ADR-0068 "Known follow-up: engine per-execution tenant
+        // scoping"). To keep the seam coherent the engine-side handles
+        // are wrapped here in `nebula-tenancy` decorators bound to
+        // `port_scope()` — the request scope the API derives and the
+        // tests seed under. The decorator substitutes its bound scope
+        // for whatever the engine passes, so engine writes, harness
+        // `seed_*` writes, and API reads all key on the same tenant.
+        // This is the decorator's intended composition-seam use (the
+        // security primitive, bound correctly), not a shim. The
+        // slow-node seam never checkpoints or replays, so a fresh
+        // in-memory checkpoint/idempotency pair suffices for the two
+        // `ExecutionStores` fields `AppState` does not expose.
+        let s = super::port_scope();
+        let scoped_exec: Arc<dyn nebula_storage_port::store::ExecutionStore> = Arc::new(
+            ScopedExecutionStore::new(Arc::clone(&state.execution_store), s.clone()),
+        );
         let engine = Arc::new(
             WorkflowEngine::new(runtime, metrics)
                 .unwrap()
                 .with_execution_stores(nebula_engine::ExecutionStores {
-                    execution: Arc::clone(&state.execution_store),
-                    journal: Arc::clone(&state.journal_reader),
-                    node_results: Arc::clone(&state.node_result_store),
+                    execution: Arc::clone(&scoped_exec),
+                    journal: Arc::new(ScopedExecutionJournalReader::new(
+                        Arc::clone(&state.journal_reader),
+                        s.clone(),
+                    )),
+                    node_results: Arc::new(ScopedNodeResultStore::new(
+                        Arc::clone(&state.node_result_store),
+                        s.clone(),
+                    )),
                     checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                     idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
                 })
                 .with_workflow_stores(nebula_engine::WorkflowStores {
-                    workflow: Arc::clone(&state.workflow_store),
-                    versions: Arc::clone(&state.workflow_version_store),
+                    workflow: Arc::new(ScopedWorkflowStore::new(
+                        Arc::clone(&state.workflow_store),
+                        s.clone(),
+                    )),
+                    versions: Arc::new(ScopedWorkflowVersionStore::new(
+                        Arc::clone(&state.workflow_version_store),
+                        s.clone(),
+                    )),
                 }),
         );
 
         let dispatch = Arc::new(EngineControlDispatch::new(
             Arc::clone(&engine),
-            Arc::clone(&state.execution_store),
+            Arc::clone(&scoped_exec),
         ));
         let consumer = ControlConsumer::new(
-            Arc::clone(&state.control_queue),
+            Arc::new(ScopedControlQueue::new(Arc::clone(&state.control_queue), s)),
             dispatch,
             super::proc16(b"knife-a3"),
         )

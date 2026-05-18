@@ -251,11 +251,39 @@ Sequenced (each step workspace+lefthook-green → its own commit):
   `Extension<TenantContext>`), `let scope = request_scope(&tenant)?;`, call
   the `*_scoped` accessor. Un-migrated handlers keep the placeholder
   delegates → green per batch. Then CONTRACT.
-- **1c CONTRACT:** when `rg placeholder_scope crates/`==0 delete
-  `placeholder_scope()` + every placeholder method + the placeholder-bound
-  `AppState::new` decorator construction; flip `common/mod.rs` `port_scope`
-  +harness and `cross_tenant_denial.rs` to the per-request model in this
-  final commit. Done only after `rg placeholder_scope crates/`==0.
+- **1c CONTRACT — done&verified (commit below); 3255514540 DONE.**
+  Deleted `placeholder_scope()` + all 10 placeholder delegate methods
+  (state.rs) + `enqueue_start`/`state_seam_placeholder_scope`
+  (execution/handler.rs). All 8 workflow + 9 execution handlers migrated
+  to `request_scope(&TenantContext)` → `*_scoped(&Scope,…)`. Added
+  scope-agnostic `WorkflowStore::is_reachable()` (port + 3 backends +
+  tenancy decorator pass-through + 2 health doubles); readiness probe
+  rewired off `workflow_count()` (per lead adjudication — no relocated
+  hardcoded scope). `rg -n placeholder_scope crates/` == **0** (true
+  elimination). Harness aligned (lead PATH (A)): `common/mod.rs`
+  `port_scope()` → `Scope::new(TEST_WS, TEST_ORG)` (the api-derived
+  request scope); both engine-seam engine constructions
+  (`engine_seam::spawn_engine_consumer` + `knife.rs::knife_step3`
+  inline) wrap their store handles in `port_scope()`-bound
+  `nebula_tenancy` decorators so engine `engine_scope()` calls are
+  substituted by the request scope → seam coherent. Verified: fmt +
+  clippy --all-targets --all-features -D (storage-port/storage/tenancy/
+  api) clean; nextest storage-port+storage+tenancy 275/275, nebula-api
+  366/366 (1 DATABASE_URL-gated skip) incl. knife step3/step5 +
+  terminate-e2e.
+- **DEFERRED-NOT-SKIPPED — engine `engine_scope()` separate latent
+  bug.** `nebula-engine` still uses a fixed
+  `engine_scope()=Scope::new("nebula","nebula")` placeholder (≈20 sites
+  across `crates/engine/src/{engine,control_dispatch,store_seam}.rs`) —
+  the same bug class as 3255514540 but in the engine, NOT raised by any
+  PR-#689 review comment, orthogonal to spec-16 and to the api
+  `state.rs` fix. Belongs in its OWN follow-up issue/PR (≈20-site engine
+  refactor = scope-creep into a merge-blocked PR). Recorded in
+  ADR-0068 "Known follow-up (out of scope): engine per-execution tenant
+  scoping" and to be noted in the 3255514540 reply + final PR report.
+  The PR "tenancy security boundary" wording is scoped to the
+  api/port/tenancy surface; engine per-execution scoping is the tracked
+  separate concern.
 
 ### 3255514540 — VERIFIED diagnosis (largest item; dedicated session)
 

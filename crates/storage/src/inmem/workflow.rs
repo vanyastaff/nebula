@@ -258,6 +258,13 @@ impl WorkflowStore for InMemoryWorkflowStore {
             .count();
         Ok(n as u64)
     }
+
+    async fn is_reachable(&self) -> Result<(), StorageError> {
+        // The in-memory store has no transport to fail — acquiring the
+        // lock is the only "round-trip" and is infallible here.
+        let _guard = self.inner.lock();
+        Ok(())
+    }
 }
 
 /// In-memory workflow-version store.

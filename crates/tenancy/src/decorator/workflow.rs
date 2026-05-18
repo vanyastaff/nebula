@@ -105,6 +105,13 @@ impl WorkflowStore for ScopedWorkflowStore {
     async fn count(&self, _scope: &Scope) -> Result<u64, StorageError> {
         self.inner.count(&self.bound).await
     }
+
+    async fn is_reachable(&self) -> Result<(), StorageError> {
+        // Tenant-agnostic infra liveness — there is no scope to bind or
+        // substitute, so the decorator is a pure pass-through and cannot
+        // observe tenant rows through this path.
+        self.inner.is_reachable().await
+    }
 }
 
 /// Wraps a [`WorkflowVersionStore`] and forces every call into the bound

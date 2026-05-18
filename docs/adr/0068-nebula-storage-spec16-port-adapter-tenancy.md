@@ -161,3 +161,29 @@ every gated test.
   documented).
 - The remaining Postgres runtime verification is the one open
   follow-up, gated on a `DATABASE_URL` environment.
+
+### Known follow-up (out of scope): engine per-execution tenant scoping
+
+The api `state.rs` placeholder-scope hole (coderabbit `3255514540`) is
+**closed**: `AppState` stores raw, undecorated port handles, every
+accessor takes a `&Scope`, the workflow/execution handlers derive the
+real request scope from `TenantContext` via
+`nebula_tenancy::request_scope`, and the readiness probe uses a
+scope-agnostic `WorkflowStore::is_reachable()`. The api/port/tenancy
+tenant boundary is therefore per-request and conformance-tested.
+
+`nebula-engine` independently still calls its storage-port handles with
+a fixed internal `engine_scope() = Scope::new("nebula", "nebula")`
+placeholder (≈20 call sites across
+`crates/engine/src/{engine,control_dispatch,store_seam}.rs`), relying on
+the tenancy decorator to substitute the request scope — the *same class*
+of latent issue, in the engine rather than the api. This was **not**
+raised by any PR-#689 review comment and is **orthogonal** to spec-16
+and to the api `state.rs` fix; threading a real per-execution tenant
+scope through the engine is a separate, sizeable refactor that belongs
+in its own follow-up issue/PR, not this merge. The PR's "tenancy
+security boundary" claim is therefore scoped to the api/port/tenancy
+surface; engine per-execution scoping is a tracked, deliberately
+deferred concern (the integration-test harness binds the engine seam's
+store handles to the request scope via tenancy decorators so the seam
+stays coherent under the per-request api).
