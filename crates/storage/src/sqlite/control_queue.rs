@@ -95,18 +95,31 @@ impl ControlQueue for SqliteControlQueue {
         for row in rows {
             let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
             let id = decode_id(&id_bytes)?;
-            sqlx::query(
+            // The claim flip is conditional on the row still being
+            // `Pending`: a concurrent consumer or a reclaim sweep can
+            // move it to `Processing`/`Pending`-with-bumped-reclaim
+            // between the SELECT above and this UPDATE. Without the
+            // `AND status = 'Pending'` guard the UPDATE would be a no-op
+            // yet the message would still be pushed — returning work this
+            // worker does not actually own (a double-claim). Only push
+            // when this UPDATE actually won the row (`rows_affected == 1`).
+            let won = sqlx::query(
                 "UPDATE port_control_queue \
                  SET status = 'Processing', processed_by = ?, \
                      processed_at_ms = ? \
-                 WHERE id = ?",
+                 WHERE id = ? AND status = 'Pending'",
             )
             .bind(processor.as_slice())
             .bind(chrono::Utc::now().timestamp_millis())
             .bind(id_bytes.as_slice())
             .execute(&mut *tx)
             .await
-            .map_err(conn_err)?;
+            .map_err(conn_err)?
+            .rows_affected()
+                == 1;
+            if !won {
+                continue;
+            }
             claimed.push(ControlMsg {
                 id,
                 execution_id: row.try_get("execution_id").map_err(conn_err)?,
