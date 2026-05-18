@@ -650,17 +650,12 @@ async fn pat_authenticated_request_cannot_create_token() {
 
     let app = app::build_app(state, &api_config);
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/me/tokens")
-                .header("authorization", format!("Bearer {}", minted.plaintext))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"nested-pat","scopes":["full_access"]}"#,
-                ))
-                .unwrap(),
-        )
+        .oneshot(mutating(
+            "POST",
+            "/api/v1/me/tokens",
+            &minted.plaintext,
+            Some(r#"{"name":"nested-pat","scopes":["full_access"]}"#),
+        ))
         .await
         .unwrap();
 

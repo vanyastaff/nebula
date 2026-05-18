@@ -22,7 +22,11 @@ mod common;
 use std::collections::HashSet;
 
 use axum::{body::Body, http::Request};
-use nebula_api::{ApiConfig, build_app};
+use nebula_api::{
+    ApiConfig,
+    access::{REQUIRED_PERMISSION_EXTENSION, UNSUPPORTED_PERMISSION_SCOPE},
+    build_app,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -31,8 +35,6 @@ use crate::common::create_state_with_queue;
 const HTTP_METHODS: &[&str] = &[
     "get", "post", "put", "patch", "delete", "options", "head", "trace",
 ];
-const REQUIRED_PERMISSION_EXTENSION: &str = "x-required-permission";
-const UNSUPPORTED_PERMISSION: &str = "__unsupported_permission__";
 
 async fn fetch_spec_json() -> Value {
     let (state, _queue) = create_state_with_queue().await;
@@ -181,7 +183,7 @@ async fn tenant_operations_declare_required_permission() {
                 "operation {method} {path} must not declare an empty `{REQUIRED_PERMISSION_EXTENSION}`"
             );
             assert_ne!(
-                permission, UNSUPPORTED_PERMISSION,
+                permission, UNSUPPORTED_PERMISSION_SCOPE,
                 "operation {method} {path} must not publish unsupported permission placeholder"
             );
         }

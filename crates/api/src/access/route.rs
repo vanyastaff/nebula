@@ -11,7 +11,10 @@ use utoipa::openapi::{
 };
 use utoipa_axum::router::UtoipaMethodRouter;
 
-use crate::access::{UNSUPPORTED_PERMISSION_SCOPE, layer::require_permission, permission_scope};
+use crate::access::{
+    UNSUPPORTED_PERMISSION_SCOPE, layer::require_permission, permission_from_scope,
+    permission_scope,
+};
 
 /// OpenAPI operation extension containing the required Access Kernel scope.
 pub const REQUIRED_PERMISSION_EXTENSION: &str = "x-required-permission";
@@ -61,7 +64,9 @@ pub fn assert_tenant_access_coverage(openapi: &OpenApi) -> Result<(), AccessCove
 
         for (method, operation) in operations(item) {
             match required_permission_extension(operation) {
-                Some(Value::String(scope)) if scope != UNSUPPORTED_PERMISSION_SCOPE => {},
+                Some(Value::String(scope))
+                    if scope != UNSUPPORTED_PERMISSION_SCOPE
+                        && permission_from_scope(scope).is_ok() => {},
                 Some(Value::String(scope)) => failures.push(format!(
                     "{path} {method} has unsupported {REQUIRED_PERMISSION_EXTENSION} value {scope}"
                 )),
@@ -224,6 +229,21 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("/api/v1/orgs/{org} GET"));
         assert!(message.contains(UNSUPPORTED_PERMISSION_SCOPE));
+    }
+
+    #[test]
+    fn unknown_required_permission_extension_fails_coverage() {
+        let openapi = openapi_with_path(
+            "/api/v1/orgs/{org}",
+            operation_with_extension(json!("workflows:reed")),
+        );
+
+        let err =
+            assert_tenant_access_coverage(&openapi).expect_err("unknown access scope must fail");
+
+        let message = err.to_string();
+        assert!(message.contains("/api/v1/orgs/{org} GET"));
+        assert!(message.contains("workflows:reed"));
     }
 
     #[test]
