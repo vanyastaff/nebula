@@ -7,6 +7,7 @@ members = [
   "crates/credential",
   "crates/credential-builtin",
   "crates/credential-vault",
+  "crates/credential-runtime",
   "crates/engine",
   "crates/eventbus",
   "crates/execution",
@@ -85,7 +86,7 @@ unicode-width = "0.2"
 
 # Graph
 petgraph = "0.8"
-domain-key = { version = "0.5.1", features = [
+domain-key = { version = "0.5.2", features = [
   "serde",
   "ulid",
   "uuid",

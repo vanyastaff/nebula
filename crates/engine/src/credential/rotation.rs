@@ -6,7 +6,9 @@
 //! remain in `nebula_credential::rotation`.
 
 pub mod blue_green;
+pub mod fanout_driver;
 pub mod grace_period;
+pub mod resource_fanout;
 pub mod scheduler;
 pub mod token_http;
 pub mod token_refresh;
@@ -18,6 +20,7 @@ pub use blue_green::{
     BlueGreenRotation, BlueGreenState, DatabasePrivilege, enumerate_required_privileges,
     validate_privileges,
 };
+pub use fanout_driver::ResourceFanoutDriver;
 pub use grace_period::{
     GracePeriodConfig, GracePeriodState, GracePeriodTracker, UsageMetrics,
     cleanup_expired_credentials, track_credential_usage,
@@ -34,6 +37,7 @@ pub use nebula_credential::rotation::{
     policy::{BeforeExpiryConfig, ManualConfig, PeriodicConfig, RotationPolicy, ScheduledConfig},
     state::RotationState,
 };
+pub use resource_fanout::{Bind, ResourceFanoutIndex, RotationOutcome};
 pub use scheduler::{ExpiryMonitor, PeriodicScheduler, ScheduledRotation};
 pub use token_refresh::{TokenRefreshError, refresh_oauth2_state};
 pub use transaction::{

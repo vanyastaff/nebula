@@ -13,12 +13,16 @@
 //! `Resource::create(&self, ctx)` no longer takes an explicit
 //! `scheme: &<R::Credential as Credential>::Scheme` argument: the framework
 //! resolves every declared `#[credential]` slot **before** invoking
-//! `create`, so the implementation reads credentials directly off `&self`.
+//! `create`. Each slot field is a `SlotCell<CredentialGuard<C>>` cell; the
+//! implementation reads the resolved guard through the `#[derive(Resource)]`-
+//! emitted `<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`).
 //!
 //! Per-credential rotation is exposed via
 //! [`Resource::on_credential_refresh`], which receives the **slot name**
-//! that rotated (so multi-credential resources can choose to refresh only
-//! the affected pool, headers, etc.).
+//! that rotated and the live `Runtime` handle (so multi-credential
+//! resources can choose to refresh only the affected pool, headers, etc.
+//! via interior mutability). Revocation is signalled via
+//! [`Resource::on_credential_revoke`].
 
 use std::future::Future;
 
@@ -215,10 +219,12 @@ impl ResourceMetadataBuilder {
 /// associated type was removed in favor of typed credential **slot
 /// fields** on the resource struct (declared via `#[credential(...)]`
 /// field attributes; the `#[derive(Resource)]` macro emits an impl of
-/// [`nebula_core::DeclaresDependencies`] enumerating them). The
-/// framework resolves slot fields **before** calling
-/// [`create`](Self::create) — implementors read credentials directly
-/// off `&self`.
+/// [`nebula_core::DeclaresDependencies`] enumerating them). Each slot
+/// field is a `SlotCell<CredentialGuard<C>>` cell. The framework
+/// resolves slot fields **before** calling [`create`](Self::create) —
+/// implementors read each resolved guard through the derive-emitted
+/// `<field>_slot()` accessor, which returns
+/// `Option<Arc<CredentialGuard<C>>>`, never off the raw cell field.
 ///
 /// # Associated types
 ///
@@ -255,29 +261,30 @@ pub trait Resource: Send + Sync + 'static {
 
     /// Creates a new runtime instance from config.
     ///
-    /// Credential slot fields declared via `#[credential(key = "...")]`
+    /// Credential slot cells declared via `#[credential(key = "...")]`
     /// are already populated on `&self` by the framework before this
-    /// call (per ADR-0044). Implementations read them directly off
-    /// `self.<field_name>`.
+    /// call (per ADR-0044). Implementations read each resolved guard
+    /// through the derive-emitted `self.<field>_slot()` accessor
+    /// (`Option<Arc<CredentialGuard<C>>>`) — handling the `None`
+    /// (unbound) case explicitly — never off the raw cell field.
     fn create(
         &self,
         config: &Self::Config,
         ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
-    /// Called by the engine after a successful credential refresh on
-    /// one of this resource's `#[credential]` slot fields.
+    /// Called by the engine rotation fan-out after it has swapped the
+    /// rotated credential into this resource's slot. `&self`: the resource
+    /// impl is an immutable descriptor; blue-green / re-auth acts on
+    /// `runtime`'s own interior mutability. `slot_name` identifies which
+    /// `#[credential]` slot rotated.
     ///
-    /// `slot_name` identifies which slot rotated — multi-credential
-    /// resources can choose to refresh only the affected sub-system
-    /// (e.g. swap a single pool, refresh a single header) rather than
-    /// recycling the whole runtime.
-    ///
-    /// Default: no-op. Override per resource for hot-reload behavior.
-    /// Connection-bound resources (Pool, Service, Transport) typically
-    /// override with the blue-green swap pattern: build a fresh pool
-    /// from the rotated credential, atomically swap into an
-    /// `Arc<RwLock<Pool>>`, let RAII drain old handles.
+    /// Multi-credential resources can choose to refresh only the affected
+    /// sub-system (e.g. swap a single pool, refresh a single header) rather
+    /// than recycling the whole runtime. Connection-bound resources (Pool,
+    /// Service, Transport) typically override with the blue-green swap
+    /// pattern: build a fresh pool from the rotated credential, atomically
+    /// swap into an `Arc<RwLock<Pool>>`, let RAII drain old handles.
     ///
     /// **Invariant** per ADR-0044 §Seam: implementer must handle every
     /// declared credential slot name; the engine emits a `WARN
@@ -286,12 +293,69 @@ pub trait Resource: Send + Sync + 'static {
     /// Cancellation safety: implementations MUST be cancel-safe — if
     /// the returned future is dropped mid-await, the resource MUST
     /// remain consistent.
+    ///
+    /// Default: no-op.
     fn on_credential_refresh(
-        &mut self,
+        &self,
         slot_name: &str,
+        runtime: &Self::Runtime,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let _ = slot_name;
+        let _ = (slot_name, runtime);
         async { Ok(()) }
+    }
+
+    /// Called by the engine fan-out when a slot's credential is revoked.
+    /// Post-invocation invariant (ADR-0044): the resource emits no further
+    /// authenticated traffic on the revoked credential. Default: no-op
+    /// (the engine still taints + drains the runtime around this call).
+    fn on_credential_revoke(
+        &self,
+        slot_name: &str,
+        runtime: &Self::Runtime,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let _ = (slot_name, runtime);
+        async { Ok(()) }
+    }
+
+    /// An opaque change-token over **all** of this resource's
+    /// `#[credential]` slot field generations — the resource's current
+    /// *credential epoch*.
+    ///
+    /// **Contract:** the returned value **changes whenever ANY slot's
+    /// generation changes** — not just the slot with the largest
+    /// generation. It is compared **only for equality** by the
+    /// create-vs-rotate reconcile (built-epoch vs live-epoch), never by
+    /// magnitude, so it is a change-token rather than a monotone counter.
+    ///
+    /// `0` means "no credential slot has ever been bound" (also the default
+    /// for resources with no credential slots). Each `SlotCell` transition
+    /// (`store` *or* `take`/clear) strictly advances its per-slot
+    /// generation, so any post-build slot transition yields a different
+    /// epoch — proving a credential rotated/was revoked in between.
+    ///
+    /// `#[derive(Resource)]` emits the real implementation: an
+    /// order-sensitive positional fold
+    /// (`acc = acc * K + slot.generation()`, fixed odd `K`) over every
+    /// declared `#[credential]` field's
+    /// [`SlotCell::generation`](crate::SlotCell::generation). A plain
+    /// `max` would be wrong here — a runtime built at
+    /// `(slot_a=5, slot_b=10)` then rotated `slot_a→6` still maxes to
+    /// `10`, so the reconcile would miss the now-stale runtime; the
+    /// positional fold changes on every slot transition regardless of
+    /// which slot moved. It is derive-generated, not author-maintained,
+    /// so a new slot field cannot be silently omitted from the epoch. The
+    /// default `0` keeps hand-written impls (and slot-less resources)
+    /// compiling; for such impls the create-vs-rotate reconcile degrades
+    /// to the runtime-presence path only (it never *falsely* reports a
+    /// stale runtime, it just cannot prove staleness by epoch).
+    ///
+    /// Used by the per-slot rotation dispatch and the Resident create slow
+    /// path to close the create-vs-rotate lost-update race (ADR-0067
+    /// §Deferred): the Resident runtime records the epoch it was built
+    /// against and the dispatch reconciles a runtime built against an
+    /// older epoch instead of silently reporting success.
+    fn credential_slot_epoch(&self) -> u64 {
+        0
     }
 
     /// Health-checks an existing runtime.

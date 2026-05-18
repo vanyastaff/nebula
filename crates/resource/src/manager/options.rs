@@ -116,8 +116,20 @@ impl Default for ManagerConfig {
 ///
 /// Per ADR-0044, credential bindings are no longer threaded through
 /// registration: the `resource: R` value handed to `Manager::register*`
-/// already carries resolved credentials in its slot fields.
+/// already carries resolved credentials in its slot fields. The
+/// [`slot_identity`](Self::slot_identity) here is a *stable hash over those
+/// resolved bindings* (per ADR-0036 / ADR-0044) — it does **not** carry
+/// secrets; it only lets the registry keep two resolved-credential
+/// registrations on **separate rows** so they cannot share one runtime
+/// (cross-tenant bleed). Compute it with
+/// [`slot_identity`](crate::dedup::slot_identity).
+///
+/// `#[non_exhaustive]`: like the sibling [`ShutdownConfig`] /
+/// [`DrainTimeoutPolicy`], new tuning fields must be additive without a
+/// breaking struct-literal change. Construct via
+/// [`RegisterOptions::default`] then the `with_*` setters.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RegisterOptions {
     /// Scope level for the resource (default: `Global`).
     pub scope: ScopeLevel,
@@ -125,6 +137,14 @@ pub struct RegisterOptions {
     pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Stable hash over this registration's resolved per-slot credential
+    /// bindings. Defaults to
+    /// [`SLOT_IDENTITY_UNBOUND`](crate::dedup::SLOT_IDENTITY_UNBOUND) — a
+    /// registration with no resolved slots keeps the historical
+    /// single-row-per-`(key, scope)` dedup behaviour. Set this (via
+    /// [`with_slot_identity`](Self::with_slot_identity)) so two different
+    /// resolved credentials at the same key+scope get distinct runtimes.
+    pub slot_identity: u64,
 }
 
 impl Default for RegisterOptions {
@@ -133,6 +153,7 @@ impl Default for RegisterOptions {
             scope: ScopeLevel::Global,
             resilience: None,
             recovery_gate: None,
+            slot_identity: crate::dedup::SLOT_IDENTITY_UNBOUND,
         }
     }
 }
@@ -156,6 +177,19 @@ impl RegisterOptions {
     #[must_use]
     pub fn with_recovery_gate(mut self, gate: Arc<RecoveryGate>) -> Self {
         self.recovery_gate = Some(gate);
+        self
+    }
+
+    /// Pin this registration to a resolved per-slot credential identity.
+    ///
+    /// Two registrations of the same resource type at the same scope with
+    /// **different** `slot_identity` occupy distinct registry rows with
+    /// distinct runtimes — the structural barrier against cross-tenant
+    /// runtime bleed. Compute the value from the resolved slot bindings via
+    /// [`slot_identity`](crate::dedup::slot_identity).
+    #[must_use]
+    pub fn with_slot_identity(mut self, slot_identity: u64) -> Self {
+        self.slot_identity = slot_identity;
         self
     }
 }

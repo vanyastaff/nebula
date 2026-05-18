@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString};
+use crate::{AuthScheme, SecretString, identity_state};
 
 /// A signing key used to authenticate requests via HMAC or similar algorithms.
 ///
@@ -50,6 +50,9 @@ impl SigningKey {
         &self.algorithm
     }
 }
+
+// Static credentials use State = Scheme (identity projection).
+identity_state!(SigningKey, "signing_key", 1);
 
 impl std::fmt::Debug for SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

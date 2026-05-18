@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_grace_period_config_creation() {
-        let duration = Duration::from_secs(7 * 24 * 3600); // 7 days
+        let duration = Duration::from_hours(168); // 7 days
         let config = GracePeriodConfig::new(duration);
 
         assert_eq!(config.duration, duration);
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_calculate_end_time() {
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
         let start = Utc::now();
         let end = config
             .calculate_end_time(start)
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_grace_period_state_creation() {
         let credential_id = CredentialId::new();
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
 
         let state = GracePeriodState::new(credential_id, 1, 2, &config)
             .expect("Should create grace period state");
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_credential_acceptance_during_grace_period() {
         let credential_id = CredentialId::new();
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
 
         let state = GracePeriodState::new(credential_id, 1, 2, &config)
             .expect("Should create grace period state");
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_force_end_grace_period() {
         let credential_id = CredentialId::new();
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
 
         let mut state = GracePeriodState::new(credential_id, 1, 2, &config)
             .expect("Should create grace period state");
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_grace_period_without_overlap() {
         let credential_id = CredentialId::new();
-        let mut config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let mut config = GracePeriodConfig::new(Duration::from_hours(168));
         config.allow_overlap = false;
 
         let state = GracePeriodState::new(credential_id, 1, 2, &config)
@@ -395,14 +395,14 @@ mod tests {
         metrics.record_usage();
 
         // Just used - should be recent
-        assert!(metrics.is_recently_used(Duration::from_secs(60)));
+        assert!(metrics.is_recently_used(Duration::from_mins(1)));
     }
 
     #[test]
     fn test_grace_period_tracker_creation() {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
         let grace_period =
             GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
@@ -418,7 +418,7 @@ mod tests {
     fn test_grace_period_tracker_usage_tracking() {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
         let grace_period =
             GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
@@ -443,14 +443,14 @@ mod tests {
         let tracker = GracePeriodTracker::new(old_id, new_id, grace_period);
 
         // Grace period expired - should always be revokable
-        assert!(tracker.can_revoke_old_credential(Duration::from_secs(3600)));
+        assert!(tracker.can_revoke_old_credential(Duration::from_hours(1)));
     }
 
     #[test]
     fn test_can_revoke_old_credential_migration_complete() {
         let old_id = CredentialId::new();
         let new_id = CredentialId::new();
-        let config = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config = GracePeriodConfig::new(Duration::from_hours(168));
         let grace_period =
             GracePeriodState::new(old_id, 1, 2, &config).expect("Should create grace period state");
 
@@ -488,7 +488,7 @@ mod tests {
         let tracker1 = GracePeriodTracker::new(old_id1, new_id1, grace_expired);
 
         // Active grace period
-        let config_active = GracePeriodConfig::new(Duration::from_secs(7 * 24 * 3600));
+        let config_active = GracePeriodConfig::new(Duration::from_hours(168));
         let grace_active = GracePeriodState::new(old_id2, 1, 2, &config_active)
             .expect("Should create grace period state");
         let tracker2 = GracePeriodTracker::new(old_id2, new_id2, grace_active);

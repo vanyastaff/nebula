@@ -7,8 +7,8 @@ use std::time::Duration;
 #[test]
 fn periodic_scheduler_is_exposed_via_engine_credential_rotation() {
     let config = nebula_engine::credential::rotation::PeriodicConfig::new(
-        Duration::from_secs(90 * 24 * 3600),
-        Duration::from_secs(7 * 24 * 3600),
+        Duration::from_hours(2160),
+        Duration::from_hours(168),
         false,
     )
     .expect("valid periodic config");

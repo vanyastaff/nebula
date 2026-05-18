@@ -16,19 +16,23 @@ An adapter crate owns three things:
 1. A **config struct** — operational parameters (host, port, timeouts).
    No secrets. Implements `ResourceConfig` (super-bound:
    `HasSchema`, re-exported as `nebula_resource::HasSchema`).
-2. A **resource struct** — implements `Resource` with five associated
-   types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`) plus the
-   lifecycle methods. The factory.
+2. A **resource struct** — implements `Resource` with four associated
+   types (`Config`, `Runtime`, `Lease`, `Error`) plus the lifecycle
+   methods. The factory.
 3. A **topology impl** — `Pooled`, `Resident`, `Service`, `Transport`,
    or `Exclusive`. Most database adapters use `Pooled`.
 
-**Credential binding (ADR-0036).** If your resource binds to a credential,
-declare a `Credential` type and override `on_credential_refresh` /
-`on_credential_revoke`. If not, use `type Credential = NoCredential` and
-let the defaults stand. The reverse-index is populated at registration via
-`RegisterOptions { credential_id: Some(..), .. }`; every no-credential
-register helper (`register_pooled`, `register_pooled_with`, etc.) is
-bounded `where R: Resource<Credential = NoCredential>`.
+**Credential binding (ADR-0044, amended by ADR-0067).** If your resource
+binds to a credential, declare a slot field
+`#[credential(key = "...")] auth: SlotCell<CredentialGuard<C>>` and read the
+resolved guard via the derive-emitted `self.auth_slot()` accessor inside
+`create` (and the rotation hooks). Connection-bound resources override
+`on_credential_refresh` / `on_credential_revoke` to act on the runtime's
+interior mutability. If your resource needs no credential, simply declare
+**no** `#[credential]` field — there is no `Credential` associated type and
+no `NoCredential` opt-out anymore. Credential bindings are no longer threaded
+through registration: the engine resolves each declared slot and binds it on
+`&self` before `Resource::create`.
 
 ---
 
@@ -203,9 +207,7 @@ Only `create` is required; `check`, `shutdown`, `destroy`,
 // src/resource.rs
 use std::future::Future;
 use nebula_core::ResourceKey;
-use nebula_resource::{
-    resource_key, Credential, NoCredential, Resource, ResourceMetadata,
-};
+use nebula_resource::{resource_key, Resource, ResourceMetadata};
 use nebula_resource::context::ResourceContext;
 
 use crate::config::PostgresConfig;
@@ -214,6 +216,8 @@ use crate::error::PostgresError;
 #[derive(Clone)]
 pub struct PgConnection { pub closed: bool }
 
+// Unauthenticated adapter: no `#[credential]` field. See the sidebar for
+// the credential-bound shape.
 #[derive(Clone)]
 pub struct PostgresResource;
 
@@ -222,14 +226,12 @@ impl Resource for PostgresResource {
     type Runtime = PgConnection;
     type Lease = PgConnection;
     type Error = PostgresError;
-    type Credential = NoCredential;  // unauthenticated; see sidebar for credential-bound
 
     fn key() -> ResourceKey { resource_key!("postgres") }
 
     fn create(
         &self,
         config: &PostgresConfig,
-        _scheme: &<Self::Credential as Credential>::Scheme,
         _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<PgConnection, PostgresError>> + Send {
         // Replace with: tokio_postgres::connect(&dsn, NoTls).await
@@ -250,26 +252,64 @@ impl Resource for PostgresResource {
 }
 ```
 
-**Credential-bound sidebar.** For an authenticated resource that binds to
-a rotating credential, set `type Credential = MyDbCredential` and override
-`on_credential_refresh` to perform the blue-green pool swap from
-credential Tech Spec §15.7. The default no-op is correct for
-unauthenticated resources.
+**Credential-bound sidebar.** For an authenticated resource that binds to a
+rotating credential, declare a `#[credential(key = "...")]` slot field and
+read the resolved guard via the derive-emitted `self.<field>_slot()`
+accessor. Override `on_credential_refresh` to perform the blue-green pool
+swap acting on the runtime's own interior mutability. The hooks take
+`&self`, the rotated `slot_name`, and `&Self::Runtime` — no scheme is ever
+handed to the impl; the engine binds the rotated guard into the slot cell
+before calling the hook.
 
 ```rust,ignore
-use nebula_resource::{CredentialContext, SchemeGuard};
+use std::sync::Arc;
+use arc_swap::ArcSwap;
+use nebula_credential::CredentialGuard;
+use nebula_resource::SlotCell;
 
-// inside `impl Resource for PostgresResource` with `type Credential = MyDbCredential`:
-fn on_credential_refresh<'a>(
+// MyDbCredential: C; PgPool: built from a resolved guard.
+pub struct PostgresResource {
+    #[credential(key = "db")]
+    auth: SlotCell<CredentialGuard<MyDbCredential>>,
+}
+
+// Runtime owns the swappable pool.
+pub struct PgRuntime {
+    pool: ArcSwap<PgPool>,
+}
+
+// inside `impl Resource for PostgresResource`:
+fn create(
     &self,
-    new_scheme: SchemeGuard<'a, Self::Credential>,
-    ctx: &'a CredentialContext,
-) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
-    // Build a fresh pool from `new_scheme`, atomically swap into your
-    // `Arc<RwLock<Pool>>`, let RAII drain old handles. `new_scheme` MUST
-    // NOT be retained past this future per PRODUCT_CANON.md §12.5 — the
-    // shared `'a` lifetime is the compile-time barrier.
-    async move { let _ = (new_scheme, ctx); Ok(()) }
+    config: &PostgresConfig,
+    _ctx: &ResourceContext,
+) -> impl Future<Output = Result<PgRuntime, PostgresError>> + Send {
+    // Read the resolved guard the engine bound before `create`.
+    let guard = self.auth_slot(); // Option<Arc<CredentialGuard<MyDbCredential>>>
+    async move {
+        let guard = guard.ok_or_else(|| PostgresError::Auth("db slot unbound".into()))?;
+        let pool = build_pool(config, &guard).await?;
+        Ok(PgRuntime { pool: ArcSwap::from_pointee(pool) })
+    }
+}
+
+fn on_credential_refresh(
+    &self,
+    slot_name: &str,
+    runtime: &PgRuntime,
+) -> impl Future<Output = Result<(), Self::Error>> + Send {
+    // The engine has already swapped the rotated guard into `self`'s slot
+    // cell; rebuild from it and atomically swap, letting RAII drain old
+    // handles. Multi-slot resources branch on `slot_name`.
+    let guard = self.auth_slot();
+    async move {
+        if slot_name == "db" {
+            let guard = guard.ok_or_else(|| PostgresError::Auth("db slot unbound".into()))?;
+            let fresh = build_pool_from_guard(&guard).await?;
+            runtime.pool.store(Arc::new(fresh));
+        }
+        Ok(())
+    }
 }
 ```
 
@@ -330,19 +370,23 @@ impl Pooled for PostgresResource {
 
 ## Step 5: Register and Acquire
 
-Three paths — most adapters need only the first.
+Three paths — most adapters need only the first. None take a `scheme`
+argument; a credential-bound resource carries its resolved guard in its
+`#[credential]` slot field (bound by the engine before `create`), so the
+register/acquire surface is identical whether or not the resource binds a
+credential.
 
-1. **`register_pooled` + `acquire_pooled_default`** — zero-boilerplate,
-   bounded `where R: Resource<Credential = NoCredential>`.
-   `acquire_pooled_default` passes `&()` as the scheme internally.
-2. **`register_pooled_with` + `acquire_pooled_default`** — pass
-   `RegisterOptions` for a non-default `scope`, an `AcquireResilience`
-   profile, or a `RecoveryGate`. Still `NoCredential`-bound.
-3. **`Manager::register` + `acquire_pooled`** — full positional path for
-   credential-bearing resources. Build a
-   `TopologyRuntime::Pool(PoolRuntime::<R>::new(...))`, supply
-   `credential_id` directly, and call `acquire_pooled` with a borrowed
-   scheme produced by the credential subsystem.
+1. **`register_pooled` + `acquire_pooled`** — zero-boilerplate. `Global`
+   scope, no resilience, no recovery gate.
+2. **`register_pooled_with` + `acquire_pooled`** — pass `RegisterOptions`
+   for a non-default `scope`, an `AcquireResilience` profile, or a
+   `RecoveryGate`.
+3. **`Manager::register` + `acquire_pooled`** — full positional path when
+   you need to build the `TopologyRuntime::Pool(PoolRuntime::<R>::new(...))`
+   yourself. For the multi-tenant case, pin distinct resolved credentials to
+   distinct registry rows with `register_with_identity` (or
+   `RegisterOptions::with_slot_identity`) and acquire via
+   `acquire_pooled_for`.
 
 ```rust,ignore
 // path 1: simplest
@@ -359,16 +403,16 @@ manager.register_pooled(
 ```
 
 ```rust,ignore
-// path 2: with options (still NoCredential).
+// path 2: with options.
 use nebula_resource::{
     AcquireResilience, AcquireRetryConfig, PoolConfig, RegisterOptions,
 };
 
-let mut opts = RegisterOptions::default();  // scope = Global
-opts.resilience = Some(AcquireResilience {
-    timeout: Some(std::time::Duration::from_secs(5)),
-    retry: Some(AcquireRetryConfig::default()),
-});
+let opts = RegisterOptions::default()  // scope = Global
+    .with_resilience(AcquireResilience {
+        timeout: Some(std::time::Duration::from_secs(5)),
+        retry: Some(AcquireRetryConfig::default()),
+    });
 
 manager.register_pooled_with(
     PostgresResource, PostgresConfig::default(), PoolConfig::default(), opts,
@@ -385,7 +429,7 @@ use tokio_util::sync::CancellationToken;
 
 let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
 let handle = manager
-    .acquire_pooled_default::<PostgresResource>(&ctx, &AcquireOptions::default())
+    .acquire_pooled::<PostgresResource>(&ctx, &AcquireOptions::default())
     .await?;
 let conn: &PgConnection = &*handle;  // RAII — returns to the pool on drop.
 ```
@@ -415,7 +459,7 @@ async fn register_and_acquire() {
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let handle = manager
-        .acquire_pooled_default::<PostgresResource>(&ctx, &AcquireOptions::default())
+        .acquire_pooled::<PostgresResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -433,10 +477,12 @@ async fn register_and_acquire() {
 - [ ] `Resource::key` returns a stable string literal (use `resource_key!`).
 - [ ] `Pooled::is_broken` is O(1) and performs no I/O — runs in `Drop`.
 - [ ] `Pooled::recycle` rolls back any open transaction before returning `Keep`.
-- [ ] `Resource::Credential = NoCredential` unless the adapter binds to a credential.
+- [ ] No `#[credential]` field unless the adapter binds to a credential; if it
+      does, the field is `SlotCell<CredentialGuard<C>>` and `create` reads it
+      via `self.<field>_slot()` (handling the unbound `None` case).
 - [ ] If credential-bound: `on_credential_refresh` performs the blue-green
-      swap (credential Tech Spec §15.7); `on_credential_revoke` ensures
-      no further authenticated traffic on the revoked credential.
+      swap on the runtime's interior mutability; `on_credential_revoke`
+      ensures no further authenticated traffic on the revoked credential.
 - [ ] `Runtime` does not implement `Debug`, or implements a redacted variant
       that omits connection strings and internal buffer state.
 - [ ] Integration tests use a mock runtime, not a live network service.

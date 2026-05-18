@@ -10,7 +10,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md`
 (excluded from agent index — see `.cursorignore`). Do not bulk-read all 41 files.
 
-## Index (0042–0066)
+## Index (0042–0068)
 
 | # | Title | Status |
 |---|-------|--------|
@@ -39,7 +39,9 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 | [0063](./0063-json-schema-2020-12-interop.md) | JSON Schema 2020-12 interop | accepted |
 | [0064](./0064-ui-form-composition.md) | UI form composition | accepted |
 | [0065](./0065-visual-rendering-modes.md) | Visual rendering modes | accepted |
-| [0066](./0066-layered-retry.md) | Layered retry (action-internal vs node-level) | accepted |
+| [0066](./0066-credential-runtime-crate.md) | Credential management runtime crate (`nebula-credential-runtime`) | accepted |
+| [0067](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Engine-owned per-slot rotation fan-out + `&self` refresh hook | accepted |
+| [0068](./0068-layered-retry.md) | Layered retry (action-internal vs node-level) | accepted |
 
 ## Supersession
 
@@ -47,9 +49,11 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 |------------|------------|------|
 | [0036](./0036-resource-credential-adoption-auth-retirement.md) | [0044](./0044-supersede-0036-resource-credential-singular.md) | Singular `Resource::Credential` → typed credential slot fields. |
 | Canon `[L1-§3.10]` (`crates/telemetry/README.md`) | [0046](./0046-metrics-telemetry-boundary.md) | Telemetry merged into `nebula-metrics`. |
+| 0044 — hook signature + slot-field/migration shape only | [0067](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | `on_credential_refresh` → `&self` + `SlotCell`; rotation stays engine-owned (ADR-0030). |
+| ADR-0030 facade slice | [0066](./0066-credential-runtime-crate.md) | Management facade → `nebula-credential-runtime`; engine keeps resolver/refresh mechanism. |
 
 ## Related plans
 
 - `docs/plans/2026-05-17-002-refactor-doc-consolidation-plan.md` — doc stack hygiene (this repo).
-- `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md` — implementation (blocked on doc gate).
+- `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md` — implementation (doc gate cleared).
 - `.ai-factory/plans/m6-resource-finalization-integration-audit.md` — M6 closure context.

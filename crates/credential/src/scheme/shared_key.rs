@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthScheme, SecretString};
+use crate::{AuthScheme, SecretString, identity_state};
 
 /// A pre-shared symmetric key, optionally paired with an identity hint.
 ///
@@ -56,6 +56,9 @@ impl SharedKey {
         self.identity.as_deref()
     }
 }
+
+// Static credentials use State = Scheme (identity projection).
+identity_state!(SharedKey, "shared_key", 1);
 
 impl std::fmt::Debug for SharedKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

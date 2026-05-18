@@ -381,5 +381,5 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 | [0063](adr/0063-json-schema-2020-12-interop.md) | JSON Schema 2020-12 interop | § Schema |
 | [0064](adr/0064-ui-form-composition.md) | UI form composition | Schema / UI (pointer) |
 | [0065](adr/0065-visual-rendering-modes.md) | Visual rendering modes | Canvas supply edges |
-| [0066](adr/0066-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
+| [0068](adr/0068-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
 

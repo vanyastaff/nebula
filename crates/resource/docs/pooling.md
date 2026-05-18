@@ -213,7 +213,7 @@ For aggregate cross-pool counters, use `Manager::metrics()` — see
 ## Lifecycle of an Instance
 
 ```text
-Resource::create(config, scheme, ctx)
+Resource::create(&self, config, ctx)   (credential slots pre-populated on &self)
   │
   ▼ [instance enters pool, idle_queue.push_back]
   │

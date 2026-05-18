@@ -8,12 +8,15 @@
 //! `execution::terminate_execution` is fully implemented end-to-end via
 //! the durable control queue (canon §12.2; `ControlCommand::Terminate` →
 //! `EngineControlDispatch::dispatch_terminate`, ADR-0008 A3 / ADR-0016) —
-//! it is no longer a stub. `resource::list_resources` and
-//! `execution::restart_execution` are still stubbed (501) and carry
-//! `#[deprecated]` so the OpenAPI spec flags them per ADR-0047 Stub
-//! Endpoint Policy. The deprecation lint is silenced at module level —
-//! those handlers are intentionally mounted so the route table stays in
-//! sync with the published spec.
+//! it is no longer a stub. The resource catalog surface
+//! (`resource::{list,get,create,update,delete}_resource` +
+//! `resource::get_resource_status`) is likewise fully implemented:
+//! config-CRUD + CAS + a read-only runtime-status projection (ADR-0067) —
+//! it is no longer a stub. `execution::restart_execution` is still
+//! stubbed (501) and carries `#[deprecated]` so the OpenAPI spec flags it
+//! per ADR-0047 Stub Endpoint Policy. The deprecation lint is silenced at
+//! module level — that handler is intentionally mounted so the route
+//! table stays in sync with the published spec.
 #![allow(deprecated)]
 
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -53,8 +56,19 @@ pub fn router() -> OpenApiRouter<AppState> {
         ))
         .routes(routes!(execution::terminate_execution))
         .routes(routes!(execution::restart_execution))
-        // Resources
-        .routes(routes!(resource::list_resources))
+        // Resources. Config-CRUD collection + by-id, then the READ-ONLY
+        // runtime-status projection. Resource lifecycle
+        // (acquire/release/drain/reload) is engine-owned and deliberately
+        // NOT exposed over HTTP (INTEGRATION_MODEL §13.1): `{res}/status`
+        // is the ONLY `{res}/...` sub-route, and it is a GET only — there
+        // is intentionally no acquire/release/drain route.
+        .routes(routes!(resource::list_resources, resource::create_resource))
+        .routes(routes!(
+            resource::get_resource,
+            resource::update_resource,
+            resource::delete_resource
+        ))
+        .routes(routes!(resource::get_resource_status))
         // Credentials (Plane B — ADR-0031). Literal paths first, then
         // collection, then parameterized `{cred}`, then sub-resources.
         .routes(routes!(credential::resolve_credential))

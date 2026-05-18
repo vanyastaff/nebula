@@ -23,6 +23,18 @@ use crate::{resource::Resource, topology_tag::TopologyTag};
 /// Callback invoked when a guarded lease is released.
 type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send + Sync>;
 
+/// A drain tracker: an in-flight `(active_count, waiters)` pair. One is the
+/// manager-wide `graceful_shutdown` tracker; another is each
+/// `ManagedResource`'s own counter that `Manager::revoke_slot` drains in
+/// isolation (ADR-0067 §Deferred).
+pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
+
+/// The `(manager_wide, per_resource)` pair an acquire pre-increments and
+/// hands to its [`ResourceGuard`]. Both are decremented + notified on guard
+/// drop: the first unblocks `graceful_shutdown`, the second unblocks the
+/// originating resource's isolated revoke drain.
+pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
+
 /// A guard over a leased resource.
 ///
 /// Dereferences to `R::Lease` for ergonomic access. On drop, guarded and
@@ -35,8 +47,17 @@ pub struct ResourceGuard<R: Resource> {
     topology_tag: TopologyTag,
     /// When this guard was acquired — used for lifetime tracking and the `Guard` trait.
     acquired_at: Instant,
-    /// Optional drain tracker — decrements on drop, notifies when zero.
-    drain_counter: Option<Arc<(AtomicU64, Notify)>>,
+    /// Optional manager-wide + per-resource drain trackers — each
+    /// decremented on drop, the owning `Notify` woken when it hits zero.
+    ///
+    /// The first element is `Manager::drain_tracker` (`graceful_shutdown`
+    /// drain); the second is the originating `ManagedResource`'s own
+    /// in-flight tracker, which `Manager::revoke_slot` drains in isolation
+    /// (ADR-0067 §Deferred). Both are pre-incremented by `InFlightCounter`
+    /// and handed off here, so a guard handed out for a row reflects in that
+    /// row's revoke drain — closing the revoke-vs-acquire TOCTOU
+    /// (ADR-0044/0036).
+    drain_counters: Option<DrainTrackers>,
 }
 
 enum GuardInner<R: Resource> {
@@ -64,7 +85,7 @@ impl<R: Resource> ResourceGuard<R> {
             resource_key,
             topology_tag,
             acquired_at: Instant::now(),
-            drain_counter: None,
+            drain_counters: None,
         }
     }
 
@@ -112,7 +133,7 @@ impl<R: Resource> ResourceGuard<R> {
             resource_key,
             topology_tag,
             acquired_at: Instant::now(),
-            drain_counter: None,
+            drain_counters: None,
         }
     }
 
@@ -134,29 +155,30 @@ impl<R: Resource> ResourceGuard<R> {
             resource_key,
             topology_tag,
             acquired_at: Instant::now(),
-            drain_counter: None,
+            drain_counters: None,
         }
     }
 
-    /// Attaches a drain tracker for shutdown coordination.
+    /// Attaches the manager-wide + per-resource drain trackers for shutdown
+    /// and revoke coordination.
     ///
-    /// **Caller-owned increment**: this method does NOT increment the counter.
-    /// Callers (i.e. `Manager` acquire paths) must pre-increment the counter
-    /// before any `await` past `lookup()` and hand the *already-counted slot*
-    /// off to the guard via this method. The guard then owns the slot and
-    /// decrements + notifies on Drop.
+    /// **Caller-owned increment**: this method does NOT increment either
+    /// counter. Callers (the `Manager` acquire paths) must pre-increment
+    /// both before any `await` past `lookup()` (via `InFlightCounter`) and
+    /// hand the *already-counted slots* off here. The guard then owns both
+    /// and decrements + notifies each on Drop.
     ///
-    /// This caller-owned ordering is required to close the
-    /// `graceful_shutdown` race where an acquire that passed `lookup()`
-    /// before `cancel.cancel()` could complete *after* `wait_for_drain()`
-    /// observed `0` and the registry was cleared. With pre-increment via
-    /// `Manager::InFlightCounter`, every in-flight acquire is reflected
-    /// in `drain_tracker` from the moment `lookup()` succeeds, so
-    /// `wait_for_drain()` always blocks until the acquire either finishes
-    /// (and the slot transfers to the guard) or fails (and `InFlightCounter`
-    /// decrements on Drop).
-    pub(crate) fn with_drain_tracker(mut self, tracker: Arc<(AtomicU64, Notify)>) -> Self {
-        self.drain_counter = Some(tracker);
+    /// This caller-owned ordering closes two races. (1) The
+    /// `graceful_shutdown` race: an acquire that passed `lookup()` before
+    /// `cancel.cancel()` could otherwise complete *after* `wait_for_drain()`
+    /// observed `0` and the registry was cleared. (2) The revoke-vs-acquire
+    /// TOCTOU (ADR-0044/0036): because the per-resource counter is
+    /// incremented before the post-taint re-check and decremented only when
+    /// this guard drops, `revoke_slot`'s per-resource drain (ADR-0067
+    /// §Deferred) cannot complete while a guard handed out for that row is
+    /// still live.
+    pub(crate) fn with_drain_tracker(mut self, trackers: DrainTrackers) -> Self {
+        self.drain_counters = Some(trackers);
         self
     }
 
@@ -313,11 +335,17 @@ impl<R: Resource> Drop for ResourceGuard<R> {
             },
         }
 
-        // Drain tracking: decrement active count and notify shutdown waiters.
-        if let Some(ref tracker) = self.drain_counter
-            && tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1
-        {
-            tracker.1.notify_waiters();
+        // Drain tracking: decrement BOTH the manager-wide and per-resource
+        // active counts, waking each owning `Notify` on its 1 → 0 edge. The
+        // manager-wide tracker unblocks `graceful_shutdown`; the per-resource
+        // tracker unblocks `revoke_slot`'s isolated per-resource drain
+        // (ADR-0067 §Deferred).
+        if let Some((ref manager, ref per_resource)) = self.drain_counters {
+            for tracker in [manager, per_resource] {
+                if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+                    tracker.1.notify_waiters();
+                }
+            }
         }
     }
 }

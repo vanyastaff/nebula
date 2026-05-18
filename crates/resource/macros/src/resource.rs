@@ -6,11 +6,16 @@
 //!   attribute. The `create` body is left as `todo!()` so the implementor must provide one — the
 //!   macro emits the trait shape and the `key()` / metadata wiring only.
 //! - `impl DeclaresDependencies for Foo` enumerating credential slot fields.
+//! - An inherent `impl Foo` exposing one read accessor per credential slot:
+//!   `fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>`. The macro
+//!   adds no fields — the `SlotCell` is author-declared and the framework
+//!   populates/rotates it through `&self`.
 //!
 //! Field-level attributes recognised:
 //! - `#[credential]` / `#[credential(key = "...", purpose = "...")]` — declares a credential slot.
-//!   Field type must be `CredentialGuard<C>` (optionally wrapped in `Option<...>` and/or
-//!   `Lazy<...>`).
+//!   Field type must be **exactly** `SlotCell<CredentialGuard<C>>`. The generated accessor emits a
+//!   single fixed body that only fits that shape, so `Option<…>`- and `Lazy<…>`-wrapped slots are
+//!   rejected at derive time (a compile error pointing at the field).
 
 use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
@@ -47,6 +52,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     let slots = field_slots::parse_credential_slot_fields(fields)?;
     let slot_registrations = field_slots::emit_slot_field_registrations(&slots);
+    let slot_accessors = field_slots::emit_slot_accessors(&slots);
+    let credential_slot_epoch_body = field_slots::emit_credential_slot_epoch_body(&slots);
 
     let key_lit = &attrs.key;
     let config_ty = &attrs.config;
@@ -81,6 +88,17 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     )
                 }
             }
+
+            // ADR-0067 §Deferred: an order-sensitive positional fold over
+            // every declared `#[credential]` `SlotCell` field's
+            // generation (NOT `max` — `max` misses a rotation of a
+            // non-max slot, #690 review / #680). Derive-emitted so a
+            // newly-added slot is folded in automatically (no author
+            // discipline). Closes the create-vs-rotate lost-update race
+            // when paired with the Resident build-epoch reconcile.
+            fn credential_slot_epoch(&self) -> u64 {
+                #credential_slot_epoch_body
+            }
         }
     };
 
@@ -108,9 +126,19 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    // Inherent read accessors over the author-declared `SlotCell` slot
+    // fields. The macro adds no fields — the cell is declared by the author
+    // and populated/rotated by the framework through `&self` (ADR-0044).
+    let slot_accessor_impl = quote! {
+        impl #impl_generics #struct_name #ty_generics #where_clause {
+            #slot_accessors
+        }
+    };
+
     Ok(quote! {
         #resource_impl
         #deps_impl
         #topology_const
+        #slot_accessor_impl
     })
 }

@@ -1,4 +1,4 @@
-# ADR-0066: Layered retry — `nebula-resilience` for action-internal, `NodeDefinition.retry_policy` for node-level
+# ADR-0068: Layered retry — `nebula-resilience` for action-internal, `NodeDefinition.retry_policy` for node-level
 
 **Status:** Accepted
 **Date:** 2026-04-29

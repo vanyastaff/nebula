@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn jitter_stays_within_ten_percent_window() {
-        let base = Duration::from_secs(90 * 24 * 3600);
+        let base = Duration::from_hours(2160);
         let min_allowed = (base.as_secs_f64() * 0.9) as u64;
         let max_allowed = (base.as_secs_f64() * 1.1) as u64;
 
@@ -220,8 +220,8 @@ mod tests {
 
     #[test]
     fn periodic_scheduler_respects_interval_without_jitter() {
-        let interval = Duration::from_secs(3600);
-        let config = PeriodicConfig::new(interval, Duration::from_secs(60), false)
+        let interval = Duration::from_hours(1);
+        let config = PeriodicConfig::new(interval, Duration::from_mins(1), false)
             .expect("valid periodic config");
         let scheduler = PeriodicScheduler::new(config);
 
@@ -232,12 +232,9 @@ mod tests {
 
     #[test]
     fn expiry_monitor_picks_conservative_trigger_time() {
-        let config = BeforeExpiryConfig::new(
-            0.9,
-            Duration::from_secs(10 * 24 * 3600),
-            Duration::from_secs(600),
-        )
-        .expect("valid before-expiry config");
+        let config =
+            BeforeExpiryConfig::new(0.9, Duration::from_hours(240), Duration::from_mins(10))
+                .expect("valid before-expiry config");
         let monitor = ExpiryMonitor::new(config);
 
         let created = Utc::now();
@@ -256,9 +253,8 @@ mod tests {
 
     #[test]
     fn expiry_monitor_filters_credentials_ready_for_rotation() {
-        let config =
-            BeforeExpiryConfig::new(0.8, Duration::from_secs(3600), Duration::from_secs(600))
-                .expect("valid before-expiry config");
+        let config = BeforeExpiryConfig::new(0.8, Duration::from_hours(1), Duration::from_mins(10))
+            .expect("valid before-expiry config");
         let monitor = ExpiryMonitor::new(config);
         let now = Utc::now();
 
@@ -285,9 +281,9 @@ mod tests {
     #[test]
     fn scheduled_rotation_notification_and_rotation_checks() {
         let scheduled_at = Utc::now() + ChronoDuration::hours(24);
-        let notify_before = Duration::from_secs(3600);
+        let notify_before = Duration::from_hours(1);
         let config =
-            ScheduledConfig::new(scheduled_at, Duration::from_secs(600), Some(notify_before))
+            ScheduledConfig::new(scheduled_at, Duration::from_mins(10), Some(notify_before))
                 .expect("valid scheduled config");
         let rotation = ScheduledRotation::new(config);
 

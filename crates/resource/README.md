@@ -19,7 +19,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Public API (v4 — M6 / dependency redesign, 2026-04-29)
 
-The v4 surface lands per ADR-0044 (supersedes ADR-0036) — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Multi-credential resources are now natural; per-slot rotation hooks land via `Resource::on_credential_refresh(&mut self, slot_name)`.
+The v4 surface lands per ADR-0044 (supersedes ADR-0036) — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Resource::on_credential_refresh(&self, slot_name, runtime)` with a companion `Resource::on_credential_revoke(&self, slot_name, runtime)`.
 
 ### `Resource` trait — 4 associated types, slot fields on Self
 
@@ -32,12 +32,20 @@ pub trait Resource: Send + Sync + 'static {
 
     fn key() -> ResourceKey;
 
-    /// Slot fields are populated on `&self` BEFORE create runs.
+    /// Slot cells are populated on `&self` BEFORE create runs; read the
+    /// resolved guard via the derive-emitted `<field>_slot()` accessor.
     fn create(&self, config: &Self::Config, ctx: &ResourceContext)
         -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
-    /// Per-slot rotation: receive the slot name that rotated.
-    fn on_credential_refresh(&mut self, slot_name: &str)
+    /// Per-slot rotation: the engine swaps the rotated guard into the slot
+    /// cell, then calls this with the slot name + live `Runtime`. `&self` —
+    /// re-auth acts on `runtime`'s interior mutability. Default no-op.
+    fn on_credential_refresh(&self, slot_name: &str, runtime: &Self::Runtime)
+        -> impl Future<Output = Result<(), Self::Error>> + Send { /* default no-op */ }
+
+    /// Per-slot revocation: post-invocation the resource emits no further
+    /// authenticated traffic on the revoked credential. Default no-op.
+    fn on_credential_revoke(&self, slot_name: &str, runtime: &Self::Runtime)
         -> impl Future<Output = Result<(), Self::Error>> + Send { /* default no-op */ }
 
     fn check    (&self, runtime: &Self::Runtime) -> impl Future<Output = Result<(), Self::Error>> + Send;
@@ -51,8 +59,8 @@ pub trait Resource: Send + Sync + 'static {
 ### Slot-binding pattern — `#[derive(Resource)]` + `#[credential]` field attrs
 
 ```rust
-use nebula_credential::{Credential, CredentialGuard};
-use nebula_resource::Resource;
+use nebula_credential::CredentialGuard;
+use nebula_resource::{Resource, SlotCell};
 
 #[derive(Resource)]
 #[resource(
@@ -65,26 +73,22 @@ use nebula_resource::Resource;
 )]
 struct Postgres {
     #[credential(key = "db_auth", purpose = "Main DB auth")]
-    db_auth: CredentialGuard<<DatabaseCredential as Credential>::Scheme>,
+    db_auth: SlotCell<CredentialGuard<DatabaseCredential>>,
 
     #[credential(key = "audit", purpose = "Audit log auth")]
-    audit: Option<CredentialGuard<<AuditCredential as Credential>::Scheme>>,
+    audit: SlotCell<CredentialGuard<AuditCredential>>,
 }
 ```
 
 The derive emits:
 - `impl Resource for Postgres { type Config = …; type Runtime = …; … fn key() … }` with a `todo!()` `create` body — the implementor supplies it.
 - `impl DeclaresDependencies for Postgres` enumerating the credential slot fields so the engine can resolve each before `create` runs.
+- A read accessor per slot field: `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` returning the resolved guard, or `None` until the framework binds it. Implementations read the credential through this accessor — never off the raw cell field. A pure derive cannot add or rewrite struct fields and `ManagedResource` hands out `Arc<R>` (no `&mut R`), so the author declares the `SlotCell` cell and the framework populates / rotates it through `&self` via `SlotCell::store`.
 - A topology marker (`Pooled` / `Resident` / `Service` / `Transport` / `Exclusive`) is **not** auto-derived — the topology attribute is informational; the implementor still writes `impl Pooled for Postgres { … }` (or the chosen topology trait) by hand.
 
-#### Field-type matrix (mirrors `#[derive(Action)]`)
+#### Field-type shape
 
-| Field type | Semantics |
-|---|---|
-| `CredentialGuard<C::Scheme>` | required + eager |
-| `Option<CredentialGuard<C::Scheme>>` | optional + eager |
-| `Lazy<CredentialGuard<C::Scheme>>` | required + lazy |
-| `Option<Lazy<CredentialGuard<C::Scheme>>>` | optional + lazy |
+The generated `<field>_slot()` accessor emits one fixed body, so a `#[credential]` slot field must currently be **exactly** `SlotCell<CredentialGuard<C>>` (required + eager). `Option<…>`- and `Lazy<…>`-wrapped slots are a hard compile error at the derive site until the accessor is generalized — declare an unconditional cell and treat the accessor's `None` (unbound) return as the optional/lazy case.
 
 ### `Manager` registration
 
@@ -94,7 +98,7 @@ The derive emits:
 | `Manager::register_pooled::<R>(...)` / `_resident_with` / `_service_with` / `_transport_with` / `_exclusive_with` | Topology-specific shortcuts. |
 | `Manager::register_from_value::<R>(json, expr_engine, …)` | JSON-driven registration: resolves `{{ … }}` templates → validates against `<R::Config as HasSchema>::schema()` → deserializes Config → constructs `R` with slot fields → registers. Phase 9 cross-crate path. |
 
-The framework resolves declared `#[credential]` slots **before** invoking `Resource::create` — implementations read credentials directly off `&self`.
+The framework resolves declared `#[credential]` slots **before** invoking `Resource::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`), handling the `None` (unbound) case explicitly.
 
 ### Other public API
 
@@ -125,9 +129,9 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 
 The Phase 4 / ADR-0044 break is hard. To migrate an existing `Resource` impl:
 
-1. **Drop `type Credential`.** Move the credential dependency to a `#[credential(key = "…")]` slot field on the struct. Change `Resource::Credential` references in your code to read off the slot field directly.
-2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates slot fields before `create` runs; read the credential off `&self.<slot_field>` instead.
-3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&mut self, slot_name)`.** The new hook receives the slot name that rotated; the new credential is already in the slot field on `&mut self`. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
+1. **Drop `type Credential`.** Move the credential dependency to a `#[credential(key = "…")]` slot field of type `SlotCell<CredentialGuard<C>>` on the struct, constructed with `SlotCell::empty()`. Change `Resource::Credential` references to read through the derive-emitted `self.<field>_slot()` accessor.
+2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C>>>`) and handle the `None` (unbound) case explicitly.
+3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, runtime)`** and add an `on_credential_revoke(&self, slot_name, runtime)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `runtime`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
 4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
 5. **For `#[derive(Resource)]`** (new), parse `#[resource(key, topology, config, runtime, lease, error)]` struct attribute; the derive emits `Resource` trait shape (with `todo!()` `create` body — you supply it) and a `DeclaresDependencies` impl enumerating slot fields. Topology traits (`Pooled`, `Resident`, etc.) are still hand-written.
 6. **Update test code** — `register*<R>` API now takes a fully-resolved `R` value; the previous `acquire_*_default` shorthand is folded into the single `acquire_*` family.

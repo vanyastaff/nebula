@@ -5,19 +5,50 @@
 
 use std::{
     any::{Any, TypeId},
+    future::Future,
+    pin::Pin,
     sync::Arc,
 };
 
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 
-use crate::{resource::Resource, runtime::managed::ManagedResource};
+use crate::{
+    error::Error, resource::Resource, runtime::managed::ManagedResource, topology_tag::TopologyTag,
+};
+
+/// Crate-private seal: only `nebula-resource` can name `sealed::Sealed`,
+/// so [`AnyManagedResource`] is **not implementable downstream**.
+///
+/// `AnyManagedResource` is engine-internal: the only purpose is to let
+/// the [`Registry`] store heterogeneous `ManagedResource<R>` behind one
+/// `dyn AnyManagedResource`, and the sole implementor is the blanket
+/// `impl<R: Resource>` below. Sealing makes that a *structural*
+/// guarantee rather than a convention — adding a required method (e.g.
+/// the per-resource-drain hook) can never be a downstream
+/// compile-break, because no downstream impl can exist. The
+/// `LookupOutcome::Found(Arc<dyn AnyManagedResource>)` surface stays
+/// usable (callers only *consume* the trait object); they just cannot
+/// *implement* it.
+mod sealed {
+    /// Sealed marker. Implemented only by the crate-internal blanket
+    /// `impl<R: Resource>` for `ManagedResource<R>`.
+    pub trait Sealed {}
+}
 
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
 /// Every `ManagedResource<R>` implements this trait, allowing the registry
 /// to store heterogeneous resource types behind a single `dyn AnyManagedResource`.
-pub trait AnyManagedResource: Send + Sync + 'static {
+///
+/// **Sealed (engine-internal).** This trait has a private `sealed::Sealed`
+/// supertrait, so it can only be implemented inside `nebula-resource` (by
+/// the blanket `impl<R: Resource>`). It is an engine-internal erasure
+/// boundary, **not** a downstream extension point — new required methods
+/// may be added without it being a semver-breaking change for consumers
+/// (they only ever hold `Arc<dyn AnyManagedResource>` via
+/// [`LookupOutcome::Found`], never implement it).
+pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// Returns the resource key for this managed resource.
     fn resource_key(&self) -> ResourceKey;
 
@@ -56,7 +87,59 @@ pub trait AnyManagedResource: Send + Sync + 'static {
     /// Diagnostic-only — typed callers should prefer
     /// `ManagedResource::status().phase` after a successful downcast.
     fn phase_erased(&self) -> crate::state::ResourcePhase;
+
+    /// Type-erased topology tag — used by `Manager::{refresh,revoke}_slot`
+    /// to label the rotation tracing span without a typed downcast.
+    fn topology_tag_erased(&self) -> TopologyTag;
+
+    /// Type-erased resource-level taint (credential revoke).
+    ///
+    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
+    /// it must taint through the erased registry view. Symmetric to the
+    /// other `*_erased` hooks: it forwards to `ManagedResource::taint`,
+    /// which sets the same flag the typed `acquire_*` funnel checks.
+    fn taint_erased(&self);
+
+    /// Type-erased per-slot refresh dispatch.
+    ///
+    /// Boxed future because `dyn AnyManagedResource` cannot carry an
+    /// RPITIT method. Forwards to `ManagedResource::dispatch_slot_hook`
+    /// with `refresh = true`, which borrows the live runtime per topology
+    /// and invokes the resource's `&self` hook.
+    fn dispatch_on_refresh_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+
+    /// Type-erased per-slot revoke dispatch (boxed for the same reason as
+    /// [`Self::dispatch_on_refresh_erased`]; forwards to
+    /// `ManagedResource::dispatch_slot_hook` with `refresh = false`).
+    fn dispatch_on_revoke_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+
+    /// Type-erased bounded drain of **this resource's own** in-flight
+    /// acquires.
+    ///
+    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
+    /// it drains through the erased view. Forwards to
+    /// `ManagedResource::wait_for_in_flight_drain`, which waits on this
+    /// row's per-resource counter — *not* the manager-wide `drain_tracker`
+    /// — so a revoke is isolated from in-flight traffic to unrelated
+    /// resources (ADR-0067 §Deferred). Boxed for the same `dyn`-safety
+    /// reason as the dispatch hooks. `Err(outstanding)` carries the counter
+    /// snapshot at the moment the timer fired.
+    fn wait_for_in_flight_drain_erased<'a>(
+        &'a self,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>>;
 }
+
+// The one and only `Sealed` impl: every `ManagedResource<R>` (and
+// nothing else, anywhere) — this is what makes `AnyManagedResource`
+// non-implementable downstream.
+impl<R: Resource> sealed::Sealed for ManagedResource<R> {}
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
     fn resource_key(&self) -> ResourceKey {
@@ -82,11 +165,69 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
     fn phase_erased(&self) -> crate::state::ResourcePhase {
         self.status().phase
     }
+
+    fn topology_tag_erased(&self) -> TopologyTag {
+        self.topology.tag()
+    }
+
+    fn taint_erased(&self) {
+        self.taint();
+    }
+
+    fn dispatch_on_refresh_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(self.dispatch_slot_hook(slot, true))
+    }
+
+    fn dispatch_on_revoke_erased<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(self.dispatch_slot_hook(slot, false))
+    }
+
+    fn wait_for_in_flight_drain_erased<'a>(
+        &'a self,
+        timeout: std::time::Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+        Box::pin(self.wait_for_in_flight_drain(timeout))
+    }
 }
 
-/// A single entry in the registry, associating a scope with a managed resource.
+/// Outcome of a registry lookup.
+///
+/// The `Ambiguous` arm is the security-relevant one: when a caller that
+/// does not know the resolved slot identity asks for `(key, scope)` and
+/// more than one credential row exists there, the registry refuses to pick
+/// one (which would alias one tenant's runtime to another). Callers map
+/// `Ambiguous` to a typed deny-by-default error — fail closed, never bleed.
+pub enum LookupOutcome {
+    /// Exactly one row matched — here it is.
+    Found(Arc<dyn AnyManagedResource>),
+    /// No row matched the key/scope.
+    NotFound,
+    /// Multiple distinct credential rows exist for the resolved
+    /// `(key, scope)` and the caller supplied no slot identity to
+    /// disambiguate. Returns the number of competing rows for diagnostics.
+    Ambiguous {
+        /// How many distinct credential rows competed.
+        rows: usize,
+    },
+}
+
+/// A single entry in the registry, associating a `(scope, slot_identity)`
+/// row with a managed resource.
+///
+/// `slot_identity` is the stable hash over the registration's resolved
+/// per-slot credential bindings (see [`crate::dedup`]). Two registrations
+/// at the same key + scope but a *different* `slot_identity` are distinct
+/// rows with distinct runtimes — the structural barrier against
+/// cross-tenant runtime bleed.
 struct RegistryEntry {
     scope: ScopeLevel,
+    slot_identity: u64,
     managed: Arc<dyn AnyManagedResource>,
 }
 
@@ -113,14 +254,22 @@ impl Registry {
         }
     }
 
-    /// Registers a managed resource under the given key, type, and scope.
+    /// Registers a managed resource under the given key, type, scope, and
+    /// resolved slot identity.
     ///
-    /// If an entry with the same key and scope already exists, it is replaced.
+    /// An entry is replaced in place **only** when an existing row matches
+    /// the same `(scope, slot_identity)`. A registration at the same
+    /// `(key, scope)` but a *different* `slot_identity` (i.e. a different
+    /// resolved per-slot credential) is appended as a **distinct** row with
+    /// its own runtime — it does not overwrite the other tenant's row. This
+    /// is the structural barrier against cross-tenant runtime bleed: two
+    /// resolved credentials can never collapse onto one shared runtime.
     pub fn register(
         &self,
         key: ResourceKey,
         type_id: TypeId,
         scope: ScopeLevel,
+        slot_identity: u64,
         managed: Arc<dyn AnyManagedResource>,
     ) {
         // Lock order is **strictly one-way**: `entries → (release) → type_index`.
@@ -145,9 +294,21 @@ impl Registry {
         let stale_type_id = {
             let mut entries = self.entries.entry(key.clone()).or_default();
 
-            if let Some(pos) = entries.iter().position(|e| e.scope == scope) {
+            // Row identity is `(scope, slot_identity)` — NOT `scope` alone.
+            // A registration that resolved a different credential
+            // (different `slot_identity`) at the same `(key, scope)` must
+            // NOT replace the existing tenant's row; it becomes a separate
+            // row with its own runtime.
+            if let Some(pos) = entries
+                .iter()
+                .position(|e| e.scope == scope && e.slot_identity == slot_identity)
+            {
                 let prev_type_id = entries[pos].managed.managed_type_id();
-                entries[pos] = RegistryEntry { scope, managed };
+                entries[pos] = RegistryEntry {
+                    scope,
+                    slot_identity,
+                    managed,
+                };
 
                 if prev_type_id != type_id
                     && !entries
@@ -159,7 +320,11 @@ impl Registry {
                     None
                 }
             } else {
-                entries.push(RegistryEntry { scope, managed });
+                entries.push(RegistryEntry {
+                    scope,
+                    slot_identity,
+                    managed,
+                });
                 None
             }
             // entries guard drops here.
@@ -171,32 +336,65 @@ impl Registry {
         self.type_index.insert(type_id, key);
     }
 
-    /// Looks up a managed resource by key and scope.
+    /// Looks up a managed resource by key and scope (slot-identity
+    /// agnostic).
     ///
-    /// Returns the entry whose scope matches `scope` exactly. If no exact
-    /// match is found, falls back to [`ScopeLevel::Global`].
-    pub fn get(
+    /// Returns the entry whose scope matches `scope` exactly, falling back
+    /// to [`ScopeLevel::Global`]. This path does **not** know the resolved
+    /// slot identity, so it is **fail-closed on ambiguity**: if more than
+    /// one credential row exists for the resolved scope it returns
+    /// [`LookupOutcome::Ambiguous`] rather than silently picking one (which
+    /// would be a cross-tenant bleed). Callers that know the resolved slot
+    /// identity must use [`get_for`](Self::get_for).
+    pub fn get(&self, key: &ResourceKey, scope: &ScopeLevel) -> LookupOutcome {
+        let Some(entries) = self.entries.get(key) else {
+            return LookupOutcome::NotFound;
+        };
+        Self::find_by_scope(&entries, scope, None)
+    }
+
+    /// Looks up a managed resource by key, scope, and a resolved slot
+    /// identity.
+    ///
+    /// Selects the row whose `(scope, slot_identity)` matches exactly
+    /// (scope falls back to [`ScopeLevel::Global`]). Because the row is
+    /// pinned by `slot_identity` there is never ambiguity: a caller that
+    /// resolved tenant A's credential can only ever reach tenant A's row.
+    pub fn get_for(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
-    ) -> Option<Arc<dyn AnyManagedResource>> {
-        let entries = self.entries.get(key)?;
-        Self::find_by_scope(&entries, scope)
+        slot_identity: u64,
+    ) -> LookupOutcome {
+        let Some(entries) = self.entries.get(key) else {
+            return LookupOutcome::NotFound;
+        };
+        Self::find_by_scope(&entries, scope, Some(slot_identity))
     }
 
     /// Typed lookup: finds the resource for type `R` and downcasts to
-    /// `Arc<ManagedResource<R>>`.
+    /// `Arc<ManagedResource<R>>` (slot-identity agnostic).
     ///
-    /// Uses the [`TypeId`] secondary index to find the key, then performs
-    /// a scope-aware lookup and downcast.
-    pub fn get_typed<R: Resource>(&self, scope: &ScopeLevel) -> Option<Arc<ManagedResource<R>>> {
+    /// Inherits [`get`](Self::get)'s fail-closed-on-ambiguity contract.
+    pub fn get_typed<R: Resource>(&self, scope: &ScopeLevel) -> LookupOutcome {
         let type_id = TypeId::of::<ManagedResource<R>>();
-        let key = self.type_index.get(&type_id)?;
-        let any_managed = self.get(&key, scope)?;
-        any_managed
-            .as_any_arc()
-            .downcast::<ManagedResource<R>>()
-            .ok()
+        let Some(key) = self.type_index.get(&type_id) else {
+            return LookupOutcome::NotFound;
+        };
+        self.get(&key, scope)
+    }
+
+    /// Typed lookup pinned to a resolved slot identity.
+    pub fn get_typed_for<R: Resource>(
+        &self,
+        scope: &ScopeLevel,
+        slot_identity: u64,
+    ) -> LookupOutcome {
+        let type_id = TypeId::of::<ManagedResource<R>>();
+        let Some(key) = self.type_index.get(&type_id) else {
+            return LookupOutcome::NotFound;
+        };
+        self.get_for(&key, scope, slot_identity)
     }
 
     /// Removes all entries for the given key.
@@ -245,32 +443,80 @@ impl Registry {
         self.type_index.clear();
     }
 
-    /// Scope-aware lookup within a list of entries.
+    /// Scope-aware, slot-identity-aware lookup within a list of entries.
     ///
-    /// Prefers an exact scope match; falls back to [`ScopeLevel::Global`].
+    /// Resolves the effective scope first (exact match, else
+    /// [`ScopeLevel::Global`] fallback) so the scope-precedence rule is
+    /// applied before any slot-identity reasoning — a Global-scoped row of
+    /// the wrong credential must not shadow a correctly-scoped one.
+    ///
+    /// With `want_identity = Some(id)`: returns the single row at the
+    /// effective scope whose `slot_identity == id` (unambiguous by
+    /// construction — a given resolved credential pins exactly one row).
+    ///
+    /// With `want_identity = None` (caller does not know the resolved
+    /// identity): returns [`LookupOutcome::Found`] iff exactly one row
+    /// exists at the effective scope, and [`LookupOutcome::Ambiguous`] if
+    /// two or more rows exist at the effective scope — the registry refuses
+    /// to silently alias one tenant's runtime to another. (`rows` is the
+    /// count of entries at that scope, not of distinct `slot_identity`
+    /// values.)
     fn find_by_scope(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,
-    ) -> Option<Arc<dyn AnyManagedResource>> {
-        // Exact scope match first.
-        if let Some(entry) = entries.iter().find(|e| e.scope == *scope) {
-            return Some(Arc::clone(&entry.managed));
-        }
-
-        // Fallback to Global scope.
-        if *scope != ScopeLevel::Global
-            && let Some(entry) = entries.iter().find(|e| e.scope == ScopeLevel::Global)
+        want_identity: Option<u64>,
+    ) -> LookupOutcome {
+        // Resolve the effective scope: exact match wins; otherwise fall
+        // back to Global. Scope precedence is decided BEFORE slot identity.
+        let effective_scope = if entries.iter().any(|e| e.scope == *scope) {
+            scope.clone()
+        } else if *scope != ScopeLevel::Global
+            && entries.iter().any(|e| e.scope == ScopeLevel::Global)
         {
-            return Some(Arc::clone(&entry.managed));
+            ScopeLevel::Global
+        } else {
+            return LookupOutcome::NotFound;
+        };
+
+        let mut at_scope = entries.iter().filter(|e| e.scope == effective_scope);
+
+        if let Some(id) = want_identity {
+            return match at_scope.find(|e| e.slot_identity == id) {
+                Some(entry) => LookupOutcome::Found(Arc::clone(&entry.managed)),
+                None => LookupOutcome::NotFound,
+            };
         }
 
-        None
+        // Identity-agnostic: exactly one row → Found; two or more distinct
+        // credential rows → fail closed (`Ambiguous`) rather than picking
+        // one and bleeding one tenant's runtime to another.
+        let Some(first) = at_scope.next() else {
+            return LookupOutcome::NotFound;
+        };
+        let extra = at_scope.count();
+        if extra == 0 {
+            LookupOutcome::Found(Arc::clone(&first.managed))
+        } else {
+            LookupOutcome::Ambiguous { rows: 1 + extra }
+        }
     }
 }
 
 impl Default for Registry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for LookupOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LookupOutcome::Found(_) => f.write_str("Found(..)"),
+            LookupOutcome::NotFound => f.write_str("NotFound"),
+            LookupOutcome::Ambiguous { rows } => {
+                write!(f, "Ambiguous {{ rows: {rows} }}")
+            },
+        }
     }
 }
 
@@ -282,6 +528,16 @@ mod tests {
 
     struct FakeA;
     struct FakeB;
+
+    // In-crate test doubles: the seal is crate-private, so the test
+    // module can satisfy it directly (an out-of-crate type could not —
+    // that is the point of the seal).
+    impl sealed::Sealed for FakeA {}
+    impl sealed::Sealed for FakeB {}
+
+    fn unit_dispatch<'a>() -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 
     impl AnyManagedResource for FakeA {
         fn resource_key(&self) -> ResourceKey {
@@ -297,6 +553,28 @@ mod tests {
         fn set_failed_erased(&self, _reason: &str) {}
         fn phase_erased(&self) -> crate::state::ResourcePhase {
             crate::state::ResourcePhase::Ready
+        }
+        fn topology_tag_erased(&self) -> TopologyTag {
+            TopologyTag::Resident
+        }
+        fn taint_erased(&self) {}
+        fn dispatch_on_refresh_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
+        }
+        fn dispatch_on_revoke_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
+        }
+        fn wait_for_in_flight_drain_erased<'a>(
+            &'a self,
+            _timeout: std::time::Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -315,6 +593,28 @@ mod tests {
         fn phase_erased(&self) -> crate::state::ResourcePhase {
             crate::state::ResourcePhase::Ready
         }
+        fn topology_tag_erased(&self) -> TopologyTag {
+            TopologyTag::Resident
+        }
+        fn taint_erased(&self) {}
+        fn dispatch_on_refresh_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
+        }
+        fn dispatch_on_revoke_erased<'a>(
+            &'a self,
+            _slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+            unit_dispatch()
+        }
+        fn wait_for_in_flight_drain_erased<'a>(
+            &'a self,
+            _timeout: std::time::Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<(), u64>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     #[test]
@@ -330,12 +630,14 @@ mod tests {
             key.clone(),
             TypeId::of::<FakeA>(),
             ScopeLevel::Global,
+            crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
         );
         reg.register(
             key.clone(),
             TypeId::of::<FakeA>(),
             ScopeLevel::Workspace(WorkspaceId::new()),
+            crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
         );
 
@@ -345,6 +647,7 @@ mod tests {
             key,
             TypeId::of::<FakeB>(),
             ScopeLevel::Global,
+            crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeB),
         );
 
@@ -365,12 +668,20 @@ mod tests {
             key.clone(),
             TypeId::of::<FakeA>(),
             scope.clone(),
+            crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
         );
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeA>()));
 
-        // Replace at the same key+scope with a different concrete type.
-        reg.register(key, TypeId::of::<FakeB>(), scope, Arc::new(FakeB));
+        // Replace at the same key+scope+slot_identity with a different
+        // concrete type — same row, last-write-wins.
+        reg.register(
+            key,
+            TypeId::of::<FakeB>(),
+            scope,
+            crate::dedup::SLOT_IDENTITY_UNBOUND,
+            Arc::new(FakeB),
+        );
 
         // The stale TypeId row for FakeA must be gone (#382).
         assert!(
@@ -378,5 +689,95 @@ mod tests {
             "stale TypeId for FakeA still in type_index after replace"
         );
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeB>()));
+    }
+
+    #[test]
+    fn distinct_slot_identity_at_same_key_scope_is_a_distinct_row() {
+        // Two registrations at the same key + scope but different resolved
+        // slot identities must NOT collapse — the second does not replace
+        // the first; both rows coexist.
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let scope = ScopeLevel::Global;
+
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            0xAAAA,
+            Arc::new(FakeA),
+        );
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            0xBBBB,
+            Arc::new(FakeA),
+        );
+
+        // Each resolved identity pins its own row.
+        assert!(matches!(
+            reg.get_for(&key, &scope, 0xAAAA),
+            LookupOutcome::Found(_)
+        ));
+        assert!(matches!(
+            reg.get_for(&key, &scope, 0xBBBB),
+            LookupOutcome::Found(_)
+        ));
+        // An identity that was never registered is NotFound, never an
+        // accidental alias to a different tenant's row.
+        assert!(matches!(
+            reg.get_for(&key, &scope, 0xCCCC),
+            LookupOutcome::NotFound
+        ));
+    }
+
+    #[test]
+    fn identity_agnostic_get_fails_closed_on_ambiguity() {
+        // When two credential rows exist for the same (key, scope) and the
+        // caller cannot disambiguate, the registry must refuse to pick one
+        // (deny-by-default — never bleed one tenant's runtime to another).
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let scope = ScopeLevel::Global;
+
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            0xAAAA,
+            Arc::new(FakeA),
+        );
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            0xBBBB,
+            Arc::new(FakeA),
+        );
+
+        match reg.get(&key, &scope) {
+            LookupOutcome::Ambiguous { rows } => assert_eq!(rows, 2),
+            other => panic!("expected Ambiguous, got a non-ambiguous outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identity_agnostic_get_returns_single_row() {
+        // The historical single-row-per-(key,scope) path is unaffected:
+        // exactly one row → Found, no ambiguity.
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let scope = ScopeLevel::Global;
+
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            crate::dedup::SLOT_IDENTITY_UNBOUND,
+            Arc::new(FakeA),
+        );
+
+        assert!(matches!(reg.get(&key, &scope), LookupOutcome::Found(_)));
     }
 }

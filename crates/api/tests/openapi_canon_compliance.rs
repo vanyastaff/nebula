@@ -9,21 +9,25 @@
 //! **Runtime check** — every honest-501 stub endpoint is probed against a
 //! booted in-memory app. The remaining inventory is the org-record
 //! (`get`/`update`/`delete_org`), service-account
-//! (`list`/`create`/`delete_service_account`), `resource::list_resources`,
-//! and `execution::restart` handlers.
+//! (`list`/`create`/`delete_service_account`), and `execution::restart`
+//! handlers.
 //!
 //! Graduated stub→implemented (removed from this inventory):
 //! `execution::terminate` via the durable control queue (ADR-0008 A3 /
 //! ADR-0016, covered by `execution_terminate_e2e.rs`); the five `me/*`
 //! profile/PAT endpoints (`get_me`, `update_me`, `list_my_tokens`,
 //! `create_token`, `delete_token`) via the Plane-A `AuthBackend` port
-//! (covered by `me_e2e.rs`); and — Phase 3 — `me::list_my_orgs` plus the
+//! (covered by `me_e2e.rs`); — Phase 3 — `me::list_my_orgs` plus the
 //! three org member endpoints (`org::list_members`, `org::add_member`,
 //! `org::remove_member`) via the shared `MembershipStore` (canon §4.5
 //! "Option 1" honest contract — the fake email-invitation shape was
 //! dropped for direct add-by-principal; covered, incl. abuse cases, by
-//! `org_e2e.rs`). The org-record + service-account endpoints stay
-//! honest-501 (no org-record store; no end-to-end
+//! `org_e2e.rs`); and the resource catalog surface
+//! (`resource::{list,get,create,update,delete}_resource` +
+//! `resource::get_resource_status`) — config-CRUD + CAS + a read-only
+//! runtime-status projection (ADR-0067; covered by
+//! `resource_handlers.rs`). The org-record + service-account endpoints
+//! stay honest-501 (no org-record store; no end-to-end
 //! `Principal::ServiceAccount` auth path).
 //!
 //! The accepted runtime outcomes are **501** (the
@@ -123,9 +127,9 @@ async fn deprecated_operations_must_advertise_501_response() {
     assert!(
         deprecated_count > 0,
         "Spec must contain at least one deprecated stub operation; \
-         after `execution::terminate` graduated stub→implemented \
-         (ADR-0008 A3 / ADR-0016) the remaining stubs are under me/, \
-         org/, resource/, and execution/restart"
+         after `execution::terminate` and the resource catalog graduated \
+         stub→implemented the remaining stubs are under org/ (org-record + \
+         service-account) and execution/restart"
     );
 }
 
@@ -166,12 +170,10 @@ fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
             format!("/api/v1/orgs/{TEST_ORG}/service-accounts/{sa_id}"),
             None,
         ),
-        // resource — 1 stub
-        (
-            "GET",
-            format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/resources"),
-            None,
-        ),
+        // resource — 0 stubs (the whole resource catalog surface
+        // graduated stub→implemented: config-CRUD + CAS + a read-only
+        // runtime-status projection, ADR-0067; covered end-to-end by
+        // resource_handlers.rs).
         // execution — 1 stub (terminate graduated stub→implemented:
         // real §12.2 durable-control-queue endpoint, ADR-0008 A3 /
         // ADR-0016; covered end-to-end by execution_terminate_e2e.rs).
@@ -193,18 +195,20 @@ async fn stub_endpoints_return_501_at_runtime() {
     let stubs = stub_endpoints();
     assert_eq!(
         stubs.len(),
-        8,
+        7,
         "stub coverage list must enumerate all remaining audit class-(c) \
          endpoints. The M3.2 audit identified 18. Graduated \
          stub→implemented (removed from this inventory): \
          `execution::terminate` (ADR-0008 A3 / ADR-0016 — \
          execution_terminate_e2e.rs); the five `me/*` profile/PAT \
-         endpoints (Plane-A `AuthBackend` port — me_e2e.rs); and **Phase \
+         endpoints (Plane-A `AuthBackend` port — me_e2e.rs); **Phase \
          3** `me::list_my_orgs` + the three org member endpoints \
          (`list_members`/`add_member`/`remove_member`) via the shared \
-         `MembershipStore` (org_e2e.rs). That leaves 8 honest-501: 3 \
-         org-record (`get`/`update`/`delete_org`) + 3 service-account + \
-         resource list + execution restart; got {}",
+         `MembershipStore` (org_e2e.rs); and the resource catalog surface \
+         (config-CRUD + CAS + read-only status, ADR-0067 — \
+         resource_handlers.rs). That leaves 7 honest-501: 3 org-record \
+         (`get`/`update`/`delete_org`) + 3 service-account + execution \
+         restart; got {}",
         stubs.len()
     );
 

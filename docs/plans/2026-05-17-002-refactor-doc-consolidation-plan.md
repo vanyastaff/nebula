@@ -41,7 +41,7 @@ mechanics with **short pointers** to ADRs — not duplicate ADR prose. This plan
 | `docs/INTEGRATION_MODEL.md` in repo | Done | Copied; `docs/adr/` link prefix applied |
 | `docs/README.md` agent map + hierarchy | Done | Tier 0–1, CE/ADR note, conflict rule |
 | `CLAUDE.md` + `INTEGRATION_MODEL` index row | Done | Documentation Index |
-| ADR **0066** layered retry (was duplicate 0042) | Done | `docs/adr/0066-layered-retry.md`; ADR-0046 backlink fixed |
+| ADR **0068** layered retry (was duplicate 0042) | Done | `docs/adr/0068-layered-retry.md`; ADR-0046 backlink fixed |
 | `docs/ARCHIVE.md` | Done | Explains removed trees |
 | `.cursorignore` / `.claudeignore` | Done | Hides historical ADR bulk + noise |
 
