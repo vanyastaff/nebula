@@ -48,6 +48,17 @@ impl EngineResourceAccessor {
         self
     }
 
+    /// Like [`with_slot_identities`](Self::with_slot_identities) but shares an
+    /// existing `Arc` (per-execution snapshot on the engine).
+    #[must_use]
+    pub fn with_slot_identities_arc(
+        mut self,
+        slot_identities: Arc<HashMap<ResourceKey, u64>>,
+    ) -> Self {
+        self.slot_identities = slot_identities;
+        self
+    }
+
     fn slot_identity_for(&self, key: &ResourceKey) -> u64 {
         self.slot_identities
             .get(key)
@@ -59,13 +70,8 @@ impl EngineResourceAccessor {
         ResourceContext::minimal(self.scope.clone(), self.cancel.clone())
     }
 
-    fn map_err(key: &ResourceKey, err: nebula_resource::Error) -> CoreError {
-        let detail = format!("{}: {err}", key.as_str());
-        match err.kind() {
-            ErrorKind::NotFound => CoreError::CredentialNotFound { key: detail },
-            ErrorKind::Ambiguous => CoreError::scope_violation(key.as_str(), detail),
-            _ => CoreError::CredentialNotConfigured(detail),
-        }
+    fn map_err(_key: &ResourceKey, err: nebula_resource::Error) -> CoreError {
+        err.to_core_error()
     }
 }
 
@@ -104,12 +110,18 @@ impl ResourceAccessor for EngineResourceAccessor {
         &self,
         key: &ResourceKey,
     ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-        let fut = self.acquire_any(key);
+        let manager = Arc::clone(&self.manager);
+        let key = key.clone();
+        let ctx = self.resource_ctx();
+        let slot_identity = self.slot_identity_for(&key);
+        let options = AcquireOptions::default();
         Box::pin(async move {
-            match fut.await {
+            match Manager::acquire_erased(manager, &key, &ctx, &options, slot_identity).await {
                 Ok(value) => Ok(Some(value)),
-                Err(CoreError::CredentialNotFound { .. }) => Ok(None),
-                Err(err) => Err(err),
+                Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::Cancelled) => {
+                    Ok(None)
+                },
+                Err(e) => Err(Self::map_err(&key, e)),
             }
         })
     }
@@ -139,7 +151,7 @@ mod tests {
 
     use nebula_resource::{
         Manager, ResidentConfig, ResourceContext, ScopeLevel,
-        dedup::SLOT_IDENTITY_UNBOUND,
+        dedup::{SLOT_IDENTITY_UNBOUND, slot_identity},
         error::Error,
         resource::{Resource, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -269,5 +281,50 @@ mod tests {
         let accessor = make_accessor(Arc::new(Manager::new()));
         let debug = format!("{accessor:?}");
         assert!(debug.contains("<Manager>"));
+    }
+
+    #[tokio::test]
+    async fn acquire_any_uses_recorded_slot_identity_not_unbound() {
+        let manager = Arc::new(Manager::new());
+        let key = AccResource::key();
+        let bound = slot_identity([("slot", "cred-a")]);
+
+        manager
+            .register_with_identity(
+                AccResource,
+                AccConfig,
+                ScopeLevel::Global,
+                bound,
+                TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
+                    ResidentConfig::default(),
+                )),
+                Manager::erased_acquire_resident::<AccResource>(bound),
+                None,
+                None,
+            )
+            .expect("register cred-bound row");
+
+        let accessor = make_accessor(Arc::clone(&manager))
+            .with_slot_identities(HashMap::from([(key.clone(), bound)]));
+        assert!(accessor.has(&key));
+
+        let boxed = accessor
+            .acquire_any(&key)
+            .await
+            .expect("acquire with matching slot identity");
+        let _guard = boxed
+            .downcast::<nebula_resource::ResourceGuard<AccResource>>()
+            .expect("ResourceGuard downcast");
+
+        let wrong = make_accessor(manager).with_slot_identities(HashMap::from([(
+            key.clone(),
+            slot_identity([("slot", "other")]),
+        )]));
+        assert!(
+            !wrong.has(&key),
+            "has must not see cred-bound row under a different slot identity"
+        );
+        let missing = wrong.try_acquire_any(&key).await.expect("try_acquire");
+        assert!(missing.is_none());
     }
 }

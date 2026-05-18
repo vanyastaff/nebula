@@ -207,8 +207,12 @@ pub struct WorkflowEngine {
     /// (`org_id`, `workspace_id`) when resources are registered above execution
     /// scope.
     resource_acquire_scope: Option<nebula_core::scope::Scope>,
-    /// Per-resource resolved slot identities recorded at activation.
+    /// Per-execution acquire scope (`org_id` / `workspace_id` for this run).
+    execution_acquire_scopes: DashMap<ExecutionId, nebula_core::scope::Scope>,
+    /// Per-resource resolved slot identities recorded at activation (pre-run).
     resource_slot_identities: RwLock<HashMap<ResourceKey, u64>>,
+    /// Frozen slot-identity map per execution (snapshot at run start).
+    resource_slot_identities_by_execution: DashMap<ExecutionId, Arc<HashMap<ResourceKey, u64>>>,
     /// Optional spec-16 port bundle (execution-state / lease / journal /
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
@@ -373,7 +377,9 @@ impl WorkflowEngine {
             resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
             resource_acquire_scope: None,
+            execution_acquire_scopes: DashMap::new(),
             resource_slot_identities: RwLock::new(HashMap::new()),
+            resource_slot_identities_by_execution: DashMap::new(),
             stores: None,
             workflow_stores: None,
             credential_resolver: None,
@@ -585,18 +591,70 @@ impl WorkflowEngine {
     }
 
     /// Merge `org_id` / `workspace_id` into the scope used for resource acquire.
+    ///
+    /// Prefer [`execute_workflow_with_acquire_scope`](Self::execute_workflow_with_acquire_scope)
+    /// when each run carries its own tenant; this builder sets the engine default.
     #[must_use]
     pub fn with_resource_acquire_scope(mut self, scope: nebula_core::scope::Scope) -> Self {
         self.resource_acquire_scope = Some(scope);
         self
     }
 
+    /// Merges engine-default and per-run tenant fields for resource acquire.
+    fn merged_acquire_scope(
+        engine_default: &Option<nebula_core::scope::Scope>,
+        run_scope: Option<&nebula_core::scope::Scope>,
+    ) -> nebula_core::scope::Scope {
+        let pick = run_scope.or(engine_default.as_ref());
+        nebula_core::scope::Scope {
+            org_id: pick.and_then(|s| s.org_id),
+            workspace_id: pick.and_then(|s| s.workspace_id),
+            ..Default::default()
+        }
+    }
+
+    fn install_execution_resource_context(
+        &self,
+        execution_id: ExecutionId,
+        run_acquire_scope: Option<nebula_core::scope::Scope>,
+    ) {
+        let slot_snap = self
+            .resource_slot_identities
+            .read()
+            .map(|ids| Arc::new(ids.clone()))
+            .unwrap_or_else(|err| {
+                tracing::error!(
+                    target: "nebula_engine",
+                    ?err,
+                    "resource_slot_identities lock poisoned; empty slot map for execution"
+                );
+                Arc::new(HashMap::new())
+            });
+        self.resource_slot_identities_by_execution
+            .insert(execution_id, slot_snap);
+
+        let acquire_scope =
+            Self::merged_acquire_scope(&self.resource_acquire_scope, run_acquire_scope.as_ref());
+        self.execution_acquire_scopes
+            .insert(execution_id, acquire_scope);
+    }
+
     /// Record a resolved slot identity for a resource key (activation-time).
     pub fn record_resource_slot_identity(&self, key: ResourceKey, slot_identity: u64) {
-        self.resource_slot_identities
-            .write()
-            .expect("resource_slot_identities lock poisoned")
-            .insert(key, slot_identity);
+        match self.resource_slot_identities.write() {
+            Ok(mut ids) => {
+                ids.insert(key, slot_identity);
+            },
+            Err(err) => {
+                tracing::error!(
+                    target: "nebula_engine",
+                    ?err,
+                    %key,
+                    slot_identity,
+                    "resource_slot_identities lock poisoned; slot identity not recorded"
+                );
+            },
+        }
     }
 
     /// Live-register a resource kind and record its slot identity for acquire.
@@ -618,6 +676,27 @@ impl WorkflowEngine {
         let outcome = self
             .resource_registrars
             .register(kind, manager, request)
+            .await?;
+        self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
+        Ok(())
+    }
+
+    /// Live-register under `rotation`, bind the fan-out index, and record slot identity.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`ResourceRegistrarRegistry::register_and_bind`].
+    #[cfg(feature = "rotation")]
+    pub async fn register_resource_and_bind(
+        &self,
+        kind: &str,
+        manager: &nebula_resource::Manager,
+        request: crate::RegisterRequest<'_>,
+        fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
+    ) -> Result<(), crate::RegistrarError> {
+        let outcome = self
+            .resource_registrars
+            .register_and_bind(kind, manager, request, fanout_index)
             .await?;
         self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
         Ok(())
@@ -1297,12 +1376,36 @@ impl WorkflowEngine {
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
+        self.execute_workflow_with_acquire_scope(workflow, input, budget, None)
+            .await
+    }
+
+    /// Like [`execute_workflow`](Self::execute_workflow) with per-run tenant scope.
+    ///
+    /// `run_acquire_scope` supplies `org_id` / `workspace_id` for this execution.
+    /// Fields set here override the engine default from
+    /// [`with_resource_acquire_scope`](Self::with_resource_acquire_scope).
+    pub async fn execute_workflow_with_acquire_scope(
+        &self,
+        workflow: &WorkflowDefinition,
+        input: serde_json::Value,
+        budget: ExecutionBudget,
+        run_acquire_scope: Option<nebula_core::scope::Scope>,
+    ) -> Result<ExecutionResult, EngineError> {
         budget
             .validate_for_execution()
             .map_err(|msg| EngineError::PlanningFailed(msg.to_string()))?;
 
         let execution_id = ExecutionId::new();
         let started = Instant::now();
+
+        self.install_execution_resource_context(execution_id, run_acquire_scope);
+        let slot_by_exec = &self.resource_slot_identities_by_execution;
+        let acquire_by_exec = &self.execution_acquire_scopes;
+        let _execution_resource_guard = scopeguard::guard(execution_id, move |id| {
+            slot_by_exec.remove(&id);
+            acquire_by_exec.remove(&id);
+        });
 
         // 1. Validate workflow (reuse ExecutionPlan for validation)
         let _plan = ExecutionPlan::from_workflow(execution_id, workflow, budget.clone())
@@ -3200,7 +3303,11 @@ impl WorkflowEngine {
         // layered accessor transparently — `scoped → global`, closest
         // ancestor wins.
         let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
-            let extra = self.resource_acquire_scope.clone().unwrap_or_default();
+            let extra = self
+                .execution_acquire_scopes
+                .get(&execution_id)
+                .map(|entry| entry.value().clone())
+                .unwrap_or_default();
             let scope = nebula_core::scope::Scope {
                 execution_id: Some(execution_id),
                 workflow_id: Some(workflow_id),
@@ -3209,13 +3316,13 @@ impl WorkflowEngine {
                 ..Default::default()
             };
             let slot_identities = self
-                .resource_slot_identities
-                .read()
-                .expect("resource_slot_identities lock poisoned")
-                .clone();
+                .resource_slot_identities_by_execution
+                .get(&execution_id)
+                .map(|entry| Arc::clone(entry.value()))
+                .unwrap_or_else(|| Arc::new(HashMap::new()));
             let global: Arc<dyn ResourceAccessor> = Arc::new(
                 EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())
-                    .with_slot_identities(slot_identities),
+                    .with_slot_identities_arc(slot_identities),
             );
             Arc::new(LayeredResourceAccessor::global_only(global))
         } else {

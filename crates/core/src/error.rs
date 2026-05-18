@@ -1,5 +1,7 @@
 //! Core error types for nebula-core operations.
 
+use std::time::Duration;
+
 use thiserror::Error;
 
 /// Core error -- only errors that core vocabulary operations produce.
@@ -73,6 +75,22 @@ pub enum CoreError {
         /// The action that attempted access.
         action_id: String,
     },
+
+    /// Resource lease/acquire failed (surfaced through the shared accessor seam).
+    ///
+    /// Actions reach this via [`ResourceAccessor`](crate::accessor::ResourceAccessor);
+    /// retryable variants are converted to retryable action errors at the action boundary.
+    #[error("resource unavailable: {key}: {detail}")]
+    ResourceUnavailable {
+        /// Resource key label for observability.
+        key: String,
+        /// Human-readable failure detail (no secret bytes).
+        detail: String,
+        /// When true, the action runtime may retry with backoff.
+        retryable: bool,
+        /// Optional retry delay hint from the resource layer.
+        retry_after: Option<Duration>,
+    },
 }
 
 impl CoreError {
@@ -109,6 +127,21 @@ impl CoreError {
     pub fn dependency_missing(name: &'static str, required_by: &'static str) -> Self {
         Self::DependencyMissing { name, required_by }
     }
+
+    /// Create a resource-acquire failure surfaced through the accessor seam.
+    pub fn resource_unavailable(
+        key: impl Into<String>,
+        detail: impl Into<String>,
+        retryable: bool,
+        retry_after: Option<Duration>,
+    ) -> Self {
+        Self::ResourceUnavailable {
+            key: key.into(),
+            detail: detail.into(),
+            retryable,
+            retry_after,
+        }
+    }
 }
 
 /// Result type for core operations.
@@ -128,6 +161,12 @@ impl nebula_error::Classify for CoreError {
                 nebula_error::ErrorCategory::NotFound
             },
             Self::CredentialAccessDenied { .. } => nebula_error::ErrorCategory::Authorization,
+            Self::ResourceUnavailable {
+                retryable: true, ..
+            } => nebula_error::ErrorCategory::Unavailable,
+            Self::ResourceUnavailable {
+                retryable: false, ..
+            } => nebula_error::ErrorCategory::Cancelled,
         }
     }
 
@@ -141,11 +180,29 @@ impl nebula_error::Classify for CoreError {
             Self::CredentialNotConfigured(_) => "CORE:CREDENTIAL_NOT_CONFIGURED",
             Self::CredentialNotFound { .. } => "CORE:CREDENTIAL_NOT_FOUND",
             Self::CredentialAccessDenied { .. } => "CORE:CREDENTIAL_ACCESS_DENIED",
+            Self::ResourceUnavailable { .. } => "CORE:RESOURCE_UNAVAILABLE",
         })
     }
 
     fn is_retryable(&self) -> bool {
-        false
+        matches!(
+            self,
+            Self::ResourceUnavailable {
+                retryable: true,
+                ..
+            }
+        )
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        match self {
+            Self::ResourceUnavailable {
+                retry_after: Some(d),
+                retryable: true,
+                ..
+            } => Some(nebula_error::RetryHint::after(*d)),
+            _ => None,
+        }
     }
 }
 

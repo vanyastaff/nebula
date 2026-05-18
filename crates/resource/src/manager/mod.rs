@@ -1209,14 +1209,9 @@ impl Manager {
         ctx: &ResourceContext,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
-        for level in crate::context::scope_levels_for_acquire(ctx.scope()) {
-            match self.lookup::<R>(&level) {
-                Ok(managed) => return Self::taint_gate::<R>(managed),
-                Err(e) if matches!(e.kind(), crate::error::ErrorKind::NotFound) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Err(Error::not_found(&R::key()))
+        let managed =
+            Self::resolve_typed::<R>(self.registry.get_typed_for_acquire_scope::<R>(ctx.scope()))?;
+        Self::taint_gate::<R>(managed)
     }
 
     /// [`lookup_for_acquire_scope`](Self::lookup_for_acquire_scope) pinned to
@@ -1227,14 +1222,25 @@ impl Manager {
         slot_identity: u64,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
-        for level in crate::context::scope_levels_for_acquire(ctx.scope()) {
-            match self.lookup_for::<R>(&level, slot_identity) {
-                Ok(managed) => return Self::taint_gate::<R>(managed),
-                Err(e) if matches!(e.kind(), crate::error::ErrorKind::NotFound) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Err(Error::not_found(&R::key()))
+        let managed = Self::resolve_typed::<R>(
+            self.registry
+                .get_typed_for_acquire::<R>(ctx.scope(), slot_identity),
+        )?;
+        Self::taint_gate::<R>(managed)
+    }
+
+    /// Typed acquire lookup at a scope level already chosen by [`Registry::get_acquire_for`].
+    fn lookup_typed_at_acquire_scope<R: Resource>(
+        &self,
+        matched_scope: ScopeLevel,
+        slot_identity: u64,
+    ) -> Result<Arc<ManagedResource<R>>, Error> {
+        self.shutdown_guard()?;
+        let managed = Self::resolve_typed::<R>(
+            self.registry
+                .get_typed_at_acquire_scope::<R>(matched_scope, slot_identity),
+        )?;
+        Self::taint_gate::<R>(managed)
     }
 
     /// Shared taint check tail for the acquire-side lookups.
@@ -1815,21 +1821,46 @@ impl Manager {
         use crate::registry::AcquireLookupOutcome;
 
         manager.shutdown_guard()?;
-        let acquire = match manager
+        tracing::debug!(
+            target: "nebula.resource",
+            %key,
+            slot_identity,
+            "acquire_erased: resolving registry hook"
+        );
+        match manager
             .registry
             .get_acquire_for(key, ctx.scope(), slot_identity)
         {
-            AcquireLookupOutcome::Found(f) => f,
-            AcquireLookupOutcome::NotFound => return Err(Error::not_found(key)),
+            AcquireLookupOutcome::Found {
+                acquire,
+                matched_scope,
+            } => {
+                acquire(
+                    manager,
+                    ctx.clone_for_acquire(),
+                    options.clone(),
+                    matched_scope,
+                )
+                .await
+            },
+            AcquireLookupOutcome::NotFound => {
+                tracing::debug!(target: "nebula.resource", %key, "acquire_erased: not found");
+                Err(Error::not_found(key))
+            },
             AcquireLookupOutcome::Ambiguous { rows } => {
-                return Err(Error::ambiguous(format!(
+                tracing::warn!(
+                    target: "nebula.resource",
+                    %key,
+                    rows,
+                    "acquire_erased: ambiguous scope/slot identity"
+                );
+                Err(Error::ambiguous(format!(
                     "{key}: {rows} resolved-credential registrations exist at this scope; \
                      acquire must target a resolved row via slot identity"
                 ))
-                .with_resource_key(key.clone()));
+                .with_resource_key(key.clone()))
             },
-        };
-        acquire(manager, ctx.clone_for_acquire(), options.clone()).await
+        }
     }
 
     /// Returns whether a registry row exists for `(key, scope bag, slot_identity)`.
@@ -1841,9 +1872,12 @@ impl Manager {
         slot_identity: u64,
     ) -> bool {
         use crate::registry::AcquireLookupOutcome;
+        if self.shutdown_guard().is_err() {
+            return false;
+        }
         matches!(
             self.registry.get_acquire_for(key, scope, slot_identity),
-            AcquireLookupOutcome::Found(_)
+            AcquireLookupOutcome::Found { .. }
         )
     }
 
@@ -1949,6 +1983,23 @@ impl Manager {
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
+        self.run_pooled_acquire(managed, ctx, options).await
+    }
+
+    /// [`acquire_pooled_for`](Self::acquire_pooled_for) with a pre-resolved scope level.
+    pub(crate) async fn acquire_pooled_at_scope<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+        matched_scope: ScopeLevel,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
         self.run_pooled_acquire(managed, ctx, options).await
     }
 
@@ -2087,6 +2138,23 @@ impl Manager {
         self.run_resident_acquire(managed, ctx, options).await
     }
 
+    /// [`acquire_resident_for`](Self::acquire_resident_for) with a pre-resolved scope level.
+    pub(crate) async fn acquire_resident_at_scope<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+        matched_scope: ScopeLevel,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::resident::Resident + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
+    {
+        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
+        self.run_resident_acquire(managed, ctx, options).await
+    }
+
     /// Shared resident acquire pipeline (resilience + gate + drain
     /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
     /// public resident-acquire entry points differ only in how they resolve
@@ -2200,6 +2268,23 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
+        self.run_service_acquire(managed, ctx, options).await
+    }
+
+    /// [`acquire_service_for`](Self::acquire_service_for) with a pre-resolved scope level.
+    pub(crate) async fn acquire_service_at_scope<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+        matched_scope: ScopeLevel,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::service::Service + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
         self.run_service_acquire(managed, ctx, options).await
     }
 
@@ -2327,6 +2412,23 @@ impl Manager {
         self.run_transport_acquire(managed, ctx, options).await
     }
 
+    /// [`acquire_transport_for`](Self::acquire_transport_for) with a pre-resolved scope level.
+    pub(crate) async fn acquire_transport_at_scope<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+        matched_scope: ScopeLevel,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
+        self.run_transport_acquire(managed, ctx, options).await
+    }
+
     /// Shared transport acquire pipeline (resilience + gate + drain
     /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
     /// public transport-acquire entry points differ only in how they resolve
@@ -2448,6 +2550,23 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
+        self.run_exclusive_acquire(managed, options).await
+    }
+
+    /// [`acquire_exclusive_for`](Self::acquire_exclusive_for) with a pre-resolved scope level.
+    pub(crate) async fn acquire_exclusive_at_scope<R>(
+        &self,
+        _ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+        matched_scope: ScopeLevel,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
         self.run_exclusive_acquire(managed, options).await
     }
 

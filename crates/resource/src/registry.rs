@@ -28,6 +28,7 @@ pub type ErasedAcquireFn = Arc<
             Arc<crate::Manager>,
             ResourceContext,
             AcquireOptions,
+            ScopeLevel,
         )
             -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, Error>> + Send>>
         + Send
@@ -236,8 +237,13 @@ pub enum LookupOutcome {
 
 /// Outcome of a registry acquire-hook lookup (same semantics as [`LookupOutcome`]).
 pub(crate) enum AcquireLookupOutcome {
-    /// Exactly one row matched — here is its erased acquire hook.
-    Found(ErasedAcquireFn),
+    /// Exactly one row matched — hook plus the scope level that won the walk.
+    Found {
+        /// Erased topology dispatch for this row.
+        acquire: ErasedAcquireFn,
+        /// Scope level selected by the acquire scope walk (avoids a second walk).
+        matched_scope: ScopeLevel,
+    },
     /// No row matched the key/scope/identity.
     NotFound,
     /// More than one row at the resolved scope without a slot identity pin.
@@ -417,14 +423,109 @@ impl Registry {
         };
         for level in scope_levels_for_acquire(scope) {
             match Self::find_at_exact_scope(&entries, &level, Some(slot_identity)) {
-                ScopeFind::Hit { acquire, .. } => return AcquireLookupOutcome::Found(acquire),
+                ScopeFind::Hit { acquire, .. } => {
+                    return AcquireLookupOutcome::Found {
+                        acquire,
+                        matched_scope: level,
+                    };
+                },
                 ScopeFind::Ambiguous { rows } => {
                     return AcquireLookupOutcome::Ambiguous { rows };
                 },
-                ScopeFind::NotFound => continue,
+                ScopeFind::NotFound => {
+                    if slot_identity == crate::dedup::SLOT_IDENTITY_UNBOUND
+                        && Self::scope_has_cred_bound_rows_without_unbound(&entries, &level)
+                    {
+                        return AcquireLookupOutcome::NotFound;
+                    }
+                    continue;
+                },
             }
         }
         AcquireLookupOutcome::NotFound
+    }
+
+    /// Typed managed-resource lookup for acquire paths.
+    ///
+    /// Walks [`scope_levels_for_acquire`] with [`find_at_exact_scope`] at each
+    /// level (no within-level Global fallback). Matches
+    /// [`get_acquire_for`](Self::get_acquire_for) so the erased hook and typed
+    /// row cannot diverge when Global and ancestor-scoped rows coexist.
+    pub(crate) fn get_typed_for_acquire<R: Resource>(
+        &self,
+        scope: &Scope,
+        slot_identity: u64,
+    ) -> LookupOutcome {
+        self.get_typed_walking_acquire_scope::<R>(scope, Some(slot_identity))
+    }
+
+    /// Typed lookup at an exact scope level (no ancestor walk).
+    ///
+    /// Used by the erased acquire path after [`get_acquire_for`](Self::get_acquire_for)
+    /// has already selected the winning scope level.
+    pub(crate) fn get_typed_at_acquire_scope<R: Resource>(
+        &self,
+        level: ScopeLevel,
+        slot_identity: u64,
+    ) -> LookupOutcome {
+        let type_id = TypeId::of::<ManagedResource<R>>();
+        let Some(key) = self.type_index.get(&type_id) else {
+            return LookupOutcome::NotFound;
+        };
+        let Some(entries) = self.entries.get(&*key) else {
+            return LookupOutcome::NotFound;
+        };
+        match Self::find_at_exact_scope(&entries, &level, Some(slot_identity)) {
+            ScopeFind::Hit { managed, .. } => LookupOutcome::Found(managed),
+            ScopeFind::Ambiguous { rows } => LookupOutcome::Ambiguous { rows },
+            ScopeFind::NotFound => LookupOutcome::NotFound,
+        }
+    }
+
+    /// [`get_typed_for_acquire`](Self::get_typed_for_acquire) without a
+    /// resolved slot identity (fail-closed on ambiguity at each level).
+    pub(crate) fn get_typed_for_acquire_scope<R: Resource>(&self, scope: &Scope) -> LookupOutcome {
+        self.get_typed_walking_acquire_scope::<R>(scope, None)
+    }
+
+    fn get_typed_walking_acquire_scope<R: Resource>(
+        &self,
+        scope: &Scope,
+        slot_identity: Option<u64>,
+    ) -> LookupOutcome {
+        let type_id = TypeId::of::<ManagedResource<R>>();
+        let Some(key) = self.type_index.get(&type_id) else {
+            return LookupOutcome::NotFound;
+        };
+        let Some(entries) = self.entries.get(&*key) else {
+            return LookupOutcome::NotFound;
+        };
+        for level in scope_levels_for_acquire(scope) {
+            match Self::find_at_exact_scope(&entries, &level, slot_identity) {
+                ScopeFind::Hit { managed, .. } => return LookupOutcome::Found(managed),
+                ScopeFind::Ambiguous { rows } => return LookupOutcome::Ambiguous { rows },
+                ScopeFind::NotFound => {
+                    if slot_identity == Some(crate::dedup::SLOT_IDENTITY_UNBOUND)
+                        && Self::scope_has_cred_bound_rows_without_unbound(&entries, &level)
+                    {
+                        return LookupOutcome::NotFound;
+                    }
+                    continue;
+                },
+            }
+        }
+        LookupOutcome::NotFound
+    }
+
+    /// At `level`, cred-bound rows exist but the caller asked for
+    /// [`SLOT_IDENTITY_UNBOUND`](crate::dedup::SLOT_IDENTITY_UNBOUND).
+    fn scope_has_cred_bound_rows_without_unbound(
+        entries: &[RegistryEntry],
+        level: &ScopeLevel,
+    ) -> bool {
+        entries
+            .iter()
+            .any(|e| e.scope == *level && e.slot_identity != crate::dedup::SLOT_IDENTITY_UNBOUND)
     }
 
     /// Looks up a managed resource by key, scope, and a resolved slot

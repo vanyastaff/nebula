@@ -15,7 +15,7 @@ use crate::error::Error;
 #[cfg(test)]
 #[must_use]
 pub(crate) fn noop_erased_acquire() -> ErasedAcquireFn {
-    Arc::new(|_mgr, _ctx, _opts| {
+    Arc::new(|_mgr, _ctx, _opts, _scope| {
         Box::pin(async {
             Err(Error::permanent(
                 "acquire dispatch not configured for this registry test entry",
@@ -30,10 +30,10 @@ where
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Clone + Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts| {
+    Arc::new(move |mgr, ctx, opts, matched_scope| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_resident_for::<R>(&ctx, &opts, slot_identity)
+                .acquire_resident_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
@@ -46,10 +46,10 @@ where
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Into<R::Runtime> + Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts| {
+    Arc::new(move |mgr, ctx, opts, matched_scope| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_pooled_for::<R>(&ctx, &opts, slot_identity)
+                .acquire_pooled_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
@@ -62,10 +62,10 @@ where
     R::Runtime: Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts| {
+    Arc::new(move |mgr, ctx, opts, matched_scope| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_service_for::<R>(&ctx, &opts, slot_identity)
+                .acquire_service_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
@@ -78,10 +78,10 @@ where
     R::Runtime: Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts| {
+    Arc::new(move |mgr, ctx, opts, matched_scope| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_transport_for::<R>(&ctx, &opts, slot_identity)
+                .acquire_transport_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
@@ -94,10 +94,10 @@ where
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts| {
+    Arc::new(move |mgr, ctx, opts, matched_scope| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_exclusive_for::<R>(&ctx, &opts, slot_identity)
+                .acquire_exclusive_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })

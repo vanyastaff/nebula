@@ -562,7 +562,7 @@ impl ResourceRegistrarRegistry {
         manager: &Manager,
         request: RegisterRequest<'_>,
         fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
-    ) -> Result<(), RegistrarError> {
+    ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         // Snapshot the bind inputs before `request` is moved into the
         // typed `register` call. Cheap clones (a small slot map + scope);
         // the resource key comes from the erased registrar so the
@@ -601,7 +601,7 @@ impl ResourceRegistrarRegistry {
                 }
             }
         }
-        Ok(())
+        Ok(outcome)
     }
 
     /// Resolves `kind` through the closed allowlist and validates

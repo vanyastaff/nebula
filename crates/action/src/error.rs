@@ -327,6 +327,24 @@ impl From<nebula_core::CoreError> for ActionError {
                 capability,
                 action_id,
             },
+            nebula_core::CoreError::ResourceUnavailable {
+                key,
+                detail,
+                retryable: true,
+                retry_after: Some(backoff),
+            } => ActionError::retryable_with_backoff(format!("{key}: {detail}"), backoff),
+            nebula_core::CoreError::ResourceUnavailable {
+                key,
+                detail,
+                retryable: true,
+                retry_after: None,
+            } => ActionError::retryable(format!("{key}: {detail}")),
+            nebula_core::CoreError::ResourceUnavailable {
+                key,
+                detail,
+                retryable: false,
+                ..
+            } => ActionError::fatal(format!("{key}: {detail}")),
             other => ActionError::fatal_from(other),
         }
     }
@@ -880,6 +898,19 @@ mod tests {
     }
 
     // ── ValidationReason + structured Validation (L7) ──────────────────────
+
+    #[test]
+    fn core_resource_unavailable_retryable_becomes_action_retryable() {
+        let core = nebula_core::CoreError::resource_unavailable(
+            "postgres",
+            "pool exhausted",
+            true,
+            Some(Duration::from_millis(50)),
+        );
+        let action: ActionError = core.into();
+        assert!(matches!(action, ActionError::Retryable { .. }));
+        assert_eq!(action.backoff_hint(), Some(Duration::from_millis(50)));
+    }
 
     #[test]
     fn validation_reason_as_str_stable() {

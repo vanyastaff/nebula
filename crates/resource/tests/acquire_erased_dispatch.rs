@@ -166,7 +166,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
 
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
 
-    Manager::acquire_erased(
+    let boxed = Manager::acquire_erased(
         Arc::clone(&manager),
         &ProbeResource::key(),
         &ctx,
@@ -175,4 +175,94 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
     )
     .await
     .expect("execution-scoped acquire must reach org-scoped row");
+
+    let lease = *boxed
+        .downcast::<nebula_resource::ResourceGuard<ProbeResource>>()
+        .expect("downcast to ResourceGuard from org-scoped row");
+    assert_eq!(lease.load(Ordering::Relaxed), 1);
+}
+
+/// Global + Organization rows at the same `slot_identity` must not let typed
+/// acquire bind Global while walking an execution+org scope bag.
+#[tokio::test]
+async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
+    let manager = Arc::new(Manager::new());
+    let org = OrgId::new();
+    let global_resource = ProbeResource::new();
+    let global_count = Arc::clone(&global_resource.create_count);
+    let org_resource = ProbeResource::new();
+    let org_count = Arc::clone(&org_resource.create_count);
+
+    manager
+        .register(
+            global_resource,
+            ProbeConfig,
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+                resident::config::Config::default(),
+            )),
+            Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            None,
+            None,
+        )
+        .expect("register global row");
+
+    manager
+        .register(
+            org_resource,
+            ProbeConfig,
+            ScopeLevel::Organization(org),
+            TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+                resident::config::Config::default(),
+            )),
+            Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            None,
+            None,
+        )
+        .expect("register org row");
+
+    let scope = Scope {
+        execution_id: Some(ExecutionId::new()),
+        org_id: Some(org),
+        ..Default::default()
+    };
+    let ctx = ResourceContext::minimal(scope, CancellationToken::new());
+    let key = ProbeResource::key();
+
+    let boxed = Manager::acquire_erased(
+        Arc::clone(&manager),
+        &key,
+        &ctx,
+        &AcquireOptions::default(),
+        SLOT_IDENTITY_UNBOUND,
+    )
+    .await
+    .expect("acquire_erased");
+
+    let lease = *boxed
+        .downcast::<nebula_resource::ResourceGuard<ProbeResource>>()
+        .expect("downcast");
+    assert_eq!(lease.load(Ordering::Relaxed), 1);
+    assert_eq!(org_count.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        global_count.load(Ordering::Relaxed),
+        0,
+        "must not create via Global row when org row matches scope bag"
+    );
+
+    let guard = manager
+        .acquire_resident_for::<ProbeResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            SLOT_IDENTITY_UNBOUND,
+        )
+        .await
+        .expect("typed acquire_resident_for");
+    assert_eq!(guard.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        org_count.load(Ordering::Relaxed),
+        1,
+        "typed acquire must reuse the org row without a second create"
+    );
+    assert_eq!(global_count.load(Ordering::Relaxed), 0);
 }
