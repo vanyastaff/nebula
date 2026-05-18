@@ -259,6 +259,29 @@ pub async fn create_workflow(
     // Build workflow definition by merging request definition with metadata
     let mut definition = payload.definition.clone();
     if let Some(obj) = definition.as_object_mut() {
+        // The server owns every immutable identity/control field — a
+        // client must not smuggle its own `id` / `version` / `owner_id`
+        // / `schema_version` through the create `definition` (the update
+        // path *rejects* these per issue #344; create previously
+        // persisted them verbatim, so the stored definition's identity
+        // could diverge from the server-generated `workflow_id` used as
+        // the repository key). These are *overwritten* with
+        // server-authoritative values, not stripped: `id` / `version` /
+        // `schema_version` are required by the canonical
+        // `WorkflowDefinition` schema, so removing them would yield a
+        // blob that fails the `from_str::<WorkflowDefinition>` parse the
+        // activate path performs. A client-supplied `owner_id` is
+        // dropped (the field is optional; create assigns no owner here).
+        obj.insert("id".to_string(), serde_json::json!(workflow_id.to_string()));
+        obj.insert(
+            "version".to_string(),
+            serde_json::json!({ "major": 0, "minor": 1, "patch": 0 }),
+        );
+        obj.insert(
+            "schema_version".to_string(),
+            serde_json::json!(nebula_workflow::CURRENT_SCHEMA_VERSION),
+        );
+        obj.remove("owner_id");
         obj.insert("name".to_string(), serde_json::json!(payload.name));
         if let Some(desc) = &payload.description {
             obj.insert("description".to_string(), serde_json::json!(desc));
@@ -716,8 +739,19 @@ pub async fn validate_workflow_handler(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
-    // Deserialise the stored JSON into a WorkflowDefinition.
-    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_value(definition)
+    // Deserialise the stored JSON into a WorkflowDefinition through the
+    // SAME `to_string` → `from_str` path `activate_workflow` uses (not
+    // `serde_json::from_value`): `from_value` cannot zero-copy borrow
+    // `&str` from a `Value::String`, so types like `domain_key::Key<T>`
+    // that use `<&str>::deserialize` fail under `from_value` but parse
+    // under the streaming `from_str` deserializer. Using `from_value`
+    // here while activate uses `from_str` made validate and activate
+    // accept *different* definitions — a workflow could validate-OK yet
+    // fail to activate (same inconsistency class as the #343 timestamp
+    // bug). Both paths now accept identically.
+    let raw_json = serde_json::to_string(&definition)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize workflow definition: {e}")))?;
+    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
         .map_err(|e| {
             ApiError::validation_message(format!(
                 "Workflow definition cannot be parsed as WorkflowDefinition: {e}"
