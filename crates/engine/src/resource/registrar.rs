@@ -563,11 +563,6 @@ impl ResourceRegistrarRegistry {
         request: RegisterRequest<'_>,
         fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
     ) -> Result<(), RegistrarError> {
-        let registrar = self
-            .registrars
-            .get(kind)
-            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
-
         // Snapshot the bind inputs before `request` is moved into the
         // typed `register` call. Cheap clones (a small slot map + scope);
         // the resource key comes from the erased registrar so the
@@ -582,13 +577,7 @@ impl ResourceRegistrarRegistry {
             )
         });
 
-        let outcome = registrar
-            .register(manager, request)
-            .await
-            .map_err(|source| RegistrarError::Register {
-                kind: kind.to_owned(),
-                source,
-            })?;
+        let outcome = self.register(kind, manager, request).await?;
 
         // Registration succeeded — the registry row exists. Record the
         // reverse-index binding so a later rotation / lease-revoke fans
