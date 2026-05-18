@@ -61,7 +61,9 @@ ig_added_lines() {
   while IFS= read -r uf; do
     [ -n "$uf" ] || continue
     printf '+++ %s\n' "$uf"
-    sed 's/^/+/' "$cwd/$uf" 2>/dev/null
+    # `+ ` (space sentinel) not `+`: a source line that itself starts with `+`
+    # would become `++…` and be miscounted as a header by `^\+([^+]|$)`.
+    sed 's/^/+ /' "$cwd/$uf" 2>/dev/null
   done < <(git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null \
             | grep -E "$CODE_RE" || true)
 }

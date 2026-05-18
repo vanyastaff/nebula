@@ -183,6 +183,16 @@ chk "E blocks >400 net-LoC" 2 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EB_P"
 chk "E budget-justified escapes" 0 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB_DIR"'","stop_hook_active":false}')"
 rm -rf "$EB_DIR"
+# Regression: an untracked code file whose lines start with `+` must still be
+# counted (the `+ ` space sentinel in ig_added_lines). Without it sed makes
+# `++…` which the `^\+([^+]|$)` count rejects → silent undercount → escapes.
+EBP_DIR="$(mktemp -d)"
+( cd "$EBP_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && { for i in $(seq 1 450); do echo "+marker $i"; done; } > plus.sh )
+EBP_SID="e-bud-plus"; EBP_P="$(turn_state_path "$EBP_SID" "$EBP_DIR")"; mkdir -p "$(dirname "$EBP_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBP_P"
+chk "E counts +-prefixed untracked" 2 "$(egate '{"session_id":"'"$EBP_SID"'","cwd":"'"$EBP_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBP_DIR"
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
