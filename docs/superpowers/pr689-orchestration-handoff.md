@@ -124,13 +124,28 @@ inherit the in-progress merge).
   postgres path DATABASE_URL-gated, NOT pg-executed (honest
   done-but-pg-unverified). **ALL (D) FIX items now complete.**
 
+- **`c7b230ad` — done&verified.** ADOPT `3255514551`: coupled
+  signature ripple — `IdempotencyStore::get`/`put` gained explicit
+  `&Scope` (consistent with `IdempotencyGuard` + rest of port);
+  backend folds `{ws}:{org}:{cache_key}` (no caller pre-namespacing
+  trust); `ScopedIdempotencyStore` now pure scope-substitution
+  pass-through. Verified the api caller is the *legacy* repos stack
+  (`IdempotencyStoreRepo`/`pg/idempotency.rs`/`api_idempotency_dedup`),
+  NOT the port — out of scope, untouched. Conformance helper split:
+  first-writer-wins (decorator-transparent → raw+scoped matrices) vs
+  cross-scope-isolation (raw matrix only; decorator cross-tenant denial
+  stays in `cross_tenant_denial.rs`). storage+tenancy 259/259 (incl.
+  `cross_tenant_idempotency_keys_are_isolated`), clippy -D + per-crate
+  fmt green, lefthook green (postgres path pg-unverified — gated).
+
 ### REMAINING (D): ADOPT group + 3255514540 + PUSHBACK reply
 
-- ADOPT items: `3255514551` (idempotency `&Scope` param),
-  `3255514553` (membership enum ScopeKind/PrincipalKind),
-  postgres/control_queue cleanup DELETE, store_seam node_result warn,
-  control_consumer traceparent warn, stale doc fixes (storage/lib.rs,
-  credential/layer/mod.rs, storage-port/README MD040).
+- ADOPT items: ~~`3255514551` (idempotency `&Scope` param) — DONE
+  `c7b230ad`~~; remaining: `3255514553` (membership enum
+  ScopeKind/PrincipalKind), postgres/control_queue cleanup DELETE,
+  store_seam node_result warn, control_consumer traceparent warn,
+  stale doc fixes (storage/lib.rs, credential/layer/mod.rs,
+  storage-port/README MD040).
 - PUSHBACK `3255514555`: reply with reasoned decline (YAGNI for current
   call sites), do NOT implement.
 - `3255514540`: dedicated session (see below) — port-scoping refactor.
