@@ -34,6 +34,28 @@ Spec-16 compliant schema for Nebula's PostgreSQL backend.
 | 0020 | `add_resume_result_persistence` | Execution | `execution_nodes` — adds `result_schema_version`, `result_kind`, `result` (ADR-0009) |
 | 0021 | `add_control_queue_reclaim_count` | Execution | `execution_control_queue` — adds `reclaim_count` (ADR-0017 / ADR-0008 B1) |
 | 0026 | `execution_control_queue_w3c_trace_context` | Execution | `execution_control_queue` — nullable `w3c_trace_context` (M3.5 W3C carrier) |
+| 0027 | `port_adapter_schema` | Storage port | the `port_*` tables — execution / journal / control-queue / idempotency / webhook-activation / workflow / workflow-version, and the identity zoo (`port_users` … `port_blobs`) |
+
+## Storage-port adapter schema (0027)
+
+`0027_port_adapter_schema.sql` is **byte-identical** to
+`crates/storage/src/postgres/schema.sql`, which the spec-16 Postgres
+adapters apply via `nebula_storage::postgres::init_schema` for in-memory
+and test pools. This migration is the canonical source for a real
+database rebuild: the spec-16 port (`PgExecutionStore` + the atomic
+`TransitionBatch`, the durable control-queue outbox, idempotency,
+webhook activations, workflows/versions, and the identity stores)
+persists through these `port_*` tables. The two files are kept in
+lockstep — regenerate the migration from the embedded schema with
+`cp crates/storage/src/postgres/schema.sql \
+crates/storage/migrations/postgres/0027_port_adapter_schema.sql`
+whenever the port schema changes.
+
+## Rebuilding the local dev database
+
+`task db:reset` **drops and recreates the database** (then re-runs every
+migration in this directory, `0027` included). It destroys all local dev
+data. `task db:migrate` applies pending migrations non-destructively.
 
 ## Schema parity
 

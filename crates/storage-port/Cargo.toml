@@ -1,0 +1,33 @@
+[package]
+name = "nebula-storage-port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Storage port (object-safe repository traits + DTOs + Scope) for Nebula"
+keywords.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+
+[dependencies]
+nebula-core = { path = "../core" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# RefreshClaimStore (ADR-0041) is re-homed shape-unchanged from the adapter;
+# its loom-verified contract uses wall-clock instants and a per-claim UUID.
+# No sqlx — the port carries no database driver.
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

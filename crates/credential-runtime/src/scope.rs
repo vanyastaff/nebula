@@ -3,7 +3,7 @@
 //! supplies a per-call `ScopeResolver`. Confused-deputy (spec §6 #1) is
 //! closed by type: no operation is callable without a `&TenantScope`.
 
-use nebula_storage::credential::ScopeResolver;
+use nebula_credential::ScopeResolver;
 
 /// Tenant identity for a credential operation. `owner_id` =
 /// `"{org}/{workspace}"` — the value persisted in
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn scope_resolver_returns_owner() {
-        use nebula_storage::credential::ScopeResolver;
+        use nebula_credential::ScopeResolver;
         let s = TenantScope::new("o", "w");
         let r = s.resolver();
         assert_eq!(r.current_owner(), Some("o/w"));

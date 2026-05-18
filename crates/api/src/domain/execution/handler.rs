@@ -7,8 +7,7 @@ use axum::{
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::{ExecutionState, ExecutionStatus};
-use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
-use uuid::Uuid;
+use nebula_storage_port::dto::ControlCommand;
 
 use crate::{
     domain::{
@@ -48,14 +47,11 @@ use crate::{
 )]
 pub async fn list_executions(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
-    let running_ids = state
-        .execution_repo
-        .list_running()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let running_ids = state.list_running_executions_scoped(&scope).await?;
 
     let total = running_ids.len();
 
@@ -103,23 +99,21 @@ pub async fn list_executions(
 )]
 pub async fn list_executions_for_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Scope the list to the requested workflow (#286, #288, #328). Using the
-    // global `list_running()` here would leak execution IDs from every other
-    // workflow on the instance — a contained info leak today (shared-trust
-    // JWT) but a tenant-crossing read the moment real multi-tenant auth
-    // lands.
+    // Scope the list to the requested workflow (#286, #288, #328) within
+    // the caller's tenant — the per-request decorator confines the read,
+    // closing the cross-tenant execution-ID leak the global
+    // `list_running()` would have allowed.
     let running_ids = state
-        .execution_repo
-        .list_running_for_workflow(workflow_id_parsed)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
+        .list_running_executions_for_workflow_scoped(&scope, workflow_id_parsed)
+        .await?;
 
     let total = running_ids.len();
     let offset = params.offset();
@@ -151,25 +145,23 @@ pub async fn list_executions_for_workflow(
 /// - [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn get_execution_outputs(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionOutputsResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Verify the execution exists before loading outputs.
+    // Verify the execution exists in the caller's tenant before loading
+    // outputs.
     state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {e}")))?
+        .execution_state_scoped(&scope, execution_id, "check")
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     let outputs = state
-        .execution_repo
-        .load_all_outputs(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
+        .execution_node_outputs_scoped(&scope, execution_id)
+        .await?;
 
     // Convert NodeKey keys to strings for JSON serialisation.
     let string_outputs: std::collections::HashMap<String, serde_json::Value> = outputs
@@ -205,23 +197,22 @@ pub async fn get_execution_outputs(
 )]
 pub async fn get_execution(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionResponse>> {
     use nebula_core::ExecutionId;
 
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Fetch execution state from repository
+    // Fetch execution state scoped to the caller's tenant
     let state_result = state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
+        .execution_state_scoped(&scope, execution_id, "get")
+        .await?;
 
-    // Check if execution exists (get_state returns Option<(version, state)>)
+    // Check if execution exists (returns Option<(version, state)>)
     let (_version, execution_state) =
         state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
@@ -294,20 +285,19 @@ pub async fn get_execution(
 )]
 pub async fn start_execution(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify workflow exists
+    // Verify the workflow exists in the caller's tenant.
     state
-        .workflow_repo
-        .get(workflow_id_parsed)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_definition_scoped(&scope, workflow_id_parsed)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {workflow_id} not found")))?;
 
     // Generate new execution ID
@@ -341,10 +331,8 @@ pub async fn start_execution(
     // exists yet), so every call returned `Ok(false)` and the handler
     // surfaced an Internal error unconditionally.
     state
-        .execution_repo
-        .create(execution_id, workflow_id_parsed, state_json)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))?;
+        .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
+        .await?;
 
     // Enqueue the Start signal onto the durable control queue (canon §12.2,
     // §13 step 3, #332). Before this PR the API persisted the row but never
@@ -357,7 +345,7 @@ pub async fn start_execution(
     // exists but the engine will not see the Start signal — the handler
     // fails loudly so the caller can retry. The retry is idempotent
     // at the consumer layer via CAS (ADR-0008 §5).
-    enqueue_start(&state, execution_id).await?;
+    enqueue_start_scoped(&state, &scope, execution_id).await?;
 
     // Build response. `started_at` is omitted on a Created execution —
     // canon §13 step 3 forbids synthetic timestamps for fields the engine
@@ -387,25 +375,31 @@ pub async fn start_execution(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-/// Enqueue a `ControlCommand::Start` onto the durable control queue (canon
-/// §12.2, §13 step 3, #332).
+/// Enqueue a `ControlCommand::Start` onto the durable control queue for
+/// the caller's tenant (canon §12.2, §13 step 3, #332).
 ///
 /// Shared by `start_execution` (this module) and `execute_workflow`
 /// (`handlers::workflow`) so the dispatch contract lives in exactly one
-/// place. Any future start-path entry point MUST route through this helper
-/// to preserve the §4.5 invariant that "persist a row" and "dispatch to the
-/// engine" travel together.
+/// place. Any future start-path entry point MUST route through this
+/// helper to preserve the §4.5 invariant that "persist a row" and
+/// "dispatch to the engine" travel together. Stamps the Start control
+/// row with the request tenant `scope` via `enqueue_control_scoped`.
 ///
 /// Returns `ApiError::ServiceUnavailable` when the control-queue backend
 /// is down (mirrors the 503 contract in `cancel_execution` — canon §13
-/// step 6) and `ApiError::Internal` for other write failures so the caller
-/// can retry. The engine-side consumer guards against double-start via CAS
-/// (ADR-0008 §5), so a retry after a partial failure is safe.
+/// step 6) and `ApiError::Internal` for other write failures so the
+/// caller can retry. The engine-side consumer guards against
+/// double-start via CAS (ADR-0008 §5), so a retry after a partial
+/// failure is safe.
 ///
 /// M3.5: stamps optional [`nebula_core::W3cTraceContext`] on the row from the active HTTP span
 /// when the global propagator yields a valid carrier; otherwise enqueues without one (never
 /// fails the request for trace stamping alone).
-pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -> ApiResult<()> {
+pub(crate) async fn enqueue_start_scoped(
+    state: &AppState,
+    scope: &nebula_storage_port::Scope,
+    execution_id: ExecutionId,
+) -> ApiResult<()> {
     let w3c_trace_context = w3c_trace_context_for_control_queue();
     tracing::debug!(
         execution_id = %execution_id,
@@ -413,35 +407,14 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
         has_trace_context = w3c_trace_context.is_some(),
         "execution: enqueue Start on control queue"
     );
-    let entry = ControlQueueEntry {
-        id: Uuid::new_v4().as_bytes().to_vec(),
-        execution_id: execution_id.to_string().into_bytes(),
-        command: ControlCommand::Start,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Pending".to_string(),
-        processed_by: None,
-        processed_at: None,
-        error_message: None,
-        reclaim_count: 0,
-        w3c_trace_context,
-    };
-    state.control_queue_repo.enqueue(&entry).await.map_err(|e| {
-        use nebula_storage::StorageError;
-        match &e {
-            StorageError::Internal(_) | StorageError::Connection(_) => {
-                ApiError::ServiceUnavailable(format!(
-                    "Execution {execution_id} persisted but control-queue backend is \
-                     unavailable — engine will not see Start signal \
-                     (canon §13 step 6, §12.2 orphan): {e}"
-                ))
-            },
-            _ => ApiError::Internal(format!(
-                "Execution {execution_id} persisted but failed to enqueue Start signal \
-                 (canon §12.2 orphan — caller should retry): {e}"
-            )),
-        }
-    })
+    state
+        .enqueue_control_scoped(
+            scope,
+            ControlCommand::Start,
+            execution_id,
+            w3c_trace_context,
+        )
+        .await
 }
 
 /// Cancel execution
@@ -468,21 +441,20 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
 )]
 pub async fn cancel_execution(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionResponse>> {
     use nebula_core::ExecutionId;
 
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Fetch current execution state from repository
+    // Fetch current execution state scoped to the caller's tenant
     let state_result = state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
+        .execution_state_scoped(&scope, execution_id, "get")
+        .await?;
 
     // Check if execution exists
     let (version, mut execution_state) =
@@ -541,10 +513,8 @@ pub async fn cancel_execution(
     // wrapper is available across ExecutionRepo and ControlQueueRepo.
     // The handler fails loudly on enqueue failure so the caller can retry.
     let transition_result = state
-        .execution_repo
-        .transition(execution_id, version, execution_state.clone())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
+        .cas_transition_scoped(&scope, execution_id, version, execution_state.clone())
+        .await?;
 
     if !transition_result {
         return Err(ApiError::Conflict(
@@ -570,49 +540,17 @@ pub async fn cancel_execution(
         has_trace_context = w3c_trace_context.is_some(),
         "execution: enqueue Cancel on control queue"
     );
-    let entry = ControlQueueEntry {
-        id: Uuid::new_v4().as_bytes().to_vec(),
-        execution_id: execution_id.to_string().into_bytes(),
-        command: ControlCommand::Cancel,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Pending".to_string(),
-        processed_by: None,
-        processed_at: None,
-        error_message: None,
-        reclaim_count: 0,
-        w3c_trace_context,
-    };
+    // Canon §13 step 6 503-vs-500 policy is centralized in
+    // `enqueue_control`; the cancel row is already committed above, so
+    // a failed enqueue still surfaces as the orphan-signal error.
     state
-        .control_queue_repo
-        .enqueue(&entry)
-        .await
-        .map_err(|e| {
-            // Canon §13 step 6: when the control-queue / orchestration backend is
-            // intentionally absent or unreachable, return 503 Service Unavailable
-            // so the caller knows the infrastructure is down (not a logic bug).
-            //
-            // `StorageError::Internal` is the sentinel returned by the
-            // `AlwaysFailControlQueueRepo` test double, and is also the natural
-            // variant for a backend that fails to start or has no driver wired up.
-            // `StorageError::Connection` covers TCP/socket-level failures.
-            // All other variants (Conflict, NotFound, etc.) indicate unexpected
-            // write failures and fall back to 500 Internal.
-            use nebula_storage::StorageError;
-            match &e {
-                StorageError::Internal(_) | StorageError::Connection(_) => {
-                    ApiError::ServiceUnavailable(format!(
-                        "Execution {execution_id} cancelled in DB but control-queue backend is \
-                         unavailable — orchestration absent (canon §13 step 6, §12.2 \
-                         orphan): {e}"
-                    ))
-                },
-                _ => ApiError::Internal(format!(
-                    "Execution {execution_id} cancelled in DB but failed to enqueue Cancel signal \
-                     (canon §12.2 orphan — caller should retry): {e}"
-                )),
-            }
-        })?;
+        .enqueue_control_scoped(
+            &scope,
+            ControlCommand::Cancel,
+            execution_id,
+            w3c_trace_context,
+        )
+        .await?;
 
     // Extract fields from updated execution state
     let workflow_id = execution_state
@@ -670,25 +608,21 @@ pub async fn cancel_execution(
 /// - [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn get_execution_logs(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionLogsResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Verify the execution exists before loading the journal.
+    // Verify the execution exists in the caller's tenant before loading
+    // the journal.
     state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {e}")))?
+        .execution_state_scoped(&scope, execution_id, "check")
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
-    let logs = state
-        .execution_repo
-        .get_journal(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load execution logs: {e}")))?;
+    let logs = state.execution_journal_scoped(&scope, execution_id).await?;
 
     Ok(Json(ExecutionLogsResponse {
         execution_id: id,
@@ -734,21 +668,22 @@ pub async fn get_execution_logs(
 )]
 pub async fn terminate_execution(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionResponse>> {
     use nebula_core::ExecutionId;
 
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Fetch current execution state from repository
+    // Fetch current execution state through the scoped storage port
+    // (same accessor the port-rewired `get_execution` / `cancel_execution`
+    // use), confined to the caller's tenant.
     let state_result = state
-        .execution_repo
-        .get_state(execution_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
+        .execution_state_scoped(&scope, execution_id, "get")
+        .await?;
 
     // Check if execution exists
     let (version, mut execution_state) =
@@ -812,10 +747,8 @@ pub async fn terminate_execution(
     // wrapper is available across ExecutionRepo and ControlQueueRepo.
     // The handler fails loudly on enqueue failure so the caller can retry.
     let transition_result = state
-        .execution_repo
-        .transition(execution_id, version, execution_state.clone())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to terminate execution: {e}")))?;
+        .cas_transition_scoped(&scope, execution_id, version, execution_state.clone())
+        .await?;
 
     if !transition_result {
         return Err(ApiError::Conflict(
@@ -843,49 +776,19 @@ pub async fn terminate_execution(
         has_trace_context = w3c_trace_context.is_some(),
         "execution: enqueue Terminate on control queue"
     );
-    let entry = ControlQueueEntry {
-        id: Uuid::new_v4().as_bytes().to_vec(),
-        execution_id: execution_id.to_string().into_bytes(),
-        command: ControlCommand::Terminate,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Pending".to_string(),
-        processed_by: None,
-        processed_at: None,
-        error_message: None,
-        reclaim_count: 0,
-        w3c_trace_context,
-    };
+    // Canon §13 step 6 503-vs-500 policy is centralized in
+    // `enqueue_control` (port-scoped `ControlQueue::enqueue` →
+    // typed-ULID `ControlMsg`); the terminate row is already committed
+    // above, so a failed enqueue still surfaces as the orphan-signal
+    // error (canon §12.2).
     state
-        .control_queue_repo
-        .enqueue(&entry)
-        .await
-        .map_err(|e| {
-            // Canon §13 step 6: when the control-queue / orchestration backend is
-            // intentionally absent or unreachable, return 503 Service Unavailable
-            // so the caller knows the infrastructure is down (not a logic bug).
-            //
-            // `StorageError::Internal` is the sentinel returned by the
-            // `AlwaysFailControlQueueRepo` test double, and is also the natural
-            // variant for a backend that fails to start or has no driver wired up.
-            // `StorageError::Connection` covers TCP/socket-level failures.
-            // All other variants (Conflict, NotFound, etc.) indicate unexpected
-            // write failures and fall back to 500 Internal.
-            use nebula_storage::StorageError;
-            match &e {
-                StorageError::Internal(_) | StorageError::Connection(_) => {
-                    ApiError::ServiceUnavailable(format!(
-                        "Execution {execution_id} terminated in DB but control-queue backend is \
-                         unavailable — orchestration absent (canon §13 step 6, §12.2 \
-                         orphan): {e}"
-                    ))
-                },
-                _ => ApiError::Internal(format!(
-                    "Execution {execution_id} terminated in DB but failed to enqueue Terminate \
-                     signal (canon §12.2 orphan — caller should retry): {e}"
-                )),
-            }
-        })?;
+        .enqueue_control_scoped(
+            &scope,
+            ControlCommand::Terminate,
+            execution_id,
+            w3c_trace_context,
+        )
+        .await?;
 
     // Extract fields from updated execution state
     let workflow_id = execution_state

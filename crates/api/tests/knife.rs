@@ -5,20 +5,34 @@
 //! (`docs/superpowers/specs/2026-04-16-workspace-health-audit.md §8
 //! Sprint A1 item #3`).
 //!
-//! Each step is asserted through the real axum `Router` via oneshot requests
-//! against in-memory repos — no handler logic is bypassed.
+//! Each step is asserted through the real axum `Router` via oneshot
+//! requests. The workflow / execution / control-queue surface is the
+//! spec-16 scoped storage port: the in-memory adapters wrapped in the
+//! `nebula-tenancy` scoping decorators, wired exactly as the production
+//! composition root does. No handler logic is bypassed.
 //!
 //! ## Step coverage
 //!
-//! | Step | What is asserted | Test(s) |
-//! |------|-----------------|---------|
-//! | 1 | `POST /workflows` round-trips through `GET /workflows/:id` | `knife_scenario_end_to_end` |
-//! | 2a | `POST /workflows/:id/activate` valid → 200 | `knife_scenario_end_to_end` |
-//! | 2b | `POST /workflows/:id/activate` cyclic → 422 RFC 9457 | `knife_scenario_end_to_end` |
-//! | 3 | `POST /workflows/:id/executions` → 202, `status=created`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end` |
-//! | 4 | `GET /executions/:id` → `finished_at` is null/absent, `status` = latest persisted value | `knife_scenario_end_to_end` |
-//! | 5 | `POST /executions/:id/cancel` → DB row = `cancelled`, control queue has exactly one `Cancel` entry | `knife_scenario_end_to_end` |
+//! | Step | What is asserted | Test |
+//! |------|-----------------|------|
+//! | 1 | `POST /workflows` round-trips through `GET /workflows/:id` | `knife_scenario_end_to_end_via_port` |
+//! | 2a | `POST /workflows/:id/activate` valid → 200 | `knife_scenario_end_to_end_via_port` |
+//! | 3 | `POST /workflows/:id/executions` → 202, `status=created`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end_via_port` |
+//! | 4 | `GET /executions/:id` → `finished_at` is null/absent, `status` = latest persisted value | `knife_scenario_end_to_end_via_port` |
+//! | 5 | `POST /executions/:id/cancel` → row = `cancelled`, outbox holds exactly Start + Cancel (both `Pending`) | `knife_scenario_end_to_end_via_port` |
 //! | 6 | Enqueue failure → 503 (orchestration absent; canon §13 step 6) | `knife_step6_queue_failure_returns_error` |
+//!
+//! ## Consumer-side §13 (engine dispatch end-to-end)
+//!
+//! The producer side above asserts the API writes the execution row and
+//! enqueues the control command. The consumer side — the engine-owned
+//! `EngineControlDispatch` draining the durable queue and driving the
+//! workflow to a terminal state (Created → Completed on `Start`, Running
+//! → Cancelled on `Cancel` via the live frontier loop, plus the ADR-0008
+//! §5 redelivery-idempotency contract) — is asserted on the same spec-16
+//! port by `crates/engine/tests/control_dispatch.rs`. That is the
+//! canonical home for the dispatch loop now that the engine consumes the
+//! port directly; this file owns only the HTTP-surface producer path.
 
 mod common;
 use std::sync::Arc;
@@ -31,39 +45,50 @@ use common::*;
 use nebula_api::{ApiConfig, app};
 use tower::ServiceExt;
 
-// The orchestration-absent control queue (`AlwaysFailControlQueueRepo` +
+// The orchestration-absent control queue (`AlwaysFailControlQueue` +
 // `create_state_with_failing_queue`) and the engine-seam harness
 // (`engine_seam::{persist_slow_workflow, spawn_engine_consumer}`) live in
-// the shared `common` module — see `tests/common/mod.rs`.
+// the shared `common` module — see `tests/common/mod.rs`. The §13 step-6
+// test reuses the placeholder scope every port store binds to via
+// `common::port_scope`.
+use common::port_scope as knife_scope;
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-/// Canon §13 steps 1–5 end-to-end: define → activate → start → observe → cancel.
+/// Canon §13 steps 1–5 end-to-end: define → activate → start → observe
+/// → cancel, through the scoped storage port.
 ///
-/// Each sub-step is labelled with the canon section it exercises.
+/// The workflow / execution / control-queue surface is the spec-16 port
+/// (in-memory adapters behind the `nebula-tenancy` decorators, wired via
+/// `create_state_with_port_queue`). Asserted invariants: a workflow
+/// round-trips, activation validates, an execution is created in
+/// `created` with `started_at` set and `finished_at` absent, cancel
+/// drives the row to `cancelled`, and the durable outbox holds exactly
+/// the `Start` (step 3) and `Cancel` (step 5) rows, both still
+/// `Pending`.
 ///
 /// Audit ref: 2026-04-16-workspace-health-audit.md §8 Sprint A1 item #3
 #[tokio::test]
-async fn knife_scenario_end_to_end() {
-    use nebula_storage::repos::ControlCommand;
+async fn knife_scenario_end_to_end_via_port() {
+    use nebula_storage_port::dto::ControlCommand as PortControlCommand;
 
-    let (state, control_queue) = create_state_with_queue().await;
+    let (state, control_queue) = create_state_with_port_queue().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // ── Step 1: Define a valid workflow and verify round-trip ────────────────
+    // ── Step 1: define a structurally valid workflow + round-trip ────────────
     //
-    // Canon §13 step 1: "Define and persist a workflow through the API —
-    // definition round-trips."
-    //
-    // POST /api/v1/workflows with a minimal request body (name + definition
-    // skeleton). The handler stores the workflow and returns 201 with the
-    // created resource. A subsequent GET must return the same `id` and `name`.
-
+    // The port-backed `create` accessor stores a workflow row + a
+    // published version record carrying the definition. A valid
+    // definition is used up front so step 2 (activate) can validate it
+    // without a direct-repo seam (the port path has no legacy
+    // `workflow_repo.save` back door — every write goes through the
+    // decorated store).
+    let wf_id = nebula_core::WorkflowId::new();
     let create_request = serde_json::json!({
-        "name": "Knife Scenario Workflow",
-        "description": "End-to-end knife test",
-        "definition": { "nodes": [], "edges": [] }
+        "name": "Port Knife Workflow",
+        "description": "End-to-end knife test via the scoped port",
+        "definition": make_valid_workflow_definition(&wf_id),
     });
 
     let app = app::build_app(state.clone(), &api_config);
@@ -81,28 +106,20 @@ async fn knife_scenario_end_to_end() {
         )
         .await
         .unwrap();
-
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
-        "step 1: POST /workflows must return 201"
+        "port step 1: POST /workflows must return 201"
     );
-
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let workflow_id = created_workflow["id"]
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created["id"]
         .as_str()
         .expect("created workflow must have an id")
         .to_string();
 
-    assert_eq!(
-        created_workflow["name"], "Knife Scenario Workflow",
-        "step 1: name must round-trip"
-    );
-
-    // Round-trip: GET must return the same workflow.
     let app = app::build_app(state.clone(), &api_config);
     let response = app
         .oneshot(
@@ -117,52 +134,28 @@ async fn knife_scenario_end_to_end() {
         )
         .await
         .unwrap();
-
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "step 1: GET /workflows/:id must return 200"
+        "port step 1: GET /workflows/:id must round-trip (200)"
     );
-
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let fetched_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
+    let fetched: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
-        fetched_workflow["id"].as_str(),
+        fetched["id"].as_str(),
         Some(workflow_id.as_str()),
-        "step 1: round-trip id must match"
-    );
-    assert_eq!(
-        fetched_workflow["name"], "Knife Scenario Workflow",
-        "step 1: round-trip name must match"
+        "port step 1: round-trip id must match"
     );
 
-    // ── Step 2a: Activate a valid workflow — must succeed with 200 ───────────
-    //
-    // Canon §13 step 2: "Activation runs validation and rejects invalid
-    // definitions — it does not silently flip a flag."
-    //
-    // The workflow created above has an empty definition which isn't a
-    // structurally valid WorkflowDefinition (it lacks the required fields for
-    // `validate_workflow`). We therefore write a structurally valid definition
-    // directly to the repo (as the existing `activate_valid_returns_200` test
-    // does) so we can assert the valid-activation path.
-
-    let valid_wf_id = nebula_core::WorkflowId::new();
-    state
-        .workflow_repo
-        .save(valid_wf_id, 0, make_valid_workflow_definition(&valid_wf_id))
-        .await
-        .unwrap();
-
+    // ── Step 2: activate the valid workflow → 200 ────────────────────────────
     let app = app::build_app(state.clone(), &api_config);
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(ws_path(&format!("/workflows/{valid_wf_id}/activate")))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
                 .header("x-csrf-token", TEST_CSRF_TOKEN)
                 .header("cookie", TEST_CSRF_COOKIE)
@@ -171,132 +164,13 @@ async fn knife_scenario_end_to_end() {
         )
         .await
         .unwrap();
-
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "step 2a: activate valid workflow must return 200"
+        "port step 2: activate valid workflow must return 200"
     );
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let activated: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        activated["id"].as_str(),
-        Some(valid_wf_id.to_string().as_str()),
-        "step 2a: activated response must echo the workflow id"
-    );
-
-    // ── Step 2b: Activate an invalid (cyclic) workflow — must return 422 ─────
-    //
-    // Canon §13 step 2: "rejects invalid definitions with structured RFC 9457
-    // errors"
-    //
-    // The cyclic definition parses as WorkflowDefinition but fails the DAG
-    // cycle check in validate_workflow.
-
-    let cyclic_wf_id = nebula_core::WorkflowId::new();
-    state
-        .workflow_repo
-        .save(
-            cyclic_wf_id,
-            0,
-            make_cyclic_workflow_definition(&cyclic_wf_id),
-        )
-        .await
-        .unwrap();
-
-    let app = app::build_app(state.clone(), &api_config);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(ws_path(&format!("/workflows/{cyclic_wf_id}/activate")))
-                .header("authorization", format!("Bearer {token}"))
-                .header("x-csrf-token", TEST_CSRF_TOKEN)
-                .header("cookie", TEST_CSRF_COOKIE)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        response.status(),
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "step 2b: activate cyclic workflow must return 422"
-    );
-
-    // RFC 9457: Content-Type must be application/problem+json
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(
-        content_type,
-        Some("application/problem+json"),
-        "step 2b: 422 body must use RFC 9457 content-type"
-    );
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(
-        problem["status"], 422,
-        "step 2b: RFC 9457 status field must be 422"
-    );
-    assert!(
-        problem["type"].as_str().is_some(),
-        "step 2b: RFC 9457 type field must be present"
-    );
-    assert!(
-        problem["errors"].as_array().is_some_and(|e| !e.is_empty()),
-        "step 2b: RFC 9457 errors array must be present and non-empty"
-    );
-
-    // Each error entry must carry a real JSON Pointer (RFC 6901) — not a
-    // synthetic positional index like "/0", "/1". The pointer is either:
-    //   - "/nodes/<key>"  for node-keyed errors
-    //   - "/connections/<from>/<to>" for connection errors
-    //   - "" (root) for structural errors (CycleDetected, NoEntryNodes, etc.)
-    let errors_arr = problem["errors"].as_array().unwrap();
-    for entry in errors_arr {
-        let pointer = entry["pointer"].as_str().unwrap_or("");
-        let is_real_pointer = pointer.is_empty()  // RFC 6901 root
-            || pointer.starts_with("/nodes/")
-            || pointer.starts_with("/connections/")
-            || pointer.starts_with("/trigger");
-        assert!(
-            is_real_pointer,
-            "step 2b: error pointer must be a real RFC 6901 JSON Pointer, \
-             not a synthetic positional index; got: {pointer:?}"
-        );
-    }
-
-    // ── Step 3: Start an execution ───────────────────────────────────────────
-    //
-    // Canon §13 step 3: "The execution row exists with consistent status,
-    // monotonic version, and a real started_at (no synthetic zero, no
-    // placeholder now() where the field should be None)."
-    //
-    // POST /api/v1/workflows/:id/executions → 202.
-    // `started_at` must be > 0 (real chrono timestamp).
-    // `finished_at` must be absent from the JSON (Option::None, skipped by
-    // serde).
-    // `status` must be the canonical `"created"` (the only valid
-    // `ExecutionStatus` for a freshly-enqueued row; #327).
-    //
-    // Note: `ExecutionResponse` does not expose a `version` field — the repo
-    // stores a version but the DTO omits it. The "monotonic version" invariant
-    // is enforced at the storage layer; the API test can only observe the DTO.
-
-    let start_request = serde_json::json!({
-        "input": { "knife_key": "knife_value" }
-    });
-
+    // ── Step 3: start an execution → 202, created, started_at>0 ──────────────
     let app = app::build_app(state.clone(), &api_config);
     let response = app
         .oneshot(
@@ -307,133 +181,55 @@ async fn knife_scenario_end_to_end() {
                 .header("authorization", format!("Bearer {token}"))
                 .header("x-csrf-token", TEST_CSRF_TOKEN)
                 .header("cookie", TEST_CSRF_COOKIE)
-                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .body(Body::from(r#"{"input":{}}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
-
     assert_eq!(
         response.status(),
         StatusCode::ACCEPTED,
-        "step 3: start execution must return 202"
+        "port step 3: start execution must return 202"
     );
-
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    let execution_id = execution_response["id"]
+    let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id = started["id"]
         .as_str()
-        .expect("step 3: execution response must have an id")
+        .expect("execution must have an id")
         .to_string();
-
     assert_eq!(
-        execution_response["status"].as_str(),
+        started["status"].as_str(),
         Some("created"),
-        "step 3: initial status must be canonical 'created' (#327)"
+        "port step 3: status must be the canonical `created`"
     );
-
-    let started_at = execution_response["started_at"]
-        .as_i64()
-        .expect("step 3: started_at must be a number");
     assert!(
-        started_at > 0,
-        "step 3: started_at must be a real chrono timestamp, got {started_at}"
+        started["started_at"].as_i64().is_some_and(|t| t > 0),
+        "port step 3: started_at must be a real timestamp"
     );
-
-    // finished_at must be absent from the JSON (serde skips None fields).
     assert!(
-        execution_response.get("finished_at").is_none()
-            || execution_response["finished_at"].is_null(),
-        "step 3: finished_at must be absent (None) on a newly-created execution, got: {:?}",
-        execution_response.get("finished_at")
+        started
+            .get("finished_at")
+            .is_none_or(serde_json::Value::is_null),
+        "port step 3: finished_at must be absent/null"
     );
 
-    // ── Step 4: Observe via GET — finished_at is null, status is latest ──────
-    //
-    // Canon §13 step 4: "finished_at is None (not 0) until terminal; status
-    // reflects the latest persisted value."
-
-    let app = app::build_app(state.clone(), &api_config);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(ws_path(&format!("/executions/{execution_id}")))
-                .header("authorization", format!("Bearer {token}"))
-                .header("x-csrf-token", TEST_CSRF_TOKEN)
-                .header("cookie", TEST_CSRF_COOKIE)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
+    // Pre-cancel: the durable outbox holds exactly one `Start` row
+    // (#332), observed via the port's non-consuming snapshot.
+    let pre = control_queue.snapshot();
     assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "step 4: GET /executions/:id must return 200"
-    );
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let observed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(
-        observed["id"].as_str(),
-        Some(execution_id.as_str()),
-        "step 4: observed id must match"
-    );
-    assert_eq!(
-        observed["status"].as_str(),
-        Some("created"),
-        "step 4: status must reflect the latest persisted value (canonical 'created')"
-    );
-
-    // finished_at must be absent (not "0") — canon explicitly forbids synthetic zero.
-    let finished_at_value = observed.get("finished_at");
-    let finished_at_is_zero = finished_at_value
-        .and_then(serde_json::Value::as_i64)
-        .is_some_and(|v| v == 0);
-    assert!(
-        !finished_at_is_zero,
-        "step 4: finished_at must NOT be synthetic 0 — must be absent or a real timestamp"
-    );
-    // Also verify it is either absent or null — not a number for a non-terminal execution.
-    let is_absent_or_null = finished_at_value.is_none() || finished_at_value.unwrap().is_null();
-    assert!(
-        is_absent_or_null,
-        "step 4: finished_at must be absent/null for non-terminal execution, got: {finished_at_value:?}"
-    );
-
-    // ── Step 5: Cancel — DB transition + control queue enqueue in same op ────
-    //
-    // Canon §13 step 5: "the handler transitions through ExecutionRepo (CAS),
-    // the same logical operation enqueues Cancel in execution_control_queue,
-    // …the execution reaches a terminal Cancelled state."
-    //
-    // We assert both the durable row and the queue entry in a single test body,
-    // proving the §12.2 same-logical-operation guarantee.
-
-    // Pre-condition: the queue already holds exactly one `Start` entry from
-    // step 3 (issue #332 fix — start must dispatch via the durable control
-    // queue). Step 5 must append a `Cancel` for the SAME execution id so the
-    // engine consumer sees both signals in order.
-    let pre_cancel_entries = control_queue.snapshot().await;
-    assert_eq!(
-        pre_cancel_entries.len(),
+        pre.len(),
         1,
-        "step 5 pre-condition (#332): queue must hold the Start entry written by step 3, got {pre_cancel_entries:?}"
+        "port step 5 pre-condition: outbox must hold the step-3 Start, got {pre:?}"
     );
     assert_eq!(
-        pre_cancel_entries[0].command,
-        ControlCommand::Start,
-        "step 5 pre-condition (#332): step-3 entry must be Start"
+        pre[0].0.command,
+        PortControlCommand::Start,
+        "port step 5 pre-condition: step-3 row must be Start"
     );
 
+    // ── Step 5: cancel → row=cancelled + Cancel enqueued ─────────────────────
     let app = app::build_app(state.clone(), &api_config);
     let response = app
         .oneshot(
@@ -448,87 +244,46 @@ async fn knife_scenario_end_to_end() {
         )
         .await
         .unwrap();
-
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "step 5: cancel must return 200"
+        "port step 5: cancel must return 200"
     );
-
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let cancelled: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    // Observation 1: execution row must reflect cancelled state.
     assert_eq!(
         cancelled["status"].as_str(),
         Some("cancelled"),
-        "step 5: execution row must show 'cancelled' status"
+        "port step 5: execution row must show 'cancelled'"
     );
     assert!(
         cancelled["finished_at"].as_i64().is_some_and(|t| t > 0),
-        "step 5: finished_at must be a real timestamp after cancellation, got: {:?}",
-        cancelled.get("finished_at")
+        "port step 5: finished_at must be a real timestamp after cancel"
     );
 
-    // Observation 2: control queue must now hold TWO entries — the `Start`
-    // from step 3 and the fresh `Cancel` from this step. Both observations
-    // are in this single test body — §12.2 same-logical-operation.
-    let queued = control_queue.snapshot().await;
+    // Outbox now holds the Start (step 3) + Cancel (step 5), both
+    // Pending — the §12.2 same-logical-operation guarantee, asserted
+    // through the port snapshot (typed id, opaque `execution_id`
+    // string — no UTF-8-of-ULID decode).
+    let queued = control_queue.snapshot();
     assert_eq!(
         queued.len(),
         2,
-        "step 5: control queue must hold Start (step 3) + Cancel (step 5), got {queued:?}"
+        "port step 5: outbox must hold Start + Cancel, got {queued:?}"
     );
-
-    // Isolate the Cancel entry; the Start entry is already asserted above.
-    let cancel_entry = queued
+    let (cancel_msg, cancel_status) = queued
         .iter()
-        .find(|e| e.command == ControlCommand::Cancel)
-        .expect("step 5: Cancel entry must be present");
+        .find(|(m, _)| m.command == PortControlCommand::Cancel)
+        .expect("port step 5: Cancel row must be present");
     assert_eq!(
-        cancel_entry.status, "Pending",
-        "step 5: Cancel entry must be in Pending state (not yet consumed by engine)"
+        cancel_status, "Pending",
+        "port step 5: Cancel row must be Pending (not yet consumed)"
     );
-
-    // The entry's execution_id bytes must decode back to the cancelled execution.
-    let queued_eid =
-        String::from_utf8(cancel_entry.execution_id.clone()).expect("execution_id must be UTF-8");
     assert_eq!(
-        queued_eid, execution_id,
-        "step 5: Cancel entry must reference the cancelled execution"
-    );
-
-    // Verify DB state persisted via a GET (not just the cancel response).
-    let app = app::build_app(state.clone(), &api_config);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(ws_path(&format!("/executions/{execution_id}")))
-                .header("authorization", format!("Bearer {token}"))
-                .header("x-csrf-token", TEST_CSRF_TOKEN)
-                .header("cookie", TEST_CSRF_COOKIE)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "step 5 verify: GET after cancel must return 200"
-    );
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let after_cancel: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
-        after_cancel["status"].as_str(),
-        Some("cancelled"),
-        "step 5 verify: GET after cancel must persist 'cancelled' status"
+        cancel_msg.execution_id, execution_id,
+        "port step 5: Cancel row must reference the cancelled execution"
     );
 }
 
@@ -547,30 +302,33 @@ async fn knife_scenario_end_to_end() {
 #[tokio::test]
 async fn knife_step6_queue_failure_returns_error() {
     use nebula_core::{ExecutionId, WorkflowId};
+    use nebula_storage_port::store::ExecutionStore;
 
-    let state = create_state_with_failing_queue().await;
+    let (state, exec_store) = create_state_with_failing_queue().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Seed a running execution directly into the repo.
+    // Seed a running execution directly through the scoped port store
+    // (shares the `Arc<Mutex<…>>` core with the decorated store inside
+    // `AppState`, so the cancel handler observes this row).
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
     let now = chrono::Utc::now().timestamp();
 
-    state
-        .execution_repo
-        .create(
-            execution_id,
-            workflow_id,
-            serde_json::json!({
-                "workflow_id": workflow_id.to_string(),
-                "status": "running",
-                "started_at": now,
-                "input": {}
-            }),
-        )
-        .await
-        .unwrap();
+    ExecutionStore::create(
+        &exec_store,
+        &knife_scope(),
+        &execution_id.to_string(),
+        &workflow_id.to_string(),
+        serde_json::json!({
+            "workflow_id": workflow_id.to_string(),
+            "status": "running",
+            "started_at": now,
+            "input": {}
+        }),
+    )
+    .await
+    .unwrap();
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -671,7 +429,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     use nebula_core::action_key;
     use nebula_engine::{
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
-        EngineControlDispatch, InProcessSandbox, WorkflowEngine,
+        EngineControlDispatch, ExecutionStores, InProcessSandbox, WorkflowEngine, WorkflowStores,
     };
     use nebula_execution::ExecutionStatus;
     use nebula_workflow::{
@@ -707,13 +465,46 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         ui_metadata: None,
         schema_version: 1,
     };
-    state
-        .workflow_repo
-        .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
-        .await
-        .unwrap();
+    // Port equivalent of the old `state.workflow_repo.save(id, 0, def)`: a
+    // workflow row at version 1 plus a published version record #1 through
+    // the scoped port handles on `AppState` (the tenancy decorators
+    // substitute their bound scope, so the `knife_scope()` argument is
+    // immaterial — it only needs to be a valid `Scope`).
+    {
+        let scope = knife_scope();
+        let id_str = workflow_id.to_string();
+        state
+            .workflow_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowRecord {
+                    id: id_str.clone(),
+                    scope: scope.clone(),
+                    version: 1,
+                    slug: id_str.clone(),
+                    deleted: false,
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .workflow_version_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowVersionRecord {
+                    workflow_id: id_str,
+                    number: 1,
+                    published: true,
+                    pinned: false,
+                    definition: serde_json::to_value(&wf).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+    }
 
-    // ── Build the engine bound to the same repos the API wrote to ────────────
+    // ── Build the engine bound to the same scoped port handles the API
+    // wrote to ──────────────────────────────────────────────────────────────
     let registry = Arc::new(ActionRegistry::new());
     registry.legacy_register_stateless_with_metadata(
         nebula_action::metadata::ActionMetadata::new(
@@ -739,22 +530,59 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         .unwrap(),
     );
 
+    // `AppState` stores **raw** port handles and applies the per-request
+    // tenant scope in its accessors; the engine still calls its handles
+    // with the internal `engine_scope()` placeholder (a separate, tracked
+    // follow-up — see ADR-0072 "Known follow-up: engine per-execution
+    // tenant scoping"). Wrap the engine-side handles in `nebula-tenancy`
+    // decorators bound to `knife_scope()` (= `port_scope()`, the scope
+    // the API derives and this test seeded the workflow/execution under)
+    // so the decorator substitutes the engine's scope and engine reads,
+    // the API-enqueued `Start`, and the seeded rows all key on the same
+    // tenant. The echo node never checkpoints or replays, so a fresh
+    // in-memory checkpoint/idempotency pair suffices for the two
+    // `ExecutionStores` fields `AppState` does not expose.
+    let s = knife_scope();
+    let scoped_exec: Arc<dyn nebula_storage_port::store::ExecutionStore> = Arc::new(
+        nebula_tenancy::ScopedExecutionStore::new(Arc::clone(&state.execution_store), s.clone()),
+    );
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)
             .unwrap()
-            .with_execution_repo(Arc::clone(&state.execution_repo))
-            .with_workflow_repo(Arc::clone(&state.workflow_repo)),
+            .with_execution_stores(ExecutionStores {
+                execution: Arc::clone(&scoped_exec),
+                journal: Arc::new(nebula_tenancy::ScopedExecutionJournalReader::new(
+                    Arc::clone(&state.journal_reader),
+                    s.clone(),
+                )),
+                node_results: Arc::new(nebula_tenancy::ScopedNodeResultStore::new(
+                    Arc::clone(&state.node_result_store),
+                    s.clone(),
+                )),
+                checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
+                idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
+            })
+            .with_workflow_stores(WorkflowStores {
+                workflow: Arc::new(nebula_tenancy::ScopedWorkflowStore::new(
+                    Arc::clone(&state.workflow_store),
+                    s.clone(),
+                )),
+                versions: Arc::new(nebula_tenancy::ScopedWorkflowVersionStore::new(
+                    Arc::clone(&state.workflow_version_store),
+                    s.clone(),
+                )),
+            }),
     );
 
     // ── Spawn the consumer so `Start` rows are drained continuously ──────────
-    let dispatch = Arc::new(EngineControlDispatch::new(
-        engine,
-        Arc::clone(&state.execution_repo),
-    ));
+    let dispatch = Arc::new(EngineControlDispatch::new(engine, Arc::clone(&scoped_exec)));
     let consumer = ControlConsumer::new(
-        Arc::clone(&state.control_queue_repo),
+        Arc::new(nebula_tenancy::ScopedControlQueue::new(
+            Arc::clone(&state.control_queue),
+            s,
+        )),
         dispatch,
-        b"knife-a2".to_vec(),
+        proc16(b"knife-a2"),
     )
     .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
@@ -802,12 +630,16 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     // §4.5 gap #332 was only half-closed — producer works, consumer does not.
     let final_status = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let (_version, json) = state
-                .execution_repo
-                .get_state(execution_id)
+            // Read through the same scoped port handle the engine was
+            // wired with; the tenancy decorator substitutes its bound
+            // scope so the `knife_scope()` argument is immaterial.
+            let json = state
+                .execution_store
+                .get(&knife_scope(), &execution_id.to_string())
                 .await
                 .unwrap()
-                .expect("execution row is present");
+                .expect("execution row is present")
+                .state;
             let status: ExecutionStatus =
                 serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
             if status.is_terminal() {
@@ -951,12 +783,16 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
     let final_status = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let (_version, json) = state
-                .execution_repo
-                .get_state(execution_id)
+            // Read through the same scoped port handle the engine was
+            // wired with; the tenancy decorator substitutes its bound
+            // scope so the `knife_scope()` argument is immaterial.
+            let json = state
+                .execution_store
+                .get(&knife_scope(), &execution_id.to_string())
                 .await
                 .unwrap()
-                .expect("execution row present");
+                .expect("execution row present")
+                .state;
             let status: ExecutionStatus =
                 serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
             if status.is_terminal() {

@@ -81,17 +81,7 @@ pub enum ApiError {
     /// Storage error
     #[classify(category = "internal", code = "API:STORAGE")]
     #[error("Storage error: {0}")]
-    Storage(#[from] nebula_storage::StorageError),
-
-    /// Workflow repository error
-    #[classify(category = "internal", code = "API:WORKFLOW_REPO")]
-    #[error("Workflow repository error: {0}")]
-    WorkflowRepo(#[from] nebula_storage::WorkflowRepoError),
-
-    /// Execution repository error
-    #[classify(category = "internal", code = "API:EXECUTION_REPO")]
-    #[error("Execution repository error: {0}")]
-    ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
+    Storage(#[from] nebula_storage_port::StorageError),
 
     /// Invalid workflow definition — structurally valid JSON but semantically
     /// invalid per `nebula_workflow::validate_workflow` (RFC 9457 **422**).
@@ -175,6 +165,108 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:NOT_IMPLEMENTED")]
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+}
+
+/// api ↔ legacy-storage seam: classify a `nebula_storage::StorageError`
+/// onto the HTTP contract.
+///
+/// `ApiError::Storage` bridges the **spec-16 port** error
+/// ([`nebula_storage_port::StorageError`]) — the canonical surface every
+/// port-migrated path returns. The resource-catalog path is the one
+/// surface still on the **retained legacy** `nebula_storage::repos::ResourceRepo`
+/// (deliberately not migrated to the row-model port — ADR-0072), which
+/// returns the legacy `nebula_storage::StorageError`. This is the seam
+/// adapter for that single path: a direct legacy→`ApiError` classification
+/// (NotFound → 404, Conflict/Duplicate → 409, everything else → opaque
+/// 500 with no internal-detail leak per ADR-0028 §7) — **not** a
+/// back-compat re-export of the deleted legacy surface, and **not** a
+/// re-route through the port error type.
+impl From<nebula_storage::StorageError> for ApiError {
+    fn from(err: nebula_storage::StorageError) -> Self {
+        use nebula_storage::StorageError as Se;
+        match err {
+            Se::NotFound { entity, id } => Self::NotFound(format!("{entity} not found: {id}")),
+            Se::Conflict {
+                entity,
+                id,
+                expected,
+                actual,
+            } => Self::Conflict(format!(
+                "{entity} {id}: version conflict (expected {expected}, actual {actual}); \
+                 re-read and retry"
+            )),
+            Se::Duplicate { entity, detail } => {
+                Self::Conflict(format!("duplicate {entity}: {detail}"))
+            },
+            // Lease / timeout / serialization / connection / configuration /
+            // internal are genuine backend faults — the opaque
+            // `Self::Storage` arm (still a 500 with no internal detail
+            // leaked to the client per ADR-0028 §7). Mapped through the
+            // port `StorageError` so the variant is preserved end-to-end
+            // (`map_resource_create_storage_error`'s contract: a
+            // non-caller fault stays the opaque `Storage` variant, never
+            // a catch-all `Internal`).
+            other => Self::Storage(storage_fault_to_port(other)),
+        }
+    }
+}
+
+/// Map a non-caller [`nebula_storage::StorageError`] fault onto the
+/// equivalent port [`nebula_storage_port::StorageError`] so
+/// [`ApiError::Storage`] carries the original failure class.
+///
+/// Only the genuine-backend-fault variants reach this — caller-conflict
+/// variants (`NotFound` / `Conflict` / `Duplicate`) are handled by the
+/// `From` arms above and never get here. The message text is
+/// store-authored (no submitted payload), so it is safe to carry; the
+/// HTTP surface still collapses every `Storage` to a detail-free 500.
+fn storage_fault_to_port(err: nebula_storage::StorageError) -> nebula_storage_port::StorageError {
+    use nebula_storage::StorageError as Se;
+    use nebula_storage_port::StorageError as Pe;
+    match err {
+        Se::LeaseUnavailable { entity, id } => Pe::LeaseUnavailable { entity, id },
+        Se::Timeout {
+            operation,
+            duration,
+        } => Pe::Timeout {
+            operation,
+            duration,
+        },
+        Se::Serialization(detail) => Pe::Serialization(detail),
+        Se::Connection(detail) => Pe::Connection(detail),
+        Se::Configuration(detail) => Pe::Configuration(detail),
+        // `Se::Internal` and any future non-caller variant fold into the
+        // port `Internal` — fail-closed, never silently dropped.
+        other => Pe::Internal(other.to_string()),
+    }
+}
+
+/// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
+/// `TenantContext` is turned into a port `Scope`) onto the HTTP surface.
+///
+/// Both variants are deliberately coarse — the tenancy layer never
+/// discloses *why* scope resolution failed in a way that lets a caller
+/// probe the tenant graph (the same existence-non-disclosure rule the
+/// scoped decorators enforce for row access, spec §6.1):
+///
+/// - `MissingWorkspace` → **404**. Every workspace-scoped resource lives
+///   under `/orgs/{org}/workspaces/{ws}/…`; reaching a scoped handler
+///   with no workspace binding is a routing-invariant violation, surfaced
+///   as the same opaque `not found` the tenancy middleware already uses
+///   for an unresolvable workspace segment (never "you lack a workspace",
+///   which would confirm the org exists).
+/// - `Unauthorized` → **403**, coarse on purpose: it never reveals which
+///   half (org vs workspace) mismatched.
+impl From<nebula_tenancy::TenancyError> for ApiError {
+    fn from(err: nebula_tenancy::TenancyError) -> Self {
+        use nebula_tenancy::TenancyError as Te;
+        match err {
+            Te::MissingWorkspace => Self::NotFound("not found".to_string()),
+            Te::Unauthorized => {
+                Self::Forbidden("not authorized for the requested tenant".to_string())
+            },
+        }
+    }
 }
 
 impl ApiError {
@@ -270,28 +362,6 @@ impl ApiError {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ProblemDetails::new(
                         "https://nebula.dev/problems/storage-error",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
-            },
-            ApiError::WorkflowRepo(err) => {
-                tracing::error!("Workflow repository error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "https://nebula.dev/problems/workflow-repo-error",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
-            },
-            ApiError::ExecutionRepo(err) => {
-                tracing::error!("Execution repository error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "https://nebula.dev/problems/execution-repo-error",
                         "Internal Server Error",
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),

@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use super::{
     ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimRepo,
-    ReplicaId, RepoError, SentinelState,
+    ReplicaId, RepoError, SentinelState, SqlxClaimResultExt,
 };
 
 /// SQLite-backed `RefreshClaimRepo`.
@@ -108,7 +108,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(now_ms)
         .bind(exp_ms)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
 
         if let Some((claim_id_str, generation, acquired_ms, expires_ms)) = row {
             let acquired_at = millis_to_utc(acquired_ms)?;
@@ -138,7 +139,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         )
         .bind(&cid_str)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
 
         match existing {
             Some((exp_ms,)) => Ok(ClaimAttempt::Contended {
@@ -171,7 +173,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(now_ms)
         .execute(&self.pool)
         .await
-        .map_err(RepoError::from)?
+        .store_err()?
         .rows_affected();
 
         if rows == 0 {
@@ -189,7 +191,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(&claim_id_str)
         .bind(token.generation as i64)
         .execute(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
         Ok(())
     }
 
@@ -208,7 +211,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(&claim_id_str)
         .bind(token.generation as i64)
         .execute(&self.pool)
-        .await?
+        .await
+        .store_err()?
         .rows_affected();
 
         if rows == 0 {
@@ -236,7 +240,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         )
         .bind(now_ms)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
 
         // The DELETE has already committed; short-circuiting on the first
         // bad row would silently abandon every other already-deleted row,
@@ -289,7 +294,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(crashed_holder.as_str())
         .bind(generation as i64)
         .execute(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
         Ok(())
     }
 
@@ -307,7 +313,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .bind(&cid_str)
         .bind(window_ms)
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 }

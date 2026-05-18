@@ -18,10 +18,9 @@
 //!   of the inner error, but the cache slot stays empty so the next call
 //!   re-attempts the resolve.
 //!
-//! Sibling to the existing [`CacheLayer`](super::CacheLayer) /
-//! [`EncryptionLayer`](super::EncryptionLayer) /
-//! [`AuditLayer`](super::AuditLayer) / [`ScopeLayer`](super::ScopeLayer),
-//! but wraps the [`ExternalProvider`] trait rather than
+//! Sibling to the existing `CacheLayer` / `EncryptionLayer` /
+//! `AuditLayer` credential-store wrappers, but wraps the
+//! [`ExternalProvider`] trait rather than
 //! [`CredentialStore`](nebula_credential::CredentialStore) — hence the
 //! disambiguating `Provider` prefix in the type name.
 //!

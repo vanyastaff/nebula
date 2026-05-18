@@ -104,23 +104,28 @@ pub async fn readiness_check(
     (status, Json(response))
 }
 
-/// Probe the workflow repository with a bounded timeout.
+/// Probe the workflow store with a bounded timeout.
 ///
-/// `count()` is the cheapest read surface already on the trait, so adding
-/// this probe does not widen the public API. A timeout OR an error from the
-/// backend maps to "not ready" — readiness is a binary signal, callers do
+/// Uses [`WorkflowStore::is_reachable`] — the tenant-agnostic
+/// infrastructure-liveness round-trip (`SELECT 1` on the SQL backends).
+/// The readiness probe is unauthenticated infrastructure with no tenant,
+/// so it deliberately does **not** construct a [`Scope`] or read tenant
+/// rows: it only answers "is the store reachable?". A timeout OR an
+/// error maps to "not ready" — readiness is a binary signal, callers do
 /// not need to distinguish transport from timeout.
+///
+/// [`Scope`]: nebula_storage_port::Scope
 async fn probe_database(state: &AppState) -> bool {
-    match tokio::time::timeout(PROBE_TIMEOUT, state.workflow_repo.count()).await {
-        Ok(Ok(_)) => true,
+    match tokio::time::timeout(PROBE_TIMEOUT, state.workflow_store.is_reachable()).await {
+        Ok(Ok(())) => true,
         Ok(Err(err)) => {
-            tracing::warn!(error = %err, "readiness probe: workflow repo count() failed");
+            tracing::warn!(error = %err, "readiness probe: workflow store unreachable");
             false
         },
         Err(_) => {
             tracing::warn!(
                 timeout_secs = PROBE_TIMEOUT.as_secs(),
-                "readiness probe: workflow repo count() timed out",
+                "readiness probe: workflow store reachability timed out",
             );
             false
         },
@@ -131,112 +136,186 @@ async fn probe_database(state: &AppState) -> bool {
 mod tests {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
-    use axum::http::StatusCode;
-    use nebula_core::WorkflowId;
-    use nebula_storage::{
-        InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError,
-    };
-
     use super::*;
     use crate::{ApiConfig, state::AppState};
+    use async_trait::async_trait;
+    use axum::http::StatusCode;
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    use nebula_storage_port::{
+        Scope, StorageError,
+        dto::{WorkflowRecord, WorkflowVersionRecord},
+        store::WorkflowStore,
+    };
 
-    /// Workflow repo that always fails `count()` — used to simulate a
-    /// database outage in readiness probes (#291).
-    struct AlwaysFailWorkflowRepo;
+    /// `WorkflowStore` whose `is_reachable()` always fails — simulates a
+    /// database outage in readiness probes (#291). The probe path is
+    /// `probe_database` → `WorkflowStore::is_reachable`, so failing
+    /// `is_reachable` is the exact surface the readiness check exercises.
+    #[derive(Debug)]
+    struct AlwaysFailWorkflowStore;
 
     #[async_trait]
-    impl WorkflowRepo for AlwaysFailWorkflowRepo {
-        async fn get_with_version(
+    impl WorkflowStore for AlwaysFailWorkflowStore {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn get_by_slug(
             &self,
-            _id: WorkflowId,
-        ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+            _: &Scope,
+            _: &str,
+        ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn save(
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn save_with_published_version(
             &self,
-            _id: WorkflowId,
-            _version: u64,
-            _definition: serde_json::Value,
-        ) -> Result<(), WorkflowRepoError> {
+            _: &Scope,
+            _: WorkflowRecord,
+            _: WorkflowVersionRecord,
+            _: Option<u64>,
+        ) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn list(
-            &self,
-            _offset: usize,
-            _limit: usize,
-        ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn list(&self, _: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn count(&self) -> Result<usize, WorkflowRepoError> {
-            Err(WorkflowRepoError::Connection("db offline".to_string()))
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn count(&self, _: &Scope) -> Result<u64, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn is_reachable(&self) -> Result<(), StorageError> {
+            Err(StorageError::Connection("db offline".to_string()))
         }
     }
 
-    /// Workflow repo whose `count()` sleeps for longer than `PROBE_TIMEOUT` —
-    /// used to force the `Err(_)` timeout branch in `probe_database` (#291
-    /// review). Pair with `#[tokio::test(start_paused = true)]` so the sleep
-    /// is virtual and the test does not block for real seconds.
-    struct SlowWorkflowRepo;
+    /// `WorkflowStore` whose `is_reachable()` sleeps for longer than
+    /// `PROBE_TIMEOUT` — forces the `Err(_)` timeout branch in
+    /// `probe_database` (#291 review). Pair with
+    /// `#[tokio::test(start_paused = true)]` so the sleep is virtual and
+    /// the test does not block for real seconds.
+    #[derive(Debug)]
+    struct SlowWorkflowStore;
 
     #[async_trait]
-    impl WorkflowRepo for SlowWorkflowRepo {
-        async fn get_with_version(
+    impl WorkflowStore for SlowWorkflowStore {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn get(&self, _: &Scope, _: &str) -> Result<Option<WorkflowRecord>, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn get_by_slug(
             &self,
-            _id: WorkflowId,
-        ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+            _: &Scope,
+            _: &str,
+        ) -> Result<Option<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn save(
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn update(&self, _: &Scope, _: WorkflowRecord, _: u64) -> Result<(), StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn save_with_published_version(
             &self,
-            _id: WorkflowId,
-            _version: u64,
-            _definition: serde_json::Value,
-        ) -> Result<(), WorkflowRepoError> {
+            _: &Scope,
+            _: WorkflowRecord,
+            _: WorkflowVersionRecord,
+            _: Option<u64>,
+        ) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn soft_delete(&self, _: &Scope, _: &str) -> Result<(), StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn list(
-            &self,
-            _offset: usize,
-            _limit: usize,
-        ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn list(&self, _: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
             unimplemented!("not exercised by readiness tests")
         }
-
-        async fn count(&self) -> Result<usize, WorkflowRepoError> {
+        // guard-justified: readiness probe only calls `is_reachable`;
+        // this op is unreachable on the probe path.
+        async fn count(&self, _: &Scope) -> Result<u64, StorageError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+        async fn is_reachable(&self) -> Result<(), StorageError> {
             // Far longer than PROBE_TIMEOUT (2s). Under paused time, the
             // runtime auto-advances to whichever timer fires first — that's
             // the timeout, so this sleep gets cancelled and never elapses
             // in wall-clock time.
             tokio::time::sleep(Duration::from_mins(1)).await;
-            Ok(0)
+            Ok(())
         }
     }
 
-    fn app_state_with_repo(repo: Arc<dyn WorkflowRepo>) -> AppState {
-        let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-        let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-            Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
+    /// Build an `AppState` whose `WorkflowStore` is the supplied (possibly
+    /// failing) port store, with real in-memory adapters for the rest —
+    /// all stored raw (undecorated), the canonical composition-root wiring
+    /// (mirrors `server::default_state`). The per-request tenant scope is
+    /// applied by the `AppState` accessors, not baked in here.
+    fn app_state_with_workflow_store(workflow_store: Arc<dyn WorkflowStore>) -> AppState {
         let config = ApiConfig::for_test();
-        AppState::new(repo, execution_repo, control_queue_repo, config.jwt_secret)
+        let exec_store = InMemoryExecutionStore::new();
+        let control_queue = InMemoryControlQueue::new(&exec_store);
+        let journal = InMemoryJournalReader::new(&exec_store);
+
+        AppState::new(
+            workflow_store,
+            Arc::new(InMemoryWorkflowVersionStore::new()),
+            Arc::new(exec_store),
+            Arc::new(InMemoryNodeResultStore::new()),
+            Arc::new(journal),
+            Arc::new(control_queue),
+            config.jwt_secret,
+        )
     }
 
     #[tokio::test]
     async fn readiness_reports_ok_when_database_responds() {
-        let state = app_state_with_repo(Arc::new(InMemoryWorkflowRepo::new()));
+        // `readiness_check` only probes `WorkflowStore::is_reachable()`
+        // (the row store); it never reads the version store, so the
+        // paired version map is immaterial here — construct the canonical
+        // pair anyway so the store is wired exactly as production builds
+        // it.
+        let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+        let state = app_state_with_workflow_store(Arc::new(workflow_store));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.ready);
@@ -245,7 +324,7 @@ mod tests {
 
     #[tokio::test]
     async fn readiness_returns_503_when_database_probe_fails() {
-        let state = app_state_with_repo(Arc::new(AlwaysFailWorkflowRepo));
+        let state = app_state_with_workflow_store(Arc::new(AlwaysFailWorkflowStore));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!body.ready);
@@ -259,7 +338,7 @@ mod tests {
     /// virtual microseconds rather than waiting 2 real seconds.
     #[tokio::test(start_paused = true)]
     async fn readiness_returns_503_when_database_probe_times_out() {
-        let state = app_state_with_repo(Arc::new(SlowWorkflowRepo));
+        let state = app_state_with_workflow_store(Arc::new(SlowWorkflowStore));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!body.ready);

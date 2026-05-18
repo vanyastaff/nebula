@@ -1,8 +1,9 @@
 //! Durable control-queue consumer — canon §12.2.
 //!
-//! The `ControlConsumer` drains `execution_control_queue` (see
-//! `nebula_storage::repos::ControlQueueRepo`) and hands typed commands to an
-//! engine-owned [`ControlDispatch`] implementation. ADR-0008 records the
+//! The `ControlConsumer` drains `execution_control_queue` (the spec-16
+//! [`nebula_storage_port::store::ControlQueue`] port) and hands typed
+//! commands to an engine-owned [`ControlDispatch`] implementation.
+//! ADR-0008 records the
 //! wiring decisions: polling loop + claim/ack, engine-owned dispatch trait
 //! (no `nebula-api` / `nebula-storage` row types leak into the public
 //! surface), at-least-once delivery with idempotent consumer semantics.
@@ -19,7 +20,7 @@
 //!   [`crate::WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body
 //!   until a distinct forced-shutdown path is wired (see ADR-0016).
 //! - reclaim sweep for stuck `Processing` rows after a crashed runner — **implemented** (B1,
-//!   ADR-0017). A periodic `tokio::time::interval` arm calls `ControlQueueRepo::reclaim_stuck`
+//!   ADR-0017). A periodic `tokio::time::interval` arm calls `ControlQueue::reclaim_stuck`
 //!   every [`DEFAULT_RECLAIM_INTERVAL`]; rows whose `processed_at` is older than
 //!   [`DEFAULT_RECLAIM_AFTER`] are moved back to `Pending` (retry budget
 //!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted. Each sweep emits
@@ -38,7 +39,8 @@ use nebula_metrics::{
     MetricsRegistry,
     naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
 };
-use nebula_storage::repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo};
+use nebula_storage_port::dto::ControlCommand;
+use nebula_storage_port::store::ControlQueue;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -200,15 +202,97 @@ pub trait ControlDispatch: Send + Sync {
     -> Result<(), ControlDispatchError>;
 }
 
+/// A raw claimed control message. The `execution_id` decode (and its
+/// per-row failure isolation) happens in `handle_entry`, not at claim
+/// time, so one malformed row never fails the whole batch.
+struct RawClaimed(nebula_storage_port::dto::ControlMsg);
+
+/// Backend-agnostic reclaim-sweep tally (the normalized form the
+/// metrics/log path consumes).
+struct ReclaimCounts {
+    reclaimed: u64,
+    exhausted: u64,
+}
+
+/// One claimed control row, normalized so the dispatch / ack / trace
+/// path is uniform.
+struct ClaimedRow {
+    /// 16-byte ULID primary key (raw bytes).
+    id: [u8; 16],
+    /// Target execution.
+    execution_id: ExecutionId,
+    /// Command to deliver.
+    command: ControlCommand,
+    /// W3C `traceparent` carrier captured at enqueue, if any.
+    w3c: Option<nebula_core::W3cTraceContext>,
+}
+
+impl RawClaimed {
+    /// The 16-byte row id (for failure logging before a successful
+    /// decode).
+    fn row_id(&self) -> [u8; 16] {
+        self.0.id
+    }
+
+    /// Normalize into a [`ClaimedRow`], decoding `execution_id` (carried
+    /// as the opaque string form — parsed directly, no "UTF-8 of the
+    /// ULID string" decode).
+    fn normalize(self) -> Result<ClaimedRow, String> {
+        let m = self.0;
+        let execution_id = m.execution_id.parse::<ExecutionId>().map_err(|e| {
+            format!(
+                "execution_id {:?} not a valid ExecutionId: {e}",
+                m.execution_id
+            )
+        })?;
+        let w3c = match m.w3c_traceparent.as_deref() {
+            None => None,
+            Some(s) => match nebula_core::W3cTraceContext::from_traceparent_str(s) {
+                Ok(ctx) => Some(ctx),
+                Err(e) => {
+                    // A malformed carrier means this command's span is
+                    // orphaned from its enqueuing trace — operationally
+                    // significant (distributed-trace gap), so surface it
+                    // rather than silently dropping (observability DoD).
+                    // The stable target makes it log-metric countable.
+                    tracing::warn!(
+                        target: "nebula_engine::control_consumer",
+                        row_id = ?m.id,
+                        error = %e,
+                        "control queue row has a malformed w3c traceparent; \
+                         dispatching without trace linkage"
+                    );
+                    None
+                },
+            },
+        };
+        Ok(ClaimedRow {
+            id: m.id,
+            execution_id,
+            command: m.command,
+            w3c,
+        })
+    }
+}
+
 /// Drains `execution_control_queue` and hands typed commands to a
 /// [`ControlDispatch`] implementation.
 ///
 /// See the module docs and ADR-0008 for wiring, atomicity, and idempotency
 /// rules.
 pub struct ControlConsumer {
-    queue: Arc<dyn ControlQueueRepo>,
+    /// Scoped spec-16 [`ControlQueue`] port the consumer drains. The
+    /// execution id is carried as the opaque string form (no "UTF-8 of
+    /// the ULID string" decode).
+    queue: Arc<dyn ControlQueue>,
     dispatch: Arc<dyn ControlDispatch>,
-    processor_id: Vec<u8>,
+    /// Fixed 16-byte fence token recorded in `processed_by` and matched
+    /// on `mark_completed`/`mark_failed`. Stored as `[u8; 16]` end-to-end
+    /// so two distinct workers can never silently collapse to the same
+    /// token (the previous `Vec<u8>` + truncate/pad let workers sharing a
+    /// 16-byte prefix ack each other's rows — a stale-worker fence
+    /// collapse).
+    processor_id: [u8; 16],
     batch_size: u32,
     poll_interval: Duration,
     reclaim_after: Duration,
@@ -224,21 +308,24 @@ pub struct ControlConsumer {
 }
 
 impl ControlConsumer {
-    /// Construct a new consumer.
+    /// Construct a consumer draining the spec-16 [`ControlQueue`] port.
     ///
-    /// `processor_id` is opaque bytes the storage layer records in
-    /// `execution_control_queue.processed_by`; operators use it to identify
-    /// which instance claimed a row. A hostname, a ULID, or a tuple of
-    /// both are all reasonable choices.
+    /// `processor_id` is the fixed 16-byte fence token recorded in the
+    /// row's `processed_by` (and matched on `mark_completed` /
+    /// `mark_failed` for the stale-worker fence). It is `[u8; 16]` by
+    /// type — the caller supplies the full id (e.g. a ULID/UUID's 16
+    /// bytes); there is deliberately no truncate/pad of an arbitrary-
+    /// length id, which would let two distinct workers collapse to the
+    /// same token and ack each other's rows.
     pub fn new(
-        queue: Arc<dyn ControlQueueRepo>,
+        queue: Arc<dyn ControlQueue>,
         dispatch: Arc<dyn ControlDispatch>,
-        processor_id: impl Into<Vec<u8>>,
+        processor_id: [u8; 16],
     ) -> Self {
         Self {
             queue,
             dispatch,
-            processor_id: processor_id.into(),
+            processor_id,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             reclaim_after: DEFAULT_RECLAIM_AFTER,
@@ -370,12 +457,20 @@ impl ControlConsumer {
     /// storage errors — a transient failure on one sweep should not abort
     /// the consumer; the next tick will retry.
     async fn sweep_reclaim(&self) {
-        match self
+        // Normalize the port's `ReclaimOutcome` to `(reclaimed,
+        // exhausted)` for the metrics/log path.
+        let swept: Result<(u64, u64), String> = self
             .queue
             .reclaim_stuck(self.reclaim_after, self.max_reclaim_count)
             .await
-        {
-            Ok(outcome) => {
+            .map(|o| (o.reclaimed, o.exhausted))
+            .map_err(|e| e.to_string());
+        match swept {
+            Ok((reclaimed, exhausted)) => {
+                let outcome = ReclaimCounts {
+                    reclaimed,
+                    exhausted,
+                };
                 // ADR-0017 Seam: bump the per-outcome counter by the row
                 // count for this sweep (not by 1 per sweep) so operators
                 // can alert on `outcome="exhausted" > 0` and watch
@@ -443,11 +538,17 @@ impl ControlConsumer {
     /// The outer loop persists this delay as a deadline so that a reclaim
     /// interruption does not cancel the backoff — see `run`.
     async fn tick(&self, consecutive_errors: &mut u32) -> Option<Duration> {
-        let claimed = match self
+        // Claim raw rows. A malformed `execution_id` must fail only
+        // *that* row (mark it failed, continue) — not the whole batch —
+        // so the decode happens per row in `handle_entry`, not here.
+        let claimed: Result<Vec<RawClaimed>, String> = self
             .queue
             .claim_pending(&self.processor_id, self.batch_size)
             .await
-        {
+            .map(|msgs| msgs.into_iter().map(RawClaimed).collect())
+            .map_err(|e| e.to_string());
+
+        let claimed = match claimed {
             Ok(rows) => {
                 *consecutive_errors = 0;
                 rows
@@ -469,30 +570,32 @@ impl ControlConsumer {
             return Some(self.poll_interval);
         }
 
-        for entry in claimed {
-            self.handle_entry(entry).await;
+        for row in claimed {
+            self.handle_entry(row).await;
         }
         None
     }
 
-    async fn handle_entry(&self, entry: ControlQueueEntry) {
-        let execution_id = match decode_execution_id(&entry.execution_id) {
-            Ok(id) => id,
+    async fn handle_entry(&self, raw: RawClaimed) {
+        let row_id = raw.row_id();
+        let ClaimedRow {
+            id: row_id,
+            execution_id,
+            command,
+            w3c: w3c_opt,
+        } = match raw.normalize() {
+            Ok(row) => row,
             Err(reason) => {
                 tracing::error!(
-                    id = %hex_display(&entry.id),
+                    id = %hex_display(&row_id),
                     reason = %reason,
                     "control-queue row has malformed execution_id; marking failed"
                 );
-                self.ack_failed(&entry.id, &format!("malformed execution_id: {reason}"))
+                self.ack_failed(&row_id, &format!("malformed execution_id: {reason}"))
                     .await;
                 return;
             },
         };
-
-        let row_id = entry.id;
-        let command = entry.command;
-        let w3c_opt = entry.w3c_trace_context;
 
         let has_carrier = w3c_opt.is_some();
         let span = tracing::info_span!(
@@ -554,14 +657,19 @@ impl ControlConsumer {
         }
     }
 
-    async fn ack_completed(&self, id: &[u8]) {
+    async fn ack_completed(&self, id: &[u8; 16]) {
         // NOTE: dispatch already ran successfully at this point. If
         // `mark_completed` fails, the row stays in `Processing` and the B1
         // reclaim path (ADR-0017 + `sweep_reclaim` above) redelivers the
         // command. Correctness under redelivery depends entirely on
         // `ControlDispatch` impls being idempotent per `(execution_id, command)`
         // — see the trait-level docs and ADR-0008 §5.
-        if let Err(e) = self.queue.mark_completed(id, &self.processor_id).await {
+        let result: Result<(), String> = self
+            .queue
+            .mark_completed(id, &self.processor_id)
+            .await
+            .map_err(|e| e.to_string());
+        if let Err(e) = result {
             tracing::error!(
                 id = %hex_display(id),
                 error = %e,
@@ -570,8 +678,13 @@ impl ControlConsumer {
         }
     }
 
-    async fn ack_failed(&self, id: &[u8], reason: &str) {
-        if let Err(e) = self.queue.mark_failed(id, &self.processor_id, reason).await {
+    async fn ack_failed(&self, id: &[u8; 16], reason: &str) {
+        let result: Result<(), String> = self
+            .queue
+            .mark_failed(id, &self.processor_id, reason)
+            .await
+            .map_err(|e| e.to_string());
+        if let Err(e) = result {
             tracing::error!(
                 id = %hex_display(id),
                 error = %e,
@@ -594,17 +707,6 @@ fn claim_error_backoff(base: Duration, consecutive_errors: u32) -> Duration {
         .checked_mul(u32::try_from(multiplier.min(u64::from(u32::MAX))).unwrap_or(u32::MAX))
         .unwrap_or(MAX_CLAIM_ERROR_BACKOFF);
     scaled.min(MAX_CLAIM_ERROR_BACKOFF)
-}
-
-/// Decode the UTF-8 ULID bytes stored in `ControlQueueEntry.execution_id`.
-///
-/// Canon note: `control_queue.rs` documents this encoding choice (UTF-8
-/// string bytes, not raw 16-byte ULIDs) — the consumer honours it here so
-/// the [`ControlDispatch`] surface sees a typed `ExecutionId`.
-fn decode_execution_id(bytes: &[u8]) -> Result<ExecutionId, String> {
-    let s = std::str::from_utf8(bytes).map_err(|e| format!("not valid UTF-8: {e}"))?;
-    s.parse::<ExecutionId>()
-        .map_err(|e| format!("not a valid ExecutionId ({s:?}): {e}"))
 }
 
 /// Hex-render opaque byte fields for structured logs, keeping tracing
@@ -645,27 +747,5 @@ mod tests {
         // before calling), but must be total and safe.
         let base = Duration::from_millis(50);
         assert_eq!(claim_error_backoff(base, 0), base);
-    }
-
-    #[test]
-    fn decode_execution_id_rejects_non_utf8() {
-        let invalid = vec![0xff, 0xfe, 0xfd];
-        let err = decode_execution_id(&invalid).unwrap_err();
-        assert!(err.contains("not valid UTF-8"), "got: {err}");
-    }
-
-    #[test]
-    fn decode_execution_id_rejects_bad_prefix() {
-        let wrong = b"not-a-ulid".to_vec();
-        let err = decode_execution_id(&wrong).unwrap_err();
-        assert!(err.contains("not a valid ExecutionId"), "got: {err}");
-    }
-
-    #[test]
-    fn decode_execution_id_accepts_round_trip() {
-        let id = ExecutionId::new();
-        let bytes = id.to_string().into_bytes();
-        let decoded = decode_execution_id(&bytes).expect("round trip");
-        assert_eq!(decoded, id);
     }
 }

@@ -182,7 +182,7 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 | `.github/workflows/auto-close-linked-issues.yml` (1) | stale-issue spec | Remove comment or ARCHIVE |
 | `docs/plans/2026-05-17-001-...` (1) | TD-11 mention | Keep (meta) or point to D-R2 |
 
-**Crate READMEs** (no superpowers today; verify INTEGRATION_MODEL paths):  
+**Crate READMEs** (no superpowers today; verify INTEGRATION_MODEL paths):
 `action`, `api`, `core`, `credential`, `plugin`, `plugin-sdk`, `resource`, `sandbox`, `sdk`, `validator` — audit in U5.
 
 ---
@@ -193,8 +193,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** Copied doc is link-clean and dated.
 
-**Requirements:** D-R1  
-**Dependencies:** none (partial done)  
+**Requirements:** D-R1
+**Dependencies:** none (partial done)
 
 **Files:**
 - `docs/INTEGRATION_MODEL.md`
@@ -215,8 +215,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** One ADR number per file; no normative superpowers URLs.
 
-**Requirements:** D-R2, D-R3  
-**Dependencies:** U1  
+**Requirements:** D-R2, D-R3
+**Dependencies:** U1
 
 **Files:**
 - `docs/adr/README.md` — full table 0042–0066
@@ -242,8 +242,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** Mechanics doc reflects M6/M11 cascade without duplicating ADRs.
 
-**Requirements:** D-R4  
-**Dependencies:** U1  
+**Requirements:** D-R4
+**Dependencies:** U1
 
 **Files:**
 - `docs/INTEGRATION_MODEL.md` (§3.6–§3.9, schema section, §7 plugin)
@@ -262,8 +262,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** Canon accurate; no long M6 paste.
 
-**Requirements:** D-R5  
-**Dependencies:** U3  
+**Requirements:** D-R5
+**Dependencies:** U3
 
 **Files:**
 - `docs/PRODUCT_CANON.md` — §3.5, §7, doc index table (~§18)
@@ -282,8 +282,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** Dashboard truthful; English; ADR-backed notes.
 
-**Requirements:** D-R6  
-**Dependencies:** U2  
+**Requirements:** D-R6
+**Dependencies:** U2
 
 **Files:**
 - `docs/MATURITY.md`
@@ -303,8 +303,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** All integrator-facing READMEs point at in-repo normative docs only.
 
-**Requirements:** D-R1, D-R6  
-**Dependencies:** U2, U4  
+**Requirements:** D-R1, D-R6
+**Dependencies:** U2, U4
 
 **Files:**
 - `crates/credential-builtin/README.md` — **remove phantom vendor types**; scaffold truth
@@ -327,8 +327,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** Direction doc matches doc map and deferred work.
 
-**Requirements:** D-R7  
-**Dependencies:** U3, U4  
+**Requirements:** D-R7
+**Dependencies:** U3, U4
 
 **Files:**
 - `STRATEGY.md`
@@ -348,8 +348,8 @@ For each **accepted** in-repo ADR, add or update a **status box / §pointer** in
 
 **Goal:** Provable clean stack; unblock flagship code plan.
 
-**Requirements:** D-R8  
-**Dependencies:** U1–U7  
+**Requirements:** D-R8
+**Dependencies:** U1–U7
 
 **Approach:** Run verification commands; paste summary in PR or issue.
 

@@ -406,26 +406,35 @@ async fn persist_oauth_state(
 mod tests {
     use std::sync::Arc;
 
-    use nebula_credential::{CredentialStore, PendingStateStore};
-    use nebula_storage::{
-        InMemoryExecutionRepo, InMemoryWorkflowRepo,
-        repos::{ControlQueueRepo, InMemoryControlQueueRepo},
-    };
-
     use super::*;
     use crate::config::JwtSecret;
+    use nebula_credential::{CredentialStore, PendingStateStore};
+    use nebula_storage::inmem::{
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
 
     fn test_app_state() -> AppState {
-        let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-        let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-        let control_queue_repo: Arc<dyn ControlQueueRepo> =
-            Arc::new(InMemoryControlQueueRepo::new());
         let jwt_secret =
             JwtSecret::new("test-jwt-secret-1234567890-abcdef").expect("valid test secret");
+
+        // Raw storage-port wiring (mirrors `server::default_state`):
+        // undecorated in-memory adapters with a shared execution core so
+        // the control queue / journal observe a `commit`'s rows. The
+        // per-request tenant scope is applied by the `AppState` accessors.
+        let exec_store = InMemoryExecutionStore::new();
+        let control_queue = InMemoryControlQueue::new(&exec_store);
+        let journal = InMemoryJournalReader::new(&exec_store);
+        let workflow_versions = InMemoryWorkflowVersionStore::new();
+        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+
         AppState::new(
-            workflow_repo,
-            execution_repo,
-            control_queue_repo,
+            Arc::new(workflow_store),
+            Arc::new(workflow_versions),
+            Arc::new(exec_store),
+            Arc::new(InMemoryNodeResultStore::new()),
+            Arc::new(journal),
+            Arc::new(control_queue),
             jwt_secret,
         )
     }

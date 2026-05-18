@@ -17,9 +17,8 @@ use nebula_api::{
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, WorkspaceId};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-};
+use nebula_storage::inmem::{InMemoryControlQueue, InMemoryExecutionStore};
+use nebula_storage_port::Scope;
 
 // ── Shared constants ─────────────────────────────────────────────────────────
 
@@ -171,59 +170,309 @@ impl CredentialSchemaPort for PermissiveCredentialSchemaPort {
     }
 }
 
-/// Create an `AppState` with fully functional in-memory repos; return both the
-/// state and a typed reference to the control queue so tests can inspect it.
+/// Build an `AppState` whose execution / workflow / control-queue
+/// surface is the scoped storage port, wired exactly as the composition
+/// root does: the in-memory port adapters wrapped in the
+/// `nebula-tenancy` scoping decorators (bound to the placeholder scope)
+/// and passed straight to [`AppState::new`].
 ///
-/// A permissive [`CredentialSchemaPort`] is wired so credential write-path
-/// tests keep returning 200 (ADR-0052 P4 closed the unvalidated-persist
-/// fail-open: with **no** port the write path now returns 503 by design;
-/// the explicit None/reject behavior is covered by the P4 seam test).
-pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+/// Returns the state plus the raw (undecorated) `InMemoryControlQueue`
+/// and `InMemoryExecutionStore` handles. Both port stores are `Clone`
+/// over an `Arc<Mutex<…>>`, so the returned handles share state with the
+/// decorated ones inside `AppState`: a test can seed an execution row
+/// directly through the returned `InMemoryExecutionStore` and observe
+/// the durable outbox through the returned `InMemoryControlQueue`'s
+/// non-consuming `snapshot()`. One shared execution-store core backs the
+/// control queue and journal so a `commit`/`enqueue` is visible through
+/// every reader; one workflow-version store instance is shared between
+/// the workflow-CRUD path and the resume/definition path so a version
+/// published via the workflow handlers is readable through the
+/// execution accessor.
+/// Raw (undecorated) in-memory port store handles that share state with
+/// the scoping-decorated stores inside the returned [`AppState`].
+///
+/// Every port store is `Clone` over an `Arc<Mutex<…>>`, so these handles
+/// observe (and can seed) exactly the rows the API sees through the
+/// tenancy decorators. The seed/read helpers below wrap the port-store
+/// API with the ergonomics the pre-port `state.execution_repo` /
+/// `state.workflow_repo` calls had, so a test body is a one-line change.
+pub(crate) struct PortHandles {
+    /// Durable control-queue outbox (non-consuming `snapshot()` for
+    /// asserting enqueued Start/Cancel rows).
+    pub control_queue: InMemoryControlQueue,
+    exec_store: InMemoryExecutionStore,
+    journal: nebula_storage::inmem::InMemoryJournalReader,
+    workflow_store: nebula_storage::inmem::InMemoryWorkflowStore,
+    workflow_versions: nebula_storage::inmem::InMemoryWorkflowVersionStore,
+}
+
+/// The single tenant scope this harness operates under — exactly the
+/// scope the API derives from a request to `/orgs/{TEST_ORG}/
+/// workspaces/{TEST_WS}/…`.
+///
+/// `AppState` stores raw, undecorated port handles and each accessor
+/// applies the per-request `&Scope` that `request_scope(&TenantContext)`
+/// projects, i.e. `Scope::new(workspace_id, org_id)`. Tests seed rows
+/// directly under this scope (`seed_*`) and the engine seam binds its
+/// store handles to it (see `engine_seam`), so harness writes, engine
+/// writes, and API reads all key on the same `(TEST_WS, TEST_ORG)`
+/// tuple. The engine's internal `engine_scope()` placeholder is
+/// substituted by the request-scope-bound decorator the seam wraps the
+/// stores in (engine per-execution scoping is a separate, tracked
+/// follow-up — see ADR-0072 "Known follow-up").
+pub(crate) fn port_scope() -> Scope {
+    Scope::new(TEST_WS, TEST_ORG)
+}
+
+/// Widen a short test label into the fixed 16-byte `ControlConsumer`
+/// processor id. Explicit padding at the test boundary — the production
+/// type is `[u8; 16]` so distinct workers can no longer silently
+/// fence-collapse.
+pub(crate) fn proc16(label: &[u8]) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    let n = label.len().min(16);
+    id[..n].copy_from_slice(&label[..n]);
+    id
+}
+
+impl PortHandles {
+    /// Seed an execution row directly (port equivalent of the old
+    /// `state.execution_repo.create(id, workflow_id, state_json)`).
+    pub(crate) async fn seed_execution(
+        &self,
+        execution_id: nebula_core::ExecutionId,
+        workflow_id: nebula_core::WorkflowId,
+        state_json: serde_json::Value,
+    ) {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::create(
+            &self.exec_store,
+            &port_scope(),
+            &execution_id.to_string(),
+            &workflow_id.to_string(),
+            state_json,
+        )
+        .await
+        .expect("seed_execution: port create must succeed");
+    }
+
+    /// Seed a workflow definition directly (port equivalent of the old
+    /// `state.workflow_repo.save(id, 0, definition)`): a workflow row at
+    /// version 1 plus a published version record #1 — exactly what
+    /// `AppState::workflow_save(version == 0)` performs, so the activate
+    /// / get-by-id handlers resolve the definition identically.
+    pub(crate) async fn seed_workflow(
+        &self,
+        workflow_id: nebula_core::WorkflowId,
+        definition: serde_json::Value,
+    ) {
+        use nebula_storage_port::store::{WorkflowStore, WorkflowVersionStore};
+        let scope = port_scope();
+        let id_str = workflow_id.to_string();
+        WorkflowStore::create(
+            &self.workflow_store,
+            &scope,
+            nebula_storage_port::dto::WorkflowRecord {
+                id: id_str.clone(),
+                scope: scope.clone(),
+                version: 1,
+                slug: id_str.clone(),
+                deleted: false,
+            },
+        )
+        .await
+        .expect("seed_workflow: port workflow create must succeed");
+        WorkflowVersionStore::create(
+            &self.workflow_versions,
+            &scope,
+            nebula_storage_port::dto::WorkflowVersionRecord {
+                workflow_id: id_str,
+                number: 1,
+                published: true,
+                pinned: false,
+                definition,
+            },
+        )
+        .await
+        .expect("seed_workflow: port version create must succeed");
+    }
+
+    /// Read the persisted `(version, state_json)` for an execution (port
+    /// equivalent of the old `state.execution_repo.get_state(id)`).
+    pub(crate) async fn execution_state(
+        &self,
+        execution_id: nebula_core::ExecutionId,
+    ) -> Option<(u64, serde_json::Value)> {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::get(&self.exec_store, &port_scope(), &execution_id.to_string())
+            .await
+            .expect("execution_state: port get must not error")
+            .map(|r| (r.version, r.state))
+    }
+
+    /// List running execution ids as opaque strings (port equivalent of
+    /// the old `state.execution_repo.list_running()`; the port id form is
+    /// the canonical string, not a typed `ExecutionId`).
+    pub(crate) async fn running_executions(&self) -> Vec<String> {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::list_running(&self.exec_store, &port_scope())
+            .await
+            .expect("running_executions: port list_running must not error")
+    }
+}
+
+/// Build an `AppState` whose execution / workflow / control-queue
+/// surface is the scoped storage port, wired exactly as the composition
+/// root does: the in-memory port adapters wrapped in the
+/// `nebula-tenancy` scoping decorators (bound to the placeholder scope)
+/// and passed straight to [`AppState::new`].
+///
+/// Returns the state plus a [`PortHandles`] bundle of raw (undecorated)
+/// store handles that share state with the decorated ones inside
+/// `AppState`. One shared execution-store core backs the control queue
+/// and journal so a `commit`/`enqueue` is visible through every reader;
+/// one workflow-version store instance is shared between the
+/// workflow-CRUD path and the resume/definition path so a version
+/// published via the workflow handlers is readable through the
+/// execution accessor.
+///
+/// When `with_credential_port` is `true` a [`PermissiveCredentialSchemaPort`]
+/// is wired (the credential happy-path default); when `false` the
+/// credential-schema port is left unset so the ADR-0052 P4 seam test can
+/// assert the unconfigured write path returns 503 (never persists
+/// unvalidated).
+async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHandles) {
+    use nebula_storage::inmem::{
+        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
+        InMemoryWorkflowVersionStore,
+    };
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+
     let api_config = ApiConfig::for_test();
 
-    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::clone(&control_queue_repo) as _;
-
+    // Raw (undecorated) port handles: the `AppState` accessors apply the
+    // per-request tenant scope at call time. `PortHandles` keeps clones of
+    // the same raw stores so `seed_*` writes are visible through the
+    // accessors (the engine seam + direct seeds all use `port_scope()`).
     let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_dyn,
+        Arc::new(workflow_store.clone()),
+        Arc::new(workflow_versions.clone()),
+        Arc::new(exec_store.clone()),
+        Arc::new(node_results),
+        Arc::new(journal.clone()),
+        Arc::new(control_queue.clone()),
+        api_config.jwt_secret,
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+
+    let state = if with_credential_port {
+        state.with_credential_schema(Arc::new(PermissiveCredentialSchemaPort))
+    } else {
+        state
+    };
+
+    (
+        state,
+        PortHandles {
+            control_queue,
+            exec_store,
+            journal,
+            workflow_store,
+            workflow_versions,
+        },
+    )
+}
+
+/// Build a port-wired `AppState` with the permissive credential-schema
+/// port (the credential happy-path default).
+async fn build_port_state() -> (AppState, PortHandles) {
+    build_port_state_with(true).await
+}
+
+/// Build a port-wired `AppState` for harnesses whose focus is auth /
+/// membership / control-plane wiring rather than storage rows: every
+/// store is an in-memory port adapter wrapped in the `nebula-tenancy`
+/// scoping decorator (bound to [`port_scope`]) and passed to
+/// [`AppState::new`], plus the slug resolvers (`TestOrgResolver` /
+/// `TestWorkspaceResolver`) every harness needs. **No** credential-schema
+/// port and no auth/membership store are wired — the caller layers the
+/// `.with_*` it needs (`me_support` adds the auth backend; `org_support`
+/// adds the membership store). Synchronous: port-store construction has
+/// no `.await`, so the sync `create_*_without_*` harnesses can call this
+/// directly.
+pub(crate) fn build_me_state() -> AppState {
+    use nebula_storage::inmem::{
+        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
+        InMemoryWorkflowVersionStore,
+    };
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+
+    let api_config = ApiConfig::for_test();
+
+    // Raw (undecorated) port handles — the `AppState` accessors apply the
+    // per-request tenant scope at call time.
+    AppState::new(
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(control_queue),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
-    .with_credential_schema(Arc::new(PermissiveCredentialSchemaPort));
+}
 
-    (state, control_queue_repo)
+/// Create an `AppState` plus a handle to the durable control queue so
+/// tests can inspect the outbox via its non-consuming `snapshot()`.
+pub(crate) async fn create_state_with_queue() -> (AppState, InMemoryControlQueue) {
+    let (state, handles) = build_port_state().await;
+    (state, handles.control_queue)
 }
 
 /// Alias for [`create_state_with_queue`], preserving the name used by
 /// `integration_tests.rs` callers so no test body needs to change.
-pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
+pub(crate) async fn create_test_state_with_queue() -> (AppState, InMemoryControlQueue) {
+    create_state_with_queue().await
+}
+
+/// Like [`create_state_with_queue`] but also returns the [`PortHandles`]
+/// bundle so a test can seed execution / workflow rows directly (the
+/// port equivalent of the old `state.execution_repo` /
+/// `state.workflow_repo` direct access).
+pub(crate) async fn create_state_with_port_handles() -> (AppState, PortHandles) {
+    build_port_state().await
+}
+
+/// Create an `AppState` wired through the scoped storage port, returning
+/// the state and the raw `InMemoryControlQueue` handle. This is the
+/// canonical §13-knife wiring; the asserted invariants are unchanged
+/// from the pre-port path (see this file's header).
+pub(crate) async fn create_state_with_port_queue() -> (AppState, InMemoryControlQueue) {
     create_state_with_queue().await
 }
 
 /// Same as [`create_state_with_queue`] but with **no** credential-schema
 /// port wired — for the ADR-0052 P4 seam test that asserts the
 /// unconfigured write path returns 503 (never persists unvalidated).
-pub(crate) async fn create_state_with_queue_no_credential_port()
--> (AppState, Arc<InMemoryControlQueueRepo>) {
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::clone(&control_queue_repo) as _;
-    let state = AppState::new(
-        Arc::new(InMemoryWorkflowRepo::new()),
-        Arc::new(InMemoryExecutionRepo::new()),
-        control_queue_dyn,
-        api_config.jwt_secret,
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
-    (state, control_queue_repo)
+/// Port-wired exactly like [`build_port_state`], minus the
+/// `with_credential_schema` call.
+pub(crate) async fn create_state_with_queue_no_credential_port() -> (AppState, InMemoryControlQueue)
+{
+    let (state, handles) = build_port_state_with(false).await;
+    (state, handles.control_queue)
 }
 
 // ── `me/*` end-to-end harness (Phase 2) ──────────────────────────────────────
@@ -240,18 +489,15 @@ pub(crate) mod me_support {
     use std::{str::FromStr, sync::Arc};
 
     use nebula_api::{
-        ApiConfig, AppState,
+        AppState,
         domain::{
             auth::backend::{AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString},
             org::InMemoryMembershipStore,
         },
     };
     use nebula_core::{OrgRole, Principal, UserId};
-    use nebula_storage::{
-        InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-    };
 
-    use super::{TEST_JWT_SECRET, TEST_ORG, TestOrgResolver, TestWorkspaceResolver};
+    use super::{TEST_JWT_SECRET, TEST_ORG, build_me_state};
 
     /// A registered user plus a JWT that authenticates *as that user*.
     pub(crate) struct MeUser {
@@ -327,17 +573,9 @@ pub(crate) mod me_support {
         let backend_dyn: Arc<dyn AuthBackend> = Arc::clone(&backend) as _;
         let membership_dyn: Arc<dyn nebula_api::state::MembershipStore> =
             Arc::clone(&membership) as _;
-        let api_config = ApiConfig::for_test();
-        let state = AppState::new(
-            Arc::new(InMemoryWorkflowRepo::new()),
-            Arc::new(InMemoryExecutionRepo::new()),
-            Arc::new(InMemoryControlQueueRepo::new()),
-            api_config.jwt_secret,
-        )
-        .with_org_resolver(Arc::new(TestOrgResolver))
-        .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
-        .with_auth_backend(backend_dyn)
-        .with_membership_store(membership_dyn);
+        let state = build_me_state()
+            .with_auth_backend(backend_dyn)
+            .with_membership_store(membership_dyn);
 
         let jwt = jwt_for(&profile.user_id);
         let user = MeUser {
@@ -353,15 +591,10 @@ pub(crate) mod me_support {
     /// principal so the request reaches the handler, where the missing
     /// port is detected.
     pub(crate) fn create_me_state_without_backend() -> (AppState, String) {
-        let api_config = ApiConfig::for_test();
-        let state = AppState::new(
-            Arc::new(InMemoryWorkflowRepo::new()),
-            Arc::new(InMemoryExecutionRepo::new()),
-            Arc::new(InMemoryControlQueueRepo::new()),
-            api_config.jwt_secret,
-        )
-        .with_org_resolver(Arc::new(TestOrgResolver))
-        .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+        // `auth_backend` deliberately left unset (the honest 503
+        // port-absent path). `build_me_state` already wires the slug
+        // resolvers.
+        let state = build_me_state();
         // A syntactically valid UserId so the JWT path yields
         // `Principal::User` and the request reaches the handler body.
         let jwt = jwt_for(&UserId::new().to_string());
@@ -387,13 +620,10 @@ pub(crate) mod me_support {
 pub(crate) mod org_support {
     use std::sync::Arc;
 
-    use nebula_api::{ApiConfig, AppState, domain::org::InMemoryMembershipStore};
+    use nebula_api::{AppState, domain::org::InMemoryMembershipStore};
     use nebula_core::{OrgRole, Principal, UserId};
-    use nebula_storage::{
-        InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-    };
 
-    use super::{TEST_ORG, TestOrgResolver, TestWorkspaceResolver, me_support::jwt_for};
+    use super::{TEST_ORG, build_me_state, me_support::jwt_for};
 
     /// A principal with a known org role plus a JWT authenticating as it.
     pub(crate) struct OrgActor {
@@ -441,16 +671,9 @@ pub(crate) mod org_support {
             InMemoryMembershipStore::seeded(org_id, admin.principal.clone(), role).into_arc();
         let store_dyn: Arc<dyn nebula_api::state::MembershipStore> = Arc::clone(&store) as _;
 
-        let api_config = ApiConfig::for_test();
-        let state = AppState::new(
-            Arc::new(InMemoryWorkflowRepo::new()),
-            Arc::new(InMemoryExecutionRepo::new()),
-            Arc::new(InMemoryControlQueueRepo::new()),
-            api_config.jwt_secret,
-        )
-        .with_org_resolver(Arc::new(TestOrgResolver))
-        .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
-        .with_membership_store(store_dyn);
+        // `build_me_state` already wires the slug resolvers; this harness
+        // adds the seeded membership store (which activates RBAC).
+        let state = build_me_state().with_membership_store(store_dyn);
 
         (state, store, admin)
     }
@@ -479,16 +702,9 @@ pub(crate) mod org_support {
     /// `sub` resolves to a `Principal::User` so the request body is
     /// actually exercised.
     pub(crate) fn create_org_state_without_store() -> (AppState, String) {
-        let api_config = ApiConfig::for_test();
-        let state = AppState::new(
-            Arc::new(InMemoryWorkflowRepo::new()),
-            Arc::new(InMemoryExecutionRepo::new()),
-            Arc::new(InMemoryControlQueueRepo::new()),
-            api_config.jwt_secret,
-        )
-        .with_org_resolver(Arc::new(TestOrgResolver))
-        .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
         // No `.with_membership_store(...)` — exactly the default binary.
+        // `build_me_state` already wires the slug resolvers.
+        let state = build_me_state();
         let jwt = jwt_for(&UserId::new().to_string());
         (state, jwt)
     }
@@ -496,45 +712,46 @@ pub(crate) mod org_support {
 
 // ── Orchestration-absent control queue (canon §13 step 6) ─────────────────────
 
-/// A control-queue repo that always fails on `enqueue` — used to simulate
+/// A scoped control-queue port whose `enqueue` always fails — simulates
 /// the "orchestration backend unavailable" scenario (canon §13 step 6).
 /// `StorageError::Internal` is the sentinel `cancel_execution` /
 /// `terminate_execution` map to `ApiError::ServiceUnavailable` → HTTP 503.
-pub(crate) struct AlwaysFailControlQueueRepo;
+#[derive(Debug)]
+pub(crate) struct AlwaysFailControlQueue;
 
 #[async_trait::async_trait]
-impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
+impl nebula_storage_port::store::ControlQueue for AlwaysFailControlQueue {
     async fn enqueue(
         &self,
-        _entry: &nebula_storage::repos::ControlQueueEntry,
-    ) -> Result<(), nebula_storage::StorageError> {
-        Err(nebula_storage::StorageError::Internal(
+        _msg: &nebula_storage_port::dto::ControlMsg,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        Err(nebula_storage_port::StorageError::Internal(
             "control queue backend unavailable (simulated)".to_string(),
         ))
     }
 
     async fn claim_pending(
         &self,
-        _processor: &[u8],
+        _processor: &[u8; 16],
         _batch_size: u32,
-    ) -> Result<Vec<nebula_storage::repos::ControlQueueEntry>, nebula_storage::StorageError> {
+    ) -> Result<Vec<nebula_storage_port::dto::ControlMsg>, nebula_storage_port::StorageError> {
         Ok(vec![])
     }
 
     async fn mark_completed(
         &self,
-        _id: &[u8],
-        _processor: &[u8],
-    ) -> Result<(), nebula_storage::StorageError> {
+        _id: &[u8; 16],
+        _processor: &[u8; 16],
+    ) -> Result<(), nebula_storage_port::StorageError> {
         Ok(())
     }
 
     async fn mark_failed(
         &self,
-        _id: &[u8],
-        _processor: &[u8],
+        _id: &[u8; 16],
+        _processor: &[u8; 16],
         _error: &str,
-    ) -> Result<(), nebula_storage::StorageError> {
+    ) -> Result<(), nebula_storage_port::StorageError> {
         Ok(())
     }
 
@@ -542,35 +759,57 @@ impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
         &self,
         _reclaim_after: std::time::Duration,
         _max_reclaim_count: u32,
-    ) -> Result<nebula_storage::repos::ReclaimOutcome, nebula_storage::StorageError> {
-        Ok(nebula_storage::repos::ReclaimOutcome::default())
+    ) -> Result<nebula_storage_port::store::ReclaimOutcome, nebula_storage_port::StorageError> {
+        Ok(nebula_storage_port::store::ReclaimOutcome::default())
     }
 
     async fn cleanup(
         &self,
         _retention: std::time::Duration,
-    ) -> Result<u64, nebula_storage::StorageError> {
+    ) -> Result<u64, nebula_storage_port::StorageError> {
         Ok(0)
     }
 }
 
-/// Create an `AppState` wired with the always-failing control queue repo.
-/// All other repos are fully functional in-memory implementations.
-pub(crate) async fn create_state_with_failing_queue() -> AppState {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::new(AlwaysFailControlQueueRepo);
+/// Create an `AppState` wired through the storage port whose **control
+/// queue** always fails on `enqueue` (canon §13 step 6). Every other
+/// store is the normal in-memory port adapter behind its `nebula-tenancy`
+/// scoping decorator — only the control queue is the always-fail double.
+///
+/// Returns the state plus the raw (undecorated) [`InMemoryExecutionStore`]
+/// so the §13 step-6 test can seed a running execution row directly under
+/// [`port_scope`] before asserting the enqueue-fails-503 path. The store is
+/// `Clone` over an `Arc<Mutex<…>>`, so the returned handle shares state
+/// with the scoping-decorated one inside `AppState`.
+pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExecutionStore) {
+    use nebula_storage::inmem::{
+        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
+        InMemoryWorkflowVersionStore,
+    };
+    let exec_store = InMemoryExecutionStore::new();
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+
     let api_config = ApiConfig::for_test();
 
-    AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
+    // Raw (undecorated) port handles; the always-failing control queue is
+    // wired directly so the enqueue-fails-503 path is asserted regardless
+    // of the per-request scope the `AppState` accessors apply.
+    let state = AppState::new(
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store.clone()),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(AlwaysFailControlQueue),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+
+    (state, exec_store)
 }
 
 // ── Engine seam harness (canon §13 step 5 / ADR-0008 A3 / ADR-0016) ──────────
@@ -601,6 +840,10 @@ pub(crate) mod engine_seam {
     use nebula_engine::{
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
         EngineControlDispatch, InProcessSandbox, WorkflowEngine,
+    };
+    use nebula_tenancy::{
+        ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
     };
     use nebula_workflow::{
         Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -683,9 +926,39 @@ pub(crate) mod engine_seam {
             ui_metadata: None,
             schema_version: 1,
         };
+        // Port equivalent of the old `state.workflow_repo.save(id, 0, def)`:
+        // a workflow row at version 1 plus a published version record #1
+        // through the scoped port handles on `AppState` (the tenancy
+        // decorators substitute their bound scope, so the `port_scope()`
+        // argument is immaterial — it only needs to be a valid `Scope`).
+        let scope = super::port_scope();
+        let id_str = workflow_id.to_string();
         state
-            .workflow_repo
-            .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
+            .workflow_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowRecord {
+                    id: id_str.clone(),
+                    scope: scope.clone(),
+                    version: 1,
+                    slug: id_str.clone(),
+                    deleted: false,
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .workflow_version_store
+            .create(
+                &scope,
+                nebula_storage_port::dto::WorkflowVersionRecord {
+                    workflow_id: id_str,
+                    number: 1,
+                    published: true,
+                    pinned: false,
+                    definition: serde_json::to_value(&wf).unwrap(),
+                },
+            )
             .await
             .unwrap();
         workflow_id
@@ -749,21 +1022,62 @@ pub(crate) mod engine_seam {
             .unwrap(),
         );
 
+        // `AppState` now stores **raw** port handles and applies the
+        // per-request tenant scope in its accessors; the engine, by
+        // contrast, still calls its store handles with the internal
+        // `engine_scope()` placeholder (a separate, tracked follow-up —
+        // see ADR-0072 "Known follow-up: engine per-execution tenant
+        // scoping"). To keep the seam coherent the engine-side handles
+        // are wrapped here in `nebula-tenancy` decorators bound to
+        // `port_scope()` — the request scope the API derives and the
+        // tests seed under. The decorator substitutes its bound scope
+        // for whatever the engine passes, so engine writes, harness
+        // `seed_*` writes, and API reads all key on the same tenant.
+        // This is the decorator's intended composition-seam use (the
+        // security primitive, bound correctly), not a shim. The
+        // slow-node seam never checkpoints or replays, so a fresh
+        // in-memory checkpoint/idempotency pair suffices for the two
+        // `ExecutionStores` fields `AppState` does not expose.
+        let s = super::port_scope();
+        let scoped_exec: Arc<dyn nebula_storage_port::store::ExecutionStore> = Arc::new(
+            ScopedExecutionStore::new(Arc::clone(&state.execution_store), s.clone()),
+        );
         let engine = Arc::new(
             WorkflowEngine::new(runtime, metrics)
                 .unwrap()
-                .with_execution_repo(Arc::clone(&state.execution_repo))
-                .with_workflow_repo(Arc::clone(&state.workflow_repo)),
+                .with_execution_stores(nebula_engine::ExecutionStores {
+                    execution: Arc::clone(&scoped_exec),
+                    journal: Arc::new(ScopedExecutionJournalReader::new(
+                        Arc::clone(&state.journal_reader),
+                        s.clone(),
+                    )),
+                    node_results: Arc::new(ScopedNodeResultStore::new(
+                        Arc::clone(&state.node_result_store),
+                        s.clone(),
+                    )),
+                    checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
+                    idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
+                })
+                .with_workflow_stores(nebula_engine::WorkflowStores {
+                    workflow: Arc::new(ScopedWorkflowStore::new(
+                        Arc::clone(&state.workflow_store),
+                        s.clone(),
+                    )),
+                    versions: Arc::new(ScopedWorkflowVersionStore::new(
+                        Arc::clone(&state.workflow_version_store),
+                        s.clone(),
+                    )),
+                }),
         );
 
         let dispatch = Arc::new(EngineControlDispatch::new(
             Arc::clone(&engine),
-            Arc::clone(&state.execution_repo),
+            Arc::clone(&scoped_exec),
         ));
         let consumer = ControlConsumer::new(
-            Arc::clone(&state.control_queue_repo),
+            Arc::new(ScopedControlQueue::new(Arc::clone(&state.control_queue), s)),
             dispatch,
-            b"knife-a3".to_vec(),
+            super::proc16(b"knife-a3"),
         )
         .with_poll_interval(Duration::from_millis(10));
         let shutdown = CancellationToken::new();

@@ -64,8 +64,8 @@ work. (see origin: Problem Frame, F1, AE4)
   contradictions (plugin stable vs partial, SDK prelude vs README) in **U0** before
   expanding API surface. (user: tech-debt-first)
 
-**Origin actors:** A1 Integration author, A3 Tech lead  
-**Origin flows:** F1 Integrator day-one, F3 Dependency chain resolve  
+**Origin actors:** A1 Integration author, A3 Tech lead
+**Origin flows:** F1 Integrator day-one, F3 Dependency chain resolve
 **Origin acceptance examples:** AE4 Integrator flagship, AE5 SlackResource chain
 
 ---
@@ -207,8 +207,8 @@ error before execute.
 new types ship. No U1–U6 PR may merge without U0 (or explicit TD waiver in PR
 description).
 
-**Requirements:** R6, R7  
-**Dependencies:** none  
+**Requirements:** R6, R7
+**Dependencies:** none
 
 **Files:**
 - `crates/credential-builtin/README.md`, `crates/credential-builtin/src/lib.rs` (comments)
@@ -246,8 +246,8 @@ description).
 **Goal:** Ship reusable built-in credential types with `Schema` forms and ADR-0035
 capability wiring so integrators do not reimplement auth plumbing.
 
-**Requirements:** R1, R6, R7  
-**Dependencies:** U0  
+**Requirements:** R1, R6, R7
+**Dependencies:** U0
 
 **Files:**
 - `crates/credential-builtin/src/lib.rs`
@@ -289,8 +289,8 @@ reflects honest state (not `frontier` scaffold).
 
 **Goal:** One-import integrator DX documented and tested; prelude matches catalog types.
 
-**Requirements:** R3, R6  
-**Dependencies:** U0, U1  
+**Requirements:** R3, R6
+**Dependencies:** U0, U1
 
 **Files:**
 - `crates/sdk/src/prelude.rs`
@@ -317,8 +317,8 @@ reflects honest state (not `frontier` scaffold).
 
 **Goal:** In-repo reference plugin authors can copy; demonstrates F1 integrator day-one.
 
-**Requirements:** R2, R13  
-**Dependencies:** U0, U1, U2  
+**Requirements:** R2, R13
+**Dependencies:** U0, U1, U2
 
 **Files:**
 - `plugins/reference/` (preferred; U0 deny spike) or `examples/reference-plugin/`
@@ -353,8 +353,8 @@ reflects honest state (not `frontier` scaffold).
 
 **Goal:** Required credential slot missing → activation fails with structured error.
 
-**Requirements:** R4, R5  
-**Dependencies:** U3  
+**Requirements:** R4, R5
+**Dependencies:** U3
 
 **Files:**
 - `crates/engine/tests/` or `crates/resource/tests/` (new integration test)
@@ -381,8 +381,8 @@ reflects honest state (not `frontier` scaffold).
 
 **Goal:** Executable proof for “same day plugin” independent of full knife operator flow.
 
-**Requirements:** R5, R6, SC2  
-**Dependencies:** U3, U4  
+**Requirements:** R5, R6, SC2
+**Dependencies:** U3, U4
 
 **Files:**
 - `crates/engine/tests/integrator_golden_path.rs` (or `crates/sdk/tests/`)
@@ -407,8 +407,8 @@ reflects honest state (not `frontier` scaffold).
 
 **Goal:** MATURITY L3 gate enforced in docs for dimensions this milestone actually completes.
 
-**Requirements:** R5, R6, SC1, SC3  
-**Dependencies:** U1–U5  
+**Requirements:** R5, R6, SC1, SC3
+**Dependencies:** U1–U5
 
 **Files:**
 - `docs/MATURITY.md`

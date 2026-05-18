@@ -44,6 +44,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         ))
         .routes(routes!(workflow::activate_workflow))
         .routes(routes!(workflow::execute_workflow))
+        .routes(routes!(workflow::validate_workflow_handler))
         // Executions
         .routes(routes!(
             execution::list_executions_for_workflow,

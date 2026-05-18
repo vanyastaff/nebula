@@ -113,6 +113,43 @@ deny = [
     # wires in-memory repos directly (same pattern as nebula-server).
     "nebula-examples",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
+
+  # nebula-storage-port is the Core-tier storage contract: object-safe
+  # repository traits, port-local DTO rows, the plain-data `Scope` value
+  # type, `StorageError`, and the `TransitionBatch` unit-of-work. Being a
+  # Core-tier contract it is broadly importable: the adapter
+  # (`nebula-storage`), the loom probe, the tenancy decorator, the
+  # exec/api consumers, and the credential-vault dev-dep may depend on it
+  # downward. It has no sqlx and no upward deps.
+  { crate = "nebula-storage-port", wrappers = [
+    "nebula-storage",
+    "nebula-storage-loom-probe",
+    "nebula-tenancy",
+    "nebula-engine",
+    "nebula-api",
+    "nebula-credential-vault",
+  ], reason = "Storage port is a Core-tier contract; the adapter, tenancy decorator, exec/api consumers, and the credential-vault dev-dep may depend on it" },
+
+  # nebula-tenancy is the Business-tier multi-tenancy security boundary: it
+  # owns the policy (resolve `Scope` from a `Principal`, inject it, enforce
+  # cross-tenant denial) via scoping decorators over the storage port — it
+  # never owns the `Scope` type itself (that is port/Core-level). Only the
+  # composition roots may depend on it: the API `AppState` builds the
+  # adapter and wraps it in the tenancy decorator from the request
+  # principal; the engine receives only the already-scoped `Arc<dyn …>`
+  # handle. The dev-dep entries carve out the scoped conformance matrix
+  # (`crates/storage/tests/conformance`) and the §13 knife integration test
+  # (`crates/api/tests/knife.rs` is in `nebula-api`). The allowlist locks
+  # this set so a sibling Business/Core crate cannot quietly bypass the
+  # boundary by depending on the decorator directly.
+  { crate = "nebula-tenancy", wrappers = [
+    "nebula-api",
+    "nebula-engine",
+    # Dev-only: the scoped variant of the storage conformance matrix wires
+    # `nebula-tenancy` as a dev-dep to prove cross-tenant denial uniformly
+    # across {InMemory, SQLite, Postgres} behind the decorator (spec §6.1).
+    "nebula-storage",
+  ], reason = "Tenancy is the Business-tier security boundary; only composition roots (api/engine) and the scoped-conformance dev-dep may depend on the decorator" },
   { crate = "nebula-sdk", wrappers = [
     "nebula-examples",
   ], reason = "SDK is the external integration surface; only the examples workspace member may depend on it" },
@@ -159,6 +196,13 @@ deny = [
     "nebula-resource",
     "nebula-sdk",
     "nebula-storage",
+    # The credential scope-layer (the `CredentialStore` scope decorator
+    # + its owner resolver) is re-homed into the tenancy security
+    # boundary (spec §8); `nebula-tenancy` owns that policy half and
+    # therefore consumes the credential contract directly. The
+    # credential-specific Encryption/Cache/Audit wiring still lives in
+    # `nebula-storage` and re-composes on top.
+    "nebula-tenancy",
   ], reason = "Credential contract is shared infra; the listed Business/Exec/API consumers and first-party backends may depend on it (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper

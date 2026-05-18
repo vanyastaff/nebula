@@ -3431,6 +3431,8 @@ dependencies = [
  "nebula-resilience",
  "nebula-schema",
  "nebula-storage",
+ "nebula-storage-port",
+ "nebula-tenancy",
  "nebula-validator",
  "nebula-workflow",
  "oas3",
@@ -3621,6 +3623,7 @@ dependencies = [
  "nebula-sandbox",
  "nebula-schema",
  "nebula-storage",
+ "nebula-storage-port",
  "nebula-workflow",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -4051,6 +4054,8 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
+ "nebula-storage-port",
+ "nebula-tenancy",
  "parking_lot",
  "pretty_assertions",
  "redis",
@@ -4073,6 +4078,35 @@ name = "nebula-storage-loom-probe"
 version = "0.1.0"
 dependencies = [
  "loom",
+]
+
+[[package]]
+name = "nebula-storage-port"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "nebula-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "nebula-tenancy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "nebula-core",
+ "nebula-credential",
+ "nebula-storage-port",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

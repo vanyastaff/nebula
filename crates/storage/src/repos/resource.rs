@@ -60,8 +60,8 @@ pub trait ResourceRepo: Send + Sync {
 
     /// List **live** resources in a workspace with pagination.
     ///
-    /// `offset`/`limit` page the workspace window (mirrors
-    /// [`WorkflowRepo::list`](super::WorkflowRepo::list)). An
+    /// `offset`/`limit` page the workspace window (mirrors the workflow
+    /// row-list contract). An
     /// implementation **MUST** exclude soft-deleted rows
     /// (`deleted_at IS NOT NULL`) **as part of** pagination — i.e. the
     /// `(offset, limit)` window is over the *live* row set, applied

@@ -127,13 +127,26 @@ impl ServerRuntime {
 
 /// Build default local-first state used by transport binaries.
 ///
+/// The execution / workflow / control-queue surface is the scoped
+/// storage port: the in-memory adapters wrapped in the `nebula-tenancy`
+/// scoping decorators bound to the local-first placeholder scope. One
+/// shared execution-store core backs the control queue and journal so a
+/// `commit`/`enqueue` is observable through every reader (the same
+/// wiring contract the conformance harness uses). A single
+/// workflow-version store instance is shared between the workflow-CRUD
+/// path and the resume/definition path so a version published via the
+/// workflow handlers is readable through the execution accessor.
+///
 /// The idempotency store is **not** attached here — it is wired
 /// asynchronously by [`ServerRuntime::run_transport`] so the PG-backed
 /// path can `await` the sqlx pool construction.
 pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitError> {
-    let workflow_repo = Arc::new(nebula_storage::InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
+    // The execution / workflow / control-queue port wiring (the
+    // six-handle in-memory-adapter + `nebula-tenancy`-decorator stack) is
+    // the single-source-of-truth `AppState::in_memory`. This composition
+    // root only layers the deployment-specific ports on top of it
+    // (identity backend, credential-schema, api keys) so the wiring
+    // contract cannot drift between the binary and the runnable example.
 
     // Plane-A identity backend. `InMemoryAuthBackend` is the
     // production-quality default (Argon2id passwords, RFC 6238 TOTP,
@@ -189,15 +202,10 @@ pub fn default_state(api_config: &ApiConfig) -> Result<AppState, TransportInitEr
         nebula_api::ports::credential_schema_registry::try_default_registry_port()
             .map_err(|e| TransportInitError::CredentialSchemaInit(e.to_string()))?;
 
-    Ok(AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_api_keys(api_config.api_keys.clone())
-    .with_auth_backend(auth_backend)
-    .with_credential_schema(credential_schema))
+    Ok(AppState::in_memory(api_config.jwt_secret.clone())
+        .with_api_keys(api_config.api_keys.clone())
+        .with_auth_backend(auth_backend)
+        .with_credential_schema(credential_schema))
 }
 
 /// Construct the idempotency store from `api_config.idempotency`.

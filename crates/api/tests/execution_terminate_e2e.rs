@@ -43,8 +43,8 @@ use tower::ServiceExt;
 // but exercises the `Terminate` command instead of `Cancel`. The wiring:
 //
 //   POST /executions/:id/terminate
-//     → execution_repo.transition (Cancelled)        [API handler, §12.2 order]
-//     → execution_control_queue.enqueue(Terminate)   [API handler, §12.2 order]
+//     → execution_store CAS-transition (Cancelled)    [API handler, §12.2 order]
+//     → control_queue.enqueue(Terminate)              [API handler, §12.2 order]
 //     → ControlConsumer.claim_pending
 //     → EngineControlDispatch::dispatch_terminate     (ADR-0008 A3 / ADR-0016)
 //     → EngineControlDispatch::dispatch_cancel        (Terminate == cooperative
@@ -70,9 +70,12 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     use std::time::Duration;
 
     use nebula_execution::ExecutionStatus;
-    use nebula_storage::repos::ControlCommand;
+    use nebula_storage_port::dto::ControlCommand;
 
-    let (state, control_queue) = create_state_with_queue().await;
+    // Port handles: `handles.control_queue` is the non-consuming outbox
+    // snapshot; `handles.{seed_execution,execution_state}` are the port
+    // equivalents of the old `state.execution_repo.{create,get_state}`.
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -157,15 +160,13 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     // The control queue must hold the `Start` from the producer path AND a
     // fresh `Terminate` from the endpoint under test — proving the §12.2
     // same-logical-operation enqueue happened, engine-visible.
-    let queued = control_queue.snapshot().await;
-    let terminate_entry = queued
+    let queued = handles.control_queue.snapshot();
+    let (terminate_msg, _status) = queued
         .iter()
-        .find(|e| e.command == ControlCommand::Terminate)
+        .find(|(msg, _status)| msg.command == ControlCommand::Terminate)
         .expect("a Terminate entry must be present in the durable control queue");
-    let queued_eid = String::from_utf8(terminate_entry.execution_id.clone())
-        .expect("execution_id bytes must be valid UTF-8");
     assert_eq!(
-        queued_eid, execution_id_str,
+        terminate_msg.execution_id, execution_id_str,
         "Terminate entry must reference the terminated execution"
     );
 
@@ -175,11 +176,9 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
     let final_status = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let (_version, json) = state
-                .execution_repo
-                .get_state(execution_id)
+            let (_version, json) = handles
+                .execution_state(execution_id)
                 .await
-                .unwrap()
                 .expect("execution row present");
             let status: ExecutionStatus =
                 serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
@@ -215,9 +214,9 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
 #[tokio::test]
 async fn terminate_enqueues_durable_control_signal() {
     use nebula_core::{ExecutionId, WorkflowId};
-    use nebula_storage::repos::ControlCommand;
+    use nebula_storage_port::dto::ControlCommand;
 
-    let (state, control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -228,9 +227,8 @@ async fn terminate_enqueues_durable_control_signal() {
         .unwrap()
         .as_secs() as i64;
 
-    state
-        .execution_repo
-        .create(
+    handles
+        .seed_execution(
             execution_id,
             workflow_id,
             serde_json::json!({
@@ -240,11 +238,10 @@ async fn terminate_enqueues_durable_control_signal() {
                 "input": {}
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "control queue must be empty before terminate"
     );
 
@@ -285,26 +282,24 @@ async fn terminate_enqueues_durable_control_signal() {
     );
 
     // (2) Exactly one Terminate command must have been written to the queue.
-    let queued = control_queue.snapshot().await;
+    let queued = handles.control_queue.snapshot();
     assert_eq!(
         queued.len(),
         1,
         "exactly one control queue entry must exist after terminate"
     );
-    let entry = &queued[0];
+    let (msg, status) = &queued[0];
     assert_eq!(
-        entry.command,
+        msg.command,
         ControlCommand::Terminate,
         "queued command must be Terminate"
     );
     assert_eq!(
-        entry.status, "Pending",
+        status, "Pending",
         "entry must be in Pending state (not yet consumed by engine)"
     );
-    let queued_eid = String::from_utf8(entry.execution_id.clone())
-        .expect("execution_id bytes must be valid UTF-8");
     assert_eq!(
-        queued_eid,
+        msg.execution_id,
         execution_id.to_string(),
         "queued entry must reference the terminated execution"
     );
@@ -319,7 +314,7 @@ async fn terminate_enqueues_durable_control_signal() {
 async fn terminate_queue_failure_returns_503() {
     use nebula_core::{ExecutionId, WorkflowId};
 
-    let state = create_state_with_failing_queue().await;
+    let (state, exec_store) = create_state_with_failing_queue().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -327,11 +322,15 @@ async fn terminate_queue_failure_returns_503() {
     let workflow_id = WorkflowId::new();
     let now = chrono::Utc::now().timestamp();
 
-    state
-        .execution_repo
-        .create(
-            execution_id,
-            workflow_id,
+    // Seed via the shared port execution store (the failing-queue harness
+    // returns the raw store; the `AppState` decorators read the same core).
+    {
+        use nebula_storage_port::store::ExecutionStore;
+        ExecutionStore::create(
+            &exec_store,
+            &port_scope(),
+            &execution_id.to_string(),
+            &workflow_id.to_string(),
             serde_json::json!({
                 "workflow_id": workflow_id.to_string(),
                 "status": "running",
@@ -340,7 +339,8 @@ async fn terminate_queue_failure_returns_503() {
             }),
         )
         .await
-        .unwrap();
+        .expect("seed execution: port create must succeed");
+    }
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -450,7 +450,7 @@ async fn terminate_invalid_execution_id_rejected_by_middleware() {
 async fn terminate_terminal_execution_rejected_and_does_not_enqueue() {
     use nebula_core::{ExecutionId, WorkflowId};
 
-    let (state, control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -461,9 +461,8 @@ async fn terminate_terminal_execution_rejected_and_does_not_enqueue() {
         .unwrap()
         .as_secs() as i64;
 
-    state
-        .execution_repo
-        .create(
+    handles
+        .seed_execution(
             execution_id,
             workflow_id,
             serde_json::json!({
@@ -474,8 +473,7 @@ async fn terminate_terminal_execution_rejected_and_does_not_enqueue() {
                 "input": {}
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -511,7 +509,7 @@ async fn terminate_terminal_execution_rejected_and_does_not_enqueue() {
     );
 
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "control queue must be empty after rejected terminate of terminal execution"
     );
 }

@@ -1,6 +1,5 @@
-//! Loom test asserting CAS atomicity under 2-thread interleaving.
-//!
-//! Per sub-spec §10 DoD requirement.
+//! Loom test asserting refresh-claim CAS atomicity under 2-thread
+//! interleaving (ADR-0041 durability requirement).
 //!
 //! Loom replaces std's atomic primitives with a deterministic scheduler
 //! that exhaustively explores thread interleavings. Two concurrent

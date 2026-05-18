@@ -20,11 +20,12 @@ use crate::{
     domain::{
         execution::{
             dto::{ExecutionResponse, StartExecutionRequest},
-            handler::enqueue_start,
+            handler::enqueue_start_scoped,
         },
         shared::PaginationParams,
         workflow::dto::{
             CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowResponse,
+            WorkflowValidateResponse,
         },
     },
     error::{ApiError, ApiResult, ProblemDetails},
@@ -95,24 +96,18 @@ pub(crate) fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
 )]
 pub async fn list_workflows(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListWorkflowsResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let offset = params.offset();
     let limit = params.limit();
 
-    // Fetch workflows from repository
-    let workflows = state
-        .workflow_repo
-        .list(offset, limit)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?;
+    // Fetch workflows scoped to the caller's tenant (a freshly bound
+    // tenancy decorator keyed by the request scope).
+    let workflows = state.workflow_list_scoped(&scope, offset, limit).await?;
 
-    let total = state
-        .workflow_repo
-        .count()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))?;
+    let total = state.workflow_count_scoped(&scope).await?;
 
     // Map to response DTOs
     let workflow_responses: Vec<WorkflowResponse> = workflows
@@ -174,23 +169,19 @@ pub async fn list_workflows(
 )]
 pub async fn get_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Fetch workflow from repository
+    // Fetch the workflow scoped to the caller's tenant.
     let definition = state
-        .workflow_repo
-        .get(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
-
-    // Check if workflow exists
-    let definition =
-        definition.ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+        .workflow_definition_scoped(&scope, workflow_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Extract fields from workflow definition JSON
     let name = definition
@@ -238,9 +229,10 @@ pub async fn get_workflow(
 )]
 pub async fn create_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Json(payload): Json<CreateWorkflowRequest>,
 ) -> ApiResult<(StatusCode, Json<WorkflowResponse>)> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Validate workflow name
     if payload.name.trim().is_empty() {
         return Err(ApiError::validation_message(
@@ -254,42 +246,71 @@ pub async fn create_workflow(
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
     // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    //
+    // The stored definition must round-trip as a `WorkflowDefinition`
+    // (its `created_at`/`updated_at` are `DateTime<Utc>`, which serde
+    // encodes as RFC 3339 strings). Writing raw Unix-seconds integers
+    // here produces a JSON object that *looks* like a workflow but fails
+    // `serde_json::from_str::<WorkflowDefinition>` — the parse the
+    // activate path performs before flipping the active flag. Persist the
+    // RFC 3339 form; the `WorkflowResponse` API field stays Unix seconds
+    // and is derived from the same instant.
+    let now = Utc::now();
+    let now_secs = now.timestamp();
+    let now_rfc3339 = now.to_rfc3339();
 
-    // Build workflow definition by merging request definition with metadata
+    // Build workflow definition by merging request definition with metadata.
+    // A workflow definition must be an object: wrapping arrays / strings /
+    // null into an outer metadata object creates JSON that cannot
+    // deserialize as `WorkflowDefinition` on activation.
     let mut definition = payload.definition.clone();
-    if let Some(obj) = definition.as_object_mut() {
-        obj.insert("name".to_string(), serde_json::json!(payload.name));
-        if let Some(desc) = &payload.description {
-            obj.insert("description".to_string(), serde_json::json!(desc));
-        }
-        obj.insert("created_at".to_string(), serde_json::json!(now));
-        obj.insert("updated_at".to_string(), serde_json::json!(now));
-    } else {
-        // If definition is not an object, wrap it with metadata
-        definition = serde_json::json!({
-            "name": payload.name,
-            "description": payload.description,
-            "created_at": now,
-            "updated_at": now,
-            "definition": definition,
-        });
+    let Some(obj) = definition.as_object_mut() else {
+        return Err(ApiError::validation_message(
+            "Workflow definition must be a JSON object",
+        ));
+    };
+    // The server owns every immutable identity/control field — a
+    // client must not smuggle its own `id` / `version` / `owner_id`
+    // / `schema_version` through the create `definition` (the update
+    // path *rejects* these per issue #344; create previously
+    // persisted them verbatim, so the stored definition's identity
+    // could diverge from the server-generated `workflow_id` used as
+    // the repository key). These are *overwritten* with
+    // server-authoritative values, not stripped: `id` / `version` /
+    // `schema_version` are required by the canonical
+    // `WorkflowDefinition` schema, so removing them would yield a
+    // blob that fails the `from_str::<WorkflowDefinition>` parse the
+    // activate path performs. A client-supplied `owner_id` is
+    // dropped (the field is optional; create assigns no owner here).
+    obj.insert("id".to_string(), serde_json::json!(workflow_id.to_string()));
+    obj.insert(
+        "version".to_string(),
+        serde_json::json!({ "major": 0, "minor": 1, "patch": 0 }),
+    );
+    obj.insert(
+        "schema_version".to_string(),
+        serde_json::json!(nebula_workflow::CURRENT_SCHEMA_VERSION),
+    );
+    obj.remove("owner_id");
+    obj.insert("name".to_string(), serde_json::json!(payload.name));
+    if let Some(desc) = &payload.description {
+        obj.insert("description".to_string(), serde_json::json!(desc));
     }
+    obj.insert("created_at".to_string(), serde_json::json!(now_rfc3339));
+    obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
 
-    // Save workflow with version 0 (new workflow)
+    // Save workflow with version 0 (new workflow) scoped to the tenant.
     state
-        .workflow_repo
-        .save(workflow_id, 0, definition.clone())
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create workflow: {e}")))?;
+        .workflow_save_scoped(&scope, workflow_id, 0, definition.clone())
+        .await?;
 
     // Build response
     let response = WorkflowResponse {
         id: workflow_id.to_string(),
         name: payload.name,
         description: payload.description,
-        created_at: now,
-        updated_at: now,
+        created_at: now_secs,
+        updated_at: now_secs,
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -320,26 +341,29 @@ pub async fn create_workflow(
 )]
 pub async fn update_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
     Json(payload): Json<UpdateWorkflowRequest>,
 ) -> ApiResult<Json<WorkflowResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Get current workflow with version
+    // Get current workflow with version, scoped to the tenant.
     let (version, mut definition) = state
-        .workflow_repo
-        .get_with_version(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_with_version_scoped(&scope, workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
-    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`. Persist the
+    // RFC 3339 form so the stored definition stays a parseable
+    // `WorkflowDefinition` (see `create_workflow` for the rationale);
+    // the response timestamp is derived via `extract_timestamp`, which
+    // accepts both encodings.
+    let now_rfc3339 = Utc::now().to_rfc3339();
 
     // Update definition with new values
     if let Some(obj) = definition.as_object_mut() {
@@ -365,9 +389,12 @@ pub async fn update_workflow(
         // wants a different identity must create a new workflow — otherwise
         // the stored id/version/owner would silently diverge from the
         // repository key used to route the request.
-        if let Some(new_def) = &payload.definition
-            && let Some(new_obj) = new_def.as_object()
-        {
+        if let Some(new_def) = &payload.definition {
+            let Some(new_obj) = new_def.as_object() else {
+                return Err(ApiError::validation_message(
+                    "Workflow definition must be a JSON object",
+                ));
+            };
             for key in new_obj.keys() {
                 if IMMUTABLE_DEFINITION_FIELDS.contains(&key.as_str()) {
                     return Err(ApiError::validation_message(format!(
@@ -381,27 +408,18 @@ pub async fn update_workflow(
         }
 
         // Update the updated_at timestamp
-        obj.insert("updated_at".to_string(), serde_json::json!(now));
+        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
     } else {
         return Err(ApiError::Internal(
             "Invalid workflow definition format".to_string(),
         ));
     }
 
-    // Save with optimistic concurrency control
+    // Save with optimistic concurrency control via the accessor (a CAS
+    // miss is mapped to the same 409 message the legacy path produced).
     state
-        .workflow_repo
-        .save(workflow_id, version, definition.clone())
-        .await
-        .map_err(|e| {
-            use nebula_storage::WorkflowRepoError;
-            match e {
-                WorkflowRepoError::Conflict { .. } => {
-                    ApiError::Conflict("Workflow was modified by another request".to_string())
-                },
-                _ => ApiError::Internal(format!("Failed to update workflow: {e}")),
-            }
-        })?;
+        .workflow_save_scoped(&scope, workflow_id, version, definition.clone())
+        .await?;
 
     // Extract fields for response
     let name = definition
@@ -450,19 +468,16 @@ pub async fn update_workflow(
 )]
 pub async fn delete_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Delete workflow from repository
-    let existed = state
-        .workflow_repo
-        .delete(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete workflow: {e}")))?;
+    // Delete the workflow scoped to the tenant (missing ⇒ false).
+    let existed = state.workflow_delete_scoped(&scope, workflow_id).await?;
 
     // Return 404 if workflow didn't exist, 204 No Content if it was deleted
     if existed {
@@ -497,19 +512,19 @@ pub async fn delete_workflow(
 )]
 pub async fn activate_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Get current workflow with version for optimistic concurrency
+    // Get current workflow with version for optimistic concurrency,
+    // scoped to the tenant.
     let (version, mut definition) = state
-        .workflow_repo
-        .get_with_version(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_with_version_scoped(&scope, workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Canon §10 step 2: validate the workflow definition before flipping the
@@ -546,33 +561,27 @@ pub async fn activate_workflow(
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
-    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`. Persist the
+    // RFC 3339 form so the re-saved definition stays a parseable
+    // `WorkflowDefinition` for the next activate/validate round-trip
+    // (see `create_workflow`).
+    let now_rfc3339 = Utc::now().to_rfc3339();
 
     // Update definition to set active flag
     if let Some(obj) = definition.as_object_mut() {
         obj.insert("active".to_string(), serde_json::json!(true));
-        obj.insert("updated_at".to_string(), serde_json::json!(now));
+        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
     } else {
         return Err(ApiError::Internal(
             "Invalid workflow definition format".to_string(),
         ));
     }
 
-    // Save with optimistic concurrency control
+    // Save with optimistic concurrency control via the accessor (a CAS
+    // miss is mapped to the same 409 message the legacy path produced).
     state
-        .workflow_repo
-        .save(workflow_id, version, definition.clone())
-        .await
-        .map_err(|e| {
-            use nebula_storage::WorkflowRepoError;
-            match e {
-                WorkflowRepoError::Conflict { .. } => {
-                    ApiError::Conflict("Workflow was modified by another request".to_string())
-                },
-                _ => ApiError::Internal(format!("Failed to activate workflow: {e}")),
-            }
-        })?;
+        .workflow_save_scoped(&scope, workflow_id, version, definition.clone())
+        .await?;
 
     // Extract fields for response
     let name = definition
@@ -623,20 +632,19 @@ pub async fn activate_workflow(
 )]
 pub async fn execute_workflow(
     State(state): State<AppState>,
-    Extension(_tenant): Extension<TenantContext>,
+    Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify workflow exists
+    // Verify the workflow exists in the caller's tenant.
     state
-        .workflow_repo
-        .get(workflow_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .workflow_definition_scoped(&scope, workflow_id)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
     // Generate new execution ID
@@ -656,22 +664,20 @@ pub async fn execute_workflow(
     let state_json = serde_json::to_value(&exec_state)
         .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
 
-    // Create execution record via `create` — `transition` is a CAS UPDATE
-    // and was hitting zero rows for every brand-new ID, so every call to
-    // this handler previously returned a 500.
+    // Create the execution record scoped to the caller's tenant.
+    // `transition` is a CAS UPDATE and would hit zero rows for a
+    // brand-new id, so this is `create`, not a transition.
     state
-        .execution_repo
-        .create(execution_id, workflow_id, state_json)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))?;
+        .create_execution_scoped(&scope, execution_id, workflow_id, state_json)
+        .await?;
 
     // Enqueue the Start signal on the durable control queue — closes the
     // §4.5 gap where the API advertised dispatch but never reached the
-    // engine (#332). Shared with `start_execution` via the `enqueue_start`
-    // helper so the create + enqueue contract lives in one place. M3.5:
-    // `enqueue_start` stamps optional W3C trace context on the row when the
-    // HTTP span is OTel-linked.
-    enqueue_start(&state, execution_id).await?;
+    // engine (#332). Shared with `start_execution` via the
+    // `enqueue_start_scoped` helper so the create + enqueue contract lives
+    // in one place. M3.5: it stamps optional W3C trace context on the row
+    // when the HTTP span is OTel-linked.
+    enqueue_start_scoped(&state, &scope, execution_id).await?;
 
     // Report `created_at` as the observable timestamp — the engine has not
     // transitioned `started_at` yet (that happens at dispatch time). See
@@ -689,6 +695,88 @@ pub async fn execute_workflow(
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+/// Validate workflow
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/validate
+///
+/// Loads the stored workflow, deserializes it as a
+/// [`nebula_workflow::WorkflowDefinition`], and runs structural validation
+/// (DAG cycle check, node references, schema version, etc.).
+///
+/// Always returns **200 OK**. The response body indicates the outcome:
+/// - `{valid: true, errors: []}` — definition is structurally valid.
+/// - `{valid: false, errors: ["…"]}` — definition has validation errors.
+///
+/// A 422 is only returned when the stored JSON cannot be parsed at all (i.e.
+/// the blob is not a `WorkflowDefinition`), which is treated as a validation
+/// error rather than a not-found condition.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}/validate",
+    tag = "workspaces.workflows",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Validation ran; body indicates valid/invalid with error list.", body = WorkflowValidateResponse),
+        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 422, description = "Stored definition cannot be parsed as a workflow.", body = ProblemDetails),
+        (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
+    ),
+)]
+pub async fn validate_workflow_handler(
+    State(state): State<AppState>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
+) -> ApiResult<Json<WorkflowValidateResponse>> {
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let workflow_id = WorkflowId::parse(&id)
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
+
+    let definition = state
+        .workflow_definition_scoped(&scope, workflow_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+
+    // Deserialise the stored JSON into a WorkflowDefinition through the
+    // SAME `to_string` → `from_str` path `activate_workflow` uses (not
+    // `serde_json::from_value`): `from_value` cannot zero-copy borrow
+    // `&str` from a `Value::String`, so types like `domain_key::Key<T>`
+    // that use `<&str>::deserialize` fail under `from_value` but parse
+    // under the streaming `from_str` deserializer. Using `from_value`
+    // here while activate uses `from_str` made validate and activate
+    // accept *different* definitions — a workflow could validate-OK yet
+    // fail to activate (same inconsistency class as the #343 timestamp
+    // bug). Both paths now accept identically.
+    let raw_json = serde_json::to_string(&definition)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize workflow definition: {e}")))?;
+    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
+        .map_err(|e| {
+            ApiError::validation_message(format!(
+                "Workflow definition cannot be parsed as WorkflowDefinition: {e}"
+            ))
+        })?;
+
+    let errors = nebula_workflow::validate_workflow(&workflow_def);
+    if errors.is_empty() {
+        Ok(Json(WorkflowValidateResponse {
+            valid: true,
+            errors: vec![],
+        }))
+    } else {
+        let error_messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        Ok(Json(WorkflowValidateResponse {
+            valid: false,
+            errors: error_messages,
+        }))
+    }
 }
 
 #[cfg(test)]

@@ -357,7 +357,7 @@ pub fn map_resource_update_storage_error(err: nebula_storage::StorageError) -> A
         },
         // Connection / serialization / timeout / not-found-on-update / …
         // are not a version conflict — keep the opaque 500 mapping.
-        other => ApiError::Storage(other),
+        other => other.into(),
     }
 }
 
@@ -391,7 +391,7 @@ pub fn map_resource_create_storage_error(err: nebula_storage::StorageError) -> A
         ),
         // Connection / serialization / timeout / … are not a caller
         // conflict — keep the opaque 500 mapping.
-        other => ApiError::Storage(other),
+        other => other.into(),
     }
 }
 

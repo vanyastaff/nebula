@@ -10,7 +10,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md`
 (excluded from agent index — see `.cursorignore`). Do not bulk-read all 41 files.
 
-## Index (0042–0068)
+## Index (0042–0072)
 
 | # | Title | Status |
 |---|-------|--------|
@@ -42,6 +42,7 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 | [0066](./0066-credential-runtime-crate.md) | Credential management runtime crate (`nebula-credential-runtime`) | accepted |
 | [0067](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Engine-owned per-slot rotation fan-out + `&self` refresh hook | accepted |
 | [0068](./0068-layered-retry.md) | Layered retry (action-internal vs node-level) | accepted |
+| [0072](./0072-nebula-storage-spec16-port-adapter-tenancy.md) | `nebula-storage` spec-16 port / adapter / tenancy | accepted |
 
 ## Supersession
 
@@ -51,6 +52,7 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 | Canon `[L1-§3.10]` (`crates/telemetry/README.md`) | [0046](./0046-metrics-telemetry-boundary.md) | Telemetry merged into `nebula-metrics`. |
 | 0044 — hook signature + slot-field/migration shape only | [0067](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | `on_credential_refresh` → `&self` + `SlotCell`; rotation stays engine-owned (ADR-0030). |
 | ADR-0030 facade slice | [0066](./0066-credential-runtime-crate.md) | Management facade → `nebula-credential-runtime`; engine keeps resolver/refresh mechanism. |
+| "Sprint E — adopt spec-16 row model" deferral | [0072](./0072-nebula-storage-spec16-port-adapter-tenancy.md) | Spec-16 is no longer deferred: it is the shipped port + adapter + tenancy architecture for storage. |
 
 ## Related plans
 

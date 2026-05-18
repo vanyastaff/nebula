@@ -24,11 +24,44 @@ use nebula_metrics::{
     MetricsRegistry,
     naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
 };
-use nebula_storage::repos::{
-    ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo,
-};
+use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore};
+use nebula_storage_port::dto::{ControlCommand, ControlMsg};
+use nebula_storage_port::store::ControlQueue;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+
+/// Widen a short test label into the fixed 16-byte processor id the
+/// `ControlConsumer` fence requires. Distinct labels stay distinct (the
+/// fence-collapse the production `[u8; 16]` type now prevents); this is
+/// explicit padding at the test boundary, not a runtime truncate.
+fn proc16(label: &[u8]) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    let n = label.len().min(16);
+    id[..n].copy_from_slice(&label[..n]);
+    id
+}
+
+/// Build a port `InMemoryControlQueue` over a fresh in-memory execution
+/// store. Tests drive only the queue; the store backs its shared core.
+fn port_queue() -> (Arc<InMemoryExecutionStore>, Arc<InMemoryControlQueue>) {
+    let store = Arc::new(InMemoryExecutionStore::new());
+    let queue = Arc::new(InMemoryControlQueue::new(&store));
+    (store, queue)
+}
+
+/// Build a control message with a deterministic 16-byte row id (every
+/// byte = `row_id`). The execution id is carried as the opaque string
+/// form — no UTF-8-of-ULID encoding.
+fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> ControlMsg {
+    ControlMsg {
+        id: [row_id; 16],
+        execution_id: execution_id.to_string(),
+        command,
+        scope: nebula_engine::store_seam::engine_scope(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+    }
+}
 
 /// Records every dispatch invocation so tests can assert the consumer
 /// translated storage rows → typed engine calls correctly.
@@ -167,26 +200,6 @@ impl ControlDispatch for FlakyDispatch {
     }
 }
 
-fn queue_entry(
-    execution_id: &ExecutionId,
-    command: ControlCommand,
-    row_id: u8,
-) -> ControlQueueEntry {
-    ControlQueueEntry {
-        id: vec![row_id; 16],
-        execution_id: execution_id.to_string().into_bytes(),
-        command,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Pending".to_string(),
-        processed_by: None,
-        processed_at: None,
-        error_message: None,
-        reclaim_count: 0,
-        w3c_trace_context: None,
-    }
-}
-
 /// Load-bearing compile check: the consumer is constructible using only
 /// engine-public + nebula-core + nebula-storage-port types.
 ///
@@ -196,10 +209,10 @@ fn queue_entry(
 /// failed to compile; this test makes the proof explicit.
 #[tokio::test]
 async fn control_consumer_public_surface_uses_only_allowed_types() {
-    let queue: Arc<dyn ControlQueueRepo> = Arc::new(InMemoryControlQueueRepo::new());
+    let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
 
-    let consumer = ControlConsumer::new(queue, dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue, dispatch, proc16(b"test-processor"))
         .with_batch_size(8)
         .with_poll_interval(Duration::from_millis(10));
 
@@ -211,10 +224,10 @@ async fn control_consumer_public_surface_uses_only_allowed_types() {
 
 #[tokio::test]
 async fn consumer_shuts_down_gracefully_on_cancel() {
-    let queue: Arc<dyn ControlQueueRepo> = Arc::new(InMemoryControlQueueRepo::new());
+    let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
 
-    let consumer = ControlConsumer::new(queue, dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue, dispatch, proc16(b"test-processor"))
         .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
@@ -231,8 +244,7 @@ async fn consumer_shuts_down_gracefully_on_cancel() {
 
 #[tokio::test]
 async fn consumer_observes_each_command_variant_via_dispatch_trait() {
-    let repo = Arc::new(InMemoryControlQueueRepo::new());
-    let queue: Arc<dyn ControlQueueRepo> = repo.clone();
+    let (_store, queue) = port_queue();
     let recorder = RecordingDispatch::new();
     let dispatch: Arc<dyn ControlDispatch> = recorder.clone();
 
@@ -242,23 +254,28 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     let exec_resume = ExecutionId::new();
     let exec_restart = ExecutionId::new();
 
-    repo.enqueue(&queue_entry(&exec_start, ControlCommand::Start, 0))
+    queue
+        .enqueue(&port_msg(&exec_start, ControlCommand::Start, 0))
         .await
         .unwrap();
-    repo.enqueue(&queue_entry(&exec_cancel, ControlCommand::Cancel, 1))
+    queue
+        .enqueue(&port_msg(&exec_cancel, ControlCommand::Cancel, 1))
         .await
         .unwrap();
-    repo.enqueue(&queue_entry(&exec_terminate, ControlCommand::Terminate, 2))
+    queue
+        .enqueue(&port_msg(&exec_terminate, ControlCommand::Terminate, 2))
         .await
         .unwrap();
-    repo.enqueue(&queue_entry(&exec_resume, ControlCommand::Resume, 3))
+    queue
+        .enqueue(&port_msg(&exec_resume, ControlCommand::Resume, 3))
         .await
         .unwrap();
-    repo.enqueue(&queue_entry(&exec_restart, ControlCommand::Restart, 4))
+    queue
+        .enqueue(&port_msg(&exec_restart, ControlCommand::Restart, 4))
         .await
         .unwrap();
 
-    let consumer = ControlConsumer::new(queue, dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
         .with_batch_size(16)
         .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
@@ -298,9 +315,9 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     );
 
     // Every row the consumer observed was acked via `mark_completed`:
-    // a second `claim_pending` call from a fresh consumer returns nothing
+    // a second `claim_pending` call from a fresh processor returns nothing
     // pending. This is the A1 equivalent of "row is drained."
-    let leftover = repo.claim_pending(b"fresh-processor", 16).await.unwrap();
+    let leftover = queue.claim_pending(b"fresh-processorr", 16).await.unwrap();
     assert!(
         leftover.is_empty(),
         "all rows acked — claim_pending sees nothing pending"
@@ -309,23 +326,25 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
 
 #[tokio::test]
 async fn consumer_marks_row_failed_on_malformed_execution_id() {
-    let repo = Arc::new(InMemoryControlQueueRepo::new());
-    let queue: Arc<dyn ControlQueueRepo> = repo.clone();
+    let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
 
-    let mut poison = queue_entry(&ExecutionId::new(), ControlCommand::Cancel, 9);
-    poison.execution_id = b"not-a-ulid".to_vec();
-    repo.enqueue(&poison).await.unwrap();
+    let mut poison = port_msg(&ExecutionId::new(), ControlCommand::Cancel, 9);
+    poison.execution_id = "not-a-ulid".to_string();
+    queue.enqueue(&poison).await.unwrap();
 
-    let consumer = ControlConsumer::new(queue, dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
         .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
 
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let snap = repo.snapshot().await;
-            if snap.iter().any(|e| e.status == "Failed") {
+            if queue
+                .snapshot_detailed()
+                .iter()
+                .any(|(_, status, _)| status == "Failed")
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -337,19 +356,17 @@ async fn consumer_marks_row_failed_on_malformed_execution_id() {
     shutdown.cancel();
     handle.await.expect("graceful shutdown");
 
-    let snap = repo.snapshot().await;
-    let poison_row = snap
+    let snap = queue.snapshot_detailed();
+    let (_, status, error) = snap
         .iter()
-        .find(|e| e.id == vec![9; 16])
+        .find(|(msg, _, _)| msg.id == [9u8; 16])
         .expect("row present");
-    assert_eq!(poison_row.status, "Failed");
+    assert_eq!(status, "Failed");
     assert!(
-        poison_row
-            .error_message
+        error
             .as_deref()
             .is_some_and(|m| m.contains("malformed execution_id")),
-        "error message explains why dispatch was rejected, got {:?}",
-        poison_row.error_message
+        "error message explains why dispatch was rejected, got {error:?}"
     );
 }
 
@@ -361,13 +378,13 @@ async fn consumer_marks_row_failed_on_malformed_execution_id() {
 /// This is the B1 acceptance test — ADR-0008 §5 liveness guarantee.
 #[tokio::test]
 async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
-    let repo = Arc::new(InMemoryControlQueueRepo::new());
-    let queue: Arc<dyn ControlQueueRepo> = repo.clone();
+    let (_store, queue) = port_queue();
     let dispatch_flaky = FlakyDispatch::new();
     let dispatch1: Arc<dyn ControlDispatch> = dispatch_flaky.clone();
 
     let exec = ExecutionId::new();
-    repo.enqueue(&queue_entry(&exec, ControlCommand::Cancel, 42))
+    queue
+        .enqueue(&port_msg(&exec, ControlCommand::Cancel, 42))
         .await
         .unwrap();
 
@@ -375,7 +392,7 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // aggressive reclaim_after (50ms) + reclaim_interval (30ms) so the test
     // runs in well under a second. Chrono is wall-clock; tokio time-pause
     // would not advance it — honest short sleeps are the answer here.
-    let consumer1 = ControlConsumer::new(queue.clone(), dispatch1, b"runner-one".to_vec())
+    let consumer1 = ControlConsumer::new(queue.clone(), dispatch1, proc16(b"runner-one"))
         .with_batch_size(4)
         .with_poll_interval(Duration::from_millis(5))
         .with_reclaim_after(Duration::from_millis(50))
@@ -387,10 +404,10 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // Wait for the row to be claimed by consumer #1 (Pending → Processing).
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
-            let snap = repo.snapshot().await;
-            if snap
+            if queue
+                .snapshot_detailed()
                 .iter()
-                .any(|e| e.id == vec![42u8; 16] && e.status == "Processing")
+                .any(|(m, status, _)| m.id == [42u8; 16] && status == "Processing")
             {
                 break;
             }
@@ -408,16 +425,16 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     let _ = handle1.await;
 
     // Confirm the row is stuck in Processing right after the crash.
-    let snap_after_crash = repo.snapshot().await;
-    let stuck = snap_after_crash
+    let snap_after_crash = queue.snapshot_detailed();
+    let (stuck_msg, stuck_status, _) = snap_after_crash
         .iter()
-        .find(|e| e.id == vec![42u8; 16])
+        .find(|(m, _, _)| m.id == [42u8; 16])
         .expect("row present");
     assert_eq!(
-        stuck.status, "Processing",
+        stuck_status, "Processing",
         "orphaned in Processing post-crash"
     );
-    assert_eq!(stuck.reclaim_count, 0, "no reclaim yet");
+    assert_eq!(stuck_msg.reclaim_count, 0, "no reclaim yet");
 
     // Sleep past the reclaim_after window so the next sweep finds it stale.
     tokio::time::sleep(Duration::from_millis(80)).await;
@@ -426,7 +443,7 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // back to Pending on startup; then its claim loop picks it up and the
     // non-flaky second-dispatch path returns Ok, which acks the row Completed.
     let dispatch_fresh: Arc<dyn ControlDispatch> = dispatch_flaky.clone();
-    let consumer2 = ControlConsumer::new(queue.clone(), dispatch_fresh, b"runner-two".to_vec())
+    let consumer2 = ControlConsumer::new(queue.clone(), dispatch_fresh, proc16(b"runner-two"))
         .with_batch_size(4)
         .with_poll_interval(Duration::from_millis(5))
         .with_reclaim_after(Duration::from_millis(50))
@@ -439,10 +456,10 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // claim → dispatch (non-flaky second call) → mark_completed.
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            let snap = repo.snapshot().await;
-            if snap
+            if queue
+                .snapshot_detailed()
                 .iter()
-                .any(|e| e.id == vec![42u8; 16] && e.status == "Completed")
+                .any(|(m, status, _)| m.id == [42u8; 16] && status == "Completed")
             {
                 break;
             }
@@ -456,13 +473,13 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     handle2.await.expect("graceful shutdown");
 
     // Post-conditions:
-    let final_snap = repo.snapshot().await;
-    let row = final_snap
+    let final_snap = queue.snapshot_detailed();
+    let (row_msg, row_status, _) = final_snap
         .iter()
-        .find(|e| e.id == vec![42u8; 16])
+        .find(|(m, _, _)| m.id == [42u8; 16])
         .expect("row still present");
-    assert_eq!(row.status, "Completed", "drove to Completed after reclaim");
-    assert_eq!(row.reclaim_count, 1, "reclaimed exactly once");
+    assert_eq!(row_status, "Completed", "drove to Completed after reclaim");
+    assert_eq!(row_msg.reclaim_count, 1, "reclaimed exactly once");
 
     // The dispatch observed exactly one successful Cancel (second call).
     let observed = dispatch_flaky.snapshot();
@@ -485,36 +502,32 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
 /// exactly once per row (not once per sweep).
 #[tokio::test]
 async fn reclaim_sweep_emits_counter_metric_per_outcome() {
-    let repo = Arc::new(InMemoryControlQueueRepo::new());
-    let queue: Arc<dyn ControlQueueRepo> = repo.clone();
+    let (_store, queue) = port_queue();
 
-    // 600s in the past is far past the 50ms reclaim window we'll configure
-    // below — every row qualifies as stuck on the first sweep.
-    let stale = chrono::Utc::now() - chrono::Duration::seconds(600);
-    let mk_row = |row_id: u8, exec: &ExecutionId, reclaim_count: u32| ControlQueueEntry {
-        id: vec![row_id; 16],
-        execution_id: exec.to_string().into_bytes(),
-        command: ControlCommand::Cancel,
-        issued_by: None,
-        issued_at: chrono::Utc::now(),
-        status: "Processing".to_string(),
-        processed_by: Some(b"dead-runner".to_vec()),
-        processed_at: Some(stale),
-        error_message: None,
-        reclaim_count,
-        w3c_trace_context: None,
+    // 10 minutes of staleness is far past the 50ms reclaim window
+    // configured below — every seeded row qualifies as stuck on the
+    // first sweep.
+    let stale_for = Duration::from_mins(10);
+    let dead_runner = *b"dead-runner-1234";
+    let seed = |row_id: u8, exec: &ExecutionId, reclaim_count: u32| {
+        queue.seed_processing(
+            &port_msg(exec, ControlCommand::Cancel, row_id),
+            dead_runner,
+            stale_for,
+            reclaim_count,
+        );
     };
     let exec_a = ExecutionId::new();
     let exec_b = ExecutionId::new();
     let exec_c = ExecutionId::new();
-    repo.enqueue(&mk_row(1, &exec_a, 0)).await.unwrap();
-    repo.enqueue(&mk_row(2, &exec_b, 0)).await.unwrap();
+    seed(1, &exec_a, 0);
+    seed(2, &exec_b, 0);
     // reclaim_count == max_reclaim_count → moves to Failed, not requeued.
-    repo.enqueue(&mk_row(3, &exec_c, 3)).await.unwrap();
+    seed(3, &exec_c, 3);
 
     let registry = MetricsRegistry::new();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, b"runner-test".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"runner-test"))
         .with_batch_size(8)
         .with_poll_interval(Duration::from_millis(20))
         .with_reclaim_after(Duration::from_millis(50))

@@ -1,28 +1,14 @@
 //! Integration tests for Nebula API
 
 mod common;
-use std::sync::Arc;
 
 use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-};
 
-/// Helper to create test app state
+/// Helper to create test app state (scoped storage port wiring).
 async fn create_test_state() -> AppState {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-    AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret,
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    let (state, _queue) = create_state_with_queue().await;
+    state
 }
 
 #[tokio::test]
@@ -90,7 +76,7 @@ async fn test_error_format_rfc9457() {
     };
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -191,11 +177,9 @@ async fn test_error_format_rfc9457() {
         "output": {"result": "success"}
     });
 
-    state
-        .execution_repo
-        .create(execution_id, workflow_id, execution_state.clone())
-        .await
-        .unwrap();
+    handles
+        .seed_execution(execution_id, workflow_id, execution_state.clone())
+        .await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -775,18 +759,16 @@ async fn test_activate_workflow() {
     };
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Write a structurally valid WorkflowDefinition directly to the repo so
+    // Seed a structurally valid WorkflowDefinition through the port so
     // activate_workflow can parse and validate it successfully.
     let workflow_id = nebula_core::WorkflowId::new();
-    state
-        .workflow_repo
-        .save(workflow_id, 0, make_valid_workflow_definition(&workflow_id))
-        .await
-        .unwrap();
+    handles
+        .seed_workflow(workflow_id, make_valid_workflow_definition(&workflow_id))
+        .await;
 
     // Activate the workflow
     let app = app::build_app(state, &api_config);
@@ -1114,11 +1096,11 @@ async fn test_execution_get_by_id() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Create an execution directly in the repo
+    // Seed an execution directly through the port store
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
@@ -1133,11 +1115,9 @@ async fn test_execution_get_by_id() {
         "input": {"key": "value"}
     });
 
-    state
-        .execution_repo
-        .create(execution_id, workflow_id, execution_state.clone())
-        .await
-        .unwrap();
+    handles
+        .seed_execution(execution_id, workflow_id, execution_state.clone())
+        .await;
 
     // Get the execution by ID
     let app = app::build_app(state, &api_config);
@@ -1300,11 +1280,11 @@ async fn test_execution_cancel() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Create an execution directly in the repo
+    // Seed an execution directly through the port store
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
@@ -1319,11 +1299,9 @@ async fn test_execution_cancel() {
         "input": {"key": "value"}
     });
 
-    state
-        .execution_repo
-        .create(execution_id, workflow_id, execution_state.clone())
-        .await
-        .unwrap();
+    handles
+        .seed_execution(execution_id, workflow_id, execution_state.clone())
+        .await;
 
     // Cancel the execution
     let app = app::build_app(state.clone(), &api_config);
@@ -1426,11 +1404,11 @@ async fn test_execution_cancel_already_completed() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Create a completed execution directly in the repo
+    // Seed a completed execution directly through the port store
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
@@ -1447,11 +1425,9 @@ async fn test_execution_cancel_already_completed() {
         "output": {"result": "success"}
     });
 
-    state
-        .execution_repo
-        .create(execution_id, workflow_id, execution_state.clone())
-        .await
-        .unwrap();
+    handles
+        .seed_execution(execution_id, workflow_id, execution_state.clone())
+        .await;
 
     // Try to cancel the completed execution
     let app = app::build_app(state, &api_config);
@@ -1827,6 +1803,86 @@ async fn cors_preflight_allows_authorization() {
 }
 
 #[tokio::test]
+async fn workflow_definition_payload_must_be_object() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let app = app::build_app(state.clone(), &api_config);
+    let create_request = serde_json::json!({
+        "name": "Bad Definition Shape",
+        "definition": []
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path("/workflows"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let app = app::build_app(state.clone(), &api_config);
+    let create_request = serde_json::json!({
+        "name": "Good Definition Shape",
+        "definition": { "nodes": [], "edges": [] }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path("/workflows"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created["id"].as_str().unwrap();
+
+    let update_request = serde_json::json!({
+        "definition": null
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&update_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn update_workflow_rejects_immutable_identity_fields() {
     // Regression for #344: update_workflow must refuse payloads that try to
     // overwrite identity/control fields (id, version, owner_id, schema_version)
@@ -1922,13 +1978,14 @@ async fn get_workflow_parses_rfc3339_timestamps() {
     use nebula_core::WorkflowId;
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Write directly through the repo with canonical string timestamps so we
-    // skip the create_workflow handler's i64 write path and exercise the read
-    // path against exactly the shape that `WorkflowDefinition` serializes.
+    // Seed directly through the port with canonical string timestamps so
+    // we skip the create_workflow handler's i64 write path and exercise
+    // the read path against exactly the shape that `WorkflowDefinition`
+    // serializes.
     let workflow_id = WorkflowId::new();
     let canonical = serde_json::json!({
         "name": "Canonical Timestamps",
@@ -1936,11 +1993,7 @@ async fn get_workflow_parses_rfc3339_timestamps() {
         "created_at": "2024-01-15T12:34:56Z",
         "updated_at": "2024-02-20T08:00:00Z",
     });
-    state
-        .workflow_repo
-        .save(workflow_id, 0, canonical)
-        .await
-        .unwrap();
+    handles.seed_workflow(workflow_id, canonical).await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -1978,16 +2031,14 @@ async fn activate_valid_returns_200() {
     };
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     let workflow_id = nebula_core::WorkflowId::new();
-    state
-        .workflow_repo
-        .save(workflow_id, 0, make_valid_workflow_definition(&workflow_id))
-        .await
-        .unwrap();
+    handles
+        .seed_workflow(workflow_id, make_valid_workflow_definition(&workflow_id))
+        .await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -2027,22 +2078,16 @@ async fn activate_invalid_returns_422() {
     };
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Cyclic workflow: parses as WorkflowDefinition but fails validate_workflow
     // (CycleDetected + NoEntryNodes).
     let workflow_id = nebula_core::WorkflowId::new();
-    state
-        .workflow_repo
-        .save(
-            workflow_id,
-            0,
-            make_cyclic_workflow_definition(&workflow_id),
-        )
-        .await
-        .unwrap();
+    handles
+        .seed_workflow(workflow_id, make_cyclic_workflow_definition(&workflow_id))
+        .await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -2127,14 +2172,14 @@ async fn cancel_enqueues_durable_control_signal() {
         http::{Request, StatusCode},
     };
     use nebula_core::{ExecutionId, WorkflowId};
-    use nebula_storage::repos::ControlCommand;
+    use nebula_storage_port::dto::ControlCommand;
     use tower::ServiceExt;
 
-    let (state, control_queue) = create_test_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Seed a running execution directly into the repo.
+    // Seed a running execution directly through the port store.
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
@@ -2142,9 +2187,8 @@ async fn cancel_enqueues_durable_control_signal() {
         .unwrap()
         .as_secs() as i64;
 
-    state
-        .execution_repo
-        .create(
+    handles
+        .seed_execution(
             execution_id,
             workflow_id,
             serde_json::json!({
@@ -2154,12 +2198,11 @@ async fn cancel_enqueues_durable_control_signal() {
                 "input": {}
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
     // Pre-condition: queue is empty.
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "control queue must be empty before cancel"
     );
 
@@ -2200,28 +2243,27 @@ async fn cancel_enqueues_durable_control_signal() {
 
     // (2) A Cancel command must have been written to the control queue — this is
     //     the engine-visible signal required by canon §12.2 and §13 step 5.
-    let queued = control_queue.snapshot().await;
+    let queued = handles.control_queue.snapshot();
     assert_eq!(
         queued.len(),
         1,
         "exactly one control queue entry must exist after cancel"
     );
 
-    let entry = &queued[0];
+    let (msg, status) = &queued[0];
     assert_eq!(
-        entry.command,
+        msg.command,
         ControlCommand::Cancel,
         "queued command must be Cancel"
     );
     assert_eq!(
-        entry.status, "Pending",
+        status, "Pending",
         "entry must be in Pending state (not yet consumed by engine)"
     );
-    // The entry's execution_id bytes must decode back to the cancelled execution.
-    let queued_eid = String::from_utf8(entry.execution_id.clone())
-        .expect("execution_id bytes must be valid UTF-8");
+    // The port carries the opaque execution-id string directly — no
+    // UTF-8-of-ULID decode (the legacy string-encoding hack is gone).
     assert_eq!(
-        queued_eid,
+        msg.execution_id,
         execution_id.to_string(),
         "queued entry must reference the cancelled execution"
     );
@@ -2241,7 +2283,7 @@ async fn cancel_terminal_execution_does_not_enqueue() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let (state, control_queue) = create_test_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -2253,9 +2295,8 @@ async fn cancel_terminal_execution_does_not_enqueue() {
         .unwrap()
         .as_secs() as i64;
 
-    state
-        .execution_repo
-        .create(
+    handles
+        .seed_execution(
             execution_id,
             workflow_id,
             serde_json::json!({
@@ -2266,8 +2307,7 @@ async fn cancel_terminal_execution_does_not_enqueue() {
                 "input": {}
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
     // Issue cancel on the completed execution — must be rejected.
     let app = app::build_app(state, &api_config);
@@ -2295,7 +2335,7 @@ async fn cancel_terminal_execution_does_not_enqueue() {
 
     // Queue must remain empty — no spurious signal enqueued.
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "control queue must be empty after rejected cancel of terminal execution"
     );
 }
@@ -2315,7 +2355,7 @@ async fn get_execution_parses_rfc3339_timestamps() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let state = create_test_state().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -2324,9 +2364,8 @@ async fn get_execution_parses_rfc3339_timestamps() {
 
     // Seed with canonical engine-shape state: RFC3339 string timestamps
     // under the canonical field names (`completed_at`, not `finished_at`).
-    state
-        .execution_repo
-        .create(
+    handles
+        .seed_execution(
             execution_id,
             workflow_id,
             serde_json::json!({
@@ -2337,8 +2376,7 @@ async fn get_execution_parses_rfc3339_timestamps() {
                 "input": {}
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -2378,7 +2416,7 @@ async fn cancel_timed_out_execution_rejected() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let (state, control_queue) = create_test_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -2389,9 +2427,8 @@ async fn cancel_timed_out_execution_rejected() {
         .unwrap()
         .as_secs() as i64;
 
-    state
-        .execution_repo
-        .create(
+    handles
+        .seed_execution(
             execution_id,
             workflow_id,
             serde_json::json!({
@@ -2402,8 +2439,7 @@ async fn cancel_timed_out_execution_rejected() {
                 "input": {}
             }),
         )
-        .await
-        .unwrap();
+        .await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -2430,7 +2466,7 @@ async fn cancel_timed_out_execution_rejected() {
 
     // Queue must remain empty — terminal-status guard short-circuits before enqueue.
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "control queue must be empty after rejected cancel of timed_out execution"
     );
 }
@@ -2465,7 +2501,7 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
     use nebula_execution::{ExecutionState, ExecutionStatus};
     use tower::ServiceExt;
 
-    let (state, _control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -2549,13 +2585,11 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
         "#327: API response status must be canonical 'created', not 'pending'"
     );
 
-    // Load the persisted row directly through the repo — same path the engine
-    // uses in `resume_execution`.
-    let (_version, state_json) = state
-        .execution_repo
-        .get_state(execution_id)
+    // Load the persisted row directly through the port store — same path
+    // the engine uses in `resume_execution`.
+    let (_version, state_json) = handles
+        .execution_state(execution_id)
         .await
-        .expect("get_state must not error")
         .expect("row must exist after start_execution");
 
     // The exact contract `resume_execution` performs at
@@ -2605,14 +2639,11 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
     // The list_running storage filter — which only accepts canonical statuses —
     // must actually see the newly-created execution. Before the fix this list
     // was empty because "pending" is not in the accepted set
-    // (created|running|paused|cancelling).
-    let running = state
-        .execution_repo
-        .list_running()
-        .await
-        .expect("list_running must not error");
+    // (created|running|paused|cancelling). The port lists running ids as
+    // their canonical opaque string form.
+    let running = handles.running_executions().await;
     assert!(
-        running.contains(&execution_id),
+        running.contains(&execution_id.to_string()),
         "#327: list_running must include the newly-created execution \
          (split-brain check — status is canonical and the filter matches)"
     );
@@ -2646,10 +2677,10 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
         body::Body,
         http::{Request, StatusCode},
     };
-    use nebula_storage::repos::ControlCommand;
+    use nebula_storage_port::dto::ControlCommand;
     use tower::ServiceExt;
 
-    let (state, control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -2685,7 +2716,7 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
 
     // Pre-condition: queue is empty — no other path has written to it.
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "#332: control queue must be empty before start"
     );
 
@@ -2723,27 +2754,25 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
     // execution id the API just returned. This is the engine-visible signal
     // canon §12.2 requires — without it the engine never dispatches and
     // the execution stays `Created` forever (the bug).
-    let queued = control_queue.snapshot().await;
+    let queued = handles.control_queue.snapshot();
     assert_eq!(
         queued.len(),
         1,
         "#332: exactly one control queue entry must exist after start_execution, got {queued:?}"
     );
-    let entry = &queued[0];
+    let (msg, status) = &queued[0];
     assert_eq!(
-        entry.command,
+        msg.command,
         ControlCommand::Start,
         "#332: queued command must be Start, got {:?}",
-        entry.command
+        msg.command
     );
     assert_eq!(
-        entry.status, "Pending",
+        status, "Pending",
         "#332: entry must be in Pending state until the engine consumer processes it"
     );
-    let queued_eid = String::from_utf8(entry.execution_id.clone())
-        .expect("execution_id bytes must be valid UTF-8");
     assert_eq!(
-        queued_eid, execution_id_str,
+        msg.execution_id, execution_id_str,
         "#332: queued entry must reference the newly-created execution id"
     );
 }
@@ -2754,10 +2783,10 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
         body::Body,
         http::{Request, StatusCode},
     };
-    use nebula_storage::repos::ControlCommand;
+    use nebula_storage_port::dto::ControlCommand;
     use tower::ServiceExt;
 
-    let (state, control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -2792,7 +2821,7 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
     let workflow_id_str = created_workflow["id"].as_str().unwrap().to_string();
 
     assert!(
-        control_queue.snapshot().await.is_empty(),
+        handles.control_queue.snapshot().is_empty(),
         "#332: control queue must be empty before execute"
     );
 
@@ -2826,22 +2855,20 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
     let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let execution_id_str = execution_response["id"].as_str().unwrap().to_string();
 
-    let queued = control_queue.snapshot().await;
+    let queued = handles.control_queue.snapshot();
     assert_eq!(
         queued.len(),
         1,
         "#332: exactly one control queue entry must exist after execute_workflow"
     );
-    let entry = &queued[0];
+    let (msg, _status) = &queued[0];
     assert_eq!(
-        entry.command,
+        msg.command,
         ControlCommand::Start,
         "#332: queued command from /execute must also be Start"
     );
-    let queued_eid = String::from_utf8(entry.execution_id.clone())
-        .expect("execution_id bytes must be valid UTF-8");
     assert_eq!(
-        queued_eid, execution_id_str,
+        msg.execution_id, execution_id_str,
         "#332: queued entry must reference the newly-created execution id"
     );
 }

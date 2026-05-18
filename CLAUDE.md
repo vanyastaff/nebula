@@ -81,7 +81,7 @@ nebula/
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.95)
-├── crates/             # 33 workspace members (incl. 8 derive companions)
+├── crates/             # 36 workspace members (incl. 8 derive companions)
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .ai-factory/        # agent context (DESCRIPTION, ARCHITECTURE, rules/, plans/)
 ├── .claude/            # Claude Code: canonical CLAUDE.md, guard hooks, skills, subagents
@@ -102,9 +102,9 @@ any level.
 |--------------|--------|
 | API / Public | `api`, `sdk` |
 | Exec         | `engine`, `storage`, `storage-loom-probe` |
-| Business     | `credential-builtin`, `resource`, `action`, `plugin` |
+| Business     | `credential-builtin`, `resource`, `action`, `plugin`, `tenancy` |
 | Plugin-Proto | `plugin-sdk`, `sandbox` |
-| Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata` |
+| Core         | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port` |
 | Cross-cutting| `log`, `eventbus`, `metrics`, `resilience`, `error` |
 
 **Plugin-Proto** is a leaf tier between Core and Business: the
@@ -121,6 +121,17 @@ credential contract directly alongside Business (`action`, `plugin`,
 `credential-vault`). Like the cross-cutting crates it is importable from
 those tiers; the `deny.toml` `[wrappers]` allowlist locks the exact
 consumer set.
+
+`nebula-storage-port` (Core) is the object-safe storage seam: the spec-16
+row-model contract (execution / workflow-row+version / control-queue /
+node-result / journal ports) every storage consumer depends on, with no
+backend code. `nebula-storage` (Exec) is the sole adapter implementation
+(InMemory + SQLite + Postgres); `nebula-tenancy` (Business) is the
+scope-enforcing decorator that wraps a raw adapter so a tenant scope is
+substituted on every call before it reaches a handler. `engine`, `api`,
+the knife harness, and `storage-loom-probe` run on the port — the legacy
+`ExecutionRepo` / `WorkflowRepo` surface and the never-implemented spec-16
+placeholders were deleted (ADR-0072).
 
 Each `+macros` companion (`action/macros`, `credential/macros`, `error/macros`,
 `plugin/macros`, `resource/macros`, `schema/macros`, `validator/macros`,

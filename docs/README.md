@@ -48,10 +48,10 @@ for traceability but are **non-normative** (see conflict rule above).
 
 ## Integration author path
 
-1. `STRATEGY.md` → SDK / plugin layers  
-2. `crates/action`, `credential`, `resource`, `plugin` READMEs  
-3. `Schema` = configuration form for Action / Credential / Resource  
-4. `PRODUCT_CANON.md` for durability and operational honesty  
+1. `STRATEGY.md` → SDK / plugin layers
+2. `crates/action`, `credential`, `resource`, `plugin` READMEs
+3. `Schema` = configuration form for Action / Credential / Resource
+4. `PRODUCT_CANON.md` for durability and operational honesty
 
 ## Legacy paths (wrong)
 

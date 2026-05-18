@@ -11,35 +11,18 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TestOrgResolver, TestWorkspaceResolver, create_test_jwt,
-};
+use common::{TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt};
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-};
 use pretty_assertions::assert_eq;
 use tower::ServiceExt;
 
 async fn create_test_state() -> AppState {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-    AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret,
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    let (state, _queue) = create_state_with_queue().await;
+    state
 }
 
 /// A 2 MiB POST on `/api/v1/workflows` must return `413 Payload Too Large`

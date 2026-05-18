@@ -2,18 +2,19 @@
 -- Layer: Execution
 -- Spec: 16 (storage-schema), 08 (cancellation), 17 (multi-process)
 --
--- Central execution entity: inbox + run + archive.
--- CAS via `version`; lease via `claimed_by`/`claimed_until`.
+-- Central execution entity: inbox + run + archive. The spec-16
+-- multi-tenant row model: rows are scoped by `(workspace_id, org_id)`
+-- and bound to a concrete `workflow_version_id`. CAS via `version`;
+-- lease via `claimed_by`/`claimed_until`; cancellation via the
+-- `cancel_*` columns (spec 08); the `idx_executions_*` indexes serve
+-- pending-claim and stale-lease sweeps.
 --
--- Status (1.0): table schema is shipped, but engine consumers are Layer 1
--- only — they go through the top-level `nebula_storage::ExecutionRepo`
--- (defined in `crates/storage/src/execution_repo.rs`), which uses its own
--- `lease_holder`/`lease_expires_at` columns added by common migration
--- `00000000000007_add_execution_leases.sql`. The `claimed_by`/`claimed_until`
--- columns and `idx_executions_pending_claim` / `idx_executions_stale_lease`
--- indexes defined below are Sprint E (1.1) scaffolding — they have no
--- engine consumers today. See ROADMAP "Out of scope for 1.0" → "Storage
--- Layer 2 / spec-16 multi-tenant row model (Sprint E)".
+-- This is the structured tenant-scoped schema. The storage-port
+-- execution adapter currently persists through its own dedicated
+-- runtime tables rather than this one; wiring the adapter onto this
+-- schema (and creating the adapter's runtime tables in the consolidated
+-- per-backend migration tree) is tracked under the migration-
+-- consolidation work, not assumed here.
 
 CREATE TABLE executions (
     id                     BYTEA PRIMARY KEY,        -- exe_ ULID

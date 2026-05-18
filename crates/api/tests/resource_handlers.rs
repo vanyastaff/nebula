@@ -28,10 +28,7 @@ use common::*;
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_core::{ResourceId, ResourceKey, WorkspaceId};
 use nebula_engine::{EngineResourceStatus, ResourceRuntimeStatus};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo,
-    repos::{InMemoryControlQueueRepo, ResourceEntry, ResourceRepo},
-};
+use nebula_storage::repos::{ResourceEntry, ResourceRepo};
 use tower::ServiceExt;
 
 /// Raw 16-byte workspace id matching [`TEST_WS`], as the repo stores it.
@@ -256,22 +253,41 @@ impl ResourceRepo for FakeResourceRepo {
     }
 }
 
-/// Build an [`AppState`] wired with `repo` as the resource catalog
-/// backend (plus the shared org/workspace resolvers).
-fn state_with_repo(api_config: &ApiConfig, repo: Arc<dyn ResourceRepo>) -> AppState {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+/// Build a bare port-wired [`AppState`] (every store is an in-memory port
+/// adapter behind its `nebula-tenancy` scoping decorator, plus the shared
+/// org/workspace resolvers) using the supplied `api_config`'s JWT secret.
+/// Callers layer the resource-catalog `.with_*` they need on top.
+fn port_resource_state(api_config: &ApiConfig) -> AppState {
+    use nebula_storage::inmem::{
+        InMemoryExecutionStore, InMemoryJournalReader, InMemoryNodeResultStore,
+        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    };
+    let exec_store = InMemoryExecutionStore::new();
+    let control_queue = nebula_storage::InMemoryControlQueue::new(&exec_store);
+    let journal = InMemoryJournalReader::new(&exec_store);
+    let node_results = InMemoryNodeResultStore::new();
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
 
+    // Raw (undecorated) port handles — the `AppState` accessors apply the
+    // per-request tenant scope at call time.
     AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(exec_store),
+        Arc::new(node_results),
+        Arc::new(journal),
+        Arc::new(control_queue),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
-    .with_resource_repo(repo)
+}
+
+/// Build an [`AppState`] wired with `repo` as the resource catalog
+/// backend (plus the shared org/workspace resolvers).
+fn state_with_repo(api_config: &ApiConfig, repo: Arc<dyn ResourceRepo>) -> AppState {
+    port_resource_state(api_config).with_resource_repo(repo)
 }
 
 #[tokio::test]
@@ -487,18 +503,8 @@ async fn list_resources_paginates_over_live_rows_honouring_offset_limit() {
 async fn list_resources_without_repo_is_service_unavailable() {
     // No `.with_resource_repo(...)` → the optional dependency is None.
     // Mirrors the action/plugin catalog convention: 503, not a 501 stub.
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let state = port_resource_state(&api_config);
 
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
@@ -633,18 +639,8 @@ async fn create_resource_without_validation_backend_is_422_fail_closed() {
 /// endpoints), checked before any validation work.
 #[tokio::test]
 async fn create_resource_without_repo_is_503() {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
 
     let response = create_resource_request(app, create_body("http_pool")).await;
@@ -1208,18 +1204,8 @@ async fn update_resource_revalidation_precedes_cas() {
 /// endpoints), checked before any validation or isolation work.
 #[tokio::test]
 async fn update_resource_without_repo_is_503() {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
 
     let response = update_resource_request(
@@ -1419,18 +1405,8 @@ async fn delete_resource_malformed_id_is_404() {
 /// No resource repo configured ⇒ 503 on delete (same convention).
 #[tokio::test]
 async fn delete_resource_without_repo_is_503() {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
 
     let response = delete_resource_request(app, &ResourceId::new().to_string()).await;
@@ -1959,18 +1935,8 @@ async fn get_resource_status_without_status_backend_is_503() {
 /// resource endpoints), checked before any isolation/status work.
 #[tokio::test]
 async fn get_resource_status_without_repo_is_503() {
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    let state = port_resource_state(&api_config);
     let app = app::build_app(state, &api_config);
 
     let response = get_status_request(app, &ResourceId::new().to_string()).await;

@@ -566,48 +566,23 @@ src/
 
 ### Startup example
 
-The canonical minimal startup is `examples/examples/api_simple_server.rs`
-(run: `cargo run -p nebula-examples --example api_simple_server`). The shape below
-is faithful to that file:
+`nebula-api` is a **pure library** — it ships no composition root and no
+binary. The canonical wiring lives outside this crate:
 
-```rust
-use std::sync::Arc;
+- `examples/examples/api_simple_server.rs` — the minimal runnable startup
+  (run: `cargo run -p nebula-examples --example api_simple_server`).
+- `apps/server` — the production composition root (the single
+  `nebula-server` binary; see the **Transport binaries** section below).
 
-use nebula_api::{ApiConfig, AppState, app, middleware::InMemoryIdempotencyStore};
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt::init();
-
-    // `from_env` reads `API_JWT_SECRET` (must be 32+ bytes).
-    // Set `NEBULA_ENV=development` to get an ephemeral per-process secret.
-    let api_config = ApiConfig::from_env()?;
-
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let idempotency_store = Arc::new(InMemoryIdempotencyStore::default());
-
-    let state = AppState::new(
-        workflow_repo,
-        execution_repo,
-        control_queue_repo,
-        api_config.jwt_secret.clone(),
-    )
-    .with_api_keys(api_config.api_keys.clone())
-    .with_idempotency_store(idempotency_store);
-
-    let bind_address = api_config.bind_address;
-    let app = app::build_app(state, &api_config);
-
-    // `app::serve` installs a built-in Ctrl-C / SIGTERM graceful-shutdown handler.
-    app::serve(app, bind_address).await?;
-    Ok(())
-}
-```
+`AppState::new` takes the **spec-16 storage-port** handles
+(`WorkflowStore` + `WorkflowVersionStore` + `ExecutionStore` +
+`NodeResultStore` + `ExecutionJournalReader` + `ControlQueue`), each
+wrapped in the `nebula-tenancy` scope-enforcing decorator by the
+composition root before it reaches `AppState` — never a raw legacy
+`ExecutionRepo` / `WorkflowRepo`. Consult `apps/server/src/compose.rs`
+for the authoritative, current shape rather than duplicating it here
+(this README intentionally does not inline a startup snippet that would
+drift from the composition root — ADR-0072).
 
 ### Transport binaries
 

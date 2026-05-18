@@ -1,6 +1,6 @@
 # Nebula — product canon
 
-**Authority:** This file overrides conflicting specs, plans, and chat assumptions until explicitly revised.  
+**Authority:** This file overrides conflicting specs, plans, and chat assumptions until explicitly revised.
 **Audience:** Every implementer (human or agent) before non-trivial changes.
 
 If a task would violate this document, **stop**: either update this canon in a deliberate commit or change the approach.

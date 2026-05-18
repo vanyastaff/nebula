@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use super::{
     ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimRepo,
-    ReplicaId, RepoError, SentinelState,
+    ReplicaId, RepoError, SentinelState, SqlxClaimResultExt,
 };
 
 /// Postgres-backed `RefreshClaimRepo`.
@@ -76,7 +76,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(now)
         .bind(new_expires)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
 
         if let Some((claim_id, generation, acquired, expires)) = row {
             return Ok(ClaimAttempt::Acquired(RefreshClaim {
@@ -101,7 +102,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         )
         .bind(&cid_str)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
 
         match existing {
             Some((exp,)) => Ok(ClaimAttempt::Contended {
@@ -131,7 +133,7 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(RepoError::from)?
+        .store_err()?
         .rows_affected();
 
         if rows == 0 {
@@ -148,7 +150,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(token.claim_id)
         .bind(token.generation as i64)
         .execute(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
         Ok(())
     }
 
@@ -166,7 +169,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(token.claim_id)
         .bind(token.generation as i64)
         .execute(&self.pool)
-        .await?
+        .await
+        .store_err()?
         .rows_affected();
 
         if rows == 0 {
@@ -186,7 +190,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         )
         .bind(now)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
 
         // The DELETE has already committed; short-circuiting on the first
         // bad row would silently abandon every other already-deleted row,
@@ -238,7 +243,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(crashed_holder.as_str())
         .bind(generation as i64)
         .execute(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
         Ok(())
     }
 
@@ -255,7 +261,8 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(&cid_str)
         .bind(window_start)
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .store_err()?;
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 }

@@ -13,6 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 nebula-api = { path = "../../crates/api" }
+# The spec-16 port wiring (in-memory adapters behind the `nebula-tenancy`
+# scoping decorators) is encapsulated in `AppState::in_memory`, so the
+# composition root needs neither `nebula-storage-port` nor
+# `nebula-tenancy` directly. `nebula-storage` is still required for the
+# PG-backed idempotency store (`nebula_storage::pg::PgIdempotencyStore`,
+# gated by `feature = "postgres"`).
 nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
 tracing = { workspace = true }

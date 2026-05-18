@@ -384,4 +384,3 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 | [0066](adr/0066-credential-runtime-crate.md) | Credential runtime crate | Engine / credential plane |
 | [0067](adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Rotation fan-out + `&self` refresh hook | § Credential rotation |
 | [0068](adr/0068-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
-

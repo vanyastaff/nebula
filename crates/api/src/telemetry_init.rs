@@ -17,7 +17,7 @@
 
 use opentelemetry::global;
 use opentelemetry_sdk::{propagation::TraceContextPropagator, trace::SdkTracerProvider};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialise the API binary's telemetry stack:
 ///
@@ -38,14 +38,17 @@ pub fn init_api_telemetry() {
     let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "nebula-api");
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(filter);
     let otel_layer = tracing_opentelemetry::OpenTelemetryLayer::new(tracer);
 
+    // `RUST_LOG` gates human-readable logging only. The OpenTelemetry layer must still see
+    // request spans so W3C propagation keeps working even when operators run with
+    // `RUST_LOG=warn` or stricter.
+    //
     // `try_init` returns `Err` when a subscriber is already installed (common in tests). That
     // is not a fatal startup failure, but the error is surfaced via `eprintln!` so operators
     // see double-init mishaps in CI logs even before any `tracing` subscriber accepts events.
     if let Err(err) = tracing_subscriber::registry()
-        .with(filter)
         .with(fmt_layer)
         .with(otel_layer)
         .try_init()
