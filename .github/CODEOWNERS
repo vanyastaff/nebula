@@ -35,9 +35,7 @@
 
 # ── Cross-cutting layer ───────────────────────────────────────────────────────
 /crates/log/                    @vanyastaff
-/crates/system/                 @vanyastaff
 /crates/eventbus/               @vanyastaff
-/crates/telemetry/              @vanyastaff
 /crates/metrics/                @vanyastaff
 /crates/resilience/             @vanyastaff
 
@@ -49,7 +47,6 @@
 
 # ── Exec layer ────────────────────────────────────────────────────────────────
 /crates/engine/                 @vanyastaff
-/crates/runtime/                @vanyastaff
 /crates/storage/                @vanyastaff
 /crates/sandbox/                @vanyastaff
 /crates/plugin-sdk/             @vanyastaff
@@ -66,14 +63,8 @@
 # ── Top-level docs ────────────────────────────────────────────────────────────
 /CLAUDE.md                      @vanyastaff
 /README.md                      @vanyastaff
-/CHANGELOG.md                   @vanyastaff
-/CONTRIBUTING.md                @vanyastaff
-/CODE_OF_CONDUCT.md             @vanyastaff
-/IDEA.md                        @vanyastaff
 
 # ── Deploy / infra ────────────────────────────────────────────────────────────
-/deploy/                        @vanyastaff
-/migrations/                    @vanyastaff
 /scripts/                       @vanyastaff
 
 # ── Apps ──────────────────────────────────────────────────────────────────────
