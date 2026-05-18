@@ -8,7 +8,7 @@
 //!
 //! Ref: `docs/adr/0028-cross-crate-credential-invariants.md` §Decision §4
 //! Ref: `docs/adr/0032-credential-store-canonical-home.md` §2
-//! Ref: `docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md` §P6.7
+//! Ref: `docs/ARCHIVE.md` §P6.7
 
 // The layers + `InMemoryStore` are feature-gated in storage. This test
 // uses `InMemoryStore` (gated on `credential-in-memory`) wrapped by

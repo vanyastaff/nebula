@@ -13,7 +13,7 @@ related:
   - docs/adr/0043-dependency-declaration-dx.md
   - docs/adr/0044-supersede-0036-resource-credential-singular.md
   - docs/adr/0051-external-provider-redesign.md
-  - docs/superpowers/specs/2026-05-15-nebula-resource-finalization-design.md
+  - docs/adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md
 ---
 
 # 0067. Engine-owned per-slot rotation fan-out + `&self` refresh hook

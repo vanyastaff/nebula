@@ -3,7 +3,25 @@
 Accepted ADRs for the **M6 resource finalization** and **M11 dependency redesign**
 cascade and later work. Numbering starts at **0042** in this directory.
 
-**Agents:** Read [`docs/README.md`](../README.md) for the full documentation map.
+**Agents:** Read [docs/README.md](../README.md) first. Use **thematic groups** (below) before opening individual files.
+
+
+---
+
+## Thematic index (agents start here)
+
+| Theme | Primary ADRs | Typical question |
+|-------|----------------|------------------|
+| **M6 integration binding** | 0042-0045, 0051, 0066, 0067 | Slots, resources, rotation |
+| **Schema & validation** | 0052, 0058-0064, 0061 | Forms, JSON Schema |
+| **Storage (spec-16)** | 0072 | Port, adapter, tenancy |
+| **Action surface & retry** | 0069, 0053, 0068 | Action traits, retry |
+| **SDK & capabilities** | 0054, 0055 | nebula-sdk |
+| **Workflow graph** | 0056 | DAG validation |
+| **Visual canvas** | 0065 | Supply edges |
+| **API & webhooks** | 0047-0049 | OpenAPI, webhooks |
+| **Observability** | 0046, 0050 | Metrics, traces |
+| **AI (deferred)** | 0057 proposed | STRATEGY.md |
 
 ## Historical ADRs (0001–0041)
 
@@ -25,7 +43,7 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 | [0050](./0050-m3-5-w3c-trace-context-propagation.md) | W3C Trace Context propagation | accepted |
 | [0051](./0051-external-provider-redesign.md) | External provider redesign | accepted |
 | [0052](./0052-schema-validator-condition-seam.md) | Validator condition evaluation seam | accepted |
-| [0052-action](./0052-action-surface-hybrid.md) | Action surface hybrid (**suffix** — shares cascade era with 0052) | accepted |
+| [0069](./0069-action-surface-hybrid.md) | Action surface hybrid (**suffix** — shares cascade era with 0052) | accepted |
 | [0053](./0053-two-struct-dx-consolidation.md) | Two-struct DX consolidation | accepted |
 | [0054](./0054-typed-capability-system.md) | Typed capability system | accepted |
 | [0055](./0055-nebula-sdk-facade.md) | `nebula-sdk` re-export façade | accepted |
@@ -56,6 +74,9 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 
 ## Related plans
 
-- `docs/plans/2026-05-17-002-refactor-doc-consolidation-plan.md` — doc stack hygiene (this repo).
+- `docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md — active doc stack.
 - `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md` — implementation (doc gate cleared).
 - M6 integration audit context — archived with other execution drafts (`docs/ARCHIVE.md`).
+
+| 0052-action file | [0069](./0069-action-surface-hybrid.md) | Renumbered 2026-05-18 |
+

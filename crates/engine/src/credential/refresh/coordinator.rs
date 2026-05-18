@@ -1,7 +1,7 @@
 //! Outer two-tier refresh coordinator.
 //!
 //! Per ADR-0041 + sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
 //! §3.1 (two-tier diagram), §3.5 (parameter invariants), §3.6 (contention
 //! backoff).
 //!

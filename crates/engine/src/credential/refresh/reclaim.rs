@@ -1,7 +1,7 @@
 //! Background reclaim-sweep task. Parallel to control-queue reclaim.
 //!
 //! Per sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
 //! §3.3 + §3.4.
 //!
 //! On a fixed cadence the task calls `RefreshClaimRepo::reclaim_stuck`,

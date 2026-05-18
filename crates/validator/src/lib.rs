@@ -12,7 +12,7 @@
 //! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
 //! (`Value` / `Predicate` / `Logic` / `Deferred` / `Described`) with a new externally-tagged
 //! wire format. See the spec at
-//! `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`.
+//! `docs/adr/0052-schema-validator-condition-seam.md`.
 //!
 //! ## Core Types
 //!

@@ -19,7 +19,7 @@
 |------|------|
 | [`docs/PRODUCT_CANON.md`](./PRODUCT_CANON.md) | Binding invariants |
 | [`docs/INTEGRATION_MODEL.md`](./INTEGRATION_MODEL.md) | Integration mechanics (Resource, Credential, Action, Schema, Plugin) |
-| [`docs/VISION.md`](./VISION.md) | Long-horizon vision |
+| [`docs/VISION.md`](./VISION.md) | Human charter draft — **agents skip** (use STRATEGY + canon) |
 | [`docs/OBSERVABILITY.md`](./OBSERVABILITY.md) | Metrics / tracing boundaries |
 | [`docs/adr/README.md`](./adr/README.md) | **Active ADRs (0042+)** — implement from these |
 | [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md) | Index only for 0001–0041 — open one file if cited |
@@ -41,7 +41,7 @@ for traceability but are **non-normative** (see conflict rule above).
 
 ## ADR layout
 
-- **0042+** — current cascade (`docs/adr/0042-*.md` and later; see [`adr/README.md`](./adr/README.md) for the live index through **0068**).
+- **0042+** — current cascade (`docs/adr/0042-*.md` and later; see [`adr/README.md`](./adr/README.md) for the live index through **0072**).
 - **0001–0041** — on disk for deep links from code; **excluded from Cursor
   index** (`.cursorignore`). Use [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md)
   to pick the right file.
@@ -61,3 +61,7 @@ for traceability but are **non-normative** (see conflict rule above).
 | `docs/audits/**` | Removed — archive |
 | `C:/Users/.../RustroverProjects/docs/` as workspace canon | This repo’s `docs/` table |
 | Bulk `glob docs/**` | This file + one crate README + cited ADR |
+
+## Code comments
+
+Prefer **behavior-first** module docs in crates/. Avoid inline ADR-NNNN / canon § pins — see docs/plans/2026-05-18-002-refactor-code-doc-citation-cleanup-plan.md.

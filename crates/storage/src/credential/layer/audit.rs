@@ -72,7 +72,7 @@ pub struct AuditEvent {
 /// flowing through [`AuditLayer`]. Variants prefixed `RefreshCoord*`
 /// describe events emitted by the engine's two-tier refresh coordinator
 /// (sub-spec
-/// `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`
+/// `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
 /// §6) and carry their structured payload as enum fields. The same
 /// [`AuditSink`] receives both families so operators reuse one sink
 /// implementation.

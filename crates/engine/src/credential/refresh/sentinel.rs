@@ -1,7 +1,7 @@
 //! Sentinel mid-refresh crash detection + threshold escalation.
 //!
 //! Per sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
 //! §3.4 + §6 audit.
 //!
 //! When a holder is about to perform the IdP POST (the operation that

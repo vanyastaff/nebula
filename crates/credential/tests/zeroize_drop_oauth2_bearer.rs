@@ -11,7 +11,7 @@
 //!    same token).
 //! 3. Drop runs without panic across the typical lifecycle.
 //!
-//! See `docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md` §4.
+//! See `docs/adr/HISTORICAL.md (ADR-0028 credential invariants)` §4.
 
 use nebula_credential::{
     SecretString,

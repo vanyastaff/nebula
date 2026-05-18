@@ -127,6 +127,11 @@ Integrators declare deps via slot fields (`#[credential]`, `#[resource]`) and `D
 
 There is no single universal wiring diagram; there is a **small set of slot kinds** (credential, resource, tool, model, …) and **consistent resolve + validation rules** so any allowed graph is safe and explainable in the journal.
 
+
+## North Star
+
+Binding success criteria for integrators, operators, and trigger delivery live in [docs/PRODUCT_CANON.md](docs/PRODUCT_CANON.md) §9 — not duplicated here.
+
 ## Who it's for
 
 **Primary:** A Rust developer writing integrations (actions, credentials, resources, plugins, **AgentTool / ResourceTool / AgentAction**). They hire Nebula to describe node and tool logic and trust the engine for concurrency, retry, credential rotation, durable state, and agent loops—without hand-rolling orchestration infrastructure.
@@ -224,6 +229,6 @@ Product-user copilot flows and flashy demos come **after** this substrate is tru
 - Requirements: `docs/brainstorms/2026-05-17-strategy-llm-standard-bar-requirements.md`
 - Normative product rules: `docs/PRODUCT_CANON.md`
 - Integration mechanics: `docs/INTEGRATION_MODEL.md`
-- Doc consolidation gate (must pass before flagship implementation): `docs/plans/2026-05-17-002-refactor-doc-consolidation-plan.md`
+- Doc consolidation gate (must pass before flagship implementation): `docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md`
 - Flagship integrator platform (blocked on doc gate): `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md`
 - Agent direction (proposed): `docs/adr/0057-ai-agent-sdk.md`

@@ -1,7 +1,8 @@
 ---
 title: "refactor: Documentation consolidation (ADR → canon, remove noise)"
 type: refactor
-status: completed
+status: superseded
+superseded-by: docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md
 date: 2026-05-17
 origin: docs/brainstorms/2026-05-17-strategy-llm-standard-bar-requirements.md
 deepened: 2026-05-17

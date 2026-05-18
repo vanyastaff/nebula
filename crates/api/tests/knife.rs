@@ -2,7 +2,7 @@
 //!
 //! This file covers §13 steps 1–6 as specified in
 //! `docs/PRODUCT_CANON.md §13` and the workspace health audit
-//! (`docs/superpowers/specs/2026-04-16-workspace-health-audit.md §8
+//! (`docs/ARCHIVE.md (removed execution specs) §8
 //! Sprint A1 item #3`).
 //!
 //! Each step is asserted through the real axum `Router` via oneshot

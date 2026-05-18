@@ -4,7 +4,6 @@ extend-exclude = [
   ".worktrees",
   ".claude/worktrees",
   "docs/plans",
-  "docs/superpowers",
   "crates/action/docs",
   "docs/plans/archive",
   "docs/guidelines/research",
