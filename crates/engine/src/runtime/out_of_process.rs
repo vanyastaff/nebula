@@ -12,12 +12,12 @@
 //! registers the plugins in the supplied [`PluginRegistry`], and registers
 //! a [`PooledRemoteActionFactory`] per discovered action into the
 //! [`ActionRegistry`]. Dispatch of those actions then flows through an
-//! engine-owned [`PluginPool`] keyed by `(binary, ScopeHash)` (ADR-0025
-//! §2): the credential scope is derived **engine-side** from the workflow
+//! engine-owned [`PluginPool`] keyed by `(binary, ScopeHash)` (
+//! ): the credential scope is derived **engine-side** from the workflow
 //! node's slot bindings at dispatch — never on the leaf, never from
 //! `ActionMetadata`.
 //!
-//! There is no broker yet: until the ADR-0025 broker lands there is no
+//! There is no broker yet: until the broker lands there is no
 //! egress or credential mediation for these processes. [`discover_into_registry`]
 //! emits a single `tracing::warn!` invariant at startup stating exactly
 //! that, so an operator who opens the gate sees the honest security
@@ -35,12 +35,11 @@
 //! so an unused one never forks a child (no leak — just an idle handle).
 //! Callers and tests MUST resolve these actions via `action_registry`;
 //! resolving them through `plugin_registry` directly would dispatch on
-//! the unpooled per-plugin handler and bypass the ADR-0025 §2
-//! credential-scope pool keying entirely.
+//! the unpooled per-plugin handler and bypass the//! credential-scope pool keying entirely.
 //!
 //! The `runtime.rs` `IsolationLevel` match is deliberately untouched:
 //! discovered actions register as ordinary stateless factories, so the
-//! live in-process path and the §13 knife are byte-for-byte unaffected
+//! live in-process path and the knife are byte-for-byte unaffected
 //! when the gate is closed.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -93,7 +92,7 @@ impl Default for OutOfProcessConfig {
 /// through an engine-owned [`PluginPool`].
 ///
 /// One factory per discovered action. The credential-scope identity
-/// (ADR-0025 §2) is computed in [`instantiate`](ActionFactory::instantiate)
+/// is computed in [`instantiate`](ActionFactory::instantiate)
 /// from the **workflow node**'s slot bindings via
 /// [`pool_key`] — the node is in scope there, the leaf
 /// `nebula-sandbox` never sees it, and `ActionMetadata` is never the
@@ -148,7 +147,7 @@ impl ActionFactory for PooledRemoteActionFactory {
         _ctx: &'a dyn ActionContext,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<ErasedAction, ActionError>> + Send + 'a>>
     {
-        // ADR-0025 §2: the per-process isolation key is derived here, from
+        // : the per-process isolation key is derived here, from
         // the workflow node's credential-slot bindings, engine-side. The
         // leaf transport never sees the node. The supervisor resolves the
         // per-key pool at acquire time.
@@ -179,7 +178,7 @@ struct PooledErasedStateless {
     local_key: String,
     binary: PathBuf,
     timeout: Duration,
-    /// ADR-0025 §2 pool key derived from the node at `instantiate`.
+    /// pool key derived from the node at `instantiate`.
     key: PoolKey,
     supervisor: PluginSupervisor,
 }
@@ -297,7 +296,7 @@ pub async fn discover_into_registry(
         target = "engine::out_of_process",
         dirs = ?config.plugin_dirs,
         "out-of-process plugins enabled; no broker egress/credential mediation \
-         until the ADR-0025 broker lands — untrusted plugins have unmediated \
+    until the broker lands — untrusted plugins have unmediated \
          network/credential access"
     );
 

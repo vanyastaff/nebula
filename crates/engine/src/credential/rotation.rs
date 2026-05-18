@@ -1,6 +1,6 @@
 //! Engine credential rotation orchestration surface.
 //!
-//! Per ADR-0030, `nebula-engine` owns credential orchestration: scheduling,
+//! `nebula-engine` owns credential orchestration: scheduling,
 //! blue-green deployment, grace-period management, and transaction state
 //! machines. Contract/state types (policy, state, events, error, validation)
 //! remain in `nebula_credential::rotation`.

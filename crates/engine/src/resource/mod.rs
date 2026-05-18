@@ -7,8 +7,7 @@
 //! registrable kind must have been explicitly inserted into the
 //! [`ResourceRegistrarRegistry`] ahead of time. An unrecognized kind is
 //! a caller/wiring misconfiguration surfaced as a typed error at
-//! activation time, never a silent no-op (INTEGRATION_MODEL §114-120;
-//! ADR-0030 / ADR-0036 / ADR-0044).
+//! activation time, never a silent no-op.
 
 pub mod registrar;
 

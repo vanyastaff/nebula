@@ -1,4 +1,4 @@
-//! Property tests for `RefreshCoordConfig::validate` (sub-spec §3.5).
+//! Property tests for `RefreshCoordConfig::validate` (sub-spec ).
 //!
 //! Verifies the interlocking invariants:
 //!

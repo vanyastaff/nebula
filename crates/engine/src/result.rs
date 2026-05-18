@@ -19,7 +19,7 @@ pub struct ExecutionResult {
     /// Wall-clock duration of the execution.
     pub duration: Duration,
     /// Engine's attribution for *why* the execution reached its
-    /// final status (canon §4.5; ROADMAP §M0.3). Threaded from
+    /// final status (operational honesty). Threaded from
     /// `determine_final_status` `FinalStatusDecision::termination_reason`
     /// so downstream consumers (audit, API responses, webhook
     /// dispatch) can distinguish ExplicitFail from a system-driven

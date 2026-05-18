@@ -1,12 +1,12 @@
-//! Engine daemon module — long-running worker primitives (per ADR-0037).
+//! Engine daemon module — long-running worker primitives (per ).
 //!
 //! Hosts the `Daemon` trait + `DaemonRuntime` (per-daemon background task with
 //! restart policy) + `DaemonRegistry` (engine-side dispatcher across all
 //! registered daemons). EventSource adapter onto the `TriggerAction` substrate
 //! lives in [`event_source`].
 //!
-//! Migrated from `nebula-resource` per ADR-0037 ("Daemon / EventSource engine
-//! fold") to honor canon §3.5 ("Resource = pool/SDK client").
+//! Migrated from `nebula-resource` per ("Daemon / EventSource engine
+//! fold") to honor canon ("Resource = pool/SDK client").
 //!
 //! # Cancellation
 //!

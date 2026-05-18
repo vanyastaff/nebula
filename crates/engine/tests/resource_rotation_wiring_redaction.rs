@@ -1,7 +1,7 @@
 #![cfg(feature = "rotation")]
 
-//! Redaction gate for the **wired** rotation fan-out path (ADR-0030 §4,
-//! PRODUCT_CANON §12.5).
+//! Redaction gate for the **wired** rotation fan-out path ( ,
+//! PRODUCT_CANON ).
 //!
 //! `resource_rotation_redaction.rs` proves the fan-out *port*
 //! (`dispatch_*` called directly) leaks no credential material. This
@@ -17,7 +17,7 @@
 //! `MakeWriter` shape from `crates/credential/tests/redaction.rs` and
 //! `resource_rotation_redaction.rs` (reused, not re-invented, so the
 //! span/event capture semantics are identical to the established
-//! ADR-0030 §4 gate). Because the driver runs on a `tokio::spawn`ed
+//! gate). Because the driver runs on a `tokio::spawn`ed
 //! task, the capture subscriber is installed process-wide via
 //! `tracing::subscriber::set_global_default` for the test so the
 //! spawned task's spans/events are also captured.
@@ -47,7 +47,7 @@ use zeroize::Zeroize;
 /// match cannot false-positive.
 const SECRET: &str = "WIRED-ROTATION-SECRET-7b1e";
 
-// ── CaptureBuf (verbatim shape from the established §4 gate) ─────────
+// ── CaptureBuf (verbatim shape from the established gate) ─────────
 
 #[derive(Clone, Default)]
 struct CaptureBuf(Arc<Mutex<Vec<u8>>>);
@@ -254,7 +254,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
 
     // Refresh via the credential bus.
     cred_bus.emit(CredentialEvent::Refreshed { credential_id: cid });
-    // Revoke via the lease bus (the ADR-0051 → ADR-0067 path).
+    // Revoke via the lease bus (the → path).
     lease_bus.emit(LeaseEvent::LeaseRevoked {
         credential_id: Some(cid),
         lease_id: "lease-redaction".to_owned(),
@@ -309,7 +309,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
 
 /// Load-bearing self-check: the absence assertion must actually fire on
 /// a string that obviously contains the token (mirrors the negative
-/// test in the established §4 gates).
+/// test in the established gates).
 #[test]
 #[should_panic(expected = "redaction gate violation")]
 fn assert_no_secret_is_load_bearing() {

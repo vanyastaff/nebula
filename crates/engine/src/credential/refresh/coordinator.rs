@@ -1,9 +1,7 @@
 //! Outer two-tier refresh coordinator.
 //!
-//! Per ADR-0041 + sub-spec
-//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
-//! §3.1 (two-tier diagram), §3.5 (parameter invariants), §3.6 (contention
-//! backoff).
+//! See `docs/INTEGRATION_MODEL.md` for the two-tier refresh diagram, parameter invariants, and
+//! contention backoff.
 //!
 //! `RefreshCoordinator` composes:
 //!
@@ -14,7 +12,7 @@
 //!
 //! Callers invoke `refresh_coalesced(credential_id, do_refresh)`. The
 //! coordinator acquires L1 first (fast in-process coalesce), then a
-//! durable L2 claim with backoff per §3.6, runs the user's refresh
+//! durable L2 claim with contention backoff, runs the user's refresh
 //! closure under both locks, and releases both on the way out.
 
 use std::{
@@ -44,7 +42,7 @@ use super::{
 
 /// Configuration knobs for the two-tier coordinator.
 ///
-/// Per sub-spec §3.5 the four time-related parameters carry interlocking
+/// Per sub-spec the four time-related parameters carry interlocking
 /// invariants verified by [`RefreshCoordConfig::validate`]:
 ///
 /// - `heartbeat_interval × 3 ≤ claim_ttl` — three heartbeat ticks must fit inside one claim TTL so
@@ -55,7 +53,7 @@ use super::{
 ///   crashed holder is reclaimed within one TTL window.
 ///
 /// The boundary case `heartbeat_interval × 3 == claim_ttl` is allowed
-/// (mirrors the ADR-0008 execution-lease shape: `ttl / 3 ==
+/// (mirrors the execution-lease shape: `ttl / 3 ==
 /// heartbeat_interval`).
 ///
 /// CI test asserts `RefreshCoordConfig::default().validate().is_ok()`.
@@ -117,13 +115,13 @@ pub enum ConfigError {
         value: Duration,
     },
 
-    /// Metric primitive registration failed for the coordinator's §6 series.
+    /// Metric primitive registration failed for the coordinator's series.
     #[error("telemetry metrics error: {0}")]
     Telemetry(#[from] nebula_metrics::MetricsError),
 }
 
 impl RefreshCoordConfig {
-    /// Verify the per-§3.5 interlocking invariants.
+    /// Verify the per- interlocking invariants.
     ///
     /// # Errors
     ///
@@ -292,11 +290,10 @@ impl From<L1ConfigError> for RefreshConfigError {
 impl RefreshCoordinator {
     /// Maximum number of consecutive non-`ClaimLost` heartbeat
     /// failures tolerated before the heartbeat task gives up and
-    /// cancels the in-flight refresh (sub-spec §3.4 wave-4 fix).
+    /// cancels the in-flight refresh (sub-spec wave-4 fix).
     ///
     /// At three failures the worst-case latency before cancellation
-    /// is `3 × heartbeat_interval`, which is bounded by the §3.5
-    /// invariant `heartbeat_interval × 3 ≤ claim_ttl` — i.e. we
+    /// is `3 × heartbeat_interval`, which is bounded by the    /// invariant `heartbeat_interval × 3 ≤ claim_ttl` — i.e. we
     /// never burn more than one TTL window absorbing transient
     /// noise. Not configurable: production tuning belongs in
     /// `RefreshCoordConfig` if a need emerges.
@@ -312,7 +309,7 @@ impl RefreshCoordinator {
     /// # Errors
     ///
     /// Returns the corresponding [`ConfigError`] if `config.validate()`
-    /// fails (see §3.5 invariants) or metric handles cannot be bound.
+    /// fails (see invariants) or metric handles cannot be bound.
     pub fn new_with(
         repo: Arc<dyn RefreshClaimRepo>,
         replica_id: ReplicaId,
@@ -322,7 +319,7 @@ impl RefreshCoordinator {
         // Bootstrap: a fresh private registry so the coordinator is fully
         // functional without composition. Production callers MUST follow
         // up with `with_metrics(engine_registry)` so a scraper actually
-        // observes the §6 series — see `with_metrics` rustdoc.
+        // observes the series — see `with_metrics` rustdoc.
         let metrics = RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new())?;
         Ok(Self {
             l1: L1RefreshCoalescer::new(),
@@ -359,7 +356,7 @@ impl RefreshCoordinator {
         // Bootstrap: a fresh private registry so the coordinator is fully
         // functional without composition. Production callers MUST follow
         // up with `with_metrics(engine_registry)` so a scraper actually
-        // observes the §6 series — see `with_metrics` rustdoc.
+        // observes the series — see `with_metrics` rustdoc.
         Self {
             l1: L1RefreshCoalescer::new(),
             repo,
@@ -400,14 +397,14 @@ impl RefreshCoordinator {
 
     /// Replace the metric handles with ones bound to the engine-shared
     /// `MetricsRegistry`. Call once during composition; the coordinator
-    /// emits all sub-spec §6 series against this registry afterwards.
+    /// emits all sub-spec series against this registry afterwards.
     #[must_use = "builder methods must be chained or used"]
     pub fn with_metrics(mut self, metrics: RefreshCoordMetrics) -> Self {
         self.metrics = metrics;
         self
     }
 
-    /// Attach an [`AuditSink`] to receive sub-spec §6 audit events
+    /// Attach an [`AuditSink`] to receive sub-spec audit events
     /// (`RefreshCoordClaimAcquired`, `SentinelTriggered`,
     /// `ReauthFlagged`). Without a sink, audit emission is a no-op (the
     /// metric / tracing surfaces still observe).
@@ -457,16 +454,16 @@ impl RefreshCoordinator {
     /// both. Returns `Err(CoalescedByOtherReplica)` if state was already
     /// fresh — caller treats as success and re-reads.
     ///
-    /// Sub-spec §3.1 acquisition sequence:
+    /// Sub-spec acquisition sequence:
     /// 1. L1 in-process coalesce (cheap fast-path; same-process concurrent calls collapse here).
-    /// 2. L2 durable claim with backoff per §3.6.
+    /// 2. L2 durable claim with backoff.
     /// 3. Background heartbeat task — passes `self.config.claim_ttl` to each `repo.heartbeat(token,
     ///    ttl)` call (Stage 1 fix C2).
     /// 4. User-supplied `do_refresh(claim)` closure.
     /// 5. Stop heartbeat + release the claim row.
     ///
     /// `needs_refresh_after_backoff` is consulted by the L2 backoff loop
-    /// per sub-spec §3.6 after the post-`Contended` sleep: if the
+    /// per sub-spec after the post-`Contended` sleep: if the
     /// predicate returns `false` the credential was refreshed by another
     /// replica while this caller was waiting and we short-circuit with
     /// [`RefreshError::CoalescedByOtherReplica`]. Callers that don't
@@ -627,12 +624,12 @@ impl RefreshCoordinator {
         // `2`).
         let _permit = self.l1.acquire_permit().await;
 
-        // L2: durable claim with backoff per §3.6.
+        // L2: durable claim with backoff.
         let claim = self
             .try_acquire_l2_with_backoff(credential_id, &needs_refresh_after_backoff)
             .await?;
 
-        // Sub-spec §6 — record the claim acquisition once we know we own
+        // Sub-spec — record the claim acquisition once we know we own
         // the L2 row. `acquired` counter, audit event, and start of the
         // hold-duration measurement happen here so they are paired
         // with the matching `release` site below.
@@ -661,7 +658,7 @@ impl RefreshCoordinator {
         // Heartbeat task in background.
         let hb_task = self.spawn_heartbeat(claim.token.clone(), hb_cancel, *credential_id);
 
-        // Cancel-safety guard (review C1 + wave-5, sub-spec §3.4). Fires
+        // Cancel-safety guard (review C1 + wave-5, sub-spec ). Fires
         // on EVERY exit path that does NOT explicitly defuse it: panic
         // unwind, error early-return, AND Drop (caller cancels the
         // outer future via `tokio::time::timeout`, `tokio::select!`, or
@@ -710,12 +707,12 @@ impl RefreshCoordinator {
         // `expires_at`), so we hand it a clone and retain `token` here.
         let token_for_release = claim.token.clone();
 
-        // Run user's refresh closure under `refresh_timeout` per §3.5.
+        // Run user's refresh closure under `refresh_timeout`.
         // The timeout is shorter than the claim TTL by construction, so
         // the heartbeat keeps the L2 row alive while the closure runs.
         // Wrap in `select!` over `cancel.cancelled()` so a heartbeat
         // failure mid-refresh aborts the closure BEFORE it issues the
-        // IdP POST — sub-spec §3.4 invariant.
+        // IdP POST — sub-spec invariant.
         //
         // Bias order MUST poll `do_refresh_fut` first: if the future
         // resolves `Ok(...)` and the heartbeat task fires
@@ -741,7 +738,7 @@ impl RefreshCoordinator {
         .map_err(|_elapsed| RefreshError::Timeout(timeout))
         .and_then(std::convert::identity);
 
-        // Normal-exit release (review I1 + wave-5, sub-spec §3.4). We
+        // Normal-exit release (review I1 + wave-5, sub-spec ). We
         // DO NOT propagate release errors — propagating them with `?`
         // would mask a successful refresh: caller would observe
         // `RefreshError::Repo(...)`, route to `record_failure`, then
@@ -762,7 +759,7 @@ impl RefreshCoordinator {
         // through its `cancelled()` arm rather than racing the abort.
         cancel.cancel();
         hb_task.abort();
-        // Sub-spec §6 — observe the hold duration on the normal-exit
+        // Sub-spec — observe the hold duration on the normal-exit
         // release path. Symmetric with the teardown guard above.
         self.metrics
             .hold_duration
@@ -774,7 +771,7 @@ impl RefreshCoordinator {
         result
     }
 
-    /// L2 acquisition retry loop per sub-spec §3.6.
+    /// L2 acquisition retry loop per sub-spec.
     ///
     /// On `Contended` we sleep until the contender's claim is expected
     /// to expire (capped + jitter) then consult
@@ -798,7 +795,7 @@ impl RefreshCoordinator {
     {
         const MAX_ATTEMPTS: usize = 5;
         for attempt in 0..MAX_ATTEMPTS {
-            // Sub-spec §6 per-attempt tracing span: `attempt` and
+            // Sub-spec per-attempt tracing span: `attempt` and
             // `credential_id` so operators correlate contention storms
             // across replicas.
             let span = tracing::info_span!(
@@ -819,7 +816,7 @@ impl RefreshCoordinator {
                 ClaimAttempt::Contended {
                     existing_expires_at,
                 } => {
-                    // Sub-spec §6 — bump the contended counter for every
+                    // Sub-spec — bump the contended counter for every
                     // try_claim that returned Contended, regardless of
                     // whether the post-backoff recheck eventually
                     // short-circuits.
@@ -835,7 +832,7 @@ impl RefreshCoordinator {
                         .to_std()
                         .unwrap_or(Duration::from_millis(200));
                     tokio::time::sleep(delay + jitter_ms(100)).await;
-                    // CRITICAL: post-backoff state recheck per §3.6. If
+                    // CRITICAL: post-backoff state recheck per . If
                     // the contender finished the refresh while we slept,
                     // the credential is now fresh — short-circuit with
                     // CoalescedByOtherReplica so the caller re-reads
@@ -846,7 +843,7 @@ impl RefreshCoordinator {
                     // refresh_token rotation the contender just
                     // committed (n8n #13088 lineage).
                     if !needs_refresh_after_backoff(credential_id).await {
-                        // Sub-spec §6 — L2 coalesce: another replica
+                        // Sub-spec — L2 coalesce: another replica
                         // refreshed while we waited.
                         //
                         // Span tier (review I1) — record `l2_coalesced`
@@ -857,7 +854,7 @@ impl RefreshCoordinator {
                         // `credential.refresh.coordinate` span — the
                         // intended target. The closed set
                         // `{l1, l2_acquired, l2_coalesced}` is
-                        // documented in OBSERVABILITY.md §7.2.
+                        // documented in OBSERVABILITY.md.
                         tracing::Span::current().record("tier", "l2_coalesced");
                         self.metrics.coalesced_l2.inc();
                         return Err(RefreshError::CoalescedByOtherReplica);
@@ -865,7 +862,7 @@ impl RefreshCoordinator {
                 },
             }
         }
-        // Sub-spec §6 — every retry exhausted without acquiring the L2
+        // Sub-spec — every retry exhausted without acquiring the L2
         // row. `claims_total{outcome=exhausted} > 0` is a real production
         // signal worth alerting on.
         self.metrics.claims_exhausted.inc();
@@ -875,7 +872,7 @@ impl RefreshCoordinator {
     /// Spawn the background heartbeat task that refreshes the L2 claim
     /// TTL on a fixed interval. Per Stage 1 fix C2 the trait's
     /// `heartbeat(token, ttl)` takes the same TTL passed to
-    /// `try_claim`, so the §3.5 invariants
+    /// `try_claim`, so the invariants
     /// (`heartbeat_interval × 3 < claim_ttl`,
     /// `reclaim_sweep_interval ≤ claim_ttl`) hold across heartbeats.
     ///
@@ -911,7 +908,7 @@ impl RefreshCoordinator {
             // Burn the initial immediate tick — the claim was just
             // acquired and already has a fresh `expires_at`.
             ticker.tick().await;
-            // Transient-failure budget per sub-spec §3.4 (wave-4 fix).
+            // Transient-failure budget per sub-spec (wave-4 fix).
             // Resets on every successful heartbeat so a long-running
             // refresh can absorb intermittent backend noise without
             // cancelling. Only `HeartbeatError::ClaimLost` is treated
@@ -1129,8 +1126,7 @@ mod tests {
 
     #[test]
     fn default_config_validates() {
-        // CI assertion that the shipped defaults satisfy the §3.5
-        // interlocking invariants.
+        // CI assertion that the shipped defaults satisfy the        // interlocking invariants.
         assert!(RefreshCoordConfig::default().validate().is_ok());
     }
 
@@ -1232,7 +1228,7 @@ mod tests {
 
     // ──────────────────────────────────────────────────────────────────
     // Panic-safety + release-error masking regression tests
-    // (review feedback C1 + I1, sub-spec §3.4)
+    // (review feedback C1 + I1, sub-spec )
     // ──────────────────────────────────────────────────────────────────
 
     use crate::credential::refresh::test_fixtures::{
@@ -1240,7 +1236,7 @@ mod tests {
         SignallingFailHeartbeatRepo, TransientFailHeartbeatRepo,
     };
 
-    /// I1 regression — sub-spec §3.4. After Stage 2 review C1+I1: a
+    /// I1 regression — sub-spec . After Stage 2 review C1+I1: a
     /// transient `release()` failure must NOT mask a successful refresh.
     /// The previous `release().await?` propagated `Repo(...)` and would
     /// trigger `record_failure` → another IdP POST → invalidates the
@@ -1269,7 +1265,7 @@ mod tests {
         );
     }
 
-    /// C1 regression — sub-spec §3.4. If the user closure panics, the
+    /// C1 regression — sub-spec . If the user closure panics, the
     /// coordinator MUST still abort the heartbeat task and release the
     /// L2 claim row. Without the scopeguard, the heartbeat ticks
     /// forever, the row stays held, and Stage 3.3 reclaim cannot
@@ -1336,7 +1332,7 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────
-    // Sub-spec §6 — observability emission
+    // Sub-spec — observability emission
     // ──────────────────────────────────────────────────────────────────
 
     /// `refresh_coalesced` must increment `claims_acquired` exactly once
@@ -1599,7 +1595,7 @@ mod tests {
         );
     }
 
-    /// Tokio-semantics regression — sub-spec §3.4. Defense-in-depth
+    /// Tokio-semantics regression — sub-spec . Defense-in-depth
     /// for the production end-to-end test
     /// `refresh_coalesced_returns_ok_when_closure_ready_concurrent_with_cancel`
     /// below. This inline `select!` reproduces the exact biased-select
@@ -1632,7 +1628,7 @@ mod tests {
         );
     }
 
-    /// M1 wave-4 reviewer-Issue-1 regression — sub-spec §3.4.
+    /// M1 wave-4 reviewer-Issue-1 regression — sub-spec.
     /// End-to-end test through `refresh_coalesced` proving the
     /// production bias order picks `do_refresh_fut` over
     /// `cancel.cancelled()` when both arms are ready in the same
@@ -1714,7 +1710,7 @@ mod tests {
         );
     }
 
-    /// M2 wave-4 regression — sub-spec §3.4. The heartbeat task MUST
+    /// M2 wave-4 regression — sub-spec . The heartbeat task MUST
     /// absorb up to `MAX_TRANSIENT_HEARTBEAT_FAILURES - 1` consecutive
     /// non-`ClaimLost` heartbeat errors without cancelling the
     /// in-flight refresh. Otherwise a 50ms DB hiccup amplifies into a
@@ -1832,7 +1828,7 @@ mod tests {
     // Wave-5 — coordinator cancel-safety on Drop
     // ──────────────────────────────────────────────────────────────────
 
-    /// Wave-5 regression — sub-spec §3.4. Dropping the
+    /// Wave-5 regression — sub-spec . Dropping the
     /// `refresh_coalesced` future mid-`await` (e.g. via a caller's
     /// `tokio::time::timeout`, `tokio::select!`, or `JoinHandle::abort`)
     /// MUST cancel the heartbeat task and best-effort release the L2
@@ -1881,7 +1877,7 @@ mod tests {
             heartbeat_count: Arc::clone(&heartbeat_count),
         });
 
-        // §3.5-validating config tuned for short virtual-time intervals:
+        // -validating config tuned for short virtual-time intervals:
         //   heartbeat_interval × 3 = 60ms ≤ claim_ttl 10s ✓
         //   refresh_timeout (5s) + heartbeat × 2 (40ms) ≤ claim_ttl 10s ✓
         // `refresh_timeout` is generous so the OUTER `refresh_coalesced`

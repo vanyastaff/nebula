@@ -53,7 +53,7 @@ pub enum RuntimeError {
     /// infinite loop into an explicit fatal so retry / error routing can
     /// handle it like any other terminal failure.
     ///
-    /// Spec 28 §9.0: engine-managed stuck-state detection is part of the
+    /// Spec 28 : engine-managed stuck-state detection is part of the
     /// stateful contract, not a generic `ActionError::Fatal`.
     #[classify(
         category = "internal",

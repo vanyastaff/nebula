@@ -1,6 +1,6 @@
 //! Integration test (Stage 2.5): two-tier coalesce smoke test.
 //!
-//! Per sub-spec §10 DoD #1.
+//! Per sub-spec DoD #1.
 //!
 //! **Caveat (acknowledged in the plan).** Two `RefreshCoordinator`s in
 //! the same process share neither L1 (each owns its own
@@ -17,7 +17,7 @@
 //!
 //! What this test verifies:
 //! * `RefreshCoordinator::refresh_coalesced` collapses many concurrent same-process calls to
-//!   exactly one inner closure invocation (sub-spec §10 DoD #1 single-process flavor).
+//!   exactly one inner closure invocation (sub-spec DoD #1 single-process flavor).
 //! * After all calls return the L2 row is released so a fresh acquire wins immediately.
 
 use std::{
@@ -110,7 +110,7 @@ async fn shared_coordinator_collapses_to_one_idp_call() {
 }
 
 /// Two distinct `RefreshCoordinator`s sharing a repo collapse to one
-/// closure invocation per sub-spec §3.6 (post-backoff state recheck).
+/// closure invocation per sub-spec (post-backoff state recheck).
 ///
 /// Each replica passes a `needs_refresh_after_backoff` predicate keyed
 /// on a shared `AtomicBool` — replica A flips it to `false` after its
@@ -236,7 +236,7 @@ async fn two_replicas_collapse_to_one_idp_call_after_stage_3_1() {
 /// `RefreshOutcome::ReauthRequired` and persists `reauth_required=true`
 /// on the credential row.
 ///
-/// Sub-spec §3.6 / review feedback I1. Before the persisted reauth flag
+/// Sub-spec / review feedback I1. Before the persisted reauth flag
 /// landed, replica B's predicate at `resolver.rs:232-242` re-read
 /// `expires_at`, computed `expired`, returned `true`, and replica B's
 /// closure ran a second IdP POST that produced another `invalid_grant`

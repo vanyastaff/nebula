@@ -1,11 +1,11 @@
-//! Unit tests for `EngineControlDispatch` (ADR-0008 A2 / A3).
+//! Unit tests for `EngineControlDispatch`.
 //!
 //! These tests mirror the API → consumer → engine seam without running the
 //! full `ControlConsumer` polling loop: they invoke `dispatch_start` /
 //! `dispatch_resume` / `dispatch_restart` / `dispatch_cancel` /
 //! `dispatch_terminate` directly against an engine wired to in-memory repos,
 //! and assert both the happy-path transitions (Created → Completed,
-//! Running → Cancelled) and the ADR-0008 §5 idempotency contract
+//! Running → Cancelled) and the idempotency contract
 //! (re-delivery does not re-run or double-signal).
 
 use std::{
@@ -356,7 +356,7 @@ impl Harness {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 /// Happy path: dispatch_start on a fresh `Created` execution row drives the
-/// engine to completion. This is the A2 §13-step-3 invariant — a POST to
+/// engine to completion. This is the A2 -step-3 invariant — a POST to
 /// `/executions` ends with the workflow actually running, not stranded at
 /// `Created`.
 #[tokio::test]
@@ -387,7 +387,7 @@ async fn dispatch_start_drives_created_execution_to_completion() {
     );
 }
 
-/// ADR-0008 §5 idempotency: a re-delivered `Start` for an execution the
+/// idempotency: a re-delivered `Start` for an execution the
 /// engine already completed is a no-op — no second run of the workflow.
 /// This is the load-bearing guard against at-least-once redelivery
 /// double-running the work.
@@ -417,7 +417,7 @@ async fn dispatch_start_is_idempotent_on_redelivery() {
     assert_eq!(
         harness.action_count.load(Ordering::SeqCst),
         1,
-        "re-delivered Start must NOT run the workflow again (ADR-0008 §5)"
+        "re-delivered Start must NOT run the workflow again "
     );
 }
 
@@ -447,7 +447,7 @@ async fn dispatch_resume_drives_created_execution_to_completion() {
 }
 
 /// Redelivered `Resume` on an already-completed execution is a no-op per
-/// ADR-0008 §5 — symmetric with the `Start` idempotency guard.
+/// — symmetric with the `Start` idempotency guard.
 #[tokio::test]
 async fn dispatch_resume_is_idempotent_on_completed_execution() {
     let harness = Harness::new().await;
@@ -531,7 +531,7 @@ async fn dispatch_restart_rejects_terminal_execution() {
     match err {
         ControlDispatchError::Rejected(msg) => {
             assert!(
-                msg.contains("durable output purge") || msg.contains("ADR-0008 follow-up"),
+                msg.contains("durable output purge") || msg.contains(" follow-up"),
                 "reject message must name the A2 gap, got: {msg}"
             );
         },
@@ -575,7 +575,7 @@ async fn dispatch_start_rejects_nonexistent_execution() {
 /// Happy path: a `Cancel` delivered while the frontier loop is inside a
 /// live node aborts the execution cooperatively. The spawned run returns,
 /// the node surfaces its typed `ActionError::Cancelled`, and the execution
-/// row lands on a terminal state. This is the §13-step-5 invariant that A3
+/// row lands on a terminal state. This is the -step-5 invariant that A3
 /// closes — the durable `Cancel` signal actually reaches the engine.
 #[tokio::test]
 async fn dispatch_cancel_aborts_running_execution() {
@@ -596,7 +596,7 @@ async fn dispatch_cancel_aborts_running_execution() {
         .await
         .expect("slow handler started within 5s");
 
-    // Deliver the Cancel. ADR-0008 A3: signal reaches the live token, the
+    // Deliver the Cancel. A3: signal reaches the live token, the
     // handler exits via `ActionError::Cancelled`, frontier loop tears down.
     harness
         .dispatch
@@ -635,11 +635,11 @@ async fn dispatch_cancel_aborts_running_execution() {
     );
 }
 
-/// ADR-0008 §5 idempotency on terminal: a `Cancel` re-delivered for an
+/// idempotency on terminal: a `Cancel` re-delivered for an
 /// already-terminal execution must be `Ok(())` without disturbing state or
 /// triggering a second dispatch of the workflow.
 ///
-/// The A3 contract (ADR-0016) makes this property hold through **two
+/// The A3 contract makes this property hold through **two
 /// layers**, not a status short-circuit:
 ///
 ///   1. `dispatch_cancel` signals the engine on every non-orphan delivery, including terminal.
@@ -760,7 +760,7 @@ async fn dispatch_cancel_rejects_nonexistent_execution() {
 }
 
 /// `Terminate` is a synonym for `Cancel` until a forced-shutdown path is
-/// wired (see ADR-0016 and the module doc). Same idempotency / orphan /
+/// wired ( and the module doc). Same idempotency / orphan /
 /// cross-runner contracts apply — this smoke test just asserts the
 /// delegation is wired, not a separate code path.
 #[tokio::test]

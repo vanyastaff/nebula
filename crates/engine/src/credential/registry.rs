@@ -1,7 +1,7 @@
 //! Type-erased state-projection registry for runtime credential dispatch.
 //!
 //! Distinct from the KEY-keyed [`CredentialRegistry`] in
-//! `nebula_credential::contract::registry` (Tech Spec §3.1, §15.6),
+//! `nebula_credential::contract::registry` (Tech Spec , ),
 //! which stores `Box<dyn AnyCredential>` instances keyed by
 //! `Credential::KEY`. This engine-side registry maps
 //! `<C::State as CredentialState>::KIND` to a deserialization +
@@ -9,7 +9,7 @@
 //! type-erased `C::Scheme` an action consumer receives.
 //!
 //! Both registries fail-closed on duplicate registration per Tech
-//! Spec §15.6 (closes security-lead N7); the previous `HashMap::insert`
+//! Spec (closes security-lead N7); the previous `HashMap::insert`
 //! overwrite path is gone in both. They serve distinct dispatch lookups
 //! and are populated from the same plugin init phase.
 //!
@@ -27,7 +27,7 @@ type ProjectFn = Arc<
 
 /// Type-erased registry mapping `state_kind` to projection handlers.
 ///
-/// Renamed from `CredentialRegistry` per Tech Spec §15.6 — the
+/// Renamed from `CredentialRegistry` per Tech Spec — the
 /// canonical [`CredentialRegistry`](nebula_credential::CredentialRegistry)
 /// now lives on the contract side and stores credential instances keyed
 /// by `Credential::KEY`. This engine-side registry is the runtime
@@ -53,7 +53,7 @@ impl StateProjectionRegistry {
     /// the same `<C::State as CredentialState>::KIND` is already
     /// registered. Fail-closed — silent `HashMap::insert` overwrite
     /// would hide namespace collisions including supply-chain plugin
-    /// replacement (Tech Spec §15.6, N7 mitigation; active-dev policy:
+    /// replacement (Tech Spec , N7 mitigation; active-dev policy:
     /// reject-second-registration).
     ///
     /// # Errors

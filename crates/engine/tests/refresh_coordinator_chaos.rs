@@ -1,7 +1,7 @@
 //! Chaos test — refresh-coordinator multi-replica race regression.
 //!
 //! Per sub-spec
-//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §5.4.
+//! `docs/INTEGRATION_MODEL.md`.
 //!
 //! # Gating
 //!
@@ -48,7 +48,7 @@
 //! - Per-credential IdP call count ≤ 1 in any single refresh window. (no double-POST)
 //! - `ReauthRequired` count == 0 (no injected crashes).
 //! - Outside-refresh-window P50 latency < 4s watchdog (catches a regression where the L1 oneshot
-//!   stopped firing, forcing every caller through full L2 backoff). The sub-spec §5.4 target P99 <
+//!   stopped firing, forcing every caller through full L2 backoff). The sub-spec target P99 <
 //!   100ms is a production SLO measured against real load, not the chaos harness — the harness
 //!   emits raw P50/P99/max for inspection so drift is still visible.
 //! - Total `coalesced_l1 + coalesced_l2` ≥ 1 (proves the test actually exercised cross-replica
@@ -78,7 +78,7 @@ use tokio::task::JoinHandle;
 /// Chaos-test parameters. The default `ci()` plane is the CI-friendly
 /// scaled-down version (5s × 5 credentials × 3 replicas × 3 workers per
 /// replica = 9 worker tasks). The `chaos-full` Cargo feature widens to
-/// the full sub-spec §5.4 plane (10 min × 100 credentials × 3 replicas
+/// the full sub-spec plane (10 min × 100 credentials × 3 replicas
 /// × 8 workers per replica = 24 worker tasks) with no code changes —
 /// only the `cfg`-gated literals differ.
 ///
@@ -209,9 +209,9 @@ async fn three_replicas_zero_double_idp_calls() {
 
     // Latency samples partitioned by outcome:
     // - `coalesced` — caller short-circuited via L1 oneshot or L2 post-backoff recheck. These are
-    //   the "outside refresh window" calls in sub-spec §5.4 and must be fast.
+    // the "outside refresh window" calls in sub-spec and must be fast.
     // - `refreshed` — caller acquired the L2 row and ran the closure. These include the simulated
-    //   IdP POST and are bounded by `refresh_timeout`, so they are NOT subject to the §5.4 100ms
+    // IdP POST and are bounded by `refresh_timeout`, so they are NOT subject to the 100ms
     //   target.
     let latencies_coalesced = Arc::new(parking_lot::Mutex::new(Vec::<Duration>::new()));
     let latencies_refreshed = Arc::new(parking_lot::Mutex::new(Vec::<Duration>::new()));
@@ -369,7 +369,7 @@ async fn three_replicas_zero_double_idp_calls() {
 
     // ── Assertion 5: latency drift watchdog ────────────────────────────
     //
-    // Sub-spec §5.4 target: P99 < 100ms outside the refresh window —
+    // Sub-spec target: P99 < 100ms outside the refresh window —
     // measured in a real production environment, not a chaos harness
     // running alongside ~270 other tests. P99 in this harness is
     // dominated by L2 contention backoff (capped at 5s+jitter by

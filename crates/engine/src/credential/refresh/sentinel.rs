@@ -1,8 +1,8 @@
 //! Sentinel mid-refresh crash detection + threshold escalation.
 //!
 //! Per sub-spec
-//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
-//! §3.4 + §6 audit.
+//! `docs/INTEGRATION_MODEL.md`
+//! + audit.
 //!
 //! When a holder is about to perform the IdP POST (the operation that
 //! risks invalidating the refresh token if not persisted), it marks the
@@ -50,7 +50,7 @@ impl Default for SentinelThresholdConfig {
 /// exceeded — the engine must transition the credential to
 /// `ReauthRequired` and emit
 /// [`nebula_credential::CredentialEvent::ReauthRequired`] per
-/// sub-spec §3.4.
+/// sub-spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SentinelDecision {
     /// Sentinel event count is below threshold; resume normal flow.
@@ -110,7 +110,7 @@ impl SentinelTrigger {
     /// `sentinel = RefreshInFlight`. Records the event in
     /// `credential_sentinel_events` then queries the rolling-window
     /// count; returns `EscalateToReauth` when the count is at or above
-    /// threshold (default 3-in-1h per sub-spec §3.4).
+    /// threshold (default 3-in-1h per sub-spec ).
     ///
     /// # Concurrency
     ///

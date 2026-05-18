@@ -1,9 +1,9 @@
 //! Lease lifecycle subsystem — engine-side consumption of the
-//! [`LeasedProvider`] capability introduced by ADR-0051.
+//! [`LeasedProvider`] capability introduced by.
 //!
 //! # Role
 //!
-//! Phases A–C of the ADR-0051 follow-up landed the lease primitives
+//! Phases A–C of the follow-up landed the lease primitives
 //! (envelope, capability sub-trait, cache layer, first concrete Vault
 //! impl). Nothing in the engine called `renew` or `revoke` — a Vault
 //! dynamic-secret lease would silently expire unless someone happened to
@@ -167,7 +167,7 @@ impl LeaseLifecycle {
     /// Returns the number of leases successfully revoked. Failed revokes
     /// do not propagate — they are logged + emitted as audit events but
     /// the rotation pipeline that called this MUST NOT block on them.
-    /// See spec §4: revoke-on-rotate is best-effort cleanup.
+    /// See spec : revoke-on-rotate is best-effort cleanup.
     pub async fn revoke_for_credential(&self, credential_id: CredentialId) -> usize {
         let (reply_tx, reply_rx) = oneshot::channel();
         if self

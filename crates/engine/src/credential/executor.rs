@@ -65,7 +65,7 @@ pub enum ExecutorError {
     /// `state: ()` is degenerate and cannot deserialize into the typed
     /// [`Interactive::Pending`] used by [`execute_continue`].
     ///
-    /// Per Tech Spec §15.4 the base [`Credential::resolve`] **must** return
+    /// Per Tech Spec the base [`Credential::resolve`] **must** return
     /// [`ResolveResult::Complete`] (or `Retry`); interactive kick-offs that
     /// need typed pending state populate it directly via
     /// [`PendingStateStore::put`] from a credential-specific helper such as
@@ -89,7 +89,7 @@ pub enum ExecutorError {
 /// Execute initial credential resolve with timeout and pending-state
 /// handling.
 ///
-/// Per Tech Spec §15.4 the base [`Credential::resolve`] returns
+/// Per Tech Spec the base [`Credential::resolve`] returns
 /// `ResolveResult<State, ()>`. The contract for this executor is:
 ///
 /// - **`Complete(state)`** — credential resolved synchronously; caller persists the state.
@@ -133,7 +133,7 @@ where
             Ok(ResolveResponse::Complete(state))
         },
         ResolveResult::Pending { .. } => {
-            // §15.4: base resolve cannot return Pending — the typed Pending
+            // : base resolve cannot return Pending — the typed Pending
             // path lives on Interactive. See `ExecutorError::BaseResolvePending`
             // doc-comment for the rationale.
             let _ = pending_store;
@@ -149,7 +149,7 @@ where
 /// Continue interactive credential resolve with timeout and
 /// pending-state handling.
 ///
-/// Bound on [`Interactive`] per Tech Spec §15.4 — non-interactive
+/// Bound on [`Interactive`] per Tech Spec — non-interactive
 /// credentials cannot reach this dispatch path. The framework loads the
 /// typed [`Interactive::Pending`] from the pending store, invokes
 /// [`Interactive::continue_resolve`], and persists the next pending

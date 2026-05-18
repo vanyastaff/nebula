@@ -41,7 +41,7 @@ struct ActionEntry {
 /// A single factory entry in the parallel factory map (Phase 3 / Session 4).
 ///
 /// Stored alongside the legacy `ActionEntry` so the engine can transition
-/// dispatch to factory-based instantiation incrementally per ADR-0043 §6.
+/// dispatch to factory-based instantiation incrementally.
 #[derive(Clone)]
 struct FactoryEntry {
     metadata: ActionMetadata,
@@ -53,11 +53,11 @@ struct FactoryEntry {
 pub struct ActionRegistry {
     /// Map from action key to list of entries, each at a distinct version.
     actions: DashMap<ActionKey, Vec<ActionEntry>>,
-    /// Parallel factory map per ADR-0043 §6 / Phase 3 Session 4. Engine
+    /// Parallel factory map per / Phase 3 Session 4. Engine
     /// dispatch consults this first and falls back to `actions` when no
     /// factory has been registered for the key.
     factories: DashMap<ActionKey, Vec<FactoryEntry>>,
-    /// Provider-typed webhook factory map (M3.3 / ADR-0049). Sibling
+    /// Provider-typed webhook factory map (M3.3). Sibling
     /// to `factories` because provider kinds are coarser than
     /// `ActionKey` and arrive as runtime strings from operator-supplied
     /// storage rows. Use [`Self::register_webhook_provider`] /
@@ -240,7 +240,7 @@ impl ActionRegistry {
         self.register(metadata, handler);
     }
 
-    /// Register an action factory (Phase 3 / Session 4 — ADR-0043 §6).
+    /// Register an action factory (Phase 3 / Session 4 — ).
     ///
     /// The factory is consulted at dispatch time to instantiate a fresh
     /// erased action per execution. This is the new path for actions that
@@ -263,7 +263,7 @@ impl ActionRegistry {
         }
     }
 
-    /// Register a provider-typed webhook factory (M3.3 / ADR-0049).
+    /// Register a provider-typed webhook factory (M3.3).
     ///
     /// String-keyed (factory.kind()) because provider names come from
     /// operator-supplied storage rows, not Rust types. Subsequent

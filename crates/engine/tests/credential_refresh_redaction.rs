@@ -1,6 +1,6 @@
 #![cfg(all(feature = "rotation", feature = "test-util"))]
 
-//! ADR-0030 §4 redaction CI gate. **One row per token_refresh code path.**
+//! redaction CI gate. **One row per token_refresh code path.**
 //!
 //! Each test injects a secret-bearing IdP response through the bounded
 //! response parser and asserts that the resulting error rendering (Display,

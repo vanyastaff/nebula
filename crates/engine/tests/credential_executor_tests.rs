@@ -35,7 +35,7 @@ async fn execute_resolve_static_credential_returns_complete() {
 
 #[tokio::test]
 async fn execute_continue_returns_pending_store_error_for_missing_token() {
-    // Per Tech Spec §15.4 `execute_continue` is bound on `Interactive`
+    // Per Tech Spec `execute_continue` is bound on `Interactive`
     // — non-interactive credentials (`ApiKeyCredential`) cannot reach
     // this dispatch path at compile time (Probe 4 cements the
     // `E0277`). This test exercises the runtime "missing token" path
@@ -79,7 +79,7 @@ impl nebula_credential::CredentialState for DummyState {
 }
 
 /// Credential whose base `resolve` returns `Pending(())` — exactly the
-/// shape Tech Spec §15.4 forbids the engine executor from honouring.
+/// shape Tech Spec forbids the engine executor from honouring.
 struct BaseResolvePendingCredential;
 
 impl Credential for BaseResolvePendingCredential {
@@ -107,7 +107,7 @@ impl Credential for BaseResolvePendingCredential {
         _values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<DummyState, ()>, CredentialError> {
-        // Deliberately return Pending(()) — Tech Spec §15.4 says this
+        // Deliberately return Pending() — Tech Spec says this
         // shape MUST be rejected by `execute_resolve`. The base trait
         // cannot carry typed pending state; interactive flows go
         // through credential-specific kickoff helpers.
@@ -125,7 +125,7 @@ impl Credential for BaseResolvePendingCredential {
 
 #[tokio::test]
 async fn execute_resolve_rejects_base_resolve_pending() {
-    // Per Tech Spec §15.4 `execute_resolve` rejects `ResolveResult::Pending`
+    // Per Tech Spec `execute_resolve` rejects `ResolveResult::Pending`
     // from the base `Credential::resolve` because `state: ()` cannot
     // deserialize into the typed `Interactive::Pending` later in
     // `execute_continue`. The contract is: base resolve returns
@@ -152,7 +152,7 @@ async fn execute_resolve_rejects_base_resolve_pending() {
 
 #[tokio::test]
 async fn execute_continue_rejects_missing_session_id() {
-    // Per Tech Spec §15.4 the executor refuses to fall back to a
+    // Per Tech Spec the executor refuses to fall back to a
     // `"default"` session bucket; callers MUST set session_id
     // explicitly to keep concurrent owners in distinct
     // `(KEY, owner, session)` slots inside `PendingStateStore`.

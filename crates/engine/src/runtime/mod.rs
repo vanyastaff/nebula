@@ -11,7 +11,7 @@
 //! - [`ActionRegistry`] — registers and looks up action handlers by key.
 //! - [`DataPassingPolicy`], [`LargeDataStrategy`] — output size enforcement.
 //! - [`MemoryQueue`], [`TaskQueue`] — in-memory task queueing (not durable; durable control signals
-//!   live in `execution_control_queue` — §12.2).
+//!   live in `execution_control_queue`).
 //! - [`BlobRef`], [`BlobStorage`] — side-channel for large payloads.
 //! - [`StatefulCheckpoint`], [`StatefulCheckpointSink`] — checkpoint boundaries for
 //!   `StatefulAction` types.
@@ -20,9 +20,9 @@
 //!
 //! ## Canon
 //!
-//! - §3.5 action dispatch by trait.
-//! - §11.2 retry surface: dispatch only; engine-level re-execution is `planned`.
-//! - §12.6 isolation honesty: isolation is by sandbox delegation.
+//! - action dispatch by trait.
+//! - retry surface: dispatch only; engine-level re-execution is `planned`.
+//! - isolation honesty: isolation is by sandbox delegation.
 
 pub mod blob;
 pub mod data_policy;

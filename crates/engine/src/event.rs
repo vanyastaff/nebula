@@ -48,7 +48,7 @@ pub enum ExecutionEvent {
     },
 
     /// A node attempt failed but the engine scheduled a retry per
-    /// ADR-0042 (Layer 2 — engine-level retry). The node has
+    /// (Layer 2 — engine-level retry). The node has
     /// transitioned to `WaitingRetry` and will be re-dispatched at
     /// `next_attempt_at`.
     ///
@@ -81,7 +81,7 @@ pub enum ExecutionEvent {
     /// The frontier loop exited while one or more nodes were still in a
     /// non-terminal state.
     ///
-    /// Per `docs/PRODUCT_CANON.md` §11.1, the engine must not silently report
+    /// Per `docs/PRODUCT_CANON.md` , the engine must not silently report
     /// `Completed` on inconsistent state. This event is emitted just before
     /// [`ExecutionEvent::ExecutionFinished`] so operators observing the event
     /// stream see the integrity violation rather than only a successful-looking
@@ -103,7 +103,7 @@ pub enum ExecutionEvent {
         /// Total elapsed time.
         elapsed: Duration,
         /// Engine's attribution for *why* the execution reached its
-        /// final status (canon §4.5; ROADMAP §M0.3).
+        /// final status (operational honesty).
         ///
         /// `Some(_)` means the engine attributed a concrete
         /// termination reason. `None` is **also intentional**: it

@@ -4,7 +4,7 @@
 //! closure with a real `RefreshClaim` whose token can be sentinel-marked
 //! via `RefreshClaimRepo::mark_sentinel`, and that on the success path
 //! the row is **deleted** by `release` so no `RefreshInFlight` sentinel
-//! lingers — sub-spec §3.4.
+//! lingers — sub-spec.
 //!
 //! Mid-refresh crash detection (sentinel surviving a sweep) is tested at
 //! the storage level in `nebula-storage::refresh_claim_in_memory_smoke`

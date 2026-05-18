@@ -18,7 +18,7 @@
 //! # Fail-closed registration
 //!
 //! Mirrors the `crate::credential::StateProjectionRegistry` policy from
-//! ADR-0030 / Tech Spec §15.6 N7 mitigation: duplicate
+//! / Tech Spec N7 mitigation: duplicate
 //! `D::key()` registration returns
 //! [`DaemonError::DuplicateKey`] rather than overwriting. Operators resolve
 //! the collision by renaming the daemon's `Resource::key`.
@@ -144,7 +144,7 @@ impl DaemonRegistry {
     /// # Errors
     ///
     /// - [`DaemonError::DuplicateKey`] when a daemon with the same `D::key()` is already registered
-    ///   (fail-closed per ADR-0030 / Tech Spec §15.6 N7).
+    ///   (fail-closed per Tech Spec N7).
     /// - [`DaemonError::RegistryCancelled`] when [`Self::shutdown`] has already cancelled the
     ///   parent token; subsequent daemons would inherit a pre-cancelled child and never run, so the
     ///   registry refuses the registration upfront.

@@ -27,7 +27,7 @@ impl zeroize::Zeroize for TestPending {
     }
 }
 
-// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Hand-rolled
+// Per Tech Spec — `PendingState: ZeroizeOnDrop`. Hand-rolled
 // because the manual `Zeroize` body above conflicts with a derived
 // `Drop`; this delegates Drop to the existing zeroize logic.
 impl Drop for TestPending {
@@ -56,7 +56,7 @@ impl zeroize::Zeroize for ShortTtl {
     }
 }
 
-// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Same hand-roll
+// Per Tech Spec — `PendingState: ZeroizeOnDrop`. Same hand-roll
 // rationale as `TestPending` above.
 impl Drop for ShortTtl {
     fn drop(&mut self) {
@@ -112,7 +112,7 @@ impl Credential for InteractiveTestCredential {
         _values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<TestInteractiveState, ()>, CredentialError> {
-        // Per Tech Spec §15.4 the base `Credential::resolve` cannot
+        // Per Tech Spec the base `Credential::resolve` cannot
         // carry typed pending state. The interactive entry point goes
         // through credential-specific kickoff helpers + direct
         // PendingStateStore::put — see the test bodies below for the
@@ -145,9 +145,9 @@ impl Interactive for InteractiveTestCredential {
     }
 }
 
-// Per Tech Spec §15.4 — `InteractiveTestCredential` is not `Refreshable`.
+// Per Tech Spec — `InteractiveTestCredential` is not `Refreshable`.
 // The legacy `impl Refreshable { Ok(NotSupported) }` was the exact
-// silent-downgrade vector §15.4 eliminates: a credential declared
+// silent-downgrade vector eliminates: a credential declared
 // "refreshable" but silently never refreshed. Tests below exercise only
 // the `Interactive` path (`execute_continue`), so no refresh impl is
 // needed.
@@ -209,14 +209,14 @@ impl Interactive for RetryAwareCredential {
     }
 }
 
-// Per Tech Spec §15.4 — `RetryAwareCredential` is not `Refreshable`.
+// Per Tech Spec — `RetryAwareCredential` is not `Refreshable`.
 // The legacy `impl Refreshable { Ok(NotSupported) }` was the silent-
-// downgrade anti-pattern §15.4 eliminates. Tests below exercise only
+// downgrade anti-pattern eliminates. Tests below exercise only
 // the `Interactive` path (`execute_continue`).
 
 /// Helper: kickoff an interactive test credential by storing the typed
 /// `TestPending` directly in the pending store and returning the issued
-/// token. Per Tech Spec §15.4 the base `Credential::resolve` cannot
+/// token. Per Tech Spec the base `Credential::resolve` cannot
 /// carry typed pending state — the kickoff happens at the API
 /// orchestration layer (or in tests, here).
 async fn kickoff_test_pending(
@@ -224,7 +224,7 @@ async fn kickoff_test_pending(
     ctx: &CredentialContext,
     credential_key: &str,
 ) -> PendingToken {
-    // Per Tech Spec §15.4 the executor requires explicit session scoping —
+    // Per Tech Spec the executor requires explicit session scoping —
     // tests must provide a session id via `with_session_id` rather than
     // relying on a `"default"` fallback that would collapse concurrent
     // owners into the same pending-store bucket.

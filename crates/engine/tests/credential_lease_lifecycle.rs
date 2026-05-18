@@ -1,4 +1,4 @@
-//! End-to-end exercise of the engine-side lease lifecycle (ADR-0051 Phase D).
+//! End-to-end exercise of the engine-side lease lifecycle.
 //!
 //! Demonstrates the canonical wiring pattern:
 //!

@@ -1,4 +1,4 @@
-//! A1 wiring tests for `ControlConsumer` (canon §12.2, ADR-0008).
+//! A1 wiring tests for `ControlConsumer` (control-queue wiring, ).
 //!
 //! These tests assert the skeleton exists and functions as a durable-outbox
 //! consumer:
@@ -203,7 +203,7 @@ impl ControlDispatch for FlakyDispatch {
 /// Load-bearing compile check: the consumer is constructible using only
 /// engine-public + nebula-core + nebula-storage-port types.
 ///
-/// This proves ADR-0008 decision 2 (no `nebula-api` / `nebula-storage`-row
+/// This proves decision 2 (no `nebula-api` / `nebula-storage`-row
 /// types leak onto the consumer's public surface) — the `nebula-engine`
 /// crate does not depend on `nebula-api`, so any such leak would have
 /// failed to compile; this test makes the proof explicit.
@@ -375,7 +375,7 @@ async fn consumer_marks_row_failed_on_malformed_execution_id() {
 /// through a reclaim sweep, then spin up a fresh consumer and verify it
 /// picks up the redelivered row and drives it to `Completed`.
 ///
-/// This is the B1 acceptance test — ADR-0008 §5 liveness guarantee.
+/// This is the B1 acceptance test — liveness guarantee.
 #[tokio::test]
 async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     let (_store, queue) = port_queue();
@@ -494,7 +494,7 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     );
 }
 
-/// ADR-0017 Seam: every reclaim sweep must increment
+/// : every reclaim sweep must increment
 /// `nebula_engine_control_reclaim_total{outcome}` by the per-row count, so a
 /// non-zero `exhausted` is alertable and a steady `reclaimed` flags
 /// crashed-runner load. Pre-seeds two stale-but-budgeted rows + one stale

@@ -1,5 +1,5 @@
 //! Lock the `Send` bounds on `RefreshCoordinator::refresh_coalesced`
-//! (sub-spec §3.6 / review feedback I2).
+//! (sub-spec / review feedback I2).
 //!
 //! `refresh_coalesced` runs the user's closure under
 //! `tokio::time::timeout` and awaits the predicate from the spawn'd

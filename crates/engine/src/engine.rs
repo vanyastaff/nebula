@@ -67,7 +67,7 @@ type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 /// Default capacity for the engine's event bus. Tuned so a typical
 /// interactive workflow (hundreds of nodes) never blocks, while a runaway
 /// producer with a dead consumer cannot inflate memory without bound. Spec
-/// 28 §2.4 calls for broadcast to multiple subscribers (storage writer,
+/// 28 calls for broadcast to multiple subscribers (storage writer,
 /// metrics collector, websocket broadcaster, audit writer) — `EventBus` is
 /// the workspace-standard fan-out primitive.
 pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -141,7 +141,7 @@ pub struct WorkflowEngine {
     /// / [`crate::TypedResourceRegistrar`]). The map is **closed**: a kind
     /// is registrable only if a registrar was explicitly inserted; an
     /// unknown kind is a wiring fault caught at activation, never a silent
-    /// no-op (INTEGRATION_MODEL §114-120; ADR-0030 / ADR-0036 / ADR-0044).
+    /// no-op.
     ///
     /// Held in engine state next to [`plugin_registry`] because the two
     /// are siblings: `impl Plugin` is the runtime source of truth for
@@ -163,7 +163,7 @@ pub struct WorkflowEngine {
     /// [`plugin_registry`]: Self::plugin_registry
     resource_registrars: ResourceRegistrarRegistry,
     /// Engine-owned reverse index `CredentialId → resolved resource rows`
-    /// for the per-slot rotation fan-out (ADR-0067 §D1).
+    /// for the per-slot rotation fan-out.
     ///
     /// Always constructed (an empty index is a no-op fan-out), held here
     /// next to [`resource_registrars`] and the
@@ -175,7 +175,7 @@ pub struct WorkflowEngine {
     /// drains it on a rotation/revoke event into the `Manager` slot ports.
     /// No `nebula-resource → nebula-engine` edge: the index lives in
     /// `nebula-engine` and the rotation signal arrives via
-    /// `nebula-eventbus` (ADR-0067 §D1; AGENTS.md).
+    /// `nebula-eventbus`.
     ///
     /// Feature-gated with the index itself (`rotation`).
     ///
@@ -223,8 +223,8 @@ pub struct WorkflowEngine {
     /// Actions may only acquire credential IDs listed for their `ActionKey`.
     /// Missing entry or empty set → every `acquire_credential` request for
     /// that action is denied with [`nebula_credential::CredentialAccessError::AccessDenied`].
-    /// See `PRODUCT_CANON` §4.5 (operational honesty — no false capabilities) and §12.5
-    /// (secrets and auth). Populated via [`WorkflowEngine::with_action_credentials`].
+    /// See product canon (operational honesty — no false capabilities; secrets and auth).
+    /// Populated via [`WorkflowEngine::with_action_credentials`].
     action_credentials: HashMap<ActionKey, HashSet<String>>,
     /// Optional event sender for real-time execution monitoring (TUI, logging).
     event_bus: Option<EventBus>,
@@ -250,7 +250,7 @@ pub struct WorkflowEngine {
     /// Volatile index of in-flight executions this runner owns.
     ///
     /// Published **after** `acquire_and_heartbeat_lease` succeeds — the lease
-    /// is the authoritative single-runner fence (ADR-0015), so publishing
+    /// is the authoritative single-runner fence, so publishing
     /// after the lease prevents an overlapping attempt for the same
     /// [`ExecutionId`] from overwriting the live token. Each entry is
     /// tagged with a monotonically-increasing [`RunningRegistrationId`]
@@ -260,13 +260,13 @@ pub struct WorkflowEngine {
     /// losing attempt clobbering the winner's registration.
     ///
     /// [`cancel_execution`] looks up the token here and cancels it,
-    /// closing the ADR-0008 A3 control-queue `Cancel` path into the
+    /// closing the A3 control-queue `Cancel` path into the
     /// cooperative-cancel signal the frontier loop already observes.
     ///
     /// **Not durable.** This map lives only as long as the `WorkflowEngine`
     /// instance. On process crash the entries vanish with the runner; the
     /// durable truth is `executions` + `execution_control_queue`, and the
-    /// replacement runner reloads from storage (ADR-0008 §5, canon §12.2).
+    /// replacement runner reloads from storage.
     ///
     /// [`execute_workflow`]: Self::execute_workflow
     /// [`resume_execution`]: Self::resume_execution
@@ -275,7 +275,7 @@ pub struct WorkflowEngine {
     /// Optional handle for the background credential-refresh reclaim
     /// sweep. When set, dropping the engine aborts the spawned task —
     /// see [`crate::credential::refresh::ReclaimSweepHandle`] (sub-spec
-    /// §3.3, §3.4).
+    /// , ).
     ///
     /// Wired by the composition root via
     /// [`Self::with_credential_reclaim_sweep`] when the deployment has a
@@ -286,7 +286,7 @@ pub struct WorkflowEngine {
 }
 
 /// Monotonic per-registration identifier used to fence out-of-order drops
-/// from concurrent attempts on the same [`ExecutionId`] (ADR-0016 / #482
+/// from concurrent attempts on the same [`ExecutionId`] ( / #482
 /// Copilot review). A `u64` is fine — we'd need billions of registrations
 /// per runner lifetime to wrap, and the counter resets on process restart
 /// anyway.
@@ -396,9 +396,9 @@ impl WorkflowEngine {
     ///
     /// This is the engine-side hook that
     /// [`crate::control_dispatch::EngineControlDispatch`]'s `dispatch_cancel`
-    /// calls after the §5 idempotency guard; the durable API-level CAS to
+    /// calls after the idempotency guard; the durable API-level CAS to
     /// `Cancelled` has already landed on the execution row by the time a
-    /// `Cancel` command reaches the consumer (canon §12.2, §13 step 5).
+    /// `Cancel` command reaches the consumer (control-queue cancel enqueue path).
     pub fn cancel_execution(&self, execution_id: ExecutionId) -> bool {
         match self.running.get(&execution_id) {
             Some(entry) => {
@@ -460,7 +460,7 @@ impl WorkflowEngine {
     /// call. A kind is registrable only if a registrar was explicitly
     /// wired in (via [`with_resource_registrars`](Self::with_resource_registrars));
     /// an unknown kind is a wiring fault surfaced at activation, never a
-    /// silent no-op (INTEGRATION_MODEL §114-120). Defaults empty
+    /// silent no-op . Defaults empty
     /// (fail-closed) when the engine is built without resource activation.
     ///
     /// The activation path (resolving a persisted row's `kind` through
@@ -471,7 +471,7 @@ impl WorkflowEngine {
         &self.resource_registrars
     }
 
-    /// The engine-owned per-slot rotation reverse index (ADR-0067 §D1).
+    /// The engine-owned per-slot rotation reverse index.
     ///
     /// This is the [`bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
     /// producer for the §M11.5 fan-out: the resource-activation path
@@ -496,9 +496,9 @@ impl WorkflowEngine {
     ///
     /// `credential_bus` / `lease_bus` are the buses
     /// `EventMetricObserver::{event_bus, lease_bus}`
-    /// (`nebula-credential-runtime`, ADR-0066) emits on after a refresh
+    /// (`nebula-credential-runtime`, ) emits on after a refresh
     /// CAS-persists fresh material or a lease is revoked. This closes the
-    /// ADR-0067 §Deferred "Rotation fan-out is implemented but unwired"
+    /// "Rotation fan-out is implemented but unwired"
     /// gap: a `CredentialEvent::Refreshed` drives
     /// `ResourceFanoutIndex::dispatch_refresh`, and
     /// `CredentialEvent::Revoked` / `LeaseEvent::LeaseRevoked` drive
@@ -528,7 +528,7 @@ impl WorkflowEngine {
     ///
     /// No `nebula-resource → nebula-engine` edge: the index lives in
     /// `nebula-engine` and the rotation signal arrives via
-    /// `nebula-eventbus` (ADR-0067 §D1; AGENTS.md cross-crate signal
+    /// `nebula-eventbus` (AGENTS.md cross-crate signal
     /// rule).
     #[cfg(feature = "rotation")]
     #[must_use = "the returned driver handle must be held; dropping it aborts the fan-out"]
@@ -603,7 +603,7 @@ impl WorkflowEngine {
     /// the plugin registry. Scope is row/activation context, not a
     /// plugin-declaration field, and is supplied per-call via
     /// [`RegisterRequest`](crate::RegisterRequest) — never defaulted, since
-    /// a wrong scope is an isolation hole (ADR-0036 / ADR-0044).
+    /// a wrong scope is an isolation hole.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_resource_registrars(mut self, registrars: ResourceRegistrarRegistry) -> Self {
         self.resource_registrars = registrars;
@@ -701,7 +701,7 @@ impl WorkflowEngine {
 
     /// Attach the background credential refresh reclaim sweep handle.
     ///
-    /// Per sub-spec §3.3 + §3.4 the engine spawns a periodic task that
+    /// Per sub-spec + the engine spawns a periodic task that
     /// calls `RefreshClaimRepo::reclaim_stuck`, routes
     /// `RefreshInFlight`-flagged stale claims through
     /// [`crate::credential::refresh::SentinelTrigger`], and publishes
@@ -723,8 +723,7 @@ impl WorkflowEngine {
 
     /// Declare the credential IDs an action is permitted to acquire.
     ///
-    /// The engine enforces a **deny-by-default** allowlist (see `PRODUCT_CANON` §4.5
-    /// and §12.5). When a node whose `action_key == action` runs, only the
+    /// The engine enforces a **deny-by-default** allowlist (see `PRODUCT_CANON` /// and ). When a node whose `action_key == action` runs, only the
     /// credential IDs supplied here may be resolved — every other request fails
     /// with [`nebula_credential::CredentialAccessError::AccessDenied`]. Actions
     /// that are never declared here cannot acquire any credential at all.
@@ -784,7 +783,7 @@ impl WorkflowEngine {
     /// When set, the engine publishes [`ExecutionEvent`]s for node
     /// lifecycle transitions (started, completed, failed, skipped) and
     /// execution completion. Used by the CLI TUI for live monitoring and
-    /// by the spec 28 §2.4 subscribers (storage writer, metrics
+    /// by the spec 28 subscribers (storage writer, metrics
     /// collector, websocket broadcaster, audit writer).
     ///
     /// The bus fans out to every subscriber independently — each gets a
@@ -809,8 +808,7 @@ impl WorkflowEngine {
         }
     }
 
-    /// Emit [`ExecutionEvent::FrontierIntegrityViolation`] when the §11.1
-    /// guard has populated a non-terminal payload. Called at every finish
+    /// Emit [`ExecutionEvent::FrontierIntegrityViolation`] when the    /// guard has populated a non-terminal payload. Called at every finish
     /// site *before* [`ExecutionEvent::ExecutionFinished`]; isolating it in
     /// one helper keeps that ordering contract in a single place.
     ///
@@ -1013,7 +1011,7 @@ impl WorkflowEngine {
         // records the terminal outcome. Without the bridge, the `let _`
         // swallows the invalid-transition error and the row stays at
         // `Running`, producing a two-truth violation against the
-        // `ExecutionResult` the engine returns (ADR-0008 A3).
+        // `ExecutionResult` the engine returns.
         if final_status == ExecutionStatus::Cancelled
             && exec_state.status == ExecutionStatus::Running
         {
@@ -1073,7 +1071,7 @@ impl WorkflowEngine {
     /// [`LeaseGuard::shutdown`] after the frontier loop exits. The guard
     /// also exposes [`LeaseGuard::heartbeat_lost`] so the caller can
     /// detect stolen / expired leases and refuse to persist further
-    /// state (a §12.2 durability invariant).
+    /// state (a durability invariant).
     ///
     /// Returns `Ok(None)` when no `execution_repo` is configured — in
     /// that mode the engine is a single-process library with no
@@ -1327,7 +1325,7 @@ impl WorkflowEngine {
 
         // 5b. Publish the cancel token into the running registry ONLY
         // after the lease is ours. The lease is the authoritative
-        // single-runner fence (ADR-0015); publishing after it prevents
+        // single-runner fence ; publishing after it prevents
         // an overlapping attempt for the same `ExecutionId` from
         // overwriting the live token (#482 Copilot review). The guard's
         // nonce-scoped `Drop` (`RunningRegistration::drop`) removes the
@@ -1406,7 +1404,7 @@ impl WorkflowEngine {
         // records the terminal outcome. Without the bridge, the `let _`
         // swallows the invalid-transition error and the row stays at
         // `Running`, producing a two-truth violation against the
-        // `ExecutionResult` the engine returns (ADR-0008 A3).
+        // `ExecutionResult` the engine returns.
         if final_status == ExecutionStatus::Cancelled
             && exec_state.status == ExecutionStatus::Running
         {
@@ -1417,12 +1415,12 @@ impl WorkflowEngine {
         // If the heartbeat lost the lease mid-run, a sibling runner
         // now owns the canonical state. We MUST NOT persist the final
         // state or emit ExecutionFinished from this runner — the new
-        // holder will drive completion. ADR 0008 / §12.2.
+        // holder will drive completion — control-queue lease handoff.
         let reported_status = if heartbeat_lost {
             tracing::error!(
                 %execution_id,
                 "final state persistence skipped: heartbeat lost this runner's lease; \
-                 another runner now owns the execution (ADR 0008, §12.2, #325)"
+                 another runner now owns the execution (#325)"
             );
             // Release whatever lease state we hold cleanly, then bubble
             // the typed error — this runner does not own the terminal
@@ -1652,7 +1650,7 @@ impl WorkflowEngine {
         //    the forward state machine via `override_node_state` but still bumps the version per
         //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
-        // Cold-start seam (ADR-0008 A2, §5): the API's start handler persists an
+        // Cold-start seam : the API's start handler persists an
         // `ExecutionState::new(id, workflow_id, &[])` row — no per-node entries,
         // because the handler does not load the workflow on the hot path. The
         // first `ControlCommand::Start` that drains via `EngineControlDispatch`
@@ -1674,7 +1672,7 @@ impl WorkflowEngine {
         // durable `next_attempt_at` that the frontier loop's
         // `retry_heap` consumes via the Phase-0 drain. Resetting it
         // would lose the persisted backoff and re-dispatch the node
-        // immediately on resume, defeating ADR-0042 §M2.1 T2's
+        // immediately on resume, defeating T2's
         // resume guarantee. (Crashed `Running` attempts have no
         // such timestamp and must be re-driven from `Pending`.)
         let non_terminal: Vec<NodeKey> = exec_state
@@ -1754,7 +1752,7 @@ impl WorkflowEngine {
             if ns.state.is_terminal() {
                 continue;
             }
-            // ADR-0042 §M2.1 T5 — `WaitingRetry` nodes belong to the
+            // T5 — `WaitingRetry` nodes belong to the
             // retry-pending heap, not to the seed/ready_queue. The
             // frontier loop seeds the heap from `WaitingRetry` nodes
             // separately; including them here would re-dispatch
@@ -1811,7 +1809,7 @@ impl WorkflowEngine {
         let fencing = lease.as_ref().and_then(LeaseGuard::fencing_token);
 
         // Publish the cancel token into the running registry ONLY after
-        // the lease is ours (ADR-0015 single-runner fence). Symmetric to
+        // the lease is ours . Symmetric to
         // `execute_workflow` — see its comment for the full rationale
         // and the #482 Copilot review context.
         let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
@@ -1888,7 +1886,7 @@ impl WorkflowEngine {
         // fired mid-flight — one-step `Running → Cancelled` is not in the
         // valid-transition table (issue #273), so without the bridge the
         // invalid-transition error is silently swallowed and the row stays
-        // at `Running`, producing a two-truth violation (ADR-0008 A3).
+        // at `Running`, producing a two-truth violation.
         if final_status == ExecutionStatus::Cancelled
             && exec_state.status == ExecutionStatus::Running
         {
@@ -1898,7 +1896,7 @@ impl WorkflowEngine {
 
         // Heartbeat loss: another runner now owns the canonical state.
         // Skip final persist and surface as Leased — mirrors the
-        // execute_workflow contract. ADR 0008 / §12.2 / #325.
+        // execute_workflow contract. ADR 0008 / / #325.
         let reported_status = if heartbeat_lost {
             tracing::error!(
                 %execution_id,
@@ -2063,7 +2061,7 @@ impl WorkflowEngine {
         }
 
         // Min-heap (via `Reverse`) of `(next_attempt_at, NodeKey)` for
-        // nodes parked in `WaitingRetry` per ADR-0042 §M2.1 T5. The
+        // nodes parked in `WaitingRetry` per T5. The
         // heap is the engine's source of truth for "what to dispatch
         // next when the current frontier is otherwise idle"; cancel /
         // terminate / budget guards run AFTER the timer fires so a
@@ -2095,13 +2093,13 @@ impl WorkflowEngine {
         // Main frontier loop
         loop {
             // Phase 0: Drain due retries from the retry_heap into the
-            // ready_queue (ADR-0042 §M2.1 T5).
+            // ready_queue.
             //
             // Phase 0 promotes `WaitingRetry → Ready` and clears
             // `next_attempt_at` so any subsequent cancel/terminate
             // teardown sees a `Ready` node — `Ready → Cancelled` is a
             // valid transition while a stranded `WaitingRetry` node
-            // would trip the canon §11.1 frontier-integrity check.
+            // would trip the frontier integrity (CAS on version) check.
             // Phase 1's `spawn_node` then performs `Ready → Running`
             // via `start_node_attempt`.
             let now_drain = Utc::now();
@@ -2113,7 +2111,7 @@ impl WorkflowEngine {
                     // Unreachable: peek-then-pop on a single-threaded
                     // owner cannot lose the entry. Surface defensively
                     // rather than panic so a future refactor can't
-                    // crash the frontier loop (canon §12.4).
+                    // crash the frontier loop (hot-path safety).
                     tracing::warn!(
                         target = "engine::retry",
                         %execution_id,
@@ -2142,7 +2140,7 @@ impl WorkflowEngine {
                             // WaitingRetry → Ready is in the canonical
                             // table; this is unreachable in practice
                             // but we surface defensively rather than
-                            // panic (canon §12.4).
+                            // panic (hot-path safety).
                             tracing::warn!(
                                 target = "engine::retry",
                                 %execution_id,
@@ -2168,7 +2166,7 @@ impl WorkflowEngine {
             // queue and is collected by `drain_pending_to_cancelled`
             // on the cancel/wall-clock teardown branches — popping
             // first would drop the node and strand it as `Ready`,
-            // tripping canon §11.1 frontier-integrity.
+            // tripping frontier integrity (CAS on version).
             while !cancel_token.is_cancelled()
                 && let Some(node_key) = ready_queue.pop_front()
             {
@@ -2248,12 +2246,12 @@ impl WorkflowEngine {
                 // `spawn_node` already marked the node as Failed and stored
                 // the typed error message on `NodeExecutionState`.
                 //
-                // ADR-0042 §M2.1 T4 — setup failures are retry-eligible
+                // T4 — setup failures are retry-eligible
                 // ("the action never started — re-running may succeed,
                 // e.g. credential rotation"). Same retry-decision flow
                 // as the runtime-failure path.
                 //
-                // Ordering on the no-retry path (§11.5, #297 review):
+                // Ordering on the no-retry path (, #297 review):
                 // record_attempt → classify → apply recovery → route
                 // (stages OnError payload into outputs) → checkpoint
                 // (durably commits state + staged payload) → emit.
@@ -2264,7 +2262,7 @@ impl WorkflowEngine {
 
                 // Push the failure attempt record so retry-decision
                 // and idempotency_key see the same attempt count.
-                // ADR-0042 §M2.1 T4: if recording fails (programming
+                // T4: if recording fails (programming
                 // error: unknown node), force `Finalize` rather than
                 // running `compute_retry_decision` against a stale
                 // `attempts.len()` — that would let `max_attempts`
@@ -2290,7 +2288,7 @@ impl WorkflowEngine {
                     },
                 };
 
-                // ADR-0042 §M2.1 T4 — retry decision (setup-failure
+                // T4 — retry decision (setup-failure
                 // path). Mirror runtime-failure semantics. Skip the
                 // decision entirely when attempt history is broken.
                 let setup_decision = if setup_attempt_recorded {
@@ -2417,7 +2415,7 @@ impl WorkflowEngine {
             // timer. Exit only when both join_set and retry_heap are
             // drained — `retry_heap` non-empty with `join_set` empty
             // is a legal "everything paused for backoff" state per
-            // ADR-0042 §M2.1 T5.
+            // T5.
             if join_set.is_empty() && retry_heap.is_empty() {
                 break;
             }
@@ -2430,10 +2428,10 @@ impl WorkflowEngine {
                 // AND the ready_queue (Ready → Cancelled). The
                 // previous failure already lives in `NodeAttempt`;
                 // the cancel terminates the wait, not the attempt
-                // (canon §4.5). Without draining `ready_queue`, a
+                // (operational honesty). Without draining `ready_queue`, a
                 // node Phase 0 already promoted to `Ready` would
                 // stay non-terminal after the loop exits, tripping
-                // the canon §11.1 frontier-integrity check. Best-
+                // the frontier integrity (CAS on version) check. Best-
                 // effort persist is covered by the final-status
                 // checkpoint in the outer caller — failures here
                 // only affect post-mortem log fidelity.
@@ -2483,7 +2481,7 @@ impl WorkflowEngine {
             // need to sleep until the timer (or cancel / wall-clock).
             // Pre-pin a boxed future per branch so `select!` never has
             // to enter an `unreachable!()` placeholder — library code
-            // must not panic on hot paths (canon §12.4).
+            // must not panic on hot paths (hot-path safety).
             let join_set_empty = join_set.is_empty();
 
             type JoinedResult = Option<
@@ -2582,7 +2580,7 @@ impl WorkflowEngine {
                     }
                     // Capture an explicit-termination signal BEFORE the
                     // checkpoint so that the same CAS-write durably
-                    // persists `terminated_by` (canon §11.5; ROADMAP
+                    // persists `terminated_by` (termination metadata; ROADMAP
                     // §M0.3). The companion `cancel_token.cancel()` is
                     // deferred until AFTER `Ok` from `checkpoint_node` so
                     // we tear down sibling branches only on a durable
@@ -2608,10 +2606,10 @@ impl WorkflowEngine {
                     // Persist node output + execution state, then record the
                     // idempotency key, before any external observer learns the
                     // node is done. This guarantees durability precedes
-                    // visibility (§11.5, #297). Checkpoint failure aborts the
+                    // visibility (, #297). Checkpoint failure aborts the
                     // node's progression so observers never see an
                     // unpersisted transition and the frontier never advances
-                    // on an undurable decision (§12.4).
+                    // on an undurable decision.
                     if let Err(e) = self
                         .checkpoint_node(
                             execution_id,
@@ -2657,11 +2655,11 @@ impl WorkflowEngine {
                     // output so that idempotent replay can reconstruct
                     // the exact routing semantics (issue #299).
                     //
-                    // ADR-0042 §M2.1 T4 — `attempt_count + 1` is the
+                    // T4 — `attempt_count + 1` is the
                     self.record_node_result(execution_id, node_key.clone(), &action_result)
                         .await;
 
-                    // ADR-0042 §M2.1 T4 — push the success attempt
+                    // T4 — push the success attempt
                     // record AFTER record_idempotency / record_node_result
                     // so those helpers see the just-finished attempt's
                     // key (push advances the next-dispatch key). The
@@ -2732,7 +2730,7 @@ impl WorkflowEngine {
                     // `CancellationToken` that control-queue `Cancel` / external cancel trips.
                     // If we route this through `mark_node_failed`, `run_frontier` returns
                     // `Some(failed_node)` and [`determine_final_status`] picks **Failed** over
-                    // `cancel_token.is_cancelled()` — wrong for ADR-0008 A3 / lease_takeover T4.
+                    // `cancel_token.is_cancelled` — wrong for A3 / lease_takeover T4.
                     // Mirror [`WakeReason::Cancel`]: mark the node `Cancelled`, drain in-flight
                     // bookkeeping, and exit without a synthetic `failed_node`.
                     //
@@ -2785,14 +2783,14 @@ impl WorkflowEngine {
                         );
                     }
 
-                    // Node failed at runtime. Ordering (§11.5, #297 PR
+                    // Node failed at runtime. Ordering (, #297 PR
                     // review by Copilot — route stages OnError payload
                     // that checkpoint must capture so resume can read
                     // it from `load_all_outputs`):
                     //   1. `mark_node_failed`      — in-memory Failed
                     //   2. `record_node_attempt(failure)` — push the attempt to history so
-                    //      `idempotency_key_for_node` differentiates future retries (ADR-0042 T4).
-                    //   3. **retry decision**       — ADR-0042 §M2.1 T4. If the per-node /
+                    // `idempotency_key_for_node` differentiates future retries.
+                    // 3. **retry decision** — T4. If the per-node /
                     //      workflow-default `RetryConfig` has budget AND the global
                     //      `ExecutionBudget.max_total_retries` cap allows another attempt, promote
                     //      `Failed → WaitingRetry`, stamp `next_attempt_at`, increment
@@ -2814,14 +2812,14 @@ impl WorkflowEngine {
                     // Successors in `ready_queue` do NOT dispatch until
                     // Phase 1 of the next loop iteration; that runs
                     // after checkpoint. Nothing external observes a
-                    // state the store has not committed (§11.5).
+                    // state the store has not committed.
                     mark_node_failed(exec_state, node_key.clone(), err);
                     let err_str = err.to_string();
 
                     // Push the failure attempt record so idempotency
                     // key, retry-decision, and post-mortem audit all
                     // see the same attempt history.
-                    // ADR-0042 §M2.1 T4: if recording fails (programming
+                    // T4: if recording fails (programming
                     // error: unknown node), force `Finalize` rather than
                     // letting `compute_retry_decision` see a stale
                     // `attempts.len()` — that path could bypass
@@ -2848,7 +2846,7 @@ impl WorkflowEngine {
                         },
                     };
 
-                    // ADR-0042 §M2.1 T4 — retry decision. Skipped when
+                    // T4 — retry decision. Skipped when
                     // attempt history could not be recorded.
                     let decision = if failure_attempt_recorded {
                         let retry_policy_resolved = node_map
@@ -3115,7 +3113,7 @@ impl WorkflowEngine {
 
         // Build credential accessor with a **deny-by-default** per-action allowlist.
         //
-        // Per `PRODUCT_CANON` §4.5 / §12.5 + audit §2.4: an action can only
+        // Per `PRODUCT_CANON` / + audit : an action can only
         // acquire credential IDs explicitly declared for its `ActionKey` via
         // `WorkflowEngine::with_action_credentials`. If the node's action was
         // never declared — or was declared with an empty set — the accessor
@@ -3227,7 +3225,7 @@ impl WorkflowEngine {
         ready_queue: &mut VecDeque<NodeKey>,
     ) -> bool {
         // Replay is detected by a persisted node *output*: the port's
-        // §11.3 guard is check-and-mark with no read-only probe, so the
+        // guard is check-and-mark with no read-only probe, so the
         // durable output is the authoritative "already ran" signal (a
         // present mark with a missing output is a partial write ⇒
         // re-execute). Without a store bundle there is no persistence,
@@ -3376,7 +3374,7 @@ impl WorkflowEngine {
     ) {
         // Dual-dispatch. The port guard is check-and-mark on
         // `{scope}:{exec}:{node}:{attempt}`; the attempt is derived the
-        // same way as `idempotency_key_for_node` (ADR-0042
+        // same way as `idempotency_key_for_node` (
         // `attempt_count + 1`) so the guard key stays in lockstep with
         // the persisted output/result rows.
         if let Some(stores) = &self.stores {
@@ -3411,7 +3409,7 @@ impl WorkflowEngine {
     /// or CAS mismatch (the row moved beneath the engine). Callers in
     /// `run_frontier` MUST abort the node's progression (no edge routing,
     /// no event emission) on `Err` so that observers and the frontier
-    /// never act on an unpersisted transition (§11.5, §12.4, #297).
+    /// never act on an unpersisted transition (, #297).
     /// Persist final Failed state + emit NodeFailed for a panicked task.
     ///
     /// Best-effort: checkpoint failures are logged at `warn!` level (not
@@ -3506,7 +3504,7 @@ impl WorkflowEngine {
     /// commit the state snapshot through a fencing-gated
     /// [`nebula_storage_port::TransitionBatch`]. A superseded fencing
     /// token yields [`EngineError::CasConflict`] (the new holder owns the
-    /// canonical state — ADR 0008, §12.2); a CAS version mismatch follows
+    /// canonical state — ADR 0008, ); a CAS version mismatch follows
     /// the same #333 refetch-and-abort contract as the legacy path.
     #[allow(clippy::too_many_arguments)]
     async fn checkpoint_node_port(
@@ -3636,7 +3634,7 @@ impl WorkflowEngine {
     /// "final state checkpoint CAS mismatch" before #333) — that
     /// silently dropped the final write and let the engine report
     /// `Completed` on an un-persisted state, violating `docs/PRODUCT_CANON.md`
-    /// §11.5 (durability precedes visibility) and §12.4 (no silent
+    /// (durability precedes visibility) and (no silent
     /// log-and-continue on state-transition failures).
     ///
     /// # Returns
@@ -3676,7 +3674,7 @@ impl WorkflowEngine {
     /// [`nebula_storage_port::TransitionBatch`]. Same #333
     /// reconcile-and-retry contract as the legacy path; a superseded
     /// fencing token yields [`EngineError::CasConflict`] (the new lease
-    /// holder owns the canonical state — ADR 0008, §12.2).
+    /// holder owns the canonical state — ADR 0008, ).
     async fn persist_final_state_port(
         &self,
         stores: &crate::store_seam::ExecutionStores,
@@ -3924,7 +3922,7 @@ impl NodeTask {
         //     EngineError::Action. The frontier loop routes this through `classify_failure` +
         //     `route_failure_edges`, where the workflow-level ErrorStrategy decides whether
         //     execution fails fast or continues/ignores the failure, and whether any `OnError` edge
-        //     is activated (split from the old `handle_node_failure` per #297 / §11.5). This
+        // is activated (split from the old `handle_node_failure` per #297). This
         //     replaces the old "log a WARN and proceed with a potentially stale credential" path,
         //     which leaked into N opaque downstream auth errors per failure.
         //   - refresh returns Ok → fall through to the action dispatch.
@@ -4085,7 +4083,7 @@ fn process_outgoing_edges(
 
 /// Evaluate whether an edge should activate given the source node's outcome.
 ///
-/// Port-driven routing (spec 28 §2.2): the engine matches the edge's
+/// Port-driven routing (spec 28 ): the engine matches the edge's
 /// effective source port (`from_port`, defaulting to `"main"`) against the
 /// port the upstream `ActionResult` produced on. There is no "edge
 /// condition" — conditionals are carried by explicit `ControlAction` nodes
@@ -4217,8 +4215,8 @@ fn check_budget(
 ///
 /// Called by all three frontier-loop teardown paths (Phase 2 cancel
 /// short-circuit, `WakeReason::Cancel`, `WakeReason::WallClock`) per
-/// ADR-0042 §M2.1 T5 acceptance: cancel/terminate/budget breach must
-/// not leave non-terminal nodes behind, otherwise the canon §11.1
+/// T5 acceptance: cancel/terminate/budget breach must
+/// not leave non-terminal nodes behind, otherwise the frontier integrity (CAS on version)
 /// frontier-integrity guard fires `FrontierIntegrityViolation`
 /// instead of the honest `Cancelled` / `TimedOut` final status.
 ///
@@ -4257,7 +4255,7 @@ fn drain_pending_to_cancelled(
     }
 }
 
-/// Resolve the effective per-node retry policy per ADR-0042 §M2.1 T4.
+/// Resolve the effective per-node retry policy per T4.
 ///
 /// Resolution order (more specific wins):
 /// 1. `NodeDefinition.retry_policy` — operator-declared per-node policy.
@@ -4272,7 +4270,7 @@ fn effective_retry_policy<'a>(
     node_def.retry_policy.as_ref().or(workflow_default)
 }
 
-/// The retry decision for a just-failed node attempt per ADR-0042.
+/// The retry decision for a just-failed node attempt.
 ///
 /// Pure: depends only on the per-node attempt count, the resolved
 /// policy, and the execution-level budget. Does not mutate any state.
@@ -4289,7 +4287,7 @@ enum RetryDecision {
 }
 
 /// Decide whether the just-failed dispatch of `node_key` should be
-/// retried per ADR-0042 §M2.1 T4 acceptance.
+/// retried per T4 acceptance.
 ///
 /// Ordering of checks (whichever caps first wins):
 ///
@@ -4353,7 +4351,7 @@ fn compute_retry_decision(
     // engine has dispatched are eligible). Refuse the retry rather
     // than fabricating an `attempts_used = 0` for a stranger node —
     // that would let a programming bug schedule retries on
-    // unbounded state (canon §12.4).
+    // unbounded state (hot-path safety).
     let Some(ns) = exec_state.node_states.get(node_key) else {
         tracing::warn!(
             target = "engine::retry",
@@ -4419,7 +4417,7 @@ fn next_retry_at(execution_id: ExecutionId, node_key: &NodeKey, delay: Duration)
 /// Pure function of the strategy: splits the outcome from the state
 /// mutation + edge routing that used to live together in the old
 /// `handle_node_failure`. Split lets `run_frontier` order `state-mutation
-/// → persist → emit → route` per §11.5 / #297 — routing outgoing edges
+/// → persist → emit → route` per / #297 — routing outgoing edges
 /// may push successors into `ready_queue`, which must be a deterministic
 /// function of the persisted state, not of an in-memory decision that
 /// a crash can lose.
@@ -4458,7 +4456,7 @@ fn classify_failure(error_strategy: nebula_workflow::ErrorStrategy) -> FailureOu
 ///
 /// Returns `Err(EngineError::Execution)` if `override_node_state`
 /// cannot find the node — the caller MUST abort the node's progression
-/// rather than leave state + outputs half-applied (§12.4). Pre-review
+/// rather than leave state + outputs half-applied . Pre-review
 /// (PR #436 / Copilot) this function discarded the `Result` via
 /// `let _ = ...`, silently masking a real consistency error.
 fn apply_failure_recovery(
@@ -4488,7 +4486,7 @@ fn apply_failure_recovery(
 /// after the outer match arm's `checkpoint_node`. If the following
 /// checkpoint returns `Err`, the caller aborts the frontier (cancel
 /// token + early return); the discarded `ready_queue` mutations never
-/// surface — §11.5 invariant holds.
+/// surface — invariant holds.
 ///
 /// Returns `Some(error_message)` if the frontier must abort — FailFast
 /// strategy with no OnError handler took the failure. Returns `None`
@@ -4625,7 +4623,7 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
 /// a live `WorkflowEngine`.
 ///
 /// `termination_reason` carries the engine's explanation of *why* the
-/// execution reached its final status (canon §4.5; ROADMAP §M0.3).
+/// execution reached its final status (operational honesty).
 /// `None` means the engine has nothing to add — historically this was
 /// always the case; the field is `Option` for backwards-compatible
 /// destructuring while consumers are wired in T4.
@@ -4638,7 +4636,7 @@ struct FinalStatusDecision {
     termination_reason: Option<ExecutionTerminationReason>,
     /// `Some(nodes)` when the frontier exited without `failed_node` or
     /// cancellation but not all nodes reached a terminal state — see
-    /// `docs/PRODUCT_CANON.md` §11.1.
+    /// `docs/PRODUCT_CANON.md`.
     integrity_violation: Option<Vec<(NodeKey, NodeState)>>,
 }
 
@@ -4771,7 +4769,7 @@ impl Drop for LeaseGuard {
 /// 3. **`cancel_token` cancelled** with no explicit termination → external cancellation (API,
 ///    admin, engine shutdown). `(Cancelled, Some(Cancelled))`.
 /// 4. **Frontier integrity violation** — the loop drained without `failed_node` or cancel but some
-///    nodes are non-terminal (canon §11.1). `(Failed, Some(SystemError))` plus the
+///    nodes are non-terminal (frontier integrity (CAS on version)). `(Failed, Some(SystemError))` plus the
 ///    integrity_violation payload so the caller can emit a diagnostic
 ///    [`ExecutionEvent::FrontierIntegrityViolation`].
 /// 5. **Natural completion** — every node terminal. `(Completed, Some(NaturalCompletion))`.
@@ -4853,7 +4851,7 @@ fn determine_final_status(
         };
     }
 
-    // Priority 4 — frontier integrity violation (canon §11.1).
+    // Priority 4 — frontier integrity violation (frontier integrity (CAS on version)).
     if !exec_state.all_nodes_terminal() {
         let non_terminal: Vec<(NodeKey, NodeState)> = exec_state
             .node_states
@@ -6548,7 +6546,7 @@ mod tests {
     /// handling and the next final-state checkpoint therefore lost both
     /// the node's `Failed` state and any OnError / ContinueOnError
     /// edge-routing already applied in memory by `handle_node_failure`.
-    /// PRODUCT_CANON §11.5 (durability precedes visibility, §12.2 /
+    // (durability precedes visibility, /
     /// #297).
     ///
     /// This test covers the fix in two parts:
@@ -6830,7 +6828,7 @@ mod tests {
     /// checkpoint error was silently logged (`tracing::warn!`) and
     /// `handle_node_failure` had already routed the OnError edge in
     /// memory, so the successor `B` was spawned off an undurable
-    /// failure decision — the §11.5 "durability precedes visibility"
+    /// failure decision — the "durability precedes visibility"
     /// invariant was violated.
     #[tokio::test]
     async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
@@ -7223,7 +7221,7 @@ mod tests {
         );
 
         // Reconstruct the idempotency key via the just-recorded
-        // attempt history. ADR-0042 §M2.1 T4 made
+        // attempt history. T4 made
         // `ExecutionState::idempotency_key_for_node` return the key
         // for the **next** dispatch, so to read the key the engine
         // actually persisted, look at the last attempt record (which
@@ -7248,7 +7246,7 @@ mod tests {
             .node_state(n.clone())
             .map(|ns| ns.attempts.len() as u32)
             .filter(|&a| a >= 1)
-            .expect("first run must have pushed an attempt record (ADR-0042 §M2.1 T4)");
+            .expect("first run must have pushed an attempt record ");
 
         let already_marked = stores.is_idempotency_marked(execution_id, n.clone(), attempt);
         assert!(
@@ -7500,7 +7498,7 @@ mod tests {
     /// Additionally, it must attach an `integrity_violation` payload naming
     /// the non-terminal nodes, so the caller can emit
     /// `ExecutionEvent::FrontierIntegrityViolation` rather than silently
-    /// reporting success (PRODUCT_CANON §11.1).
+    /// reporting success (PRODUCT_CANON ).
     #[test]
     fn final_status_guard_returns_failed_for_non_terminal_nodes() {
         let exec_id = ExecutionId::new();
@@ -7564,7 +7562,7 @@ mod tests {
     ///
     /// Acts as a lightweight property-style check — enumerates the cartesian
     /// product of the three input axes for a two-node workflow and asserts
-    /// the canon §11.1 rule across every combination.
+    /// the frontier integrity (CAS on version) rule across every combination.
     #[test]
     fn final_status_never_completed_with_non_terminal_nodes() {
         use NodeState::*;
@@ -7958,7 +7956,7 @@ mod tests {
         ));
     }
 
-    // -- Credential allowlist enforcement (PRODUCT_CANON §4.5 / §12.5 — audit §2.4) --
+    // -- Credential allowlist enforcement (PRODUCT_CANON / — audit ) --
 
     /// Handler that attempts to acquire a credential by id and records the result.
     ///
@@ -8333,7 +8331,7 @@ mod tests {
     /// with a tight concurrency / retry / timeout budget would resume
     /// with the default 10-way concurrency and unbounded retries,
     /// changing behavior vs operator expectations. See
-    /// `PRODUCT_CANON.md §4.5` (public surface honored end-to-end).
+    /// `PRODUCT_CANON.md ` (public surface honored end-to-end).
     #[tokio::test]
     async fn resume_restores_persisted_budget() {
         use std::time::Duration;
@@ -9329,7 +9327,7 @@ mod tests {
         );
     }
 
-    /// Registry race regression (ADR-0016 / #482 Copilot review).
+    /// Registry race regression.
     ///
     /// Two `resume_execution` calls overlap on the **same engine** for the
     /// **same execution_id**. The winner acquires the lease and publishes

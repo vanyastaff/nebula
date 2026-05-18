@@ -1,7 +1,7 @@
 #![cfg(feature = "rotation")]
 
-//! Per-slot rotation observability redaction CI gate (PRODUCT_CANON §12.5,
-//! ADR-0030 §4).
+//! Per-slot rotation observability redaction CI gate (PRODUCT_CANON ,
+//! ).
 //!
 //! This is the resource-rotation analogue of the `token_refresh`
 //! redaction gate in `credential_refresh_redaction.rs`: the same
@@ -21,7 +21,7 @@
 //! sink (Debug + Display of every emitted slot event) and renders the full
 //! Prometheus text exposition (every `*_ATTEMPTS_TOTAL{outcome=…}` series
 //! with its label set) so all four observability surfaces named in
-//! ADR-0030 §4 — spans, domain events, metric labels, error strings — are
+//! — spans, domain events, metric labels, error strings — are
 //! inspected against the same injected secret.
 //!
 //! A distinctive secret literal is planted both in the slot's
@@ -78,7 +78,7 @@ const SECRET: &str = "SUPER-SECRET-TOKEN-9d3f";
 // Verbatim shape of the `CaptureBuf` harness in
 // `crates/credential/tests/redaction.rs` — reused (not re-invented) so
 // the span/event capture semantics are identical to the established
-// ADR-0030 §4 gate.
+// gate.
 // ---------------------------------------------------------------------
 
 /// Shared buffer every captured span/event is appended to.
@@ -113,7 +113,7 @@ impl<'a> MakeWriter<'a> for CaptureBuf {
 }
 
 /// Case-sensitive **and** case-insensitive substring absence assertion.
-/// ADR-0030 §4 requires both: a leak that lower/upper-cases the token in
+/// requires both: a leak that lower/upper-cases the token in
 /// transit is still a leak.
 fn assert_no_secret(haystack: &str, surface: &str) {
     assert!(

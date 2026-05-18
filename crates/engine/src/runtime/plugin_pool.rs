@@ -86,14 +86,14 @@ impl PooledConn for ProcessSandbox {
 /// Identity that buckets connections into independent pools.
 ///
 /// Two invocations with the same binary but a different bound
-/// credential-slot set ([`ScopeHash`]) MUST NOT share a process (ADR-0025
-/// §2 isolation), hence the scope is part of the key, not just the binary
+/// credential-slot set ([`ScopeHash`]) MUST NOT share a process (
+/// isolation), hence the scope is part of the key, not just the binary
 /// path.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PoolKey {
     /// Plugin binary path.
     binary: PathBuf,
-    /// Credential-scope identity (ADR-0025 §2 per-process isolation key).
+    /// Credential-scope identity.
     scope: ScopeHash,
 }
 
@@ -108,7 +108,7 @@ impl PoolKey {
 /// Derive the [`PoolKey`] for dispatching `node`'s action to the plugin
 /// `binary`.
 ///
-/// The credential-scope identity (ADR-0025 §2) is computed from the
+/// The credential-scope identity is computed from the
 /// **credential** slot bindings declared on the workflow node:
 /// [`SlotBinding::CredentialId`] entries in
 /// [`NodeDefinition::slot_bindings`]. Resource bindings are excluded —
@@ -456,7 +456,7 @@ impl<T: PooledConn> PoolRegistry<T> {
     ///
     /// Distinct keys map to distinct `Arc<PluginPool<T>>` values, so a
     /// different binary OR a different [`ScopeHash`] yields an independent
-    /// pool with its own capacity — the ADR-0025 §2 isolation boundary.
+    /// pool with its own capacity — the isolation boundary.
     pub(crate) fn pool_for(&self, key: &PoolKey) -> Arc<PluginPool<T>> {
         if let Some(existing) = self.pools.get(key) {
             return Arc::clone(existing.value());
@@ -969,7 +969,7 @@ mod tests {
 
     // ---- pool_key: PoolKey derived from NodeDefinition bindings ------
     //
-    // ADR-0025 §2: a distinct bound credential-slot set ⇒ a distinct
+    // : a distinct bound credential-slot set ⇒ a distinct
     // process key. `pool_key` reads `NodeDefinition.slot_bindings`
     // (read-only over the existing workflow API) and the leaf
     // `nebula-sandbox` never sees the node.

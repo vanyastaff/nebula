@@ -329,7 +329,7 @@ async fn action_resource_fails_without_manager() {
 // (`Arc::ptr_eq`).
 //
 // Architecture note (deviation from the original Phase 8 task wording):
-// the `R::Credential` associated type was retired in Phase 4 (ADR-0044), and
+// the `R::Credential` associated type was retired in Phase 4 , and
 // the manager dedupes by `(R::key(), ScopeLevel)` — the static type-level key
 // of the registered `Resource`, not a runtime `ResourceId`. The "10 workflows
 // declaring the same `ResourceId`" framing collapses to "10 acquires of the

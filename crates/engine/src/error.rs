@@ -97,7 +97,7 @@ pub enum EngineError {
     /// The frontier loop exited while one or more nodes were still in a
     /// non-terminal state (e.g. `Pending` / `Ready` / `Running`).
     ///
-    /// Per `docs/PRODUCT_CANON.md` §11.1, the engine must be the single source
+    /// Per `docs/PRODUCT_CANON.md` , the engine must be the single source
     /// of truth for execution status and must not silently report `Completed`
     /// on inconsistent state. This variant is produced when the frontier
     /// drains without `failed_node` or cancellation, yet `all_nodes_terminal`
@@ -118,8 +118,7 @@ pub enum EngineError {
     /// The engine could not persist a node-level checkpoint.
     ///
     /// Surfaced so that `run_frontier` aborts the node's progression instead
-    /// of continuing on undurable state: per `docs/PRODUCT_CANON.md` §11.5
-    /// (durability precedes visibility) and §12.4 (no silent log-and-continue
+    /// of continuing on undurable state: per `docs/PRODUCT_CANON.md` /// (durability precedes visibility) and (no silent log-and-continue
     /// on state-transition failures), an unpersisted transition must never
     /// leak to observers or the frontier.
     #[error("checkpoint persist failed for node {node_key}: {reason}")]
@@ -135,7 +134,7 @@ pub enum EngineError {
     /// in-memory state cannot reconcile.
     ///
     /// Surfaced instead of silently overwriting the concurrent update
-    /// (issue #333). Per `docs/PRODUCT_CANON.md` §11.5 / §12.4, the engine
+    /// (issue #333). Per `docs/PRODUCT_CANON.md` / , the engine
     /// may not report a successful completion when its final CAS write
     /// collided with an authoritative external transition that the
     /// engine could not honor (e.g. the row is still active-non-terminal
@@ -163,7 +162,7 @@ pub enum EngineError {
     /// [`WorkflowEngine::resume_execution`] when `acquire_lease` fails
     /// because a live (non-expired) lease with a different holder is
     /// already recorded in storage. Per ADR 0008 and
-    /// `docs/PRODUCT_CANON.md` §12.2, exactly one runner may dispatch
+    /// `docs/PRODUCT_CANON.md` , exactly one runner may dispatch
     /// nodes for an execution at a time; the second caller must back off
     /// rather than run in parallel.
     ///

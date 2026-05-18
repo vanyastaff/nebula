@@ -21,7 +21,7 @@
 //! repos. The §M2.2 lease-handoff guarantees are unchanged and asserted
 //! verbatim:
 //! - heartbeat-loss → TTL-expiry takeover by a second runner with no
-//!   double-execution of terminal work (canon §11.3 idempotency);
+//!   double-execution of terminal work (per-node idempotency);
 //! - durable Cancel survives runner death and is redelivered to the new
 //!   runner via the control-queue reclaim sweep;
 //! - lease-less `replay_execution` never contends for a held lease.
@@ -303,7 +303,7 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
 /// the lease TTL, runner B's `resume_execution` is called.
 ///
 /// Asserts "no double-execution of completed work":
-/// - X (echo) is **not** re-dispatched on B (canon §11.3 idempotency)
+/// - X (echo) is **not** re-dispatched on B (idempotency idempotency)
 /// - Y (park) **is** re-dispatched on B because A never finished it (legitimate retry after lease
 ///   handoff)
 /// - B drives the workflow to `Succeeded`
@@ -440,7 +440,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     // - `LeaseGuard::drop` signalling heartbeat shutdown + aborting the
     //   heartbeat handle;
     // - the lease holder/expires_at row left intact in storage — TTL
-    //   expiry is the takeover path (ADR-0008 §5).
+    // expiry is the takeover path.
     task_a.abort();
     let _ = task_a.await;
 
@@ -478,7 +478,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     assert_eq!(
         echo_invocations.load(Ordering::SeqCst),
         1,
-        "X (echo) was completed by runner A; runner B must NOT re-run it (canon §11.3 idempotency)"
+        "X (echo) was completed by runner A; runner B must NOT re-run it (idempotency idempotency)"
     );
     assert_eq!(
         park_invocations.load(Ordering::SeqCst),
@@ -493,7 +493,7 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
 // ---------------------------------------------------------------------------
 
 /// Durable Cancel survives runner death and reaches runner B via the
-/// reclaim sweep (ADR-0008 §5 + ADR-0017).
+/// reclaim sweep.
 ///
 /// Setup: runner A holds a parked workflow. The Cancel command is
 /// enqueued on the port `ControlQueue` and then **claimed once by a
@@ -725,7 +725,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     assert_eq!(
         echo_invocations.load(Ordering::SeqCst),
         1,
-        "X (echo) was completed by runner A; runner B must NOT re-run it (canon §11.3)"
+        "X (echo) was completed by runner A; runner B must NOT re-run it (idempotency)"
     );
     assert_eq!(
         park_invocations.load(Ordering::SeqCst),

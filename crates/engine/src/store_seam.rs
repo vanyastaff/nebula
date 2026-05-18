@@ -106,7 +106,7 @@ pub struct ExecutionStores {
     pub execution: Arc<dyn ExecutionStore>,
     /// Append-only journal read side (appends go through the batch).
     pub journal: Arc<dyn ExecutionJournalReader>,
-    /// Per-node output + typed result persistence (ADR-0009 resume seam).
+    /// Per-node output + typed result persistence.
     pub node_results: Arc<dyn NodeResultStore>,
     /// Best-effort stateful-action checkpoint persistence.
     pub checkpoints: Arc<dyn CheckpointStore>,

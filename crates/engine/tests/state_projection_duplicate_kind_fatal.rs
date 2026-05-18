@@ -8,13 +8,13 @@
 //! 3. Registry state is unchanged after the failure — original handler is not overwritten (len
 //!    remains 1, `contains(kind)` still true).
 //!
-//! Active-dev policy per Tech Spec §15.12.2: reject-second-registration.
+//! Active-dev policy per Tech Spec : reject-second-registration.
 //! Silent `HashMap::insert` overwrite (prior behavior) would hide
 //! namespace collisions, including supply-chain plugin replacement.
 //!
 //! The companion KEY-keyed [`CredentialRegistry`](nebula_credential::CredentialRegistry)
 //! is exercised by `crates/credential/tests/runtime_duplicate_key_fatal.rs`
-//! (Probe 5, Tech Spec §15.6). Both registries fail-closed on duplicate
+//! (Probe 5, Tech Spec ). Both registries fail-closed on duplicate
 //! registration; this probe covers the engine-side state-projection
 //! lookup.
 
@@ -41,7 +41,7 @@ fn duplicate_registration_returns_error_no_overwrite() {
 
     // Second registration with same `<State as CredentialState>::KIND`
     // must fail with DuplicateKind — active-dev policy rejects silent
-    // overwrite (N7 mitigation, Tech Spec §15.6 + §15.12.2).
+    // overwrite (N7 mitigation, Tech Spec + ).
     let err = registry
         .register::<ApiKeyCredential>()
         .expect_err("second registration must fail");
