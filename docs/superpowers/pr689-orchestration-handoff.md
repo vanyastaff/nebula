@@ -138,14 +138,45 @@ inherit the in-progress merge).
   `cross_tenant_idempotency_keys_are_isolated`), clippy -D + per-crate
   fmt green, lefthook green (postgres path pg-unverified — gated).
 
-### REMAINING (D): ADOPT group + 3255514540 + PUSHBACK reply
+- **`a60ebdc9` — done&verified.** ADOPT `3255514553`: membership
+  `scope_kind`/`principal_kind` → closed `ScopeKind{Org,Workspace}` /
+  `PrincipalKind{User,ServiceAccount}` enums on `MembershipRow` + the
+  `MembershipStore` get/list_for_scope/remove params. Adapter decode is
+  now fail-closed (`StorageError::Serialization` on unknown text;
+  sqlite previously `unwrap_or_default()`). Stable `as_str()` keeps DB
+  text unchanged (`"org"`/`"workspace"`/`"user"`/`"service_account"`).
+  No `Scoped*` membership decorator exists (api side uses a separate
+  `crate::state::MembershipStore` trait — out of scope). Port trait has
+  no cross-crate consumers beyond storage's 3 adapters + identity
+  conformance; all updated. storage 233/233 (incl. membership_contract
+  across in-memory/sqlite; postgres gated), clippy -D + per-crate fmt
+  green, lefthook green.
 
-- ADOPT items: ~~`3255514551` (idempotency `&Scope` param) — DONE
-  `c7b230ad`~~; remaining: `3255514553` (membership enum
-  ScopeKind/PrincipalKind), postgres/control_queue cleanup DELETE,
-  store_seam node_result warn, control_consumer traceparent warn,
-  stale doc fixes (storage/lib.rs, credential/layer/mod.rs,
-  storage-port/README MD040).
+- **`72835587` — done&verified.** ADOPT-tail (3 hardenings + stale
+  docs): `store_seam::node_result_record` missing-`type` → `warn!` +
+  `debug_assert!` (was silent `"Unknown"`); `control_consumer`
+  normalize malformed `w3c_traceparent` → `warn!`+row_id+err (was
+  `.ok()` drop) — counter deferred (the `RawClaimed::normalize`
+  conversion has no `MetricsRegistry` access; threading it is scope
+  creep, and the stable-target `warn!` is log-metric countable);
+  postgres `ControlQueue::cleanup` bare `Ok(0)` → documented deliberate
+  no-op (parity w/ sqlite+inmem; port schema has no enqueue-timestamp
+  col — inventing a retention DELETE would contradict the documented
+  design, NOT done); `storage/src/lib.rs` crate-doc rewritten
+  (ExecutionRepo/WorkflowRepo + "repos planned" framing genuinely
+  stale post spec-16); `storage-port/README.md` MD040 `text` fence.
+  **Verify-actual finding:** `credential/src/lib.rs` doc claims
+  (`nebula_tenancy::CredentialScopeLayer`,
+  `nebula_storage::credential::InMemory{,Pending}Store`) checked and
+  are ACCURATE — handoff hint was wrong; correctly left untouched.
+  engine+storage 657/657, clippy -D + per-crate fmt + lefthook green
+  (postgres path gated, pg-unverified).
+
+  **ALL (D) ADOPT items now complete.** Remaining: `3255514540`
+  (mandatory, own commit — mapped below), `3255514555` decline reply.
+
+### REMAINING (D): 3255514540 + PUSHBACK reply
+
 - PUSHBACK `3255514555`: reply with reasoned decline (YAGNI for current
   call sites), do NOT implement.
 - `3255514540`: dedicated session (see below) — port-scoping refactor.
