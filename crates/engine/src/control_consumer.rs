@@ -269,7 +269,13 @@ pub struct ControlConsumer {
     /// the ULID string" decode).
     queue: Arc<dyn ControlQueue>,
     dispatch: Arc<dyn ControlDispatch>,
-    processor_id: Vec<u8>,
+    /// Fixed 16-byte fence token recorded in `processed_by` and matched
+    /// on `mark_completed`/`mark_failed`. Stored as `[u8; 16]` end-to-end
+    /// so two distinct workers can never silently collapse to the same
+    /// token (the previous `Vec<u8>` + truncate/pad let workers sharing a
+    /// 16-byte prefix ack each other's rows — a stale-worker fence
+    /// collapse).
+    processor_id: [u8; 16],
     batch_size: u32,
     poll_interval: Duration,
     reclaim_after: Duration,
@@ -287,22 +293,22 @@ pub struct ControlConsumer {
 impl ControlConsumer {
     /// Construct a consumer draining the spec-16 [`ControlQueue`] port.
     ///
-    /// `processor_id` is the opaque id recorded in the row's
-    /// `processed_by` (and matched on `mark_completed` / `mark_failed`
-    /// for the stale-worker fence). The port claim/ack API takes a
-    /// 16-byte id, so a `processor_id` shorter than 16 bytes is
-    /// right-zero-padded and a longer one is truncated to its first 16
-    /// bytes — applied consistently on every claim and ack so the fence
-    /// stays self-consistent.
+    /// `processor_id` is the fixed 16-byte fence token recorded in the
+    /// row's `processed_by` (and matched on `mark_completed` /
+    /// `mark_failed` for the stale-worker fence). It is `[u8; 16]` by
+    /// type — the caller supplies the full id (e.g. a ULID/UUID's 16
+    /// bytes); there is deliberately no truncate/pad of an arbitrary-
+    /// length id, which would let two distinct workers collapse to the
+    /// same token and ack each other's rows.
     pub fn new(
         queue: Arc<dyn ControlQueue>,
         dispatch: Arc<dyn ControlDispatch>,
-        processor_id: impl Into<Vec<u8>>,
+        processor_id: [u8; 16],
     ) -> Self {
         Self {
             queue,
             dispatch,
-            processor_id: processor_id.into(),
+            processor_id,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             reclaim_after: DEFAULT_RECLAIM_AFTER,
@@ -310,16 +316,6 @@ impl ControlConsumer {
             max_reclaim_count: DEFAULT_MAX_RECLAIM_COUNT,
             metrics: MetricsRegistry::new(),
         }
-    }
-
-    /// The processor id as the port's fixed 16-byte form (right-zero-
-    /// padded / truncated). Used for every port claim/ack so the
-    /// stale-worker fence compares the same bytes it stamped.
-    fn processor_id_16(&self) -> [u8; 16] {
-        let mut buf = [0u8; 16];
-        let n = self.processor_id.len().min(16);
-        buf[..n].copy_from_slice(&self.processor_id[..n]);
-        buf
     }
 
     /// Override the claim batch size. Default: [`DEFAULT_BATCH_SIZE`].
@@ -530,7 +526,7 @@ impl ControlConsumer {
         // so the decode happens per row in `handle_entry`, not here.
         let claimed: Result<Vec<RawClaimed>, String> = self
             .queue
-            .claim_pending(&self.processor_id_16(), self.batch_size)
+            .claim_pending(&self.processor_id, self.batch_size)
             .await
             .map(|msgs| msgs.into_iter().map(RawClaimed).collect())
             .map_err(|e| e.to_string());
@@ -653,7 +649,7 @@ impl ControlConsumer {
         // — see the trait-level docs and ADR-0008 §5.
         let result: Result<(), String> = self
             .queue
-            .mark_completed(id, &self.processor_id_16())
+            .mark_completed(id, &self.processor_id)
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = result {
@@ -668,7 +664,7 @@ impl ControlConsumer {
     async fn ack_failed(&self, id: &[u8; 16], reason: &str) {
         let result: Result<(), String> = self
             .queue
-            .mark_failed(id, &self.processor_id_16(), reason)
+            .mark_failed(id, &self.processor_id, reason)
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = result {

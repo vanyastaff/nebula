@@ -30,6 +30,17 @@ use nebula_storage_port::store::ControlQueue;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+/// Widen a short test label into the fixed 16-byte processor id the
+/// `ControlConsumer` fence requires. Distinct labels stay distinct (the
+/// fence-collapse the production `[u8; 16]` type now prevents); this is
+/// explicit padding at the test boundary, not a runtime truncate.
+fn proc16(label: &[u8]) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    let n = label.len().min(16);
+    id[..n].copy_from_slice(&label[..n]);
+    id
+}
+
 /// Build a port `InMemoryControlQueue` over a fresh in-memory execution
 /// store. Tests drive only the queue; the store backs its shared core.
 fn port_queue() -> (Arc<InMemoryExecutionStore>, Arc<InMemoryControlQueue>) {
@@ -201,7 +212,7 @@ async fn control_consumer_public_surface_uses_only_allowed_types() {
     let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
 
-    let consumer = ControlConsumer::new(queue, dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue, dispatch, proc16(b"test-processor"))
         .with_batch_size(8)
         .with_poll_interval(Duration::from_millis(10));
 
@@ -216,7 +227,7 @@ async fn consumer_shuts_down_gracefully_on_cancel() {
     let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
 
-    let consumer = ControlConsumer::new(queue, dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue, dispatch, proc16(b"test-processor"))
         .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
@@ -264,7 +275,7 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
         .await
         .unwrap();
 
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
         .with_batch_size(16)
         .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
@@ -322,7 +333,7 @@ async fn consumer_marks_row_failed_on_malformed_execution_id() {
     poison.execution_id = "not-a-ulid".to_string();
     queue.enqueue(&poison).await.unwrap();
 
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, b"test-processor".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
         .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
@@ -381,7 +392,7 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // aggressive reclaim_after (50ms) + reclaim_interval (30ms) so the test
     // runs in well under a second. Chrono is wall-clock; tokio time-pause
     // would not advance it — honest short sleeps are the answer here.
-    let consumer1 = ControlConsumer::new(queue.clone(), dispatch1, b"runner-one".to_vec())
+    let consumer1 = ControlConsumer::new(queue.clone(), dispatch1, proc16(b"runner-one"))
         .with_batch_size(4)
         .with_poll_interval(Duration::from_millis(5))
         .with_reclaim_after(Duration::from_millis(50))
@@ -432,7 +443,7 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // back to Pending on startup; then its claim loop picks it up and the
     // non-flaky second-dispatch path returns Ok, which acks the row Completed.
     let dispatch_fresh: Arc<dyn ControlDispatch> = dispatch_flaky.clone();
-    let consumer2 = ControlConsumer::new(queue.clone(), dispatch_fresh, b"runner-two".to_vec())
+    let consumer2 = ControlConsumer::new(queue.clone(), dispatch_fresh, proc16(b"runner-two"))
         .with_batch_size(4)
         .with_poll_interval(Duration::from_millis(5))
         .with_reclaim_after(Duration::from_millis(50))
@@ -516,7 +527,7 @@ async fn reclaim_sweep_emits_counter_metric_per_outcome() {
 
     let registry = MetricsRegistry::new();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, b"runner-test".to_vec())
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"runner-test"))
         .with_batch_size(8)
         .with_poll_interval(Duration::from_millis(20))
         .with_reclaim_after(Duration::from_millis(50))

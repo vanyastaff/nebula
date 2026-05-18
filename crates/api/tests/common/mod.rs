@@ -213,6 +213,17 @@ pub(crate) fn port_scope() -> Scope {
     Scope::new("nebula", "nebula")
 }
 
+/// Widen a short test label into the fixed 16-byte `ControlConsumer`
+/// processor id. Explicit padding at the test boundary — the production
+/// type is `[u8; 16]` so distinct workers can no longer silently
+/// fence-collapse.
+pub(crate) fn proc16(label: &[u8]) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    let n = label.len().min(16);
+    id[..n].copy_from_slice(&label[..n]);
+    id
+}
+
 impl PortHandles {
     /// Seed an execution row directly (port equivalent of the old
     /// `state.execution_repo.create(id, workflow_id, state_json)`).
@@ -1089,7 +1100,7 @@ pub(crate) mod engine_seam {
         let consumer = ControlConsumer::new(
             Arc::clone(&state.control_queue),
             dispatch,
-            b"knife-a3".to_vec(),
+            super::proc16(b"knife-a3"),
         )
         .with_poll_interval(Duration::from_millis(10));
         let shutdown = CancellationToken::new();

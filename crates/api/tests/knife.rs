@@ -559,7 +559,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     let consumer = ControlConsumer::new(
         Arc::clone(&state.control_queue),
         dispatch,
-        b"knife-a2".to_vec(),
+        proc16(b"knife-a2"),
     )
     .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
