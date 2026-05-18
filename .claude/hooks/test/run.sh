@@ -203,5 +203,14 @@ printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EF_P"
 chk "E blocks >5 new files" 2 "$(egate '{"session_id":"'"$EF_SID"'","cwd":"'"$EF_DIR"'","stop_hook_active":false}')"
 rm -rf "$EF_DIR"
 
+# E large-blob proxy (single added run > 100 lines in one .rs file)
+EL_DIR="$(mktemp -d)"
+( cd "$EL_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/el/src && { echo 'fn big(){'; for i in $(seq 1 130); do echo "  let v$i=$i;"; done; echo '}'; } > crates/el/src/f.rs )
+EL_SID="e-blob"; EL_P="$(turn_state_path "$EL_SID" "$EL_DIR")"; mkdir -p "$(dirname "$EL_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EL_P"
+chk "E blocks >100-line blob" 2 "$(egate '{"session_id":"'"$EL_SID"'","cwd":"'"$EL_DIR"'","stop_hook_active":false}')"
+rm -rf "$EL_DIR"
+
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
