@@ -59,7 +59,9 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use cell::Cell;
-pub use context::ResourceContext;
+pub use context::{
+    ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
+};
 pub use dedup::{DedupKey, SLOT_IDENTITY_UNBOUND, slot_identity};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
@@ -67,8 +69,8 @@ pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
 pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
-    DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot,
-    RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
+    DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions,
+    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};

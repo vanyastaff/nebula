@@ -13,5 +13,5 @@ pub mod registrar;
 
 pub use registrar::{
     ErasedResourceRegistrar, RegisterRequest, RegistrarError, ResourceRegistrarRegistry,
-    TypedResourceRegistrar,
+    ResourceRegistrationOutcome, TypedResourceRegistrar,
 };

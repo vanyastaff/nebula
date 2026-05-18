@@ -11,11 +11,28 @@ use std::{
 };
 
 use dashmap::DashMap;
-use nebula_core::{ResourceKey, ScopeLevel};
+use nebula_core::{ResourceKey, Scope, ScopeLevel};
 
 use crate::{
-    error::Error, resource::Resource, runtime::managed::ManagedResource, topology_tag::TopologyTag,
+    context::{ResourceContext, scope_levels_for_acquire},
+    error::Error,
+    options::AcquireOptions,
+    resource::Resource,
+    runtime::managed::ManagedResource,
+    topology_tag::TopologyTag,
 };
+
+/// Erased acquire hook installed on each registry row at registration.
+pub type ErasedAcquireFn = Arc<
+    dyn Fn(
+            Arc<crate::Manager>,
+            ResourceContext,
+            AcquireOptions,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, Error>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Crate-private seal: only `nebula-resource` can name `sealed::Sealed`,
 /// so [`AnyManagedResource`] is **not implementable downstream**.
@@ -217,6 +234,19 @@ pub enum LookupOutcome {
     },
 }
 
+/// Outcome of a registry acquire-hook lookup (same semantics as [`LookupOutcome`]).
+pub(crate) enum AcquireLookupOutcome {
+    /// Exactly one row matched — here is its erased acquire hook.
+    Found(ErasedAcquireFn),
+    /// No row matched the key/scope/identity.
+    NotFound,
+    /// More than one row at the resolved scope without a slot identity pin.
+    Ambiguous {
+        /// How many distinct credential rows competed.
+        rows: usize,
+    },
+}
+
 /// A single entry in the registry, associating a `(scope, slot_identity)`
 /// row with a managed resource.
 ///
@@ -229,6 +259,18 @@ struct RegistryEntry {
     scope: ScopeLevel,
     slot_identity: u64,
     managed: Arc<dyn AnyManagedResource>,
+    acquire: ErasedAcquireFn,
+}
+
+enum ScopeFind {
+    Hit {
+        managed: Arc<dyn AnyManagedResource>,
+        acquire: ErasedAcquireFn,
+    },
+    NotFound,
+    Ambiguous {
+        rows: usize,
+    },
 }
 
 /// Type-erased storage for all registered resources.
@@ -271,6 +313,7 @@ impl Registry {
         scope: ScopeLevel,
         slot_identity: u64,
         managed: Arc<dyn AnyManagedResource>,
+        acquire: ErasedAcquireFn,
     ) {
         // Lock order is **strictly one-way**: `entries → (release) → type_index`.
         //
@@ -308,6 +351,7 @@ impl Registry {
                     scope,
                     slot_identity,
                     managed,
+                    acquire,
                 };
 
                 if prev_type_id != type_id
@@ -324,6 +368,7 @@ impl Registry {
                     scope,
                     slot_identity,
                     managed,
+                    acquire,
                 });
                 None
             }
@@ -350,7 +395,36 @@ impl Registry {
         let Some(entries) = self.entries.get(key) else {
             return LookupOutcome::NotFound;
         };
-        Self::find_by_scope(&entries, scope, None)
+        match Self::find_in_entries(&entries, scope, None) {
+            ScopeFind::Hit { managed, .. } => LookupOutcome::Found(managed),
+            ScopeFind::NotFound => LookupOutcome::NotFound,
+            ScopeFind::Ambiguous { rows } => LookupOutcome::Ambiguous { rows },
+        }
+    }
+
+    /// Looks up the erased acquire hook for `(key, scope bag, slot_identity)`.
+    ///
+    /// Walks [`scope_levels_for_acquire`] from most specific to Global so
+    /// org/workspace rows remain visible under execution-scoped contexts.
+    pub(crate) fn get_acquire_for(
+        &self,
+        key: &ResourceKey,
+        scope: &Scope,
+        slot_identity: u64,
+    ) -> AcquireLookupOutcome {
+        let Some(entries) = self.entries.get(key) else {
+            return AcquireLookupOutcome::NotFound;
+        };
+        for level in scope_levels_for_acquire(scope) {
+            match Self::find_at_exact_scope(&entries, &level, Some(slot_identity)) {
+                ScopeFind::Hit { acquire, .. } => return AcquireLookupOutcome::Found(acquire),
+                ScopeFind::Ambiguous { rows } => {
+                    return AcquireLookupOutcome::Ambiguous { rows };
+                },
+                ScopeFind::NotFound => continue,
+            }
+        }
+        AcquireLookupOutcome::NotFound
     }
 
     /// Looks up a managed resource by key, scope, and a resolved slot
@@ -369,7 +443,11 @@ impl Registry {
         let Some(entries) = self.entries.get(key) else {
             return LookupOutcome::NotFound;
         };
-        Self::find_by_scope(&entries, scope, Some(slot_identity))
+        match Self::find_in_entries(&entries, scope, Some(slot_identity)) {
+            ScopeFind::Hit { managed, .. } => LookupOutcome::Found(managed),
+            ScopeFind::NotFound => LookupOutcome::NotFound,
+            ScopeFind::Ambiguous { rows } => LookupOutcome::Ambiguous { rows },
+        }
     }
 
     /// Typed lookup: finds the resource for type `R` and downcasts to
@@ -443,6 +521,38 @@ impl Registry {
         self.type_index.clear();
     }
 
+    /// Lookup at an exact [`ScopeLevel`] only (no ancestor or Global fallback).
+    fn find_at_exact_scope(
+        entries: &[RegistryEntry],
+        scope: &ScopeLevel,
+        want_identity: Option<u64>,
+    ) -> ScopeFind {
+        let mut at_scope = entries.iter().filter(|e| e.scope == *scope);
+
+        if let Some(id) = want_identity {
+            return match at_scope.find(|e| e.slot_identity == id) {
+                Some(entry) => ScopeFind::Hit {
+                    managed: Arc::clone(&entry.managed),
+                    acquire: Arc::clone(&entry.acquire),
+                },
+                None => ScopeFind::NotFound,
+            };
+        }
+
+        let Some(first) = at_scope.next() else {
+            return ScopeFind::NotFound;
+        };
+        let extra = at_scope.count();
+        if extra == 0 {
+            ScopeFind::Hit {
+                managed: Arc::clone(&first.managed),
+                acquire: Arc::clone(&first.acquire),
+            }
+        } else {
+            ScopeFind::Ambiguous { rows: 1 + extra }
+        }
+    }
+
     /// Scope-aware, slot-identity-aware lookup within a list of entries.
     ///
     /// Resolves the effective scope first (exact match, else
@@ -461,11 +571,11 @@ impl Registry {
     /// to silently alias one tenant's runtime to another. (`rows` is the
     /// count of entries at that scope, not of distinct `slot_identity`
     /// values.)
-    fn find_by_scope(
+    fn find_in_entries(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,
         want_identity: Option<u64>,
-    ) -> LookupOutcome {
+    ) -> ScopeFind {
         // Resolve the effective scope: exact match wins; otherwise fall
         // back to Global. Scope precedence is decided BEFORE slot identity.
         let effective_scope = if entries.iter().any(|e| e.scope == *scope) {
@@ -475,30 +585,10 @@ impl Registry {
         {
             ScopeLevel::Global
         } else {
-            return LookupOutcome::NotFound;
+            return ScopeFind::NotFound;
         };
 
-        let mut at_scope = entries.iter().filter(|e| e.scope == effective_scope);
-
-        if let Some(id) = want_identity {
-            return match at_scope.find(|e| e.slot_identity == id) {
-                Some(entry) => LookupOutcome::Found(Arc::clone(&entry.managed)),
-                None => LookupOutcome::NotFound,
-            };
-        }
-
-        // Identity-agnostic: exactly one row → Found; two or more distinct
-        // credential rows → fail closed (`Ambiguous`) rather than picking
-        // one and bleeding one tenant's runtime to another.
-        let Some(first) = at_scope.next() else {
-            return LookupOutcome::NotFound;
-        };
-        let extra = at_scope.count();
-        if extra == 0 {
-            LookupOutcome::Found(Arc::clone(&first.managed))
-        } else {
-            LookupOutcome::Ambiguous { rows: 1 + extra }
-        }
+        Self::find_at_exact_scope(entries, &effective_scope, want_identity)
     }
 }
 
@@ -525,6 +615,10 @@ mod tests {
     use nebula_core::WorkspaceId;
 
     use super::*;
+
+    fn test_acquire() -> ErasedAcquireFn {
+        crate::manager::acquire_dispatch::noop_erased_acquire()
+    }
 
     struct FakeA;
     struct FakeB;
@@ -632,6 +726,7 @@ mod tests {
             ScopeLevel::Global,
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
+            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -639,6 +734,7 @@ mod tests {
             ScopeLevel::Workspace(WorkspaceId::new()),
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
+            test_acquire(),
         );
 
         // Replace only the Global entry with FakeB. Workflow still
@@ -649,6 +745,7 @@ mod tests {
             ScopeLevel::Global,
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeB),
+            test_acquire(),
         );
 
         assert!(
@@ -670,6 +767,7 @@ mod tests {
             scope.clone(),
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
+            test_acquire(),
         );
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeA>()));
 
@@ -681,6 +779,7 @@ mod tests {
             scope,
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeB),
+            test_acquire(),
         );
 
         // The stale TypeId row for FakeA must be gone (#382).
@@ -706,6 +805,7 @@ mod tests {
             scope.clone(),
             0xAAAA,
             Arc::new(FakeA),
+            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -713,6 +813,7 @@ mod tests {
             scope.clone(),
             0xBBBB,
             Arc::new(FakeA),
+            test_acquire(),
         );
 
         // Each resolved identity pins its own row.
@@ -747,6 +848,7 @@ mod tests {
             scope.clone(),
             0xAAAA,
             Arc::new(FakeA),
+            test_acquire(),
         );
         reg.register(
             key.clone(),
@@ -754,6 +856,7 @@ mod tests {
             scope.clone(),
             0xBBBB,
             Arc::new(FakeA),
+            test_acquire(),
         );
 
         match reg.get(&key, &scope) {
@@ -776,6 +879,7 @@ mod tests {
             scope.clone(),
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             Arc::new(FakeA),
+            test_acquire(),
         );
 
         assert!(matches!(reg.get(&key, &scope), LookupOutcome::Found(_)));

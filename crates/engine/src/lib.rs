@@ -103,7 +103,7 @@ pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, Resol
 pub use node_output::NodeOutput;
 pub use resource::{
     ErasedResourceRegistrar, RegisterRequest, RegistrarError, ResourceRegistrarRegistry,
-    TypedResourceRegistrar,
+    ResourceRegistrationOutcome, TypedResourceRegistrar,
 };
 pub use resource_accessor::EngineResourceAccessor;
 pub use resource_status::{

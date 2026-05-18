@@ -37,7 +37,7 @@ use std::{
     time::Instant,
 };
 
-use nebula_core::{LayerLifecycle, ResourceKey, ScopeLevel};
+use nebula_core::{Context, LayerLifecycle, ResourceKey, ScopeLevel};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -59,11 +59,13 @@ use crate::{
     runtime::{TopologyRuntime, managed::ManagedResource},
 };
 
+pub(crate) mod acquire_dispatch;
 mod execute;
 mod gate;
 pub(crate) mod options;
 pub(crate) mod shutdown;
 
+pub use crate::registry::ErasedAcquireFn;
 use execute::{execute_with_resilience, validate_pool_config};
 use gate::{admit_through_gate, settle_gate_admission};
 pub use options::{DrainTimeoutPolicy, ManagerConfig, RegisterOptions, ShutdownConfig};
@@ -287,6 +289,61 @@ impl Manager {
         self.event_tx.subscribe()
     }
 
+    /// Erased acquire hook for [`register`](Self::register) on a pooled resource.
+    #[must_use]
+    pub fn erased_acquire_pooled<R>(slot_identity: u64) -> ErasedAcquireFn
+    where
+        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_pooled::<R>(slot_identity)
+    }
+
+    /// Erased acquire hook for [`register`](Self::register) on a resident resource.
+    #[must_use]
+    pub fn erased_acquire_resident<R>(slot_identity: u64) -> ErasedAcquireFn
+    where
+        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_resident::<R>(slot_identity)
+    }
+
+    /// Erased acquire hook for [`register`](Self::register) on a service resource.
+    #[must_use]
+    pub fn erased_acquire_service<R>(slot_identity: u64) -> ErasedAcquireFn
+    where
+        R: crate::topology::service::Service + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_service::<R>(slot_identity)
+    }
+
+    /// Erased acquire hook for [`register`](Self::register) on a transport resource.
+    #[must_use]
+    pub fn erased_acquire_transport<R>(slot_identity: u64) -> ErasedAcquireFn
+    where
+        R: crate::topology::transport::Transport + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_transport::<R>(slot_identity)
+    }
+
+    /// Erased acquire hook for [`register`](Self::register) on an exclusive resource.
+    #[must_use]
+    pub fn erased_acquire_exclusive<R>(slot_identity: u64) -> ErasedAcquireFn
+    where
+        R: crate::topology::exclusive::Exclusive + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_exclusive::<R>(slot_identity)
+    }
+
     /// Registers a resource with its config, scope, topology, and optional
     /// resilience / recovery gate configuration.
     ///
@@ -307,12 +364,17 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors register_with_identity minus slot_identity; arity grows when acquire hook is required at registration"
+    )]
     pub fn register<R: Resource>(
         &self,
         resource: R,
         config: R::Config,
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
+        acquire: ErasedAcquireFn,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error> {
@@ -322,6 +384,7 @@ impl Manager {
             scope,
             crate::dedup::SLOT_IDENTITY_UNBOUND,
             topology,
+            acquire,
             resilience,
             recovery_gate,
         )
@@ -358,6 +421,7 @@ impl Manager {
         scope: ScopeLevel,
         slot_identity: u64,
         topology: TopologyRuntime<R>,
+        acquire: ErasedAcquireFn,
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error> {
@@ -365,7 +429,35 @@ impl Manager {
         config.validate()?;
 
         let key = R::key();
+        self.register_row_with_acquire(
+            key,
+            resource,
+            config,
+            scope,
+            slot_identity,
+            topology,
+            acquire,
+            resilience,
+            recovery_gate,
+        )
+    }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal row builder shared by register_with_identity; same arity as the public register path"
+    )]
+    fn register_row_with_acquire<R: Resource>(
+        &self,
+        key: ResourceKey,
+        resource: R,
+        config: R::Config,
+        scope: ScopeLevel,
+        slot_identity: u64,
+        topology: TopologyRuntime<R>,
+        acquire: ErasedAcquireFn,
+        resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
+    ) -> Result<(), Error> {
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -380,8 +472,14 @@ impl Manager {
         });
 
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
-        self.registry
-            .register(key.clone(), type_id, scope, slot_identity, managed.clone());
+        self.registry.register(
+            key.clone(),
+            type_id,
+            scope,
+            slot_identity,
+            managed.clone(),
+            acquire,
+        );
 
         // #387: everything below `register()` is a single funnel — the
         // resource is installed, so advance its phase from `Initializing`
@@ -417,13 +515,16 @@ impl Manager {
         pool_config: crate::topology::pooled::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
     {
         use crate::resource::ResourceConfig as _;
 
         validate_pool_config(&pool_config)?;
 
         let fingerprint = config.fingerprint();
+        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -432,6 +533,7 @@ impl Manager {
                 pool_config,
                 fingerprint,
             )),
+            acquire_dispatch::erased_acquire_pooled::<R>(slot_identity),
             None,
             None,
         )
@@ -452,8 +554,11 @@ impl Manager {
         resident_config: crate::topology::resident::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
     {
+        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -461,6 +566,7 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
+            acquire_dispatch::erased_acquire_resident::<R>(slot_identity),
             None,
             None,
         )
@@ -482,8 +588,11 @@ impl Manager {
         service_config: crate::topology::service::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::service::Service + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
     {
+        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -492,6 +601,7 @@ impl Manager {
                 runtime,
                 service_config,
             )),
+            acquire_dispatch::erased_acquire_service::<R>(slot_identity),
             None,
             None,
         )
@@ -513,8 +623,11 @@ impl Manager {
         exclusive_config: crate::topology::exclusive::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::exclusive::Exclusive + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
     {
+        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -523,6 +636,7 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
+            acquire_dispatch::erased_acquire_exclusive::<R>(slot_identity),
             None,
             None,
         )
@@ -544,8 +658,11 @@ impl Manager {
         transport_config: crate::topology::transport::config::Config,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::transport::Transport + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
     {
+        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -554,6 +671,7 @@ impl Manager {
                 runtime,
                 transport_config,
             )),
+            acquire_dispatch::erased_acquire_transport::<R>(slot_identity),
             None,
             None,
         )
@@ -575,7 +693,9 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
     {
         use crate::resource::ResourceConfig as _;
 
@@ -591,6 +711,7 @@ impl Manager {
                 pool_config,
                 fingerprint,
             )),
+            acquire_dispatch::erased_acquire_pooled::<R>(options.slot_identity),
             options.resilience,
             options.recovery_gate,
         )
@@ -612,7 +733,9 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
     {
         self.register_with_identity(
             resource,
@@ -622,6 +745,7 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
+            acquire_dispatch::erased_acquire_resident::<R>(options.slot_identity),
             options.resilience,
             options.recovery_gate,
         )
@@ -644,7 +768,9 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::service::Service + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
     {
         self.register_with_identity(
             resource,
@@ -655,6 +781,7 @@ impl Manager {
                 runtime,
                 service_config,
             )),
+            acquire_dispatch::erased_acquire_service::<R>(options.slot_identity),
             options.resilience,
             options.recovery_gate,
         )
@@ -677,7 +804,9 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::transport::Transport + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Send + Sync + 'static,
+        R::Lease: Send + 'static,
     {
         self.register_with_identity(
             resource,
@@ -688,6 +817,7 @@ impl Manager {
                 runtime,
                 transport_config,
             )),
+            acquire_dispatch::erased_acquire_transport::<R>(options.slot_identity),
             options.resilience,
             options.recovery_gate,
         )
@@ -710,7 +840,9 @@ impl Manager {
         options: RegisterOptions,
     ) -> Result<(), Error>
     where
-        R: Resource,
+        R: crate::topology::exclusive::Exclusive + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Send + 'static,
     {
         self.register_with_identity(
             resource,
@@ -721,6 +853,7 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
+            acquire_dispatch::erased_acquire_exclusive::<R>(options.slot_identity),
             options.resilience,
             options.recovery_gate,
         )
@@ -888,6 +1021,7 @@ impl Manager {
         resource: R,
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
+        acquire_for_slot: &(dyn Fn(u64) -> ErasedAcquireFn + Send + Sync),
         resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<(), Error>
@@ -957,6 +1091,7 @@ impl Manager {
             scope,
             slot_id,
             topology,
+            acquire_for_slot(slot_id),
             resilience,
             recovery_gate,
         )
@@ -1068,21 +1203,38 @@ impl Manager {
     /// credential is re-registered), distinct from the
     /// [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) that
     /// the `shutting_down` funnel raises.
-    fn lookup_for_acquire<R: Resource>(
+    /// Acquire-side lookup walking the scope bag from most specific to Global.
+    fn lookup_for_acquire_scope<R: Resource>(
         &self,
-        scope: &ScopeLevel,
+        ctx: &ResourceContext,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
-        Self::taint_gate::<R>(self.lookup::<R>(scope)?)
+        self.shutdown_guard()?;
+        for level in crate::context::scope_levels_for_acquire(ctx.scope()) {
+            match self.lookup::<R>(&level) {
+                Ok(managed) => return Self::taint_gate::<R>(managed),
+                Err(e) if matches!(e.kind(), crate::error::ErrorKind::NotFound) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::not_found(&R::key()))
     }
 
-    /// [`lookup_for_acquire`](Self::lookup_for_acquire) pinned to a resolved
-    /// per-slot credential identity (the unambiguous acquire path).
-    fn lookup_for_acquire_with<R: Resource>(
+    /// [`lookup_for_acquire_scope`](Self::lookup_for_acquire_scope) pinned to
+    /// a resolved per-slot credential identity.
+    fn lookup_for_acquire_with_scope<R: Resource>(
         &self,
-        scope: &ScopeLevel,
+        ctx: &ResourceContext,
         slot_identity: u64,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
-        Self::taint_gate::<R>(self.lookup_for::<R>(scope, slot_identity)?)
+        self.shutdown_guard()?;
+        for level in crate::context::scope_levels_for_acquire(ctx.scope()) {
+            match self.lookup_for::<R>(&level, slot_identity) {
+                Ok(managed) => return Self::taint_gate::<R>(managed),
+                Err(e) if matches!(e.kind(), crate::error::ErrorKind::NotFound) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::not_found(&R::key()))
     }
 
     /// Shared taint check tail for the acquire-side lookups.
@@ -1642,6 +1794,74 @@ impl Manager {
     /// A `slot_identity` that was never registered is
     /// [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound), never an
     /// accidental alias to another tenant's row.
+    /// Acquires a [`ResourceGuard`] through the registry row's erased dispatch
+    /// hook (key + scope + resolved slot identity).
+    ///
+    /// This is the object-safe entry point used by the engine/action accessor
+    /// when the concrete resource type `R` is not known at compile time.
+    ///
+    /// # Errors
+    ///
+    /// Same as the typed `acquire_*_for` family: not found, ambiguous (when
+    /// `slot_identity` does not match a row), shutdown, taint, topology, and
+    /// acquire-time failures.
+    pub async fn acquire_erased(
+        manager: Arc<Self>,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: u64,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+        use crate::registry::AcquireLookupOutcome;
+
+        manager.shutdown_guard()?;
+        let acquire = match manager
+            .registry
+            .get_acquire_for(key, ctx.scope(), slot_identity)
+        {
+            AcquireLookupOutcome::Found(f) => f,
+            AcquireLookupOutcome::NotFound => return Err(Error::not_found(key)),
+            AcquireLookupOutcome::Ambiguous { rows } => {
+                return Err(Error::ambiguous(format!(
+                    "{key}: {rows} resolved-credential registrations exist at this scope; \
+                     acquire must target a resolved row via slot identity"
+                ))
+                .with_resource_key(key.clone()));
+            },
+        };
+        acquire(manager, ctx.clone_for_acquire(), options.clone()).await
+    }
+
+    /// Returns whether a registry row exists for `(key, scope bag, slot_identity)`.
+    #[must_use]
+    pub fn has_registered_for_scope(
+        &self,
+        key: &ResourceKey,
+        scope: &nebula_core::Scope,
+        slot_identity: u64,
+    ) -> bool {
+        use crate::registry::AcquireLookupOutcome;
+        matches!(
+            self.registry.get_acquire_for(key, scope, slot_identity),
+            AcquireLookupOutcome::Found(_)
+        )
+    }
+
+    /// Returns whether a registry row exists for `(key, scope level, slot_identity)`.
+    ///
+    /// Prefer [`has_registered_for_scope`](Self::has_registered_for_scope) when
+    /// the full scope bag is available (execution + org/workspace).
+    #[must_use]
+    pub fn has_registered_for(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: u64,
+    ) -> bool {
+        let scope_bag = crate::context::minimal_scope_for_level(scope);
+        self.has_registered_for_scope(key, &scope_bag, slot_identity)
+    }
+
     fn lookup_any_for_slot_identity(
         &self,
         key: &ResourceKey,
@@ -1696,7 +1916,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_pooled_acquire(managed, ctx, options).await
     }
 
@@ -1728,7 +1948,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
         self.run_pooled_acquire(managed, ctx, options).await
     }
 
@@ -1831,7 +2051,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_resident_acquire(managed, ctx, options).await
     }
 
@@ -1863,7 +2083,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
         self.run_resident_acquire(managed, ctx, options).await
     }
 
@@ -1947,7 +2167,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_service_acquire(managed, ctx, options).await
     }
 
@@ -1979,7 +2199,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
         self.run_service_acquire(managed, ctx, options).await
     }
 
@@ -2071,7 +2291,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_transport_acquire(managed, ctx, options).await
     }
 
@@ -2103,7 +2323,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
         self.run_transport_acquire(managed, ctx, options).await
     }
 
@@ -2195,7 +2415,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_exclusive_acquire(managed, options).await
     }
 
@@ -2227,7 +2447,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_for_acquire_with::<R>(&ctx.scope_level(), slot_identity)?;
+        let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
         self.run_exclusive_acquire(managed, options).await
     }
 
@@ -2330,7 +2550,7 @@ impl Manager {
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
@@ -2417,7 +2637,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        let managed = self.lookup_for_acquire::<R>(&ctx.scope_level())?;
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         let config = managed.config();
         match &managed.topology {
             TopologyRuntime::Pool(rt) => {

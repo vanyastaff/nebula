@@ -226,6 +226,9 @@ async fn use_case_1_http_client_pool() {
             },
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<HttpClientResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None, // resilience
             None,
         )
@@ -357,6 +360,9 @@ async fn use_case_2_resident_config_store() {
             },
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ConfigStoreResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -497,6 +503,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             },
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<DbResource>(nebula_resource::SLOT_IDENTITY_UNBOUND),
             Some(resilience),
             None,
         )

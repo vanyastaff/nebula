@@ -9,7 +9,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use nebula_action::{
@@ -17,13 +20,21 @@ use nebula_action::{
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
+use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
     WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
-use nebula_resource::Manager;
+use nebula_resource::{
+    Manager, ResidentConfig, ResourceContext,
+    dedup::SLOT_IDENTITY_UNBOUND,
+    error::Error as ResourceError,
+    resource::{Resource, ResourceConfig, ResourceMetadata},
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::resident::Resident,
+};
 use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
@@ -269,6 +280,176 @@ async fn full_resource_lifecycle_with_shutdown() {
     assert!(manager.is_shutdown());
 }
 
+// ---------------------------------------------------------------------------
+// Engine integration — real acquire through EngineResourceAccessor
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct IntegrationProbeError(String);
+
+impl std::fmt::Display for IntegrationProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for IntegrationProbeError {}
+
+impl From<IntegrationProbeError> for ResourceError {
+    fn from(e: IntegrationProbeError) -> Self {
+        ResourceError::permanent(e.0)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct IntegrationProbeConfig;
+
+nebula_schema::impl_empty_has_schema!(IntegrationProbeConfig);
+
+impl ResourceConfig for IntegrationProbeConfig {}
+
+#[derive(Clone)]
+struct IntegrationProbeResource;
+
+impl Resource for IntegrationProbeResource {
+    type Config = IntegrationProbeConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = IntegrationProbeError;
+
+    fn key() -> ResourceKey {
+        resource_key!("test.engine_integration.probe")
+    }
+
+    async fn create(
+        &self,
+        _config: &IntegrationProbeConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicU64>, IntegrationProbeError> {
+        Ok(Arc::new(AtomicU64::new(7)))
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Resident for IntegrationProbeResource {
+    fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
+        runtime.load(Ordering::Relaxed) > 0
+    }
+}
+
+struct IntegrationAcquireHandler;
+
+impl Action for IntegrationAcquireHandler {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> &'static ActionMetadata {
+        static M: OnceLock<ActionMetadata> = OnceLock::new();
+        M.get_or_init(|| {
+            ActionMetadata::new(
+                action_key!("test.engine_integration.acquire"),
+                "IntegrationAcquire",
+                "static",
+            )
+        })
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+
+impl StatelessAction for IntegrationAcquireHandler {
+    async fn execute(
+        &self,
+        _input: <Self as Action>::Input,
+        ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        let key = IntegrationProbeResource::key();
+        let boxed = ctx
+            .resources()
+            .acquire_any(&key)
+            .await
+            .map_err(ActionError::from)?;
+        let guard = boxed
+            .downcast::<nebula_resource::ResourceGuard<IntegrationProbeResource>>()
+            .map_err(|_| ActionError::fatal("expected ResourceGuard downcast"))?;
+        let value = guard.load(Ordering::Relaxed);
+        Ok(ActionResult::success(serde_json::json!({ "lease": value })))
+    }
+}
+
+/// Org-scoped registration + execution-scoped acquire + slot identity on engine.
+#[tokio::test]
+async fn engine_acquires_org_scoped_resource_through_accessor() {
+    let manager = Arc::new(Manager::new());
+    let org = OrgId::new();
+
+    manager
+        .register(
+            IntegrationProbeResource,
+            IntegrationProbeConfig,
+            ScopeLevel::Organization(org),
+            TopologyRuntime::Resident(ResidentRuntime::<IntegrationProbeResource>::new(
+                ResidentConfig::default(),
+            )),
+            Manager::erased_acquire_resident::<IntegrationProbeResource>(SLOT_IDENTITY_UNBOUND),
+            None,
+            None,
+        )
+        .expect("register org-scoped resource");
+
+    let registry = Arc::new(ActionRegistry::new());
+    registry.legacy_register_stateless_with_metadata(
+        meta(action_key!("engine-integration-acquire")),
+        IntegrationAcquireHandler,
+    );
+
+    let executor: ActionExecutor =
+        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
+    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let metrics = MetricsRegistry::new();
+    let runtime = Arc::new(
+        ActionRuntime::try_new(
+            registry,
+            sandbox,
+            DataPassingPolicy::default(),
+            metrics.clone(),
+        )
+        .unwrap(),
+    );
+
+    let engine = WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_resource_manager(Arc::clone(&manager))
+        .with_resource_acquire_scope(nebula_core::scope::Scope {
+            org_id: Some(org),
+            ..Default::default()
+        });
+    engine.record_resource_slot_identity(IntegrationProbeResource::key(), SLOT_IDENTITY_UNBOUND);
+
+    let node = node_key!("probe");
+    let wf = make_workflow(vec![
+        NodeDefinition::new(node.clone(), "A", "engine-integration-acquire").unwrap(),
+    ]);
+
+    let result = engine
+        .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+        .await
+        .expect("workflow execution");
+
+    assert!(result.is_success(), "workflow should succeed");
+    let output = result.node_output(&node).expect("node output");
+    assert_eq!(
+        output.get("lease").and_then(serde_json::Value::as_u64),
+        Some(7)
+    );
+}
+
 /// Verify that `ctx.resource()` returns a fatal error when no resource
 /// manager is attached to the engine.
 ///
@@ -346,6 +527,7 @@ mod shared_resource {
     use nebula_core::{ExecutionId, OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_resource::{
         AcquireOptions, Manager, ResidentConfig, ResourceContext,
+        dedup::SLOT_IDENTITY_UNBOUND,
         error::Error,
         resource::{Resource, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -581,6 +763,7 @@ mod shared_resource {
                 test_config(),
                 ScopeLevel::Organization(org),
                 TopologyRuntime::Resident(resident_rt),
+                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )
@@ -657,6 +840,7 @@ mod shared_resource {
                 TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
+                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )
@@ -669,6 +853,7 @@ mod shared_resource {
                 TopologyRuntime::Resident(ResidentRuntime::<AlternateBot>::new(
                     ResidentConfig::default(),
                 )),
+                Manager::erased_acquire_resident::<AlternateBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )
@@ -731,6 +916,7 @@ mod shared_resource {
                 TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
+                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )
@@ -743,6 +929,7 @@ mod shared_resource {
                 TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
+                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )
@@ -803,6 +990,7 @@ mod shared_resource {
                 test_config(),
                 scope.clone(),
                 TopologyRuntime::Resident(resident_rt),
+                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )
@@ -880,6 +1068,7 @@ mod shared_resource {
                 test_config(),
                 ScopeLevel::Global,
                 TopologyRuntime::Resident(resident_rt),
+                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
                 None,
             )

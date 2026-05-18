@@ -403,6 +403,7 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
             config,
             ScopeLevel::Global, // scope
             TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(pool_config, fingerprint)),
+            Manager::erased_acquire_pooled::<DbResource>(nebula_resource::SLOT_IDENTITY_UNBOUND),
             Some(AcquireResilience::standard()), // resilience
             None,
         )

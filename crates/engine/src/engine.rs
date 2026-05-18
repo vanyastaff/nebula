@@ -11,7 +11,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nebula_action::{ActionError, ActionResult, capability::default_resource_accessor};
 use nebula_core::{
-    ActionKey, NodeKey,
+    ActionKey, NodeKey, ResourceKey,
     accessor::{CredentialAccessor, ResourceAccessor},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
@@ -203,6 +203,12 @@ pub struct WorkflowEngine {
     resolver: ParamResolver,
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
+    /// Extra scope fields merged into each node's resource acquire context
+    /// (`org_id`, `workspace_id`) when resources are registered above execution
+    /// scope.
+    resource_acquire_scope: Option<nebula_core::scope::Scope>,
+    /// Per-resource resolved slot identities recorded at activation.
+    resource_slot_identities: RwLock<HashMap<ResourceKey, u64>>,
     /// Optional spec-16 port bundle (execution-state / lease / journal /
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
@@ -366,6 +372,8 @@ impl WorkflowEngine {
             resource_fanout_spawned: std::sync::atomic::AtomicBool::new(false),
             resolver: ParamResolver::new(expression_engine),
             resource_manager: None,
+            resource_acquire_scope: None,
+            resource_slot_identities: RwLock::new(HashMap::new()),
             stores: None,
             workflow_stores: None,
             credential_resolver: None,
@@ -574,6 +582,45 @@ impl WorkflowEngine {
     pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::Manager>) -> Self {
         self.resource_manager = Some(manager);
         self
+    }
+
+    /// Merge `org_id` / `workspace_id` into the scope used for resource acquire.
+    #[must_use]
+    pub fn with_resource_acquire_scope(mut self, scope: nebula_core::scope::Scope) -> Self {
+        self.resource_acquire_scope = Some(scope);
+        self
+    }
+
+    /// Record a resolved slot identity for a resource key (activation-time).
+    pub fn record_resource_slot_identity(&self, key: ResourceKey, slot_identity: u64) {
+        self.resource_slot_identities
+            .write()
+            .expect("resource_slot_identities lock poisoned")
+            .insert(key, slot_identity);
+    }
+
+    /// Live-register a resource kind and record its slot identity for acquire.
+    ///
+    /// Callers should prefer this over
+    /// [`ResourceRegistrarRegistry::register`](crate::ResourceRegistrarRegistry::register)
+    /// alone so action-time `acquire_any` uses the same `slot_identity` as the
+    /// manager registry row.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`ResourceRegistrarRegistry::register`].
+    pub async fn register_resource(
+        &self,
+        kind: &str,
+        manager: &nebula_resource::Manager,
+        request: crate::RegisterRequest<'_>,
+    ) -> Result<(), crate::RegistrarError> {
+        let outcome = self
+            .resource_registrars
+            .register(kind, manager, request)
+            .await?;
+        self.record_resource_slot_identity(outcome.resource_key, outcome.slot_identity);
+        Ok(())
     }
 
     /// Thread in the closed `kind → typed registrar` allowlist.
@@ -3153,8 +3200,23 @@ impl WorkflowEngine {
         // layered accessor transparently — `scoped → global`, closest
         // ancestor wins.
         let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
-            let global: Arc<dyn ResourceAccessor> =
-                Arc::new(EngineResourceAccessor::new(Arc::clone(manager)));
+            let extra = self.resource_acquire_scope.clone().unwrap_or_default();
+            let scope = nebula_core::scope::Scope {
+                execution_id: Some(execution_id),
+                workflow_id: Some(workflow_id),
+                org_id: extra.org_id,
+                workspace_id: extra.workspace_id,
+                ..Default::default()
+            };
+            let slot_identities = self
+                .resource_slot_identities
+                .read()
+                .expect("resource_slot_identities lock poisoned")
+                .clone();
+            let global: Arc<dyn ResourceAccessor> = Arc::new(
+                EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())
+                    .with_slot_identities(slot_identities),
+            );
             Arc::new(LayeredResourceAccessor::global_only(global))
         } else {
             default_resource_accessor()
