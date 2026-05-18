@@ -8,7 +8,7 @@ use std::net::IpAddr;
 
 use nebula_credential::credentials::oauth2::AuthStyle;
 use serde::Deserialize;
-use url::Url;
+use url::{Host, Url};
 
 pub use super::http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, TokenHttpError, oauth_token_http_client,
@@ -131,18 +131,25 @@ pub fn validate_token_endpoint(raw: &str) -> Result<(), String> {
         return Err("OAuth token endpoint must use https".to_owned());
     }
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| "OAuth token endpoint must include a host".to_owned())?;
-    if host.eq_ignore_ascii_case("localhost") {
-        return Err("OAuth token endpoint must not target localhost".to_owned());
-    }
-    if let Ok(ip) = host.parse::<IpAddr>()
-        && forbidden_token_endpoint_ip(ip)
-    {
-        return Err("OAuth token endpoint must not target private or local addresses".to_owned());
-    }
+    validate_token_endpoint_host(url.host())?;
     Ok(())
+}
+
+fn validate_token_endpoint_host(host: Option<Host<&str>>) -> Result<(), String> {
+    match host.ok_or_else(|| "OAuth token endpoint must include a host".to_owned())? {
+        Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => {
+            Err("OAuth token endpoint must not target localhost".to_owned())
+        },
+        Host::Domain(_) => Ok(()),
+        Host::Ipv4(ip) if forbidden_token_endpoint_ip(IpAddr::V4(ip)) => {
+            Err("OAuth token endpoint must not target private or local addresses".to_owned())
+        },
+        Host::Ipv4(_) => Ok(()),
+        Host::Ipv6(ip) if forbidden_token_endpoint_ip(IpAddr::V6(ip)) => {
+            Err("OAuth token endpoint must not target private or local addresses".to_owned())
+        },
+        Host::Ipv6(_) => Ok(()),
+    }
 }
 
 fn forbidden_token_endpoint_ip(ip: IpAddr) -> bool {
@@ -155,10 +162,16 @@ fn forbidden_token_endpoint_ip(ip: IpAddr) -> bool {
                 || ip.is_broadcast()
         },
         IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return forbidden_token_endpoint_ip(IpAddr::V4(mapped));
+            }
+            let first = ip.segments()[0];
             ip.is_loopback()
                 || ip.is_unspecified()
-                || matches!(ip.segments()[0] & 0xfe00, 0xfc00)
-                || matches!(ip.segments()[0] & 0xffc0, 0xfe80)
+                || ip.is_multicast()
+                || matches!(first & 0xfe00, 0xfc00)
+                || matches!(first & 0xffc0, 0xfe80)
+                || matches!(first & 0xffc0, 0xfec0)
         },
     }
 }
@@ -239,6 +252,24 @@ mod tests {
             err.to_lowercase().contains("token endpoint"),
             "expected endpoint validation error, got: {err}"
         );
+    }
+
+    #[test]
+    fn token_endpoint_rejects_ipv4_mapped_ipv6_private_addresses() {
+        for raw in [
+            "https://[::ffff:7f00:1]/token",
+            "https://[::ffff:a00:1]/token",
+            "https://[::ffff:a9fe:1]/token",
+            "https://[ff02::1]/token",
+            "https://[fec0::1]/token",
+        ] {
+            let err = validate_token_endpoint(raw)
+                .expect_err("private IPv4-mapped and local IPv6 addresses must be rejected");
+            assert!(
+                err.to_lowercase().contains("token endpoint"),
+                "expected endpoint validation error for {raw}, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]
