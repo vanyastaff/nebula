@@ -4,9 +4,10 @@ The following were **removed from the Nebula git tree** on 2026-05-17 to
 shrink agent context. They remain on disk for humans; agents must not search
 for them inside this repository.
 
-**Archive root (sibling tree, not in workspace):**
-
-`C:/Users/vanya/RustroverProjects/docs/_nebula-repo-archive/2026-05-17/`
+**Archive root (outside this git repo):** a sibling documentation tree under the
+maintainer’s local `RustroverProjects/docs/_nebula-repo-archive/2026-05-17/`.
+Other machines: recover removed paths from git history (below) or ask the maintainer
+for the archive export — do not assume a fixed absolute path.
 
 | Moved path | Contents |
 |------------|----------|

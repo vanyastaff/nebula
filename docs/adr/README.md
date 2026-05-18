@@ -25,7 +25,7 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 | [0050](./0050-m3-5-w3c-trace-context-propagation.md) | W3C Trace Context propagation | accepted |
 | [0051](./0051-external-provider-redesign.md) | External provider redesign | accepted |
 | [0052](./0052-schema-validator-condition-seam.md) | Validator condition evaluation seam | accepted |
-| [0052-action](./0052-action-surface-hybrid.md) | Action surface hybrid | accepted |
+| [0052-action](./0052-action-surface-hybrid.md) | Action surface hybrid (**suffix** — shares cascade era with 0052) | accepted |
 | [0053](./0053-two-struct-dx-consolidation.md) | Two-struct DX consolidation | accepted |
 | [0054](./0054-typed-capability-system.md) | Typed capability system | accepted |
 | [0055](./0055-nebula-sdk-facade.md) | `nebula-sdk` re-export façade | accepted |
@@ -56,4 +56,4 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 
 - `docs/plans/2026-05-17-002-refactor-doc-consolidation-plan.md` — doc stack hygiene (this repo).
 - `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md` — implementation (doc gate cleared).
-- `.ai-factory/plans/m6-resource-finalization-integration-audit.md` — M6 closure context.
+- M6 integration audit context — archived with other execution drafts (`docs/ARCHIVE.md`).

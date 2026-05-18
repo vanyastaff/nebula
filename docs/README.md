@@ -34,13 +34,14 @@ amends canon, update canon or INTEGRATION_MODEL with a **pointer**, not a second
 
 ## Removed from repo (do not search here)
 
-Plans, audits, conference notes, and superpowers drafts were **moved out** of
-this repository. See [`docs/ARCHIVE.md`](./ARCHIVE.md). They are **not**
-implementation specs.
+Historical execution drafts (`superpowers/`), audits, and conference notes were
+**moved out** of this repository — see [`docs/ARCHIVE.md`](./ARCHIVE.md). They are
+**not** implementation specs. Active **plan files** under `docs/plans/` remain in-tree
+for traceability but are **non-normative** (see conflict rule above).
 
 ## ADR layout
 
-- **0042+** — current cascade (`docs/adr/0042-*.md` … `0065-*.md`).
+- **0042+** — current cascade (`docs/adr/0042-*.md` and later; see [`adr/README.md`](./adr/README.md) for the live index through **0068**).
 - **0001–0041** — on disk for deep links from code; **excluded from Cursor
   index** (`.cursorignore`). Use [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md)
   to pick the right file.

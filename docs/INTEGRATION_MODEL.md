@@ -79,9 +79,9 @@ flowchart TB
   WF -.->|"handoff: SecretWire → credential/storage"| ENC
 ```
 
-**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see [ADR-0028](docs/adr/0028-cross-crate-credential-invariants.md) / [ADR-0029](docs/adr/0029-storage-owns-credential-persistence.md)).
+**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see [ADR-0028](adr/0028-cross-crate-credential-invariants.md) / [ADR-0029](adr/0029-storage-owns-credential-persistence.md)).
 
-**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see [ADR-0029](docs/adr/0029-storage-owns-credential-persistence.md)).
+**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see [ADR-0029](adr/0029-storage-owns-credential-persistence.md)).
 
 **Where `S` lives:** today the **shape** of `ValidSchema` comes from **author-time Rust** in integration/plugin crates (and registry wiring), not from the snapshot store. Persisted artifacts are **config values and history** (`SNAP`), not the Rust type graph. If product ever versions **schema definitions as data**, the diagram can gain an optional `SNAP -.-> S` edge; until then, keeping `S` only under **author** avoids visual clutter.
 
@@ -131,9 +131,9 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **What / why:** unified **Credential** contract — stored state vs projected auth material, refresh/resolve/test paths — so secrets and rotation stay **out of Action code** and logs.
 
-**Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula** (browser/API session, future SSO/LDAP to the control plane — see [ADR-0033](docs/adr/0033-integration-credentials-plane-b.md) and a future Plane A / `nebula-auth` crate).
+**Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula** (browser/API session, future SSO/LDAP to the control plane — see **ADR-0033** ([`adr/HISTORICAL.md`](adr/HISTORICAL.md)) and a future Plane A / `nebula-auth` crate).
 
-**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, [ADR-0033 — Integration credentials (Plane B)](docs/adr/0033-integration-credentials-plane-b.md).
+**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, **ADR-0033** — Integration credentials (Plane B) ([`adr/HISTORICAL.md`](adr/HISTORICAL.md)).
 
 ### Industry reference — n8n credential taxonomy vs Nebula axes
 
@@ -161,7 +161,7 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 | JWT | JWT auth | 1 |
 | Service-account JWT | e.g. RS256 bearer to Google APIs | 1 |
 
-**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see [ADR-0033](docs/adr/0033-integration-credentials-plane-b.md): **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as hundreds of unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is the same ad hoc pattern Nebula avoids.
+**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see **ADR-0033** ([`adr/HISTORICAL.md`](adr/HISTORICAL.md)): **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as hundreds of unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is the same ad hoc pattern Nebula avoids.
 
 ## `nebula-action`
 
@@ -381,5 +381,7 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 | [0063](adr/0063-json-schema-2020-12-interop.md) | JSON Schema 2020-12 interop | § Schema |
 | [0064](adr/0064-ui-form-composition.md) | UI form composition | Schema / UI (pointer) |
 | [0065](adr/0065-visual-rendering-modes.md) | Visual rendering modes | Canvas supply edges |
+| [0066](adr/0066-credential-runtime-crate.md) | Credential runtime crate | Engine / credential plane |
+| [0067](adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Rotation fan-out + `&self` refresh hook | § Credential rotation |
 | [0068](adr/0068-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
 

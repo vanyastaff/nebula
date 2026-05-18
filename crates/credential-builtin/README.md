@@ -2,7 +2,7 @@
 
 First-party **concrete** credential types for Nebula workflows. Plugin authors depend on
 `nebula-credential` (the contract crate) only; this crate holds built-in implementations
-once the integrator catalog lands (see `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md`).
+once the integrator catalog lands (see `docs/INTEGRATION_MODEL.md` § Credential).
 
 ## Why split
 
