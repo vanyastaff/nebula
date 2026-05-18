@@ -18,6 +18,6 @@ This file is a **redirect stub**. The decision record lives in the contract ADR.
 |---|---|
 | **Topic** | Closed #[field(...)] vocabulary for schema-driven forms. |
 | **Contract** | [0080-schema-validation-platform.md](./0080-schema-validation-platform.md) |
-| **Mechanics** | [\docs/INTEGRATION_MODEL.md\](../INTEGRATION_MODEL.md) (schema / validation) |
+| **Mechanics** | [INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (schema / validation) |
 
-Prior full text: \git log -- docs/adr/0058-schema-field-vocabulary.md\ before the Wave B contract merge.
+Prior full text: `git log -- docs/adr/0058-schema-field-vocabulary.md` before the Wave B contract merge.

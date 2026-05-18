@@ -358,7 +358,8 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 |-----|-------|-------------------------|
 | [0080](adr/0080-schema-validation-platform.md) | Schema & validation platform (**contract**) | § Schema / validator |
 | [0081](adr/0081-m6-resource-credential-integration.md) | M6 resource & credential integration (**contract**) | § Resource / credential |
-| [0082](adr/0082-api-webhooks-idempotency.md) | API edge contracts (**contract**) | API / webhooks || [0042](adr/0042-node-binding-mechanism.md) | Node → ResourceId / CredentialId binding | Activation / slot wiring |
+| [0082](adr/0082-api-webhooks-idempotency.md) | API edge contracts (**contract**) | API / webhooks |
+| [0042](adr/0042-node-binding-mechanism.md) | Node → ResourceId / CredentialId binding (stub → 0081) | Activation / slot wiring |
 | [0043](adr/0043-dependency-declaration-dx.md) | `#[credential]` / `#[resource]` slot DX | § Action / Resource deps |
 | [0044](adr/0044-supersede-0036-resource-credential-singular.md) | Slot credentials on resources (not singular associated type) | § Resource, § Credential |
 | [0045](adr/0045-eventtrigger-scope-deferral.md) | EventTrigger wrapper deferred | § Action / triggers |

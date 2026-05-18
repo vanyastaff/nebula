@@ -11,6 +11,8 @@ supersedes:
   - 0051-external-provider-redesign
   - 0066-credential-runtime-crate
   - 0067-engine-owned-rotation-fanout-self-refresh-hook
+amends:
+  - 0036-resource-credential-adoption-auth-retirement
 superseded_by: []
 tags: [resource, credential, action, engine, m6, m11, contract]
 related:

@@ -28,7 +28,15 @@ cascade and later work. Numbering starts at **0042** in this directory.
 Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md`
 (excluded from agent index — see `.cursorignore`). Do not bulk-read all 41 files.
 
-## Index (0042–0072)
+## Contract ADRs (0080–0082)
+
+| # | Title | Status |
+|---|-------|--------|
+| [0080](./0080-schema-validation-platform.md) | Schema & validation platform | accepted |
+| [0081](./0081-m6-resource-credential-integration.md) | M6 resource & credential integration | accepted |
+| [0082](./0082-api-webhooks-idempotency.md) | API edge — OpenAPI, idempotency, webhooks | accepted |
+
+## Index (0042–0072, stubs + standalone)
 
 | # | Title | Status |
 |---|-------|--------|

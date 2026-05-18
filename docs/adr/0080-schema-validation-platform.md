@@ -23,7 +23,7 @@ related:
 
 ## Context
 
-The M11 schema / validator / dependency-redesign cascade produced nine
+The M11 schema / validator / dependency-redesign cascade produced eight
 accepted or proposed feature ADRs (**0052**, **0058–0064**) that agents had to
 open individually. Mechanics (pipelines, ports, crate boundaries) belong in
 [`docs/INTEGRATION_MODEL.md`](../INTEGRATION_MODEL.md) and crate READMEs; this

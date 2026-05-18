@@ -18,6 +18,6 @@ This file is a **redirect stub**. The decision record lives in the contract ADR.
 |---|---|
 | **Topic** | Validator owns visibility/required When(Rule) via PredicateContext; schema maps modes at validate time. |
 | **Contract** | [0080-schema-validation-platform.md](./0080-schema-validation-platform.md) |
-| **Mechanics** | [\docs/INTEGRATION_MODEL.md\](../INTEGRATION_MODEL.md) (schema / validation) |
+| **Mechanics** | [INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (schema / validation) |
 
-Prior full text: \git log -- docs/adr/0052-schema-validator-condition-seam.md\ before the Wave B contract merge.
+Prior full text: `git log -- docs/adr/0052-schema-validator-condition-seam.md` before the Wave B contract merge.

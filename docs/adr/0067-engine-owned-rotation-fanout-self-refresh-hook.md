@@ -18,6 +18,6 @@ This file is a **redirect stub**. The decision record lives in the contract ADR.
 |---|---|
 | **Topic** | Engine-owned rotation dispatch and SlotCell substrate. |
 | **Contract** | [0081-m6-resource-credential-integration.md](./0081-m6-resource-credential-integration.md) |
-| **Mechanics** | [\docs/INTEGRATION_MODEL.md\](../INTEGRATION_MODEL.md) (resources / credentials) |
+| **Mechanics** | [INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (resources / credentials) |
 
-Prior full text: \git log -- docs/adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md\ before the Wave B contract merge.
+Prior full text: `git log -- docs/adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md` before the Wave B contract merge.
