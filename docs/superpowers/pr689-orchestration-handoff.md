@@ -104,16 +104,23 @@ inherit the in-progress merge).
   test helper. engine 9/9 (consumer_wiring+lease_takeover), api 45/45
   (knife+integration), clippy/fmt green.
 
+- **`5da213a3` — done&verified.** Two outside-diff workflow.rs fixes:
+  (1) `validate_workflow_handler` `from_value` → `to_string`+`from_str`
+  (matches activate; `from_value` can't zero-copy borrow `&str` →
+  validate/activate accepted different defs); (2) `create_workflow`
+  now *overwrites* client `id`/`version`/`schema_version`/`owner_id`
+  with server-authoritative values (NOT strip — they're required by
+  the `WorkflowDefinition` schema; blanket-strip regressed
+  knife_scenario, caught + fixed). nebula-api 366/366 (1 pg-gated
+  skip), clippy/fmt green.
+
 ### REMAINING (D) FIX items (not yet started)
 
 - `3255514559` storage migrations/postgres/0027 column drift
   (TIMESTAMPTZ vs SQLite `*_ms` BIGINT) → normalize to `*_ms BIGINT`
-  both dialects + fix postgres adapter rows that read these.
-- outside-diff workflow.rs:729-740 `validate_workflow_handler`
-  `from_value` vs activate `from_str` → use `from_str` both.
-- outside-diff workflow.rs:289-307 create persists client
-  id/version/owner_id/schema_version verbatim → strip on create too
-  (update guard already strips).
+  both dialects + fix postgres adapter rows that read these. NOTE:
+  postgres-only schema; DATABASE_URL-gated, cannot pg-verify locally —
+  classify done-but-pg-unverified.
 - ADOPT items: `3255514551` (idempotency `&Scope` param),
   `3255514553` (membership enum ScopeKind/PrincipalKind),
   postgres/control_queue cleanup DELETE, store_seam node_result warn,
