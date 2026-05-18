@@ -232,11 +232,25 @@ Sequenced (each step workspace+lefthook-green → its own commit):
   No handler migrated yet (next sub-batch). fmt + clippy --all-targets
   --all-features -D (nebula-api) clean; nextest nebula-api 366/366 (1 pg-gated
   skip) incl. workflow CRUD/list/count/activate + knife step5; lefthook green.
-- **1b-ii.exec SCOPED SIBLINGS + handler migration (next):** same pattern for
-  the execution/control/journal/node-result methods, then migrate handlers a
-  few files per commit (bind `tenant`, `let scope = request_scope(&tenant)?;`,
-  call the `*_scoped` method). Un-migrated handlers keep the placeholder
-  delegates → green per batch.
+- **1b-ii.exec SCOPED SIBLINGS — done&verified (commit below).** Added
+  `list_running_executions_scoped` / `..._for_workflow_scoped` /
+  `execution_state_scoped` / `enqueue_control_scoped` /
+  `create_execution_scoped` / `cas_transition_scoped` /
+  `execution_node_outputs_scoped` / `execution_journal_scoped` (each builds a
+  freshly bound `ScopedExecutionStore`/`ScopedControlQueue`/`ScopedNodeResult
+  Store`/`ScopedExecutionJournalReader`; enqueue_control rebinds the message
+  scope per request). All 8 execution placeholder methods are now delegates →
+  **all 14 AppState data accessors have scoped siblings; every placeholder
+  method is a one-line delegate.** Behavior-identical (decorator bound ==
+  passed scope). fmt + clippy --all-targets --all-features -D (nebula-api)
+  clean; nextest nebula-api 366/366 (1 pg-gated skip) incl. knife step5 +
+  execution_terminate e2e (engine↔API control/journal row-share); lefthook
+  green.
+- **1b-iii HANDLER MIGRATION (next):** migrate workflow/execution handlers a
+  few files per commit — bind `tenant` (un-underscore the
+  `Extension<TenantContext>`), `let scope = request_scope(&tenant)?;`, call
+  the `*_scoped` accessor. Un-migrated handlers keep the placeholder
+  delegates → green per batch. Then CONTRACT.
 - **1c CONTRACT:** when `rg placeholder_scope crates/`==0 delete
   `placeholder_scope()` + every placeholder method + the placeholder-bound
   `AppState::new` decorator construction; flip `common/mod.rs` `port_scope`

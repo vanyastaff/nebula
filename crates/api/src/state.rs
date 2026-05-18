@@ -20,7 +20,10 @@ use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowStore,
     WorkflowVersionStore,
 };
-use nebula_tenancy::{ScopedWorkflowStore, ScopedWorkflowVersionStore};
+use nebula_tenancy::{
+    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore,
+    ScopedWorkflowStore, ScopedWorkflowVersionStore,
+};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -797,14 +800,23 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 
-    /// List running execution ids through the scoped [`ExecutionStore`]
-    /// port. The fixed placeholder scope is substituted by the
-    /// `nebula-tenancy` decorator, so its value is immaterial to
-    /// isolation.
+    /// List running execution ids (delegates to the per-request-scoped
+    /// sibling with the transitional placeholder scope).
     pub(crate) async fn list_running_executions(&self) -> Result<Vec<ExecutionId>, ApiError> {
-        let ids = self
-            .execution_store
-            .list_running(&placeholder_scope())
+        self.list_running_executions_scoped(&placeholder_scope())
+            .await
+    }
+
+    /// Per-request-scoped [`Self::list_running_executions`]: running ids
+    /// read through a freshly bound `ScopedExecutionStore`, so the listing
+    /// is the caller's tenant only.
+    pub(crate) async fn list_running_executions_scoped(
+        &self,
+        scope: &Scope,
+    ) -> Result<Vec<ExecutionId>, ApiError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        let ids = store
+            .list_running(scope)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
         ids.iter()
@@ -816,15 +828,25 @@ impl AppState {
             .collect()
     }
 
-    /// List running execution ids for one workflow (same scoped port as
-    /// [`Self::list_running_executions`]).
+    /// List running execution ids for one workflow (delegates to the
+    /// per-request-scoped sibling with the transitional placeholder scope).
     pub(crate) async fn list_running_executions_for_workflow(
         &self,
         workflow_id: nebula_core::id::WorkflowId,
     ) -> Result<Vec<ExecutionId>, ApiError> {
-        let ids = self
-            .execution_store
-            .list_running_for_workflow(&placeholder_scope(), &workflow_id.to_string())
+        self.list_running_executions_for_workflow_scoped(&placeholder_scope(), workflow_id)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::list_running_executions_for_workflow`].
+    pub(crate) async fn list_running_executions_for_workflow_scoped(
+        &self,
+        scope: &Scope,
+        workflow_id: nebula_core::id::WorkflowId,
+    ) -> Result<Vec<ExecutionId>, ApiError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        let ids = store
+            .list_running_for_workflow(scope, &workflow_id.to_string())
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
         ids.iter()
@@ -836,29 +858,55 @@ impl AppState {
             .collect()
     }
 
-    /// Read an execution's persisted `(version, state-json)`, or `None`
-    /// if absent, via the scoped [`ExecutionStore`] port (`get` →
-    /// `(record.version, record.state)`). `context` labels the error
-    /// (callers used distinct wording: "check" / "get" / …).
+    /// Read an execution's persisted `(version, state-json)` (delegates to
+    /// the per-request-scoped sibling with the transitional placeholder
+    /// scope). `context` labels the error.
     pub(crate) async fn execution_state(
         &self,
         execution_id: ExecutionId,
         context: &str,
     ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
-        self.execution_store
-            .get(&placeholder_scope(), &execution_id.to_string())
+        self.execution_state_scoped(&placeholder_scope(), execution_id, context)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::execution_state`]: the row is read
+    /// through a freshly bound `ScopedExecutionStore`, so a cross-tenant
+    /// id resolves to `None` (never another tenant's state).
+    pub(crate) async fn execution_state_scoped(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        context: &str,
+    ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        store
+            .get(scope, &execution_id.to_string())
             .await
             .map(|opt| opt.map(|r| (r.version, r.state)))
             .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
     }
 
-    /// Enqueue a control command onto the durable outbox via the scoped
-    /// [`ControlQueue`] port (typed 16-byte id, opaque `execution_id`
-    /// string, `traceparent` string — no UTF-8-of-ULID encoding). The
-    /// §13-step-6 503-vs-500 error policy is centralized here so both
-    /// enqueue sites stay identical.
+    /// Enqueue a control command onto the durable outbox (delegates to the
+    /// per-request-scoped sibling with the transitional placeholder scope).
     pub(crate) async fn enqueue_control(
         &self,
+        command: nebula_storage_port::dto::ControlCommand,
+        execution_id: ExecutionId,
+        w3c: Option<nebula_core::W3cTraceContext>,
+    ) -> Result<(), ApiError> {
+        self.enqueue_control_scoped(&placeholder_scope(), command, execution_id, w3c)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::enqueue_control`]: the control message
+    /// is enqueued through a freshly bound `ScopedControlQueue`, so the
+    /// row is stamped with the caller's tenant scope (a forged `scope`
+    /// field on the message is rebound to the bound tenant). The
+    /// §13-step-6 503-vs-500 error policy stays centralized here.
+    pub(crate) async fn enqueue_control_scoped(
+        &self,
+        scope: &Scope,
         command: nebula_storage_port::dto::ControlCommand,
         execution_id: ExecutionId,
         w3c: Option<nebula_core::W3cTraceContext>,
@@ -881,32 +929,48 @@ impl AppState {
             }
         };
 
+        let queue = ScopedControlQueue::new(Arc::clone(&self.control_queue), scope.clone());
         let msg = nebula_storage_port::dto::ControlMsg {
             id: *uuid::Uuid::new_v4().as_bytes(),
             execution_id: execution_id.to_string(),
             command,
-            scope: placeholder_scope(),
+            scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
         };
-        self.control_queue.enqueue(&msg).await.map_err(|e| {
+        queue.enqueue(&msg).await.map_err(|e| {
             use nebula_storage_port::StorageError;
             let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
             to_api_err(unavailable, e.to_string())
         })
     }
 
-    /// Create a fresh execution row via the scoped [`ExecutionStore`]
-    /// port `create`.
+    /// Create a fresh execution row (delegates to the per-request-scoped
+    /// sibling with the transitional placeholder scope).
     pub(crate) async fn create_execution(
         &self,
         execution_id: ExecutionId,
         workflow_id: nebula_core::id::WorkflowId,
         state_json: serde_json::Value,
     ) -> Result<(), ApiError> {
-        self.execution_store
+        self.create_execution_scoped(&placeholder_scope(), execution_id, workflow_id, state_json)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::create_execution`]: the row is created
+    /// through a freshly bound `ScopedExecutionStore`, so it lands in the
+    /// caller's tenant.
+    pub(crate) async fn create_execution_scoped(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        workflow_id: nebula_core::id::WorkflowId,
+        state_json: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        store
             .create(
-                &placeholder_scope(),
+                scope,
                 &execution_id.to_string(),
                 &workflow_id.to_string(),
                 state_json,
@@ -915,9 +979,26 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
     }
 
-    /// CAS-update an execution's state, returning `false` on a
-    /// version/fencing conflict (caller maps that to 409), via the
-    /// scoped [`ExecutionStore`] port `commit`.
+    /// CAS-update an execution's state (delegates to the
+    /// per-request-scoped sibling with the transitional placeholder scope).
+    pub(crate) async fn cas_transition(
+        &self,
+        execution_id: ExecutionId,
+        expected_version: u64,
+        new_state: serde_json::Value,
+    ) -> Result<bool, ApiError> {
+        self.cas_transition_scoped(
+            &placeholder_scope(),
+            execution_id,
+            expected_version,
+            new_state,
+        )
+        .await
+    }
+
+    /// Per-request-scoped [`Self::cas_transition`]: the read + commit run
+    /// through a freshly bound `ScopedExecutionStore`, so the CAS is
+    /// confined to the caller's tenant.
     ///
     /// The API is an *external* mutator (no held lease), so it reads the
     /// row's current fencing generation and commits at it. If a runner
@@ -925,17 +1006,17 @@ impl AppState {
     /// returns `FencedOut`, which maps to the same `Ok(false)` (retry) a
     /// version miss produces — the engine's reconciliation honors a
     /// concurrent terminal write (§11.5, #333).
-    pub(crate) async fn cas_transition(
+    pub(crate) async fn cas_transition_scoped(
         &self,
+        scope: &Scope,
         execution_id: ExecutionId,
         expected_version: u64,
         new_state: serde_json::Value,
     ) -> Result<bool, ApiError> {
-        let scope = placeholder_scope();
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
         let id = execution_id.to_string();
-        let current = self
-            .execution_store
-            .get(&scope, &id)
+        let current = store
+            .get(scope, &id)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
         let Some(record) = current else {
@@ -946,14 +1027,14 @@ impl AppState {
         let fencing =
             nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
         let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope)
+            .scope(scope.clone())
             .execution_id(&id)
             .expected_version(expected_version)
             .fencing(fencing)
             .new_state(new_state)
             .build()
             .map_err(|e| ApiError::Internal(format!("Failed to build cancel transition: {e}")))?;
-        match self.execution_store.commit(batch).await {
+        match store.commit(batch).await {
             Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
             Ok(
                 nebula_storage_port::TransitionOutcome::VersionConflict { .. }
@@ -965,17 +1046,28 @@ impl AppState {
         }
     }
 
-    /// Load all persisted per-node *outputs* for an execution via the
-    /// scoped [`NodeResultStore`] port `load_all_node_outputs` (mapping
-    /// `record.json`). Returns `Vec<(NodeKey, Value)>` (order-independent
-    /// — callers re-key).
+    /// Load all persisted per-node *outputs* for an execution (delegates
+    /// to the per-request-scoped sibling with the transitional placeholder
+    /// scope).
     pub(crate) async fn execution_node_outputs(
         &self,
         execution_id: ExecutionId,
     ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
-        let rows = self
-            .node_result_store
-            .load_all_node_outputs(&placeholder_scope(), &execution_id.to_string())
+        self.execution_node_outputs_scoped(&placeholder_scope(), execution_id)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::execution_node_outputs`]: outputs read
+    /// through a freshly bound `ScopedNodeResultStore`, so a cross-tenant
+    /// id yields nothing.
+    pub(crate) async fn execution_node_outputs_scoped(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
+        let store = ScopedNodeResultStore::new(Arc::clone(&self.node_result_store), scope.clone());
+        let rows = store
+            .load_all_node_outputs(scope, &execution_id.to_string())
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
         rows.into_iter()
@@ -989,15 +1081,28 @@ impl AppState {
             .collect()
     }
 
-    /// Load an execution's journal entries (opaque payloads) via the
-    /// scoped [`ExecutionJournalReader`] port `get_journal` (mapping
-    /// `entry.payload`).
+    /// Load an execution's journal entries (delegates to the
+    /// per-request-scoped sibling with the transitional placeholder scope).
     pub(crate) async fn execution_journal(
         &self,
         execution_id: ExecutionId,
     ) -> Result<Vec<serde_json::Value>, ApiError> {
-        self.journal_reader
-            .get_journal(&placeholder_scope(), &execution_id.to_string())
+        self.execution_journal_scoped(&placeholder_scope(), execution_id)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::execution_journal`]: entries read
+    /// through a freshly bound `ScopedExecutionJournalReader`, confined to
+    /// the caller's tenant.
+    pub(crate) async fn execution_journal_scoped(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+    ) -> Result<Vec<serde_json::Value>, ApiError> {
+        let reader =
+            ScopedExecutionJournalReader::new(Arc::clone(&self.journal_reader), scope.clone());
+        reader
+            .get_journal(scope, &execution_id.to_string())
             .await
             .map(|entries| entries.into_iter().map(|e| e.payload).collect())
             .map_err(|e| ApiError::Internal(format!("Failed to load logs: {e}")))
