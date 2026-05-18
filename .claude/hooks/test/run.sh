@@ -194,5 +194,14 @@ printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts"
 chk "E counts +-prefixed untracked" 2 "$(egate '{"session_id":"'"$EBP_SID"'","cwd":"'"$EBP_DIR"'","stop_hook_active":false}')"
 rm -rf "$EBP_DIR"
 
+# E new-file budget (cap 5)
+EF_DIR="$(mktemp -d)"
+( cd "$EF_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ef/src && for i in 1 2 3 4 5 6; do echo "fn f${i}(){}" > "crates/ef/src/m${i}.rs"; done )
+EF_SID="e-nf"; EF_P="$(turn_state_path "$EF_SID" "$EF_DIR")"; mkdir -p "$(dirname "$EF_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EF_P"
+chk "E blocks >5 new files" 2 "$(egate '{"session_id":"'"$EF_SID"'","cwd":"'"$EF_DIR"'","stop_hook_active":false}')"
+rm -rf "$EF_DIR"
+
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"

@@ -86,6 +86,23 @@ if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 # Escape token: `// budget-justified:` on any added line this turn.
 budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'; }
 
+# New-file budget (ToF is the 2nd strongest decay predictor). ls-files
+# --others lists individual files even inside a brand-new directory (which
+# `git status --porcelain` would collapse to the dir).
+new_files() {
+  { [ -n "$tb" ] && git -C "$cwd" diff --name-only --diff-filter=A "$tb"..HEAD 2>/dev/null; \
+    git -C "$cwd" diff --name-only --diff-filter=A --cached 2>/dev/null; \
+    git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null; } \
+  | grep -E "$CODE_RE" | sort -u | grep -c .
+}
+NF_CAP=5
+nf="$(new_files)"
+if [ "${nf:-0}" -gt "$NF_CAP" ] && ! budget_justified; then
+  ig_bump
+  ig_log block "new-file-over-cap"
+  deny "Turn adds $nf new code files (cap $NF_CAP). Consolidate into existing modules, or add a \`// budget-justified: <reason>\` line. (ADR-0083; file-count predicts architectural decay.)"
+fi
+
 NET_CAP=400
 if [ "$net" -gt "$NET_CAP" ] && ! budget_justified; then
   ig_bump
