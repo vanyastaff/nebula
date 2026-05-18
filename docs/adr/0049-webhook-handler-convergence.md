@@ -18,6 +18,6 @@ This file is a **redirect stub**. The decision record lives in the contract ADR.
 |---|---|
 | **Topic** | Unified webhook dispatch for activation and generic ingress. |
 | **Contract** | [0082-api-webhooks-idempotency.md](./0082-api-webhooks-idempotency.md) |
-| **Mechanics** | [docs/INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (HTTP / webhooks) |
+| **Mechanics** | [INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (HTTP / webhooks) |
 
 Prior full text: git history for docs/adr/0049-webhook-handler-convergence.md before the Wave B contract merge.

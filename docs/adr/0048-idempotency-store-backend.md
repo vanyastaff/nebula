@@ -18,6 +18,6 @@ This file is a **redirect stub**. The decision record lives in the contract ADR.
 |---|---|
 | **Topic** | Hybrid L1 + PostgreSQL idempotency replay store. |
 | **Contract** | [0082-api-webhooks-idempotency.md](./0082-api-webhooks-idempotency.md) |
-| **Mechanics** | [docs/INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (HTTP / webhooks) |
+| **Mechanics** | [INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (HTTP / webhooks) |
 
 Prior full text: git history for docs/adr/0048-idempotency-store-backend.md before the Wave B contract merge.

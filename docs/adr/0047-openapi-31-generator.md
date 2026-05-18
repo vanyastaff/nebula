@@ -18,6 +18,6 @@ This file is a **redirect stub**. The decision record lives in the contract ADR.
 |---|---|
 | **Topic** | utoipa-generated OpenAPI 3.1 + Swagger UI; spec must match live routes. |
 | **Contract** | [0082-api-webhooks-idempotency.md](./0082-api-webhooks-idempotency.md) |
-| **Mechanics** | [docs/INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (HTTP / webhooks) |
+| **Mechanics** | [INTEGRATION_MODEL.md](../INTEGRATION_MODEL.md) (HTTP / webhooks) |
 
 Prior full text: git history for docs/adr/0047-openapi-31-generator.md before the Wave B contract merge.
