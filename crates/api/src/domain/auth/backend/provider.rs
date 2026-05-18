@@ -39,7 +39,8 @@ pub struct ProfilePatch {
 pub struct CreatePatParams {
     /// Caller-chosen friendly name.
     pub name: String,
-    /// Granted scopes (`[]` = full access).
+    /// Granted scopes. Use `full_access` for complete access; empty scopes
+    /// are invalid at the API auth boundary.
     pub scopes: Vec<String>,
     /// Optional time-to-live in seconds; `None` = non-expiring.
     pub ttl_seconds: Option<u64>,

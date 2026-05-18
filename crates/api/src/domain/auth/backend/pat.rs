@@ -44,7 +44,8 @@ pub struct PatRecord {
     pub prefix: String,
     /// SHA-256 of the *full* plaintext token.
     pub hash: [u8; 32],
-    /// Allowed scopes — `[]` means full access.
+    /// Allowed scopes. Use `full_access` for complete access; empty scopes
+    /// are invalid at the API auth boundary.
     pub scopes: Vec<String>,
     /// When the PAT was created.
     pub created_at: DateTime<Utc>,

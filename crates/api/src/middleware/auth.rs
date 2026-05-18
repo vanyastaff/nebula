@@ -19,7 +19,11 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use nebula_core::UserId;
 use serde::{Deserialize, Serialize};
 
-use crate::{domain::auth::backend::PAT_PREFIX as AUTH_PAT_PREFIX, state::AppState};
+use crate::{
+    access::{Grant, parse_pat_grant},
+    domain::auth::backend::PAT_PREFIX as AUTH_PAT_PREFIX,
+    state::AppState,
+};
 
 /// The canonical prefix for Nebula API keys.
 pub const API_KEY_PREFIX: &str = "nbl_sk_";
@@ -70,6 +74,8 @@ pub struct AuthContext {
     pub principal: nebula_core::Principal,
     /// Which authentication method was used.
     pub auth_method: AuthMethod,
+    /// Effective API access granted to the authenticated caller.
+    pub grant: Grant,
 }
 
 /// The authentication mechanism that was used for the current request.
@@ -119,6 +125,7 @@ pub async fn auth_middleware(
                 request.extensions_mut().insert(AuthContext {
                     principal,
                     auth_method: AuthMethod::Session,
+                    grant: Grant::UnrestrictedIdentity,
                 });
                 return Ok(next.run(request).await);
             },
@@ -148,6 +155,7 @@ pub async fn auth_middleware(
             .map_err(|_| StatusCode::UNAUTHORIZED)?
             .ok_or(StatusCode::UNAUTHORIZED)?;
 
+        let grant = parse_pat_grant(&record.scopes).map_err(|_| StatusCode::UNAUTHORIZED)?;
         let principal = nebula_core::Principal::User(record.user_id);
         request.extensions_mut().insert(AuthenticatedUser {
             user_id: record.user_id.to_string(),
@@ -155,6 +163,7 @@ pub async fn auth_middleware(
         request.extensions_mut().insert(AuthContext {
             principal,
             auth_method: AuthMethod::Pat,
+            grant,
         });
         return Ok(next.run(request).await);
     }
@@ -184,6 +193,7 @@ pub async fn auth_middleware(
         request.extensions_mut().insert(AuthContext {
             principal: nebula_core::Principal::System,
             auth_method: AuthMethod::ApiKey,
+            grant: Grant::SystemInternal,
         });
         return Ok(next.run(request).await);
     }
@@ -212,6 +222,7 @@ pub async fn auth_middleware(
     request.extensions_mut().insert(AuthContext {
         principal,
         auth_method: AuthMethod::Jwt,
+        grant: Grant::UnrestrictedIdentity,
     });
 
     Ok(next.run(request).await)

@@ -64,6 +64,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod access;
 pub mod app;
 pub mod config;
 pub mod domain;

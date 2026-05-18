@@ -89,7 +89,8 @@ pub struct TokenSummary {
     pub id: String,
     /// Caller-chosen friendly name.
     pub name: String,
-    /// Granted scopes (e.g. `["workflows:read"]`).
+    /// Granted scopes (e.g. `["workflows:read"]`). Use exactly
+    /// `["full_access"]` for complete API access.
     pub scopes: Vec<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
@@ -113,7 +114,8 @@ pub struct MyTokensResponse {
 pub struct CreateTokenRequest {
     /// Caller-chosen friendly name.
     pub name: String,
-    /// Granted scopes.
+    /// Granted scopes. Must contain at least one supported scope; use exactly
+    /// `["full_access"]` for complete API access.
     pub scopes: Vec<String>,
     /// Optional time-to-live in seconds. Omit for non-expiring tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
