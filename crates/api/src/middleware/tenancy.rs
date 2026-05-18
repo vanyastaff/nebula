@@ -12,10 +12,34 @@ use axum::{
     response::Response,
 };
 use nebula_core::{
-    CredentialId, ExecutionId, OrgId, ResolvedIds, WorkflowId, WorkspaceId, slug::is_prefixed_ulid,
+    CredentialId, ExecutionId, OrgId, ResolvedIds, TenantContext, WorkflowId, WorkspaceId,
+    slug::is_prefixed_ulid,
 };
+use nebula_storage_port::Scope;
 
 use crate::{error::ApiError, state::AppState};
+
+/// Project the request's [`TenantContext`] into the port [`Scope`] every
+/// tenant-scoped storage call is keyed by, mapping the tenancy projection
+/// failure onto the HTTP surface.
+///
+/// This is the per-request seam the workflow/execution handlers use to
+/// derive the caller's tenant scope before invoking the scoped `AppState`
+/// methods: the auth + RBAC middleware has already proven the caller's
+/// org/workspace onto the [`TenantContext`], and
+/// [`nebula_tenancy::request_scope`] performs the fail-closed projection
+/// (an absent workspace is rejected, never widened to an org-only
+/// bucket). The `?` maps [`nebula_tenancy::TenancyError`] through the
+/// coarse [`From`] impl (`MissingWorkspace` → 404, `Unauthorized` → 403)
+/// so no tenant-graph detail leaks (spec §6.1).
+//
+// guard-justified: additive seam — wired into the workflow/execution
+// handlers in the following expand-contract commits; dead until the
+// first handler is migrated off the placeholder-scoped `AppState` path.
+#[allow(dead_code)]
+pub(crate) fn request_scope(tenant: &TenantContext) -> Result<Scope, ApiError> {
+    Ok(nebula_tenancy::request_scope(tenant)?)
+}
 
 /// Middleware that resolves org and workspace identifiers from the URL path.
 ///

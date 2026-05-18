@@ -12,9 +12,43 @@
 
 use nebula_core::id::{OrgId, WorkspaceId};
 use nebula_core::scope::Principal as ActorPrincipal;
+use nebula_core::tenancy::TenantContext;
 use nebula_storage_port::Scope;
 
 use crate::error::TenancyError;
+
+/// Project a request's [`TenantContext`] into the port [`Scope`] every
+/// tenant-scoped storage call is keyed by.
+///
+/// This is the per-request entry point the api handlers use: the
+/// authentication + RBAC middleware has already resolved and proven the
+/// caller's org/workspace onto the [`TenantContext`]; this function is the
+/// **fail-closed projection** into the non-optional port `Scope`. It
+/// rejects an absent workspace ([`TenancyError::MissingWorkspace`])
+/// rather than silently widening to an org-only bucket — every
+/// workspace-scoped resource (workflows, executions, …) lives under
+/// `/orgs/{org}/workspaces/{ws}/…`, so a missing workspace at this point
+/// is a routing-invariant violation, not a valid org-level request.
+///
+/// Shares its projection rule with [`BindingScopeResolver`] (the
+/// `Principal`-based seam the credential stack resolves once per request);
+/// both turn a proven tenant binding into the same
+/// `Scope { workspace_id, org_id }`.
+///
+/// # Errors
+///
+/// [`TenancyError::MissingWorkspace`] if `tenant` carries no workspace
+/// binding.
+pub fn request_scope(tenant: &TenantContext) -> Result<Scope, TenancyError> {
+    let workspace_id = tenant
+        .workspace_id
+        .as_ref()
+        .ok_or(TenancyError::MissingWorkspace)?;
+    Ok(Scope::new(
+        workspace_id.to_string(),
+        tenant.org_id.to_string(),
+    ))
+}
 
 /// Authenticated tenant identity presented by an inbound request.
 ///

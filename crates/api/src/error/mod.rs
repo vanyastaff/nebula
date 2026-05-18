@@ -241,6 +241,34 @@ fn storage_fault_to_port(err: nebula_storage::StorageError) -> nebula_storage_po
     }
 }
 
+/// Project a [`nebula_tenancy::TenancyError`] (raised when a request's
+/// `TenantContext` is turned into a port `Scope`) onto the HTTP surface.
+///
+/// Both variants are deliberately coarse — the tenancy layer never
+/// discloses *why* scope resolution failed in a way that lets a caller
+/// probe the tenant graph (the same existence-non-disclosure rule the
+/// scoped decorators enforce for row access, spec §6.1):
+///
+/// - `MissingWorkspace` → **404**. Every workspace-scoped resource lives
+///   under `/orgs/{org}/workspaces/{ws}/…`; reaching a scoped handler
+///   with no workspace binding is a routing-invariant violation, surfaced
+///   as the same opaque `not found` the tenancy middleware already uses
+///   for an unresolvable workspace segment (never "you lack a workspace",
+///   which would confirm the org exists).
+/// - `Unauthorized` → **403**, coarse on purpose: it never reveals which
+///   half (org vs workspace) mismatched.
+impl From<nebula_tenancy::TenancyError> for ApiError {
+    fn from(err: nebula_tenancy::TenancyError) -> Self {
+        use nebula_tenancy::TenancyError as Te;
+        match err {
+            Te::MissingWorkspace => Self::NotFound("not found".to_string()),
+            Te::Unauthorized => {
+                Self::Forbidden("not authorized for the requested tenant".to_string())
+            },
+        }
+    }
+}
+
 impl ApiError {
     /// Create validation error without field-level details.
     pub fn validation_message(detail: impl Into<String>) -> Self {

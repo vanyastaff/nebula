@@ -181,6 +181,38 @@ inherit the in-progress merge).
   call sites), do NOT implement.
 - `3255514540`: dedicated session (see below) — port-scoping refactor.
 
+### 3255514540 — CHOSEN APPROACH (per-request-scoped store; expand-contract)
+
+Prior atomic rip (15-file all-signatures+all-callers) discarded
+(non-converging). Decision: **construct request-scoped decorators per
+request** — NOT "decorator honors per-call &Scope". Rationale:
+`crates/tenancy/tests/cross_tenant_denial.rs` LOCKS the decorator's
+"substitute its bound scope, ignore the per-call arg" contract as the
+confused-deputy defense (two decorators bound to distinct scopes; forged
+per-call scope must not cross). Keeping that contract and instead binding
+the decorator per-request from the handler-derived scope is the minimal
+structural fix — the decorator stays the security primitive, it is just
+bound correctly (request scope) instead of to a static placeholder.
+
+Sequenced (each step workspace+lefthook-green → its own commit):
+- **1a ADDITIVE (done-marker below when committed):** `From<nebula_tenancy::TenancyError>
+  for ApiError`; `request_scope(&TenantContext) -> Result<Scope, ApiError>`
+  in `crates/api/src/middleware/tenancy.rs` (builds `nebula_tenancy::Principal`
+  from `TenantContext.{principal,org_id,workspace_id}` → `BindingScopeResolver`).
+  Purely additive, `#[allow(dead_code)]` + `// guard-justified:` until wired.
+- **1b BATCHES:** AppState holds the raw *inner* (undecorated) port stores +
+  the resolver; add per-request `scoped_*` accessors that build a freshly
+  bound decorator from a passed `&Scope`; add NEW `*_scoped` AppState methods
+  taking `scope: &Scope` alongside the placeholder ones. Migrate handlers a
+  few files per commit: bind `tenant`, `let scope = request_scope(&tenant)?;`
+  call the scoped method. Un-migrated handlers keep the placeholder methods →
+  green per batch.
+- **1c CONTRACT:** when `rg placeholder_scope crates/`==0 delete
+  `placeholder_scope()` + every placeholder method + the placeholder-bound
+  `AppState::new` decorator construction; flip `common/mod.rs` `port_scope`
+  +harness and `cross_tenant_denial.rs` to the per-request model in this
+  final commit. Done only after `rg placeholder_scope crates/`==0.
+
 ### 3255514540 — VERIFIED diagnosis (largest item; dedicated session)
 
 **Hole is REAL (FIX verdict command-confirmed).** Mechanism, verified

@@ -45,4 +45,4 @@ pub use decorator::{
 };
 pub use error::TenancyError;
 pub use nebula_credential::ScopeResolver as CredentialScopeResolver;
-pub use resolver::{BindingScopeResolver, Principal, ScopeResolver};
+pub use resolver::{BindingScopeResolver, Principal, ScopeResolver, request_scope};
