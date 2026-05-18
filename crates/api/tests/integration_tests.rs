@@ -69,6 +69,46 @@ async fn test_workflow_list_empty() {
 }
 
 #[tokio::test]
+async fn tenant_routes_without_membership_store_fail_closed() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = build_me_state();
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(ws_path("/workflows"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "tenant routes must fail closed when no MembershipStore is configured"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        problem["detail"], "membership store not configured; tenant routes are disabled",
+        "fail-closed must come from RBAC membership-store guard"
+    );
+}
+
+#[tokio::test]
 async fn test_error_format_rfc9457() {
     use axum::{
         body::Body,

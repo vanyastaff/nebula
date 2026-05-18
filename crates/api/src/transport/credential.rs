@@ -49,20 +49,20 @@
 //! Durability is process-local (in-memory store, no `EncryptionLayer`
 //! wired) — see the credential durability note in `crates/api/README.md`.
 //!
-//! ## No cross-workspace isolation (pre-existing crate-wide gap)
+//! ## Workspace isolation
 //!
-//! The `_org` / `_ws` arguments are intentionally unused: the wired
-//! in-memory store is **global** and no owner-scoped
-//! `nebula_tenancy::CredentialScopeLayer` / credential→workspace
-//! ownership binding is composed, so any authenticated caller holding a
-//! valid `cred_<ULID>` resolves/mutates it regardless of the path
-//! `{org}`/`{ws}`. This is the same crate-wide local-first tenant-
-//! isolation gap that `workflow` / `execution` carry (a flat global
-//! `repo.get(id)`), **not** a Phase-4 regression — fixing credentials
-//! alone would be inconsistent with the rest of the crate. It closes
-//! when `ScopeLayer` + tenant binding is wired in the composition root.
+//! Workspace handlers derive an owner id from the resolved tenant scope and
+//! compose `nebula_tenancy::CredentialScopeLayer` over the shared
+//! in-memory store for every CRUD call. The layer stamps
+//! `metadata["owner_id"]` on create and returns `NotFound` for cross-owner
+//! reads, updates, deletes, `exists`, and `list`, so credential IDs are not
+//! dereferenceable across workspaces.
 
-use nebula_credential::{CredentialStore, PutMode, SecretString, StoreError, StoredCredential};
+use nebula_credential::{
+    CredentialStore, PutMode, ScopeResolver, SecretString, StoreError, StoredCredential,
+};
+use nebula_storage_port::Scope;
+use nebula_tenancy::CredentialScopeLayer;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -92,6 +92,29 @@ struct CredentialMeta {
     description: Option<String>,
     #[serde(default)]
     tags: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug)]
+struct RequestCredentialOwner(String);
+
+impl ScopeResolver for RequestCredentialOwner {
+    fn current_owner(&self) -> Option<&str> {
+        Some(&self.0)
+    }
+}
+
+pub(crate) fn owner_id_from_scope(scope: &Scope) -> String {
+    format!("{}:{}", scope.org_id, scope.workspace_id)
+}
+
+pub(crate) fn scoped_store(
+    state: &AppState,
+    owner_id: &str,
+) -> CredentialScopeLayer<nebula_storage::credential::InMemoryStore> {
+    CredentialScopeLayer::new(
+        state.oauth_credential_store.as_ref().clone(),
+        std::sync::Arc::new(RequestCredentialOwner(owner_id.to_owned())),
+    )
 }
 
 /// Envelope for the type-specific secret input blob.
@@ -280,11 +303,10 @@ fn to_summary(stored: &StoredCredential) -> ApiResult<CredentialSummary> {
 ///
 /// Cross-workspace / unknown ids collapse to `404` with **no existence
 /// disclosure** (mirrors the Phase-2 owner-scoped pattern). The error
-/// string never contains secret material — only the opaque credential
-/// id, which is already client-supplied.
+/// string never contains secret material or credential identifiers.
 fn map_store_err(err: StoreError, cred: &str) -> ApiError {
     match err {
-        StoreError::NotFound { .. } => ApiError::NotFound(format!("credential {cred} not found")),
+        StoreError::NotFound { .. } => ApiError::NotFound("credential not found".to_owned()),
         StoreError::AlreadyExists { .. } => {
             ApiError::Conflict(format!("credential {cred} already exists"))
         },
@@ -308,9 +330,8 @@ fn map_store_err(err: StoreError, cred: &str) -> ApiError {
 
 /// Fetch a credential, treating a cross-workspace / unknown id as a
 /// flat 404 (no existence disclosure, canon §12.4 / Phase-2 pattern).
-async fn load(state: &AppState, cred: &str) -> ApiResult<StoredCredential> {
-    state
-        .oauth_credential_store
+async fn load(state: &AppState, owner_id: &str, cred: &str) -> ApiResult<StoredCredential> {
+    scoped_store(state, owner_id)
         .get(cred)
         .await
         .map_err(|e| map_store_err(e, cred))
@@ -325,8 +346,7 @@ async fn load(state: &AppState, cred: &str) -> ApiResult<StoredCredential> {
 #[tracing::instrument(skip_all, fields(cred.key = %req.credential_key))]
 pub async fn create_credential(
     state: &AppState,
-    _org: &str,
-    _ws: &str,
+    owner_id: &str,
     req: CreateCredentialRequest,
 ) -> ApiResult<CredentialResponse> {
     // ADR-0052 P4 (V2): validate `data` against the type's schema BEFORE
@@ -366,8 +386,7 @@ pub async fn create_credential(
         metadata,
     };
 
-    let persisted = state
-        .oauth_credential_store
+    let persisted = scoped_store(state, owner_id)
         .put(stored, PutMode::CreateOnly)
         .await
         .map_err(|e| map_store_err(e, &id))?;
@@ -383,11 +402,10 @@ pub async fn create_credential(
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn get_credential(
     state: &AppState,
-    _org: &str,
-    _ws: &str,
+    owner_id: &str,
     cred: &str,
 ) -> ApiResult<CredentialResponse> {
-    let stored = load(state, cred).await?;
+    let stored = load(state, owner_id, cred).await?;
     to_response(&stored)
 }
 
@@ -399,12 +417,11 @@ pub async fn get_credential(
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn update_credential(
     state: &AppState,
-    _org: &str,
-    _ws: &str,
+    owner_id: &str,
     cred: &str,
     req: UpdateCredentialRequest,
 ) -> ApiResult<CredentialResponse> {
-    let existing = load(state, cred).await?;
+    let existing = load(state, owner_id, cred).await?;
 
     let mut meta: CredentialMeta =
         serde_json::from_value(serde_json::Value::Object(existing.metadata.clone()))
@@ -458,8 +475,7 @@ pub async fn update_credential(
         metadata,
     };
 
-    let persisted = state
-        .oauth_credential_store
+    let persisted = scoped_store(state, owner_id)
         .put(updated, mode)
         .await
         .map_err(|e| map_store_err(e, cred))?;
@@ -470,14 +486,8 @@ pub async fn update_credential(
 
 /// Delete a credential from the workspace.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
-pub async fn delete_credential(
-    state: &AppState,
-    _org: &str,
-    _ws: &str,
-    cred: &str,
-) -> ApiResult<()> {
-    state
-        .oauth_credential_store
+pub async fn delete_credential(state: &AppState, owner_id: &str, cred: &str) -> ApiResult<()> {
+    scoped_store(state, owner_id)
         .delete(cred)
         .await
         .map_err(|e| map_store_err(e, cred))?;
@@ -491,8 +501,7 @@ pub async fn delete_credential(
 #[tracing::instrument(skip_all)]
 pub async fn list_credentials(
     state: &AppState,
-    _org: &str,
-    _ws: &str,
+    owner_id: &str,
     query: ListCredentialsQuery,
 ) -> ApiResult<ListCredentialsResponse> {
     // Push the `state_kind` filter into the store: only rows this layer
@@ -500,8 +509,8 @@ pub async fn list_credentials(
     // different `state_kind` + non-`CredentialMeta` metadata shape) are
     // excluded at the source rather than fetched-then-discarded — no
     // wasted `get` + projection, and no metadata-shape 500 risk.
-    let ids = state
-        .oauth_credential_store
+    let store = scoped_store(state, owner_id);
+    let ids = store
         .list(Some(STATE_KIND))
         .await
         .map_err(|e| map_store_err(e, "<list>"))?;
@@ -510,7 +519,7 @@ pub async fn list_credentials(
     for id in ids {
         // A row may vanish between `list` and `get` (concurrent delete);
         // skip it rather than failing the whole page.
-        let Ok(stored) = state.oauth_credential_store.get(&id).await else {
+        let Ok(stored) = store.get(&id).await else {
             continue;
         };
         let summary = to_summary(&stored)?;
@@ -857,11 +866,11 @@ mod tests {
     #[tokio::test]
     async fn crud_round_trips_without_secret_in_projection() {
         let s = test_state();
+        let owner_id = "o:w";
         let secret = "sk-unit-crud-NEVER-LEAK-7a7a";
         let created = create_credential(
             &s,
-            "o",
-            "w",
+            owner_id,
             CreateCredentialRequest {
                 credential_key: "api_key".into(),
                 name: "Unit Key".into(),
@@ -880,7 +889,7 @@ mod tests {
             "CredentialResponse Debug must not carry the secret: {dbg}"
         );
 
-        let got = get_credential(&s, "o", "w", &created.id)
+        let got = get_credential(&s, owner_id, &created.id)
             .await
             .expect("get");
         assert_eq!(got.id, created.id);
@@ -888,8 +897,7 @@ mod tests {
 
         let listed = list_credentials(
             &s,
-            "o",
-            "w",
+            owner_id,
             ListCredentialsQuery {
                 page: 1,
                 page_size: 20,
@@ -902,11 +910,11 @@ mod tests {
         assert_eq!(listed.total, 1);
         assert!(!format!("{listed:?}").contains(secret));
 
-        delete_credential(&s, "o", "w", &created.id)
+        delete_credential(&s, owner_id, &created.id)
             .await
             .expect("delete");
         assert!(matches!(
-            get_credential(&s, "o", "w", &created.id).await,
+            get_credential(&s, owner_id, &created.id).await,
             Err(ApiError::NotFound(_))
         ));
     }

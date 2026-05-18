@@ -277,6 +277,11 @@ pub struct AppState {
     /// Optional membership store for RBAC role lookups.
     pub membership_store: Option<Arc<dyn MembershipStore>>,
 
+    /// Test-only escape hatch for harnesses that exercise tenant routes
+    /// without modeling memberships. Production composition leaves this
+    /// false so missing RBAC state disables tenant routes fail-closed.
+    allow_insecure_tenant_rbac_bypass: bool,
+
     /// Optional idempotency store backing [`crate::middleware::IdempotencyLayer`].
     ///
     /// When `Some`, `build_app` mounts the layer on `api_routes` (NOT on the
@@ -429,6 +434,7 @@ impl AppState {
             workspace_resolver: None,
             auth_backend: None,
             membership_store: None,
+            allow_insecure_tenant_rbac_bypass: false,
             idempotency_store: None,
             webhook_activation_repo: None,
             trigger_lifecycle_bus: None,
@@ -855,44 +861,48 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
     }
 
-    /// CAS-update an execution's state for the caller's tenant. The
-    /// read-then-commit pair runs through a freshly bound
-    /// `ScopedExecutionStore`, so the CAS is confined to that tenant.
-    ///
-    /// The API is an *external* mutator (no held lease), so it reads the
-    /// row's current fencing generation and commits at it. If a runner
-    /// concurrently takes over (bumping the generation) the commit
-    /// returns `FencedOut`, which maps to the same `Ok(false)` (retry) a
-    /// version miss produces — the engine's reconciliation honors a
-    /// concurrent terminal write (§11.5, #333).
-    pub(crate) async fn cas_transition_scoped(
+    /// CAS-update an execution state and append one control message in the
+    /// same storage-port commit. This is the API-side path for control
+    /// commands that also pre-set execution state (`Cancel` / `Terminate`):
+    /// either the state transition and outbox row both land, or neither does.
+    pub(crate) async fn cas_transition_with_control_scoped(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
         expected_version: u64,
         new_state: serde_json::Value,
+        command: nebula_storage_port::dto::ControlCommand,
+        w3c: Option<nebula_core::W3cTraceContext>,
     ) -> Result<bool, ApiError> {
         let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
         let id = execution_id.to_string();
-        let current = store
-            .get(scope, &id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
+        let current = store.get(scope, &id).await.map_err(|e| {
+            ApiError::Internal(format!(
+                "Failed to read execution for control transition: {e}"
+            ))
+        })?;
         let Some(record) = current else {
-            // No row: a CAS that can never match — caller treats
-            // `false` as a 409 / refetch.
             return Ok(false);
         };
         let fencing =
             nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
+        let msg = nebula_storage_port::dto::ControlMsg {
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            execution_id: id.clone(),
+            command,
+            scope: scope.clone(),
+            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
+            reclaim_count: 0,
+        };
         let batch = nebula_storage_port::TransitionBatch::builder()
             .scope(scope.clone())
             .execution_id(&id)
             .expected_version(expected_version)
             .fencing(fencing)
             .new_state(new_state)
+            .outbox(vec![msg])
             .build()
-            .map_err(|e| ApiError::Internal(format!("Failed to build cancel transition: {e}")))?;
+            .map_err(|e| ApiError::Internal(format!("Failed to build control transition: {e}")))?;
         match store.commit(batch).await {
             Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
             Ok(
@@ -900,7 +910,7 @@ impl AppState {
                 | nebula_storage_port::TransitionOutcome::FencedOut,
             ) => Ok(false),
             Err(e) => Err(ApiError::Internal(format!(
-                "Failed to cancel execution: {e}"
+                "Failed to apply control transition: {e}"
             ))),
         }
     }
@@ -1026,6 +1036,22 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_membership_store(mut self, store: Arc<dyn MembershipStore>) -> Self {
         self.membership_store = Some(store);
+        self
+    }
+
+    /// Whether tenant RBAC is explicitly bypassed for test harnesses.
+    pub(crate) const fn allow_insecure_tenant_rbac_bypass(&self) -> bool {
+        self.allow_insecure_tenant_rbac_bypass
+    }
+
+    /// Allow tenant routes to pass RBAC without a membership store.
+    ///
+    /// This builder exists only for integration tests compiled with
+    /// `feature = "test-util"`; production callers cannot opt into it.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_insecure_tenant_rbac_bypass_for_tests(mut self) -> Self {
+        self.allow_insecure_tenant_rbac_bypass = true;
         self
     }
 

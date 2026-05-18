@@ -1,4 +1,4 @@
-#![cfg(feature = "rotation")]
+#![cfg(all(feature = "rotation", feature = "test-util"))]
 
 //! SEC-02 (security hardening 2026-04-27 Stage 3) — `error_uri` from
 //! non-2xx OAuth2 token responses must pass through `sanitize_error_uri`
@@ -13,11 +13,9 @@
 //!   5. `javascript:alert(1)` → rejected (parse OK but scheme not https)
 //!   6. empty string → rejected (parse fail)
 
-use nebula_credential::{
-    SecretString,
-    credentials::{OAuth2State, oauth2::AuthStyle},
+use nebula_engine::credential::rotation::{
+    TokenRefreshError, token_refresh::parse_oauth_token_response_for_tests,
 };
-use nebula_engine::credential::rotation::{TokenRefreshError, refresh_oauth2_state};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -44,20 +42,6 @@ async fn drain_incoming_request(stream: &mut tokio::net::TcpStream) {
     }
 }
 
-fn sample_state(token_url: String) -> OAuth2State {
-    OAuth2State {
-        access_token: SecretString::new("old-access"),
-        token_type: "Bearer".to_owned(),
-        refresh_token: Some(SecretString::new("rt")),
-        expires_at: None,
-        scopes: vec![],
-        client_id: SecretString::new("cid"),
-        client_secret: SecretString::new("csecret"),
-        token_url,
-        auth_style: AuthStyle::Header,
-    }
-}
-
 async fn spawn_idp_returning(body: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
@@ -78,8 +62,12 @@ async fn spawn_idp_returning(body: &'static str) -> String {
 
 async fn run_and_get_summary(body: &'static str) -> String {
     let url = spawn_idp_returning(body).await;
-    let mut state = sample_state(url);
-    let err = refresh_oauth2_state(&mut state)
+    let resp = reqwest::Client::new()
+        .post(url)
+        .send()
+        .await
+        .expect("token endpoint response");
+    let err = parse_oauth_token_response_for_tests(resp)
         .await
         .expect_err("400 expected");
     let TokenRefreshError::TokenEndpoint { summary, .. } = err else {

@@ -20,7 +20,7 @@
 //! | 3 | `POST /workflows/:id/executions` → 202, `status=created`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end_via_port` |
 //! | 4 | `GET /executions/:id` → `finished_at` is null/absent, `status` = latest persisted value | `knife_scenario_end_to_end_via_port` |
 //! | 5 | `POST /executions/:id/cancel` → row = `cancelled`, outbox holds exactly Start + Cancel (both `Pending`) | `knife_scenario_end_to_end_via_port` |
-//! | 6 | Enqueue failure → 503 (orchestration absent; canon §13 step 6) | `knife_step6_queue_failure_returns_error` |
+//! | 6 | Cancel state + control signal commit atomically even if the legacy queue handle fails | `knife_step6_cancel_control_signal_is_atomic_with_state` |
 //!
 //! ## Consumer-side §13 (engine dispatch end-to-end)
 //!
@@ -45,7 +45,7 @@ use common::*;
 use nebula_api::{ApiConfig, app};
 use tower::ServiceExt;
 
-// The orchestration-absent control queue (`AlwaysFailControlQueue` +
+// The legacy failing control queue (`AlwaysFailControlQueue` +
 // `create_state_with_failing_queue`) and the engine-seam harness
 // (`engine_seam::{persist_slow_workflow, spawn_engine_consumer}`) live in
 // the shared `common` module — see `tests/common/mod.rs`. The §13 step-6
@@ -287,20 +287,11 @@ async fn knife_scenario_end_to_end_via_port() {
     );
 }
 
-/// Canon §13 step 6 — "orchestration absent" scenario.
-///
-/// When the control queue backend is unavailable, the cancel endpoint must
-/// return **503 Service Unavailable** with RFC 9457 problem+json — not fake
-/// success and not an unparsable 500.
-///
-/// The `AlwaysFailControlQueueRepo` simulates the case where the orchestration
-/// layer is intentionally absent (test/demo server with no queue wired up).
-/// `cancel_execution` maps `StorageError::Internal` from enqueue to
-/// `ApiError::ServiceUnavailable` → HTTP 503 per canon §13 step 6.
-///
-/// Audit ref: 2026-04-16-workspace-health-audit.md §8 Sprint A1 item #3
+/// Cancel writes the terminal state and control signal through one
+/// `TransitionBatch`, so the legacy separately-wired control queue can fail
+/// without creating a cancelled-row / missing-signal orphan.
 #[tokio::test]
-async fn knife_step6_queue_failure_returns_error() {
+async fn knife_step6_cancel_control_signal_is_atomic_with_state() {
     use nebula_core::{ExecutionId, WorkflowId};
     use nebula_storage_port::store::ExecutionStore;
 
@@ -345,12 +336,23 @@ async fn knife_step6_queue_failure_returns_error() {
         .await
         .unwrap();
 
-    // Canon §13 step 6: control-queue backend unavailable must return 503.
     assert_eq!(
         response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "step 6: orchestration-absent enqueue failure must return 503 Service Unavailable \
-         (canon §13 step 6)"
+        StatusCode::OK,
+        "cancel should not orphan a state transition when the legacy queue handle fails"
+    );
+
+    let queue = nebula_storage::inmem::InMemoryControlQueue::new(&exec_store);
+    let queued = queue.snapshot();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        queued[0].0.command,
+        nebula_storage_port::dto::ControlCommand::Cancel
+    );
+    assert_eq!(
+        queued[0].0.execution_id,
+        execution_id.to_string(),
+        "atomic outbox row must reference the cancelled execution"
     );
 }
 

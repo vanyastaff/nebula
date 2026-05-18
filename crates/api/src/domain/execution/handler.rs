@@ -436,7 +436,7 @@ pub(crate) async fn enqueue_start_scoped(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 503, description = "Control queue is unavailable; the cancel signal cannot reach the engine.", body = ProblemDetails),
+        (status = 500, description = "Execution aggregate transition failed before the state/control outbox commit completed.", body = ProblemDetails),
     ),
 )]
 pub async fn cancel_execution(
@@ -504,16 +504,25 @@ pub async fn cancel_execution(
         }
     }
 
-    // Apply state transition using CAS.
-    //
-    // Order: transition first, then enqueue — per canon §12.2 and audit §2.2.
-    // If enqueue fails after a successful transition the execution row is
-    // already `cancelled` but the engine will not see the signal (orphan).
-    // This is documented as a known limitation until a shared transaction
-    // wrapper is available across ExecutionRepo and ControlQueueRepo.
-    // The handler fails loudly on enqueue failure so the caller can retry.
+    // Apply the state transition and append the Cancel outbox row in one
+    // storage-port commit. This prevents a cancelled row without a matching
+    // engine-visible control signal.
+    let w3c_trace_context = w3c_trace_context_for_control_queue();
+    tracing::debug!(
+        execution_id = %execution_id,
+        command = ControlCommand::Cancel.as_str(),
+        has_trace_context = w3c_trace_context.is_some(),
+        "execution: append Cancel control row with state transition"
+    );
     let transition_result = state
-        .cas_transition_scoped(&scope, execution_id, version, execution_state.clone())
+        .cas_transition_with_control_scoped(
+            &scope,
+            execution_id,
+            version,
+            execution_state.clone(),
+            ControlCommand::Cancel,
+            w3c_trace_context,
+        )
         .await?;
 
     if !transition_result {
@@ -521,36 +530,6 @@ pub async fn cancel_execution(
             "concurrent modification detected; refetch execution state and retry".to_string(),
         ));
     }
-
-    // Enqueue the Cancel signal to the durable control queue (canon §12.2).
-    //
-    // This MUST happen immediately after a successful CAS transition. If
-    // this call fails we return 503 when the control-queue backend is
-    // unavailable (orchestration absent — canon §13 step 6), else 500, per
-    // the `StorageError` sentinel match below. Either way the caller should
-    // retry the cancel request — the retry will see the already-cancelled
-    // DB row and short-circuit at the terminal-status guard above without
-    // re-enqueuing (idempotent).
-    //
-    // M3.5: same W3C stamping policy as [`enqueue_start`] — operator correlation for Cancel.
-    let w3c_trace_context = w3c_trace_context_for_control_queue();
-    tracing::debug!(
-        execution_id = %execution_id,
-        command = ControlCommand::Cancel.as_str(),
-        has_trace_context = w3c_trace_context.is_some(),
-        "execution: enqueue Cancel on control queue"
-    );
-    // Canon §13 step 6 503-vs-500 policy is centralized in
-    // `enqueue_control`; the cancel row is already committed above, so
-    // a failed enqueue still surfaces as the orphan-signal error.
-    state
-        .enqueue_control_scoped(
-            &scope,
-            ControlCommand::Cancel,
-            execution_id,
-            w3c_trace_context,
-        )
-        .await?;
 
     // Extract fields from updated execution state
     let workflow_id = execution_state
@@ -663,7 +642,7 @@ pub async fn get_execution_logs(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 503, description = "Control queue is unavailable; the terminate signal cannot reach the engine.", body = ProblemDetails),
+        (status = 500, description = "Execution aggregate transition failed before the state/control outbox commit completed.", body = ProblemDetails),
     ),
 )]
 pub async fn terminate_execution(
@@ -738,16 +717,25 @@ pub async fn terminate_execution(
         }
     }
 
-    // Apply state transition using CAS.
-    //
-    // Order: transition first, then enqueue — per canon §12.2 and audit §2.2.
-    // If enqueue fails after a successful transition the execution row is
-    // already `cancelled` but the engine will not see the signal (orphan).
-    // This is documented as a known limitation until a shared transaction
-    // wrapper is available across ExecutionRepo and ControlQueueRepo.
-    // The handler fails loudly on enqueue failure so the caller can retry.
+    // Apply the state transition and append the Terminate outbox row in one
+    // storage-port commit. This prevents a cancelled row without a matching
+    // engine-visible control signal.
+    let w3c_trace_context = w3c_trace_context_for_control_queue();
+    tracing::debug!(
+        execution_id = %execution_id,
+        command = ControlCommand::Terminate.as_str(),
+        has_trace_context = w3c_trace_context.is_some(),
+        "execution: append Terminate control row with state transition"
+    );
     let transition_result = state
-        .cas_transition_scoped(&scope, execution_id, version, execution_state.clone())
+        .cas_transition_with_control_scoped(
+            &scope,
+            execution_id,
+            version,
+            execution_state.clone(),
+            ControlCommand::Terminate,
+            w3c_trace_context,
+        )
         .await?;
 
     if !transition_result {
@@ -755,40 +743,6 @@ pub async fn terminate_execution(
             "concurrent modification detected; refetch execution state and retry".to_string(),
         ));
     }
-
-    // Enqueue the Terminate signal to the durable control queue (canon
-    // §12.2).
-    //
-    // This MUST happen immediately after a successful CAS transition. If
-    // this call fails we return 503 when the control-queue backend is
-    // unavailable (orchestration absent — canon §13 step 6), else 500, per
-    // the `StorageError` sentinel match below. Either way the caller should
-    // retry the terminate request — the retry will see the already-cancelled
-    // DB row and short-circuit at the terminal-status guard above without
-    // re-enqueuing (idempotent).
-    //
-    // M3.5: same W3C stamping policy as [`enqueue_start`] — operator
-    // correlation for Terminate.
-    let w3c_trace_context = w3c_trace_context_for_control_queue();
-    tracing::debug!(
-        execution_id = %execution_id,
-        command = ControlCommand::Terminate.as_str(),
-        has_trace_context = w3c_trace_context.is_some(),
-        "execution: enqueue Terminate on control queue"
-    );
-    // Canon §13 step 6 503-vs-500 policy is centralized in
-    // `enqueue_control` (port-scoped `ControlQueue::enqueue` →
-    // typed-ULID `ControlMsg`); the terminate row is already committed
-    // above, so a failed enqueue still surfaces as the orphan-signal
-    // error (canon §12.2).
-    state
-        .enqueue_control_scoped(
-            &scope,
-            ControlCommand::Terminate,
-            execution_id,
-            w3c_trace_context,
-        )
-        .await?;
 
     // Extract fields from updated execution state
     let workflow_id = execution_state

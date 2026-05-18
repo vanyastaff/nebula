@@ -4,9 +4,11 @@
 //! construction, code→token exchange). Token endpoint policy and bounded
 //! body reads live in the sibling [`super::http`] module.
 
+use std::net::IpAddr;
+
 use nebula_credential::credentials::oauth2::AuthStyle;
 use serde::Deserialize;
-use url::Url;
+use url::{Host, Url};
 
 pub use super::http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, TokenHttpError, oauth_token_http_client,
@@ -78,6 +80,11 @@ pub struct TokenExchangeRequest {
 
 /// Exchange authorization code for tokens.
 pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
+    validate_token_endpoint(&req.token_url)?;
+    exchange_code_unchecked(req).await
+}
+
+async fn exchange_code_unchecked(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
     let client = oauth_token_http_client();
 
     let mut form: Vec<(&str, &str)> = vec![
@@ -111,6 +118,62 @@ pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Val
     read_token_response_limited(response, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Validate that an OAuth token endpoint is safe for server-side exchange.
+///
+/// API callers control this URL during interactive OAuth setup, so the
+/// backend rejects non-HTTPS URLs and obvious loopback/private/link-local
+/// hosts before `reqwest` can reach internal services.
+pub fn validate_token_endpoint(raw: &str) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("invalid OAuth token endpoint URL: {e}"))?;
+    if url.scheme() != "https" {
+        return Err("OAuth token endpoint must use https".to_owned());
+    }
+
+    validate_token_endpoint_host(url.host())?;
+    Ok(())
+}
+
+fn validate_token_endpoint_host(host: Option<Host<&str>>) -> Result<(), String> {
+    match host.ok_or_else(|| "OAuth token endpoint must include a host".to_owned())? {
+        Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => {
+            Err("OAuth token endpoint must not target localhost".to_owned())
+        },
+        Host::Domain(_) => Ok(()),
+        Host::Ipv4(ip) if forbidden_token_endpoint_ip(IpAddr::V4(ip)) => {
+            Err("OAuth token endpoint must not target private or local addresses".to_owned())
+        },
+        Host::Ipv4(_) => Ok(()),
+        Host::Ipv6(ip) if forbidden_token_endpoint_ip(IpAddr::V6(ip)) => {
+            Err("OAuth token endpoint must not target private or local addresses".to_owned())
+        },
+        Host::Ipv6(_) => Ok(()),
+    }
+}
+
+fn forbidden_token_endpoint_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+        },
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return forbidden_token_endpoint_ip(IpAddr::V4(mapped));
+            }
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || matches!(first & 0xfe00, 0xfc00)
+                || matches!(first & 0xffc0, 0xfe80)
+                || matches!(first & 0xffc0, 0xfec0)
+        },
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +241,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_exchange_rejects_loopback_token_url() {
+        let mut req = sample_exchange();
+        req.token_url = "http://127.0.0.1:1/token".to_owned();
+
+        let err = exchange_code(&req)
+            .await
+            .expect_err("loopback token URLs must fail before any request");
+        assert!(
+            err.to_lowercase().contains("token endpoint"),
+            "expected endpoint validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn token_endpoint_rejects_ipv4_mapped_ipv6_private_addresses() {
+        for raw in [
+            "https://[::ffff:7f00:1]/token",
+            "https://[::ffff:a00:1]/token",
+            "https://[::ffff:a9fe:1]/token",
+            "https://[ff02::1]/token",
+            "https://[fec0::1]/token",
+        ] {
+            let err = validate_token_endpoint(raw)
+                .expect_err("private IPv4-mapped and local IPv6 addresses must be rejected");
+            assert!(
+                err.to_lowercase().contains("token endpoint"),
+                "expected endpoint validation error for {raw}, got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn token_exchange_succeeds_for_small_response() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
@@ -195,7 +290,7 @@ mod tests {
 
         let mut req = sample_exchange();
         req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let val = exchange_code(&req)
+        let val = exchange_code_unchecked(&req)
             .await
             .expect("small token body should parse");
         assert_eq!(val["access_token"], "t");
@@ -221,7 +316,7 @@ mod tests {
 
         let mut req = sample_exchange();
         req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = exchange_code(&req)
+        let err = exchange_code_unchecked(&req)
             .await
             .expect_err("oversized Content-Length should fail");
         assert!(
@@ -262,7 +357,7 @@ Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
 
         let mut req = sample_exchange();
         req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = exchange_code(&req)
+        let err = exchange_code_unchecked(&req)
             .await
             .expect_err("streaming body over max should fail");
         let lower = err.to_lowercase();
@@ -292,7 +387,7 @@ Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
 
         let mut req = sample_exchange();
         req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = exchange_code(&req)
+        let err = exchange_code_unchecked(&req)
             .await
             .expect_err("401 from token endpoint should map to error");
         assert!(
@@ -321,7 +416,7 @@ Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
 
         let mut req = sample_exchange();
         req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = exchange_code(&req)
+        let err = exchange_code_unchecked(&req)
             .await
             .expect_err("invalid json on 2xx should fail");
         let lower = err.to_lowercase();

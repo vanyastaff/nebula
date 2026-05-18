@@ -19,6 +19,8 @@
 //! the sentinel clears by row removal, no separate "clear" call is
 //! needed.
 
+use std::net::IpAddr;
+
 use chrono::Utc;
 use nebula_credential::{
     SecretString,
@@ -26,6 +28,7 @@ use nebula_credential::{
 };
 use reqwest::Response;
 use serde_json::Value;
+use url::{Host, Url};
 
 use super::token_http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
@@ -70,6 +73,7 @@ pub enum TokenRefreshError {
 /// our code; the unavoidable in-flight copy lives in reqwest's request
 /// body and is released when the response future resolves.
 pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRefreshError> {
+    validate_token_endpoint(&state.token_url).map_err(TokenRefreshError::Request)?;
     let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
 
     // Inner block scopes secret borrows tightly. After the block returns
@@ -118,6 +122,57 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
     Ok(())
 }
 
+fn validate_token_endpoint(raw: &str) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("invalid OAuth token endpoint URL: {e}"))?;
+    if url.scheme() != "https" {
+        return Err("OAuth token endpoint must use https".to_owned());
+    }
+
+    validate_token_endpoint_host(url.host())?;
+    Ok(())
+}
+
+fn validate_token_endpoint_host(host: Option<Host<&str>>) -> Result<(), String> {
+    match host.ok_or_else(|| "OAuth token endpoint must include a host".to_owned())? {
+        Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => {
+            Err("OAuth token endpoint must not target localhost".to_owned())
+        },
+        Host::Domain(_) => Ok(()),
+        Host::Ipv4(ip) if forbidden_token_endpoint_ip(IpAddr::V4(ip)) => {
+            Err("OAuth token endpoint must not target private or local addresses".to_owned())
+        },
+        Host::Ipv4(_) => Ok(()),
+        Host::Ipv6(ip) if forbidden_token_endpoint_ip(IpAddr::V6(ip)) => {
+            Err("OAuth token endpoint must not target private or local addresses".to_owned())
+        },
+        Host::Ipv6(_) => Ok(()),
+    }
+}
+
+fn forbidden_token_endpoint_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+        },
+        IpAddr::V6(ip) => {
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return forbidden_token_endpoint_ip(IpAddr::V4(mapped));
+            }
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || matches!(first & 0xfe00, 0xfc00)
+                || matches!(first & 0xffc0, 0xfe80)
+                || matches!(first & 0xffc0, 0xfec0)
+        },
+    }
+}
+
 async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
     let status = resp.status();
     if !status.is_success() {
@@ -140,6 +195,16 @@ async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError
     read_token_response_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
         .await
         .map_err(|e| TokenRefreshError::Parse(e.to_string()))
+}
+
+/// Test-support hook for integration tests that validate token endpoint
+/// response parsing/redaction without weakening production endpoint validation.
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub async fn parse_oauth_token_response_for_tests(
+    resp: Response,
+) -> Result<Value, TokenRefreshError> {
+    parse_token_response(resp).await
 }
 
 fn update_state_from_token_response(
@@ -234,7 +299,7 @@ fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
 /// - `[control_chars_in_error_uri_redacted]` — control byte found
 fn sanitize_error_uri(raw: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
-    let parsed = match url::Url::parse(raw) {
+    let parsed = match Url::parse(raw) {
         Ok(u) if u.scheme() == "https" => u,
         _ => return Cow::Borrowed("[invalid_error_uri_redacted]"),
     };
@@ -351,6 +416,24 @@ mod tests {
         assert!(state.expires_at.is_some());
     }
 
+    #[test]
+    fn token_endpoint_rejects_ipv4_mapped_ipv6_private_addresses() {
+        for raw in [
+            "https://[::ffff:7f00:1]/token",
+            "https://[::ffff:a00:1]/token",
+            "https://[::ffff:a9fe:1]/token",
+            "https://[ff02::1]/token",
+            "https://[fec0::1]/token",
+        ] {
+            let err = validate_token_endpoint(raw)
+                .expect_err("private IPv4-mapped and local IPv6 addresses must be rejected");
+            assert!(
+                err.to_lowercase().contains("token endpoint"),
+                "expected endpoint validation error for {raw}, got: {err}"
+            );
+        }
+    }
+
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -379,7 +462,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_oauth2_state_maps_401_to_token_endpoint_error() {
+    async fn parse_token_response_maps_401_to_token_endpoint_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         const BODY: &[u8] = b"{\"error\":\"invalid_client\"}";
@@ -396,9 +479,12 @@ mod tests {
             let _ = stream.write_all(BODY).await;
         });
 
-        let mut state = sample_state();
-        state.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = refresh_oauth2_state(&mut state)
+        let resp = oauth_token_http_client()
+            .post(format!("http://127.0.0.1:{}/token", addr.port()))
+            .send()
+            .await
+            .expect("token endpoint response");
+        let err = parse_token_response(resp)
             .await
             .expect_err("401 from token");
         assert!(
@@ -408,7 +494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_oauth2_state_maps_invalid_json_to_parse_error() {
+    async fn parse_token_response_maps_invalid_json_to_parse_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let body: &[u8] = b"not json {";
@@ -425,9 +511,12 @@ mod tests {
             let _ = stream.write_all(body).await;
         });
 
-        let mut state = sample_state();
-        state.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = refresh_oauth2_state(&mut state)
+        let resp = oauth_token_http_client()
+            .post(format!("http://127.0.0.1:{}/token", addr.port()))
+            .send()
+            .await
+            .expect("token endpoint response");
+        let err = parse_token_response(resp)
             .await
             .expect_err("invalid json body");
         assert!(

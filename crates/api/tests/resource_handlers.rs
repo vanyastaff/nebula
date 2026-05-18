@@ -282,6 +282,7 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    .with_insecure_tenant_rbac_bypass_for_tests()
 }
 
 /// Build an [`AppState`] wired with `repo` as the resource catalog
