@@ -93,7 +93,7 @@ new_files() {
   { [ -n "$tb" ] && git -C "$cwd" diff --name-only --diff-filter=A "$tb"..HEAD 2>/dev/null; \
     git -C "$cwd" diff --name-only --diff-filter=A --cached 2>/dev/null; \
     git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null; } \
-  | grep -E "$CODE_RE" | sort -u | grep -c .
+  | grep -E "$CODE_RE" | sort -u | grep -c . || true
 }
 NF_CAP=5
 nf="$(new_files)"
