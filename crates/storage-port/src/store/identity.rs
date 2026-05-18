@@ -5,8 +5,8 @@
 //! parent id) so cross-tenant reads return `None`, never another tenant's
 //! row.
 use crate::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, QuotaRow, ResourceRow, TriggerRow, UserRow,
-    WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
+    TriggerRow, UserRow, WorkspaceRow,
 };
 use crate::error::StorageError;
 use crate::scope::Scope;
@@ -65,23 +65,23 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     /// Read one membership by (scope_kind, scope_id, principal).
     async fn get(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<Option<MembershipRow>, StorageError>;
     /// List all members of a scope (org or workspace).
     async fn list_for_scope(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
     ) -> Result<Vec<MembershipRow>, StorageError>;
     /// Remove a membership.
     async fn remove(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<(), StorageError>;
 }

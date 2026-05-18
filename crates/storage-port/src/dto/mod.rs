@@ -18,8 +18,8 @@ pub use control::{ControlCommand, ControlMsg};
 pub use execution::ExecutionRecord;
 pub use idempotency::CachedRecord;
 pub use identity::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, QuotaRow, ResourceRow, TriggerRow, UserRow,
-    WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
+    TriggerRow, UserRow, WorkspaceRow,
 };
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};

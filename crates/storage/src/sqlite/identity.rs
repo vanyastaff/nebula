@@ -18,8 +18,8 @@
 //! `BLOB`.
 
 use nebula_storage_port::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, QuotaRow, ResourceRow, TriggerRow, UserRow,
-    WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
+    TriggerRow, UserRow, WorkspaceRow,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
@@ -457,16 +457,24 @@ impl SqliteMembershipStore {
     }
 }
 
-fn membership_from_row(r: &sqlx::sqlite::SqliteRow) -> MembershipRow {
-    MembershipRow {
-        scope_kind: r.try_get("scope_kind").unwrap_or_default(),
+fn membership_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<MembershipRow, StorageError> {
+    let scope_kind_txt: String = r.try_get("scope_kind").unwrap_or_default();
+    let principal_kind_txt: String = r.try_get("principal_kind").unwrap_or_default();
+    Ok(MembershipRow {
+        // Fail-closed: an unrecognized authz-domain value is a hard
+        // deserialization error, never silently coerced to a default.
+        scope_kind: ScopeKind::parse(&scope_kind_txt).map_err(|bad| {
+            StorageError::Serialization(format!("unknown membership scope_kind {bad:?}"))
+        })?,
         scope_id: r.try_get("scope_id").unwrap_or_default(),
-        principal_kind: r.try_get("principal_kind").unwrap_or_default(),
+        principal_kind: PrincipalKind::parse(&principal_kind_txt).map_err(|bad| {
+            StorageError::Serialization(format!("unknown membership principal_kind {bad:?}"))
+        })?,
         principal_id: r.try_get("principal_id").unwrap_or_default(),
         role: r.try_get("role").unwrap_or_default(),
         added_at: r.try_get("added_at").unwrap_or_default(),
         added_by: r.try_get("added_by").ok(),
-    }
+    })
 }
 
 #[async_trait::async_trait]
@@ -479,9 +487,9 @@ impl MembershipStore for SqliteMembershipStore {
              DO UPDATE SET role = excluded.role, added_at = excluded.added_at, \
              added_by = excluded.added_by",
         )
-        .bind(&row.scope_kind)
+        .bind(row.scope_kind.as_str())
         .bind(&row.scope_id)
-        .bind(&row.principal_kind)
+        .bind(row.principal_kind.as_str())
         .bind(&row.principal_id)
         .bind(&row.role)
         .bind(&row.added_at)
@@ -494,56 +502,56 @@ impl MembershipStore for SqliteMembershipStore {
 
     async fn get(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<Option<MembershipRow>, StorageError> {
         let row = sqlx::query(
             "SELECT * FROM port_memberships WHERE scope_kind = ? AND scope_id = ? \
              AND principal_kind = ? AND principal_id = ?",
         )
-        .bind(scope_kind)
+        .bind(scope_kind.as_str())
         .bind(scope_id)
-        .bind(principal_kind)
+        .bind(principal_kind.as_str())
         .bind(principal_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(row.as_ref().map(membership_from_row))
+        row.as_ref().map(membership_from_row).transpose()
     }
 
     async fn list_for_scope(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         let rows = sqlx::query(
             "SELECT * FROM port_memberships \
              WHERE scope_kind = ? AND scope_id = ? ORDER BY principal_id",
         )
-        .bind(scope_kind)
+        .bind(scope_kind.as_str())
         .bind(scope_id)
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        Ok(rows.iter().map(membership_from_row).collect())
+        rows.iter().map(membership_from_row).collect()
     }
 
     async fn remove(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<(), StorageError> {
         sqlx::query(
             "DELETE FROM port_memberships WHERE scope_kind = ? AND scope_id = ? \
              AND principal_kind = ? AND principal_id = ?",
         )
-        .bind(scope_kind)
+        .bind(scope_kind.as_str())
         .bind(scope_id)
-        .bind(principal_kind)
+        .bind(principal_kind.as_str())
         .bind(principal_id)
         .execute(&self.pool)
         .await

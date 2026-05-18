@@ -28,8 +28,8 @@ use std::sync::Arc;
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, QuotaRow, ResourceRow, TriggerRow, UserRow,
-    WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
+    TriggerRow, UserRow, WorkspaceRow,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
@@ -456,9 +456,9 @@ fn workspace_row(id: &str, org_id: &str, slug: &str) -> WorkspaceRow {
 
 fn membership_row(scope_id: &str, principal_id: &str) -> MembershipRow {
     MembershipRow {
-        scope_kind: "org".into(),
+        scope_kind: ScopeKind::Org,
         scope_id: scope_id.into(),
-        principal_kind: "user".into(),
+        principal_kind: PrincipalKind::User,
         principal_id: principal_id.into(),
         role: "admin".into(),
         added_at: "2026-01-01T00:00:00Z".into(),
@@ -641,26 +641,32 @@ async fn assert_membership_contract(b: &dyn IdentityBackend) {
     promoted.role = "owner".into();
     s.upsert(promoted).await.expect("upsert replaces");
     assert_eq!(
-        s.get("org", "org_1", "user", "usr_1")
+        s.get(ScopeKind::Org, "org_1", PrincipalKind::User, "usr_1")
             .await
             .unwrap()
             .unwrap()
             .role,
         "owner"
     );
-    assert_eq!(s.list_for_scope("org", "org_1").await.unwrap().len(), 1);
+    assert_eq!(
+        s.list_for_scope(ScopeKind::Org, "org_1")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     // cross-scope read is a miss
     assert!(
-        s.get("org", "org_2", "user", "usr_1")
+        s.get(ScopeKind::Org, "org_2", PrincipalKind::User, "usr_1")
             .await
             .unwrap()
             .is_none()
     );
-    s.remove("org", "org_1", "user", "usr_1")
+    s.remove(ScopeKind::Org, "org_1", PrincipalKind::User, "usr_1")
         .await
         .expect("remove");
     assert!(
-        s.get("org", "org_1", "user", "usr_1")
+        s.get(ScopeKind::Org, "org_1", PrincipalKind::User, "usr_1")
             .await
             .unwrap()
             .is_none()

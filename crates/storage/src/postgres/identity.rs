@@ -17,8 +17,8 @@
 //! [`sqlx::types::Json`]; binary columns are `BYTEA`.
 
 use nebula_storage_port::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, QuotaRow, ResourceRow, TriggerRow, UserRow,
-    WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
+    TriggerRow, UserRow, WorkspaceRow,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
@@ -447,10 +447,18 @@ impl PgMembershipStore {
 }
 
 fn membership_from_row(r: &sqlx::postgres::PgRow) -> Result<MembershipRow, StorageError> {
+    let scope_kind_txt: String = r.try_get("scope_kind").map_err(conn_err)?;
+    let principal_kind_txt: String = r.try_get("principal_kind").map_err(conn_err)?;
     Ok(MembershipRow {
-        scope_kind: r.try_get("scope_kind").map_err(conn_err)?,
+        // Fail-closed: an unrecognized authz-domain value is a hard
+        // deserialization error, never silently coerced.
+        scope_kind: ScopeKind::parse(&scope_kind_txt).map_err(|bad| {
+            StorageError::Serialization(format!("unknown membership scope_kind {bad:?}"))
+        })?,
         scope_id: r.try_get("scope_id").map_err(conn_err)?,
-        principal_kind: r.try_get("principal_kind").map_err(conn_err)?,
+        principal_kind: PrincipalKind::parse(&principal_kind_txt).map_err(|bad| {
+            StorageError::Serialization(format!("unknown membership principal_kind {bad:?}"))
+        })?,
         principal_id: r.try_get("principal_id").map_err(conn_err)?,
         role: r.try_get("role").map_err(conn_err)?,
         added_at: r.try_get("added_at").map_err(conn_err)?,
@@ -469,9 +477,9 @@ impl MembershipStore for PgMembershipStore {
              DO UPDATE SET role = excluded.role, added_at = excluded.added_at, \
              added_by = excluded.added_by",
         )
-        .bind(&row.scope_kind)
+        .bind(row.scope_kind.as_str())
         .bind(&row.scope_id)
-        .bind(&row.principal_kind)
+        .bind(row.principal_kind.as_str())
         .bind(&row.principal_id)
         .bind(&row.role)
         .bind(&row.added_at)
@@ -484,18 +492,18 @@ impl MembershipStore for PgMembershipStore {
 
     async fn get(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<Option<MembershipRow>, StorageError> {
         let row = sqlx::query(
             "SELECT * FROM port_memberships WHERE scope_kind = $1 AND scope_id = $2 \
              AND principal_kind = $3 AND principal_id = $4",
         )
-        .bind(scope_kind)
+        .bind(scope_kind.as_str())
         .bind(scope_id)
-        .bind(principal_kind)
+        .bind(principal_kind.as_str())
         .bind(principal_id)
         .fetch_optional(&self.pool)
         .await
@@ -505,14 +513,14 @@ impl MembershipStore for PgMembershipStore {
 
     async fn list_for_scope(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         let rows = sqlx::query(
             "SELECT * FROM port_memberships \
              WHERE scope_kind = $1 AND scope_id = $2 ORDER BY principal_id",
         )
-        .bind(scope_kind)
+        .bind(scope_kind.as_str())
         .bind(scope_id)
         .fetch_all(&self.pool)
         .await
@@ -522,18 +530,18 @@ impl MembershipStore for PgMembershipStore {
 
     async fn remove(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<(), StorageError> {
         sqlx::query(
             "DELETE FROM port_memberships WHERE scope_kind = $1 AND scope_id = $2 \
              AND principal_kind = $3 AND principal_id = $4",
         )
-        .bind(scope_kind)
+        .bind(scope_kind.as_str())
         .bind(scope_id)
-        .bind(principal_kind)
+        .bind(principal_kind.as_str())
         .bind(principal_id)
         .execute(&self.pool)
         .await

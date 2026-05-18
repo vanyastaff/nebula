@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, QuotaRow, ResourceRow, TriggerRow, UserRow,
-    WorkspaceRow,
+    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
+    TriggerRow, UserRow, WorkspaceRow,
 };
 use nebula_storage_port::store::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
@@ -335,13 +335,20 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
 // ── Memberships ───────────────────────────────────────────────────────────
 
 /// Membership key: `(scope_kind, scope_id, principal_kind, principal_id)`.
+/// `*_kind` is keyed by the enum's stable text form so lookups match the
+/// stored row exactly.
 type MemKey = (String, String, String, String);
 
-fn mem_key(scope_kind: &str, scope_id: &str, principal_kind: &str, principal_id: &str) -> MemKey {
+fn mem_key(
+    scope_kind: ScopeKind,
+    scope_id: &str,
+    principal_kind: PrincipalKind,
+    principal_id: &str,
+) -> MemKey {
     (
-        scope_kind.to_string(),
+        scope_kind.as_str().to_string(),
         scope_id.to_string(),
-        principal_kind.to_string(),
+        principal_kind.as_str().to_string(),
         principal_id.to_string(),
     )
 }
@@ -364,9 +371,9 @@ impl InMemoryMembershipStore {
 impl MembershipStore for InMemoryMembershipStore {
     async fn upsert(&self, row: MembershipRow) -> Result<(), StorageError> {
         let key = mem_key(
-            &row.scope_kind,
+            row.scope_kind,
             &row.scope_id,
-            &row.principal_kind,
+            row.principal_kind,
             &row.principal_id,
         );
         self.inner.lock().insert(key, row);
@@ -375,9 +382,9 @@ impl MembershipStore for InMemoryMembershipStore {
 
     async fn get(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<Option<MembershipRow>, StorageError> {
         Ok(self
@@ -389,7 +396,7 @@ impl MembershipStore for InMemoryMembershipStore {
 
     async fn list_for_scope(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
     ) -> Result<Vec<MembershipRow>, StorageError> {
         Ok(self
@@ -403,9 +410,9 @@ impl MembershipStore for InMemoryMembershipStore {
 
     async fn remove(
         &self,
-        scope_kind: &str,
+        scope_kind: ScopeKind,
         scope_id: &str,
-        principal_kind: &str,
+        principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<(), StorageError> {
         self.inner

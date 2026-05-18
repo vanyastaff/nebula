@@ -100,6 +100,83 @@ pub struct WorkspaceRow {
     pub deleted_at: Option<String>,
 }
 
+/// Which membership table / scope domain a [`MembershipRow`] belongs to.
+///
+/// Stored verbatim as the `scope_kind` text column (`"org"` /
+/// `"workspace"`). Modelled as a closed enum so an authorization domain
+/// can never be a free-form string — an unknown value fails closed at the
+/// adapter edge rather than silently widening access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScopeKind {
+    /// Org-level membership (`org_members`).
+    Org,
+    /// Workspace-level membership (`workspace_members`).
+    Workspace,
+}
+
+impl ScopeKind {
+    /// Stable text form stored in the backend `scope_kind` column.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Org => "org",
+            Self::Workspace => "workspace",
+        }
+    }
+
+    /// Parse the backend `scope_kind` text. An unrecognized value is
+    /// rejected (fail-closed: never coerce an unknown authz domain).
+    ///
+    /// # Errors
+    /// Returns the offending string when it is neither `"org"` nor
+    /// `"workspace"`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "org" => Ok(Self::Org),
+            "workspace" => Ok(Self::Workspace),
+            other => Err(other.to_string()),
+        }
+    }
+}
+
+/// Which kind of principal holds a [`MembershipRow`].
+///
+/// Stored verbatim as the `principal_kind` text column (`"user"` /
+/// `"service_account"`). Closed enum for the same fail-closed reason as
+/// [`ScopeKind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrincipalKind {
+    /// A human user.
+    User,
+    /// A non-human service account.
+    ServiceAccount,
+}
+
+impl PrincipalKind {
+    /// Stable text form stored in the backend `principal_kind` column.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::ServiceAccount => "service_account",
+        }
+    }
+
+    /// Parse the backend `principal_kind` text. An unrecognized value is
+    /// rejected (fail-closed).
+    ///
+    /// # Errors
+    /// Returns the offending string when it is neither `"user"` nor
+    /// `"service_account"`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "user" => Ok(Self::User),
+            "service_account" => Ok(Self::ServiceAccount),
+            other => Err(other.to_string()),
+        }
+    }
+}
+
 /// `org_members` / `workspace_members` row (migration 0005).
 ///
 /// `scope_id` is the org id (for org members) or workspace id (for workspace
@@ -107,12 +184,12 @@ pub struct WorkspaceRow {
 /// membership tables.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MembershipRow {
-    /// `"org"` or `"workspace"`.
-    pub scope_kind: String,
+    /// Org vs workspace membership domain.
+    pub scope_kind: ScopeKind,
     /// Org or workspace id (opaque string form).
     pub scope_id: String,
-    /// `"user"` or `"service_account"`.
-    pub principal_kind: String,
+    /// User vs service-account principal.
+    pub principal_kind: PrincipalKind,
     /// Principal id (opaque string form).
     pub principal_id: String,
     /// Role name.
