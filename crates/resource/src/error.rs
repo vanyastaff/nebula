@@ -235,12 +235,9 @@ impl Error {
             ErrorKind::Cancelled => {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
             },
-            ErrorKind::Permanent => nebula_core::CoreError::resource_unavailable(
-                key_label,
-                detail,
-                false,
-                None,
-            ),
+            ErrorKind::Permanent => {
+                nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
+            },
             ErrorKind::Transient
             | ErrorKind::Exhausted { .. }
             | ErrorKind::Backpressure
