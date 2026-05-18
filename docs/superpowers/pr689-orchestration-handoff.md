@@ -81,17 +81,24 @@ inherit the in-progress merge).
   gains an update-on-tombstone assertion. storage 230/230, clippy/fmt
   green.
 
+- **`40170f73` — done&verified.** sqlite control-queue claim
+  (coderabbit 3255514598): `claim_pending` UPDATE matched `id` only +
+  unconditional push → double-claim. Now `WHERE id=? AND
+  status='Pending'` + push only when `rows_affected==1`. storage
+  230/230, clippy/fmt green.
+- **`dadefb07` — done&verified.** inmem identity update active-
+  uniqueness (coderabbit 3255514577): users/orgs/workspaces/resource
+  `update` paths now re-run the create-path uniqueness scan (excluding
+  self) → `Duplicate` on collision. Trigger intentionally skipped (no
+  active-slug invariant in its `create`). storage 230/230, tenancy
+  26/26, clippy/fmt green.
+- **`b7600d72` — done&verified.** inmem blob `evict_expired`
+  (coderabbit 3255514579): lexical RFC3339 compare → parse to epoch-ms,
+  fail-closed on unparseable (mirrors idempotency `expires_at_ms`).
+  storage+tenancy 256/256, clippy/fmt green.
+
 ### REMAINING (D) FIX items (not yet started)
 
-- `3255514598` storage sqlite/control_queue.rs claim UPDATE by id only
-  + unconditional push → returns work not actually claimed.
-  `WHERE id=? AND status='Pending'` + only push when
-  `rows_affected==1`.
-- `3255514577` storage inmem/identity.rs update paths skip create's
-  active-uniqueness (email/slug). Add same uniqueness scan to all
-  update sites (90-104,174-188,267-282,456-476 per triage).
-- `3255514579` storage inmem/identity.rs blob `evict_expired` lexical
-  RFC3339 compare → parse+compare timestamps (mirror idempotency cache).
 - `3255514543` engine control_consumer processor-id silent
   truncate/pad to 16B → typed `[u8;16]` processor id end-to-end.
 - `3255514559` storage migrations/postgres/0027 column drift
