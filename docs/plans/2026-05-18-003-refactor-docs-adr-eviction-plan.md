@@ -1,7 +1,7 @@
 ---
 title: "refactor: Evict dead ADR weight from the working tree"
 type: refactor
-status: active
+status: completed
 date: 2026-05-18
 origin: docs/brainstorms/2026-05-18-001-docs-stack-contract-consolidation-requirements.md
 note: executes the "Historical ADR export / 0001–0041 out of repo" item deferred by docs/plans/2026-05-18-001
