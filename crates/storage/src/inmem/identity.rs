@@ -100,6 +100,19 @@ impl UserStore for InMemoryUserStore {
                 actual: cur.version,
             });
         }
+        // Re-enforce the create-path active-email-uniqueness invariant on
+        // update: an email change must not collide with another active
+        // user. Without this an `update` could silently introduce a
+        // duplicate the `create` path forbids (first-writer-wins).
+        let email = row.email.to_ascii_lowercase();
+        if map.values().any(|u| {
+            u.id != row.id && u.deleted_at.is_none() && u.email.to_ascii_lowercase() == email
+        }) {
+            return Err(StorageError::Duplicate {
+                entity: "user",
+                detail: format!("active user with email {} already exists", row.email),
+            });
+        }
         map.insert(row.id.clone(), row);
         Ok(())
     }
@@ -182,6 +195,17 @@ impl OrgStore for InMemoryOrgStore {
                 id: row.id,
                 expected: expected_version,
                 actual: cur.version,
+            });
+        }
+        // Re-enforce the create-path active-slug-uniqueness invariant on
+        // update: a slug change must not collide with another active org.
+        if map
+            .values()
+            .any(|o| o.id != row.id && o.deleted_at.is_none() && o.slug == row.slug)
+        {
+            return Err(StorageError::Duplicate {
+                entity: "org",
+                detail: format!("active org with slug {} already exists", row.slug),
             });
         }
         map.insert(row.id.clone(), row);
@@ -276,6 +300,19 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
                 id: row.id,
                 expected: expected_version,
                 actual: cur.version,
+            });
+        }
+        // Re-enforce the create-path active-slug-uniqueness invariant
+        // (slug is unique among active rows per org) on update.
+        if map.values().any(|w| {
+            w.id != row.id && w.deleted_at.is_none() && w.org_id == row.org_id && w.slug == row.slug
+        }) {
+            return Err(StorageError::Duplicate {
+                entity: "workspace",
+                detail: format!(
+                    "active workspace with slug {} already exists in org {}",
+                    row.slug, row.org_id
+                ),
             });
         }
         map.insert(key, row);
@@ -470,6 +507,20 @@ impl ResourceStore for InMemoryResourceStore {
                 id: row.id,
                 expected: expected_version,
                 actual: cur.version,
+            });
+        }
+        // Re-enforce the create-path active-slug-uniqueness invariant
+        // (slug unique among active rows in this scope) on update.
+        if map.iter().any(|((ws, org, rid), r)| {
+            *ws == scope.workspace_id
+                && *org == scope.org_id
+                && *rid != row.id
+                && r.deleted_at.is_none()
+                && r.slug == row.slug
+        }) {
+            return Err(StorageError::Duplicate {
+                entity: "resource",
+                detail: format!("active resource with slug {} already exists", row.slug),
             });
         }
         map.insert(key, row);
