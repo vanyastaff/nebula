@@ -4,10 +4,7 @@
 >
 > The shipped form of "Action ↔ Resource binding" lands per:
 >
-> - [`docs/adr/0042-node-binding-mechanism.md`](../../../docs/adr/0042-node-binding-mechanism.md) — hybrid (a)+(b) node→ResourceId/CredentialId binding.
-> - [`docs/adr/0043-dependency-declaration-dx.md`](../../../docs/adr/0043-dependency-declaration-dx.md) — `#[derive(Action)]` slot-binding form.
-> - [`docs/adr/0044-supersede-0036-resource-credential-singular.md`](../../../docs/adr/0044-supersede-0036-resource-credential-singular.md) — Resource::Credential supersession.
-> - [`docs/adr/0045-eventtrigger-scope-deferral.md`](../../../docs/adr/0045-eventtrigger-scope-deferral.md) — EventTrigger DX deferred to candidate §M6.4.
+> - [`docs/adr/0081-m6-resource-credential-integration.md`](../../../docs/adr/0081-m6-resource-credential-integration.md) — M6 contract; consolidates ADR-0042 (hybrid node→ResourceId/CredentialId binding), ADR-0043 (`#[derive(Action)]` slot-binding form), ADR-0044 (Resource::Credential supersession), ADR-0045 (EventTrigger DX deferred to candidate §M6.4).
 >
 > The runtime surface differs from this plan:
 >

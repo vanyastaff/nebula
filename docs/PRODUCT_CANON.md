@@ -87,7 +87,7 @@ For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / 
 
 For the full model — structural-contract types, wiring rules, plugin packaging (`Cargo.toml` / `plugin.toml` / `impl Plugin`), plugin signing (status: planned), cross-plugin dependency rules — see `docs/INTEGRATION_MODEL.md`. That document is the authoritative source for integration mechanics; this canon states the invariants.
 
-**[L1]** Resource credential dependencies use **typed slot fields** on resources (ADR-0044), not a singular `Resource::Credential` associated type. See `docs/INTEGRATION_MODEL.md` and `docs/adr/0044-supersede-0036-resource-credential-singular.md`.
+**[L1]** Resource credential dependencies use **typed slot fields** on resources (ADR-0044, consolidated into the M6 contract), not a singular `Resource::Credential` associated type. See `docs/INTEGRATION_MODEL.md` and `docs/adr/0081-m6-resource-credential-integration.md`.
 
 Sections 3.6 through 3.9 (per-crate pointers) are consolidated in `docs/INTEGRATION_MODEL.md`.
 

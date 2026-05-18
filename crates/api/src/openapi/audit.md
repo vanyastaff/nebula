@@ -1,8 +1,8 @@
 # `Json<serde_json::Value>` callsite audit (M3.2 Task 3.0)
 
 > Input contract for T3 (typed DTO scope) and T4 (per-handler `#[utoipa::path]`
-> annotations). See [ADR-0047](../../../../docs/adr/0047-openapi-31-generator.md)
-> for the cross-layer schema strategy and stub endpoint policy.
+> annotations). See [ADR-0047](../../../../docs/adr/0082-api-webhooks-idempotency.md)
+> for the cross-layer schema strategy and stub endpoint policy (ADR-0047, consolidated into the API edge contract).
 >
 > Run on: 2026-05-06 against worktree `feat/api-openapi-spec` at HEAD.
 > Discovery: `Grep "Json<.*Value>"` across `crates/api/src/`.
