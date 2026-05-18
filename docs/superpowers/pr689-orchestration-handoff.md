@@ -97,10 +97,15 @@ inherit the in-progress merge).
   fail-closed on unparseable (mirrors idempotency `expires_at_ms`).
   storage+tenancy 256/256, clippy/fmt green.
 
+- **`da3374ff` — done&verified.** engine processor-id `[u8; 16]`
+  (coderabbit 3255514543): `ControlConsumer` id was `Vec<u8>` +
+  truncate/pad → fence collapse; now `[u8; 16]` end-to-end,
+  `processor_id_16()` deleted, 11 call sites use explicit `proc16`
+  test helper. engine 9/9 (consumer_wiring+lease_takeover), api 45/45
+  (knife+integration), clippy/fmt green.
+
 ### REMAINING (D) FIX items (not yet started)
 
-- `3255514543` engine control_consumer processor-id silent
-  truncate/pad to 16B → typed `[u8;16]` processor id end-to-end.
 - `3255514559` storage migrations/postgres/0027 column drift
   (TIMESTAMPTZ vs SQLite `*_ms` BIGINT) → normalize to `*_ms BIGINT`
   both dialects + fix postgres adapter rows that read these.
