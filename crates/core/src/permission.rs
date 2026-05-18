@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::role::WorkspaceRole;
 
 /// Granular permission that can be checked against a workspace role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Permission {
     // Workflow
@@ -25,6 +25,8 @@ pub enum Permission {
 
     // Resource
     ResourceRead,
+    ResourceWrite,
+    ResourceDelete,
 
     // Workspace membership
     WorkspaceMemberRead,
@@ -34,6 +36,7 @@ pub enum Permission {
     OrgRead,
     OrgUpdate,
     OrgDelete,
+    MemberRead,
     MemberInvite,
     MemberRemove,
     ServiceAccountManage,
@@ -62,6 +65,8 @@ impl Permission {
             | Self::WorkflowDelete
             | Self::CredentialWrite
             | Self::CredentialDelete
+            | Self::ResourceWrite
+            | Self::ResourceDelete
             | Self::ExecutionTerminate => Some(WorkspaceRole::WorkspaceEditor),
 
             // Admin can manage members
@@ -71,9 +76,36 @@ impl Permission {
             Self::OrgRead
             | Self::OrgUpdate
             | Self::OrgDelete
+            | Self::MemberRead
             | Self::MemberInvite
             | Self::MemberRemove
             | Self::ServiceAccountManage => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_mutation_permissions_require_workspace_editor() {
+        assert_eq!(
+            Permission::ResourceRead.required_workspace_role(),
+            Some(WorkspaceRole::WorkspaceViewer)
+        );
+        assert_eq!(
+            Permission::ResourceWrite.required_workspace_role(),
+            Some(WorkspaceRole::WorkspaceEditor)
+        );
+        assert_eq!(
+            Permission::ResourceDelete.required_workspace_role(),
+            Some(WorkspaceRole::WorkspaceEditor)
+        );
+    }
+
+    #[test]
+    fn member_read_is_org_level_permission() {
+        assert_eq!(Permission::MemberRead.required_workspace_role(), None);
     }
 }

@@ -10,24 +10,45 @@
 //! non-deprecated member handlers are unaffected by the allow.
 #![allow(deprecated)]
 
+use nebula_core::Permission;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::handler;
-use crate::state::AppState;
+use crate::{access, state::AppState};
 
 /// Organization routes under `/api/v1/orgs/{org}/*`.
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(
-            handler::get_org,
-            handler::update_org,
-            handler::delete_org
+        .routes(access::protected(
+            Permission::OrgRead,
+            routes!(handler::get_org),
         ))
-        .routes(routes!(handler::list_members, handler::add_member))
-        .routes(routes!(handler::remove_member))
-        .routes(routes!(
-            handler::list_service_accounts,
-            handler::create_service_account
+        .routes(access::protected(
+            Permission::OrgUpdate,
+            routes!(handler::update_org),
         ))
-        .routes(routes!(handler::delete_service_account))
+        .routes(access::protected(
+            Permission::OrgDelete,
+            routes!(handler::delete_org),
+        ))
+        .routes(access::protected(
+            Permission::MemberRead,
+            routes!(handler::list_members),
+        ))
+        .routes(access::protected(
+            Permission::MemberInvite,
+            routes!(handler::add_member),
+        ))
+        .routes(access::protected(
+            Permission::MemberRemove,
+            routes!(handler::remove_member),
+        ))
+        .routes(access::protected(
+            Permission::ServiceAccountManage,
+            routes!(
+                handler::list_service_accounts,
+                handler::create_service_account,
+                handler::delete_service_account
+            ),
+        ))
 }

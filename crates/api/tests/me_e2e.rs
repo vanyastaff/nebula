@@ -105,7 +105,7 @@ async fn get_me_returns_profile_with_real_token_count() {
             &user.user_id,
             nebula_api::domain::auth::backend::CreatePatParams {
                 name: "cli".to_owned(),
-                scopes: vec![],
+                scopes: vec!["workflows:read".to_owned()],
                 ttl_seconds: Some(3600),
             },
         )
@@ -211,6 +211,38 @@ async fn get_me_with_non_user_principal_is_401() {
         ct,
         "non-user-principal 401 must come from the handler (RFC 9457 problem+json)"
     );
+}
+
+#[tokio::test]
+async fn pat_with_legacy_empty_scopes_is_rejected_at_auth() {
+    let (state, backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let minted = backend
+        .create_pat(
+            &user.user_id,
+            nebula_api::domain::auth::backend::CreatePatParams {
+                name: "legacy-empty-scopes".to_owned(),
+                scopes: vec![],
+                ttl_seconds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/me")
+                .header("authorization", format!("Bearer {}", minted.plaintext))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 // Helper: a 401 emitted by the handler carries application/problem+json;
@@ -408,7 +440,7 @@ async fn list_my_tokens_returns_metadata_only() {
             &user.user_id,
             nebula_api::domain::auth::backend::CreatePatParams {
                 name: "list-me".to_owned(),
-                scopes: vec!["a".to_owned()],
+                scopes: vec!["workflows:read".to_owned()],
                 ttl_seconds: None,
             },
         )
@@ -432,7 +464,7 @@ async fn list_my_tokens_returns_metadata_only() {
     let tokens = body["tokens"].as_array().expect("tokens array");
     assert_eq!(tokens.len(), 1);
     assert_eq!(tokens[0]["name"], "list-me");
-    assert_eq!(tokens[0]["scopes"][0], "a");
+    assert_eq!(tokens[0]["scopes"][0], "workflows:read");
     assert!(tokens[0]["id"].as_str().unwrap().starts_with("pat_"));
     assert!(
         !raw.contains(&plaintext),
@@ -473,7 +505,7 @@ async fn create_token_returns_plaintext_once_and_201() {
             "POST",
             "/api/v1/me/tokens",
             &user.jwt,
-            Some(r#"{"name":"deploy-bot","scopes":["workflows:read","workflows:run"],"ttl_seconds":7200}"#),
+            Some(r#"{"name":"deploy-bot","scopes":["workflows:read","workflows:execute"],"ttl_seconds":7200}"#),
         ))
         .await
         .unwrap();
@@ -513,12 +545,126 @@ async fn create_token_blank_name_is_400() {
             "POST",
             "/api/v1/me/tokens",
             &user.jwt,
-            Some(r#"{"name":"","scopes":[]}"#),
+            Some(r#"{"name":"","scopes":["full_access"]}"#),
         ))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn create_token_empty_scopes_is_400() {
+    let (state, _backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(mutating(
+            "POST",
+            "/api/v1/me/tokens",
+            &user.jwt,
+            Some(r#"{"name":"empty-scope","scopes":[]}"#),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn create_token_unknown_scope_is_400() {
+    let (state, _backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(mutating(
+            "POST",
+            "/api/v1/me/tokens",
+            &user.jwt,
+            Some(r#"{"name":"unknown-scope","scopes":["workflows:run"]}"#),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn create_token_full_access_mixed_scope_is_400() {
+    let (state, _backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(mutating(
+            "POST",
+            "/api/v1/me/tokens",
+            &user.jwt,
+            Some(r#"{"name":"mixed-scope","scopes":["full_access","workflows:read"]}"#),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn create_token_full_access_scope_is_201() {
+    let (state, _backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(mutating(
+            "POST",
+            "/api/v1/me/tokens",
+            &user.jwt,
+            Some(r#"{"name":"full-access","scopes":["full_access"]}"#),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = body_json(response).await;
+    assert_eq!(body["summary"]["scopes"][0], "full_access");
+}
+
+#[tokio::test]
+async fn pat_authenticated_request_cannot_create_token() {
+    let (state, backend, user) = create_me_state().await;
+    let api_config = ApiConfig::for_test();
+
+    let minted = backend
+        .create_pat(
+            &user.user_id,
+            nebula_api::domain::auth::backend::CreatePatParams {
+                name: "bootstrap-pat".to_owned(),
+                scopes: vec!["full_access".to_owned()],
+                ttl_seconds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(mutating(
+            "POST",
+            "/api/v1/me/tokens",
+            &minted.plaintext,
+            Some(r#"{"name":"nested-pat","scopes":["full_access"]}"#),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        backend.list_pats(&user.user_id).await.unwrap().len(),
+        1,
+        "PAT-authenticated creation attempt must not mint an additional PAT"
+    );
 }
 
 #[tokio::test]
@@ -533,7 +679,7 @@ async fn create_token_without_auth_is_401() {
                 .method("POST")
                 .uri("/api/v1/me/tokens")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"x","scopes":[]}"#))
+                .body(Body::from(r#"{"name":"x","scopes":["full_access"]}"#))
                 .unwrap(),
         )
         .await
@@ -592,7 +738,7 @@ async fn create_token_plaintext_never_leaks_to_logs() {
             "POST",
             "/api/v1/me/tokens",
             &user.jwt,
-            Some(r#"{"name":"secret-probe","scopes":[]}"#),
+            Some(r#"{"name":"secret-probe","scopes":["full_access"]}"#),
         ))
         .await
         .unwrap();
@@ -628,7 +774,7 @@ async fn delete_token_revokes_and_is_idempotent() {
             &user.user_id,
             nebula_api::domain::auth::backend::CreatePatParams {
                 name: "to-revoke".to_owned(),
-                scopes: vec![],
+                scopes: vec!["workflows:read".to_owned()],
                 ttl_seconds: None,
             },
         )
@@ -710,7 +856,7 @@ async fn delete_token_owned_by_another_user_is_404() {
             &user_a.user_id,
             nebula_api::domain::auth::backend::CreatePatParams {
                 name: "user-a-token".to_owned(),
-                scopes: vec![],
+                scopes: vec!["workflows:read".to_owned()],
                 ttl_seconds: None,
             },
         )

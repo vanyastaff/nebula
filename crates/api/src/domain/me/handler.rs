@@ -37,6 +37,7 @@ use nebula_core::Principal;
 use zeroize::Zeroize;
 
 use crate::{
+    access::validate_new_pat_scopes,
     domain::{
         auth::backend::{AuthBackend, CreatePatParams, PatRecord, ProfilePatch},
         me::dto::{
@@ -46,7 +47,7 @@ use crate::{
         shared::{AckResponse, OrgRoleDto},
     },
     error::{ApiError, ApiResult, ProblemDetails},
-    middleware::auth::AuthContext,
+    middleware::auth::{AuthContext, AuthMethod},
     state::AppState,
 };
 
@@ -311,6 +312,7 @@ pub async fn list_my_tokens(
         (status = 201, description = "Token created; `token` carries the plaintext once.", body = CreateTokenResponse),
         (status = 400, description = "Validation error.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "PAT-authenticated callers cannot create PATs.", body = ProblemDetails),
         (status = 404, description = "Authenticated user no longer exists.", body = ProblemDetails),
         (status = 503, description = "Authentication backend not configured.", body = ProblemDetails),
     ),
@@ -321,6 +323,12 @@ pub async fn create_token(
     Json(body): Json<CreateTokenRequest>,
 ) -> ApiResult<(StatusCode, Json<CreateTokenResponse>)> {
     let user_id = require_user_id(&auth)?;
+    if auth.auth_method == AuthMethod::Pat {
+        return Err(ApiError::Forbidden(
+            "personal access tokens cannot create new personal access tokens".to_owned(),
+        ));
+    }
+
     let backend = auth_backend_or_503(&state)?;
 
     // Request-level validation → 400.
@@ -330,6 +338,8 @@ pub async fn create_token(
             "token name must be 1..=128 non-blank characters",
         ));
     }
+    validate_new_pat_scopes(&body.scopes)
+        .map_err(|err| ApiError::validation_message(format!("invalid token scopes: {err}")))?;
 
     let params = CreatePatParams {
         name: name.to_owned(),

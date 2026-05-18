@@ -22,7 +22,11 @@ mod common;
 use std::collections::HashSet;
 
 use axum::{body::Body, http::Request};
-use nebula_api::{ApiConfig, build_app};
+use nebula_api::{
+    ApiConfig,
+    access::{REQUIRED_PERMISSION_EXTENSION, UNSUPPORTED_PERMISSION_SCOPE},
+    build_app,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -143,6 +147,224 @@ fn walk_refs(value: &Value, schemas: &HashSet<String>, unresolved: &mut Vec<Stri
         },
         _ => {},
     }
+}
+
+#[tokio::test]
+async fn tenant_operations_declare_required_permission() {
+    let spec = fetch_spec_json().await;
+    let paths = spec
+        .get("paths")
+        .and_then(Value::as_object)
+        .expect("spec.paths must be present");
+
+    let mut checked = 0usize;
+    for (path, item) in paths {
+        if !path.starts_with("/api/v1/orgs/{org}") {
+            continue;
+        }
+
+        let item = item.as_object().expect("each path entry must be an object");
+        for method in HTTP_METHODS {
+            let Some(operation) = item.get(*method) else {
+                continue;
+            };
+            checked += 1;
+
+            let permission = operation
+                .get(REQUIRED_PERMISSION_EXTENSION)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "operation {method} {path} must declare string `{REQUIRED_PERMISSION_EXTENSION}`"
+                    )
+                });
+            assert!(
+                !permission.is_empty(),
+                "operation {method} {path} must not declare an empty `{REQUIRED_PERMISSION_EXTENSION}`"
+            );
+            assert_ne!(
+                permission, UNSUPPORTED_PERMISSION_SCOPE,
+                "operation {method} {path} must not publish unsupported permission placeholder"
+            );
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "spec must contain at least one tenant operation under /api/v1/orgs/{{org}}"
+    );
+}
+
+#[tokio::test]
+async fn selected_operations_publish_expected_permissions() {
+    let spec = fetch_spec_json().await;
+
+    for (method, path, expected) in [
+        // Org
+        ("get", "/api/v1/orgs/{org}", "orgs:read"),
+        ("patch", "/api/v1/orgs/{org}", "orgs:update"),
+        ("delete", "/api/v1/orgs/{org}", "orgs:delete"),
+        ("get", "/api/v1/orgs/{org}/members", "members:read"),
+        ("post", "/api/v1/orgs/{org}/members", "members:invite"),
+        (
+            "delete",
+            "/api/v1/orgs/{org}/members/{principal}",
+            "members:remove",
+        ),
+        // Workspace/workflow
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
+            "workflows:read",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
+            "workflows:write",
+        ),
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}",
+            "workflows:read",
+        ),
+        (
+            "put",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}",
+            "workflows:write",
+        ),
+        (
+            "delete",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}",
+            "workflows:delete",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute",
+            "workflows:execute",
+        ),
+        // Executions
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/executions",
+            "executions:read",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
+            "workflows:execute",
+        ),
+        (
+            "delete",
+            "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}",
+            "executions:cancel",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate",
+            "executions:terminate",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart",
+            "executions:restart",
+        ),
+        // Resources
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+            "resources:read",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+            "resources:write",
+        ),
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}",
+            "resources:read",
+        ),
+        (
+            "put",
+            "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}",
+            "resources:write",
+        ),
+        (
+            "delete",
+            "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}",
+            "resources:delete",
+        ),
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}/status",
+            "resources:read",
+        ),
+        // Credentials
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
+            "credentials:read",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
+            "credentials:write",
+        ),
+        (
+            "get",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}",
+            "credentials:read",
+        ),
+        (
+            "put",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}",
+            "credentials:write",
+        ),
+        (
+            "delete",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}",
+            "credentials:delete",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve",
+            "credentials:write",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
+            "credentials:read",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
+            "credentials:write",
+        ),
+        (
+            "post",
+            "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
+            "credentials:delete",
+        ),
+    ] {
+        assert_eq!(
+            required_permission_for(&spec, path, method),
+            expected,
+            "{method} {path} must publish `{expected}` as `{REQUIRED_PERMISSION_EXTENSION}`"
+        );
+    }
+}
+
+fn required_permission_for<'a>(spec: &'a Value, path: &str, method: &str) -> &'a str {
+    spec.get("paths")
+        .and_then(|paths| paths.get(path))
+        .and_then(|item| item.get(method))
+        .and_then(|operation| operation.get(REQUIRED_PERMISSION_EXTENSION))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            panic!(
+                "operation {method} {path} must exist and declare string `{REQUIRED_PERMISSION_EXTENSION}`"
+            )
+        })
 }
 
 #[tokio::test]

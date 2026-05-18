@@ -43,13 +43,28 @@ impl TenantContext {
             // Org-level permission — check org_role
             // OrgAdmin+ can do most org ops; OrgOwner for destructive ops
             let required = match permission {
-                Permission::OrgRead => OrgRole::OrgMember,
+                Permission::OrgRead | Permission::MemberRead => OrgRole::OrgMember,
                 Permission::OrgUpdate
                 | Permission::MemberInvite
                 | Permission::MemberRemove
                 | Permission::ServiceAccountManage => OrgRole::OrgAdmin,
                 Permission::OrgDelete => OrgRole::OrgOwner,
-                _ => OrgRole::OrgAdmin,
+                Permission::WorkflowRead
+                | Permission::WorkflowWrite
+                | Permission::WorkflowDelete
+                | Permission::WorkflowExecute
+                | Permission::ExecutionRead
+                | Permission::ExecutionCancel
+                | Permission::ExecutionTerminate
+                | Permission::ExecutionRestart
+                | Permission::CredentialRead
+                | Permission::CredentialWrite
+                | Permission::CredentialDelete
+                | Permission::ResourceRead
+                | Permission::ResourceWrite
+                | Permission::ResourceDelete
+                | Permission::WorkspaceMemberRead
+                | Permission::WorkspaceMemberManage => OrgRole::OrgAdmin,
             };
             match self.org_role {
                 Some(actual) if actual >= required => Ok(()),
@@ -105,4 +120,63 @@ pub struct ResolvedIds {
     pub credential_id: Option<CredentialId>,
     pub trigger_id: Option<TriggerId>,
     pub service_account_id: Option<ServiceAccountId>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::UserId;
+
+    fn context_with_org_role(org_role: Option<OrgRole>) -> TenantContext {
+        TenantContext {
+            org_id: OrgId::new(),
+            workspace_id: None,
+            principal: Principal::User(UserId::new()),
+            org_role,
+            workspace_role: None,
+        }
+    }
+
+    #[test]
+    fn org_member_can_read_org_and_members() {
+        let ctx = context_with_org_role(Some(OrgRole::OrgMember));
+
+        assert!(ctx.require(Permission::OrgRead).is_ok());
+        assert!(ctx.require(Permission::MemberRead).is_ok());
+    }
+
+    #[test]
+    fn org_member_cannot_manage_org_members_or_service_accounts() {
+        let ctx = context_with_org_role(Some(OrgRole::OrgMember));
+
+        for permission in [
+            Permission::OrgUpdate,
+            Permission::MemberInvite,
+            Permission::MemberRemove,
+            Permission::ServiceAccountManage,
+        ] {
+            assert_eq!(
+                ctx.require(permission)
+                    .map_err(|err| (err.required_role, err.current_role)),
+                Err((
+                    OrgRole::OrgAdmin.to_string(),
+                    OrgRole::OrgMember.to_string()
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn only_org_owner_can_delete_org() {
+        let admin = context_with_org_role(Some(OrgRole::OrgAdmin));
+        let owner = context_with_org_role(Some(OrgRole::OrgOwner));
+
+        assert_eq!(
+            admin
+                .require(Permission::OrgDelete)
+                .map_err(|err| (err.required_role, err.current_role)),
+            Err((OrgRole::OrgOwner.to_string(), OrgRole::OrgAdmin.to_string()))
+        );
+        assert!(owner.require(Permission::OrgDelete).is_ok());
+    }
 }
