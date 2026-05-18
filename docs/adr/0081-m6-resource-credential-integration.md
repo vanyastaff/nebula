@@ -89,10 +89,10 @@ execution-plan paths.
 
 | Source ADR | Role |
 |------------|------|
-| [0042-node-binding-mechanism](./0042-node-binding-mechanism.md) | Stub → 0081 |
-| [0043-dependency-declaration-dx](./0043-dependency-declaration-dx.md) | Stub → 0081 |
-| [0044-supersede-0036-resource-credential-singular](./0044-supersede-0036-resource-credential-singular.md) | Stub → 0081 |
-| [0045-eventtrigger-scope-deferral](./0045-eventtrigger-scope-deferral.md) | Stub → 0081 |
-| [0051-external-provider-redesign](./0051-external-provider-redesign.md) | Stub → 0081 |
-| [0066-credential-runtime-crate](./0066-credential-runtime-crate.md) | Stub → 0081 |
-| [0067-engine-owned-rotation-fanout-self-refresh-hook](./0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Stub → 0081 |
+| ADR-0042 — node-binding-mechanism | absorbed (git history) |
+| ADR-0043 — dependency-declaration-dx | absorbed (git history) |
+| ADR-0044 — supersede-0036-resource-credential-singular | absorbed (git history) |
+| ADR-0045 — eventtrigger-scope-deferral | absorbed (git history) |
+| ADR-0051 — external-provider-redesign | absorbed (git history) |
+| ADR-0066 — credential-runtime-crate | absorbed (git history) |
+| ADR-0067 — engine-owned-rotation-fanout-self-refresh-hook | absorbed (git history) |

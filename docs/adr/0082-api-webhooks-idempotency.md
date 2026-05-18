@@ -55,6 +55,6 @@ do not fork. Aligns with ADR-0022 signature policy and storage activation repos.
 
 | Source ADR | Role |
 |------------|------|
-| [0047-openapi-31-generator](./0047-openapi-31-generator.md) | Stub → 0082 |
-| [0048-idempotency-store-backend](./0048-idempotency-store-backend.md) | Stub → 0082 |
-| [0049-webhook-handler-convergence](./0049-webhook-handler-convergence.md) | Stub → 0082 |
+| ADR-0047 — openapi-31-generator | absorbed (git history) |
+| ADR-0048 — idempotency-store-backend | absorbed (git history) |
+| ADR-0049 — webhook-handler-convergence | absorbed (git history) |
