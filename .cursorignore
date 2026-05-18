@@ -2,17 +2,4 @@
 target/
 .worktrees/
 .claude/worktrees/
-docs/adr/0001-*.md
-docs/adr/0002-*.md
-docs/adr/0003-*.md
-docs/adr/0004-*.md
-docs/adr/0005-*.md
-docs/adr/0006-*.md
-docs/adr/0007-*.md
-docs/adr/0008-*.md
-docs/adr/0009-*.md
-docs/adr/001*.md
-docs/adr/002*.md
-docs/adr/003*.md
-docs/adr/0040-*.md
-docs/adr/0041-*.md
+# Pre-0042 ADRs evicted 2026-05-18 — index at docs/adr/HISTORICAL.md, full text git-history-only
