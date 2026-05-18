@@ -13,7 +13,7 @@
 //! `"invalid_format"` disambiguated by their `pattern` / `expected` params.
 //! Schema-owned structural codes (`type_mismatch`, `items.*`, `option.*`,
 //! `mode.*`, `expression.*`, `required`) are emitted by the schema crate and
-//! unchanged. See ADR-0052 (P2 amendment).
+//! unchanged.
 //!
 //! # Loader-family codes
 //!
@@ -167,9 +167,9 @@ fn emits_max() {
 }
 
 // ── Format codes — pattern / url / email all surface the validator-native
-//    `invalid_format` (the schema crate no longer remaps to a per-rule
-//    namespace; the merge is verbatim). Each is exercised separately so a
-//    regression in any one rule's wiring through the single crossing fails. ──
+// `invalid_format` (the schema crate no longer remaps to a per-rule
+// namespace; the merge is verbatim). Each is exercised separately so a
+// regression in any one rule's wiring through the single crossing fails. ──
 
 #[test]
 fn emits_invalid_format_for_pattern() {

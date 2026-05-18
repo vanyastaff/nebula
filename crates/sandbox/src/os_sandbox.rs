@@ -3,7 +3,7 @@
 //! Linux: a fixed-system-path Landlock ruleset (read-only `/lib`, `/usr/lib`,
 //! TLS certs, resolver config) plus `setrlimit` resource caps. There is **no
 //! per-plugin filesystem capability** — egress/credential/path mediation is
-//! the broker's job (ADR-0025), not this module (canon §12.6). ABI < V4 has
+//! the broker's job, not this module. ABI < V4 has
 //! no kernel network rule by design; network confinement is the broker's, not
 //! Landlock's.
 //!

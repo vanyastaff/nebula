@@ -5,25 +5,25 @@
 //! trigger into one file:
 //!
 //! - [`WebhookRequest`] — typed HTTP event (method, path, query, headers, body, arrival timestamp).
-//!   Constructed by the HTTP transport layer via [`WebhookRequest::try_new`] /
-//!   [`WebhookRequest::try_new_with_limits`] which enforce body-size and header-count limits at the
-//!   boundary.
+//! Constructed by the HTTP transport layer via [`WebhookRequest::try_new`] /
+//! [`WebhookRequest::try_new_with_limits`] which enforce body-size and header-count limits at the
+//! boundary.
 //! - [`WebhookAction`] — DX trait with the register / handle / unregister lifecycle. Implement this
-//!   and register via `registry.register_webhook(action)`.
+//! and register via `registry.register_webhook(action)`.
 //! - [`WebhookTriggerAdapter`] — bridges a typed `WebhookAction` to the
-//!   [`TriggerHandler`](crate::trigger::TriggerHandler) dyn contract. Stores state from
-//!   `on_activate` in a `RwLock<Option<Arc<State>>>`, rejects double-start with
-//!   `ActionError::Fatal`, cleans up orphaned state on lost-race rollback, and downcasts incoming
-//!   [`TriggerEvent`](crate::trigger::TriggerEvent)s to [`WebhookRequest`].
+//! [`TriggerHandler`](crate::trigger::TriggerHandler) dyn contract. Stores state from
+//! `on_activate` in a `RwLock<Option<Arc<State>>>`, rejects double-start with
+//! `ActionError::Fatal`, cleans up orphaned state on lost-race rollback, and downcasts incoming
+//! [`TriggerEvent`](crate::trigger::TriggerEvent)s to [`WebhookRequest`].
 //! - [`verify_hmac_sha256`], [`hmac_sha256_compute`], [`verify_tag_constant_time`],
-//!   [`SignatureOutcome`] — constant-time HMAC primitives. Use `verify_hmac_sha256` for
-//!   GitHub-style `sha256=…` bare-hex signatures; reach for the lower-level pair for Stripe / Slack
-//!   schemes that sign a derived payload.
+//! [`SignatureOutcome`] — constant-time HMAC primitives. Use `verify_hmac_sha256` for
+//! GitHub-style `sha256=…` bare-hex signatures; reach for the lower-level pair for Stripe / Slack
+//! schemes that sign a derived payload.
 //! - [`WebhookConfig`], [`SignaturePolicy`], [`RequiredPolicy`], [`SignatureScheme`] — the
-//!   `Required`-by-default signature-enforcement contract at the trait surface. Authors return a
-//!   [`WebhookConfig`] from [`WebhookAction::config`]; the HTTP transport reads its
-//!   [`WebhookConfig::signature_policy`] before dispatch; misconfigured or unsigned requests are
-//!   rejected before the action sees them. See ADR-0022.
+//! `Required`-by-default signature-enforcement contract at the trait surface. Authors return a
+//! [`WebhookConfig`] from [`WebhookAction::config`]; the HTTP transport reads its
+//! [`WebhookConfig::signature_policy`] before dispatch; misconfigured or unsigned requests are
+//! rejected before the action sees them. See.
 //!
 //! # Security
 //!
@@ -496,9 +496,9 @@ impl Default for WebhookHttpResponse {
 ///
 /// // Slack URL verification — echo challenge, no workflow.
 /// Ok(WebhookResponse::respond(
-///     StatusCode::OK,
-///     challenge_value,
-///     TriggerEventOutcome::skip(),
+/// StatusCode::OK,
+/// challenge_value,
+/// TriggerEventOutcome::skip(),
 /// ))
 /// ```
 #[derive(Debug)]
@@ -592,24 +592,24 @@ impl WebhookResponse {
 /// struct GitHubWebhook { secret: Vec<u8> }
 ///
 /// impl WebhookAction for GitHubWebhook {
-///     type State = WebhookReg;
+/// type State = WebhookReg;
 ///
-///     async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<WebhookReg, ActionError> {
-///         Ok(WebhookReg { hook_id: register(ctx).await? })
-///     }
+/// async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<WebhookReg, ActionError> {
+/// Ok(WebhookReg { hook_id: register(ctx).await? })
+/// }
 ///
-///     async fn handle_request(&self, req: &WebhookRequest, _state: &Self::State, _ctx: &(impl TriggerContext + ?Sized))
-///         -> Result<WebhookResponse, ActionError> {
-///         let outcome = verify_hmac_sha256(req, &self.secret, "X-Hub-Signature-256")?;
-///         if !outcome.is_valid() {
-///             return Ok(WebhookResponse::accept(TriggerEventOutcome::skip()));
-///         }
-///         Ok(WebhookResponse::accept(TriggerEventOutcome::emit(req.body_json()?)))
-///     }
+/// async fn handle_request(&self, req: &WebhookRequest, _state: &Self::State, _ctx: &(impl TriggerContext + ?Sized))
+/// -> Result<WebhookResponse, ActionError> {
+/// let outcome = verify_hmac_sha256(req, &self.secret, "X-Hub-Signature-256")?;
+/// if !outcome.is_valid() {
+/// return Ok(WebhookResponse::accept(TriggerEventOutcome::skip()));
+/// }
+/// Ok(WebhookResponse::accept(TriggerEventOutcome::emit(req.body_json()?)))
+/// }
 ///
-///     async fn on_deactivate(&self, state: WebhookReg, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
-///         delete_hook(&state.hook_id).await
-///     }
+/// async fn on_deactivate(&self, state: WebhookReg, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+/// delete_hook(&state.hook_id).await
+/// }
 /// }
 /// ```
 pub trait WebhookAction: Action + Send + Sync + 'static {
@@ -728,7 +728,7 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
     /// Slack) use [`SignaturePolicy::Custom`] with a verifier that
     /// composes the primitives in this module.
     ///
-    /// See ADR-0022 for the full rationale.
+    ///
     fn config(&self) -> WebhookConfig {
         WebhookConfig::default()
     }
@@ -746,7 +746,7 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
 ///
 /// # Fields
 ///
-/// - [`signature_policy`](Self::signature_policy) — ADR-0022 signature enforcement policy. Default:
+/// - [`signature_policy`](Self::signature_policy). Default:
 ///   `Required` with an empty secret (fail-closed).
 ///
 /// # Cloning
@@ -875,7 +875,7 @@ pub enum PreHandleOutcome {
 /// `HeaderName` (both cheap clones) and `Custom` holds `Arc<dyn Fn>`.
 /// The adapter reads the policy once at construction and stores it.
 ///
-/// See ADR-0022 for the full rationale.
+///
 pub enum SignaturePolicy {
     /// Require HMAC signature via the configured header and scheme.
     /// Default: `X-Nebula-Signature`, hex-encoded SHA-256, empty secret.
@@ -950,7 +950,7 @@ impl SignaturePolicy {
 ///
 /// An empty secret is *not* a misuse of the API — it is the
 /// fail-closed default surface that catches "author forgot to
-/// supply a secret" at the transport layer. See ADR-0022.
+/// supply a secret" at the transport layer. See.
 ///
 /// # Non-exhaustive
 ///
@@ -1500,17 +1500,17 @@ pub enum SignatureScheme {
 ///
 /// ```rust,ignore
 /// async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized + HasWebhookEndpoint))
-///     -> Result<Self::State, ActionError>
+/// -> Result<Self::State, ActionError>
 /// {
-///     let endpoint = ctx.webhook_endpoint().ok_or_else(|| {
-///         ActionError::fatal("webhook trigger activated without endpoint provider")
-///     })?;
-///     let hook_id = github_api::create_hook(
-///         &self.repo,
-///         endpoint.endpoint_url().as_str(),
-///         &self.secret,
-///     ).await?;
-///     Ok(GitHubState { hook_id })
+/// let endpoint = ctx.webhook_endpoint().ok_or_else(|| {
+/// ActionError::fatal("webhook trigger activated without endpoint provider")
+/// })?;
+/// let hook_id = github_api::create_hook(
+/// &self.repo,
+/// endpoint.endpoint_url().as_str(),
+/// &self.secret,
+/// ).await?;
+/// Ok(GitHubState { hook_id })
 /// }
 /// ```
 pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
@@ -1783,7 +1783,7 @@ where
             };
 
             // Clone Arc under read lock; the guard drops at end of statement BEFORE
-            // the await on handle_request. Holding a parking_lot guard across .await
+            // the await on handle_request. Holding a parking_lot guard across.await
             // would be unsound (non-Send) and risk re-entry panic with start/stop.
             let state = if let Some(s) = self.state.read().as_ref().cloned() {
                 s
@@ -1805,7 +1805,7 @@ where
                 ));
             };
 
-            // pre_handle hook (ADR-0049) — provider-typed actions
+            // pre_handle hook — provider-typed actions
             // (Slack url_verification, Stripe pending_webhook ping,
             // Generic GET challenge) intercept verification probes
             // here. Runs AFTER signature verification (transport
@@ -1840,38 +1840,38 @@ where
             // runtime records it and the task exits cleanly. Otherwise
             // race the handler normally.
             let response = tokio::select! {
-                biased;
-                () = ctx.cancellation().cancelled() => {
-                    if let Some(tx) = response_tx {
-                        let _ = tx.send(WebhookHttpResponse::new(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            Bytes::from_static(b"shutting down"),
-                        ));
-                    }
-                    ctx.health().record_error();
-                    return Err(ActionError::retryable(
-                        "webhook trigger cancelled mid-request",
-                    ));
-                }
-                result = self.action.handle_request(&request, &state, ctx) => {
-                    // H1 — on handler error, send a 500 via oneshot BEFORE
-                    // propagating Err. Without this, the transport receives
-                    // RecvError and has to guess the HTTP status.
-                    match result {
-                        Ok(r) => r,
-                        Err(e) => {
-                            if let Some(tx) = response_tx {
-                                let _ = tx.send(WebhookHttpResponse::new(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    Bytes::new(),
-                                ));
-                            }
-                            ctx.health().record_error();
-                            return Err(e);
-                        }
-                    }
-                }
-            };
+                           biased;
+                           () = ctx.cancellation().cancelled() => {
+                               if let Some(tx) = response_tx {
+                                   let _ = tx.send(WebhookHttpResponse::new(
+                                       StatusCode::SERVICE_UNAVAILABLE,
+                                       Bytes::from_static(b"shutting down"),
+                                   ));
+                               }
+                               ctx.health().record_error();
+                               return Err(ActionError::retryable(
+                                   "webhook trigger cancelled mid-request",
+                               ));
+                           }
+                           result = self.action.handle_request(&request, &state, ctx) => {
+            // H1 — on handler error, send a 500 via oneshot BEFORE
+            // propagating Err. Without this, the transport receives
+            // RecvError and has to guess the HTTP status.
+                               match result {
+                                   Ok(r) => r,
+                                   Err(e) => {
+                                       if let Some(tx) = response_tx {
+                                           let _ = tx.send(WebhookHttpResponse::new(
+                                               StatusCode::INTERNAL_SERVER_ERROR,
+                                               Bytes::new(),
+                                           ));
+                                       }
+                                       ctx.health().record_error();
+                                       return Err(e);
+                                   }
+                               }
+                           }
+                       };
 
             let (http_response, outcome) = response.into_parts();
 
@@ -1931,7 +1931,7 @@ impl SignatureOutcome {
     ///
     /// ```ignore
     /// if !verify_hmac_sha256(request, secret, "X-Hub-Signature-256")?.is_valid() {
-    ///     return Ok(TriggerEventOutcome::skip());
+    /// return Ok(TriggerEventOutcome::skip());
     /// }
     /// ```
     #[must_use]
@@ -2100,7 +2100,7 @@ fn verify_base64_hmac_timing_invariant(
 /// # Arguments
 ///
 /// - `request` — the incoming webhook request (body + headers)
-/// - `secret`  — shared HMAC key (typically from a credential)
+/// - `secret` — shared HMAC key (typically from a credential)
 /// - `header` — header name carrying the signature, e.g. `"X-Hub-Signature-256"`. Must be a valid
 ///   HTTP header name.
 ///
@@ -2356,7 +2356,7 @@ pub fn hmac_sha256_compute(secret: &[u8], payload: &[u8]) -> [u8; 32] {
 /// let expected = hmac_sha256_compute(secret, signed_payload.as_bytes());
 /// let provided = hex::decode(header_v1).unwrap_or_default();
 /// if !verify_tag_constant_time(&expected, &provided) {
-///     return Ok(TriggerEventOutcome::skip());
+/// return Ok(TriggerEventOutcome::skip());
 /// }
 /// ```
 #[must_use]

@@ -1,4 +1,4 @@
-//! `#[action_phantom]` attribute macro per Tech Spec 2.7 + ADR-0035 4.3.
+//! `#[action_phantom]` attribute macro per Tech Spec 2.7 + 4.3.
 //!
 //! Rewrites struct fields whose type is `CredentialRef<dyn X>` to
 //! `CredentialRef<dyn XPhantom>` in the emitted item. Pattern 1 (concrete
@@ -11,13 +11,13 @@
 //! Derives may only emit *new* items; they cannot mutate the input.
 //! The phantom rewrite must edit the user-written struct in place so
 //! that the field type the action body sees is the dyn-compatible
-//! `CredentialRef<dyn XPhantom>`. ADR-0035 amendment 2026-04-24-B
+//! `CredentialRef<dyn XPhantom>`. amendment 2026-04-24-B
 //! prescribes the phantom-shim form; Tech Spec 2.7 routes the
 //! translation through `#[action_phantom]`.
 //!
 //! ## Why the name `action_phantom`, not `action`
 //!
-//! `#[derive(Action)]` declares `#[action(key = ..., ...)]` as an inert
+//! `#[derive(Action)]` declares `#[action(key =...,...)]` as an inert
 //! helper attribute. A bare `#[action]` attribute macro alongside the
 //! derive helper would put two different things called `#[action]` on
 //! the same struct - confusing for readers, and a real footgun if any

@@ -15,7 +15,7 @@
 //!
 //! ## Role
 //!
-//! **Error Taxonomy and Classification Boundary** (canon §3.10, §4.2, §12.4).
+//! **Error Taxonomy and Classification Boundary** — typed classification and HTTP mapping.
 //! `nebula-api` maps `NebulaError` to RFC 9457 `problem+json` at the HTTP boundary.
 //!
 //! ## Public API

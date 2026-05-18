@@ -1,18 +1,18 @@
-//! ADR-0052 P2 item-2: root-rule predicates run against a context scrubbed of
+//! P2 item-2: root-rule predicates run against a context scrubbed of
 //! `Field::Secret` (by schema type, recursively) — BUT legal non-secret nested
 //! values (object / list-item / mode-variant) remain addressable so a
 //! legitimate root guard does NOT fail open.
 //!
 //! Two guards:
-//!  - `legal_non_secret_nested_root_predicate_still_fires_after_scrub` proves a
-//!    legitimate nested-object root predicate still resolves post-scrub (it
-//!    would also resolve under the old `from_json`, so it is a true regression
-//!    guard against the scrub silently nuking legal nested context).
-//!  - `root_predicate_cannot_read_scrubbed_secret_plaintext` unit-tests the new
-//!    `root_predicate_context_for` directly: the secret's path is absent, no
-//!    pushed value carries the plaintext, and a container object that has a
-//!    secret descendant is never emitted as a node (so a `Contains("/cfg", …)`
-//!    over the parent blob cannot read the secret).
+//! - `legal_non_secret_nested_root_predicate_still_fires_after_scrub` proves a
+//!   legitimate nested-object root predicate still resolves post-scrub (it
+//!   would also resolve under the old `from_json`, so it is a true regression
+//!   guard against the scrub silently nuking legal nested context).
+//! - `root_predicate_cannot_read_scrubbed_secret_plaintext` unit-tests the new
+//!   `root_predicate_context_for` directly: the secret's path is absent, no
+//!   pushed value carries the plaintext, and a container object that has a
+//!   secret descendant is never emitted as a node (so a `Contains("/cfg", …)`
+//!   over the parent blob cannot read the secret).
 
 use nebula_schema::context::root_predicate_context_for;
 use nebula_schema::{Field, FieldValue, FieldValues, Schema, field_key};
@@ -73,7 +73,7 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
     const PLAINTEXT: &str = "s3cr3t-root-plaintext";
 
     // (1) Top-level Field::Secret with a pre-resolve plaintext literal: the
-    //     scrubbed root context must NOT expose it under any pointer.
+    // scrubbed root context must NOT expose it under any pointer.
     let secret_fields = vec![Field::from(Field::secret(field_key!("api_key")))];
     let secret_values = FieldValues::from_json(json!({ "api_key": PLAINTEXT })).unwrap();
     let ctx = root_predicate_context_for(&secret_fields, &secret_values);
@@ -88,10 +88,10 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
     );
 
     // (2) A Field::Object `cfg` whose only child is a Field::Secret. The
-    //     container node MUST stay present (so a legal `Set("/cfg")` presence
-    //     guard still resolves — dropping it is the fail-open class), but its
-    //     secret child is stripped, so the node value carries no plaintext and
-    //     the secret pointer is unreadable.
+    // container node MUST stay present (so a legal `Set("/cfg")` presence
+    // guard still resolves — dropping it is the fail-open class), but its
+    // secret child is stripped, so the node value carries no plaintext and
+    // the secret pointer is unreadable.
     let nested = Field::object(field_key!("cfg")).add(Field::secret(field_key!("the_secret")));
     let nested_fields = vec![Field::from(nested)];
     let nested_values =
@@ -120,8 +120,8 @@ fn root_predicate_cannot_read_scrubbed_secret_plaintext() {
     );
 
     // (3) Structural guarantee: a sibling NON-secret leaf next to the secret
-    //     IS still emitted (proves the scrub is type-targeted, not blanket —
-    //     it does not over-remove legal context, which would fail open).
+    // IS still emitted (proves the scrub is type-targeted, not blanket —
+    // it does not over-remove legal context, which would fail open).
     let mixed = Field::object(field_key!("cfg2"))
         .add(Field::secret(field_key!("token")))
         .add(Field::string(field_key!("region")));

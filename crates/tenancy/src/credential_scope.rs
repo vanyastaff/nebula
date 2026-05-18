@@ -10,7 +10,7 @@
 //!
 //! The credential-specific `EncryptionLayer` / `CacheLayer` / `AuditLayer`
 //! stay in `nebula-storage` and re-compose **on top** of this layer; their
-//! ADR-0029 fail-closed audit + zeroize-on-drop invariants are unaffected
+//! fail-closed audit + zeroize-on-drop invariants are unaffected
 //! by the move (the layer order — `ScopeLayer → AuditLayer →
 //! EncryptionLayer → CacheLayer → Backend` — is preserved at the
 //! composition root) and remain regression-tested in
@@ -65,12 +65,12 @@ const OWNER_KEY: &str = "owner_id";
 ///
 /// struct TenantScope(String);
 /// impl CredentialScopeResolver for TenantScope {
-///     fn current_owner(&self) -> Option<&str> { Some(&self.0) }
+/// fn current_owner(&self) -> Option<&str> { Some(&self.0) }
 /// }
 ///
 /// let store = CredentialScopeLayer::new(
-///     InMemoryStore::new(),
-///     Arc::new(TenantScope("tenant-1".into())),
+/// InMemoryStore::new(),
+/// Arc::new(TenantScope("tenant-1".into())),
 /// );
 /// ```
 pub struct ScopeLayer<S> {

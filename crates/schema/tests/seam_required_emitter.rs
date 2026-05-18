@@ -1,4 +1,4 @@
-//! ADR-0052 seam: validator is the sole `required` emitter, and a hidden
+//! seam: validator is the sole `required` emitter, and a hidden
 //! field that nonetheless carries a present value is STILL structurally
 //! validated (a smuggled expression in a no-payload mode-variant placeholder
 //! must not escape to resolve). The carve-out is moved, not deleted.

@@ -10,7 +10,7 @@
 //! authors wire at outbound call sites. Retry filtering is driven by `nebula-error::Classify`
 //! so transient vs permanent is explicit — not folklore.
 //!
-//! Per canon §11.2, `nebula-resilience` pipelines are the **canonical retry surface today**.
+//! `nebula-resilience` pipelines are the **canonical retry surface today**.
 //! Engine-level node re-execution with persisted attempt accounting is `planned`. See
 //! `crates/resilience/README.md` for the full role description and contract invariants.
 //!
@@ -38,20 +38,20 @@
 //! use std::time::Duration;
 //!
 //! use nebula_resilience::{
-//!     CallError, ResiliencePipeline,
-//!     retry::{BackoffConfig, RetryConfig},
+//! CallError, ResiliencePipeline,
+//! retry::{BackoffConfig, RetryConfig},
 //! };
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let pipeline = ResiliencePipeline::<String>::builder()
-//!     .timeout(Duration::from_secs(5))
-//!     .retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
-//!     .build();
+//!.timeout(Duration::from_secs(5))
+//!.retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
+//!.build();
 //!
 //! let _value: Result<String, _> = pipeline
-//!     .call(|| Box::pin(async { Ok::<_, String>("success".into()) }))
-//!     .await;
+//!.call(|| Box::pin(async { Ok::<_, String>("success".into()) }))
+//!.await;
 //! # Ok(())
 //! # }
 //! ```
@@ -69,32 +69,32 @@
 //! # #[derive(Debug)]
 //! # struct MyError;
 //! # impl std::fmt::Display for MyError {
-//! #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "error") }
+//! # fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "error") }
 //! # }
 //! # impl std::error::Error for MyError {}
 //! # impl nebula_error::Classify for MyError {
-//! #     fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::Internal }
-//! #     fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
+//! # fn category(&self) -> nebula_error::ErrorCategory { nebula_error::ErrorCategory::Internal }
+//! # fn code(&self) -> nebula_error::ErrorCode { nebula_error::ErrorCode::new("DOC:EXAMPLE") }
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Circuit breaker
 //! let cb = CircuitBreaker::new(CircuitBreakerConfig {
-//!     failure_threshold: 5,
-//!     reset_timeout: Duration::from_secs(30),
-//!     ..Default::default()
+//! failure_threshold: 5,
+//! reset_timeout: Duration::from_secs(30),
+//!..Default::default()
 //! })?;
 //!
 //! let result = cb.call(|| Box::pin(async {
-//!     Ok::<_, MyError>("ok")
+//! Ok::<_, MyError>("ok")
 //! })).await;
 //!
 //! // Retry with Classify-aware error filtering
 //! let config = RetryConfig::<MyError>::new(3)?
-//!     .backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
+//!.backoff(BackoffConfig::Fixed(Duration::from_millis(50)));
 //!
 //! let result = retry_with(config, || Box::pin(async {
-//!     Ok::<_, MyError>("ok")
+//! Ok::<_, MyError>("ok")
 //! })).await;
 //! # Ok(())
 //! # }
@@ -114,7 +114,7 @@
 //! | `RetriesExhausted { attempts, last }` | no | retry |
 //! | `Cancelled { reason }` | no | cancellation |
 //! | `LoadShed` | no | load shedder |
-//! | `FallbackFailed { reason }` / `FallbackFailedWithContext { .. }` | no | fallback |
+//! | `FallbackFailed { reason }` / `FallbackFailedWithContext {.. }` | no | fallback |
 //!
 //! # Observability
 //!

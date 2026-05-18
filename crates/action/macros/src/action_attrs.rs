@@ -5,7 +5,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Ident, Result, Type};
 
-/// Parsed action container attributes (Variant A — ADR-0043 §6).
+/// Parsed action container attributes (Variant A.
 #[derive(Debug, Clone)]
 pub(crate) struct ActionAttrs {
     /// Unique key (e.g. `"http.request"`).

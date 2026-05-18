@@ -6,8 +6,6 @@
 //!
 //! **Role:** Validation Rules Engine + Declarative Rule. See `crates/validator/README.md`.
 //!
-//! **Canon:** §3.5 (schema system), §4.5 (proof-token pipeline).
-//!
 //! **Maturity:** `frontier` — the programmatic validator API (`Validate`, `ValidateExt`,
 //! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
 //! (`Value` / `Predicate` / `Logic` / `Deferred` / `Described`) with a new externally-tagged
@@ -31,7 +29,7 @@
 //! ```rust,ignore
 //! use nebula_validator::prelude::*;
 //!
-//! // Compose validators with .and() / .or() / .not()
+//! // Compose validators with.and() /.or() /.not()
 //! let username = min_length(3).and(max_length(20)).and(alphanumeric());
 //! assert!(username.validate("alice").is_ok());
 //!
@@ -50,7 +48,7 @@
 // ValidationError (<= 80 bytes) is the fundamental error type for all validators —
 // boxing it would add indirection to every validation call for no practical benefit.
 #![allow(clippy::result_large_err)]
-// Deep combinator nesting (And<Or<Not<...>, ...>, ...>) produces complex types
+// Deep combinator nesting (And<Or<Not<...>,...>,...>) produces complex types
 // that are inherent to the type-safe combinator architecture.
 #![allow(clippy::type_complexity)]
 
@@ -63,7 +61,7 @@ pub mod engine;
 pub mod error;
 /// Core traits, errors, and type-erased validators.
 pub mod foundation;
-/// Field visibility / required policy evaluation (ADR-0052).
+/// Field visibility / required policy evaluation.
 pub mod policy;
 /// Single-import convenience module.
 pub mod prelude;

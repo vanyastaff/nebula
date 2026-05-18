@@ -10,10 +10,9 @@
 //!
 //! Single observability crate covering primitive metric types, label interning,
 //! standard `nebula_*` metric names, cardinality safety, and Prometheus export.
-//! Per ADR-0046 the formerly separate `nebula-telemetry` primitives layer was
-//! absorbed into this crate; the cross-crate boundary was structurally
-//! unenforced and caused daily friction. Intra-crate module discipline
-//! (`mod` boundaries + `pub`/`pub(crate)`) replaces canon `[L1-§3.10]`.
+//! The formerly separate `nebula-telemetry` primitives layer was absorbed into
+//! this crate; intra-crate module discipline (`mod` boundaries + `pub`/`pub(crate)`)
+//! replaces a cross-crate boundary that was structurally unenforced.
 //!
 //! ## Public API
 //!

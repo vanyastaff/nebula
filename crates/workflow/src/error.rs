@@ -109,7 +109,7 @@ pub enum WorkflowError {
     /// rules: `max_attempts == 0`, `max_delay_ms < initial_delay_ms`,
     /// `backoff_multiplier <= 0` or non-finite, or `initial_delay_ms == 0`
     /// combined with `max_attempts > 1` (burst retry without backoff).
-    /// Per ROADMAP §M2.1 + ADR-0042 the engine relies on these constraints —
+    /// Per ROADMAP §M2.1 + the engine relies on these constraints —
     /// shift-left rejection at activation prevents nonsensical configs from
     /// reaching the runtime scheduler.
     #[classify(category = "validation", code = "WORKFLOW:INVALID_RETRY_CONFIG")]

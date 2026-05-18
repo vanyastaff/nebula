@@ -1,13 +1,13 @@
 //! # nebula-credential-builtin
 //!
 //! Built-in concrete credential types and the canonical
-//! `sealed_caps` module per ADR-0035. Plugin authors depend on
+//! `sealed_caps` module. Plugin authors depend on
 //! `nebula-credential` (the contract crate); first-party concrete
 //! types live here.
 //!
 //! ## Canonical `mod sealed_caps`
 //!
-//! Per ADR-0035 §3 (amended 2026-04-24-B), every crate that declares
+//! Every crate that declares
 //! capability phantom traits in `dyn` positions must provide a
 //! crate-private `sealed_caps` module with **per-capability** inner
 //! sealed traits. This crate is the canonical home for the built-in
@@ -22,7 +22,7 @@ extern crate self as nebula_credential_builtin;
 /// Canonical inner sealed traits for built-in capabilities.
 ///
 /// Crate-private. External crates cannot impl these — they declare
-/// their own `mod sealed_caps` per ADR-0035 §3.
+/// their own `mod sealed_caps`.
 ///
 /// `dead_code` is silenced for the П1 scaffold — these inner traits
 /// are emitted into `dyn` positions by the `#[capability]` macro in

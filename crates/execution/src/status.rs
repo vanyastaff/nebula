@@ -82,7 +82,7 @@ impl std::fmt::Display for ExecutionStatus {
 /// This does **not** replace [`ExecutionStatus`]. Status describes *what*
 /// terminal state was reached; this enum describes *why*.
 ///
-/// # Engine wiring (ROADMAP §M0.3, canon §4.5)
+/// # Engine wiring (ROADMAP §M0.3, )
 ///
 /// `ExplicitStop` / `ExplicitFail` are populated by the engine's
 /// frontier loop: a node returning `ActionResult::Terminate` records
@@ -99,7 +99,7 @@ impl std::fmt::Display for ExecutionStatus {
 /// persisted states that predate `terminated_by` still deserialise
 /// (the field is `#[serde(default)]`) and the engine treats them as
 /// not having received an explicit termination — preserving the
-/// canon §4.5 honesty contract.
+/// honesty contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]

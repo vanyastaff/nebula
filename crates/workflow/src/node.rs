@@ -44,7 +44,7 @@ pub struct NodeDefinition {
     /// Engine throttles execution to stay within the limit.
     #[serde(default)]
     pub rate_limit: Option<RateLimit>,
-    /// Slot-binding overrides per ADR-0042 (hybrid binding mechanism).
+    /// Slot-binding overrides (hybrid binding mechanism).
     ///
     /// Map key is the action's `slot_key` (the struct field name on the
     /// `#[derive(Action)]` type). Map value is a [`SlotBinding`] selecting
@@ -64,8 +64,8 @@ pub struct NodeDefinition {
 ///
 /// ```yaml
 /// rate_limit:
-///   max_requests: 60
-///   window_secs: 60
+/// max_requests: 60
+/// window_secs: 60
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateLimit {
@@ -208,7 +208,7 @@ impl NodeDefinition {
 
 /// Slot-binding override for an action's `#[resource]` / `#[credential]` field.
 ///
-/// Per ADR-0042, action authors declare slots on their `#[derive(Action)]`
+///, action authors declare slots on their `#[derive(Action)]`
 /// struct fields. The default binding id is the slot key (the field name).
 /// Workflow authors override per-node by populating
 /// [`NodeDefinition::slot_bindings`]; each entry selects either a resource

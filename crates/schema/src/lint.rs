@@ -1121,7 +1121,7 @@ pub(crate) enum AddressableKind {
 /// segment-wise regardless of JSON-Pointer leading-slash or escaping. Both the
 /// secret-value-predicate lint and the scrubbed root-rule predicate context
 /// (`crate::context::root_predicate_context_for`) consume this one traversal —
-/// keeping the addressable-path invariant single-owned (the ADR-0052 root
+/// keeping the addressable-path invariant single-owned (the root
 /// cause was two owners of one invariant drifting).
 pub(crate) fn walk_addressable_paths(
     fields: &[Field],

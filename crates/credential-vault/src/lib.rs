@@ -1,7 +1,7 @@
 //! # nebula-credential-vault
 //!
 //! HashiCorp Vault backend for Nebula's [`ExternalProvider`] /
-//! [`LeasedProvider`] trait surface (ADR-0051). Supports the two canonical
+//! [`LeasedProvider`] trait surface. Supports the two canonical
 //! Vault read shapes:
 //!
 //! - **KV v2 static secrets** (`/v1/{mount}/data/{path}`) — the default path
@@ -20,10 +20,10 @@
 //!
 //! [`ExternalReference::path`] is interpreted by prefix:
 //!
-//! | Prefix      | Backend route                | Resolution shape                                  |
+//! | Prefix | Backend route | Resolution shape |
 //! |-------------|------------------------------|---------------------------------------------------|
-//! | _(none)_    | `GET /v1/{kv_mount}/data/{path}` | `from_secret` (no lease)                      |
-//! | `dyn/<rest>`| `GET /v1/{rest}`              | `with_lease` (lease_id + TTL from response)      |
+//! | _(none)_ | `GET /v1/{kv_mount}/data/{path}` | `from_secret` (no lease) |
+//! | `dyn/<rest>`| `GET /v1/{rest}` | `with_lease` (lease_id + TTL from response) |
 //!
 //! `ExternalReference::version` is honoured for KV v2 (added as
 //! `?version=N`). `ExternalReference::field` is interpreted as a JSON-pointer-

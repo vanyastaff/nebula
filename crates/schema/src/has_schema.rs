@@ -29,9 +29,9 @@ pub trait HasSchema {
 /// single way `Action` / `Credential` / `Resource` consumers reach a
 /// companion type's schema. The associated-type bound (e.g. `Action::Input`,
 /// `Credential::Properties`, `Resource::Config`) is the sole source of truth;
-/// there is no per-trait `*_schema()` method (ADR-0052 P3). The returned
+/// there is no per-trait `*_schema()` method. The returned
 /// value is `Arc`-backed and cheap to clone; for derived types it is already
-/// memoized inside `#[derive(Schema)]`. Per ADR-0061 a caller may still wrap
+/// memoized inside `#[derive(Schema)]`. a caller may still wrap
 /// this in its own `OnceLock` if a `&'static` is required.
 #[must_use]
 pub fn schema_of<T: HasSchema>() -> ValidSchema {

@@ -24,7 +24,7 @@ pub enum NodeState {
     /// Failed but a retry is scheduled — `NodeExecutionState::next_attempt_at`
     /// holds the wake-up time. Transient retry state in the
     /// `Failed → WaitingRetry → Ready → Running` path for engine-level retry
-    /// per ADR-0042. Not terminal: a `WaitingRetry` node will eventually
+    ///. Not terminal: a `WaitingRetry` node will eventually
     /// transition back to `Ready`/`Running` (retry attempt) or to
     /// `Cancelled` (shutdown / explicit cancel during the wait).
     WaitingRetry,
@@ -104,7 +104,7 @@ mod tests {
         assert!(
             !NodeState::WaitingRetry.is_terminal(),
             "WaitingRetry must be non-terminal — engine flips it back \
-             to Ready when next_attempt_at fires (ADR-0042)"
+             to Ready when next_attempt_at fires"
         );
     }
 
@@ -122,14 +122,14 @@ mod tests {
             !NodeState::WaitingRetry.is_active(),
             "WaitingRetry is parked between attempts; the work is not \
              running — frontier loop's max_concurrent guard must not \
-             count it (canon §11.1)"
+             count it toward active concurrency"
         );
     }
 
     /// `WaitingRetry` is the parked-between-attempts state — distinct
     /// from a final `Failed`. `is_failure()` must return `false` so
     /// `failed_node_ids()` and `determine_final_status` only count
-    /// nodes whose retry budget is fully exhausted (ADR-0042).
+    /// nodes whose retry budget is fully exhausted.
     #[test]
     fn waiting_retry_is_not_failure() {
         assert!(!NodeState::WaitingRetry.is_failure());
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn serde_waiting_retry_uses_snake_case() {
-        // ADR-0042 wire format: rename_all = "snake_case" so the new
+        // wire format: rename_all = "snake_case" so the new
         // variant serializes as `"waiting_retry"`, matching the
         // existing `"failed"` / `"completed"` style. Out-of-tree
         // consumers (UI, API clients, audit log readers) must see this

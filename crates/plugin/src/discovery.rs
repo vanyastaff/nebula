@@ -17,7 +17,7 @@
 //!
 //! There is no per-plugin capability/scope model in this path: egress,
 //! credential, and filesystem mediation is the broker's responsibility
-//! (ADR-0025), not discovery (canon §12.6). The probe and the runtime
+//!, not discovery. The probe and the runtime
 //! sandbox spawn the binary with the same OS-level hardening.
 
 use std::{path::Path, sync::Arc, time::Duration};
@@ -41,7 +41,7 @@ use crate::{
 /// from.
 ///
 /// The `binary` is exposed so an engine-side composition root can key an
-/// engine-owned plugin-process pool on `(binary, scope)` per ADR-0025 §2.
+/// engine-owned plugin-process pool on `(binary, scope)`.
 /// The pre-existing `handler` (a `ProcessSandboxHandler` over one
 /// long-lived process) is unchanged — the binary is purely additive
 /// context for callers that pool processes themselves.
@@ -144,8 +144,8 @@ pub enum DiscoveryError {
 /// Probe a plugin binary and return its wire metadata.
 ///
 /// The probe spawns the binary with the same OS-level hardening as the
-/// runtime sandbox. There is no per-plugin capability grant (canon §12.6;
-/// scope model is the broker's per ADR-0025).
+/// runtime sandbox. There is no per-plugin capability grant (;
+/// scope model is the broker's ).
 ///
 /// Uses a **two-phase parse**: the response bytes are first parsed to a
 /// `serde_json::Value`, `kind` + `protocol_version` are checked, and only
@@ -260,7 +260,7 @@ enum SkipReason {
     /// per-action skip) because a plugin that lies about its action namespace
     /// cannot be trusted — fail fast and surface the violation at load time.
     /// Symmetric with [`crate::ResolvedPlugin::from`]'s fail-fast
-    /// behaviour for in-process plugins (ADR-0027 §7).
+    /// behaviour for in-process plugins.
     CrossNamespaceAction {
         descriptor_key: String,
         plugin_key: String,
@@ -465,7 +465,7 @@ async fn discover_one(
         credentials = 0,
         resources = 0,
         binary = %binary.display(),
-        "discovered out-of-process plugin (credentials/resources gated on ADR-0025 slice 1d)",
+        "discovered out-of-process plugin (credentials/resources gated on broker slice 1d)",
     );
 
     // Step 6: construct DiscoveredPlugin + ResolvedPlugin.
@@ -486,8 +486,8 @@ async fn discover_one(
 ///
 /// ## Why two outputs?
 ///
-/// The engine's `PluginRegistry` stores `Arc<dyn ActionFactory>` (per
-/// ADR-0043 §6 / Variant A). The runtime's `ActionRegistry` stores
+/// The engine's `PluginRegistry` stores `Arc<dyn ActionFactory>` per action key.
+/// The runtime's `ActionRegistry` stores
 /// `Arc<dyn StatelessHandler>`. Both wrappings require the concrete
 /// `Arc<RemoteAction>` — which is available during construction but lost
 /// after coercion. `discover_directory` performs both at construction time
@@ -496,8 +496,8 @@ async fn discover_one(
 /// `binary` so an engine-side pooling caller can key on `(binary, scope)`.
 ///
 /// Per-plugin capability/scope is **not** modeled here — egress, credential,
-/// and filesystem mediation is the broker's responsibility (ADR-0025), not
-/// this discovery path (canon §12.6).
+/// and filesystem mediation is the broker's responsibility, not
+/// this discovery path.
 pub async fn discover_directory(
     dir: &Path,
     registry: &mut PluginRegistry,

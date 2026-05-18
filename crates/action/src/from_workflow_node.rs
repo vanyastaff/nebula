@@ -1,17 +1,17 @@
 //! `FromWorkflowNode` — async factory trait that resolves slot bindings
 //! against a workflow node definition and an action context.
 //!
-//! Per ADR-0043 §9 (Phase 3 / Session 2), every concrete action implementing
+//! Every concrete action implementing
 //! [`Action`](crate::Action) ALSO implements [`FromWorkflowNode`]. The engine
 //! calls [`from_workflow_node`](FromWorkflowNode::from_workflow_node) once at
 //! dispatch time:
 //!
 //! 1. Read each declared slot field from `Self::dependencies()`.
-//! 2. For each slot, look up the override in `node.slot_bindings` (per ADR-0042 hybrid binding) —
-//!    falling back to the action's declared `default_id`.
+//! 2. For each slot, look up the override in `node.slot_bindings` ( hybrid binding) —
+//! falling back to the action's declared `default_id`.
 //! 3. Resolve the resource / credential through [`ActionContext`](crate::ActionContext) typed
-//!    helpers ([`acquire_resource_by_id`](crate::context::ActionContextExt::acquire_resource_by_id),
-//!    [`resolve_credential_by_id`](crate::context::ActionContextExt::resolve_credential_by_id)).
+//! helpers ([`acquire_resource_by_id`](crate::context::ActionContextExt::acquire_resource_by_id),
+//! [`resolve_credential_by_id`](crate::context::ActionContextExt::resolve_credential_by_id)).
 //! 4. Assemble `Self` with the resolved guards.
 //!
 //! `#[derive(Action)]` (Phase 3 / Session 3) generates the body of
@@ -46,16 +46,16 @@ use crate::context::ActionContext;
 /// # use std::future::Future;
 /// # struct SendTelegram { /* slot fields */ }
 /// impl FromWorkflowNode for SendTelegram {
-///     type Error = ActionError;
-///     fn from_workflow_node<'a>(
-///         node: &'a NodeDefinition,
-///         ctx: &'a dyn ActionContext,
-///     ) -> impl Future<Output = Result<Self, Self::Error>> + Send + 'a {
-///         async move {
-///             // resolve slot fields against ctx + node.slot_bindings here
-///             # unimplemented!()
-///         }
-///     }
+/// type Error = ActionError;
+/// fn from_workflow_node<'a>(
+/// node: &'a NodeDefinition,
+/// ctx: &'a dyn ActionContext,
+/// ) -> impl Future<Output = Result<Self, Self::Error>> + Send + 'a {
+/// async move {
+/// // resolve slot fields against ctx + node.slot_bindings here
+/// # unimplemented!()
+/// }
+/// }
 /// }
 /// ```
 pub trait FromWorkflowNode: Sized + Send + 'static {

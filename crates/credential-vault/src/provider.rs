@@ -96,7 +96,7 @@ impl VaultConfig {
 /// [`ExternalProvider`] + [`LeasedProvider`].
 ///
 /// See the crate-level docs for the path-shape convention and the request
-/// semantics. Errors classify per ADR-0051:
+/// semantics. Errors classify :
 ///
 /// - 404 → [`ProviderError::NotFound`] (chain fall-through).
 /// - 403 → [`ProviderError::AccessDenied`] (short-circuit).

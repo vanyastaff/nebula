@@ -1,4 +1,4 @@
-//! ADR-0052 (P2) lockdown #1: the ONLY schema→validator behavioral crossing
+//! (P2) lockdown #1: the ONLY schema→validator behavioral crossing
 //! symbols are `validate_rules_with_ctx` and `resolve_field_policies`.
 //!
 //! This is a symbol-level invariant, not a single-runtime-call one (nested
@@ -19,7 +19,7 @@ fn schema_crosses_into_validator_through_one_surface_only() {
     ] {
         assert!(
             !src.contains(forbidden),
-            "validated.rs must not contain `{forbidden}` (ADR-0052: single \
+            "validated.rs must not contain `{forbidden}` (single \
              validator crossing, no in-schema rule executor / code remap)"
         );
     }

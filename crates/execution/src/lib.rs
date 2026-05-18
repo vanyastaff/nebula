@@ -9,11 +9,8 @@
 //! **Role:** Execution State Machine + Journal + Idempotency Types.
 //! See `crates/execution/README.md`.
 //!
-//! **Canon:** §11.1 (execution authority), §11.3 (idempotency),
-//! §11.5 (persistence matrix), §12.2 (single lifecycle).
-//!
 //! **Maturity:** `stable` — state machine, journal, and plan types in active use.
-//! The engine does not retry nodes (canon §11.2); the canonical retry surface is
+//! The engine does not retry nodes; the canonical retry surface is
 //! `nebula-resilience` inside an action.
 //!
 //! ## Core Types

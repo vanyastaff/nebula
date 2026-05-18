@@ -30,7 +30,7 @@ pub use crate::port::PortKey;
 /// The engine does not retry actions: re-execution from a result variant is
 /// not part of the engine contract. The canonical retry surface is the
 /// `nebula-resilience` pipeline composed inside an action around outbound
-/// calls (canon §11.2).
+/// calls.
 ///
 /// All output fields are wrapped in [`ActionOutput<T>`] to support binary,
 /// reference, and stream data alongside structured values.
@@ -176,7 +176,7 @@ pub enum ActionResult<T> {
     /// / API / webhook consumers can distinguish ExplicitFail from a
     /// system-driven failure and ExplicitStop from natural completion.
     ///
-    /// See ROADMAP §M0.3 for the wiring contract and canon §4.5 for
+    /// See ROADMAP §M0.3 for the wiring contract and for
     /// the operational-honesty rule this closed.
     Terminate {
         /// Why the execution is ending.

@@ -53,7 +53,7 @@ pub fn validate_execution_transition(
 ///
 /// The retry-related edges (`Failed → WaitingRetry`,
 /// `WaitingRetry → Ready`, `WaitingRetry → Cancelled`) implement the
-/// engine-level retry path from ADR-0042: when the retry policy still
+/// engine-level retry path from : when the retry policy still
 /// has budget after a `Running → Failed` transition, the engine moves
 /// the node into `WaitingRetry` (parking it until
 /// `NodeExecutionState::next_attempt_at`), then back to `Ready` for the
@@ -307,7 +307,7 @@ mod tests {
         ));
     }
 
-    /// ADR-0042 — engine-level retry path:
+    /// — engine-level retry path:
     ///
     /// `Running → Failed → WaitingRetry → Ready → Running`
     ///
@@ -329,7 +329,7 @@ mod tests {
         assert!(can_transition_node(NodeState::Ready, NodeState::Running));
     }
 
-    /// ADR-0042 — cancel during retry wait must be expressible without
+    /// — cancel during retry wait must be expressible without
     /// a phantom `WaitingRetry → Failed → Cancelled` detour. The
     /// previous attempt's failure is already recorded in
     /// `NodeAttempt`; the cancel terminates the wait, not the attempt.

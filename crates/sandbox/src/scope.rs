@@ -1,6 +1,6 @@
 //! Credential-scope identity for keying long-lived plugin processes.
 //!
-//! `ScopeHash` is the per-process isolation key from ADR-0025 §2: two
+//! `ScopeHash` is the per-process isolation key from
 //! plugin invocations with a different bound credential-slot set MUST run
 //! in different processes, so a plugin can never name a slot outside its
 //! scope. This module computes the hash from caller-supplied slot-name
@@ -12,7 +12,7 @@
 use sha2::{Digest, Sha256};
 
 /// SHA-256 over the sorted, unambiguously-framed credential-slot-name set
-/// bound to a plugin invocation (ADR-0025 §2).
+/// bound to a plugin invocation.
 ///
 /// Opaque, fixed-size, cheap to compare/hash — suitable as a process-pool
 /// key and for the reattach identity tuple.
@@ -38,7 +38,7 @@ const DOMAIN: &[u8] = b"nebula.scope.v1";
 /// collision-safe: each slot name is length-prefixed, so `["ab", "c"]`
 /// and `["a", "bc"]` hash distinctly — without that, distinct bound sets
 /// could collide and merge two credential scopes into one process,
-/// breaking the ADR-0025 §2 isolation guarantee. The slots are treated
+/// breaking the. The slots are treated
 /// as an ordered multiset (no de-duplication): the scope is the exact
 /// bound set from workflow-config.
 #[must_use]
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn scope_hash_frames_slots_unambiguously() {
         // A naive concat-then-hash would collide these; length-prefixing
-        // must not. This is the ADR-0025 §2 isolation guarantee: a
+        // must not. This is the
         // distinct bound set => a distinct process key.
         assert_ne!(scope_hash(&["ab", "c"]), scope_hash(&["a", "bc"]));
         assert_ne!(scope_hash(&["a", "b"]), scope_hash(&["ab"]));

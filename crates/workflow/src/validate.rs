@@ -12,7 +12,8 @@ use crate::{
 /// Validate a single `RetryConfig` against the engine's invariants.
 ///
 /// Returns a list of human-readable rejection reasons; an empty list means the
-/// config is acceptable. Per ADR-0042 (layered retry):
+/// config is acceptable. Layered retry rules:
+///
 /// - `max_attempts == 0` is rejected — the field should be `None` to disable retries; zero retries
 ///   means the field is dead and indicates a modelling bug.
 /// - `initial_delay_ms == 0` with `max_attempts > 1` is rejected — burst retry with no backoff is
@@ -165,11 +166,11 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 
     // 9. Check per-node retry_policy validity. The workflow-default retry
     // policy was validated as step 1b (before the empty-nodes early return);
-    // here we only iterate the actual nodes. Per ADR-0042 the engine consumes
+    // here we only iterate the actual nodes. the engine consumes
     // both surfaces (`NodeDefinition.retry_policy` overriding
     // `WorkflowConfig.retry_policy`) — rejecting bad configs at this
     // shift-left point prevents them from reaching the runtime scheduler
-    // (canon §10).
+    //.
     for node in &definition.nodes {
         if let Some(ref retry) = node.retry_policy {
             for reason in validate_retry_config(retry) {
@@ -459,7 +460,7 @@ mod tests {
         );
     }
 
-    // ── retry_policy validation tests (ROADMAP §M2.1 / ADR-0042) ────────────
+    // ── retry_policy validation tests (ROADMAP §) ────────────
 
     /// Construct a workflow with a single node carrying the given retry config.
     fn def_with_node_retry(retry: RetryConfig) -> WorkflowDefinition {

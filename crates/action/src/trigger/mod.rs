@@ -12,7 +12,7 @@
 //! own transport-specific event types:
 //!
 //! - [`crate::webhook`] — HTTP webhooks, with `WebhookRequest` carrying method, path, query,
-//!   headers, and body.
+//! headers, and body.
 //! - [`crate::poll`] — pull-based periodic polling with cursor state.
 //!
 //! Both register their adapters against the dyn contract defined here
@@ -73,7 +73,7 @@ use crate::{
 /// triggers whose transport supplies a stable per-event id (webhook
 /// delivery id, queue message id) override to return `Some(...)`.
 /// Engine uses the key to suppress duplicate workflow executions per
-/// PRODUCT_CANON §11.3 idempotency.
+/// PRODUCT_ idempotency.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement TriggerAction",
     note = "implement `Source`, `Error`, and the `start`/`stop`/`handle` methods"
@@ -116,7 +116,7 @@ pub trait TriggerAction: Action {
     ///
     /// Default: `None`. Override when the transport supplies a stable
     /// per-event id (webhook delivery id, queue message id).
-    /// Per Tech Spec §15.12 F2 + PRODUCT_CANON §11.3 idempotency.
+    /// Per Tech Spec §15.12 F2 + PRODUCT_ idempotency.
     fn idempotency_key(
         &self,
         _event: &<Self::Source as TriggerSource>::Event,
@@ -141,11 +141,11 @@ pub trait TriggerAction: Action {
     ///
     /// ```ignore
     /// async fn handle(
-    ///     &self,
-    ///     _ctx: &(impl TriggerContext + ?Sized),
-    ///     _event: <Self::Source as TriggerSource>::Event,
+    /// &self,
+    /// _ctx: &(impl TriggerContext + ?Sized),
+    /// _event: <Self::Source as TriggerSource>::Event,
     /// ) -> Result<TriggerEventOutcome, ActionError> {
-    ///     Err(ActionError::fatal("trigger does not accept external events"))
+    /// Err(ActionError::fatal("trigger does not accept external events"))
     /// }
     /// ```
     fn handle(
@@ -368,12 +368,12 @@ pub trait TriggerHandler: Send + Sync + 'static {
     /// Implementations fall into one of two categories:
     ///
     /// 1. **Setup-and-return** — register an external listener (webhook, message queue consumer),
-    ///    then return immediately. The listener runs asynchronously outside this call. Example:
-    ///    `crate::webhook::WebhookTriggerAdapter`.
+    /// then return immediately. The listener runs asynchronously outside this call. Example:
+    /// `crate::webhook::WebhookTriggerAdapter`.
     ///
     /// 2. **Run-until-cancelled** — run the entire trigger loop inline, returning only when
-    ///    `ctx.cancellation` fires or a fatal error occurs. Example:
-    ///    `crate::poll::PollTriggerAdapter`.
+    /// `ctx.cancellation` fires or a fatal error occurs. Example:
+    /// `crate::poll::PollTriggerAdapter`.
     ///
     /// **Callers MUST spawn `start()` in a dedicated task** and must not
     /// assume it returns promptly. Calling sites that drive multiple

@@ -36,9 +36,9 @@ where
 /// use nebula_execution::context::ExecutionBudget;
 ///
 /// let budget = ExecutionBudget::default()
-///     .with_max_duration(Duration::from_secs(300))
-///     .with_max_output_bytes(10 * 1024 * 1024)
-///     .with_max_total_retries(50);
+///.with_max_duration(Duration::from_secs(300))
+///.with_max_output_bytes(10 * 1024 * 1024)
+///.with_max_total_retries(50);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionBudget {
@@ -61,10 +61,10 @@ pub struct ExecutionBudget {
     pub max_output_bytes: Option<u64>,
 
     /// Global cap on retry attempts summed across **all** nodes in
-    /// the execution (ADR-0042 §Consequences "Out of scope" + §M2.1
+    /// the execution (.1
     /// T4 acceptance). Complements per-node
     /// `RetryConfig::max_attempts`: the engine consults both on every
-    /// failure and whichever caps first wins (canon §11.2).
+    /// failure and whichever caps first wins.
     ///
     /// `None` = no global cap; per-node policy is the only retry
     /// gate. A `Some(0)` value disables engine-level retry entirely
@@ -131,7 +131,7 @@ impl ExecutionBudget {
         self
     }
 
-    /// Set the global retry cap (ADR-0042 §M2.1 T4).
+    /// Set the global retry cap.
     ///
     /// `0` disables engine-level retry entirely for this execution
     /// even when nodes declare a `RetryConfig`. Useful for tests and
@@ -256,7 +256,7 @@ mod tests {
         assert!(budget.validate_for_execution().is_err());
     }
 
-    /// ADR-0042 §M2.1 T2 — `max_total_retries` must round-trip
+    /// `max_total_retries` must round-trip
     /// through serde so `resume_execution` carries the same global
     /// cap the original run was started with.
     #[test]

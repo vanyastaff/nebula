@@ -6,7 +6,7 @@
 //! (webhook retry, queue redelivery, schedule replay).
 //!
 //! Not a secret — engine logs and metrics MAY include the key. For dedup
-//! windows and storage, see PRODUCT_CANON §11.3 idempotency.
+//! windows and storage, see PRODUCT_ idempotency.
 
 use std::fmt;
 

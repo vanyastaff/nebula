@@ -6,7 +6,7 @@
 //! discovery) and delegates execution to the long-lived `ProcessSandbox`
 //! handle via the existing `ProcessSandboxHandler`.
 //!
-//! Per ADR-0043 §6 / Phase 3, the typed [`nebula_action::Action`] trait is
+//! The typed [`nebula_action::Action`] trait is
 //! `Sized`/object-unsafe and requires static metadata — incompatible with
 //! the dynamic per-instance metadata `RemoteAction` carries. So the wrapper
 //! only provides the dyn-erased [`StatelessHandler`] surface; engine
@@ -80,7 +80,7 @@ impl StatelessHandler for RemoteAction {
 
 /// `ActionFactory` adapter for an out-of-process [`RemoteAction`].
 ///
-/// The host registry stores `Arc<dyn ActionFactory>` per ADR-0043 §6;
+/// The host registry stores `Arc<dyn ActionFactory>` ;
 /// at dispatch time the engine calls
 /// [`instantiate`](ActionFactory::instantiate) and gets an
 /// [`ErasedAction::Stateless`] wrapping the underlying `RemoteAction`'s

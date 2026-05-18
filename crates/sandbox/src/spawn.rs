@@ -9,7 +9,7 @@
 //! This is the **only** module in the crate that contains `unsafe`: the
 //! single `pre_exec` block that runs between `fork()` and `exec()` on
 //! Linux. The crate-level `#![deny(unsafe_code)]` stays in force; this
-//! module carries one narrowly-scoped `#[expect(unsafe_code, ...)]` around
+//! module carries one narrowly-scoped `#[expect(unsafe_code,...)]` around
 //! the real `pre_exec` call.
 //!
 //! Security enforcement (ADR 0006):
@@ -62,7 +62,7 @@ pub(crate) async fn spawn_and_dial(
     // `env_clear()` then only the host-controlled transport env: a
     // Phase-era plugin inherits **no** host environment. A
     // host-authored, scope-keyed env allowlist returns only with the
-    // broker (ADR-0025 §6), never as a plugin-declared capability.
+    // broker, never as a plugin-declared capability.
     let mut cmd = Command::new(binary);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -110,14 +110,14 @@ pub(crate) async fn spawn_and_dial(
     // dropped (#270). The task's lifecycle is bounded implicitly via
     // the chain:
     //
-    //   cmd.kill_on_drop(true)             (above, ~"kill_on_drop")
-    //     → dropping PluginHandle drops Child
-    //     → Child's Drop terminates the plugin process
-    //       (SIGKILL on Unix, TerminateProcess on Windows — both
-    //       close the child's stderr pipe handle as a side effect)
-    //     → plugin's stderr pipe closes
-    //     → drain_plugin_stderr observes EOF and returns
-    //     → detached task completes and is reaped
+    // cmd.kill_on_drop(true) (above, ~"kill_on_drop")
+    // → dropping PluginHandle drops Child
+    // → Child's Drop terminates the plugin process
+    // (SIGKILL on Unix, TerminateProcess on Windows — both
+    // close the child's stderr pipe handle as a side effect)
+    // → plugin's stderr pipe closes
+    // → drain_plugin_stderr observes EOF and returns
+    // → detached task completes and is reaped
     //
     // If a future refactor removes `kill_on_drop(true)`, make sure
     // the replacement shutdown path still reliably terminates the

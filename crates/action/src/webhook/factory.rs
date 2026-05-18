@@ -37,7 +37,7 @@ pub struct WebhookActivationSpec {
     pub action_kind: String,
     /// HMAC secret material as raw bytes. Storage layers should
     /// resolve this from a credential reference rather than store
-    /// raw bytes inline; see ADR-0049 for the secret-handling
+    /// raw bytes inline; see for the secret-handling
     /// rationale.
     pub secret: Vec<u8>,
     /// Replay window in seconds. `None` defers to the provider's

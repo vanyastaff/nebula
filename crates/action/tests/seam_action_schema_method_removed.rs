@@ -1,4 +1,4 @@
-//! Seam (ADR-0052 P3) — `Action::input_schema()`/`output_schema()` are
+//! Seam — `Action::input_schema()`/`output_schema()` are
 //! removed. Schema is reachable only via the `Input`/`Output: HasSchema`
 //! associated-type bound, exposed through `nebula_schema::schema_of`. This
 //! locks the convergence: the redundant per-trait schema methods do not

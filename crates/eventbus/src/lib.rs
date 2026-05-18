@@ -10,8 +10,8 @@
 //! Transport-only: no domain event types are defined here.
 //!
 //! This is an **in-process, ephemeral** channel — not a durable control plane.
-//! Per canon §4.5 / §12.2: anything requiring reliable delivery (cancel, dispatch
-//! signals) must use `execution_control_queue`, not this crate.
+//! Anything requiring reliable delivery (cancel, dispatch signals) must use
+//! `execution_control_queue`, not this crate.
 //! See `crates/eventbus/README.md` for the full role description.
 //!
 //! ## Role
@@ -41,18 +41,18 @@
 //!
 //! #[derive(Clone)]
 //! struct MyEvent {
-//!     id: u64,
+//! id: u64,
 //! }
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let bus = EventBus::<MyEvent>::new(64);
-//!     let mut sub = bus.subscribe();
+//! let bus = EventBus::<MyEvent>::new(64);
+//! let mut sub = bus.subscribe();
 //!
-//!     let outcome = bus.emit(MyEvent { id: 1 });
-//!     assert!(outcome.is_sent());
-//!     let event = sub.try_recv().expect("event must be available");
-//!     assert_eq!(event.id, 1);
+//! let outcome = bus.emit(MyEvent { id: 1 });
+//! assert!(outcome.is_sent());
+//! let event = sub.try_recv().expect("event must be available");
+//! assert_eq!(event.id, 1);
 //! }
 //! ```
 //!
@@ -76,11 +76,11 @@
 //! # async fn main() {
 //! # let bus = EventBus::<Event>::new(10);
 //! let mut sub = bus.subscribe();
-//! // ... emit 20 events with a slow subscriber ...
+//! //... emit 20 events with a slow subscriber...
 //! if let Some(_) = sub.recv().await {
-//!     if sub.lagged_count() > 0 {
-//!         println!("Fell behind by {} events", sub.lagged_count());
-//!     }
+//! if sub.lagged_count() > 0 {
+//! println!("Fell behind by {} events", sub.lagged_count());
+//! }
 //! }
 //! # }
 //! ```

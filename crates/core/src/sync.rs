@@ -4,14 +4,14 @@
 //! a future-friendly `get_or_init` flow. Two paths are supported:
 //!
 //! 1. **Pre-populated** via [`Lazy::with_value`] — used when the framework eagerly resolves a slot
-//!    before passing it to action code (the common case for `Lazy<ResourceGuard<R>>` fields the
-//!    macro emits).
+//! before passing it to action code (the common case for `Lazy<ResourceGuard<R>>` fields the
+//! macro emits).
 //! 2. **Deferred** via [`Lazy::new`] + [`Lazy::get_or_try_init`] — used when an action wants to
-//!    resolve a dependency only on the path that needs it. The initializer is provided per
-//!    `.get_or_try_init` call so callers can plug in the right async resolver (typed
-//!    `ResourceRef::resolve` or `CredentialRef::resolve` per ADR-0043).
+//! resolve a dependency only on the path that needs it. The initializer is provided per
+//! `.get_or_try_init` call so callers can plug in the right async resolver (typed
+//! `ResourceRef::resolve` or `CredentialRef::resolve` ).
 //!
-//! See ADR-0043 §3 (type-based optional + lazy via composable wrappers) for the
+//! See ) for the
 //! place this primitive occupies in the dependency-redesign cascade.
 //!
 //! ## Cancel safety
@@ -29,7 +29,7 @@ use tokio::sync::OnceCell;
 /// Async-aware lazy wrapper.
 ///
 /// `Lazy<X>` is the canonical wrapper for "resolve this dependency on first use,
-/// not at action construction time" per ADR-0043. The macro emits this around
+/// not at action construction time". The macro emits this around
 /// `ResourceGuard<R>` / `CredentialGuard<C::Scheme>` slot fields whose attribute
 /// declares lazy resolution; eager slots are resolved by the framework before
 /// `execute()` runs.
@@ -42,10 +42,10 @@ use tokio::sync::OnceCell;
 /// let lazy: Lazy<String> = Lazy::new();
 ///
 /// let value = lazy
-///     .get_or_try_init(async {
-///         Ok::<_, std::io::Error>(format!("computed-{}", 42))
-///     })
-///     .await?;
+///.get_or_try_init(async {
+/// Ok::<_, std::io::Error>(format!("computed-{}", 42))
+/// })
+///.await?;
 ///
 /// assert_eq!(value, "computed-42");
 /// ```

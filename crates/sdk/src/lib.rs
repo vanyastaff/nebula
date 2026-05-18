@@ -12,12 +12,12 @@
 //! use nebula_sdk::prelude::*;
 //!
 //! let metadata = ActionBuilder::new(action_key!("example.greet"), "Greet")
-//!     .with_description("A simple greeting action")
-//!     .build();
+//!.with_description("A simple greeting action")
+//!.build();
 //!
 //! let workflow = WorkflowBuilder::new("example_workflow")
-//!     .add_node("greet", "example_greet")
-//!     .build();
+//!.add_node("greet", "example_greet")
+//!.build();
 //!
 //! assert_eq!(metadata.base.name, "Greet");
 //! assert!(workflow.is_ok());
@@ -121,8 +121,8 @@ impl Error {
 /// use nebula_sdk::json;
 ///
 /// let value = json!({
-///     "name": "test",
-///     "count": 42
+/// "name": "test",
+/// "count": 42
 /// });
 /// ```
 pub use serde_json::json;
@@ -135,8 +135,8 @@ pub use serde_json::json;
 /// use nebula_sdk::params;
 ///
 /// let params = params! {
-///     "name" => "test",
-///     "count" => 42
+/// "name" => "test",
+/// "count" => 42
 /// };
 /// ```
 #[macro_export]
@@ -167,12 +167,12 @@ macro_rules! params {
 /// use nebula_sdk::workflow;
 ///
 /// let wf = workflow! {
-///     name: "my_workflow",
-///     nodes: [
-///         fetch:   "http.get"     => transform,
-///         transform: "json.map"   => store,
-///         store:   "db.insert",
-///     ]
+/// name: "my_workflow",
+/// nodes: [
+/// fetch: "http.get" => transform,
+/// transform: "json.map" => store,
+/// store: "db.insert",
+/// ]
 /// };
 /// ```
 #[macro_export]
@@ -202,8 +202,8 @@ macro_rules! workflow {
 /// Macro for defining a simple stateless action with a unit struct.
 ///
 /// Generates a unit `struct $name`, implements [`Action`](nebula_action::Action)
-/// (with static metadata + schemas + slot-binding [`Dependencies`](nebula_core::Dependencies),
-/// per ADR-0043 §6 / Variant A), and implements
+/// (with static metadata + schemas + slot-binding [`Dependencies`](nebula_core::Dependencies)),
+/// and implements
 /// [`StatelessAction`](nebula_action::StatelessAction) over the supplied
 /// `input` / `output` types.
 ///
@@ -219,16 +219,16 @@ macro_rules! workflow {
 /// use nebula_sdk::{prelude::*, simple_action};
 ///
 /// simple_action! {
-///     name: GreetAction,
-///     key: "demo.greet",
-///     input: serde_json::Value,
-///     output: serde_json::Value,
-///     async fn execute(&self, input, _ctx) {
-///         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
-///         Ok(ActionResult::success(serde_json::json!({
-///             "message": format!("Hello, {name}!"),
-///         })))
-///     }
+/// name: GreetAction,
+/// key: "demo.greet",
+/// input: serde_json::Value,
+/// output: serde_json::Value,
+/// async fn execute(&self, input, _ctx) {
+/// let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
+/// Ok(ActionResult::success(serde_json::json!({
+/// "message": format!("Hello, {name}!"),
+/// })))
+/// }
 /// }
 /// ```
 #[macro_export]

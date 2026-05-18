@@ -8,7 +8,7 @@
 
 /// Attribute parsing utilities.
 pub mod attrs;
-/// `CredentialRef<dyn X>` rewrite per ADR-0035 4.3 + Tech Spec 2.7.
+/// `CredentialRef<dyn X>` rewrite 4.3 + Tech Spec 2.7.
 pub mod credential_ref;
 /// Diagnostic helpers for compile errors.
 pub mod diag;

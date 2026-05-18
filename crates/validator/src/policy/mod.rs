@@ -1,4 +1,4 @@
-//! Field visibility / required policy evaluation (ADR-0052).
+//! Field visibility / required policy evaluation.
 //!
 //! Owns the *engine* for `When(Rule)` conditions. Callers get typed
 //! `Presence`/`Requiredness` verdicts — never a raw `bool` they could
@@ -196,7 +196,7 @@ pub struct FieldPolicyResolution<'a, P> {
     /// One plan per input decl, in input order.
     pub plans: Vec<FieldPlan<'a, P>>,
     /// `required` errors for required, absent fields — validator owns this
-    /// reporting (ADR-0052).
+    /// reporting.
     pub required_failures: ValidationErrors,
 }
 

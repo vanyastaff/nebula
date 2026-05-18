@@ -1,7 +1,7 @@
 //! Integration test - `#[action_phantom] + #[derive(Action)]` end-to-end.
 //!
 //! Verifies the documented "apply attribute first, derive sees rewritten
-//! struct" ordering behavior end-to-end (Tech Spec 2.7 / ADR-0035 §4.3).
+//! struct" ordering behavior end-to-end (Tech Spec 2.7 /.3).
 //! Closes I3 from the Stage 4 review.
 //!
 //! Approach: a regular cargo integration test rather than a `trybuild`
@@ -13,14 +13,14 @@
 //!
 //! The fixture is self-contained:
 //!
-//! - local `mod sealed_caps` per ADR-0035 §4.1
+//! - local `mod sealed_caps`
 //! - local `AcceptsBearer` marker
 //! - local service supertrait + `#[capability]` invocation
 //! - stand-in `CredentialRef<C: ?Sized>` (the real type does not ship in Stage 4; the
 //!   `#[action_phantom]` rewriter operates on syntax, not on the type's semantics, so a stub
 //!   suffices to exercise the rewrite)
 //! - a Pattern 2 struct that wires `#[action_phantom] #[derive(Action)]` over a `CredentialRef<dyn
-//!   LocalServiceBearer>` field
+//! LocalServiceBearer>` field
 //!
 //! The compile-fail companion is already covered by the standalone
 //! `compile_fail_pattern2_service_reject` probe - that probe exercises
@@ -43,7 +43,7 @@ use nebula_credential::{
 use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 
-// ADR-0035 §4.1 - the crate author declares the sealed module manually
+//.1 - the crate author declares the sealed module manually
 // at "crate root". For this fixture the test file is the crate root.
 mod sealed_caps {
     pub trait BearerSealed {}
@@ -83,7 +83,7 @@ pub trait LocalService: Credential {}
 
 /// Capability sub-trait declared via `#[capability]`. Emits the real
 /// trait + scheme blanket + sealed blanket + phantom companion + phantom
-/// blanket. With ADR-0035 §1 visibility-symmetry, `pub trait` here
+/// blanket. With, `pub trait` here
 /// produces `pub trait LocalServiceBearerPhantom`.
 #[nebula_credential_macros::capability(scheme_bound = AcceptsBearer, sealed = BearerSealed)]
 pub trait LocalServiceBearer: LocalService {}
@@ -141,7 +141,7 @@ impl<C: ?Sized> Default for CredentialRef<C> {
 // field) the type would be `CredentialRef<dyn LocalServiceBearer>` -
 // which fails to compile because `dyn LocalServiceBearer` triggers the
 // E0191 "unspecified associated types" gate from the `Credential`
-// supertrait closure (the whole reason ADR-0035 exists).
+// supertrait closure (the whole reason exists).
 
 #[nebula_action_macros::action_phantom]
 #[derive(Action)]
@@ -178,7 +178,7 @@ fn action_attr_with_derive_pattern2_compiles_and_metadata_roundtrips() {
 #[test]
 fn action_attr_with_derive_pattern2_dependencies_are_empty() {
     // Pattern 2 fields don't auto-register as `#[credential]` slots —
-    // the field type is `CredentialRef<dyn ...>`, not `CredentialGuard<C>`.
+    // the field type is `CredentialRef<dyn...>`, not `CredentialGuard<C>`.
     // The dependency list reflects the absence of `#[credential]` /
     // `#[resource]` annotations on the field. Verifies the derive's
     // dependencies-builder executed against the rewritten struct without
