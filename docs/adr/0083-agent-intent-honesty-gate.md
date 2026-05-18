@@ -135,12 +135,14 @@ reasoning that removed `resolve_cmd` from `_lib.sh`).
    **diff-scoped — legacy grandfathered**, so no workspace-wide churn and the
    `QUALITY_GATES.md` allowance stays intact):
    - **Net-LoC budget** — `git diff --numstat turn_base..HEAD` added−deleted
-     over a soft cap blocks unless the turn carries an explicit
-     `// budget-justified: <reason>` token (mirrors the `// guard-justified:`
-     escape-hatch idiom). Large diffs are a top rejection cause; the cap
-     forces a split or a justification.
-   - **New-file budget** — count of added files over a small cap warns→blocks
-     (ToF is the second strongest decay predictor).
+     over a soft cap (**starting value 400**, the research-cited large-change
+     threshold; calibrated from the audit log, not guessed again) blocks
+     unless the turn carries an explicit `// budget-justified: <reason>` token
+     (mirrors the `// guard-justified:` escape-hatch idiom). Large diffs are a
+     top rejection cause; the cap forces a split or a justification.
+   - **New-file budget** — added-file count over a small cap (**starting
+     value 5**) blocks unless `// budget-justified:` (ToF is the second
+     strongest decay predictor).
    - **Per-changed-fn complexity** — clippy is crate-scoped and the lints are
      `allow`, so this is a **deterministic heuristic over the diff**: for each
      function added/modified in `turn_base..HEAD`, take the enclosing-fn body
