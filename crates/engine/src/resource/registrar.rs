@@ -326,11 +326,12 @@ where
     /// Builds a typed registrar for resource type `R`.
     ///
     /// `resource_factory` yields the `R` value (with credential slots
-    /// already resolved by the engine per );
+    /// already resolved by the engine per registration scope).
     /// `topology_factory` yields the `TopologyRuntime<R>` declared for
     /// this kind. Both are invoked once per registration call.
     /// `acquire_for_slot` builds the erased acquire hook for a resolved
-    /// per-slot credential identity (see [`Manager::erased_acquire_*`]).
+    /// per-slot credential identity (for example
+    /// [`Manager::erased_acquire_resident`](nebula_resource::manager::Manager::erased_acquire_resident)).
     pub fn new(resource_factory: FRes, topology_factory: FTopo, acquire_for_slot: FAcq) -> Self {
         Self {
             resource_factory,
