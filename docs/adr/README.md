@@ -3,7 +3,7 @@
 Accepted ADRs for the **M6 resource finalization** and **M11 dependency redesign**
 cascade and later work. Numbering starts at **0042** in this directory.
 
-**Agents:** Read [\docs/README.md\](../README.md) first. Use **thematic groups** (below) before opening individual files.
+**Agents:** Read [docs/README.md](../README.md) first. Use **thematic groups** (below) before opening individual files.
 
 
 ---
@@ -79,3 +79,4 @@ Index only: [`HISTORICAL.md`](./HISTORICAL.md). Full text at `docs/adr/NNNN-*.md
 - M6 integration audit context — archived with other execution drafts (`docs/ARCHIVE.md`).
 
 | 0052-action file | [0069](./0069-action-surface-hybrid.md) | Renumbered 2026-05-18 |
+

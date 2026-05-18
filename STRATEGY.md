@@ -229,6 +229,6 @@ Product-user copilot flows and flashy demos come **after** this substrate is tru
 - Requirements: `docs/brainstorms/2026-05-17-strategy-llm-standard-bar-requirements.md`
 - Normative product rules: `docs/PRODUCT_CANON.md`
 - Integration mechanics: `docs/INTEGRATION_MODEL.md`
-- Doc consolidation gate (must pass before flagship implementation): `docs/plans/2026-05-17-002-refactor-doc-consolidation-plan.md`
+- Doc consolidation gate (must pass before flagship implementation): `docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md`
 - Flagship integrator platform (blocked on doc gate): `docs/plans/2026-05-17-001-feat-integrator-flagship-platform-plan.md`
 - Agent direction (proposed): `docs/adr/0057-ai-agent-sdk.md`
