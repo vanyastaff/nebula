@@ -5,21 +5,21 @@
 //! `POST .../resources` (create) are config-CRUD endpoints: they manage
 //! the persisted resource *definitions* for a workspace. Resource
 //! lifecycle (acquire/refresh/revoke) is owned by the engine and is
-//! intentionally NOT exposed over HTTP (INTEGRATION_MODEL §13.1).
+//! intentionally NOT exposed over HTTP (INTEGRATION_MODEL integration seam.1).
 //!
 //! `create_resource` validates the submitted `config` against the target
 //! `kind`'s `R::Config` schema through the engine's closed `kind →
 //! registrar` allowlist (`resource_registrars`) **before** persisting —
 //! schema + closed-set validation only, with no live registration into a
 //! `nebula_resource::Manager` (that is an engine-activation concern, not
-//! a config-create one — §13.1). The owning workspace is always the
+//! a config-create one — integration seam.1). The owning workspace is always the
 //! caller's authenticated workspace, never a request-body field, so a
 //! resource can never be created in another tenant's workspace.
 //!
 //! The resource catalog backend is optional on [`AppState`]
 //! (`resource_repo`); when it is not configured the endpoints report
 //! `503 Service Unavailable`, matching the action/plugin catalog
-//! convention rather than the retired ADR-0047 501 stub.
+//! convention rather than the retired stub-endpoint policy 501 stub.
 //!
 //! Tenant isolation for the single-resource read: `ResourceRepo::get` is
 //! looked up purely by id and is **not** workspace-scoped. The handler is
@@ -54,7 +54,7 @@ use crate::{
 /// [`ResourceSummary`] DTO.
 ///
 /// Centralised so every resource read path produces an identical
-/// projection: the raw `config` blob is never surfaced (ADR-0028 §7) and
+/// projection: the raw `config` blob is never surfaced (no secret echo) and
 /// the id is the prefixed `res_<ULID>` encoding. The `bytes_to_id` step is
 /// fallible (a stored id that is not exactly 16 bytes is a storage
 /// invariant violation), so the result is a `Result`.
@@ -152,7 +152,7 @@ fn phase_from_seam(phase: &str) -> ResourcePhase {
 /// the `(offset, limit)` window is over the live row set), so the
 /// handler does no `deleted_at` post-filter — paginating then filtering
 /// would yield sparse pages / skip live rows. The raw `config` blob is
-/// never surfaced — only the non-secret summary fields (ADR-0028 §7).
+/// never surfaced — only the non-secret summary fields (no secret echo).
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/resources",
@@ -218,7 +218,7 @@ pub async fn list_resources(
 ///
 /// Returns a single resource definition scoped to the caller's workspace.
 /// The raw `config` blob is never surfaced — only the non-secret summary
-/// fields (ADR-0028 §7).
+/// fields (no secret echo).
 ///
 /// All of the following collapse to **404 Not Found**, deliberately
 /// indistinguishable so no information leaks across tenants:
@@ -275,7 +275,7 @@ pub async fn get_resource(
 /// Validate `config` against `kind` through the engine's closed
 /// `kind → registrar` allowlist (schema + closed-set guard, **no** live
 /// `Manager` registration — that is an engine-activation concern,
-/// INTEGRATION_MODEL §13.1).
+/// INTEGRATION_MODEL integration seam.1).
 ///
 /// Shared by `create_resource` and `update_resource` so a PUT can never
 /// be a path to persist a config that a POST would have rejected. The
@@ -287,7 +287,7 @@ pub async fn get_resource(
 ///   `RegistrarError::UnknownKind`);
 /// - schema / closed-set failure ⇒ **422** with a generic detail. The
 ///   validator's raw report can restate submitted field values, so it is
-///   logged server-side and never echoed to the client (ADR-0028 §7).
+///   logged server-side and never echoed to the client (no secret echo).
 fn validate_resource_config(
     state: &AppState,
     kind: &str,
@@ -349,7 +349,7 @@ pub fn map_resource_update_storage_error(err: nebula_storage::StorageError) -> A
         } => {
             // The version numbers are non-secret optimistic-concurrency
             // metadata (not config/secret material), so echoing them is a
-            // useful, safe CAS diagnostic per ADR-0028 §7.
+            // useful, safe CAS diagnostic per no secret echo.
             ApiError::Conflict(format!(
                 "resource was modified concurrently (expected version {expected}, found {actual}); \
                  re-read and retry"
@@ -380,7 +380,7 @@ pub fn map_resource_create_storage_error(err: nebula_storage::StorageError) -> A
         // Unique-constraint violation — a duplicate workspace slug is the
         // expected case here. The `detail` is store-authored (constraint
         // name / generic text), not the submitted config, so it carries
-        // no secret material (ADR-0028 §7).
+        // no secret material (no secret echo).
         nebula_storage::StorageError::Duplicate { detail, .. } => {
             ApiError::Conflict(format!("resource already exists: {detail}"))
         },
@@ -452,7 +452,7 @@ fn created_by_bytes(principal: &Principal) -> Vec<u8> {
 /// Validation runs through the engine's closed `kind → registrar`
 /// allowlist (schema + closed-set guard, **no** live `Manager`
 /// registration — live registration is an engine-activation concern,
-/// INTEGRATION_MODEL §13.1). Outcomes:
+/// INTEGRATION_MODEL integration seam.1). Outcomes:
 /// - unknown `kind` ⇒ **409 Conflict** (the kind is not in the closed
 ///   allowlist — a non-retryable caller fault, classified exactly as the
 ///   engine's `RegistrarError::UnknownKind`);
@@ -462,7 +462,7 @@ fn created_by_bytes(principal: &Principal) -> Vec<u8> {
 /// - `config` fails the kind's schema or carries an undeclared,
 ///   secret-shaped field ⇒ **422 Unprocessable** with a generic detail
 ///   (the validator's raw report is logged server-side, never echoed —
-///   it could restate submitted values; ADR-0028 §7);
+///   it could restate submitted values; no secret echo);
 /// - validation backend not configured ⇒ **422** (fail closed: an
 ///   unvalidated config is never persisted).
 #[utoipa::path(
@@ -502,7 +502,7 @@ pub async fn create_resource(
     // Validate the config against the target kind BEFORE persistence. If
     // the validation surface is not wired, fail closed — persisting an
     // unvalidated config (which could carry an inlined secret) would
-    // violate ADR-0028 §7 / PRODUCT_CANON §3.5.
+    // violate no secret echo / product credential boundary.
     validate_resource_config(&state, &body.kind, body.config.clone())?;
 
     let resource_id = ResourceId::new();
@@ -568,7 +568,7 @@ pub async fn create_resource(
 ///   storage CAS-mismatch error mapped specifically — not a catch-all);
 /// - unknown `kind` ⇒ **409**; schema/closed-set failure or no
 ///   validation backend ⇒ **422** (fail closed; the validator's raw
-///   report is logged server-side, never echoed — ADR-0028 §7).
+///   report is logged server-side, never echoed — no secret echo).
 #[utoipa::path(
     put,
     path = "/orgs/{org}/workspaces/{ws}/resources/{res}",
@@ -736,8 +736,8 @@ pub async fn delete_resource(
 /// mutates one. Resource lifecycle (acquire / release / drain / reload)
 /// is engine-owned and is intentionally NOT exposed over HTTP — there is
 /// deliberately no acquire/release/drain route (INTEGRATION_MODEL
-/// §13.1). The response body carries phase/health only, never `config`
-/// or credential material (ADR-0028 §7).
+/// integration seam.1). The response body carries phase/health only, never `config`
+/// or credential material (no secret echo).
 ///
 /// Tenant isolation composes with the read path. The runtime
 /// `nebula_resource::Manager` is keyed by `(ResourceKey, ScopeLevel)`,

@@ -1,6 +1,6 @@
 //! ResourceAction Output marker — `ResourceProduces<R>`.
 //!
-//! Per ADR-0043 §4 (Variant A trait shape), the base [`Action`](crate::Action)
+//! For the base [`Action`](crate::Action)
 //! trait has `type Output` for *what this action produces*. For
 //! `ResourceAction`, the produced thing is a scoped resource binding that
 //! downstream nodes consume via `ctx.resource::<R>()`. There is no flowing
@@ -16,8 +16,8 @@
 //!
 //! ```ignore
 //! pub trait ResourceAction:
-//!     Action<Output = ResourceProduces<<Self as ResourceAction>::Resource>>
-//! { ... }
+//! Action<Output = ResourceProduces<<Self as ResourceAction>::Resource>>
+//! {... }
 //! ```
 //!
 //! so the compiler enforces that a ResourceAction's Output is the marker

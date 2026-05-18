@@ -3,7 +3,7 @@
 //! Each function takes an `AppState` reference plus domain-specific parameters
 //! and returns `ApiResult`.
 //!
-//! ## §4.5 honesty split (Phase 4)
+//! ## honest capability honesty split (Phase 4)
 //!
 //! The CRUD subset (`create` / `get` / `update` / `delete` / `list`)
 //! persists over the wired [`nebula_storage::credential::InMemoryStore`]
@@ -15,10 +15,10 @@
 //! 503** (`ApiError::ServiceUnavailable`): `test` / `refresh` / `revoke`
 //! / `resolve` / `continue_resolve` need a `CredentialRegistry` to
 //! dispatch a concrete `Credential` and an engine-owned resolver/refresh
-//! orchestrator (`nebula-engine::credential`, ADR-0030 / ADR-0041 — see
+//! orchestrator (`nebula-engine::credential`, engine refresh orchestration — see
 //! `docs/MATURITY.md` "engine-owned `credential` runtime surface").
 //! Neither is wired into `AppState`, so faking success would be a
-//! §4.5 false capability (the worst class for a credential surface).
+//! honest capability false capability (the worst class for a credential surface).
 //!
 //! Note: the generic `resolve_credential` / `continue_resolve`
 //! functions are honest-503 at the function boundary, and their routes
@@ -32,7 +32,7 @@
 //! strictly ULID-validated. The honest-503 is pinned by the unit test
 //! below and the `credential_e2e` route-reachability regression guard.
 //!
-//! ## §12.5 secret handling
+//! ## credential secrecy secret handling
 //!
 //! - The credential `data` blob arrives **write-only**: it is wrapped in
 //!   [`nebula_credential::SecretString`] for its in-process lifetime and
@@ -125,7 +125,7 @@ pub(crate) fn scoped_store(
 /// `EncryptionLayer` is composed** — not wired here, so the in-memory
 /// store keeps the raw bytes in plaintext-at-rest; see the operator
 /// warning in `crates/api/README.md`). Production deployments wrap the
-/// store with `nebula_storage`'s `EncryptionLayer` (ADR-0032).
+/// store with `nebula_storage`'s `EncryptionLayer` (storage credential layers).
 #[derive(Serialize, Deserialize)]
 struct PersistedSecretData {
     #[serde(with = "nebula_credential::serde_secret")]
@@ -167,8 +167,8 @@ fn encode_secret_data(data: &serde_json::Value) -> ApiResult<Vec<u8>> {
 /// other request-validation failure).
 ///
 /// `CredentialFieldError` carries only an RFC-6901 path, a validator code,
-/// and a static message — never the submitted value (ADR-0034 redaction;
-/// ADR-0052 P4). The mapping introduces no value either.
+/// and a static message — never the submitted value (credential redaction redaction;
+/// credential-schema validation). The mapping introduces no value either.
 fn credential_validation_error(
     errs: Vec<crate::ports::credential_schema::CredentialFieldError>,
 ) -> ApiError {
@@ -186,11 +186,11 @@ fn credential_validation_error(
     }
 }
 
-/// ADR-0052 P4 (V2): validate credential `data` against the credential
+/// credential-schema validation: validate credential `data` against the credential
 /// type's resolved schema **before persist**. Authority sits with the
 /// validator (invoked behind the [`CredentialSchemaPort`]). When no port
 /// is configured the request is rejected with 503 — credential `data` is
-/// **never** persisted unvalidated (closes the §4.5/§10 fail-open the
+/// **never** persisted unvalidated (closes the honest capability/§10 fail-open the
 /// handler docstring previously mis-claimed was closed).
 ///
 /// [`CredentialSchemaPort`]: crate::ports::credential_schema::CredentialSchemaPort
@@ -329,7 +329,7 @@ fn map_store_err(err: StoreError, cred: &str) -> ApiError {
 }
 
 /// Fetch a credential, treating a cross-workspace / unknown id as a
-/// flat 404 (no existence disclosure, canon §12.4 / Phase-2 pattern).
+/// flat 404 (no existence disclosure, problem+json error seam / Phase-2 pattern).
 async fn load(state: &AppState, owner_id: &str, cred: &str) -> ApiResult<StoredCredential> {
     scoped_store(state, owner_id)
         .get(cred)
@@ -349,7 +349,7 @@ pub async fn create_credential(
     owner_id: &str,
     req: CreateCredentialRequest,
 ) -> ApiResult<CredentialResponse> {
-    // ADR-0052 P4 (V2): validate `data` against the type's schema BEFORE
+    // credential-schema validation: validate `data` against the type's schema BEFORE
     // any persist/encode. No port ⇒ 503 (never persist unvalidated).
     validate_credential_data(state, &req.credential_key, &req.data)?;
 
@@ -446,7 +446,7 @@ pub async fn update_credential(
 
     // Re-encode the secret only when the caller supplied new data;
     // otherwise carry the existing opaque blob through untouched.
-    // ADR-0052 P4 (V2): when new `data` is supplied, validate it against
+    // credential-schema validation: when new `data` is supplied, validate it against
     // the (unchanged) credential type's schema before re-encode/persist.
     let data = match req.data.as_ref() {
         Some(value) => {
@@ -557,9 +557,9 @@ pub async fn list_credentials(
 /// **Honest 503.** A real test requires dispatching the registered
 /// `Credential`'s `Testable::test` (an outbound provider call). No
 /// `CredentialRegistry` is wired into `AppState`, and test dispatch is
-/// engine-owned (`nebula-engine::credential`, ADR-0030 — see
+/// engine-owned (`nebula-engine::credential`, engine credential orchestration — see
 /// `docs/MATURITY.md`). A "test" that does not contact the provider
-/// would be a §4.5 false capability.
+/// would be a honest capability false capability.
 pub async fn test_credential(
     _state: &AppState,
     _org: &str,
@@ -576,8 +576,8 @@ pub async fn test_credential(
 
 /// Force a token refresh for the credential.
 ///
-/// **Honest 503.** Refresh orchestration is engine-owned (ADR-0030 /
-/// ADR-0041; the L2 refresh coordinator lives in
+/// **Honest 503.** Refresh orchestration is engine-owned (engine credential orchestration /
+/// refresh coordinator; the L2 refresh coordinator lives in
 /// `nebula-engine::credential::refresh`). The API does not own a
 /// refresh path end-to-end, so this stays honest rather than faking a
 /// successful refresh.
@@ -589,7 +589,7 @@ pub async fn refresh_credential(
 ) -> ApiResult<RefreshCredentialResponse> {
     Err(ApiError::ServiceUnavailable(
         "credential refresh is engine-owned (RefreshCoordinator in \
-         nebula-engine::credential, ADR-0030/ADR-0041) and not exposed \
+         nebula-engine::credential, engine refresh orchestration) and not exposed \
          through this API build"
             .into(),
     ))
@@ -669,9 +669,9 @@ pub async fn continue_resolve(
 /// **Honest 503.** Enumerating registered types + their schemas
 /// requires a `CredentialRegistry`; none is wired into `AppState`.
 /// Returning a hand-rolled catalog would misrepresent what is actually
-/// registered (§4.5).
+/// registered (honest capability).
 /// Map a port [`CredentialTypeDescriptor`] to the wire DTO, applying the
-/// api-owned public projection to the schema (ADR-0052 P4 V3 + #6 — the
+/// api-owned public projection to the schema (credential-schema port + #6 — the
 /// raw `json_schema()` export's `x-nebula-root-rules` / predicate operands
 /// are stripped before the unauthenticated wire).
 fn credential_type_info_from_descriptor(
@@ -697,8 +697,8 @@ fn credential_type_info_from_descriptor(
 const NO_CRED_SCHEMA_PORT: &str =
     "credential type discovery unavailable: no credential-schema port configured";
 
-/// ADR-0052 P4 (V3): list registered credential types with their
-/// public-projected input schema. No port ⇒ honest 503 (§4.5).
+/// credential-schema port: list registered credential types with their
+/// public-projected input schema. No port ⇒ honest 503 (honest capability).
 pub async fn list_credential_types(state: &AppState) -> ApiResult<ListCredentialTypesResponse> {
     let port = state
         .credential_schema
@@ -712,7 +712,7 @@ pub async fn list_credential_types(state: &AppState) -> ApiResult<ListCredential
     Ok(ListCredentialTypesResponse { types })
 }
 
-/// ADR-0052 P4 (V3): one credential type by key. No port ⇒ honest 503;
+/// credential-schema port: one credential type by key. No port ⇒ honest 503;
 /// unknown key ⇒ 404 (credential *types* are public catalog info, so
 /// non-existence disclosure is non-sensitive — unlike credential
 /// *instances*, which are flat-404 per IDOR rules).
@@ -737,7 +737,7 @@ mod tests {
     };
 
     /// Permissive port so the CRUD/secret-projection unit tests still
-    /// exercise persistence after ADR-0052 P4 closed the
+    /// exercise persistence after credential-schema validation closed the
     /// unvalidated-persist fail-open (the no-port → 503 behavior is
     /// covered by `tests/seam_credential_write_path_validation.rs`).
     struct PermissivePort;
@@ -784,7 +784,7 @@ mod tests {
     }
 
     /// The blob round-trips through `serde_secret`, and the redaction
-    /// envelope's `Debug` never spells the plaintext (§12.5).
+    /// envelope's `Debug` never spells the plaintext (credential secrecy).
     #[test]
     fn secret_data_envelope_redacts_and_round_trips() {
         let secret = "sk-unit-NEVER-LEAK-9f9f";
@@ -809,7 +809,7 @@ mod tests {
         assert_eq!(redacted, "\"[REDACTED]\"");
     }
 
-    /// §4.5: the engine-owned / registry-absent functions return a
+    /// honest capability: the engine-owned / registry-absent functions return a
     /// typed honest 503 — never a faked success — even at the function
     /// boundary (independent of route shadowing).
     #[tokio::test]
@@ -853,7 +853,7 @@ mod tests {
             .await,
             Err(ApiError::ServiceUnavailable(_))
         ));
-        // ADR-0052 P4 V3: `list_credential_types`/`get_credential_type`
+        // credential-schema port: `list_credential_types`/`get_credential_type`
         // are no longer engine-owned-503 — they are port-backed (a
         // permissive port is wired in `test_state()`). Their no-port → 503
         // behavior is covered by

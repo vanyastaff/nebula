@@ -65,7 +65,7 @@ pub struct PluginDetailResponse {
     pub description: String,
     /// Bundle semver version (e.g. `"1.2.0"`). One plugin, one version —
     /// multi-version runtime registry was removed in the plugin load-path
-    /// stabilization (ADR-0027).
+    /// stabilization.
     pub version: String,
     /// Group hierarchy for UI categorization
     pub group: Vec<String>,

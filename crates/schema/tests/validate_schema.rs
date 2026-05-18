@@ -323,7 +323,7 @@ fn length_max_rule_violated() {
     let report = schema.validate(&values).unwrap_err();
     // Rule-failure codes are surfaced verbatim from nebula-validator (no
     // schema-side remap); a `max_length` rule reports the native
-    // `max_length` code. See ADR-0052 (P2 amendment).
+    // `max_length` code. See (P2 amendment).
     assert!(
         report.errors().any(|e| e.code == "max_length"),
         "expected max_length error, codes: {:?}",
@@ -679,9 +679,9 @@ fn nested_required_when_is_enforced_not_fail_open() {
         .expect("schema builds");
 
     let values = FieldValues::from_json(json!({
-        "auth": { "mode": "oauth" }
-        // secret_token absent
-    }))
+           "auth": { "mode": "oauth" }
+    // secret_token absent
+       }))
     .unwrap();
 
     let report = schema

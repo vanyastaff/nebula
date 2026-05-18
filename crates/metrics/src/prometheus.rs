@@ -118,9 +118,7 @@ fn counter_help(name: &str) -> &'static str {
             "Total resolver reauth-required persist attempts that exhausted CAS retries."
         },
         NEBULA_ENGINE_LEASE_CONTENTION_TOTAL => "Total engine execution-lease contention events.",
-        NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL => {
-            "Total control-queue reclaim sweep outcomes (ADR-0017)."
-        },
+        NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL => "Total control-queue reclaim sweep outcomes.",
         NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL => {
             "Total webhook HMAC signature failures (labeled by reason)."
         },
@@ -358,7 +356,7 @@ fn escape_label_value(value: &str) -> String {
 ///
 /// Dynamically iterates all entries in the registry — including labeled
 /// metrics — via `snapshot_counters`, `snapshot_gauges`, and
-/// `snapshot_histograms`.  Entries are grouped by metric name so each family
+/// `snapshot_histograms`. Entries are grouped by metric name so each family
 /// gets a single `# HELP` / `# TYPE` header, matching the Prometheus
 /// exposition format spec.
 #[must_use]

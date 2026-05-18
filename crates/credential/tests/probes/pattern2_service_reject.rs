@@ -17,7 +17,7 @@ use nebula_credential::{
 use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 
-// Per ADR-0035 4.1, the crate author declares `mod sealed_caps`
+// Per capability macro 4.1, the crate author declares `mod sealed_caps`
 // manually at crate root with one inner trait per capability. The
 // fixture is the "crate" here.
 mod sealed_caps {

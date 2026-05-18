@@ -1,7 +1,7 @@
-//! Canon §13 knife scenario — end-to-end integration test.
+//! integration seam knife scenario — end-to-end integration test.
 //!
-//! This file covers §13 steps 1–6 as specified in
-//! `docs/PRODUCT_CANON.md §13` and the workspace health audit
+//! This file covers integration seam steps 1–6 as specified in
+//! `docs/PRODUCT_CANON.md integration seam` and the workspace health audit
 //! (`docs/ARCHIVE.md (removed execution specs) §8
 //! Sprint A1 item #3`).
 //!
@@ -22,13 +22,13 @@
 //! | 5 | `POST /executions/:id/cancel` → row = `cancelled`, outbox holds exactly Start + Cancel (both `Pending`) | `knife_scenario_end_to_end_via_port` |
 //! | 6 | Cancel state + control signal commit atomically even if the legacy queue handle fails | `knife_step6_cancel_control_signal_is_atomic_with_state` |
 //!
-//! ## Consumer-side §13 (engine dispatch end-to-end)
+//! ## Consumer-side integration seam (engine dispatch end-to-end)
 //!
 //! The producer side above asserts the API writes the execution row and
 //! enqueues the control command. The consumer side — the engine-owned
 //! `EngineControlDispatch` draining the durable queue and driving the
 //! workflow to a terminal state (Created → Completed on `Start`, Running
-//! → Cancelled on `Cancel` via the live frontier loop, plus the ADR-0008
+//! → Cancelled on `Cancel` via the live frontier loop, plus the durable control queue
 //! §5 redelivery-idempotency contract) — is asserted on the same spec-16
 //! port by `crates/engine/tests/control_dispatch.rs`. That is the
 //! canonical home for the dispatch loop now that the engine consumes the
@@ -48,14 +48,14 @@ use tower::ServiceExt;
 // The legacy failing control queue (`AlwaysFailControlQueue` +
 // `create_state_with_failing_queue`) and the engine-seam harness
 // (`engine_seam::{persist_slow_workflow, spawn_engine_consumer}`) live in
-// the shared `common` module — see `tests/common/mod.rs`. The §13 step-6
+// the shared `common` module — see `tests/common/mod.rs`. The integration seam step-6
 // test reuses the placeholder scope every port store binds to via
 // `common::port_scope`.
 use common::port_scope as knife_scope;
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-/// Canon §13 steps 1–5 end-to-end: define → activate → start → observe
+/// integration seam steps 1–5 end-to-end: define → activate → start → observe
 /// → cancel, through the scoped storage port.
 ///
 /// The workflow / execution / control-queue surface is the spec-16 port
@@ -264,7 +264,7 @@ async fn knife_scenario_end_to_end_via_port() {
     );
 
     // Outbox now holds the Start (step 3) + Cancel (step 5), both
-    // Pending — the §12.2 same-logical-operation guarantee, asserted
+    // Pending — the durable control queue same-logical-operation guarantee, asserted
     // through the port snapshot (typed id, opaque `execution_id`
     // string — no UTF-8-of-ULID decode).
     let queued = control_queue.snapshot();
@@ -356,13 +356,13 @@ async fn knife_step6_cancel_control_signal_is_atomic_with_state() {
     );
 }
 
-// ── Step 3 end-to-end (ADR-0008 A2) ───────────────────────────────────────────
+// ── Step 3 end-to-end (control-queue start dispatch) ───────────────────────────────────────────
 //
-// The `knife_scenario_end_to_end` test above asserts the PRODUCER side of §13
+// The `knife_scenario_end_to_end` test above asserts the PRODUCER side of integration seam
 // step 3 — the API writes the execution row and enqueues `Start` onto the
 // durable control queue (#332). This separate test asserts the CONSUMER side:
-// the engine-owned `EngineControlDispatch` (ADR-0008 A2) drains the queue and
-// actually drives the workflow to `Completed`, closing the §4.5 gap that was
+// the engine-owned `EngineControlDispatch` (control-queue start dispatch) drains the queue and
+// actually drives the workflow to `Completed`, closing the honest capability gap that was
 // still open after #332 landed.
 //
 // The two tests intentionally stand up separate `AppState`s — the producer
@@ -407,12 +407,12 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
     }
 }
 
-/// Canon §13 step 3 end-to-end (ADR-0008 A2).
+/// integration seam step 3 end-to-end (control-queue start dispatch).
 ///
 /// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
 /// over shared in-memory repos, POSTs `/workflows/:id/executions`, and polls
 /// the repo until the execution transitions all the way to `Completed`. This
-/// exercises the full §12.2 loop that ADR-0008 promised:
+/// exercises the full durable control queue loop that durable control queue promised:
 ///
 /// ```text
 /// POST /executions
@@ -420,7 +420,7 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
 ///   → execution_control_queue.enqueue(Start)
 ///   → ControlConsumer.claim_pending
 ///   → EngineControlDispatch::dispatch_start
-///   → WorkflowEngine::resume_execution (ADR-0015 lease scope)
+///   → WorkflowEngine::resume_execution (execution lease scope lease scope)
 ///   → node run → transition to Completed
 ///   → mark_completed on the queue row
 /// ```
@@ -535,7 +535,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     // `AppState` stores **raw** port handles and applies the per-request
     // tenant scope in its accessors; the engine still calls its handles
     // with the internal `engine_scope()` placeholder (a separate, tracked
-    // follow-up — see ADR-0072 "Known follow-up: engine per-execution
+    // follow-up — see storage port migration "Known follow-up: engine per-execution
     // tenant scoping"). Wrap the engine-side handles in `nebula-tenancy`
     // decorators bound to `knife_scope()` (= `port_scope()`, the scope
     // the API derives and this test seeded the workflow/execution under)
@@ -629,7 +629,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     //
     // Poll the repo because the consumer loop is cross-task; a small timeout
     // tolerates scheduler jitter on slow test hosts. A fail here means the
-    // §4.5 gap #332 was only half-closed — producer works, consumer does not.
+    // honest capability gap #332 was only half-closed — producer works, consumer does not.
     let final_status = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             // Read through the same scoped port handle the engine was
@@ -665,7 +665,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     let _ = consumer_handle.await;
 }
 
-// ── Knife step 5 end-to-end (ADR-0008 A3) ──────────────────────────────────
+// ── Knife step 5 end-to-end (control-queue terminate dispatch) ──────────────────────────────────
 //
 // Symmetric to `knife_step3_engine_dispatches_start_end_to_end`. The producer
 // half — `POST /cancel` writes the `Cancelled` row and enqueues `Cancel` — is
@@ -690,7 +690,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
 // `common::engine_seam` harness (byte-behaviorally identical to the
 // original inline wiring — the move is mechanical).
 
-/// Canon §13 step 5 end-to-end (ADR-0008 A3).
+/// integration seam step 5 end-to-end (control-queue terminate dispatch).
 ///
 /// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
 /// over shared in-memory repos, starts a long-running execution, POSTs

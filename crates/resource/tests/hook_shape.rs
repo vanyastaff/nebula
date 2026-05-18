@@ -1,5 +1,5 @@
 //! Compile-time assertion of the hook shape (&self + slot + &Runtime,
-//! plus on_credential_revoke; ADR-0044/0067). Body is never run;
+//! plus on_credential_revoke; slot model/0067). Body is never run;
 //! compilation is the test.
 // guard-justified: this file is a type-shape probe — items exist only to
 // be type-checked, never executed, so dead_code/unused are inherent.

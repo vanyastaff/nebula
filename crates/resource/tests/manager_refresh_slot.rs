@@ -1,5 +1,5 @@
 //! `Manager::{refresh_slot, revoke_slot}` — port of the per-slot rotation
-//! entry points (ADR-0044).
+//! entry points (slot model).
 //!
 //! These exercise the real `Manager::register_resident` + `ResourceKey` /
 //! `ScopeLevel` API. The test resource carries a real
@@ -218,7 +218,7 @@ mod counting {
     /// Slot identities for the two-tenant isolation fixture. Two distinct
     /// resolved-credential identities at the same `(key, Global)` occupy two
     /// distinct registry rows — each its own `ManagedResource` with its own
-    /// per-resource in-flight counter (ADR-0067 §Deferred).
+    /// per-resource in-flight counter (per-resource revoke deferral).
     pub const SLOT_A: u64 = 0xA;
     pub const SLOT_B: u64 = 0xB;
 
@@ -571,7 +571,7 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
     );
 }
 
-/// ADR-0044/0036 "no authenticated traffic on a revoked credential
+/// slot + isolation model "no authenticated traffic on a revoked credential
 /// post-revoke" — the revoke-vs-acquire TOCTOU close.
 ///
 /// The acquire-side taint *gate* runs before the in-flight counter is
@@ -661,7 +661,7 @@ async fn revoke_vs_acquire_post_taint_recheck_rejects_late_acquire() {
 
 /// Multi-threaded revoke-vs-acquire stress: many acquire loops race a single
 /// `revoke_slot` on a `multi_thread` runtime. The binding invariant
-/// (ADR-0044/0036): **no acquire may return a live guard once `revoke_slot`
+/// (slot + isolation model): **no acquire may return a live guard once `revoke_slot`
 /// has returned** — a guard handed out on the revoked credential after the
 /// revoke completed is exactly the bug. A per-acquire flag, set the instant
 /// the revoke future resolves, makes "this guard was issued after revoke
@@ -739,7 +739,7 @@ async fn revoke_vs_acquire_multithread_no_guard_after_revoke() {
                         ok_before_revoke.fetch_add(1, Ordering::AcqRel);
                     }
                     // A live guard observed after the revoke future resolved
-                    // is the exact ADR-0044/0036 violation.
+                    // is the exact slot + isolation model violation.
                     if revoke_done.load(Ordering::Acquire) {
                         guards_after_revoke.fetch_add(1, Ordering::AcqRel);
                     }
@@ -801,7 +801,7 @@ async fn revoke_vs_acquire_multithread_no_guard_after_revoke() {
     );
 }
 
-/// ADR-0067 §Deferred: a revoke on one resource must NOT block on in-flight
+/// per-resource revoke deferral: a revoke on one resource must NOT block on in-flight
 /// traffic to an *unrelated* resource. Two tenants (`SLOT_A` / `SLOT_B`) of
 /// the same resource type occupy two distinct registry rows, each with its
 /// own per-resource in-flight counter. With a long-lived lease held on B,

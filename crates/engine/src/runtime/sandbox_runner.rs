@@ -63,7 +63,7 @@ impl SandboxedContext {
 /// - `ProcessSandbox` — child-process dispatch over a JSON
 ///   envelope with Linux OS-level hardening (community plugins)
 ///
-/// WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md` §12.6.
+/// WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md`.
 #[async_trait]
 pub trait SandboxRunner: Send + Sync {
     /// Execute an action within the sandbox.

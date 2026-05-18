@@ -3,7 +3,7 @@
 //! `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` returns the
 //! persisted resource definitions for a workspace. These DTOs are the
 //! non-secret summary projection of `nebula_storage`'s `ResourceEntry`
-//! — the raw `config` blob is deliberately not exposed (ADR-0028 §7).
+//! — the raw `config` blob is deliberately not exposed (no secret echo).
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -49,7 +49,7 @@ pub struct ListResourcesResponse {
 /// another tenant's workspace (tenant isolation; the confused-deputy
 /// abuse). `config` is validated against the target `kind`'s
 /// `R::Config` schema (and rejected if it carries an undeclared,
-/// secret-shaped field — ADR-0028 §7 / PRODUCT_CANON §3.5) *before* the
+/// secret-shaped field — no secret echo / product credential boundary) *before* the
 /// row is persisted.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateResourceRequest {
@@ -88,8 +88,8 @@ pub struct CreateResourceResponse {
 /// read from a prior GET; the store applies a CAS on it and a mismatch
 /// is reported as **409 Conflict**. `config`/`kind` are re-validated
 /// against the kind's `R::Config` schema (and rejected if the config
-/// carries an undeclared, secret-shaped field — ADR-0028 §7 /
-/// PRODUCT_CANON §3.5) *before* the row is persisted, so a PUT can never
+/// carries an undeclared, secret-shaped field — no secret echo /
+/// product credential boundary) *before* the row is persisted, so a PUT can never
 /// be a path to persist a config that a create would have rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateResourceRequest {
@@ -155,10 +155,10 @@ pub enum ResourcePhase {
 /// response — a **read-only** runtime-status projection.
 ///
 /// Carries lifecycle phase / health only. It deliberately has **no**
-/// `config` / credential / secret field (ADR-0028 §7): a status read is
+/// `config` / credential / secret field (no secret echo): a status read is
 /// not a config read. There is also no acquire/release/drain control on
 /// this DTO or its endpoint — resource lifecycle is engine-owned and not
-/// exposed over HTTP (INTEGRATION_MODEL §13.1).
+/// exposed over HTTP (INTEGRATION_MODEL integration seam.1).
 ///
 /// A resource that exists as a definition but has never been activated in
 /// the engine reports `phase = "inactive"` (with `healthy`/`accepting`

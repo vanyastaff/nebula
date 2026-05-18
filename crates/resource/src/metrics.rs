@@ -5,12 +5,12 @@
 //! counters. Use [`snapshot()`](ResourceOpsMetrics::snapshot) to capture a
 //! point-in-time view as [`ResourceOpsSnapshot`].
 //!
-//! Per ADR-0044 the credential rotation/revoke counters that the previous
+//! Per slot model the credential rotation/revoke counters that the previous
 //! `Resource::Credential` model owned have been removed. The per-slot
 //! rotation hook shape is `on_credential_refresh(&self, slot_name, runtime)`
 //! / `on_credential_revoke(&self, slot_name, runtime)`.
 //!
-//! Per ADR-0036 the rotation/revoke attempt totals are **one counter per
+//! Per credential isolation the rotation/revoke attempt totals are **one counter per
 //! direction, labeled by `outcome`** over the closed set
 //! `nebula_metrics::naming::rotation_outcome::{SUCCESS,FAILED,TIMED_OUT}`.
 //! `Manager::{refresh_slot,revoke_slot}` record exactly one outcome per

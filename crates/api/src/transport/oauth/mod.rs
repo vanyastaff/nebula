@@ -1,4 +1,4 @@
-//! OAuth2 / credential infrastructure — **Plane B** (ADR-0033) / OAuth ceremony (ADR-0031).
+//! OAuth2 / credential infrastructure — **Plane B** (auth plane separation) / OAuth ceremony (API-owned OAuth flow).
 //!
 //! This module provides the infrastructure for OAuth2 credential acquisition:
 //! PKCE flow helpers, signed state management, HTTP token exchange, and input

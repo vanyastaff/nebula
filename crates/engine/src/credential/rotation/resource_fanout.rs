@@ -1,6 +1,6 @@
 //! Engine-owned reverse index: `CredentialId` -> affected resource rows.
 //!
-//! Per ADR-0030, `nebula-engine` (exec layer) owns credential rotation
+//! `nebula-engine` (exec layer) owns credential rotation
 //! orchestration; `nebula-resource` exposes only the typed
 //! `Manager::{refresh_slot_for, revoke_slot_for}` port. When a credential
 //! rotates, the engine must fan that single event out to every resource
@@ -28,11 +28,9 @@
 //! family. This is forward-correctness against the structural dedup model,
 //! not extra precision for its own sake.
 //!
-//! Per ADR-0036 (event-driven cross-crate flow) the engine consumes the
-//! credential rotation signal and translates it into typed `Manager` port
-//! calls; per ADR-0044 the resource layer never reaches back across the
-//! boundary. This index is an in-process, in-memory routing table only —
-//! never persisted and never sent across a trust boundary.
+//! The engine consumes each credential rotation signal and translates it into typed `Manager` port
+//! calls; the resource layer never reaches back across the boundary. This index is an in-process,
+//! in-memory routing table only — never persisted and never sent across a trust boundary.
 
 use std::time::Duration;
 
@@ -72,12 +70,11 @@ pub struct Bind {
 /// registry row.
 ///
 /// One [`Bind`] contributes exactly one of the three counts, so
-/// `success + failed + timed_out == affected_rows`. Per ADR-0036's
-/// per-resource timeout-isolation invariant a slow, failed, or timed-out row
+/// `success + failed + timed_out == affected_rows`./// per-resource timeout-isolation invariant a slow, failed, or timed-out row
 /// never aborts or fails its siblings — each row's outcome is independent. The
 /// struct carries only counts (no key/slot/credential material) so it is safe
 /// to log or emit as a metrics/dashboard signal; it is **not** a substitute
-/// for an audit write (ADR-0028 §4).
+/// for an audit write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RotationOutcome {
     /// Rows whose `Manager::{refresh,revoke}_slot_for` hook returned `Ok`.
@@ -210,13 +207,13 @@ impl ResourceFanoutIndex {
     /// [`Manager::refresh_slot_for`](nebula_resource::Manager::refresh_slot_for)
     /// per row.
     ///
-    /// The engine (exec layer, ADR-0030) owns rotation orchestration: it has
+    /// The engine (exec layer, ) owns rotation orchestration: it has
     /// already resolved and stored the fresh credential material before this
     /// is called; this method only translates the single rotation signal
-    /// into the typed per-row resource port (ADR-0036), and the resource
-    /// layer never reaches back (ADR-0044).
+    /// into the typed per-row resource port , and the resource
+    /// layer never reaches back.
     ///
-    /// **Per-resource timeout isolation (ADR-0036 invariant).** Each row's
+    /// **Per-resource timeout isolation .** Each row's
     /// `refresh_slot_for` is independently wrapped in
     /// `tokio::time::timeout(per_resource_timeout, …)` and all are driven
     /// concurrently via [`futures::future::join_all`]. One slow, failed, or
@@ -234,7 +231,7 @@ impl ResourceFanoutIndex {
     /// Redaction: only the aggregate counts and per-row key / slot / scope /
     /// `slot_identity` (a `u64`) / duration reach spans — never credential
     /// or secret material. The returned aggregate is a metrics/dashboard
-    /// signal, **not** an audit record (ADR-0028 §4); the caller still owns
+    /// signal, **not** an audit record ; the caller still owns
     /// any audit write.
     ///
     /// An empty `affected(cid)` returns
@@ -255,7 +252,7 @@ impl ResourceFanoutIndex {
             .await
     }
 
-    /// Fans a credential revoke (e.g. an ADR-0051 lease revoke) out to every
+    /// Fans a credential revoke (e.g. an lease revoke) out to every
     /// resource registry row that resolved `cid`, calling
     /// [`Manager::revoke_slot_for`](nebula_resource::Manager::revoke_slot_for)
     /// per row.
@@ -288,11 +285,11 @@ impl ResourceFanoutIndex {
     /// `tokio::time::timeout(per_resource_timeout, …)` and drives them all
     /// concurrently via [`join_all`](futures::future::join_all). This
     /// independent per-future timeout + `join_all` is exactly what
-    /// guarantees the ADR-0036 timeout-isolation invariant: a slow, failed,
+    /// guarantees the timeout-isolation invariant: a slow, failed,
     /// or timed-out row's future resolves on its own and cannot abort or
     /// fail a sibling — every row's outcome is recorded independently.
     ///
-    /// **Revoke is two-phase and cancellation-safe (ADR-0067 §Deferred).**
+    /// **Revoke is two-phase and cancellation-safe .**
     /// `Manager::revoke_slot_for` is *not* called inside the timeout: a Rust
     /// `async fn` body is lazy, so a timeout future dropped before its first
     /// poll would skip the synchronous taint and leave new acquires accepted
@@ -375,7 +372,7 @@ impl ResourceFanoutIndex {
                     // Phase 1 — SYNCHRONOUS taint, OUTSIDE the timeout. It is
                     // fully applied before `taint_slot_for` returns, so a
                     // subsequently-dropped timeout on the drain tail can
-                    // never skip it (ADR-0067 §Deferred). A taint failure
+                    // never skip it . A taint failure
                     // (resolution miss / manager shutting down) is this
                     // row's terminal outcome — the drain tail is not entered.
                     let tainted = match mgr.taint_slot_for(
@@ -408,7 +405,7 @@ impl ResourceFanoutIndex {
                     // be able to elapse on a slow drain and drop the whole
                     // future *before the hook ran*, silently skipping the
                     // documented "hook still runs after a timed-out drain"
-                    // guarantee (ADR-0067 §Deferred / #690 review). The row
+                    // guarantee . The row
                     // is already tainted (phase 1); every tail outcome
                     // leaves it tainted.
                     match mgr.drain_and_revoke(tainted, per_resource_timeout).await {
@@ -475,10 +472,10 @@ enum FanoutOp {
     /// `Manager::refresh_slot_for` — credential rotated, fresh material
     /// already resolved and stored by the engine.
     Refresh,
-    /// Credential revoked (e.g. ADR-0051 lease revoke). Driven as the
+    /// Credential revoked (e.g. lease revoke). Driven as the
     /// two-phase port: synchronous `Manager::taint_slot_for` outside the
     /// timeout, then the timeout-wrapped cancellation-safe
-    /// `Manager::drain_and_revoke` tail (ADR-0067 §Deferred).
+    /// `Manager::drain_and_revoke` tail.
     Revoke,
 }
 
@@ -617,7 +614,7 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────────────
-    // Per-resource timeout-isolation fan-out tests (ADR-0036 invariant).
+    // Per-resource timeout-isolation fan-out tests.
     //
     // A controllable resident resource: its `on_credential_refresh` /
     // `on_credential_revoke` hooks either return immediately or block

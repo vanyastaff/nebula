@@ -1,9 +1,9 @@
-//! Base `Plugin` trait — canonical per ADR-0027.
+//! Base `Plugin` trait — canonical.
 //!
 //! A plugin bundles actions / credentials / resources under a versioned
-//! identity. It returns the runnable trait objects directly (matching canon
-//! §3.5 "Plugin = [ registry: Actions + Resources + Credentials ]"), not
-//! descriptors. One plugin → one `ResolvedPlugin` after registration.
+//! identity. It returns the runnable trait objects directly (plugin =
+//! registry of actions, credentials, and resources), not descriptors.
+//! One plugin → one `ResolvedPlugin` after registration.
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -35,7 +35,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// Each entry is a typed factory that the engine registry will use to
     /// construct an [`nebula_action::ErasedAction`] per dispatch (per
-    /// ADR-0043 §6 / Phase 3 — the typed [`nebula_action::Action`] trait
+    ///
     /// is `Sized`/object-unsafe, so plugins return factories not actions).
     fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
         vec![]

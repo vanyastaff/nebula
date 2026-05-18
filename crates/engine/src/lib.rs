@@ -5,33 +5,31 @@
 //!
 //! Workflow execution orchestrator. Builds an `ExecutionPlan` from a workflow
 //! DAG, resolves node inputs from predecessor outputs, transitions execution
-//! state through `ExecutionRepo` (CAS on `version` — canon §11.1), and
+//! state through `ExecutionRepo` (CAS on `version`), and
 //! delegates action dispatch to `nebula-engine`.
 //!
-//! Canon §12.2 names this crate as the location of the `execution_control_queue`
-//! consumer (`ControlConsumer`, see [`control_consumer`]). Status per §11.6:
+//! Canon names this crate as the location of the `execution_control_queue`
+//! consumer (`ControlConsumer`, see [`control_consumer`]). Implementation status:
 //!
 //! - **implemented** — consumer skeleton: construction, polling loop with graceful shutdown,
 //!   `claim_pending` / `mark_completed` / `mark_failed` plumbing, command observation with typed
 //!   `ExecutionId` decoding.
 //! - **implemented** — `Start` / `Resume` / `Restart` dispatch into the engine start / resume path
-//!   (ADR-0008 follow-up A2; closes #332 / #327). The engine-owned implementation lives in
+//!   (closes #332 / #327). The engine-owned implementation lives in
 //!   [`control_dispatch::EngineControlDispatch`].
-//! - **implemented** — `Cancel` / `Terminate` dispatch into the engine cancel path (ADR-0008
-//!   follow-up A3; closes #330). `Cancel` signals the live frontier loop via
-//!   [`WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body until a
-//!   distinct forced-shutdown path is wired (see ADR-0016).
+//! - **implemented** — `Cancel` / `Terminate` dispatch into the engine cancel path (closes #330).
+//!   `Cancel` signals the live frontier loop via [`WorkflowEngine::cancel_execution`]; `Terminate`
+//!   shares the cooperative-cancel body until a distinct forced-shutdown path is wired.
 //! - **implemented** — M3.5: [`control_consumer::ControlConsumer`] restores W3C trace parents from
 //!   queue rows onto the per-dispatch span (`control_trace` + `tracing_opentelemetry`).
 //!
-//! Wiring and atomicity decisions live in `docs/adr/0008-execution-control-queue-consumer.md`
-//! and `docs/adr/0016-engine-cancel-registry.md`.
+//! See `crates/engine/README.md` for control-queue wiring and cancel-registry behavior.
 //!
 //! ## Key types
 //!
 //! - `WorkflowEngine` — entry point; level-by-level DAG execution with bounded concurrency.
-//! - `ControlConsumer` / `ControlDispatch` — durable control-queue consumer (§12.2, ADR-0008).
-//! - `EngineControlDispatch` — canonical engine-side `ControlDispatch` impl (ADR-0008 A2).
+//! - `ControlConsumer` / `ControlDispatch` — durable control-queue consumer.
+//! - `EngineControlDispatch` — canonical engine-side `ControlDispatch` implementation.
 //! - `ExecutionResult` — post-run summary returned to the API layer.
 //! - `EngineError` — typed engine-layer error.
 //! - `ExecutionEvent` — broadcast event type for `nebula-eventbus`.
@@ -54,9 +52,9 @@
 //!
 //! ## Canon
 //!
-//! - §10 golden path (orchestrator schedules activated workflows).
-//! - §11.1 execution authority via `ExecutionRepo`.
-//! - §12.2 durable control plane; engine owns the `execution_control_queue` consumer.
+//! - golden path (orchestrator schedules activated workflows).
+//! - execution authority via `ExecutionRepo`.
+//! - durable control plane; engine owns the `execution_control_queue` consumer.
 //!
 //! See `crates/engine/README.md` for known open debts (budget ephemerality,
 //! edge-gate narrowness).

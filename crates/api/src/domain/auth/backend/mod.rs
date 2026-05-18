@@ -16,7 +16,7 @@
 //!
 //! ## Why this module exists
 //!
-//! Per ADR-0033, **Plane A** (host / Nebula API auth) is kept disjoint from
+//! Per auth plane separation, **Plane A** (host / Nebula API auth) is kept disjoint from
 //! **Plane B** (integration credential OAuth). Plane B lives under
 //! [`crate::transport::oauth`] + `crates/credential/`; Plane A lives here.
 //! New auth-domain features land in [`crate::domain::auth`] — never in the

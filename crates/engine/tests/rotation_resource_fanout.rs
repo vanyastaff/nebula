@@ -2,7 +2,7 @@
 
 //! Integration: the engine credential-rotation fan-out drives the typed
 //! `nebula_resource::Manager` slot ports per resolved registry row, with
-//! per-resource timeout isolation (ADR-0036).
+//! per-resource timeout isolation.
 //!
 //! Exercises the public engine surface
 //! (`nebula_engine::credential::rotation::{ResourceFanoutIndex,
@@ -114,7 +114,7 @@ impl Resident for Ctl {
     }
 }
 
-/// The headline ADR-0036 invariant proven through the public engine API:
+/// The headline invariant proven through the public engine API:
 /// a wedged resource times out in isolation; both healthy siblings still
 /// refresh, and the aggregate accounts for every bound row.
 #[tokio::test]

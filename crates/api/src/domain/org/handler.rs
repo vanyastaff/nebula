@@ -1,6 +1,6 @@
 //! Organization-level endpoint handlers (auth + org-level tenancy).
 //!
-//! ## §4.5 status (Phase 3, "Option 1" honest contract)
+//! ## honest capability status (Phase 3, "Option 1" honest contract)
 //!
 //! **Graduated stub→implemented** (real end-to-end against the shared
 //! [`MembershipStore`] — the same store
@@ -12,7 +12,7 @@
 //!   not an email invitation — see [`super::dto`] for the contract change)
 //! - `DELETE /orgs/{org}/members/{principal}` — [`remove_member`]
 //!
-//! **Still honest 501** (canon §4.5 — shipping them would be a false
+//! **Still honest 501** (honest capability contract — shipping them would be a false
 //! capability, see [`super`] module docs):
 //!
 //! - `GET`/`PATCH`/`DELETE /orgs/{org}` — no org-record store
@@ -47,13 +47,13 @@
 //! 6. treats an absent target member as a 404 identical to "no such org"
 //!    so membership is never disclosed by an IDOR probe.
 //!
-//! ## Provisioning & durability (canon §4.5 / §11.6 / §12.5)
+//! ## Provisioning & durability (honest capability contract / provisioning durability / credential secrecy)
 //!
 //! These endpoints require an explicitly-provisioned `MembershipStore`.
 //! The default `apps/server` binary deliberately leaves it **unwired**
 //! (PR #671 P1: auto-seeding a bootstrap owner the empty default
 //! `AuthBackend` could never authenticate would 404-deadlock every
-//! org/workspace route — a deployment-level §4.5 false capability — and
+//! org/workspace route — a deployment-level honest capability false capability — and
 //! a hardcoded auto-seed would be a default-credential surface). When
 //! unwired, the `membership_or_503` port guard returns an honest **503**
 //! (port-absent, same posture as `me/*` when `auth_backend` is absent) and
@@ -106,7 +106,7 @@ fn membership_or_503(state: &AppState) -> Result<&std::sync::Arc<dyn MembershipS
 
 /// Parse a wire principal-id (`usr_<ULID>` / `svc_<ULID>`) into a
 /// [`Principal`]. Returns a 400 for anything else — we never coerce an
-/// unparsable identity into a guessed principal (canon §4.5).
+/// unparsable identity into a guessed principal (honest capability contract).
 fn parse_member_principal(raw: &str) -> Result<Principal, ApiError> {
     if let Ok(uid) = UserId::from_str(raw) {
         return Ok(Principal::User(uid));
@@ -185,8 +185,7 @@ pub async fn get_org(
     Extension(_tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
     Err(ApiError::NotImplemented(
-        "org-record store not implemented — tracked under ADR-0047 Stub Endpoint Policy"
-            .to_string(),
+        "org-record store not implemented — tracked under stub endpoint policy".to_string(),
     ))
 }
 
@@ -215,8 +214,7 @@ pub async fn update_org(
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::OrgUpdate)?;
     Err(ApiError::NotImplemented(
-        "org-record store not implemented — tracked under ADR-0047 Stub Endpoint Policy"
-            .to_string(),
+        "org-record store not implemented — tracked under stub endpoint policy".to_string(),
     ))
 }
 
@@ -242,8 +240,7 @@ pub async fn delete_org(
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::OrgDelete)?;
     Err(ApiError::NotImplemented(
-        "org-record store not implemented — tracked under ADR-0047 Stub Endpoint Policy"
-            .to_string(),
+        "org-record store not implemented — tracked under stub endpoint policy".to_string(),
     ))
 }
 
@@ -254,7 +251,7 @@ pub async fn delete_org(
 /// Reachable only behind RBAC (a non-member caller is 404'd before this
 /// handler). Any org member may list — the read is gated by RBAC
 /// membership itself, matching the `members:read` semantics. The response
-/// carries only role-index fields (no `email`/`joined_at` — canon §4.5).
+/// carries only role-index fields (no `email`/`joined_at` — honest capability contract).
 #[utoipa::path(
     get,
     path = "/orgs/{org}/members",
@@ -522,8 +519,7 @@ pub async fn list_service_accounts(
     Extension(_tenant): Extension<TenantContext>,
 ) -> ApiResult<Json<serde_json::Value>> {
     Err(ApiError::NotImplemented(
-        "service-account identity not implemented — tracked under ADR-0047 Stub Endpoint Policy"
-            .to_string(),
+        "service-account identity not implemented — tracked under stub endpoint policy".to_string(),
     ))
 }
 
@@ -553,8 +549,7 @@ pub async fn create_service_account(
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::ServiceAccountManage)?;
     Err(ApiError::NotImplemented(
-        "service-account identity not implemented — tracked under ADR-0047 Stub Endpoint Policy"
-            .to_string(),
+        "service-account identity not implemented — tracked under stub endpoint policy".to_string(),
     ))
 }
 
@@ -584,7 +579,6 @@ pub async fn delete_service_account(
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::ServiceAccountManage)?;
     Err(ApiError::NotImplemented(
-        "service-account identity not implemented — tracked under ADR-0047 Stub Endpoint Policy"
-            .to_string(),
+        "service-account identity not implemented — tracked under stub endpoint policy".to_string(),
     ))
 }

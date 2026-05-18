@@ -1,7 +1,7 @@
 //! Plane-A OAuth helpers — sign-in via Google / GitHub / Microsoft.
 //!
 //! This is **distinct** from Plane-B integration credential OAuth (per
-//! ADR-0033 and `crates/api/src/services/oauth/`). Plane A is "who is
+//! auth plane separation and `crates/api/src/services/oauth/`). Plane A is "who is
 //! signing in to Nebula"; Plane B is "Nebula on behalf of a user
 //! talking to Slack/HubSpot/etc.".
 //!

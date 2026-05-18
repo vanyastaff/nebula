@@ -106,10 +106,10 @@ pub(super) struct TransportInner {
     pub(super) rate_limiter: Option<WebhookRateLimiter>,
     /// Optional metrics registry. When `Some`, signature-failure
     /// outcomes increment [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`]
-    /// per ADR-0022. `None` means the transport runs without emitting
+    ///. `None` means the transport runs without emitting
     /// the counter — the enforcement behaviour is identical.
     pub(super) metrics: Option<Arc<MetricsRegistry>>,
-    /// Time source for replay-window enforcement (M3.3 / ADR-0049).
+    /// Time source for replay-window enforcement (webhook activation).
     /// Production deployments use [`SystemClock`]; tests inject
     /// `MockClock` to drive deterministic timestamp scenarios.
     pub(super) clock: Arc<dyn Clock>,
@@ -133,7 +133,7 @@ impl WebhookTransport {
 
     /// Build a new transport from config with a metrics registry
     /// attached. Signature-failure outcomes increment
-    /// `NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL` per ADR-0022.
+    /// `NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`.
     ///
     /// Composition roots that already own a `MetricsRegistry` (the
     /// API crate's `AppState` does) should prefer this constructor
@@ -186,7 +186,7 @@ impl WebhookTransport {
     ///
     /// `action_config` is the [`WebhookConfig`] read from the typed
     /// [`nebula_action::WebhookAction`] that the handler wraps. Per
-    /// ADR-0022 the caller reads it from the action (typically via
+    ///  the caller reads it from the action (typically via
     /// `WebhookTriggerAdapter::config()`) before erasing the handler
     /// to `Arc<dyn TriggerHandler>` — webhook-specific configuration
     /// does not flow through the dyn trigger contract.
@@ -234,7 +234,7 @@ impl WebhookTransport {
         self.inner.routing.remove(&key);
     }
 
-    /// Register a slug-routed activation (M3.3 / ADR-0049).
+    /// Register a slug-routed activation (webhook activation).
     ///
     /// The handler comes from a [`nebula_action::WebhookActionFactory`]
     /// invoked by the API bootstrap (E1) or the lifecycle subscriber
@@ -324,7 +324,7 @@ impl WebhookTransport {
     /// Build the axum router that dispatches incoming webhook
     /// requests to registered triggers.
     ///
-    /// Mounts both URL shapes (M3.3 / ADR-0049):
+    /// Mounts both URL shapes (webhook activation):
     ///
     /// - Programmatic: `POST {path_prefix}/{trigger_uuid}/{nonce}` —
     ///   minted by [`Self::activate`].

@@ -1,4 +1,4 @@
-//! Field-level credential slot detection for `#[derive(Resource)]` (ADR-0044).
+//! Field-level credential slot detection for `#[derive(Resource)]` (slot model).
 //!
 //! Walks the struct fields and identifies `#[credential(...)]` attributes.
 //! Each slot field is a [`SlotCell`] cell holding the resolved guard — the
@@ -9,7 +9,7 @@
 //! (required + eager). `Option<…>`- and `Lazy<…>`-wrapped slots are
 //! reserved for future optional/lazy binding but are currently rejected
 //! at the derive site with a compile error, because the emitted accessor
-//! only fits the plain cell shape (ADR-0044).
+//! only fits the plain cell shape (slot model).
 //!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
 //! macro accepts both bare `SlotCell<...>` / `CredentialGuard<...>` and
@@ -245,7 +245,7 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedCredentialSlot]) -> T
 
 /// Emit the body of `Resource::credential_slot_epoch` — an
 /// **order-sensitive positional fold** over every declared
-/// `#[credential]` `SlotCell` field's generation (ADR-0067 §Deferred
+/// `#[credential]` `SlotCell` field's generation (per-resource revoke deferral
 /// create-vs-rotate reconcile).
 ///
 /// Derive-generated so a newly-added credential slot is automatically
@@ -310,7 +310,7 @@ pub(crate) fn emit_credential_slot_epoch_body(slots: &[ParsedCredentialSlot]) ->
 /// declared by the author; the framework populates and rotates it through
 /// `&self` (`SlotCell::store`), and this accessor is the read side —
 /// `self.<field>.load()` returns the current `Arc<CredentialGuard<C>>`, or
-/// `None` until the framework binds it. No fields are added (ADR-0044).
+/// `None` until the framework binds it. No fields are added (slot model).
 pub(crate) fn emit_slot_accessors(slots: &[ParsedCredentialSlot]) -> TokenStream2 {
     let accessors: Vec<TokenStream2> = slots
         .iter()

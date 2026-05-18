@@ -47,7 +47,7 @@ pub mod engine_lease_contention_reason {
     pub const HEARTBEAT_LOST: &str = "heartbeat_lost";
 }
 
-/// Counter: control-queue reclaim sweep outcomes (ADR-0017).
+/// Counter: control-queue reclaim sweep outcomes.
 ///
 /// Labeled by `outcome` (see [`control_reclaim_outcome`]). The
 /// `ControlConsumer` reclaim sweep increments this counter by the per-row
@@ -110,7 +110,7 @@ pub mod dispatch_reject_reason {
 }
 
 // ---------------------------------------------------------------------------
-// API: idempotency middleware (M3.4 — ADR-0048)
+// API: idempotency middleware (M3.4
 // ---------------------------------------------------------------------------
 
 /// Counter: idempotent-replay cache hits.
@@ -154,7 +154,7 @@ pub const NEBULA_API_IDEMPOTENCY_REJECTS_TOTAL: &str = "nebula_api_idempotency_r
 ///
 /// Static strings — call sites and tests compare without stringifying twice.
 /// Adding a label permanently inflates the cardinality floor and requires
-/// an ADR amendment (ADR-0048).
+/// an ADR amendment.
 pub mod idempotency_reject_reason {
     /// Header validation failed — empty / too long / non-printable ASCII.
     /// Hard reject: 400 returned without running the handler.
@@ -196,7 +196,7 @@ pub const NEBULA_API_IDEMPOTENCY_LATENCY_MS: &str = "nebula_api_idempotency_late
 // ---------------------------------------------------------------------------
 
 /// Counter: webhook requests rejected by the transport-layer signature
-/// check (ADR-0022 + M3.3 / ADR-0049).
+/// check.
 ///
 /// Labeled by `reason` (see [`webhook_signature_failure_reason`]). Low
 /// cardinality by design — the label set is a small closed set of
@@ -231,7 +231,7 @@ pub mod webhook_signature_failure_reason {
     /// 500 (not 401) because the misconfiguration is on our side.
     pub const MISSING_SECRET: &str = "missing_secret";
     /// Replay-window check failed: the timestamp header was absent
-    /// when the policy required one (M3.3 / ADR-0049).
+    /// when the policy required one.
     pub const TIMESTAMP_MISSING: &str = "timestamp_missing";
     /// Replay-window check failed: the timestamp header was present
     /// but unparsable (non-numeric, malformed RFC 3339, etc.).
@@ -242,7 +242,7 @@ pub mod webhook_signature_failure_reason {
     pub const TIMESTAMP_OUT_OF_WINDOW: &str = "timestamp_out_of_window";
 }
 
-/// Counter: webhook requests entering the transport (M3.3 / ADR-0049).
+/// Counter: webhook requests entering the transport.
 ///
 /// Labeled by:
 /// - `outcome` — see [`webhook_request_outcome`].
@@ -257,27 +257,27 @@ pub mod webhook_signature_failure_reason {
 pub const NEBULA_WEBHOOK_REQUESTS_TOTAL: &str = "nebula_webhook_requests_total";
 
 /// Histogram: end-to-end transport handling latency in seconds
-/// (M3.3 / ADR-0049). Same labelset as
+///. Same labelset as
 /// [`NEBULA_WEBHOOK_REQUESTS_TOTAL`].
 pub const NEBULA_WEBHOOK_LATENCY_SECONDS: &str = "nebula_webhook_latency_seconds";
 
 /// Counter: requests rejected by replay-window enforcement
-/// (M3.3 / ADR-0049). Labeled by `reason` (see
+///. Labeled by `reason` (see
 /// [`webhook_replay_rejection_reason`]).
 pub const NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL: &str = "nebula_webhook_replay_rejections_total";
 
 /// Counter: requests rejected by per-key rate-limit enforcement
-/// (M3.3 / ADR-0049). Labels: `tenant_id`, `webhook_key_kind`.
+///. Labels: `tenant_id`, `webhook_key_kind`.
 pub const NEBULA_WEBHOOK_RATE_LIMIT_REJECTIONS_TOTAL: &str =
     "nebula_webhook_rate_limit_rejections_total";
 
 /// Counter: storage-driven bootstrap rows that failed to register
-/// in the transport (M3.3 / ADR-0049 / E1). Labeled by `reason` (see
+/// in the transport ( / E1). Labeled by `reason` (see
 /// [`webhook_bootstrap_failure_reason`]).
 pub const NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL: &str = "nebula_webhook_bootstrap_failures_total";
 
 /// Gauge: active webhook registrations in the transport's routing
-/// map (M3.3 / ADR-0049). Labeled by `webhook_key_kind`.
+/// map. Labeled by `webhook_key_kind`.
 ///
 /// Used by `/healthz` reporters and dashboarding. Counts move
 /// monotonically with E1 bootstrap, E2 lifecycle events, and E3
@@ -286,8 +286,8 @@ pub const NEBULA_WEBHOOK_REGISTRATIONS: &str = "nebula_webhook_registrations";
 
 /// Counter: provider-specific verification interceptions before the
 /// action's main `handle_request` (Slack `url_verification`, Stripe
-/// `pending_webhook` ping, Generic `?challenge=…` GET — M3.3 /
-/// ADR-0049). Labels: `provider` (`slack` | `stripe` | `generic`),
+/// `pending_webhook` ping, Generic `?challenge=…` GET (M3.3).
+/// Labels: `provider` (`slack` | `stripe` | `generic`),
 /// `outcome` (see [`webhook_provider_intercept_outcome`]).
 pub const NEBULA_WEBHOOK_PROVIDER_INTERCEPTS_TOTAL: &str =
     "nebula_webhook_provider_intercepts_total";
@@ -489,7 +489,7 @@ pub const NEBULA_CREDENTIAL_EXPIRED_TOTAL: &str = "nebula_credential_expired_tot
 
 // ---------------------------------------------------------------------------
 // Credential refresh coordinator (two-tier L1+L2 — sub-spec
-// `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §6)
+// `docs/INTEGRATION_MODEL.md` credential refresh coordinator)
 // ---------------------------------------------------------------------------
 
 /// Counter: L2 claim acquisition outcomes.
@@ -923,7 +923,7 @@ mod tests {
         );
     }
 
-    /// API idempotency metrics (M3.4 — ADR-0048).
+    /// API idempotency metrics (M3.4.
     ///
     /// 3 counters + 1 gauge + 1 histogram = 5 series. Mirrors the
     /// per-counter `(name, label_key, sample_value)` pattern used for

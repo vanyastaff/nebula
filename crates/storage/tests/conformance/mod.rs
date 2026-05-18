@@ -520,7 +520,7 @@ pub async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
 /// A live lease blocks every further `acquire_lease` — including a second
 /// acquire by the *same* holder — and an acquire that follows a prior
 /// (now-expired) lease bumps the fencing generation so the pre-expiry
-/// token is dead. This is the §12.2 zombie-runner closure (ADR-0008):
+/// token is dead. Zombie-runner closure: a live lease blocks re-acquire,
 /// two concurrent runners must see exactly one winner, and a
 /// crashed-then-restarted runner reusing its holder id cannot revive its
 /// pre-crash token.

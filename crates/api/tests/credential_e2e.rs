@@ -1,7 +1,7 @@
 //! Phase 4 — credential CRUD end-to-end + abuse-case coverage.
 //!
 //! Credentials are the highest-value target in the API surface, so this
-//! file is deliberately heavy on the security cases (canon §13, §12.5 /
+//! file is deliberately heavy on the security cases (integration seam, credential secrecy /
 //! STYLE §6):
 //!
 //! - Happy-path CRUD round-trips through the real axum `Router` over the
@@ -667,7 +667,7 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
     // The sentinel is placed in the submitted credential material
     // (`data` / `user_input`) so the no-secret assertion below is a
     // *real* redaction guard, not vacuous: the honest-503 problem body
-    // must never echo caller-submitted secret material (§12.5 / §13 —
+    // must never echo caller-submitted secret material (credential secrecy / integration seam —
     // same contract as the forced-error bodies elsewhere in this file).
     let resolve_503: &[(&str, String, serde_json::Value)] = &[
         (
@@ -711,10 +711,10 @@ async fn credential_engine_owned_endpoints_stay_honest_503() {
     }
 
     // Type-discovery endpoints (system-level, not workspace-scoped).
-    // ADR-0052 P4 V3: these are now port-backed. The shared harness wires
+    // credential-schema port: these are now port-backed. The shared harness wires
     // a permissive port (zero registered types), so the *honest* result is
     // 200 with an empty `types` list (the endpoint truthfully reports the
-    // registered set) and 404 for an unknown key — not a §4.5 false
+    // registered set) and 404 for an unknown key — not a honest capability false
     // capability. The genuine no-port → 503 path is covered by
     // `tests/seam_credential_catalog_schema.rs::catalog_503_when_port_unconfigured`.
     let app = app::build_app(state.clone(), &config);

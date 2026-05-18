@@ -1,4 +1,4 @@
-//! Plugin manifest — bundle descriptor for a plugin (ADR-0018).
+//! Plugin manifest — bundle descriptor for a plugin.
 //!
 //! A [`PluginManifest`] describes the *container* that bundles actions,
 //! credentials, and resources under a versioned identity. It reuses the
@@ -56,7 +56,7 @@ fn is_default_maturity(m: &MaturityLevel) -> bool {
     *m == MaturityLevel::default()
 }
 
-/// Static manifest describing a plugin bundle (ADR-0018).
+/// Static manifest describing a plugin bundle.
 ///
 /// Built via the builder API:
 ///
@@ -65,11 +65,11 @@ fn is_default_maturity(m: &MaturityLevel) -> bool {
 /// use semver::Version;
 ///
 /// let manifest = PluginManifest::builder("http_request", "HTTP Request")
-///     .description("Make HTTP calls to external APIs")
-///     .group(vec!["network".into()])
-///     .version(Version::new(2, 0, 0))
-///     .build()
-///     .unwrap();
+///.description("Make HTTP calls to external APIs")
+///.group(vec!["network".into()])
+///.version(Version::new(2, 0, 0))
+///.build()
+///.unwrap();
 ///
 /// assert_eq!(manifest.key().as_str(), "http_request");
 /// assert_eq!(manifest.version(), &Version::new(2, 0, 0));
@@ -303,9 +303,9 @@ impl PluginManifestBuilder {
     /// use nebula_metadata::PluginManifest;
     ///
     /// let manifest = PluginManifest::builder("slack", "Slack")
-    ///     .author("Acme Corp")
-    ///     .build()
-    ///     .unwrap();
+    ///.author("Acme Corp")
+    ///.build()
+    ///.unwrap();
     ///
     /// assert_eq!(manifest.author(), Some("Acme Corp"));
     /// ```

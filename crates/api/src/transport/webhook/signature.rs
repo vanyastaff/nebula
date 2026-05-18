@@ -1,4 +1,4 @@
-//! ADR-0022 signature-policy enforcement for the webhook transport.
+//!  signature-policy enforcement for the webhook transport.
 //!
 //! Translates a [`SignaturePolicy`] + [`WebhookRequest`] pair into a
 //! [`SignatureVerdict`] that the dispatch pipeline maps to HTTP status
@@ -109,7 +109,7 @@ pub(super) fn outcome_to_verdict(outcome: SignatureOutcome) -> SignatureVerdict 
     }
 }
 
-/// Record a signature-failure metric (ADR-0022).
+/// Record a signature-failure metric.
 ///
 /// Replay-window failures additionally bump
 /// [`NEBULA_WEBHOOK_REPLAY_REJECTIONS_TOTAL`] so dashboards can

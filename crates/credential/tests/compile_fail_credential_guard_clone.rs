@@ -2,11 +2,11 @@
 //!
 //! `CredentialGuard` previously implemented `Clone` when `S: Zeroize + Clone`.
 //! Cloning would create a second zeroize point on the same plaintext,
-//! violating PRODUCT_CANON §4.2 invariant N10 («plaintext does not cross
+//! violating plaintext boundary invariant N10 («plaintext does not cross
 //! spawn boundary»). This probe verifies the impl is gone via fully-qualified
 //! syntax (FQS) so `Clone` cannot resolve through `Deref` to the inner `S`.
 //!
-//! See `docs/adr/HISTORICAL.md (ADR-0028 credential invariants)` §4.
+//! See `credential invariants doc (credential invariants credential invariants)` §4.
 
 #[test]
 fn compile_fail_credential_guard_clone() {

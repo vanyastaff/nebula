@@ -1,5 +1,5 @@
 //! Loom CAS atomicity probe for the credential refresh-claim pattern
-//! (ADR-0041).
+//!.
 //!
 //! # Why a standalone crate?
 //!
@@ -22,9 +22,9 @@
 //! acquisition itself.
 //!
 //! Run with:
-//!   RUSTFLAGS="--cfg loom" cargo nextest run \
-//!     -p nebula-storage-loom-probe --features loom-test \
-//!     --profile ci --no-tests=pass
+//! RUSTFLAGS="--cfg loom" cargo nextest run \
+//! -p nebula-storage-loom-probe --features loom-test \
+//! --profile ci --no-tests=pass
 
 #![cfg(loom)]
 

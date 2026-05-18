@@ -1,12 +1,14 @@
-//! `#[derive(Action)]` macro implementation — Variant A (ADR-0043 §6).
+//! `#[derive(Action)]` macro implementation — Variant A.
 //!
 //! Emits:
+//!
 //! - `impl Action for Foo` with static `metadata` and `dependencies` functions (no schema
-//!   methods — the `Input`/`Output: HasSchema` bound is the single source of truth, ADR-0052 P3).
-//! - `impl FromWorkflowNode for Foo` (when the struct has at least one `#[resource]` /
-//!   `#[credential]` field, or when the struct is a unit struct — in that case a no-op factory).
+//!   methods — the `Input`/`Output: HasSchema` bound is the single source of truth).
+//! - `impl FromWorkflowNode for Foo` when the struct has at least one `#[resource]` /
+//!   `#[credential]` field, or when the struct is a unit struct (no-op factory).
 //!
 //! Field-level attributes recognised:
+//!
 //! - `#[resource]` / `#[resource(key = "...")]` — declares a resource slot. Field type must be
 //!   `ResourceGuard<R>` (optionally wrapped in `Option<...>` and/or `Lazy<...>`).
 //! - `#[credential]` / `#[credential(key = "...")]` — declares a credential slot. Field type must

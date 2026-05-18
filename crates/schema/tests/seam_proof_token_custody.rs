@@ -1,7 +1,7 @@
-//! ADR-0052 seam: `ValidValues` is mintable ONLY via the `nebula-schema`
+//! seam: `ValidValues` is mintable ONLY via the `nebula-schema`
 //! pipeline (`ValidSchema::validate`). Moving condition evaluation into
 //! `nebula-validator` must not add a back-door constructor. This pins the
-//! proof-token custody contract referenced by ADR-0052.
+//! proof-token custody contract referenced by.
 
 use nebula_schema::{Field, FieldKey, FieldValue, FieldValues, Schema};
 use serde_json::json;

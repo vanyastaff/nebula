@@ -1,7 +1,7 @@
 //! Base [`Action`] trait — identity, metadata, type-level Input/Output, slot deps.
 //!
 //! See module docs in `lib.rs` for trait family overview. Variant A trait shape
-//! lands per ADR-0043 §6 (Phase 3 / Session 1).
+//! lands in Phase 3.
 
 use nebula_core::Dependencies;
 use nebula_schema::HasSchema;
@@ -15,7 +15,7 @@ use crate::metadata::ActionMetadata;
 /// `Self::Output`), and slot-binding declarations (`dependencies`) — all
 /// static per concrete type. The schema is reached via the
 /// `Input`/`Output: HasSchema` bound (`nebula_schema::schema_of::<A::Input>()`);
-/// there is no per-trait schema method (ADR-0052 P3). Sub-traits
+/// there is no per-trait schema method. Sub-traits
 /// ([`StatelessAction`](crate::StatelessAction) etc.) define the execution
 /// surface and consume `Self::Input` / `Self::Output`.
 ///
@@ -35,17 +35,17 @@ use crate::metadata::ActionMetadata;
 /// struct Echo;
 ///
 /// impl Action for Echo {
-///     type Input = serde_json::Value;
-///     type Output = serde_json::Value;
+/// type Input = serde_json::Value;
+/// type Output = serde_json::Value;
 ///
-///     fn metadata() -> &'static ActionMetadata {
-///         static M: OnceLock<ActionMetadata> = OnceLock::new();
-///         M.get_or_init(|| ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input"))
-///     }
-///     fn dependencies() -> &'static Dependencies {
-///         static D: OnceLock<Dependencies> = OnceLock::new();
-///         D.get_or_init(Dependencies::new)
-///     }
+/// fn metadata() -> &'static ActionMetadata {
+/// static M: OnceLock<ActionMetadata> = OnceLock::new();
+/// M.get_or_init(|| ActionMetadata::new(action_key!("echo"), "Echo", "Echoes input"))
+/// }
+/// fn dependencies() -> &'static Dependencies {
+/// static D: OnceLock<Dependencies> = OnceLock::new();
+/// D.get_or_init(Dependencies::new)
+/// }
 /// }
 /// ```
 ///

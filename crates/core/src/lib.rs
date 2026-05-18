@@ -61,7 +61,7 @@ pub mod scope;
 pub mod serde_helpers;
 /// Validated slug strings for human-readable identifiers.
 pub mod slug;
-/// Async-aware lazy initialization wrapper (`Lazy<X>`) — ADR-0043 §3 (type-based optional + lazy).
+/// Async-aware lazy initialization wrapper (`Lazy<X>`).
 pub mod sync;
 /// Multi-tenant context and resolved IDs.
 pub mod tenancy;

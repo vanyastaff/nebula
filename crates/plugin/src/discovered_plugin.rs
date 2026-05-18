@@ -6,7 +6,7 @@
 //! `RemoteAction` list built from the wire `ActionDescriptor`s.
 //!
 //! `credentials()` and `resources()` intentionally return empty vecs.
-//! Out-of-process credential and resource registration is gated on ADR-0025
+//! Out-of-process credential and resource registration is gated on
 //! slice 1d broker RPC.
 
 use std::sync::Arc;
@@ -54,13 +54,13 @@ impl Plugin for DiscoveredPlugin {
     }
 
     fn credentials(&self) -> Vec<Arc<dyn AnyCredential>> {
-        // Out-of-process credential registration is gated on ADR-0025 slice 1d
+        // Out-of-process credential registration is gated on slice 1d
         // broker RPC. Until that lands, discovered plugins report zero credentials.
         vec![]
     }
 
     fn resources(&self) -> Vec<Arc<dyn AnyResource>> {
-        // Out-of-process resource registration is gated on ADR-0025 slice 1d
+        // Out-of-process resource registration is gated on slice 1d
         // broker RPC. Until that lands, discovered plugins report zero resources.
         vec![]
     }

@@ -3,7 +3,7 @@
 //! This module hosts runtime credential resolution and type-erased registry
 //! logic used by the execution engine for **integration credentials** — workflow
 //! access to external systems per [`Credential`](nebula_credential::Credential)
-//! and ADR-0033 (`docs/adr/0033-integration-credentials-plane-b.md`). It does
+//! and (`crates/engine/README.md`). It does
 //! not implement platform/operator authentication (**Plane A**).
 
 pub mod dispatchers;

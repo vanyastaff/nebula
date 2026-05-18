@@ -1,10 +1,10 @@
 //! Credential domain — Plane B (integration credentials for workflows
-//! talking to *external* systems; ADR-0031 / ADR-0033).
+//! talking to *external* systems; API-owned OAuth flow / auth plane separation).
 //!
-//! Kept disjoint from Plane A ([`crate::domain::auth`]) per ADR-0033. All
+//! Kept disjoint from Plane A ([`crate::domain::auth`]) per auth plane separation. All
 //! credential routes are protected by Plane A middleware.
 //!
-//! Self-contained per canon §12.7:
+//! Self-contained per domain-module layout:
 //!
 //! - [`routes`] — system-level credential route table (type discovery +
 //!   OAuth2 callbacks). Workspace-scoped credential CRUD is merged by

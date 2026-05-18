@@ -69,7 +69,7 @@ impl PluginSupervisor {
     ///
     /// Delegates to the per-key [`PluginPool`](crate::runtime::plugin_pool)
     /// — distinct keys have fully independent capacity and idle sets
-    /// (ADR-0025 §2 isolation). The returned [`Lease`] owns its capacity
+    /// . The returned [`Lease`] owns its capacity
     /// permit; dropping it releases the permit exactly once and either
     /// re-pools or (if poisoned) destroys the connection.
     ///
@@ -77,7 +77,7 @@ impl PluginSupervisor {
     /// `E` and never leaks a permit or wedges the key's pool.
     ///
     /// `pub(crate)`: `PoolKey` / `Lease` are engine-owned internals
-    /// (ADR-0025 §9.2 — the pool is engine-owned, the keyed type does not
+    /// ( — the pool is engine-owned, the keyed type does not
     /// leave the crate). Only the gated dispatch path calls this; the
     /// composition root holds the supervisor solely for
     /// [`shutdown`](Self::shutdown).

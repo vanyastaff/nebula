@@ -1,4 +1,4 @@
-//! Compile-fail probe — ADR-0052 P3: `Action::input_schema()` is removed.
+//! Compile-fail probe.
 //!
 //! Schema is reachable only via the `Input`/`Output: HasSchema`
 //! associated-type bound / `nebula_schema::schema_of`. FQS on the trait so

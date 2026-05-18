@@ -17,7 +17,7 @@
 //! discarded but the side effects of its handler invocation are not
 //! rolled back. True at-most-once under contention requires a "pending
 //! claim" record (followers wait or replay instead of running the
-//! handler again) — tracked as a follow-up under ADR-0048
+//! handler again) — tracked as a follow-up under idempotency backend
 //! "Open Questions / Follow-ups".
 //!
 //! [draft-ietf-httpapi-idempotency-key]: https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key/
@@ -73,7 +73,7 @@
 //! [`store::StorageBackedIdempotencyStore`] adapts a layer-1
 //! `nebula_storage::repos::IdempotencyStoreRepo` (PG-backed in
 //! production deployments) onto this trait. Selection is driven by
-//! `ApiConfig.idempotency.backend` per **ADR-0048**: the in-memory
+//! `ApiConfig.idempotency.backend` per **idempotency backend**: the in-memory
 //! backend loses dedup state across restart and across runners, so
 //! production deployments running more than one API replica must select
 //! `Postgres` to satisfy the §M3 1.0 closure criterion.

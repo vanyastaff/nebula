@@ -305,7 +305,7 @@ pub async fn start_execution(
 
     // Build the canonical execution state directly from the typed enum so
     // that the persisted row matches the schema the engine's
-    // `resume_execution` reads (canon §4.5: public surface must be honored
+    // `resume_execution` reads (honest capability contract: public surface must be honored
     // end-to-end). The legacy hand-rolled JSON with `status: "pending"` was
     // a false capability — `ExecutionStatus` has no `Pending` variant, and
     // neither `list_running` (storage filter) nor `ExecutionState::deserialize`
@@ -334,28 +334,28 @@ pub async fn start_execution(
         .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
         .await?;
 
-    // Enqueue the Start signal onto the durable control queue (canon §12.2,
-    // §13 step 3, #332). Before this PR the API persisted the row but never
-    // dispatched it — the §4.5 violation ("advertise capability engine
+    // Enqueue the Start signal onto the durable control queue (durable control queue,
+    // integration seam step 3, #332). Before this PR the API persisted the row but never
+    // dispatched it — the honest capability violation ("advertise capability engine
     // doesn't deliver end-to-end"). The engine-side `ControlConsumer`
-    // (ADR-0008) drains this queue and drives the actual workflow run.
+    // (durable control queue) drains this queue and drives the actual workflow run.
     //
     // Order matches the `cancel_execution` contract: create the row first,
     // then enqueue. If enqueue fails after a successful create, the row
     // exists but the engine will not see the Start signal — the handler
     // fails loudly so the caller can retry. The retry is idempotent
-    // at the consumer layer via CAS (ADR-0008 §5).
+    // at the consumer layer via CAS (control-queue CAS).
     enqueue_start_scoped(&state, &scope, execution_id).await?;
 
     // Build response. `started_at` is omitted on a Created execution —
-    // canon §13 step 3 forbids synthetic timestamps for fields the engine
+    // integration seam step 3 forbids synthetic timestamps for fields the engine
     // has not actually populated yet. `ExecutionState::started_at` is
     // `None` until the engine transitions the status to `Running`, and the
     // API response must reflect that.
     //
     // The legacy response returned `chrono::Utc::now().timestamp()` as a
     // placeholder, which conflated "row was created" with "engine started
-    // the run" — two different events under canon §11.1. Downstream tools
+    // the run" — two different events under lifecycle authority. Downstream tools
     // that graphed `started_at` therefore measured API-enqueue latency, not
     // engine dispatch latency. The DTO field stays `i64` (wire-compatible),
     // but we now return `created_at` as the observable timestamp so clients
@@ -376,20 +376,20 @@ pub async fn start_execution(
 }
 
 /// Enqueue a `ControlCommand::Start` onto the durable control queue for
-/// the caller's tenant (canon §12.2, §13 step 3, #332).
+/// the caller's tenant (durable control queue, integration seam step 3, #332).
 ///
 /// Shared by `start_execution` (this module) and `execute_workflow`
 /// (`handlers::workflow`) so the dispatch contract lives in exactly one
 /// place. Any future start-path entry point MUST route through this
-/// helper to preserve the §4.5 invariant that "persist a row" and
+/// helper to preserve the honest capability invariant that "persist a row" and
 /// "dispatch to the engine" travel together. Stamps the Start control
 /// row with the request tenant `scope` via `enqueue_control_scoped`.
 ///
 /// Returns `ApiError::ServiceUnavailable` when the control-queue backend
-/// is down (mirrors the 503 contract in `cancel_execution` — canon §13
+/// is down (mirrors the 503 contract in `cancel_execution` — integration seam
 /// step 6) and `ApiError::Internal` for other write failures so the
 /// caller can retry. The engine-side consumer guards against
-/// double-start via CAS (ADR-0008 §5), so a retry after a partial
+/// double-start via CAS (control-queue CAS), so a retry after a partial
 /// failure is safe.
 ///
 /// M3.5: stamps optional [`nebula_core::W3cTraceContext`] on the row from the active HTTP span
@@ -478,7 +478,7 @@ pub async fn cancel_execution(
     // Update state to cancelled. Write the status as the canonical
     // snake-case string that `ExecutionStatus::Cancelled` serializes to,
     // so that engine-side reads via `ExecutionStatus::deserialize` round-
-    // trip cleanly (#327, canon §4.5). Persist `completed_at` (not the
+    // trip cleanly (#327, honest capability contract). Persist `completed_at` (not the
     // legacy `finished_at`) because that is the field `ExecutionState`
     // actually declares — see `crates/execution/src/state.rs`.
     if let Some(state_obj) = execution_state.as_object_mut() {
@@ -613,7 +613,7 @@ pub async fn get_execution_logs(
 /// POST /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate
 ///
 /// Forced-terminate is a *forced* shutdown contrasted with
-/// [`cancel_execution`]'s *cooperative* drain. Per ADR-0016 the engine
+/// [`cancel_execution`]'s *cooperative* drain. Per cooperative cancel the engine
 /// has no distinct forced-shutdown path today: `ControlCommand::Terminate`
 /// is wired end-to-end (`ControlConsumer` → `EngineControlDispatch::
 /// dispatch_terminate` → `dispatch_cancel` → the engine cancel registry's
@@ -622,7 +622,7 @@ pub async fn get_execution_logs(
 /// state is therefore `ExecutionStatus::Cancelled` — `ExecutionStatus`
 /// has no distinct `Terminated` variant (see
 /// `crates/execution/src/state.rs` / `status.rs`), so pre-setting any
-/// other status string would be a #327 / canon §4.5 false capability the
+/// other status string would be a #327 / honest capability contract false capability the
 /// engine would not round-trip. This mirrors `cancel_execution` exactly
 /// except for the durable command kind.
 #[utoipa::path(
@@ -684,14 +684,14 @@ pub async fn terminate_execution(
     }
 
     // Pre-set the terminal status. Forced-terminate lands in the same
-    // `Cancelled` terminal state as cooperative cancel: ADR-0016 documents
+    // `Cancelled` terminal state as cooperative cancel: cooperative cancel documents
     // that the engine has no distinct forced-shutdown path and treats
     // `Terminate` as a cooperative-cancel synonym (the
     // `Running → Cancelling → Cancelled` bridge in the engine tails), and
     // `ExecutionStatus` carries no `Terminated` variant. Write the
     // canonical snake-case string `ExecutionStatus::Cancelled` serializes
     // to so engine-side reads via `ExecutionStatus::deserialize` round-trip
-    // cleanly (#327, canon §4.5). Persist `completed_at` (not the legacy
+    // cleanly (#327, honest capability contract). Persist `completed_at` (not the legacy
     // `finished_at`) because that is the field `ExecutionState` declares —
     // see `crates/execution/src/state.rs`.
     if let Some(state_obj) = execution_state.as_object_mut() {
@@ -814,6 +814,6 @@ pub async fn restart_execution(
 ) -> ApiResult<Json<serde_json::Value>> {
     // TODO: Restart a failed/cancelled execution
     Err(ApiError::NotImplemented(
-        "handler stub — tracked under ADR-0047 Stub Endpoint Policy".to_string(),
+        "handler stub — tracked under stub endpoint policy".to_string(),
     ))
 }

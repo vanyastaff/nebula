@@ -1,4 +1,4 @@
-//! Scope-enforcing [`NodeResultStore`] decorator (ADR-0009).
+//! Scope-enforcing [`NodeResultStore`] decorator.
 
 use std::sync::Arc;
 

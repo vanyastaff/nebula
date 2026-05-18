@@ -135,7 +135,7 @@ pub enum StoreError {
     },
     /// Audit sink refused to record the operation. Fail-closed alarm.
     ///
-    /// Per ADR-0028 invariant 4 + §14 "no discard-and-log": a failed
+    /// Per credential invariants invariant 4 + §14 "no discard-and-log": a failed
     /// audit sink surfaces as a hard error rather than a log-and-continue.
     /// The underlying store state depends on the operation and rollback
     /// feasibility:

@@ -17,7 +17,7 @@
 //!
 //! # Allowlist semantics (deny-by-default)
 //!
-//! Per `PRODUCT_CANON` §4.5 (operational honesty) and §12.5 (secrets and auth):
+//! Per `PRODUCT_CANON` (operational honesty) and (secrets and auth):
 //! an action may only acquire a credential it has **explicitly declared**.
 //!
 //! - An **empty** allowlist means **no credentials are permitted**. Every request is rejected with
@@ -105,7 +105,7 @@ impl EngineCredentialAccessor {
     /// # Parameters
     ///
     /// - `allowed_keys` — the set of credential IDs this accessor may resolve. An **empty** set
-    ///   denies every request (deny-by-default, per `PRODUCT_CANON` §4.5 / §12.5). A non-empty set
+    ///   denies every request (deny-by-default). A non-empty set
     ///   permits only the listed keys.
     /// - `resolve_fn` — async closure that resolves a credential ID to a boxed `Any` (typically a
     ///   `CredentialSnapshot`) or a `CoreError`.

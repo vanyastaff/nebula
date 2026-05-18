@@ -4,13 +4,13 @@
 //! struct that Phase 5 attached to every `Credential` impl. The test pins:
 //!
 //!   1. The credential's metadata schema (the converged consumer path) equals
-//!      `nebula_schema::schema_of::<C::Properties>()` (ADR-0052 P3 — there is no
+//!      `nebula_schema::schema_of::<C::Properties>()` (schema-of properties — there is no
 //!      per-trait schema method).
 //!   2. JSON properties → `FieldValues::from_json` → `schema.validate` →
 //!      `serde_json::from_value::<C::Properties>`. The two passes (schema and serde) are
 //!      independent.
 //!   3. **Credential properties never run through `ValidValues::resolve`.** The engine deliberately
-//!      omits the expression-resolution step from the credential pipeline (canon §12.5: secrets
+//!      omits the expression-resolution step from the credential pipeline (credential secrecy: secrets
 //!      must not depend on runtime workflow state). This test asserts the policy by validating the
 //!      schema directly without `.resolve(...)` and by shape-checking the post-validate value tree
 //!      (no template gets replaced).
@@ -26,7 +26,7 @@ use serde_json::json;
 
 #[test]
 fn metadata_schema_is_schema_of_properties() {
-    // ADR-0052 P3 seam: the converged path. `Credential::properties_schema()`
+    // schema-of properties seam: the converged path. `Credential::properties_schema()`
     // is removed; the metadata schema is sourced from
     // `nebula_schema::schema_of::<C::Properties>()` (the `Properties: HasSchema`
     // associated-type bound is the single source of truth).
@@ -82,7 +82,7 @@ fn properties_pipeline_rejects_missing_required_api_key() {
     );
 }
 
-// ── Expression policy (canon §12.5) ────────────────────────────────────────
+// ── Expression policy (credential secrecy) ────────────────────────────────────────
 
 /// Policy: the credential pipeline does NOT run `valid.resolve(...)`.
 ///
@@ -157,7 +157,7 @@ fn expressions_in_optional_property_field_also_fail_serde() {
     let values = FieldValues::from_json(raw.clone()).expect("ingest");
     schema.validate(&values).expect("validate passes");
 
-    // The optional `server: Option<String>` is also targeted by canon §12.5;
+    // The optional `server: Option<String>` is also targeted by credential secrecy;
     // serde refuses the `{"$expr": ...}` envelope as a `String`.
     let result = serde_json::from_value::<<ApiKeyCredential as Credential>::Properties>(raw);
     assert!(

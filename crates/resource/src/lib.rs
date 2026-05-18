@@ -1,7 +1,7 @@
 //! # nebula-resource
 //!
 //! **Role:** Bulkhead Pool — engine-owned resource lifecycle (acquire / health /
-//! release). Canon §11.4, §13.3. Pattern: Release It! "Bulkhead."
+//! release). Bulkhead isolation (integration seam step 3). Pattern: Release It! "Bulkhead."
 //!
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
@@ -75,7 +75,7 @@ pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource
 // Credential surface re-exported so resource consumers don't need a
 // direct nebula-credential dep for trait shape.
 //
-// Per ADR-0044 the singular `Resource::Credential` associated type and
+// Per slot model the singular `Resource::Credential` associated type and
 // its `NoCredential` opt-out type are gone — credentials are declared
 // via `#[credential(key = ...)]` slot fields on the resource struct.
 // `NoCredential`/`NoCredentialState` are no longer re-exported.

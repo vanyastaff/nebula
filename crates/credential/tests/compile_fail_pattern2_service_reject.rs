@@ -1,7 +1,7 @@
 //! Bonus probe (Stage 4) - Pattern 2 wrong-scheme rejection through
 //! the phantom-shim chain.
 //!
-//! Per ADR-0035 1, declaring a credential whose `Scheme` does not
+//! Per capability macro 1, declaring a credential whose `Scheme` does not
 //! satisfy a capability's `scheme_bound` marker must reject at
 //! compile time. The diagnostic chain travels:
 //!

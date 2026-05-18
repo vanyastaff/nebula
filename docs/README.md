@@ -62,6 +62,15 @@ for traceability but are **non-normative** (see conflict rule above).
 | `C:/Users/.../RustroverProjects/docs/` as workspace canon | This repo’s `docs/` table |
 | Bulk `glob docs/**` | This file + one crate README + cited ADR |
 
-## Code comments
+## Code comments (Rust)
 
-Prefer **behavior-first** module docs in crates/. Avoid inline ADR-NNNN / canon § pins — see docs/plans/2026-05-18-002-refactor-code-doc-citation-cleanup-plan.md.
+Write **behavior-first** `//!` / `//` text in `crates/**/*.rs`. Normative decisions live in
+canon, INTEGRATION_MODEL, and ADRs — not as section pins on every hot path.
+
+| Do | Don't |
+|----|-------|
+| Explain *what the code enforces* (lease reclaim, SKIP LOCKED, tenant scope, replay-oracle) | `ADR-0048 §3.2`, `canon §12.2`, `spec-16 §11.3` in inline comments |
+| At most **one** module-level pointer per file to `crates/<crate>/README.md` or `docs/INTEGRATION_MODEL.md` when traceability helps | Scatter ADR numbers through `//` blocks inside functions |
+| Keep ADR ids in **tests** when the test name/doc is explicitly proving a contract seam | Remove history from `docs/adr/` stubs, `deny.toml` layer comments, or supersession tables |
+
+`rg 'ADR-0|canon §' crates --glob '*.rs'` should trend to zero on merged work; crate READMEs may still cite ADRs for integrators.

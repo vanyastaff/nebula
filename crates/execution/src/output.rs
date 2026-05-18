@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// (`"hello"`, `42`, `true`) round-trip correctly — newtype-wrapped
 /// `Value` cannot share a level with `type`, so the engine's first
 /// attempt to persist a string-output `NodeAttempt` would otherwise
-/// fail at `serde_json::to_value(&exec_state)` (ADR-0042 §M2.1 T2
+/// fail at `serde_json::to_value(&exec_state)` (retry scheduling
 /// regression discovered during T4 wiring).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

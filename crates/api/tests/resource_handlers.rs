@@ -1,12 +1,12 @@
 //! Integration tests for the workspace-scoped resource catalog handlers.
 //!
 //! `GET /api/v1/orgs/{org}/workspaces/{ws}/resources` and
-//! `GET .../resources/{res}` are config-CRUD read endpoints (ADR-0047
+//! `GET .../resources/{res}` are config-CRUD read endpoints (stub-endpoint policy
 //! Stub Endpoint Policy retired for these routes). These tests boot the
 //! in-memory app with a fake [`ResourceRepo`] and assert the honest
 //! `ResourceEntry` → `ResourceSummary` mapping: `res_<ULID>` id encoding,
 //! `display_name` → `name`, soft-deleted rows excluded, and no raw
-//! `config` ever surfaced (ADR-0028 §7).
+//! `config` ever surfaced (no secret echo).
 //!
 //! The single-resource read additionally enforces tenant isolation: a
 //! resource whose `workspace_id` differs from the caller's authorized
@@ -48,7 +48,7 @@ fn test_ws_bytes() -> Vec<u8> {
 /// exact: a 404 from the read handlers can then only come from their
 /// isolation / soft-delete filters, never an id-encoding mismatch. The
 /// `config` is deliberately secret-shaped so every read path is asserted
-/// to never echo it (ADR-0028 §7).
+/// to never echo it (no secret echo).
 fn entry(
     id: ResourceId,
     workspace_id_bytes: Vec<u8>,
@@ -349,7 +349,7 @@ async fn list_resources_returns_200_with_mapped_summaries() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "list_resources must be implemented (200), not the ADR-0047 501 stub"
+        "list_resources must be implemented (200), not the stub-endpoint 501"
     );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -615,7 +615,7 @@ async fn create_resource_unknown_kind_is_409_and_not_persisted() {
 
 /// With no validation backend wired, the handler fails **closed**: 422,
 /// and nothing is persisted. Persisting an unvalidated config (which
-/// could carry an inlined secret) is never acceptable (ADR-0028 §7).
+/// could carry an inlined secret) is never acceptable (no secret echo).
 #[tokio::test]
 async fn create_resource_without_validation_backend_is_422_fail_closed() {
     let api_config = ApiConfig::for_test();
@@ -947,7 +947,7 @@ async fn update_resource_request(
 }
 
 /// A well-formed update body. `config` is deliberately secret-shaped so
-/// every rejection path is asserted never to echo it (ADR-0028 §7).
+/// every rejection path is asserted never to echo it (no secret echo).
 fn update_body(kind: &str, expected_version: i64) -> serde_json::Value {
     serde_json::json!({
         "display_name": "Renamed Pool",
@@ -1540,7 +1540,7 @@ async fn delete_then_get_same_id_is_404() {
 //
 // `GET .../resources/{res}/status` is a READ-ONLY runtime-status
 // projection. Resource lifecycle (acquire/release/drain/reload) is owned
-// by the engine and is NOT exposed over HTTP (INTEGRATION_MODEL §13.1):
+// by the engine and is NOT exposed over HTTP (INTEGRATION_MODEL integration seam.1):
 // there is no `{res}/acquire` (or release/drain) route at all, asserted
 // below as the explicit non-lifecycle guarantee.
 //
@@ -1552,7 +1552,7 @@ async fn delete_then_get_same_id_is_404() {
 // The seam is api-safe (`nebula_engine::EngineResourceStatus` →
 // `ResourceRuntimeStatus`), so the API crate never depends on
 // `nebula-resource` (deny.toml `[[wrappers]]`). The status DTO carries
-// phase/health only — never config or credential material (ADR-0028 §7).
+// phase/health only — never config or credential material (no secret echo).
 
 /// Fake [`EngineResourceStatus`] for the handler tests.
 ///
@@ -1633,7 +1633,7 @@ async fn get_status_request(app: axum::Router, res_id: &str) -> axum::http::Resp
 
 /// A live, owned resource with a live runtime ⇒ **200** + a
 /// `ResourceStatusDto` projecting phase/health. The raw config must NOT
-/// leak (ADR-0028 §7) and no secret/credential field may appear.
+/// leak (no secret echo) and no secret/credential field may appear.
 #[tokio::test]
 async fn get_resource_status_owned_active_is_200_with_dto() {
     let api_config = ApiConfig::for_test();
@@ -1668,7 +1668,7 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
     )
     .expect("body is utf-8");
 
-    // No secret / config material in a status body (ADR-0028 §7): the
+    // No secret / config material in a status body (no secret echo): the
     // fixture's config is deliberately secret-shaped.
     assert!(
         !raw.contains("secret_looking_key") && !raw.contains("do-not-leak"),
@@ -1692,7 +1692,7 @@ async fn get_resource_status_owned_active_is_200_with_dto() {
         assert!(
             allowed.contains(&k.as_str()),
             "status DTO leaked an unexpected field `{k}` (no config / \
-             credential material may appear — ADR-0028 §7)"
+             credential material may appear — no secret echo)"
         );
     }
 
@@ -1949,7 +1949,7 @@ async fn get_resource_status_without_repo_is_503() {
 }
 
 /// Resource lifecycle is NOT exposed over HTTP (INTEGRATION_MODEL
-/// §13.1). There is deliberately **no**
+/// integration seam.1). There is deliberately **no**
 /// `POST .../resources/{res}/acquire` route (nor release/drain): the only
 /// `{res}/...` sub-route is the read-only `{res}/status` GET.
 ///

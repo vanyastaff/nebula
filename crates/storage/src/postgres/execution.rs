@@ -279,9 +279,8 @@ impl ExecutionStore for PgExecutionStore {
             // second acquire by the *same* holder. Renewal is the
             // dedicated `renew_lease` op (fencing-token gated); a
             // second `acquire_lease` while the lease is live is
-            // contention, not a silent renew (§12.2 zombie-runner
-            // closure, ADR-0008 — two concurrent runners must see
-            // exactly one winner).
+            // contention, not a silent renew (zombie-runner closure —
+            // two concurrent runners must see exactly one winner).
             tx.rollback().await.map_err(conn_err)?;
             return Ok(None);
         }

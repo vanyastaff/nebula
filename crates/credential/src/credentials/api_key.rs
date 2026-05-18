@@ -18,7 +18,7 @@ use crate::{
 ///
 /// The struct is purely the schema-bearing companion: `#[derive(Schema)]`
 /// emits the `HasSchema` impl read via
-/// `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3). The
+/// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). The
 /// actual auth material conversion to
 /// [`SecretToken`] happens in [`Credential::resolve`].
 ///

@@ -1,4 +1,4 @@
-//! Seam (ADR-0052 P3) — `Credential::properties_schema()` is removed.
+//! Seam (schema-of properties) — `Credential::properties_schema()` is removed.
 //!
 //! Schema is reachable only via the `Properties: HasSchema` associated-type
 //! bound / `nebula_schema::schema_of`. This locks the convergence: the

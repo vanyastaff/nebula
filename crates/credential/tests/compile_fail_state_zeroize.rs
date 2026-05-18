@@ -2,7 +2,7 @@
 //!
 //! Verifies the trait shape rejects an `impl CredentialState for X` where
 //! `X` does not derive (or otherwise implement) `ZeroizeOnDrop`. Plaintext
-//! state at runtime must drop deterministically per §12.5; the supertrait
+//! state at runtime must drop deterministically per credential secrecy; the supertrait
 //! bound is the compile-time gate.
 
 #[test]

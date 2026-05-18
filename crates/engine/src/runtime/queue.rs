@@ -50,7 +50,7 @@ impl QueueError {
 ///
 /// Methods are desugared from `async fn` to `fn -> impl Future + Send` to
 /// avoid a `Pin<Box<dyn Future>>` wrapper and preserve `Send` on the returned
-/// futures (ADR-0014 direction; Phase 2 AFIT). Callers that use
+/// futures . Callers that use
 /// `tokio::spawn` may still need an owning `async move { ... }` wrapper and
 /// owned/cloned inputs to satisfy the spawned future's `'static` requirement.
 pub trait TaskQueue: Send + Sync {

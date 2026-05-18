@@ -5,7 +5,7 @@
 //! (TEXT/INTEGER vs TIMESTAMPTZ/UUID/BIGSERIAL) — we match on the column
 //! identifiers, not their declared types.
 //!
-//! Per ADR-0041 + sub-spec §3.3 / §3.4.
+//! Per refresh-claim contract (SQLite vs Postgres column parity).
 
 use std::{collections::BTreeSet, path::Path};
 

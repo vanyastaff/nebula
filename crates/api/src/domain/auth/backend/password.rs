@@ -2,7 +2,7 @@
 //!
 //! Parameters (m=19_456 KiB, t=2, p=1) match OWASP 2024 minimum
 //! recommendations and produce a verify time of ~50 ms on a 2024 laptop —
-//! within the canon §11 "login p99 < 200 ms" budget while keeping the
+//! within the operational SLO "login p99 < 200 ms" budget while keeping the
 //! brute-force factor at ≥ 2^16.
 
 use argon2::{

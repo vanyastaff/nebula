@@ -2,9 +2,9 @@
 //!
 //! [`Resource`] is the central abstraction: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! four associated types and the lifecycle methods (Phase 4 / ADR-0044).
+//! four associated types and the lifecycle methods (Phase 4 / slot model).
 //!
-//! Per ADR-0044 (supersedes ADR-0036) the singular `type Credential`
+//! Per slot model (supersedes credential isolation) the singular `type Credential`
 //! associated type was deleted in favor of typed credential **slot fields**
 //! declared on the resource struct via `#[credential(key = "...")]` (the
 //! `#[derive(Resource)]` macro emits a `DeclaresDependencies` impl that
@@ -210,12 +210,12 @@ impl ResourceMetadataBuilder {
     }
 }
 
-/// Core resource trait — 4 associated types + lifecycle methods (Phase 4 / ADR-0044).
+/// Core resource trait — 4 associated types + lifecycle methods (Phase 4 / slot model).
 ///
 /// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
 /// which avoids the `Box<dyn Future>` allocation on every call.
 ///
-/// Per ADR-0044 (supersedes ADR-0036) the singular `type Credential`
+/// Per slot model (supersedes credential isolation) the singular `type Credential`
 /// associated type was removed in favor of typed credential **slot
 /// fields** on the resource struct (declared via `#[credential(...)]`
 /// field attributes; the `#[derive(Resource)]` macro emits an impl of
@@ -263,7 +263,7 @@ pub trait Resource: Send + Sync + 'static {
     ///
     /// Credential slot cells declared via `#[credential(key = "...")]`
     /// are already populated on `&self` by the framework before this
-    /// call (per ADR-0044). Implementations read each resolved guard
+    /// call (per slot model). Implementations read each resolved guard
     /// through the derive-emitted `self.<field>_slot()` accessor
     /// (`Option<Arc<CredentialGuard<C>>>`) — handling the `None`
     /// (unbound) case explicitly — never off the raw cell field.
@@ -286,7 +286,7 @@ pub trait Resource: Send + Sync + 'static {
     /// pattern: build a fresh pool from the rotated credential, atomically
     /// swap into an `Arc<RwLock<Pool>>`, let RAII drain old handles.
     ///
-    /// **Invariant** per ADR-0044 §Seam: implementer must handle every
+    /// **Invariant** per slot model §Seam: implementer must handle every
     /// declared credential slot name; the engine emits a `WARN
     /// [resource]` if rotation arrives for an unhandled slot.
     ///
@@ -305,7 +305,7 @@ pub trait Resource: Send + Sync + 'static {
     }
 
     /// Called by the engine fan-out when a slot's credential is revoked.
-    /// Post-invocation invariant (ADR-0044): the resource emits no further
+    /// Post-invocation invariant (slot model): the resource emits no further
     /// authenticated traffic on the revoked credential. Default: no-op
     /// (the engine still taints + drains the runtime around this call).
     fn on_credential_revoke(
@@ -350,7 +350,7 @@ pub trait Resource: Send + Sync + 'static {
     /// stale runtime, it just cannot prove staleness by epoch).
     ///
     /// Used by the per-slot rotation dispatch and the Resident create slow
-    /// path to close the create-vs-rotate lost-update race (ADR-0067
+    /// path to close the create-vs-rotate lost-update race (resource runtime status
     /// §Deferred): the Resident runtime records the epoch it was built
     /// against and the dispatch reconciles a runtime built against an
     /// older epoch instead of silently reporting success.

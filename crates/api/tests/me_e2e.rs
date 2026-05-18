@@ -3,7 +3,7 @@
 //! All six `/api/v1/me/*` endpoints are graduated stub→implemented. Five
 //! drive the full middleware → handler → `AuthBackend` path against a
 //! **real** `InMemoryAuthBackend` (Argon2id / RFC 6238 TOTP / SHA-256 PAT
-//! lookup — the §4.5-honest production-quality default; `nebula_storage`
+//! lookup — the honest capability-honest production-quality default; `nebula_storage`
 //! ships no `UserRepo`/`PatRepo`/`SessionRepo` impl, so this in-memory
 //! backend *is* the real backing, exactly as `InMemoryControlQueueRepo`
 //! is for the durable control plane in Phase 1).
@@ -143,7 +143,7 @@ async fn get_me_returns_profile_with_real_token_count() {
 
 #[tokio::test]
 async fn get_me_orgs_count_absent_when_membership_store_unwired() {
-    // §4.5 honest degradation: `create_me_state_without_backend` wires
+    // honest capability honest degradation: `create_me_state_without_backend` wires
     // neither an auth backend nor a membership store. The request reaches
     // the handler (JWT → Principal::User) but fails closed on the absent
     // auth backend with 503 *before* it would read org membership — so
@@ -369,7 +369,7 @@ async fn list_my_orgs_returns_seeded_membership() {
         "org id must be a prefixed ULID"
     );
     assert_eq!(orgs[0]["role"], "member", "seeded role is OrgMember");
-    // §4.5: no synthesized reverse-slug field.
+    // honest capability: no synthesized reverse-slug field.
     assert!(
         orgs[0].get("slug").is_none(),
         "OrgSummary must not carry a synthesized slug (no OrgId→slug directory)"
@@ -542,7 +542,7 @@ async fn create_token_without_auth_is_401() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// Secret-redaction contract for `create_token` (canon §12.5 / STYLE §6):
+/// Secret-redaction contract for `create_token` (credential secrecy / STYLE §6):
 /// the plaintext is returned **exactly once** in the body and **never**
 /// surfaces in tracing output. Mirrors the
 /// `crates/credential/tests/redaction.rs` capturing-subscriber pattern.

@@ -80,7 +80,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
     ///
-    /// Per Tech Spec §15.4 — bound on [`Refreshable`] so a non-refreshable
+    /// Per Tech Spec — bound on [`Refreshable`] so a non-refreshable
     /// credential cannot reach this dispatch path. Probe 4
     /// (`compile_fail_engine_dispatch_capability`) cements the structural
     /// barrier with `E0277` at the dispatch site.
@@ -188,7 +188,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let resolver_stored = stored;
         let credential_id_owned = credential_id.to_string();
 
-        // Sub-spec §3.6 post-backoff state recheck. After the L2 backoff
+        // Sub-spec post-backoff state recheck. After the L2 backoff
         // sleep the contender's claim may have been released because
         // their refresh succeeded — in that case the credential is now
         // fresh and we should short-circuit rather than running the
@@ -199,7 +199,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // expired, return `false` so the coordinator surfaces
         // `CoalescedByOtherReplica`.
         //
-        // Sub-spec §3.6 ProviderRejected gap (review feedback I1): if
+        // Sub-spec ProviderRejected gap (review feedback I1): if
         // the contender's refresh returned `ReauthRequired` it persisted
         // `reauth_required = true` on the row before releasing the L2
         // claim. Re-running the IdP closure here would produce another
@@ -494,7 +494,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         // when already false, recovers from a stale
                         // `true` left over by a previous ReauthRequired
                         // outcome that the application has since
-                        // re-authorized (sub-spec §3.6 / I1).
+                        // re-authorized (sub-spec / I1).
                         reauth_required: false,
                         ..stored.clone()
                     };
@@ -541,7 +541,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             },
             RefreshOutcome::ReauthRequired(reason) => {
                 // Persist `reauth_required = true` on the credential row
-                // BEFORE returning the typed error (sub-spec §3.6 / I1).
+                // BEFORE returning the typed error (sub-spec / I1).
                 // Cross-replica readers consult this flag in their
                 // post-backoff state-recheck predicate; without the
                 // persisted bit, every replica would re-run the IdP
@@ -556,7 +556,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // Outcome of the best-effort `reauth_required=true`
                 // persist loop. Distinguishing CAS exhaustion from a
                 // transient store error matters for observability: the
-                // CAS-exhausted metric (sub-spec §6) MUST count only the
+                // CAS-exhausted metric (sub-spec ) MUST count only the
                 // case where every attempt lost to `VersionConflict`,
                 // because that is the failure mode that produces a
                 // duplicate IdP load on the next replica's recheck. A
@@ -635,7 +635,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         // and produce another `invalid_grant`. Surface the
                         // failure mode at WARN; metric wiring tracked under
                         // `NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL`
-                        // (sub-spec §6) — increment lands when the resolver
+                        // (sub-spec ) — increment lands when the resolver
                         // gains a `MetricsRegistry` handle (out of scope for
                         // this PR-583 wave 2 fix; resolver does not currently
                         // hold a metrics handle).
@@ -659,7 +659,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             // refreshed while we were waiting on L2. Caller re-reads
             // state from the store via the parent dispatch path. This
             // arm reaches us from the inner `RefreshOutcome` only via a
-            // future resolver path; today the sub-spec §3.6 coalesce is
+            // future resolver path; today the sub-spec coalesce is
             // surfaced by the `RefreshError` layer in
             // `RefreshCoordinator::refresh_coalesced` (handled in the
             // outer match on `outcome` above). Keep the arm explicit so
@@ -670,8 +670,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             },
             // RefreshOutcome is `#[non_exhaustive]` — preserve the
             // wildcard so adding future variants (e.g. partial refresh)
-            // does not silently break this match. Per Tech Spec §15.4
-            // the `NotSupported` variant was removed because membership
+            // does not silently break this match. Per Tech Spec            // the `NotSupported` variant was removed because membership
             // in `Refreshable` already guarantees the credential
             // supports refresh.
             _ => {
@@ -719,7 +718,7 @@ pub enum ResolveError {
     ///
     /// Carries a typed [`ReauthReason`] so callers (UI, metrics, audit)
     /// can distinguish provider-rejected refresh from sentinel-threshold
-    /// escalation per sub-spec §3.4.
+    /// escalation per sub-spec.
     #[error("credential {credential_id}: re-authentication required")]
     ReauthRequired {
         /// Credential identifier.

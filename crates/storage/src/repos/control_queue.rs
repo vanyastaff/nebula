@@ -18,11 +18,8 @@ pub enum ControlCommand {
     /// First-time dispatch of a newly-created execution.
     ///
     /// Enqueued by the API `start_execution` / `execute_workflow` handlers
-    /// once the `ExecutionState::Created` row has been persisted (canon §12.2,
-    /// §13 step 3, #332). The engine-side consumer picks this up and drives
-    /// the execution through its initial transition to `Running` — closing
-    /// the §4.5 public-surface gap where the API advertised workflow
-    /// dispatch but never reached the engine.
+    /// once the `ExecutionState::Created` row has been persisted. The engine-side consumer picks this up and drives
+    /// the execution through its initial transition to `Running`.
     Start,
     /// Cooperative cancel (graceful shutdown of running work).
     Cancel,
@@ -80,12 +77,12 @@ pub struct ControlQueueEntry {
     /// for crashed-runner recovery — rows whose `processed_at` is older
     /// than the `reclaim_after` window are redelivered. Cleared on a
     /// successful reclaim so the next `claim_pending` resets the clock.
-    /// See ADR-0017 / ADR-0008 B1.
+    /// Used by crashed-runner reclaim sweeps.
     pub processed_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Error message if processing failed.
     pub error_message: Option<String>,
     /// Number of times this row has been reclaimed back to `Pending` after a
-    /// crashed runner left it in `Processing` (ADR-0017, ADR-0008 B1). Bounded
+    /// crashed runner left it in `Processing`. Bounded
     /// by `max_reclaim_count` on the consumer; rows past the budget move to
     /// `Failed` with a `"reclaim exhausted:"` error.
     pub reclaim_count: u32,
@@ -96,7 +93,7 @@ pub struct ControlQueueEntry {
     pub w3c_trace_context: Option<nebula_core::W3cTraceContext>,
 }
 
-/// Summary of a single `reclaim_stuck` sweep (ADR-0017).
+/// Summary of a single `reclaim_stuck` sweep.
 ///
 /// `reclaimed` counts rows moved `Processing → Pending` for a fresh dispatch
 /// attempt; `exhausted` counts rows moved `Processing → Failed` because
@@ -133,7 +130,7 @@ pub trait ControlQueueRepo: Send + Sync {
     /// is the one that claimed the row. This prevents a stale worker whose
     /// row was reclaimed and re-claimed by another runner from overwriting
     /// the newer claim's state. A mismatch is an idempotent no-op under
-    /// the at-least-once contract of ADR-0008 §5.
+    /// the at-least-once delivery contract.
     async fn mark_completed(&self, id: &[u8], processor: &[u8]) -> Result<(), StorageError>;
 
     /// Mark a claimed command as failed (records `error_message`).
@@ -151,7 +148,7 @@ pub trait ControlQueueRepo: Send + Sync {
     ) -> Result<(), StorageError>;
 
     /// Reclaim rows stuck in `Processing` whose owning runner is presumed
-    /// dead (ADR-0017, ADR-0008 B1).
+    /// dead (crashed-runner reclaim).
     ///
     /// Finds rows where `status = 'Processing'` and
     /// `processed_at < now - reclaim_after`. For each such row:

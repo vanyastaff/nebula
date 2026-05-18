@@ -1,7 +1,7 @@
 //! Compile-pass probe: `#[derive(Resource)]` accepts a `#[credential]` field
 //! of shape `SlotCell<CredentialGuard<C>>` and emits an inherent read
 //! accessor `<field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` that
-//! delegates to `SlotCell::load` (ADR-0044 slot model, finalized shape).
+//! delegates to `SlotCell::load` (slot model, finalized shape).
 
 use std::sync::Arc;
 

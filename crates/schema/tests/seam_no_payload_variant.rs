@@ -1,4 +1,4 @@
-//! ADR-0052 seam — no-payload mode-variant expression smuggle, runtime
+//! seam — no-payload mode-variant expression smuggle, runtime
 //! defence-in-depth.
 //!
 //! `mode.no_payload_variant_must_forbid_expression` (a build-fatal lint) is the

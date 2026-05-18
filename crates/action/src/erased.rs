@@ -1,6 +1,6 @@
 //! `ErasedAction` enum + object-safe per-variant sub-traits.
 //!
-//! Per ADR-0043 §6 / Phase 3 Session 4, the engine cannot dispatch on the
+//! The engine cannot dispatch on the
 //! `Sized` [`Action`](crate::Action) trait directly because Variant A makes
 //! it object-unsafe. Instead, the engine works against an enum
 //! [`ErasedAction`] whose variants wrap `Box<dyn ErasedXxx>` trait objects

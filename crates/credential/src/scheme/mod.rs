@@ -10,7 +10,7 @@
 //! so `nebula-core` holds only cross-cutting vocabulary.
 //!
 //! **Pruned 2026-04-24** (zero consumers, Plane-A territory):
-//! `FederatedAssertion` (SAML/JWT — `nebula-auth` Plane A concern per ADR-0033),
+//! `FederatedAssertion` (SAML/JWT — `nebula-auth` Plane A concern per auth plane separation),
 //! `OtpSeed` (TOTP/HOTP — belongs inside specific integrations, not projected),
 //! `ChallengeSecret` (Digest/NTLM/SCRAM — HTTP client negotiation, not wire-level scheme).
 

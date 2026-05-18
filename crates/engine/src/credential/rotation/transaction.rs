@@ -573,7 +573,7 @@ impl RotationTransaction {
 
     /// Mark rotation as committed.
     ///
-    /// **Revoke-on-rotate hook (ADR-0051 Phase D).** Composition roots
+    /// **Revoke-on-rotate hook .** Composition roots
     /// that wire a [`LeaseLifecycle`](crate::credential::LeaseLifecycle)
     /// SHOULD call
     /// [`LeaseLifecycle::revoke_for_credential(self.credential_id)`](crate::credential::LeaseLifecycle::revoke_for_credential)

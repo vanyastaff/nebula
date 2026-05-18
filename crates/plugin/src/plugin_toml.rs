@@ -1,4 +1,4 @@
-//! `plugin.toml` parsing per canon §7.1.
+//! `plugin.toml` parsing per
 //!
 //! The `plugin.toml` file sits next to a plugin binary and declares two things:
 //! 1. `[nebula].sdk` — semver `VersionReq` the plugin was built against.

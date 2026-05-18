@@ -3,10 +3,10 @@
 //! A resource declares `#[credential]` slots; the engine resolves each into a
 //! `CredentialGuard<C>` and stores it here before `Resource::create`. On
 //! rotation the engine swaps a fresh guard in without `&mut` on the
-//! resource (the `&self` refresh-hook model, ADR-0067). Lock-free via
+//! resource (the `&self` refresh-hook model, resource runtime status). Lock-free via
 //! `arc-swap`.
 //!
-//! # Generation / epoch (ADR-0067 §Deferred — create-vs-rotate ordering)
+//! # Generation / epoch (per-resource revoke deferral — create-vs-rotate ordering)
 //!
 //! Every credential-state transition (`store`, `take`) bumps a strictly
 //! monotonically increasing **generation**. `0` is reserved for "never
@@ -19,7 +19,7 @@
 //! records the generation it was constructed against; the per-slot rotation
 //! dispatch compares that against the live generation to detect a runtime
 //! left bound to a pre-rotation credential by a create-vs-rotate race
-//! (ADR-0067 §Deferred). See `ResidentRuntime` / `ManagedResource::
+//! (per-resource revoke deferral). See `ResidentRuntime` / `ManagedResource::
 //! dispatch_slot_hook`.
 
 use std::sync::{
@@ -52,7 +52,7 @@ struct SlotEntry<S> {
 /// inside the entry lets the engine swap a rotated guard in with no
 /// secret-byte clone. Every transition carries a fresh generation so a
 /// runtime built against an older guard is detectable on rotation
-/// (ADR-0067 §Deferred).
+/// (per-resource revoke deferral).
 #[derive(Debug)]
 pub struct SlotCell<S> {
     inner: ArcSwapOption<SlotEntry<S>>,
@@ -134,7 +134,7 @@ impl<S> SlotCell<S> {
     ///
     /// A clear is a credential-state transition, so it bumps the
     /// generation: a runtime built against the pre-clear guard is then
-    /// detectably stale on the next rotation/revoke dispatch (ADR-0067
+    /// detectably stale on the next rotation/revoke dispatch (resource runtime status
     /// §Deferred). The post-clear generation is observable via
     /// [`generation`](Self::generation) even though [`load`](Self::load)
     /// is now `None`.

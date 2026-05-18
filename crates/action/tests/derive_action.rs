@@ -38,7 +38,7 @@ fn metadata_key_matches_attribute() {
 
 #[test]
 fn input_schema_derives_from_input_via_schema_of() {
-    // ADR-0052 P3: there is no `Action::input_schema()` method. The action's
+    // P3: there is no `Action::input_schema()` method. The action's
     // input schema is reached through the `Input: HasSchema` associated-type
     // bound via `nebula_schema::schema_of` — the single source of truth.
     let schema = nebula_schema::schema_of::<<NoCredAction as Action>::Input>();

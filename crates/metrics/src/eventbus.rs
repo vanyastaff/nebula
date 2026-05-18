@@ -3,7 +3,7 @@
 //! The four `NEBULA_EVENTBUS_*` gauges (sent / dropped / subscribers /
 //! drop-ratio in ppm) form a single observation point: every scrape interval
 //! the engine snapshots [`nebula_eventbus::EventBusStats`] and writes the four
-//! values atomically into the registry. Per ADR-0046 the recording is exposed
+//! values atomically into the registry. the recording is exposed
 //! as a single free function instead of a method on a bridge type — the
 //! function takes a [`MetricsRegistry`] reference, applies the canonical
 //! `nebula_*` names from [`crate::naming`], and clamps the platform-specific
@@ -15,9 +15,9 @@
 //!
 //! let registry = MetricsRegistry::new();
 //! let stats = EventBusStats {
-//!     sent_count: 75,
-//!     dropped_count: 25,
-//!     subscriber_count: 3,
+//! sent_count: 75,
+//! dropped_count: 25,
+//! subscriber_count: 3,
 //! };
 //! record_eventbus_stats(&registry, &stats).unwrap();
 //! ```

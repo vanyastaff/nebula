@@ -1,6 +1,6 @@
 //! `ActionFactory` — engine-side object-safe per-execution factory.
 //!
-//! Per ADR-0043 §6 / Phase 3 Session 4. The engine's
+//! The engine's
 //! `ActionRegistry` keeps `Arc<dyn ActionFactory>` per `ActionKey`. On
 //! each dispatch, the registry calls
 //! [`instantiate`](ActionFactory::instantiate) with the current

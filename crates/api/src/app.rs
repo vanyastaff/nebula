@@ -29,7 +29,7 @@ use crate::{
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // Materialise the full route tree alongside the merged OpenAPI 3.1
-    // document (ADR-0047). `OpenApiRouter::split_for_parts()` is the
+    // document (stub-endpoint policy). `OpenApiRouter::split_for_parts()` is the
     // single mounting path that ties the served `axum::Router` to the
     // generated `OpenApi` value, so any handler missing
     // `#[utoipa::path]` would fail to pass through `routes!()` at compile
@@ -38,7 +38,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
 
     let path_count = openapi_spec.paths.paths.len();
     // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
-    // round-trips it to the canonical version string. ADR-0047 pins the
+    // round-trips it to the canonical version string. stub-endpoint policy pins the
     // generator to 3.1.0, so the assertion in T7 catches accidental drift.
     // A serialization failure here is unexpected — it would mean the
     // generated `OpenApi` cannot be represented in JSON, which the served
@@ -90,7 +90,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // Test-only echo / fail routes (used by `tests/idempotency_e2e.rs`).
     // Merged BEFORE the idempotency layer so the dedup contract covers
     // them; gated behind `test-util` so production builds never include
-    // these endpoints. Per ADR-0047 they go through `axum::Router::merge`
+    // these endpoints. Per stub-endpoint policy they go through `axum::Router::merge`
     // (not `OpenApiRouter`) so the spec stays clean — no `_test/*` paths
     // in `/api/v1/openapi.json`.
     #[cfg(any(test, feature = "test-util"))]
@@ -101,7 +101,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // timestamp). Routing webhook traffic through the API idempotency
     // cache would inflate `nebula_api_idempotency_misses_total` with
     // provider traffic that never carries `Idempotency-Key` and conflate
-    // two distinct dedup surfaces. See ADR-0048.
+    // two distinct dedup surfaces. See idempotency backend.
     let api_routes = if let Some(store) = state.idempotency_store.as_ref() {
         // `ttl_secs > 0` is structurally enforced at config load time
         // by `parse_positive_u64_env` (`ApiConfigError::ZeroValue`) so
@@ -133,7 +133,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         None => api_routes,
     };
 
-    // Internal routes (M3.3 / ADR-0049 — E3): /internal/v1/...
+    // Internal routes (webhook activation — E3): /internal/v1/...
     // Mounted on the plain axum `Router` so they never appear in
     // `/api/v1/openapi.json`. Auth is the shared-token middleware
     // gated by `AppState.internal_shared_token`.
@@ -328,7 +328,7 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     //
     // `Idempotency-Key` is here so cross-origin POSTs that opt into
     // replay protection clear the preflight; without it browsers
-    // strip the header before the server sees it (M3.4 / ADR-0048).
+    // strip the header before the server sees it (idempotency backend).
     .allow_headers([
         header::CONTENT_TYPE,
         header::AUTHORIZATION,

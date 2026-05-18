@@ -130,7 +130,7 @@ pub struct ActionMetadata {
     /// still applies, but no per-action limit. `Some(n)` — at most `n`
     /// in-flight executions of this action across the engine.
     ///
-    /// Per Tech Spec §15.12 F9 + PRODUCT_CANON §11 backpressure.
+    /// Per Tech Spec §15.12 F9 + PRODUCT_ backpressure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent: Option<core::num::NonZeroU32>,
 }
@@ -173,13 +173,13 @@ impl ActionMetadata {
     ///
     /// struct MyAction;
     /// impl StatelessAction for MyAction {
-    ///     type Input = MyInput;  // must impl HasSchema
-    ///     type Output = MyOutput;
-    ///     // ...
+    /// type Input = MyInput; // must impl HasSchema
+    /// type Output = MyOutput;
+    /// //...
     /// }
     ///
     /// let meta = ActionMetadata::for_stateless::<MyAction>(
-    ///     action_key!("my.action"), "My Action", "desc",
+    /// action_key!("my.action"), "My Action", "desc",
     /// );
     /// ```
     #[must_use]

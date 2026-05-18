@@ -88,7 +88,7 @@ async fn dynamic_resolution_is_cached_using_response_ttl() {
     // Dynamic resolutions carry a `lease.ttl` ⇒ resolution.ttl = lease.ttl,
     // so the cache layer caches even with the default ZERO fallback — the
     // per-entry TTL comes from the provider response. This is the canonical
-    // use case for the cache layer (ADR-0051 §3.2 of the cache plan).
+    // use case for the cache layer.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/database/creds/role-a"))

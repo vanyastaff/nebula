@@ -5,12 +5,12 @@
 //! supertraits is an action/trigger context. The concrete runtime types live
 //! in this module as [`ActionRuntimeContext`] / [`TriggerRuntimeContext`] —
 //! they embed [`nebula_core::BaseContext`] for identity and compose
-//! capability accessors as `Arc<dyn ...>` fields.
+//! capability accessors as `Arc<dyn...>` fields.
 //!
 //! Action authors never write `ActionRuntimeContext` in their code — they
 //! write `fn execute(ctx: &(impl ActionContext + ?Sized))` and receive any
 //! type the runtime chooses to supply (engine runtime, test harness,
-//! sandbox wrapper, ...).
+//! sandbox wrapper,...).
 
 use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
@@ -717,7 +717,7 @@ impl<T: ?Sized + HasCredentials> CredentialContextExt for T {}
 /// `FromWorkflowNode::from_workflow_node` (the auto-generated factory)
 /// resolves each `#[resource]` / `#[credential]` field by calling these
 /// methods with the concrete slot id (either the action's declared
-/// `default_id` or the per-node `slot_bindings` override per ADR-0042).
+/// `default_id` or the per-node `slot_bindings` override ).
 ///
 /// Plugin authors normally do not call these methods directly; the
 /// derive macro emits the call sites. They are public so authors who
@@ -726,7 +726,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// Acquire a [`nebula_resource::ResourceGuard<R>`] by string id.
     ///
     /// Mirrors [`nebula_resource::ResourceRef::resolve`] but takes the id
-    /// directly so the derive-generated factory can pass the ADR-0042
+    /// directly so the derive-generated factory can pass the
     /// slot binding without constructing an intermediate `ResourceRef<R>`.
     ///
     /// # Errors
@@ -773,7 +773,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// Resolve a [`CredentialGuard<C::Scheme>`] by string id.
     ///
     /// Mirrors [`nebula_credential::CredentialRef::resolve`] but takes the
-    /// id directly so the derive-generated factory can pass the ADR-0042
+    /// id directly so the derive-generated factory can pass the
     /// slot binding without constructing an intermediate `CredentialRef<C>`.
     ///
     /// # Errors

@@ -66,10 +66,10 @@ pub struct ManagedResource<R: Resource> {
     /// manager-wide `Manager::drain_tracker`) and the resulting
     /// [`ResourceGuard`](crate::guard::ResourceGuard) decrements + notifies
     /// it on drop. `Manager::revoke_slot` drains **only this** counter
-    /// (ADR-0067 §Deferred): a revoke on resource A must not block on
+    /// (per-resource revoke deferral): a revoke on resource A must not block on
     /// in-flight traffic to an unrelated resource B, and the
     /// taint→increment→post-taint-recheck ordering against this same counter
-    /// is what closes the revoke-vs-acquire TOCTOU that ADR-0044/ADR-0036
+    /// is what closes the revoke-vs-acquire TOCTOU that slot model/credential isolation
     /// "no authenticated traffic on a revoked credential post-revoke"
     /// requires. The manager-wide tracker stays the `graceful_shutdown`
     /// drain primitive and is untouched here.
@@ -143,7 +143,7 @@ impl<R: Resource> ManagedResource<R> {
     /// Returns a clone of this resource's per-resource in-flight tracker so
     /// an acquire pipeline can pre-count against it (and hand it to the
     /// resulting guard). Distinct from the manager-wide `drain_tracker`:
-    /// `Manager::revoke_slot` drains *this* counter only (ADR-0067
+    /// `Manager::revoke_slot` drains *this* counter only (resource runtime status
     /// §Deferred), so a revoke never blocks on a sibling resource's
     /// in-flight work.
     pub(crate) fn in_flight_tracker(&self) -> Arc<(AtomicU64, Notify)> {
@@ -155,7 +155,7 @@ impl<R: Resource> ManagedResource<R> {
     /// The per-resource analogue of `Manager::wait_for_drain`: it waits on
     /// this row's own counter, not the manager-wide one, so a revoke on this
     /// resource is isolated from in-flight traffic to unrelated resources
-    /// (ADR-0067 §Deferred). Reuses the exact lost-wakeup-safe ordering of
+    /// (per-resource revoke deferral). Reuses the exact lost-wakeup-safe ordering of
     /// the shared shutdown drain helper. Returns `Ok(())` once drained, or
     /// `Err(outstanding)` with the counter snapshot at the moment the timer
     /// fired (the caller — `revoke_resolved` — keeps the taint and proceeds
@@ -176,7 +176,7 @@ impl<R: Resource> ManagedResource<R> {
     /// which carries the same `refresh` selector).
     ///
     /// **Topology audit of the `current() == None → Ok(())` stale-skip
-    /// (ADR-0067 §Deferred / #680).** Only **Resident** lazily builds its
+    /// (per-resource revoke deferral / #680).** Only **Resident** lazily builds its
     /// runtime internally via `resource.create()` (under its `create_lock`,
     /// with a `None`-cell window), so only Resident had the lost-update
     /// where a rotation racing the first `create` could be recorded as a
@@ -196,7 +196,7 @@ impl<R: Resource> ManagedResource<R> {
     /// per-topology runtime-borrow semantics.
     pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
         match &self.topology {
-            // Reconcile-aware (ADR-0067 §Deferred / #680): serialises
+            // Reconcile-aware (per-resource revoke deferral / #680): serialises
             // against the resident `create` slow path and re-delivers the
             // hook to a runtime built against an older credential epoch
             // rather than skipping with a false success.

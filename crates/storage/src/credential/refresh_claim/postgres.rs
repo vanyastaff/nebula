@@ -3,7 +3,7 @@
 //! Multi-replica production target. Atomic CAS via
 //! `INSERT ... ON CONFLICT (credential_id) DO UPDATE WHERE
 //! credential_refresh_claims.expires_at < EXCLUDED.expires_at`
-//! pattern, mirroring control-queue claim acquisition (ADR-0008).
+//! pattern, mirroring control-queue claim acquisition.
 
 use std::time::Duration;
 

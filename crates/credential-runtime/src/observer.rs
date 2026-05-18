@@ -1,4 +1,4 @@
-//! Non-optional observability seam. Closes canon §12.5/§3.5: emission
+//! Non-optional observability seam. Closes credential secrecy/§3.5: emission
 //! sits on the single facade code path, so "never wired" is
 //! unrepresentable. `CredentialObserver` is object-safe by design
 //! (`Arc<dyn CredentialObserver>`).

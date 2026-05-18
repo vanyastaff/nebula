@@ -1,4 +1,4 @@
-//! Storage-driven webhook bootstrap (M3.3 / ADR-0049).
+//! Storage-driven webhook bootstrap (webhook activation).
 //!
 //! Walks every active operator-configured webhook activation in
 //! storage, instantiates the matching `WebhookActionFactory`, and
@@ -14,7 +14,7 @@
 //! returns `Err` for storage-layer failures (connection errors), so
 //! the composition root can choose its own degraded-mode policy
 //! (typically: log, leave the slug map empty, surface `/healthz`
-//! degraded). See ADR-0049 for the rationale.
+//! degraded). See webhook activation for the rationale.
 //!
 //! The composition root invokes this function before handing
 //! [`crate::AppState`] into [`crate::app::build_app`] — the `Router`

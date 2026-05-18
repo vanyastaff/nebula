@@ -1,4 +1,4 @@
-//! Error handling — RFC 9457 `application/problem+json` seam (canon §12.4).
+//! Error handling — RFC 9457 `application/problem+json` seam (problem+json error seam).
 //!
 //! ## Structure
 //!
@@ -158,7 +158,7 @@ pub enum ApiError {
 
     /// The endpoint is documented but the handler is not yet implemented (501).
     ///
-    /// Used by class-(c) stub handlers under ADR-0047 Stub Endpoint Policy
+    /// Used by class-(c) stub handlers under stub endpoint policy
     /// so the runtime status code matches the `responses(501)` annotation
     /// in the OpenAPI document. Migrating from `Internal("not implemented")`
     /// (500) to this variant keeps the stub-honesty contract self-consistent.
@@ -174,11 +174,11 @@ pub enum ApiError {
 /// ([`nebula_storage_port::StorageError`]) — the canonical surface every
 /// port-migrated path returns. The resource-catalog path is the one
 /// surface still on the **retained legacy** `nebula_storage::repos::ResourceRepo`
-/// (deliberately not migrated to the row-model port — ADR-0072), which
+/// (deliberately not migrated to the row-model port — storage port migration), which
 /// returns the legacy `nebula_storage::StorageError`. This is the seam
 /// adapter for that single path: a direct legacy→`ApiError` classification
 /// (NotFound → 404, Conflict/Duplicate → 409, everything else → opaque
-/// 500 with no internal-detail leak per ADR-0028 §7) — **not** a
+/// 500 with no internal-detail leak per no secret echo) — **not** a
 /// back-compat re-export of the deleted legacy surface, and **not** a
 /// re-route through the port error type.
 impl From<nebula_storage::StorageError> for ApiError {
@@ -201,7 +201,7 @@ impl From<nebula_storage::StorageError> for ApiError {
             // Lease / timeout / serialization / connection / configuration /
             // internal are genuine backend faults — the opaque
             // `Self::Storage` arm (still a 500 with no internal detail
-            // leaked to the client per ADR-0028 §7). Mapped through the
+            // leaked to the client per no secret echo). Mapped through the
             // port `StorageError` so the variant is preserved end-to-end
             // (`map_resource_create_storage_error`'s contract: a
             // non-caller fault stays the opaque `Storage` variant, never

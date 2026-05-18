@@ -6,7 +6,7 @@
 //! re-export. Production callers must go through `encrypt_with_aad` /
 //! `encrypt_with_key_id` — the AAD-mandatory paths.
 //!
-//! See `docs/adr/HISTORICAL.md (ADR-0028 credential invariants)` §3.
+//! See `credential invariants doc (credential invariants credential invariants)` §3.
 
 #[test]
 fn compile_fail_encrypt_no_aad_removed() {

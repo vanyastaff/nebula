@@ -71,7 +71,7 @@ async fn abuse1_cross_tenant_is_uniformly_not_found_no_existence_leak() {
     assert_eq!(svc.list(&a).await.expect("list A").len(), 1);
 }
 
-/// Abuse #2 — schema-bypass / `$expr` injection (canon §12.5).
+/// Abuse #2 — schema-bypass / `$expr` injection (credential secrecy).
 ///
 /// A `{"$expr": ..}` envelope survives schema validation but the typed
 /// `serde_json::from_value` round-trip refuses it, so a credential secret
@@ -377,7 +377,7 @@ impl AuditSink for FailingAuditSink {
 /// Abuse #8 — audit fail-closed.
 ///
 /// A refusing `AuditSink` makes the wrapping `AuditLayer` fail the whole
-/// store operation with `StoreError::AuditFailure` (ADR-0028 inv. 4),
+/// store operation with `StoreError::AuditFailure` (no discard-and-log),
 /// surfaced by the facade as `CredentialServiceError::Store`. The write
 /// must **not partially land** — fail-closed, never log-and-continue.
 ///

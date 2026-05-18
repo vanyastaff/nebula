@@ -1,4 +1,4 @@
-//! Parser tests for `plugin.toml` per canon §7.1.
+//! Parser tests for `plugin.toml` per
 
 use std::path::PathBuf;
 

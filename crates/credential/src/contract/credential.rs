@@ -44,7 +44,7 @@ use crate::{
 /// secrets and auth material for **external** systems (SaaS APIs,
 /// webhooks, databases), not for logging into Nebula's own API or
 /// control plane. That host-facing authentication (**Plane A**) stays
-/// out of this trait; see ADR-0033 (`docs/adr/0033-integration-credentials-plane-b.md`).
+/// out of this trait; see auth plane separation ().
 ///
 /// # Associated types
 ///
@@ -124,7 +124,7 @@ pub trait Credential: Send + Sync + 'static {
     /// the schema lives on this type rather than being baked into
     /// [`CredentialMetadata`]: read it via
     /// [`nebula_schema::schema_of::<Self::Properties>()`](nebula_schema::schema_of)
-    /// (there is no per-trait schema method — ADR-0052 P3).
+    /// (there is no per-trait schema method — schema-of properties).
     ///
     /// Use [`FieldValues`] for legacy credentials that do not yet
     /// declare a typed properties struct (the blanket

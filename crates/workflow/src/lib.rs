@@ -7,10 +7,8 @@
 //!
 //! **Role:** Workflow Definition + DAG + Validation. See `crates/workflow/README.md`.
 //!
-//! **Canon:** §10 (golden path — activation runs `validate_workflow`), §12.2 (shift-left
-//! validation contract).
-//!
 //! **Maturity:** `stable` — definition types, builder, DAG, and validator are in active use.
+//! Activation must run shift-left validation before execution starts.
 //!
 //! ## Core Types
 //!
@@ -19,7 +17,7 @@
 //! - [`Connection`] — directed edges wired port-to-port (spec 28 port-driven routing).
 //! - [`DependencyGraph`] — `petgraph` wrapper; topological sort + per-level batching.
 //! - [`WorkflowBuilder`] — fluent, validated construction API.
-//! - [`validate_workflow`] — multi-error validator; **canon §10 requires this at activation**.
+//! - [`validate_workflow`] — multi-error validator; required at activation.
 //! - [`NodeState`] — execution progress tracking per node.
 //!
 //! ## Non-goals

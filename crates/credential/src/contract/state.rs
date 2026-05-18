@@ -17,7 +17,7 @@ use zeroize::ZeroizeOnDrop;
 ///
 /// `ZeroizeOnDrop` is mandatory — credential state contains decrypted
 /// secret material at runtime; deterministic plaintext drop is a
-/// §12.5 invariant (§15.4 amendment, Tech Spec).
+/// credential secrecy invariant (§15.4 amendment, Tech Spec).
 ///
 /// [`AuthScheme`]: crate::AuthScheme
 pub trait CredentialState:

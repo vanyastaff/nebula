@@ -1,4 +1,4 @@
-//! ADR-0052 P4 seam — `CredentialSchemaPort` is api-owned, object-safe, and
+//! credential-schema validation seam — `CredentialSchemaPort` is api-owned, object-safe, and
 //! wires into `AppState` exactly like the `action_registry` precedent
 //! (`Option<Arc<dyn …>>`, `None` ⇒ honest 503).
 
@@ -35,7 +35,7 @@ async fn appstate_credential_schema_defaults_none_and_builder_sets_it() {
     // Object-safety: the trait must be usable as `dyn`.
     fn _assert_object_safe(_: &dyn CredentialSchemaPort) {}
 
-    // The shared harness wires a permissive port by default (ADR-0052 P4
+    // The shared harness wires a permissive port by default (credential-schema validation
     // closed the unvalidated-persist fail-open); the *AppState default*
     // (no builder call) is None — assert via the no-port helper.
     let (state, _q) = common::create_state_with_queue_no_credential_port().await;

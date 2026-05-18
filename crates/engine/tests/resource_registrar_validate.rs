@@ -5,16 +5,16 @@
 //! reject a malformed resource config *before* persisting the row, but
 //! it must **not** live-register the resource into a running
 //! `nebula_resource::Manager` — live registration is an
-//! engine-activation concern (INTEGRATION_MODEL §13.1). This test pins
+//! engine-activation concern (.1). This test pins
 //! that `validate`:
 //!
 //! - resolves the `kind` through the **closed allowlist** (an unknown
 //!   kind is a typed `RegistrarError::UnknownKind`, never a silent grab
-//!   of the wrong resource type — INTEGRATION_MODEL §114-120);
+//!   of the wrong resource type);
 //! - runs the real `R::Config` schema pass + closed-set guard for a
 //!   known kind (schema-valid ⇒ `Ok`; schema-invalid ⇒
 //!   `RegistrarError::Register`; an undeclared secret-shaped field ⇒
-//!   `RegistrarError::Register`, ADR-0028 §7 / PRODUCT_CANON §3.5);
+//!   `RegistrarError::Register`);
 //! - performs **no** `Manager` mutation — validating a config never
 //!   makes the resource resolvable in a manager (the live/validate
 //!   separation that keeps config CRUD distinct from activation).
@@ -132,7 +132,7 @@ fn registry_with_http_pool() -> ResourceRegistrarRegistry {
 
 /// A schema-valid config for a known kind validates `Ok` — and the
 /// resource is **NOT** registered into any `Manager` as a side effect
-/// (config validation is not activation; §13.1).
+/// (config validation is not activation; ).
 #[tokio::test]
 async fn known_kind_schema_valid_config_is_ok_and_no_manager_mutation() {
     let registry = registry_with_http_pool();
@@ -199,7 +199,7 @@ fn known_kind_out_of_range_value_is_register_error() {
 }
 
 /// An undeclared, secret-shaped field is rejected by the closed-set
-/// guard (ADR-0028 §7 / PRODUCT_CANON §3.5) — and the rejection message
+/// guard — and the rejection message
 /// names only the offending KEY, never its value, so a mis-wired secret
 /// can never leak through the error.
 #[test]
@@ -228,13 +228,13 @@ fn undeclared_secret_shaped_field_is_rejected_without_leaking_value() {
     assert!(
         !msg.contains(secret_value),
         "the rejection must NEVER echo the offending field's VALUE \
-         (ADR-0028 §7); got: {msg}"
+ ; got: {msg}"
     );
 }
 
 /// An unknown `kind` is a typed `RegistrarError::UnknownKind` resolved
 /// through the closed allowlist *before* any typed call — it can never
-/// touch a resource type (INTEGRATION_MODEL §114-120).
+/// touch a resource type.
 #[test]
 fn unknown_kind_is_typed_unknownkind_not_silent() {
     let registry = registry_with_http_pool();

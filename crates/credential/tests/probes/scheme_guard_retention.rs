@@ -27,7 +27,7 @@ impl LeakyResource {
         new_scheme: SchemeGuard<'a, ApiKeyCredential>,
         // `ctx` is decorative for this probe — it mirrors the canonical
         // refresh-hook signature (`Resource::on_credential_refresh` takes a
-        // `&'a CredentialContext` alongside the guard per ADR-0036 + Tech
+        // `&'a CredentialContext` alongside the guard per credential isolation + Tech
         // Spec §15.4) so the probe matches the production call shape
         // verbatim. The retention error would fire on `new_scheme` alone;
         // the parameter is kept to make the fixture grep-equivalent to

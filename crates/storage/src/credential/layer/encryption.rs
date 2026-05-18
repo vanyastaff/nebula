@@ -14,9 +14,8 @@
 //! The current encryption key is supplied by an
 //! [`Arc<dyn KeyProvider>`](super::super::KeyProvider), **not** an `Arc<EncryptionKey>`
 //! directly. Composition roots choose the provider (env var, file, KMS, …)
-//! at wiring time — see
-//! [ADR-0023](../../../../docs/adr/0023-keyprovider-trait.md) for the seam
-//! and ADR-0020 §3 for why this gate exists.
+//! at wiring time — see `crates/storage/README.md` and
+//! `docs/INTEGRATION_MODEL.md` for the key-provider seam.
 //!
 //! # Key rotation
 //!
@@ -314,7 +313,7 @@ mod tests {
     }
 
     /// Integration-style check: an OAuth2 credential blob must not be stored as raw JSON
-    /// strings in the backend row (regression for ADR-0029 / at-rest expectations).
+    /// strings in the backend row (at-rest encryption regression).
     #[tokio::test]
     async fn oauth2_state_secrets_not_plaintext_in_inner_store() {
         const PLAINTEXT_ACCESS: &str = "nebula-integration-plaintext-access-token-zz";

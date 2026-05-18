@@ -46,15 +46,15 @@ impl ValidationError {
     /// use nebula_schema::{FieldPath, ValidationError};
     ///
     /// let err = ValidationError::builder("required")
-    ///     .at(FieldPath::parse("user.email").unwrap())
-    ///     .message("field is required")
-    ///     .build();
+    ///.at(FieldPath::parse("user.email").unwrap())
+    ///.message("field is required")
+    ///.build();
     ///
     /// assert_eq!(err.code, "required");
     /// ```
     pub fn builder(code: impl Into<Cow<'static, str>>) -> ValidationErrorBuilder {
         let code = code.into();
-        // Default message = code so that build() without .message() produces
+        // Default message = code so that build() without.message() produces
         // "[code]: code" rather than "[code]: " (empty message looks broken).
         let default_message = code.clone();
         ValidationErrorBuilder {
@@ -240,10 +240,10 @@ impl fmt::Display for ValidationReport {
     ///
     /// let mut report = ValidationReport::new();
     /// report.push(
-    ///     ValidationError::builder("required")
-    ///         .at(FieldPath::parse("name").unwrap())
-    ///         .message("field is required")
-    ///         .build(),
+    /// ValidationError::builder("required")
+    ///.at(FieldPath::parse("name").unwrap())
+    ///.message("field is required")
+    ///.build(),
     /// );
     ///
     /// let text = report.to_string();
@@ -275,10 +275,8 @@ impl std::error::Error for ValidationReport {}
 /// - **Rule-failure codes** — produced by `nebula-validator` and surfaced
 ///   verbatim (no namespace remap). A failing length/range/format rule
 ///   reports the validator-native `min_length` / `max_length` / `min` /
-///   `max` / `invalid_format`. See ADR-0052 (P2 amendment): this replaced
-///   the former schema-side `length.*` / `range.*` / `pattern` / `url` /
-///   `email` remap. `nebula-schema` is `frontier`/pre-1.0, so the change is
-///   canon-legal.
+///   `max` / `invalid_format`. This replaced the former schema-side
+///   `length.*` / `range.*` / `pattern` / `url` / `email` remap.
 ///
 /// Plugins may add their own under a namespace prefix (e.g. `my_plugin.foo`).
 /// A test in the schema crate guarantees every entry here is emittable from

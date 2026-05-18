@@ -3,11 +3,11 @@
 //! - `#[derive(Action)]` generates `DeclaresDependencies` and `Action` trait impls with
 //!   `metadata()`.
 //! - `#[action_phantom]` rewrites `CredentialRef<dyn X>` field types to `CredentialRef<dyn
-//!   XPhantom>` per ADR-0035 4.3 + Tech Spec 2.7.
+//!   XPhantom>` per Tech Spec 2.7.
 //!
 //! ## Why a separate name from `#[action(...)]`
 //!
-//! `#[derive(Action)]` declares `#[action(key = ..., name = ..., ...)]` as an inert helper
+//! `#[derive(Action)]` declares `#[action(key =..., name =...,...)]` as an inert helper
 //! attribute. Naming the rewriter `#[action]` (no args) and putting it in scope would create a
 //! conceptual collision on the same struct - two different `#[action]` mean different things. The
 //! rewriter is therefore named `#[action_phantom]` to match its job (phantom-shim rewrite for
@@ -51,12 +51,12 @@ mod field_slots;
 /// ```ignore
 /// #[derive(Action)]
 /// #[action(
-///     key = "slack.send",
-///     name = "Send Slack Message",
-///     description = "Sends a message to a Slack channel",
-///     version = "2.1",
-///     credential = SlackOAuthCredential,
-///     resources = [HttpClient]
+/// key = "slack.send",
+/// name = "Send Slack Message",
+/// description = "Sends a message to a Slack channel",
+/// version = "2.1",
+/// credential = SlackOAuthCredential,
+/// resources = [HttpClient]
 /// )]
 /// pub struct SlackSendAction;
 /// ```
@@ -90,8 +90,8 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 /// #[derive(Action)]
 /// #[action(key = "bitbucket.repo.fetch", name = "Fetch Repo")]
 /// pub struct BitbucketRepoFetch {
-///     pub bb: CredentialRef<dyn BitbucketBearer>,
-///     // - emitted as `CredentialRef<dyn BitbucketBearerPhantom>`
+/// pub bb: CredentialRef<dyn BitbucketBearer>,
+/// // - emitted as `CredentialRef<dyn BitbucketBearerPhantom>`
 /// }
 /// ```
 ///

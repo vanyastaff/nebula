@@ -1,4 +1,4 @@
-//! Node-result row DTO (ADR-0009).
+//! Node-result row DTO.
 use serde::{Deserialize, Serialize};
 
 /// Maximum node-result schema version this binary can decode. A persisted

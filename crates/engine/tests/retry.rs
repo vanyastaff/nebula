@@ -1,6 +1,6 @@
-//! Engine-level retry integration tests (ADR-0042 §M2.1 T6).
+//! Engine-level retry integration tests.
 //!
-//! Covers the canonical retry path plus the four ADR-named edge
+//! Covers the canonical retry path plus the four spec-named edge
 //! cases (cancel/terminate/budget/idempotency) and the three
 //! resolution scenarios for the effective retry policy
 //! (per-node / workflow-default / no policy).
@@ -181,7 +181,7 @@ fn make_workflow(
 }
 
 // ---------------------------------------------------------------------------
-// Tests (9 — ADR-0042 §M2.1 T6 acceptance)
+// Tests (9 — T6 acceptance)
 // ---------------------------------------------------------------------------
 
 /// 1) Basic retry path — handler fails once, succeeds on attempt 2.
@@ -485,7 +485,7 @@ async fn idempotency_key_differentiates_attempts() {
     assert_eq!(ns.attempts.len(), 2, "two attempts pushed");
     assert_ne!(
         ns.attempts[0].idempotency_key, ns.attempts[1].idempotency_key,
-        "retry must mint a fresh idempotency key per attempt (canon §11.3)"
+        "retry must mint a fresh idempotency key per attempt (idempotency)"
     );
     assert_eq!(ns.attempts[0].attempt_number, 1);
     assert_eq!(ns.attempts[1].attempt_number, 2);

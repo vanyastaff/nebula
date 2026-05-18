@@ -527,7 +527,7 @@ pub async fn activate_workflow(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
-    // Canon §10 step 2: validate the workflow definition before flipping the
+    // documentation honesty step 2: validate the workflow definition before flipping the
     // active flag.  Invalid definitions are rejected with RFC 9457 422
     // (Unprocessable Entity) — activation must never silently enable a
     // workflow that cannot pass structural validation.
@@ -651,7 +651,7 @@ pub async fn execute_workflow(
     let execution_id = ExecutionId::new();
 
     // Build the canonical execution state — same rationale as
-    // `start_execution` in `handlers/execution.rs` (#327, canon §4.5): the
+    // `start_execution` in `handlers/execution.rs` (#327, honest capability contract): the
     // persisted row must match `ExecutionState` so the engine's
     // `resume_execution` can deserialize it, and the status must be the
     // canonical `Created`, not the non-existent `"pending"` that the
@@ -672,7 +672,7 @@ pub async fn execute_workflow(
         .await?;
 
     // Enqueue the Start signal on the durable control queue — closes the
-    // §4.5 gap where the API advertised dispatch but never reached the
+    // honest capability gap where the API advertised dispatch but never reached the
     // engine (#332). Shared with `start_execution` via the
     // `enqueue_start_scoped` helper so the create + enqueue contract lives
     // in one place. M3.5: it stamps optional W3C trace context on the row

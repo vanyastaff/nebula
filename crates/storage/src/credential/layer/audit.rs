@@ -11,7 +11,7 @@
 //! [`AuditSink`] for each call. Only metadata flows through the sink —
 //! credential data never does.
 //!
-//! # Fail-closed invariant (ADR-0028 §Decision §4)
+//! # Fail-closed invariant (no discard-and-log)
 //!
 //! Audit is **in-line durable**: if [`AuditSink::record`] returns an
 //! error, the credential operation as a whole returns
@@ -39,7 +39,7 @@ use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
 /// - `record` must not block the calling task for extended periods.
 /// - Implementations must never inspect or log credential data.
 /// - Returning `Err(StoreError)` causes the wrapping [`AuditLayer`] to fail the whole credential
-///   operation with [`StoreError::AuditFailure`] (fail-closed per ADR-0028 inv 4).
+///   operation with [`StoreError::AuditFailure`] (fail-closed audit contract).
 pub trait AuditSink: Send + Sync {
     /// Record an audit event.
     ///
@@ -72,7 +72,7 @@ pub struct AuditEvent {
 /// flowing through [`AuditLayer`]. Variants prefixed `RefreshCoord*`
 /// describe events emitted by the engine's two-tier refresh coordinator
 /// (sub-spec
-/// `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
+/// `docs/INTEGRATION_MODEL.md` (credential refresh coordinator)
 /// §6) and carry their structured payload as enum fields. The same
 /// [`AuditSink`] receives both families so operators reuse one sink
 /// implementation.
@@ -189,7 +189,7 @@ impl<S: CredentialStore> CredentialStore for AuditLayer<S> {
         };
 
         if let Err(sink_err) = self.sink.record(&event) {
-            // ADR-0028 §4: fail-closed. Best-effort rollback of the
+            // Fail-closed: best-effort rollback of the
             // inner write so the store ends in the pre-call state.
             // Only attempted on CreateOnly (Overwrite/CAS have no
             // recoverable prior state at this layer).

@@ -1,30 +1,28 @@
-//! Durable control-queue consumer — canon §12.2.
+//! Durable control-queue consumer — control-queue wiring.
 //!
 //! The `ControlConsumer` drains `execution_control_queue` (the spec-16
 //! [`nebula_storage_port::store::ControlQueue`] port) and hands typed
 //! commands to an engine-owned [`ControlDispatch`] implementation.
-//! ADR-0008 records the
-//! wiring decisions: polling loop + claim/ack, engine-owned dispatch trait
+//! Wiring decisions: polling loop + claim/ack, engine-owned dispatch trait
 //! (no `nebula-api` / `nebula-storage` row types leak into the public
 //! surface), at-least-once delivery with idempotent consumer semantics.
 //!
 //! ## Status
 //!
-//! - construction, spawning, graceful shutdown, polling, claim/ack plumbing — **implemented**
-//!   (§11.6);
+//! - construction, spawning, graceful shutdown, polling, claim/ack plumbing — **implemented**;
 //! - dispatch of `Start` / `Resume` / `Restart` to the engine start/resume path — **implemented**
 //!   (A2, closes #332 / #327). The engine-owned implementation lives in
 //!   [`crate::control_dispatch::EngineControlDispatch`];
 //! - dispatch of `Cancel` / `Terminate` to the engine cancel path — **implemented** (A3, closes
 //!   #330). The `Cancel` command now reaches the live frontier loop via
 //!   [`crate::WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body
-//!   until a distinct forced-shutdown path is wired (see ADR-0016).
-//! - reclaim sweep for stuck `Processing` rows after a crashed runner — **implemented** (B1,
-//!   ADR-0017). A periodic `tokio::time::interval` arm calls `ControlQueue::reclaim_stuck`
+//!   until a distinct forced-shutdown path is wired.
+//! - reclaim sweep for stuck `Processing` rows after a crashed runner — **implemented** (B1).
+//!   A periodic `tokio::time::interval` arm calls `ControlQueue::reclaim_stuck`
 //!   every [`DEFAULT_RECLAIM_INTERVAL`]; rows whose `processed_at` is older than
 //!   [`DEFAULT_RECLAIM_AFTER`] are moved back to `Pending` (retry budget
 //!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted. Each sweep emits
-//!   the `nebula_engine_control_reclaim_total{outcome}` counter (ADR-0017 Seam) — wire the shared
+//!   the `nebula_engine_control_reclaim_total{outcome}` counter — wire the shared
 //!   registry via [`ControlConsumer::with_metrics`].
 //! - M3.5 — before each dispatch, optional `w3c_trace_context` on the row is attached as the
 //!   OpenTelemetry parent of an `engine.control_queue.dispatch` span (`.instrument` across await).
@@ -55,7 +53,7 @@ pub const DEFAULT_BATCH_SIZE: u32 = 32;
 /// Default poll interval when the queue is empty.
 ///
 /// Short enough that a cancel feels interactive in the in-memory / SQLite
-/// local path (canon §12.3); the Postgres path may shorten this further
+/// local path (local control-queue path); the Postgres path may shorten this further
 /// once `LISTEN / NOTIFY` wake-up is wired as an optimisation over the
 /// authoritative polling loop.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -67,22 +65,22 @@ pub const MAX_CLAIM_ERROR_BACKOFF: Duration = Duration::from_secs(30);
 /// Default staleness window before a `Processing` row is considered
 /// reclaimable.
 ///
-/// Set to 5× the ADR-0015 lease TTL (30s) so a runner that has missed 15
+/// Set to 5× the lease TTL (30s) so a runner that has missed 15
 /// heartbeats is presumed dead. Intentionally wider than any plausible GC
-/// pause. See ADR-0017.
+/// pause.
 pub const DEFAULT_RECLAIM_AFTER: Duration = Duration::from_secs(150);
 
 /// Default cadence of the reclaim sweep.
 ///
 /// Matches the lease TTL shape — a runner that died less than 30s ago still
 /// has a valid lease from another observer's perspective, so sweeping more
-/// often buys nothing. See ADR-0017.
+/// often buys nothing.
 pub const DEFAULT_RECLAIM_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Default retry budget before a reclaim-eligible row moves to `Failed`.
 ///
 /// Three crashed runners in a row on the same command makes the command
-/// itself the suspect, not the runners. See ADR-0017.
+/// itself the suspect, not the runners.
 pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 
 /// Errors returned from [`ControlDispatch`] methods.
@@ -115,7 +113,7 @@ pub enum ControlDispatchError {
 /// Implementations must be **idempotent per `(execution_id, command)`
 /// pair**: receiving the same command twice (e.g. after an at-least-once
 /// redelivery) for a terminal execution must return `Ok(())`, not an
-/// error. This is a load-bearing contract for ADR-0008 decision 5.
+/// error. This is a load-bearing contract for decision 5.
 ///
 /// ## Status
 ///
@@ -125,21 +123,21 @@ pub enum ControlDispatchError {
 /// no storage / api types) is stabilised by A1's public-surface test.
 #[async_trait::async_trait]
 pub trait ControlDispatch: Send + Sync {
-    /// Deliver a `Start` command to a newly-created execution (canon §12.2,
-    /// §13 step 3, #332).
+    /// Deliver a `Start` command to a newly-created execution (control-queue wiring,
+    /// , #332).
     ///
     /// Enqueued by the API `start_execution` / `execute_workflow` handlers
     /// once the `ExecutionState::Created` row has been persisted. A2 wired
     /// the canonical engine-side body in
     /// [`crate::control_dispatch::EngineControlDispatch`] — no default
     /// implementation is provided, so every `ControlDispatch` implementor
-    /// must supply a real dispatch (the ADR-0008 A2 merge-checklist
+    /// must supply a real dispatch (the A2 merge-checklist
     /// requirement).
     ///
     /// **Idempotency (critical):** double-start re-runs the workflow twice.
     /// Implementations must guard via CAS on `ExecutionRepo::transition` —
     /// a `Start` arriving for an already-running or already-terminal
-    /// execution must be `Ok(())`, not a second run. See ADR-0008 §5.
+    /// execution must be `Ok()`, not a second run.
     async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Cancel` command to a running execution.
@@ -150,21 +148,21 @@ pub trait ControlDispatch: Send + Sync {
     /// [`crate::WorkflowEngine::cancel_execution`] on every non-orphan
     /// delivery, regardless of persisted status.
     ///
-    /// **Idempotency (load-bearing, ADR-0008 §5):** The underlying
+    /// **Idempotency (load-bearing, ):** The underlying
     /// `CancellationToken::cancel` is idempotent per token, and a missing
     /// registry entry (cross-runner case, or this runner has already
     /// cleaned up) is a no-op. The consumer's ack path (`mark_completed`)
     /// can fail after a successful dispatch, and the reclaim path (B1)
     /// will redeliver; because the signal itself is idempotent, re-delivery
-    /// is safe without a short-circuit on persisted status. See ADR-0016.
+    /// is safe without a short-circuit on persisted status.
     async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Terminate` command to a running execution.
     ///
-    /// ADR-0008 calls this "forced termination", but there is no distinct
+    /// calls this "forced termination", but there is no distinct
     /// forced-shutdown path in the engine today — cooperative cancel via
     /// the same [`tokio_util::sync::CancellationToken`] is the honest A3
-    /// minimum (see ADR-0016). The canonical
+    /// minimum . The canonical
     /// [`crate::control_dispatch::EngineControlDispatch`] body delegates
     /// to [`dispatch_cancel`](Self::dispatch_cancel) until a process-level
     /// kill / `JoinSet` abort is wired as a separate chip.
@@ -183,7 +181,7 @@ pub trait ControlDispatch: Send + Sync {
     /// **Idempotency (critical):** double-resume starts the workflow twice.
     /// Implementations must guard via CAS on `ExecutionRepo::transition` —
     /// a `Resume` arriving for an already-running or already-terminal
-    /// execution must be `Ok(())`, not a second start. See ADR-0008 §5.
+    /// execution must be `Ok()`, not a second start.
     async fn dispatch_resume(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Restart` command to an execution.
@@ -192,7 +190,7 @@ pub trait ControlDispatch: Send + Sync {
     /// [`crate::control_dispatch::EngineControlDispatch`]. Full
     /// rewind-from-input semantics require durable output purge and a
     /// monotonic restart counter — both are tracked as follow-ups under
-    /// ADR-0008; the A2 body honors idempotency for non-terminal states
+    /// ; the A2 body honors idempotency for non-terminal states
     /// and surfaces a typed [`ControlDispatchError::Rejected`] for
     /// already-terminal executions until the rewind path is wired.
     ///
@@ -278,7 +276,7 @@ impl RawClaimed {
 /// Drains `execution_control_queue` and hands typed commands to a
 /// [`ControlDispatch`] implementation.
 ///
-/// See the module docs and ADR-0008 for wiring, atomicity, and idempotency
+/// See the module docs and for wiring, atomicity, and idempotency
 /// rules.
 pub struct ControlConsumer {
     /// Scoped spec-16 [`ControlQueue`] port the consumer drains. The
@@ -299,7 +297,7 @@ pub struct ControlConsumer {
     reclaim_interval: Duration,
     max_reclaim_count: u32,
     /// Registry the reclaim sweep increments
-    /// `nebula_engine_control_reclaim_total{outcome}` against (ADR-0017
+    /// `nebula_engine_control_reclaim_total{outcome}` against (
     /// Seam). Defaults to a private fresh [`MetricsRegistry`] so the
     /// consumer is always emit-safe; production composition roots inject
     /// the shared registry via [`Self::with_metrics`] so the counter
@@ -351,7 +349,7 @@ impl ControlConsumer {
     }
 
     /// Override the staleness window before a `Processing` row is eligible
-    /// for reclaim. Default: [`DEFAULT_RECLAIM_AFTER`] (ADR-0017).
+    /// for reclaim. Default: [`DEFAULT_RECLAIM_AFTER`].
     #[must_use]
     pub fn with_reclaim_after(mut self, reclaim_after: Duration) -> Self {
         self.reclaim_after = reclaim_after;
@@ -359,7 +357,7 @@ impl ControlConsumer {
     }
 
     /// Override the cadence of the reclaim sweep tick. Default:
-    /// [`DEFAULT_RECLAIM_INTERVAL`] (ADR-0017).
+    /// [`DEFAULT_RECLAIM_INTERVAL`].
     #[must_use]
     pub fn with_reclaim_interval(mut self, reclaim_interval: Duration) -> Self {
         self.reclaim_interval = reclaim_interval;
@@ -367,7 +365,7 @@ impl ControlConsumer {
     }
 
     /// Override the max retry budget before a reclaim-eligible row moves to
-    /// `Failed`. Default: [`DEFAULT_MAX_RECLAIM_COUNT`] (ADR-0017).
+    /// `Failed`. Default: [`DEFAULT_MAX_RECLAIM_COUNT`].
     #[must_use]
     pub fn with_max_reclaim_count(mut self, max_reclaim_count: u32) -> Self {
         self.max_reclaim_count = max_reclaim_count;
@@ -380,7 +378,7 @@ impl ControlConsumer {
     /// Without this builder the consumer still increments the counter, but
     /// against a private registry no scraper sees — composition roots
     /// (`apps/server`) must wire the runtime registry so operators can
-    /// alert on `outcome="exhausted"` (ADR-0017 Seam).
+    /// alert on `outcome="exhausted"`.
     #[must_use]
     pub fn with_metrics(mut self, metrics: MetricsRegistry) -> Self {
         self.metrics = metrics;
@@ -394,7 +392,7 @@ impl ControlConsumer {
     /// it does not begin a fresh `claim_pending` once shutdown is requested.
     /// Rows that were claimed but not acknowledged remain in the `Processing`
     /// state and are recovered by the next runner via the reclaim sweep
-    /// (ADR-0008 B1 / ADR-0017).
+    ///.
     pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move { self.run(shutdown).await })
     }
@@ -404,14 +402,14 @@ impl ControlConsumer {
     /// custom task structure.
     pub async fn run(self, shutdown: CancellationToken) {
         tracing::info!(
-            processor = %hex_display(&self.processor_id),
-            batch_size = self.batch_size,
-            poll_ms = self.poll_interval.as_millis() as u64,
-            reclaim_after_ms = self.reclaim_after.as_millis() as u64,
-            reclaim_interval_ms = self.reclaim_interval.as_millis() as u64,
-            max_reclaim_count = self.max_reclaim_count,
-            "control-queue consumer started (canon §12.2, ADR-0008, ADR-0017)"
-        );
+                   processor = %hex_display(&self.processor_id),
+                   batch_size = self.batch_size,
+                   poll_ms = self.poll_interval.as_millis() as u64,
+                   reclaim_after_ms = self.reclaim_after.as_millis() as u64,
+                   reclaim_interval_ms = self.reclaim_interval.as_millis() as u64,
+                   max_reclaim_count = self.max_reclaim_count,
+        "control-queue consumer started (control-queue wiring, )"
+               );
 
         let mut consecutive_errors: u32 = 0;
         let mut reclaim_ticker = tokio::time::interval(self.reclaim_interval);
@@ -423,7 +421,7 @@ impl ControlConsumer {
         // Deadline at which the next `claim_pending` is allowed to fire. Held
         // in scope across the `tokio::select!` below so that a reclaim
         // interruption does not reset the backoff / poll_interval clock —
-        // see the review finding for PR #483 and ADR-0008 §5.
+        // see the review finding for PR #483 and.
         let mut claim_deadline = tokio::time::Instant::now();
 
         loop {
@@ -471,7 +469,7 @@ impl ControlConsumer {
                     reclaimed,
                     exhausted,
                 };
-                // ADR-0017 Seam: bump the per-outcome counter by the row
+                // : bump the per-outcome counter by the row
                 // count for this sweep (not by 1 per sweep) so operators
                 // can alert on `outcome="exhausted" > 0` and watch
                 // `outcome="reclaimed"` for crashed-runner load.
@@ -505,12 +503,12 @@ impl ControlConsumer {
 
                 if outcome.reclaimed > 0 || outcome.exhausted > 0 {
                     tracing::warn!(
-                        processor = %hex_display(&self.processor_id),
-                        reclaimed = outcome.reclaimed,
-                        exhausted = outcome.exhausted,
-                        reclaim_after_ms = self.reclaim_after.as_millis() as u64,
-                        "control-queue reclaim sweep recovered stuck rows (ADR-0008 B1)"
-                    );
+                                           processor = %hex_display(&self.processor_id),
+                                           reclaimed = outcome.reclaimed,
+                                           exhausted = outcome.exhausted,
+                                           reclaim_after_ms = self.reclaim_after.as_millis() as u64,
+                    "control-queue reclaim sweep recovered stuck rows "
+                                       );
                 } else {
                     tracing::debug!(
                         processor = %hex_display(&self.processor_id),
@@ -646,12 +644,12 @@ impl ControlConsumer {
             Ok(()) => self.ack_completed(&row_id).await,
             Err(e) => {
                 tracing::error!(
-                    id = %hex_display(&row_id),
-                    %execution_id,
-                    command = command.as_str(),
-                    error = %e,
-                    "control-queue dispatch failed; marking failed (no auto-retry — ADR-0008 §5)"
-                );
+                                   id = %hex_display(&row_id),
+                                   %execution_id,
+                                   command = command.as_str(),
+                                   error = %e,
+                "control-queue dispatch failed; marking failed (no auto-retry — )"
+                               );
                 self.ack_failed(&row_id, &e.to_string()).await;
             },
         }
@@ -660,10 +658,10 @@ impl ControlConsumer {
     async fn ack_completed(&self, id: &[u8; 16]) {
         // NOTE: dispatch already ran successfully at this point. If
         // `mark_completed` fails, the row stays in `Processing` and the B1
-        // reclaim path (ADR-0017 + `sweep_reclaim` above) redelivers the
+        // reclaim path redelivers the
         // command. Correctness under redelivery depends entirely on
         // `ControlDispatch` impls being idempotent per `(execution_id, command)`
-        // — see the trait-level docs and ADR-0008 §5.
+        // — see the trait-level docs and.
         let result: Result<(), String> = self
             .queue
             .mark_completed(id, &self.processor_id)

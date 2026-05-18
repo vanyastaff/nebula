@@ -961,7 +961,7 @@ impl ActionRuntime {
                 return Err(ActionError::Cancelled.into());
             }
 
-            // Spec 28 §9.0 stuck-state guard. Serialize state before the
+            // Spec 28 stuck-state guard. Serialize state before the
             // iteration so we can detect infinite loops: if `Continue`
             // returns with byte-identical state, the handler did not move
             // the cursor — converting silent hangs into an explicit Fatal.
@@ -993,7 +993,7 @@ impl ActionRuntime {
 
             match result {
                 ActionResult::Continue { delay, .. } => {
-                    // Stuck-state detection (spec 28 §9.0): a `Continue` that
+                    // Stuck-state detection (spec 28 ): a `Continue` that
                     // did not mutate the checkpoint is an infinite loop.
                     // Happens in practice when an author forgets to advance
                     // a cursor / page number. Surfacing a typed
@@ -2724,7 +2724,7 @@ mod tests {
     }
 
     /// A stateful handler that returns `Continue` without ever mutating its
-    /// state — used to pin the spec 28 §9.0 stuck-state guard.
+    /// state — used to pin the spec 28 stuck-state guard.
     struct NoProgressHandler {
         meta: ActionMetadata,
     }
@@ -2751,7 +2751,7 @@ mod tests {
         }
     }
 
-    /// Spec 28 §9.0: a stateful handler that Continues without mutating its
+    /// Spec 28 : a stateful handler that Continues without mutating its
     /// state must surface as a typed `RuntimeError::StatefulStuck`, NOT as
     /// an opaque `ActionError::Fatal`. Retry/error routing depends on the
     /// typed classification.

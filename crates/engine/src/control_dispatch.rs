@@ -1,17 +1,16 @@
-//! Engine-owned [`ControlDispatch`] implementation — ADR-0008 follow-ups A2
+//! Engine-owned [`ControlDispatch`] implementation — follow-ups A2
 //! (Start / Resume / Restart) and A3 (Cancel / Terminate).
 //!
 //! The [`ControlConsumer`] (skeleton landed in A1) drains
 //! `execution_control_queue` rows and hands each typed command to an
 //! implementation of [`ControlDispatch`]. [`EngineControlDispatch`] wires the
 //! `Start` / `Resume` / `Restart` paths into the engine so that a POST to
-//! `/executions` actually causes node execution — closing the §4.5 gap named
-//! in #332. The `Cancel` / `Terminate` path closes the §12.2 / §13-step-5
-//! symmetric gap named in #330: the durable `Cancel` signal the API's
+//! `/executions` actually causes node execution — closing the gap named
+//! in #332. The `Cancel` / `Terminate` path closes the symmetric cancel gap named in #330: the durable `Cancel` signal the API's
 //! `cancel_execution` handler enqueues now reaches the live frontier loop
 //! via [`WorkflowEngine::cancel_execution`].
 //!
-//! ## Idempotency contract (ADR-0008 §5)
+//! ## Idempotency contract
 //!
 //! Control-queue delivery is at-least-once: the ack path on `mark_completed`
 //! may fail after a successful dispatch, and the reclaim path (B1) will
@@ -31,12 +30,12 @@
 //!   registry entry — cross-runner case or this runner already cleaned up — is a no-op that returns
 //!   [`WorkflowEngine::cancel_execution`] `= false` without side effects. Short-circuiting on
 //!   terminal status would leave a live frontier loop orphaned after the API handler's CAS
-//!   transitioned the row to `Cancelled` in the same logical operation as the enqueue (canon §12.2
-//!   / §13 step 5) — the durable state would say the run is over while the in-process `JoinSet`
+//!   transitioned the row to `Cancelled` in the same logical operation as the enqueue (control-queue
+//!   cancel path) — the durable state would say the run is over while the in-process `JoinSet`
 //!   kept waiting on a slow handler.
 //!
 //! The authoritative single-runner fence still lives inside
-//! [`WorkflowEngine::resume_execution`] (ADR-0015 lease lifecycle); this
+//! [`WorkflowEngine::resume_execution`] (lease lifecycle); this
 //! module just forwards commands and collapses the resulting errors into the
 //! [`ControlDispatch`] contract.
 //!
@@ -67,7 +66,7 @@ use crate::{
 /// wires the API and engine together — they share the same execution
 /// store so status reads from either side agree.
 ///
-/// See the module docs for the idempotency contract and ADR-0008 §5 for the
+/// See the module docs for the idempotency contract and for the
 /// canon rules this impl honors.
 #[derive(Clone)]
 pub struct EngineControlDispatch {
@@ -134,7 +133,7 @@ impl EngineControlDispatch {
         match self.engine.resume_execution(execution_id).await {
             Ok(_) => Ok(()),
             // Concurrent dispatcher already holds the lease — the canonical
-            // ADR-0008 §5 idempotency outcome. Returning `Ok(())` here prevents
+            // idempotency outcome. Returning `Ok()` here prevents
             // the consumer from marking the row `Failed`; the lease holder
             // owns the terminal transition.
             Err(EngineError::Leased { .. }) => Ok(()),
@@ -167,7 +166,7 @@ impl ControlDispatch for EngineControlDispatch {
             ))),
             // Already past the Created gate: either the engine is driving it
             // (Running / Cancelling) or it has already reached a terminal
-            // outcome. Re-delivered Start is a no-op per ADR-0008 §5.
+            // outcome. Re-delivered Start is a no-op.
             Some(
                 ExecutionStatus::Running
                 | ExecutionStatus::Cancelling
@@ -207,8 +206,7 @@ impl ControlDispatch for EngineControlDispatch {
         &self,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        // Per ADR-0008 §5 restart docs: "double-restart rewinds twice". A true
-        // rewind-from-input restart requires durable output purge plus a
+        //        // rewind-from-input restart requires durable output purge plus a
         // restart counter — neither exists yet. For A2, treat restart as a
         // re-entrant drive of the engine's resume path and honor the same
         // terminal / running idempotency outcomes.
@@ -228,7 +226,7 @@ impl ControlDispatch for EngineControlDispatch {
                 | ExecutionStatus::TimedOut),
             ) => Err(ControlDispatchError::Rejected(format!(
                 "execution {execution_id} is already {status}; rewind-from-input restart \
-                 requires durable output purge — not yet implemented, tracked under ADR-0008 \
+ requires durable output purge — not yet implemented \
                  follow-up"
             ))),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
@@ -238,11 +236,11 @@ impl ControlDispatch for EngineControlDispatch {
     }
 
     async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
-        // ADR-0008 A3 — every non-orphan `Cancel` signals the engine's
+        // A3 — every non-orphan `Cancel` signals the engine's
         // cancel registry, regardless of the persisted status.
         //
         // The API handler's `cancel_execution` writes the row to `Cancelled`
-        // in the same logical operation as the enqueue (canon §12.2 / §13
+        // in the same logical operation as the enqueue (control-queue wiring
         // step 5), so by the time the consumer drains this command, the
         // read here will typically report a terminal status even for a
         // live frontier loop. Short-circuiting on terminal would leave a
@@ -255,7 +253,7 @@ impl ControlDispatch for EngineControlDispatch {
         // registry entry (cross-runner, or this runner already cleaned up)
         // returns `false` without side effects. Signalling always is the
         // honest minimum: it closes the live-loop gap and is safe under
-        // at-least-once redelivery (ADR-0008 §5).
+        // at-least-once redelivery.
         match self.read_status(execution_id).await? {
             // Producer bug: queue row written without the execution row (or a
             // row that disappeared between enqueue and drain). Surface so the
@@ -266,11 +264,11 @@ impl ControlDispatch for EngineControlDispatch {
             Some(status) => {
                 let signalled = self.engine.cancel_execution(execution_id);
                 tracing::debug!(
-                    %execution_id,
-                    %status,
-                    signalled,
-                    "control-queue: Cancel dispatched (ADR-0008 A3) — signalled local runner={signalled}"
-                );
+                                   %execution_id,
+                                   %status,
+                                   signalled,
+                "control-queue: Cancel dispatched — signalled local runner={signalled}"
+                               );
                 Ok(())
             },
         }
@@ -280,7 +278,7 @@ impl ControlDispatch for EngineControlDispatch {
         &self,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        // ADR-0008 names `Terminate` "forced termination", but there is no
+        // names `Terminate` "forced termination", but there is no
         // distinct forced-shutdown path in the engine today — the frontier
         // loop aborts in-flight `JoinSet` tasks via the same cooperative
         // `CancellationToken` that `Cancel` trips. Treating `Terminate` as a
@@ -288,9 +286,9 @@ impl ControlDispatch for EngineControlDispatch {
         // contract is identical (in-flight work aborts, state reaches a
         // terminal `Cancelled`), and the capability gap — process-level kill
         // or task-set abort — is tracked separately as a future chip. Do not
-        // emit half-implemented forced-abort machinery here (canon §4.5).
+        // emit half-implemented forced-abort machinery here (operational honesty).
         //
-        // See ADR-0016 (cancel-registry and cooperative-cancel contract) for
+        // (cancel-registry and cooperative-cancel contract) for
         // the design rationale and the upgrade path to a true forced-shutdown
         // distinction.
         self.dispatch_cancel(execution_id).await

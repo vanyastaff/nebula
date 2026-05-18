@@ -7,7 +7,7 @@
 //! duplicate keys surface as `PluginError::DuplicateComponent`; out-of-
 //! namespace keys surface as `PluginError::NamespaceMismatch`.
 //!
-//! See ADR-0027 and `docs/pitfalls.md`.
+//! See and `docs/pitfalls.md`.
 
 use std::{collections::HashMap, sync::Arc};
 

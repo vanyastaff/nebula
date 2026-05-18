@@ -1,6 +1,6 @@
 #![cfg(feature = "rotation")]
 
-//! End-to-end: the production rotation fan-out **wiring** (ADR-0067
+//! End-to-end: the production rotation fan-out **wiring** (
 //! §Deferred "Rotation fan-out is implemented but unwired"; closes #679 /
 //! #680 / #681 prerequisites).
 //!
@@ -11,7 +11,7 @@
 //! credential-runtime composition root emits in production**
 //! ([`CredentialEvent::Refreshed`] / [`CredentialEvent::Revoked`] on
 //! `EventBus<CredentialEvent>`, [`LeaseEvent::LeaseRevoked`] on
-//! `EventBus<LeaseEvent>` — the `EventMetricObserver` shape, ADR-0066).
+//! `EventBus<LeaseEvent>` — the `EventMetricObserver` shape, ).
 //! Nothing here calls `dispatch_refresh` / `dispatch_revoke` itself; the
 //! driver's bus subscription does, exactly as in production.
 //!
@@ -280,7 +280,7 @@ async fn credential_revoked_event_drives_revoke_fanout() {
 /// `LeaseLifecycle::revoke_for_credential`) must drive the revoke
 /// fan-out: the row is tainted (a subsequent acquire on that exact
 /// resolved row is rejected) and `on_credential_revoke` is delivered —
-/// the ADR-0051 → ADR-0067 path end-to-end.
+/// the → path end-to-end.
 #[tokio::test]
 async fn lease_revoked_event_taints_row_and_delivers_revoke_hook() {
     use nebula_error::{Classify, ErrorCategory};

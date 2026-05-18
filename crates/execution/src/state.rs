@@ -69,7 +69,7 @@ pub struct NodeExecutionState {
     #[serde(default)]
     pub error_message: Option<String>,
     /// Wall-clock instant at which the engine should dispatch the next
-    /// retry attempt for this node (ADR-0042 §Decision Layer 2).
+    /// retry attempt for this node.
     ///
     /// `Some(_)` is paired with `state == NodeState::WaitingRetry`: the
     /// engine sets it when the retry policy still has budget after a
@@ -140,8 +140,8 @@ impl NodeExecutionState {
 
     /// Drive a node to `Running` for a fresh dispatch
     /// (`Pending → Ready → Running` for the first attempt;
-    /// `WaitingRetry → Ready → Running` for a scheduled retry per
-    /// ADR-0042; `Ready → Running` when the engine has already
+    /// `WaitingRetry → Ready → Running` for a scheduled retry;
+    /// `Ready → Running` when the engine has already
     /// promoted the node to `Ready` in a prior phase). Any other
     /// source state is an invalid transition and returned as such —
     /// the engine must route the node through the setup-failure path
@@ -225,7 +225,7 @@ pub struct ExecutionState {
     /// execution. `Some((node_key, reason))` means the named node
     /// returned `ActionResult::Terminate` and its
     /// `ExecutionTerminationReason` is the authoritative source of
-    /// the eventual final status (canon §4.5; ROADMAP §M0.3).
+    /// the eventual final status (; ROADMAP §M0.3).
     /// First-write-wins: subsequent terminate signals from racing
     /// siblings are dropped at `set_terminated_by`.
     ///
@@ -236,12 +236,12 @@ pub struct ExecutionState {
     pub terminated_by: Option<(NodeKey, ExecutionTerminationReason)>,
     /// Total number of retry attempts dispatched across all nodes in
     /// this execution. Bumped exactly once per scheduled retry
-    /// (post-decision, pre-checkpoint) per ADR-0042 §M2.1 T4.
+    /// (post-decision, pre-checkpoint).
     ///
     /// Paired with [`ExecutionBudget::max_total_retries`] as a global
     /// cap that complements per-node `RetryConfig::max_attempts`. The
     /// engine consults both on every failure; whichever caps first
-    /// wins (canon §11.2). A `None` budget cap means the global
+    /// wins. A `None` budget cap means the global
     /// counter is informational only — the engine still increments
     /// it for observability.
     ///
@@ -287,7 +287,7 @@ impl ExecutionState {
     /// Record a scheduled retry attempt at the execution level.
     ///
     /// Called by the engine on every successful retry decision (per
-    /// ADR-0042 §M2.1 T4) so [`ExecutionBudget::max_total_retries`]
+    /// so [`ExecutionBudget::max_total_retries`]
     /// can be enforced as a global cap across all nodes. Bumps the
     /// parent version so optimistic-concurrency readers observe the
     /// state change (issue #255).
@@ -350,11 +350,11 @@ impl ExecutionState {
     /// 2. **`by_node` matches `node_key`.** The variant's inner `by_node` field MUST equal the
     ///    `node_key` argument. Mismatched identity returns `false` with a `tracing::warn!` and no
     ///    mutation. Engine wiring constructs the reason via
-    ///    `map_termination_reason(node_key.clone(), ...)`, so a mismatch indicates a programming
+    ///    `map_termination_reason(node_key.clone(),...)`, so a mismatch indicates a programming
     ///    error in a non-engine caller (or a refactor regression).
     /// 3. **First-write-wins.** Only the first signal is durable; subsequent signals are
     ///    debug-logged and dropped so the post-mortem audit log has a single authoritative source
-    ///    per execution (canon §4.5). The frontier loop holds `&mut ExecutionState` while it
+    ///    per execution. The frontier loop holds `&mut ExecutionState` while it
     ///    consumes node results, so no two writers race here at the language level.
     ///
     /// On a successful set this method bumps the parent
@@ -389,7 +389,7 @@ impl ExecutionState {
                 attempted_by = %node_key,
                 attempted_reason = ?reason,
                 "set_terminated_by rejected — reason must be ExplicitStop/ExplicitFail \
-                 with matching by_node (canon §4.5; ROADMAP §M0.3)"
+                 with matching by_node (durable lifecycle honesty; ROADMAP §M0.3)"
             );
             return false;
         }
@@ -465,7 +465,7 @@ impl ExecutionState {
 
     /// Build the idempotency key for the **next** dispatch of a node.
     ///
-    /// Per ADR-0042 §M2.1 T4 the engine pushes a [`NodeAttempt`] into
+    /// The engine pushes a [`NodeAttempt`] into
     /// `node_states[*].attempts` after each finished attempt
     /// (success or failure). The key for the next dispatch is therefore
     /// `attempts.len() + 1`:
@@ -478,7 +478,7 @@ impl ExecutionState {
     /// check and mark sides of the canonical (`check_idempotency` →
     /// act → `mark_idempotent`) flow, so that a retried or
     /// restart-replayed attempt does not collide with a previous
-    /// attempt's persisted output (issue #266, canon §11.3).
+    /// attempt's persisted output (issue #266, ).
     ///
     /// The execution id is taken from `self` — callers cannot pass a
     /// mismatched id by accident. If `node_key` is not present in
@@ -500,7 +500,7 @@ impl ExecutionState {
     /// Called by the engine's frontier loop **after** the action's
     /// dispatch resolves — once on success, once on failure — so the
     /// canonical attempt count drives both `idempotency_key_for_node`
-    /// (next dispatch) and the retry decision (per ADR-0042 §M2.1
+    /// (next dispatch) and the retry decision (.1
     /// T4).
     ///
     /// The idempotency key is **derived internally** from the just-
@@ -508,7 +508,7 @@ impl ExecutionState {
     /// caller cannot persist `attempt_number = N` against an
     /// `attempt-(N-1)` key — that mismatch would silently corrupt
     /// the retry/idempotency audit trail this API is supposed to
-    /// own (canon §11.3, ADR-0042 §M2.1 T4).
+    /// own (engine retry path).
     ///
     /// Returns the recorded attempt number (1-indexed). Returns
     /// [`ExecutionError::NodeNotFound`] if `node_key` is unknown.
@@ -546,7 +546,7 @@ impl ExecutionState {
         Ok(attempt_number)
     }
 
-    /// Schedule the next retry attempt for a node per ADR-0042 §M2.1
+    /// Schedule the next retry attempt for a node.1
     /// T4.
     ///
     /// Promotes a `Failed` node to `WaitingRetry`, stamps the wall-clock
@@ -618,7 +618,7 @@ impl ExecutionState {
     /// current one via the forward state machine. They still MUST
     /// bump the parent version so CAS readers observe the change
     /// (issue #255); use this method instead of a direct
-    /// `node_states.get_mut(...).state = ...` assignment.
+    /// `node_states.get_mut(...).state =...` assignment.
     ///
     /// Application code that is NOT in a recovery path should use
     /// [`transition_node`](Self::transition_node) instead — it
@@ -970,7 +970,7 @@ mod tests {
         assert!(ns.started_at.is_some());
     }
 
-    /// ADR-0042 — engine retries via the `Failed → WaitingRetry` edge,
+    /// — engine retries via the `Failed → WaitingRetry` edge,
     /// not directly from `Failed`. A `start_attempt` on `Failed` is
     /// still rejected (the engine must first promote the node to
     /// `WaitingRetry` via the retry-decision path); but
@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(ns.state, NodeState::Failed, "state must not move on error");
     }
 
-    /// ADR-0042 — `WaitingRetry → Ready → Running` is the retry
+    /// — `WaitingRetry → Ready → Running` is the retry
     /// re-dispatch path. `start_attempt` honors it.
     #[test]
     fn start_attempt_promotes_waiting_retry() {
@@ -999,7 +999,7 @@ mod tests {
         ns.transition_to(NodeState::WaitingRetry).unwrap();
 
         ns.start_attempt()
-            .expect("WaitingRetry must be a legal start_attempt source per ADR-0042");
+            .expect("WaitingRetry must be a legal start_attempt source for engine retries");
         assert_eq!(ns.state, NodeState::Running);
     }
 
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(back.node_states.len(), state.node_states.len());
     }
 
-    // Regression for #266 + ADR-0042 §M2.1 T4: the idempotency key is
+    // Regression for #266: the idempotency key is
     // for the **next** dispatch — `attempts.len() + 1`. Push-on-result
     // semantics in the engine guarantees that a retried or
     // restart-replayed attempt does not collide with a previous
@@ -1172,7 +1172,7 @@ mod tests {
         );
     }
 
-    /// ADR-0042 §M2.1 T4 — `record_node_attempt` pushes a sequential
+    /// `record_node_attempt` pushes a sequential
     /// attempt with the right number, captures the outcome, and bumps
     /// the parent version (issue #255).
     #[test]
@@ -1244,7 +1244,7 @@ mod tests {
         assert!(matches!(err, ExecutionError::NodeNotFound(_)));
     }
 
-    /// ADR-0042 §M2.1 T4 — `schedule_node_retry` promotes Failed →
+    /// `schedule_node_retry` promotes Failed →
     /// WaitingRetry, stamps `next_attempt_at`, and increments
     /// `total_retries`. All three observable effects move atomically
     /// (single `checkpoint_node` covers the version bumps).
@@ -1469,7 +1469,7 @@ mod tests {
     /// ROADMAP §M0.3 invariant 2 — `set_terminated_by` must reject a
     /// reason whose inner `by_node` does not match the `node_key`
     /// argument. Engine wiring constructs the reason via
-    /// `map_termination_reason(node_key.clone(), ...)` so a mismatch
+    /// `map_termination_reason(node_key.clone(),...)` so a mismatch
     /// indicates a programming error (or a refactor regression) and
     /// must surface as `false` rather than store inconsistent data.
     #[test]
@@ -1526,7 +1526,7 @@ mod tests {
         );
     }
 
-    /// ADR-0042 §M2.1 T2 — `next_attempt_at` must round-trip via
+    /// `next_attempt_at` must round-trip via
     /// serde so a resumed engine picks up scheduled retries at their
     /// declared time.
     #[test]
@@ -1556,7 +1556,7 @@ mod tests {
         assert!(ns.next_attempt_at.is_none());
     }
 
-    /// ADR-0042 §M2.1 T2 — `total_retries` round-trips and starts
+    /// `total_retries` round-trips and starts
     /// at zero.
     #[test]
     fn total_retries_roundtrip_and_default() {
@@ -1586,7 +1586,7 @@ mod tests {
         assert_eq!(state.total_retries, 0);
     }
 
-    /// ADR-0042 §M2.1 T4 — `increment_total_retries` bumps both the
+    /// `increment_total_retries` bumps both the
     /// counter and the parent execution version (issue #255).
     #[test]
     fn increment_total_retries_bumps_version() {

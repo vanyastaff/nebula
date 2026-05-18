@@ -127,7 +127,7 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// `ManagedResource::wait_for_in_flight_drain`, which waits on this
     /// row's per-resource counter — *not* the manager-wide `drain_tracker`
     /// — so a revoke is isolated from in-flight traffic to unrelated
-    /// resources (ADR-0067 §Deferred). Boxed for the same `dyn`-safety
+    /// resources (per-resource revoke deferral). Boxed for the same `dyn`-safety
     /// reason as the dispatch hooks. `Err(outstanding)` carries the counter
     /// snapshot at the moment the timer fired.
     fn wait_for_in_flight_drain_erased<'a>(

@@ -14,9 +14,8 @@
 //! inserted. An unknown kind is a caller/wiring misconfiguration caught
 //! at activation and surfaced as a typed, matchable error
 //! ([`RegistrarError::UnknownKind`]); it is never a silent grab of the
-//! wrong type nor a panic (INTEGRATION_MODEL §114-120 — misconfiguration
-//! caught at activation; ADR-0030 typed-error discipline; ADR-0036
-//! isolation; ADR-0044 slot model).
+//! wrong type nor a panic ( — misconfiguration
+//! caught at activation; typed-error discipline;//! isolation; slot model).
 //!
 //! # Erasure mechanism
 //!
@@ -180,14 +179,14 @@ pub struct RegisterRequest<'a> {
     /// Engine-held expression engine used to resolve `{{ … }}` templates
     /// in `config_json`.
     pub expr_engine: &'a nebula_expression::ExpressionEngine,
-    /// Slot-name → resolved-credential-key bindings (per ADR-0044). The
+    /// Slot-name → resolved-credential-key bindings (per ). The
     /// engine resolves credentials and is expected to have folded them
     /// into the resource value the registrar produces; this map is
     /// asserted against the resource's declared slots inside the typed
     /// call.
     pub slot_bindings: HashMap<String, nebula_core::CredentialKey>,
     /// Slot-name → resolved `CredentialId` for the rotation fan-out
-    /// reverse index (ADR-0067 §D1).
+    /// reverse index.
     ///
     /// `slot_bindings` carries the `CredentialKey` (the credential
     /// *name*, what `Manager::register_from_value` hashes into the
@@ -266,7 +265,7 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     /// and does **no** `{{ … }}` template resolution. This is the seam a
     /// config-CRUD writer uses to reject a bad resource config *before*
     /// persistence — config validation is strictly separate from
-    /// engine-activation live registration (INTEGRATION_MODEL §13.1).
+    /// engine-activation live registration (.1).
     ///
     /// Synchronous: validation is pure (schema + serde, no I/O), so unlike
     /// [`register`](Self::register) it needs no boxed future.
@@ -313,7 +312,7 @@ where
     /// Builds a typed registrar for resource type `R`.
     ///
     /// `resource_factory` yields the `R` value (with credential slots
-    /// already resolved by the engine per ADR-0044);
+    /// already resolved by the engine per );
     /// `topology_factory` yields the `TopologyRuntime<R>` declared for
     /// this kind. Both are invoked once per registration call.
     pub fn new(resource_factory: FRes, topology_factory: FTopo) -> Self {
@@ -379,7 +378,7 @@ where
 /// [`insert`](Self::insert)ed. [`register`](Self::register) on an unknown
 /// kind returns [`RegistrarError::UnknownKind`] — a typed, matchable
 /// activation error, never a panic or a silent grab of the wrong type
-/// (INTEGRATION_MODEL §114-120).
+///.
 #[derive(Default)]
 pub struct ResourceRegistrarRegistry {
     registrars: HashMap<String, Arc<dyn ErasedResourceRegistrar>>,
@@ -435,8 +434,7 @@ impl ResourceRegistrarRegistry {
     /// # Errors
     ///
     /// - [`RegistrarError::UnknownKind`] if `kind` is not in the
-    ///   allowlist. This is a caller/wiring fault caught at activation
-    ///   (INTEGRATION_MODEL §114-120) — non-retryable, classified as a
+    ///   allowlist. This is a caller/wiring fault caught at activation — non-retryable, classified as a
     ///   client conflict. The lookup happens **before** any typed call,
     ///   so an unknown kind can never touch a resource type.
     /// - [`RegistrarError::Register`] if the typed
@@ -464,7 +462,7 @@ impl ResourceRegistrarRegistry {
 
     /// Resolves `kind` through the closed allowlist, dispatches into its
     /// typed registrar, and — on success — records the resolved row in
-    /// the rotation fan-out reverse index (ADR-0067 §D1).
+    /// the rotation fan-out reverse index.
     ///
     /// This is the §M11.5 `bind` seam: the registered row resolved one
     /// or more `#[credential]` slots, so a later rotation / lease-revoke
@@ -508,7 +506,7 @@ impl ResourceRegistrarRegistry {
     /// is a documented contract, not an enforced invariant, because the
     /// seam has **no production caller today**: *bind-population* (the
     /// production credential→slot resolution that would call this) is the
-    /// deferred resource-activation path (ADR-0067 §Deferred — *bind-
+    /// deferred resource-activation path ( — *bind-
     /// population producer*). The driver cannot observe a row that
     /// nothing activated, so the window is not reachable in production
     /// until that deferred producer lands; when it does, it must honour
@@ -607,12 +605,11 @@ impl ResourceRegistrarRegistry {
     /// [`Manager::validate_config_value`]), but mutates **no** `Manager`,
     /// builds **no** runtime, and resolves **no** `{{ … }}` templates —
     /// live registration stays an engine-activation concern
-    /// (INTEGRATION_MODEL §13.1), distinct from config validation.
+    /// (.1), distinct from config validation.
     ///
     /// The closed-allowlist lookup is identical to `register`'s: an unknown
     /// `kind` is rejected *before* any typed call, so it can never touch a
-    /// resource type (closed dependency graph — INTEGRATION_MODEL §114-120;
-    /// the type-confusion abuse).
+    /// resource type (closed dependency graph —    /// the type-confusion abuse).
     ///
     /// # Errors
     ///

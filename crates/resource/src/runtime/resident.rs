@@ -53,7 +53,7 @@ pub struct ResidentRuntime<R: Resource> {
     /// the rotation dispatch. A stored runtime whose `built_epoch` is
     /// *older* than the live slot epoch was bound to a pre-rotation
     /// credential — the lost-update the dispatch must reconcile rather
-    /// than silently report success for (ADR-0067 §Deferred / #680).
+    /// than silently report success for (per-resource revoke deferral / #680).
     built_epoch: AtomicU64,
 }
 
@@ -79,7 +79,7 @@ impl<R: Resource> ResidentRuntime<R> {
     }
 
     /// Per-slot rotation hook dispatch for the Resident topology, with the
-    /// create-vs-rotate reconcile (ADR-0067 §Deferred / #680).
+    /// create-vs-rotate reconcile (per-resource revoke deferral / #680).
     ///
     /// Takes `create_lock` so it is **mutually excluded** with the
     /// `create` slow path: a rotation dispatch and a first-acquire create
@@ -261,7 +261,7 @@ where
         // Capture the credential epoch *immediately before* `create`
         // reads the slot. `create` reads each `#[credential]` slot through
         // its derive-emitted accessor; if a `SlotCell::store` (engine
-        // rotation fan-out, ADR-0067 D1) lands *after* this read but
+        // rotation fan-out, rotation fan-out) lands *after* this read but
         // *before* we publish the runtime, the runtime is bound to the
         // pre-rotation credential while a concurrent rotation dispatch
         // would (pre-fix) see `current() == None`, record a false success,

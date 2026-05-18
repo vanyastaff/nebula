@@ -1,8 +1,8 @@
 //! Background reclaim-sweep task. Parallel to control-queue reclaim.
 //!
 //! Per sub-spec
-//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`
-//! §3.3 + §3.4.
+//! `docs/INTEGRATION_MODEL.md`
+//! +.
 //!
 //! On a fixed cadence the task calls `RefreshClaimRepo::reclaim_stuck`,
 //! atomically sweeping every claim row whose `expires_at` is in the
@@ -56,7 +56,7 @@ impl ReclaimSweepHandle {
     /// Spawn the reclaim sweep task wired to a [`RefreshCoordinator`].
     ///
     /// The cadence and the underlying [`RefreshClaimRepo`] are derived
-    /// from `coord` so the §3.5 invariant
+    /// from `coord` so the invariant
     /// `reclaim_sweep_interval ≤ claim_ttl` (validated at coordinator
     /// construction) reaches the sweep task by construction — no
     /// freestanding `Duration` argument that could drift from the
@@ -79,7 +79,7 @@ impl ReclaimSweepHandle {
     ) -> Self {
         let cadence = coord.config().reclaim_sweep_interval;
         let repo = Arc::clone(coord.repo());
-        // Sub-spec §6 — sweep emits metrics + audit events through the
+        // Sub-spec — sweep emits metrics + audit events through the
         // same handles wired into the coordinator so a single PromQL /
         // sink view aggregates both refresh sites.
         let metrics = coord.metrics().clone();
@@ -151,7 +151,7 @@ async fn run_one_sweep(
     audit_sink: Option<&dyn AuditSink>,
 ) -> Result<(), nebula_storage::credential::RepoError> {
     let stuck = repo.reclaim_stuck().await?;
-    // Sub-spec §6 — increment reclaim sweep counter once per sweep,
+    // Sub-spec — increment reclaim sweep counter once per sweep,
     // labeled by whether work was found. `no_work` is the steady state
     // for healthy systems; `reclaimed` rising is a crashed-runner signal.
     if stuck.is_empty() {
@@ -165,7 +165,7 @@ async fn run_one_sweep(
             // do (no mid-refresh crash to record).
             continue;
         }
-        // Sub-spec §6 — per-row span; an operator can grep
+        // Sub-spec — per-row span; an operator can grep
         // `credential.refresh.sentinel.detected` for crashed-mid-refresh
         // events without wading through normal-expiry rows. Use
         // `.instrument(...)` rather than `.entered()` so the span
@@ -206,7 +206,7 @@ async fn run_one_sweep(
                     event_count,
                     "sentinel recoverable — credential refresh will retry"
                 );
-                // Sub-spec §6 — record the event (below threshold).
+                // Sub-spec — record the event (below threshold).
                 metrics.sentinel_recorded.inc();
                 emit_sentinel_triggered(audit_sink, &reclaimed.credential_id, event_count);
             },
@@ -220,7 +220,7 @@ async fn run_one_sweep(
                     window_secs,
                     "sentinel threshold exceeded — escalating to ReauthRequired"
                 );
-                // Sub-spec §6 — bump both the recorded counter (every
+                // Sub-spec — bump both the recorded counter (every
                 // detection counts) and the reauth_triggered counter
                 // (the escalation transition itself).
                 metrics.sentinel_recorded.inc();
@@ -273,7 +273,7 @@ mod tests {
     };
 
     /// Build a [`RefreshCoordinator`] with a tight 30ms reclaim cadence
-    /// for spawn-path unit tests. Other §3.5 invariants are scaled
+    /// for spawn-path unit tests. Other invariants are scaled
     /// proportionally so `validate()` accepts the shape.
     fn fast_coord_for_test(repo: Arc<dyn RefreshClaimRepo>) -> Arc<RefreshCoordinator> {
         Arc::new(
@@ -501,7 +501,7 @@ mod tests {
         );
     }
 
-    /// Sub-spec §6 emission test for reclaim metrics.
+    /// Sub-spec emission test for reclaim metrics.
     ///
     /// Calls `run_one_sweep` against a repo with one stuck
     /// `RefreshInFlight` claim and asserts `reclaim_sweeps_total{
@@ -565,7 +565,7 @@ mod tests {
         );
     }
 
-    /// Sub-spec §6 — at-threshold sweep must increment both
+    /// Sub-spec — at-threshold sweep must increment both
     /// `recorded` and `reauth_triggered`.
     #[tokio::test]
     async fn run_one_sweep_at_threshold_increments_reauth_triggered() {

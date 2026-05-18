@@ -1,4 +1,4 @@
-//! Postgres implementation of [`WebhookActivationRepo`] (M3.3 / ADR-0049).
+//! Postgres implementation of [`WebhookActivationRepo`].
 //!
 //! Schema lives in migrations 0010 (`triggers`) and 0018
 //! (`webhook_path` indexed column). Migration 0025 attaches the

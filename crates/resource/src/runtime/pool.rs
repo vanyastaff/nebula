@@ -187,7 +187,7 @@ impl<R: Resource> PoolRuntime<R> {
     /// "optimize" by dropping and reacquiring the lock between entries:
     /// that reopens the window for an instance to be checked out
     /// mid-rotation and miss its hook, violating the post-revoke
-    /// invariant guaranteed here (ADR-0036). If rotation ever moves onto
+    /// invariant guaranteed here (credential isolation). If rotation ever moves onto
     /// a hot path, or hook latency becomes unbounded, revisit this only
     /// via a snapshot-with-epoch-reconcile design (capture the idle set
     /// under a brief lock, run hooks lock-free, then reconcile against

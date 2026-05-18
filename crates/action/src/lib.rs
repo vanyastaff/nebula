@@ -1,14 +1,13 @@
 //! # nebula-action
 //!
 //! **Role:** Action Trait Family + Execution Policy Metadata (Ports & Adapters).
-//! Canon §3.5 (trait family; adding a trait requires canon revision), §11.2, §11.3.
 //!
 //! Defines what actions are and how they communicate with the engine. Core types
 //! live here; execution environments (in-process, ProcessSandbox with capability
 //! allowlists and OS-level hardening) are drivers in `nebula-sandbox`.
-//! WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md` §12.6.
+//! WASM is an explicit non-goal for the action execution surface.
 //!
-//! ## Trait family (canon §3.5)
+//! ## Trait family
 //!
 //! - `Action` — base trait providing identity and metadata.
 //! - `StatelessAction` — pure, stateless single-execution.
@@ -77,7 +76,7 @@ pub mod port;
 pub mod prelude;
 /// [`ResourceAction`] DX trait, [`ResourceHandler`] dyn contract, and adapter.
 pub mod resource;
-/// `ResourceProduces<R>` — Output marker for `ResourceAction` (ADR-0043 §4 Variant A).
+/// `ResourceProduces<R>` — Output marker for `ResourceAction`.
 pub mod resource_produces;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;

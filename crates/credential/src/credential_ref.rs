@@ -1,7 +1,7 @@
 //! Typed credential reference (`CredentialRef<C>`) — slot-binding handle for action/resource
 //! fields.
 //!
-//! Per ADR-0043 §9, `CredentialRef<C>` is the canonical field type for the
+//! Per typed ref fields, `CredentialRef<C>` is the canonical field type for the
 //! slot-binding pattern: an action or resource declares
 //!
 //! ```ignore
@@ -12,7 +12,7 @@
 //! }
 //! ```
 //!
-//! and the framework resolves the slot per ADR-0042's binding mechanism: the
+//! and the framework resolves the slot per slot binding's binding mechanism: the
 //! `key` attribute supplies a default credential id; workflow-JSON
 //! `slot_bindings.<slot_key>.credential_id` overrides it per node.
 //!
@@ -28,7 +28,7 @@
 //! ## Composability
 //!
 //! `Option<CredentialRef<C>>` and `Lazy<CredentialRef<C>>` (from
-//! `nebula_core::Lazy`) compose for optional / lazy semantics per ADR-0043 §3.
+//! `nebula_core::Lazy`) compose for optional / lazy semantics per optional ref composition.
 
 use std::{fmt, marker::PhantomData};
 
@@ -39,7 +39,7 @@ use crate::{Credential, CredentialGuard, error::CredentialError, snapshot::Crede
 
 /// Typed reference to a registered credential.
 ///
-/// The reference carries a credential id (slot binding per ADR-0042) and a
+/// The reference carries a credential id (slot binding per slot binding) and a
 /// type-level marker selecting the concrete `Credential` impl whose
 /// `Scheme` should be projected on resolve. The field type alone tells
 /// the framework what slot kind, what concrete credential type, and (via
@@ -52,7 +52,7 @@ use crate::{Credential, CredentialGuard, error::CredentialError, snapshot::Crede
 /// does **not** copy the underlying secret — the secret materializes only
 /// during `.resolve()` and lives in the resulting guard with zeroize-on-drop.
 pub struct CredentialRef<C: ?Sized> {
-    /// Resolved credential id (per ADR-0042 — slot-key default OR workflow-JSON override).
+    /// Resolved credential id (per slot binding — slot-key default OR workflow-JSON override).
     id: String,
     /// Type-level marker for the concrete `Credential` impl. `fn() -> C` so
     /// `CredentialRef<C>` is `Send + Sync` regardless of `C`.

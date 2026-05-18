@@ -57,7 +57,7 @@ pub enum CredentialEvent {
     /// connections using this credential must be invalidated until the
     /// user re-authenticates.
     ///
-    /// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)
+    /// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh)
     ReauthRequired {
         /// The credential instance ID.
         credential_id: CredentialId,

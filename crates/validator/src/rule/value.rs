@@ -6,7 +6,7 @@
 //! match. `null` is a distinct kind and does not match any typed rule —
 //! schema layers are expected to filter optional/nullable fields upstream
 //! before dispatching rules (see `nebula-schema::validated`). Strictness
-//! here aligns with PRODUCT_CANON §4.2 ("no silent shape mismatches").
+//! here aligns with PRODUCT_ ("no silent shape mismatches").
 
 use serde::{Deserialize, Serialize};
 

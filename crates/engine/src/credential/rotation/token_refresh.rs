@@ -7,8 +7,7 @@
 //! # Sentinel marking
 //!
 //! Per sub-spec
-//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §3.4
-//! the holder marks the L2 claim row `sentinel = RefreshInFlight`
+//! `docs/INTEGRATION_MODEL.md`//! the holder marks the L2 claim row `sentinel = RefreshInFlight`
 //! immediately before the IdP POST. That mark is set by the
 //! `CredentialResolver::refresh_via_coordinator` closure (the caller of
 //! `refresh_oauth2_state`) **outside** this module, so we do not have to
@@ -238,14 +237,14 @@ fn update_state_from_token_response(
 }
 
 /// Redacts common sensitive-field-name=value patterns in IdP error
-/// strings. OAuth2 IdPs (per RFC 6749 §5.2) sometimes echo submitted
+/// strings. OAuth2 IdPs (per RFC 6749 ) sometimes echo submitted
 /// credentials inside `error_description` — most commonly
 /// `refresh_token=<value>` on `invalid_grant` from buggy or hostile
 /// providers. Without redaction those values reach operator-facing
 /// logs / SIEM via [`TokenRefreshError::TokenEndpoint`]. This helper
 /// scrubs the value while preserving the structural diagnostic.
 ///
-/// Implements ADR-0030 §4 redaction discipline at the source: the
+/// Implements redaction discipline at the source: the
 /// summary string emitted by [`oauth_token_error_summary`] is the
 /// single chokepoint through which non-2xx response bodies enter the
 /// error type, so applying redaction here covers all downstream
@@ -261,7 +260,7 @@ fn update_state_from_token_response(
 /// (not under-redaction; never leaks the input). The CI safety net
 /// (`tests::redaction_regex_compiles` lib test +
 /// `crates/engine/tests/credential_refresh_redaction.rs` integration rows
-/// per ADR-0030 §4) catches the pattern regression before merge so the
+/// per ) catches the pattern regression before merge so the
 /// fallback path is never reached in production.
 const REDACTION_PATTERN: &str = r"(?i)\b(refresh[_-]?token|access[_-]?token|client[_-]?secret|bearer|api[_-]?key|password|secret)\s*[=:]\s*\S+";
 

@@ -6,7 +6,7 @@
 //! it from unit tests. Proc-macro crates themselves cannot expose pub
 //! helpers for integration tests; this crate can.
 //!
-//! See ADR-0035 paragraph 4.3 (action-side translation) and Tech Spec
+//! See paragraph 4.3 (action-side translation) and Tech Spec
 //! 2.7 (`#[action_phantom]` macro translation, "rewrites silently") for
 //! the contract.
 
@@ -53,7 +53,7 @@ fn rewrite_field(field: &mut Field) {
 /// the `Phantom` suffix. Without this guard, `CredentialRef<dyn Cap +
 /// Send + Sync>` would expand to nonsensical `SendPhantom` / `SyncPhantom`
 /// references that fail with cryptic `E0405` and have no path back to
-/// the macro for the plugin author. ADR-0035 §5 retains `Send + Sync` on
+/// the macro for the plugin author.
 /// the phantom trait as a forward-compat promise; user-written
 /// `dyn Cap + Send + Sync` must compose with that promise unchanged.
 ///
@@ -61,7 +61,7 @@ fn rewrite_field(field: &mut Field) {
 /// today — the recursive walk only descends into `Type::Path` generics.
 /// Adding a `Type::Reference` arm would let `CredentialRef<&dyn Cap>`
 /// rewrite to `CredentialRef<&dyn CapPhantom>`, but that form is not a
-/// supported Pattern 2 spelling per ADR-0035 §1 (canonical form is
+/// supported Pattern 2 spelling
 /// owning `CredentialRef<dyn Cap>`). Authors who write the borrowed
 /// form get rustc's normal `E0191` for the unspecified-assoc-type
 /// closure on `dyn Cap` — which is the correct guidance to switch to
@@ -261,7 +261,7 @@ mod tests {
     // capability and apply the phantom suffix. The pre-fix rewriter only
     // matched the outermost segment, so authors who wrote
     // `Vec<CredentialRef<dyn Cap>>` got a struct that compiled without
-    // phantom enforcement — silently bypassing the ADR-0035 guarantee.
+    // phantom enforcement — silently bypassing the guarantee.
 
     #[test]
     fn pattern2_inside_vec_rewrites() {

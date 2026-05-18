@@ -1,7 +1,7 @@
 //! Integration tests for sentinel threshold + ReauthRequired escalation
 //! (Stage 3.3).
 //!
-//! Per sub-spec §3.4. Each test wires:
+//! Per sub-spec . Each test wires:
 //!
 //! - An [`InMemoryRefreshClaimRepo`] holding both refresh-claim rows and the sentinel-event log.
 //! - A [`SentinelTrigger`] with a custom threshold/window for deterministic timing.
@@ -33,7 +33,7 @@ use nebula_storage::credential::{
 
 /// Build a fast-cadence coordinator for the sentinel integration tests
 /// so the reclaim sweep wakes every ~30ms while still satisfying the
-/// §3.5 interlocking invariants validated by `RefreshCoordConfig`.
+/// interlocking invariants validated by `RefreshCoordConfig`.
 fn fast_coord(repo: Arc<dyn RefreshClaimRepo>, sweep: Duration) -> Arc<RefreshCoordinator> {
     Arc::new(
         RefreshCoordinator::new_with(

@@ -293,14 +293,14 @@ impl PendingState for OAuth2Pending {
 /// `CredentialError::Provider("OAuth2 HTTP transport has moved …")`
 /// because the underlying HTTP calls (RFC 7009 revoke endpoint, token
 /// introspection / userinfo health probe) live in nebula-engine per
-/// ADR-0031. The trait impls exist so the engine's revoke / test
+/// API-owned OAuth flow. The trait impls exist so the engine's revoke / test
 /// dispatchers (which bind `where C: Revocable` / `where C: Testable`)
 /// can route to OAuth2 once the transport is wired — and so plugin
 /// callers see a typed transport-disabled classification instead of
 /// "credential type does not support revocation / testing."
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
-/// via `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3) and
+/// via `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties) and
 /// extracted from [`FieldValues`] when the OAuth2 flow is initiated.
 ///
 /// # Grant types and entry points
@@ -317,12 +317,12 @@ impl PendingState for OAuth2Pending {
 ///   callback, the framework loads the typed pending state and invokes
 ///   [`Interactive::continue_resolve`].
 /// - **Client Credentials** — base `resolve` returns `Complete(state)` once the engine wires the
-///   moved `nebula-engine` HTTP transport (ADR-0031). For now `resolve` returns `Provider("OAuth2
+///   moved `nebula-engine` HTTP transport (API-owned OAuth flow). For now `resolve` returns `Provider("OAuth2
 ///   HTTP transport has moved …")` so callers surface the migration explicitly rather than silently
 ///   no-op'ing.
 /// - **Device Code** — base `resolve` errors as per Authorization Code; the device-code variant
 ///   (`initiate_device_code`) is deferred to a later phase. RFC 8628 requires HTTP transport which
-///   is currently disabled in this crate per ADR-0031 (see `docs/adr/0031-api-owns-oauth-flow.md`);
+///   is currently disabled in this crate per API-owned OAuth flow (see );
 ///   the kickoff helper will land alongside the engine HTTP transport wiring.
 pub struct OAuth2Credential;
 
@@ -330,7 +330,7 @@ pub struct OAuth2Credential;
 /// the legacy `OAuth2Input`).
 ///
 /// `#[derive(Schema)]` emits the `HasSchema` impl read via
-/// `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3). Secret
+/// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). Secret
 /// fields use `String`
 /// here so that the universal Schema derivation applies; `resolve()` and
 /// the OAuth2 kickoff helpers wrap them into [`SecretString`] before they
@@ -422,7 +422,7 @@ impl Credential for OAuth2Credential {
         // * AuthorizationCode / DeviceCode: kick off via `OAuth2Credential::initiate_*` and persist
         //   the typed `OAuth2Pending` through `PendingStateStore`. The continuation then routes
         //   through `Interactive::continue_resolve`.
-        // * ClientCredentials: HTTP transport moved to nebula-engine (ADR-0031); surface the
+        // * ClientCredentials: HTTP transport moved to nebula-engine (API-owned OAuth flow); surface the
         //   migration explicitly.
         let _client_id = extract_required(values, "client_id")?;
         let _client_secret = extract_required(values, "client_secret")?;
@@ -515,7 +515,7 @@ impl Interactive for OAuth2Credential {
                     .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
 
                 // Validation passed. HTTP code exchange has moved to nebula-api
-                // per ADR-0031; this crate no longer performs HTTP.
+                // per API-owned OAuth flow; this crate no longer performs HTTP.
                 let _ = (verifier_secret, redirect_uri, code);
                 Err(oauth2_http_transport_disabled())
             },
@@ -525,7 +525,7 @@ impl Interactive for OAuth2Credential {
                         "device_code flow expects UserInput::Poll".into(),
                     ));
                 }
-                // HTTP device code polling has moved to nebula-engine per ADR-0031.
+                // HTTP device code polling has moved to nebula-engine per API-owned OAuth flow.
                 Err(oauth2_http_transport_disabled())
             },
             GrantType::ClientCredentials => Err(CredentialError::InvalidInput(
@@ -553,7 +553,7 @@ impl Refreshable for OAuth2Credential {
             ));
         }
 
-        // Token refresh HTTP has moved to nebula-engine per ADR-0031;
+        // Token refresh HTTP has moved to nebula-engine per API-owned OAuth flow;
         // this crate no longer performs HTTP.
         Err(oauth2_http_transport_disabled())
     }
@@ -565,7 +565,7 @@ impl Revocable for OAuth2Credential {
         _ctx: &CredentialContext,
     ) -> Result<(), CredentialError> {
         // OAuth2 RFC 7009 token revocation requires HTTP — moved to
-        // nebula-engine per ADR-0031. Returning the typed transport-
+        // nebula-engine per API-owned OAuth flow. Returning the typed transport-
         // disabled error keeps the failure classification stable for
         // callers (engine routes to the HTTP transport when wired); a
         // silent `Ok(())` would falsely signal "secret revoked at
@@ -580,7 +580,7 @@ impl Testable for OAuth2Credential {
         _ctx: &CredentialContext,
     ) -> Result<TestResult, CredentialError> {
         // OAuth2 health probe (token introspection / userinfo) requires
-        // HTTP — moved to nebula-engine per ADR-0031. Same routing
+        // HTTP — moved to nebula-engine per API-owned OAuth flow. Same routing
         // rationale as `Refreshable::refresh` and `Revocable::revoke`
         // above. Returning `Ok(TestResult::Failed { … })` would falsely
         // signal "credential tested and is bad"; the test simply did
@@ -683,7 +683,7 @@ impl OAuth2Credential {
 
 fn oauth2_http_transport_disabled() -> CredentialError {
     CredentialError::Provider(
-        "OAuth2 HTTP transport has moved: code exchange to nebula-api, token refresh to nebula-engine (ADR-0031)"
+        "OAuth2 HTTP transport has moved: code exchange to nebula-api, token refresh to nebula-engine (API-owned OAuth flow)"
             .into(),
     )
 }
@@ -826,7 +826,7 @@ mod tests {
     // implements `Interactive`, `Refreshable`, `Revocable`, and
     // `Testable` (and not `Dynamic`). Trait bound checks below stand in
     // for the previous const-bool assertions. The `Revocable` and
-    // `Testable` impls currently route through ADR-0031 HTTP transport
+    // `Testable` impls currently route through API-owned OAuth flow HTTP transport
     // (returning `oauth2_http_transport_disabled()`); the trait
     // membership is still required so the engine's revoke / test
     // dispatchers can bind on it once the transport is wired.

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 // `OrgRoleDto` / `WorkspaceRoleDto` are cross-domain API-boundary role
-// wrappers (ADR-0047 §Wrapping-checklist) and live in `domain::shared`
+// wrappers (Wrapping-checklist) and live in `domain::shared`
 // alongside the other cross-cutting wire DTOs; imported here for the
 // `OrgSummary` field below.
 use crate::domain::shared::OrgRoleDto;
@@ -38,7 +38,7 @@ pub struct MeResponse {
     /// enumeration (Phase 3 — resolves the Phase-2 carry-over where this
     /// was omitted because no enumeration existed). Still `Option<u32>`
     /// for forward-compatibility and so it degrades to *absent* (never a
-    /// synthesized `0`) if the membership store is unwired — canon §4.5.
+    /// synthesized `0`) if the membership store is unwired — honest capability contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orgs_count: Option<u32>,
     /// Number of personal access tokens issued to this user.
@@ -60,7 +60,7 @@ pub struct UpdateMeRequest {
 ///
 /// `slug` is intentionally absent: the membership store keys by `OrgId`
 /// and there is no `OrgId`→slug reverse directory (the `OrgResolver` port
-/// is one-way slug→id). Echoing a synthesized slug would be a canon §4.5
+/// is one-way slug→id). Echoing a synthesized slug would be a honest capability contract
 /// false field — same reasoning as the dropped `MemberSummary.email`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct OrgSummary {

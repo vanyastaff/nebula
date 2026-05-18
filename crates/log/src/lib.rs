@@ -9,8 +9,8 @@
 //! subscriber for any Nebula process — consistent structured fields, multiple
 //! formats (pretty/compact/JSON/logfmt), pluggable writers, runtime reload, and
 //! optional OTLP / Sentry integrations. Enforces the observability contract:
-//! no secret material in log output (canon §12.5), consistent service/env/version
-//! fields (canon §4.6). See `crates/log/README.md` for full role and contract.
+//! no secret material in log output, consistent service/env/version
+//! fields. See `crates/log/README.md` for full role and contract.
 //!
 //! ## Role
 //!
@@ -30,9 +30,9 @@
 //! use nebula_log::prelude::*;
 //!
 //! fn main() -> LogResult<()> {
-//!     let _guard = nebula_log::auto_init()?;
-//!     info!(service = "api", "server started");
-//!     Ok(())
+//! let _guard = nebula_log::auto_init()?;
+//! info!(service = "api", "server started");
+//! Ok(())
 //! }
 //! ```
 //!
@@ -54,14 +54,14 @@
 //! use nebula_log::{Config, Format, WriterConfig};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut cfg = Config::production();
-//!     cfg.format = Format::Json;
-//!     cfg.writer = WriterConfig::Stderr;
-//!     cfg.fields.service = Some("nebula-api".to_string());
-//!     cfg.fields.env = Some("prod".to_string());
+//! let mut cfg = Config::production();
+//! cfg.format = Format::Json;
+//! cfg.writer = WriterConfig::Stderr;
+//! cfg.fields.service = Some("nebula-api".to_string());
+//! cfg.fields.env = Some("prod".to_string());
 //!
-//!     let _guard = nebula_log::init_with(cfg)?;
-//!     Ok(())
+//! let _guard = nebula_log::init_with(cfg)?;
+//! Ok(())
 //! }
 //! ```
 //!
@@ -97,10 +97,10 @@
 //!
 //! Telemetry/Sentry related:
 //! - `OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP export is opt-in. When neither this env var nor
-//!   `TelemetryConfig::otlp_endpoint` is set, OTLP is disabled. Use the literal string `"disabled"`
-//!   (or an empty string) to explicitly opt out at either layer.
-//! - `SENTRY_DSN` — when set but unparsable, a `tracing::warn!` is emitted at startup and Sentry
-//!   reporting is disabled.
+//!   `TelemetryConfig::otlp_endpoint` is set, OTLP is disabled. Use the literal string
+//!   `"disabled"` (or an empty string) to explicitly opt out at either layer.
+//! - `SENTRY_DSN` — when set but unparsable, a `tracing::warn!` is emitted at startup and
+//!   Sentry reporting is disabled.
 //! - `SENTRY_ENV`
 //! - `SENTRY_RELEASE`
 //! - `SENTRY_TRACES_SAMPLE_RATE`

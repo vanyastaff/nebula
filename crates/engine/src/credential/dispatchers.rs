@@ -1,6 +1,6 @@
 //! Engine-side capability dispatchers.
 //!
-//! Per Tech Spec §15.4 capability sub-trait split — these helpers bind
+//! Per Tech Spec capability sub-trait split — these helpers bind
 //! `where C: Revocable` / `where C: Testable` / `where C: Dynamic` so a
 //! non-capable credential cannot reach the corresponding lifecycle path.
 //! The structural barrier is identical to
@@ -33,7 +33,7 @@ use crate::credential::TestResult;
 
 /// Engine-side revocation dispatcher.
 ///
-/// Bound on [`Revocable`] per Tech Spec §15.4 — non-`Revocable`
+/// Bound on [`Revocable`] per Tech Spec — non-`Revocable`
 /// credentials cannot be passed; compile error at the call site
 /// (`E0277`). П2+ wires real callers (engine rotation orchestrator,
 /// admin-revoke API endpoint) into this entry point.
@@ -46,7 +46,7 @@ pub async fn dispatch_revoke<C: Revocable>(
 
 /// Engine-side health-probe dispatcher.
 ///
-/// Bound on [`Testable`] per Tech Spec §15.4 — non-`Testable`
+/// Bound on [`Testable`] per Tech Spec — non-`Testable`
 /// credentials cannot be passed; compile error at the call site
 /// (`E0277`). П2+ wires real callers (admin "test credential" API
 /// endpoint, periodic health-probe scheduler) into this entry point.
@@ -59,7 +59,7 @@ pub async fn dispatch_test<C: Testable>(
 
 /// Engine-side lease-release dispatcher.
 ///
-/// Bound on [`Dynamic`] per Tech Spec §15.4 — non-`Dynamic`
+/// Bound on [`Dynamic`] per Tech Spec — non-`Dynamic`
 /// credentials cannot be passed; compile error at the call site
 /// (`E0277`). П2+ wires real callers (per-execution lease reaper,
 /// lease-TTL expiry reaper) into this entry point.

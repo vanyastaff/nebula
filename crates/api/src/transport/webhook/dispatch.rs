@@ -1,11 +1,11 @@
-//! Webhook dispatch pipeline (M3.3 / ADR-0049).
+//! Webhook dispatch pipeline (webhook activation).
 //!
 //! Contains the shared `dispatch_inner` pipeline for both the
 //! programmatic and slug-routed webhook surfaces, plus the two axum
 //! handler functions that build a [`super::key::WebhookKey`] and
 //! delegate into it.
 //!
-//! ## Pipeline order (ADR-0049 single-pipe)
+//! ## Pipeline order (webhook activation single-pipe)
 //!
 //! 1. Body size check → 413
 //! 2. Route lookup → 404 (before rate-limit so unregistered keys
@@ -88,7 +88,7 @@ pub(super) async fn slug_webhook_handler(
 }
 
 /// Shared dispatch pipeline for both programmatic and slug webhook
-/// surfaces (M3.3 / ADR-0049). Order of operations:
+/// surfaces (webhook activation). Order of operations:
 ///
 /// 1. body size check → 413
 /// 2. routing lookup → 404 (before rate-limit — #271)
@@ -161,7 +161,7 @@ pub(super) async fn dispatch_inner(
         },
     };
 
-    // 5.5. Signature enforcement (ADR-0022). The `Required` default
+    // 5.5. Signature enforcement. The `Required` default
     // means an action that forgot to configure a secret trips a 500
     // here; an action that explicitly opted into
     // `OptionalAcceptUnsigned` passes through; everything else

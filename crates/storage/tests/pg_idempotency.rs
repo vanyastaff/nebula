@@ -1,4 +1,4 @@
-//! Postgres integration tests for [`PgIdempotencyStore`] (M3.4 / ADR-0048).
+//! Postgres integration tests for [`PgIdempotencyStore`] (durable idempotent-replay cache).
 //!
 //! Mirrors the existing storage test convention: skip silently when
 //! `DATABASE_URL` is absent, fail loudly when it is set but unparsable.

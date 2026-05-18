@@ -1,7 +1,7 @@
 //! `nebula-metadata` — shared metadata shapes for catalog-leaf entities
 //! (actions, credentials, resources). See the crate README below for the
 //! full surface, composition example, consumer list, and the
-//! plugin-as-container carve-out (ADR-0018).
+//! plugin-as-container carve-out.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -17,7 +17,7 @@ pub mod deprecation;
 /// [`Icon`] enum — one valid representation for catalog icons.
 pub mod icon;
 /// [`PluginManifest`] — bundle descriptor for a plugin, and [`ManifestError`] for
-/// construction failures (ADR-0018, moved from `nebula-plugin` in slice B).
+/// construction failures.
 pub mod manifest;
 /// [`MaturityLevel`] — `Experimental / Beta / Stable / Deprecated`.
 pub mod maturity;

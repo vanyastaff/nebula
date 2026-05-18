@@ -4,9 +4,9 @@
 //! # Why this exists
 //!
 //! [`ResourceFanoutIndex`] is the engine-owned reverse index + per-slot
-//! fan-out port (ADR-0067 §D1). Until this module, every
+//! fan-out port . Until this module, every
 //! `bind` / `dispatch_refresh` / `dispatch_revoke` caller was a
-//! `#[cfg(test)]` test — the index was implemented but unwired (ADR-0067
+//! `#[cfg(test)]` test — the index was implemented but unwired (
 //! §Deferred "Rotation fan-out is implemented but unwired"). This module
 //! closes that: it is the single production consumer that turns a
 //! completed credential refresh / revoke into the typed
@@ -16,11 +16,11 @@
 //! # Layering (no `nebula-resource → nebula-engine` edge)
 //!
 //! The rotation/revoke *signals* originate in the credential-runtime
-//! composition root (`nebula-credential-runtime`, ADR-0066), which owns
+//! composition root (`nebula-credential-runtime`, ), which owns
 //! the resolver, the [`RefreshCoordinator`](super::super::RefreshCoordinator),
 //! and the lease lifecycle. That crate must **not** depend on
 //! `nebula-resource` (deny.toml `[[bans]]` `nebula-resource` wrapper
-//! allowlist; ADR-0067 §D1). The signals reach this driver as plain
+//! allowlist; ). The signals reach this driver as plain
 //! [`nebula-eventbus`](nebula_eventbus) events
 //! ([`CredentialEvent`] on `EventBus<CredentialEvent>`,
 //! [`LeaseEvent`] on `EventBus<LeaseEvent>`) — the AGENTS.md
@@ -37,7 +37,7 @@
 //! - [`CredentialEvent::Refreshed`] — the credential-runtime facade has
 //!   already CAS-persisted the fresh material into the store
 //!   (`CredentialService::refresh`) before emitting this. That is exactly
-//!   the ADR-0067 §D1 "engine has stored the fresh material" point, so
+//! the "engine has stored the fresh material" point, so
 //!   the driver calls
 //!   [`ResourceFanoutIndex::dispatch_refresh`].
 //! - [`CredentialEvent::Revoked`] and
@@ -47,7 +47,7 @@
 //!   `LeaseRevoked`; the facade additionally emits
 //!   `CredentialEvent::Revoked`). Either triggers
 //!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is
-//!   already two-phase + cancellation-safe internally (ADR-0067
+//! already two-phase + cancellation-safe internally (
 //!   §Deferred / #681): synchronous `taint_slot_for` outside the
 //!   per-resource timeout, then the timeout-wrapped
 //!   `drain_and_revoke` tail. This driver does **not** re-implement
@@ -58,18 +58,15 @@
 //! address a reverse-index row, so it is a no-op fan-out (logged at
 //! `debug`, not an error).
 //!
-//! # Observability (ADR-0028 §4 — eventbus is not audit)
-//!
+//! # Observability//!
 //! Each dispatch returns a [`RotationOutcome`] aggregate. It is **never
 //! silently dropped**: a credential-data-free `tracing` event records
 //! `credential_id` / counts, and a non-zero `failed` / `timed_out`
-//! escalates to `warn!`. Per ADR-0028 §4 this aggregate is a
-//! metrics/observability signal **only** — it is *not* an audit write
+//! escalates to `warn!`.//! metrics/observability signal **only** — it is *not* an audit write
 //! and is *not* re-emitted on an eventbus (that dashboard emission stays
-//! a deferred Non-goal of this unit; ADR-0067 §Deferred
-//! "`RotationOutcome` → eventbus emission"). The fan-out internals
+//! a deferred Non-goal of this unit;//! "`RotationOutcome` → eventbus emission"). The fan-out internals
 //! already guarantee no credential/secret material reaches any span
-//! (ADR-0030 §4); this driver adds only key-free counts.
+//! ; this driver adds only key-free counts.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -174,7 +171,7 @@ impl RevokeDedupe {
 /// `LeaseLifecycleConfig::provider_call_timeout` default,
 /// `token_http::OAUTH_TOKEN_HTTP_TIMEOUT`) rather than inventing a
 /// magic literal. It is a **per-resource** budget (one slow resource
-/// cannot cascade-fail siblings — ADR-0036 invariant, enforced inside
+/// cannot cascade-fail siblings — invariant, enforced inside
 /// the fan-out), not a global one.
 const PER_RESOURCE_ROTATION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -393,10 +390,10 @@ impl ResourceFanoutDriver {
     }
 
     /// Consume the [`RotationOutcome`] — **never silently dropped**
-    /// (ADR-0028 §4: an observability signal, not an audit write and not
+    /// ( : an observability signal, not an audit write and not
     /// an eventbus re-emission). Only `credential_id` + counts reach the
     /// span; the fan-out internals already guarantee no credential /
-    /// secret material on any observability surface (ADR-0030 §4). A
+    /// secret material on any observability surface . A
     /// non-zero `failed` / `timed_out` escalates to `warn!` so a partial
     /// fan-out is operator-visible.
     fn record(credential_id: CredentialId, op: &'static str, outcome: RotationOutcome) {

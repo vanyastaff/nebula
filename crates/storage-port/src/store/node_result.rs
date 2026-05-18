@@ -1,4 +1,4 @@
-//! Node-output / node-result store trait (ADR-0009).
+//! Node-output / node-result store trait (per-node execution payloads).
 use crate::dto::NodeResultRecord;
 use crate::error::StorageError;
 use crate::scope::Scope;

@@ -1,5 +1,5 @@
 //! `WebhookActivationSpec` — operator-configured webhook trigger spec
-//! persisted under `triggers.config.webhook_activation` (M3.3 / ADR-0049).
+//! persisted under `triggers.config.webhook_activation`.
 //!
 //! # JSONB namespace
 //!
@@ -79,7 +79,7 @@ pub struct WebhookActivationSpec {
     /// Storage identifier of the HMAC secret credential. Resolved
     /// against the credential registry by the webhook factory at
     /// activation time. Storage layer **must not** inline raw secret
-    /// bytes — see ADR-0029.
+    /// bytes — credential registry holds secrets at rest.
     pub secret_id: String,
 
     /// Optional override for the signature replay window. `None`

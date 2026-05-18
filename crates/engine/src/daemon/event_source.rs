@@ -1,8 +1,8 @@
 //! EventSource topology + `EventSourceAdapter<E>: TriggerAction`.
 //!
 //! Migrated from `crates/resource/src/topology/event_source.rs` and
-//! `crates/resource/src/runtime/event_source.rs` per ADR-0037 / Tech Spec
-//! §12.3. EventSource lands as a thin adapter onto engine's existing
+//! `crates/resource/src/runtime/event_source.rs` per / Tech Spec
+//! . EventSource lands as a thin adapter onto engine's existing
 //! `TriggerAction` substrate.
 //!
 //! # Why an adapter, not a TriggerAction extension
@@ -207,8 +207,7 @@ where
 }
 
 // `EventSourceAdapter<E>` carries per-instance dynamic metadata (the
-// host supplies `ActionMetadata` at construction). Per ADR-0043 §6 the
-// typed [`nebula_action::Action`] / [`nebula_action::TriggerAction`]
+// host supplies `ActionMetadata` at construction).// typed [`nebula_action::Action`] / [`nebula_action::TriggerAction`]
 // traits require **static** metadata, so the adapter implements the
 // dyn-erased [`nebula_action::TriggerHandler`] surface directly. The
 // engine registers it as `Arc<dyn TriggerHandler>` like any other

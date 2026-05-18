@@ -81,7 +81,7 @@ impl WebhookAction for GitHubLikeWebhook {
 
     fn config(&self) -> WebhookConfig {
         // Declare the signature policy at the trait surface so the
-        // transport enforces it before dispatch (ADR-0022). In-handler
+        // transport enforces it before dispatch. In-handler
         // verification stays as defence-in-depth but the transport
         // would reject a mismatch first.
         WebhookConfig::default().with_signature_policy(
@@ -182,7 +182,7 @@ async fn register_webhook(
     let adapter = WebhookTriggerAdapter::new(webhook);
     // Read the cached webhook config BEFORE erasing the adapter
     // to `Arc<dyn TriggerHandler>` — webhook configuration does not
-    // flow through the dyn trigger contract (ADR-0022).
+    // flow through the dyn trigger contract.
     let config = adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);
 
@@ -263,7 +263,7 @@ async fn bad_signature_returns_401_problem_json() {
         .unwrap();
 
     let response = router.oneshot(request).await.unwrap();
-    // ADR-0022: transport rejects at the boundary — the handler is
+    // : transport rejects at the boundary — the handler is
     // never given the chance to observe an unsigned / bad-signed
     // request. RFC 9457 problem+json carries the diagnostic.
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -368,7 +368,7 @@ async fn oversized_body_returns_413() {
 #[tokio::test]
 async fn rate_limit_returns_429_with_retry_after() {
     // 2 requests per minute, so the 3rd will trip the limiter.
-    // The rate limiter runs before signature enforcement (ADR-0022
+    // The rate limiter runs before signature enforcement (
     // only governs dispatch, not ingress shaping), so any 3+ request
     // trips 429 regardless of signature state.
     let transport = make_transport(Some(2), 1024 * 1024);
@@ -384,7 +384,7 @@ async fn rate_limit_returns_429_with_retry_after() {
             .unwrap()
     };
 
-    // First two requests: unsigned → 401 under ADR-0022. But they pass
+    // First two requests: unsigned → 401 under . But they pass
     // *through* the rate limiter — we only assert that they do not
     // trip the 429 path, not the specific status.
     let r1 = router.clone().oneshot(make_request()).await.unwrap();
@@ -609,7 +609,7 @@ async fn post_still_dispatches() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// ── ADR-0022 trait-level coverage ────────────────────────────────────────
+// ──  trait-level coverage ────────────────────────────────────────
 
 /// Opt-out fixture: signature policy is `OptionalAcceptUnsigned`.
 /// Locks in the regression guard that tightening the default later
@@ -641,7 +641,7 @@ impl WebhookAction for UnsignedWebhook {
 
     fn config(&self) -> WebhookConfig {
         // Public-by-design webhook — explicit opt-out is the audit
-        // trail per ADR-0022.
+        // trail.
         WebhookConfig::default().with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned)
     }
 
@@ -660,7 +660,7 @@ impl WebhookAction for UnsignedWebhook {
 }
 
 /// Fixture whose `config()` is left as the default — `Required` with
-/// an empty secret. ADR-0022: the transport returns 500 without ever
+/// an empty secret. : the transport returns 500 without ever
 /// calling `handle_request`.
 struct DefaultConfigWebhook {
     reached_handler: Arc<std::sync::atomic::AtomicBool>,
@@ -744,7 +744,7 @@ async fn optional_accept_unsigned_passes_through_unsigned_request() {
         .unwrap();
 
     let response = router.oneshot(request).await.unwrap();
-    // ADR-0022: the action explicitly opted out, so the transport
+    // : the action explicitly opted out, so the transport
     // MUST NOT block the unsigned request.
     assert_eq!(response.status(), StatusCode::OK);
 }

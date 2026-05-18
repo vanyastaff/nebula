@@ -1,4 +1,4 @@
-//! Pre-bound metric handles for the refresh coordinator (sub-spec §6).
+//! Pre-bound metric handles for the refresh coordinator (sub-spec ).
 //!
 //! All handles are constructed once at coordinator-build time and live
 //! for the coordinator's lifetime, so the hot path (per-`refresh_coalesced`
@@ -33,7 +33,7 @@ use nebula_metrics::{
 };
 
 /// Pre-bound handles for the five refresh-coordinator metrics declared
-/// in sub-spec §6. Cheaply cloneable (each handle is `Arc<...>` under
+/// in sub-spec . Cheaply cloneable (each handle is `Arc<...>` under
 /// the hood).
 #[derive(Clone, Debug)]
 pub struct RefreshCoordMetrics {

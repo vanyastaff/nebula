@@ -1,6 +1,6 @@
 //! `NoCredential` — legacy no-auth credential marker.
 //!
-//! Per ADR-0044 (supersedes ADR-0036), the `Resource::Credential`
+//! Per slot model (supersedes credential isolation), the `Resource::Credential`
 //! associated type was removed in favor of typed `#[credential(...)]`
 //! slot fields on resource structs. Resources that do not bind any
 //! credential simply declare zero `#[credential]` fields — `NoCredential`
@@ -43,7 +43,7 @@ impl CredentialState for NoCredentialState {
 /// Legacy no-auth credential type — retained for credential-subsystem
 /// internal use (registry diagnostics, capability sub-traits).
 ///
-/// Per ADR-0044 the `Resource::Credential` associated type was removed;
+/// Per slot model the `Resource::Credential` associated type was removed;
 /// `NoCredential` is no longer used as an opt-out marker. Resources that
 /// don't need credential material simply declare zero `#[credential]`
 /// slot fields.

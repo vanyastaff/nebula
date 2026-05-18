@@ -1,11 +1,11 @@
 //! Organization domain — org settings, members, service accounts.
 //!
-//! Self-contained per canon §12.7: route table ([`routes`]), HTTP handlers
+//! Self-contained per domain-module layout: route table ([`routes`]), HTTP handlers
 //! ([`handler`]), request/response DTOs ([`dto`]), and the canonical
 //! in-memory [`MembershipStore`](crate::state::MembershipStore) impl
 //! ([`membership`]) live together. Authenticated + org-scoped.
 //!
-//! ## §4.5 status (Phase 3, "Option 1" honest contract)
+//! ## honest capability status (Phase 3, "Option 1" honest contract)
 //!
 //! The **member-management** triad is implemented end-to-end against the
 //! shared [`MembershipStore`](crate::state::MembershipStore):
@@ -13,14 +13,14 @@
 //! add-by-principal — the fake email-invitation contract was dropped, see
 //! [`dto`]), and `DELETE /orgs/{org}/members/{principal}`. The org-record
 //! endpoints (`GET`/`PATCH`/`DELETE /orgs/{org}`) and the service-account
-//! endpoints stay **honest 501** (canon §4.5): there is no org-record
+//! endpoints stay **honest 501** (honest capability contract): there is no org-record
 //! store (name/plan/created_at) and no end-to-end
 //! `Principal::ServiceAccount` auth path, so shipping them would be a
 //! false capability. Their `#[deprecated]` + 501 + ` (planned)`
 //! annotations are unchanged and enforced by
 //! `tests/openapi_canon_compliance.rs`.
 //!
-//! ## Provisioning & durability (canon §11.6 / §12.5)
+//! ## Provisioning & durability (provisioning durability / credential secrecy)
 //!
 //! The member endpoints require an explicitly-provisioned
 //! [`MembershipStore`](crate::state::MembershipStore) — the default
@@ -31,9 +31,9 @@
 //! route). Auto-seeding a bootstrap owner into the default binary was
 //! removed (PR #671 P1): the default `AuthBackend` is empty, so an
 //! auto-seeded owner could never authenticate and a seeded store would
-//! 404-deadlock every org/workspace route (a deployment-level §4.5 false
+//! 404-deadlock every org/workspace route (a deployment-level honest capability false
 //! capability); a hardcoded auto-seeded admin would also be a
-//! default-credential surface (§12.5). An operator/integrator provisions
+//! default-credential surface (credential secrecy). An operator/integrator provisions
 //! it via [`membership::InMemoryMembershipStore::seeded_bootstrap`] +
 //! [`crate::AppState::with_membership_store`], registering the same
 //! bootstrap-owner identity in the wired `AuthBackend` so it can

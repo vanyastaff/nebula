@@ -1,4 +1,4 @@
-//! `TriggerLifecycleEvent` and the transport subscriber (M3.3 / ADR-0049 — E2).
+//! `TriggerLifecycleEvent` and the transport subscriber (webhook activation — E2).
 //!
 //! Operator changes to slug-routed webhook activations (create /
 //! update / delete) are published as
@@ -11,7 +11,7 @@
 //! E2 ships the **consumer** — the transport-side subscriber that
 //! reapplies events. The producer side (storage CRUD callsites that
 //! `emit()` on the bus) is intentionally out of scope for M3.3 per
-//! ADR-0049 §"Out of scope". Until producers wire in, the bus is
+//! webhook activation §"Out of scope". Until producers wire in, the bus is
 //! observed only by the admin reload endpoint and by tests.
 //!
 //! # Why an event bus, not direct calls

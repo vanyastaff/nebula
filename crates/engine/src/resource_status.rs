@@ -9,7 +9,7 @@
 //! is the action-capability seam (acquire), this is the diagnostics seam
 //! (observe).
 //!
-//! # No lifecycle mutation (INTEGRATION_MODEL §13.1)
+//! # No lifecycle mutation (.1)
 //!
 //! The trait deliberately exposes **only** a phase read. There is no
 //! acquire / release / drain / reload entry point: resource lifecycle is
@@ -29,7 +29,7 @@
 //! runtime to another. The erased phase is mapped to a stable, non-secret
 //! string at the engine boundary so the api-safe struct carries no
 //! `nebula-resource` type and no configuration/credential material
-//! (ADR-0028 §7).
+//!
 
 use std::{fmt, sync::Arc};
 
@@ -38,7 +38,7 @@ use nebula_core::{ResourceKey, ScopeLevel};
 /// Stable, non-secret runtime-status projection of one live resource.
 ///
 /// Carries lifecycle phase only — never configuration, credential, or any
-/// other resource-supplied material (ADR-0028 §7). The `phase` string is a
+/// other resource-supplied material . The `phase` string is a
 /// closed, stable vocabulary; consumers match on it rather than
 /// re-deriving from internals.
 #[derive(Debug, Clone, PartialEq, Eq)]

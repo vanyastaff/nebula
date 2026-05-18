@@ -5,7 +5,7 @@
 //! dispatches, attaches `Set-Cookie` headers, and translates
 //! [`crate::domain::auth::backend::AuthError`] into [`crate::error::ApiError`].
 //!
-//! Per ADR-0033 these endpoints belong to **Plane A** (host login). They
+//! Per auth plane separation these endpoints belong to **Plane A** (host login). They
 //! never touch the credential / Plane B OAuth state.
 
 use std::sync::Arc;

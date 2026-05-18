@@ -1,10 +1,10 @@
-//! Durable control-signal outbox trait (spec-16 §12.2, ADR-0008/0017).
+//! Durable control-signal outbox trait (cancel/terminate/pause + lease reclaim).
 use std::time::Duration;
 
 use crate::dto::ControlMsg;
 use crate::error::StorageError;
 
-/// Summary of a single `reclaim_stuck` sweep (ADR-0017).
+/// Summary of a single `reclaim_stuck` sweep.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReclaimOutcome {
     /// Rows moved `Processing → Pending` for redelivery.

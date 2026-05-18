@@ -1,5 +1,6 @@
-//! Cross-replica refresh-claim store (ADR-0041 + refresh-coordination
-//! sub-spec).
+//! Cross-replica refresh-claim store (CAS lease, heartbeat, sentinel reclaim).
+//!
+//! See `docs/INTEGRATION_MODEL.md` (credential refresh) for integration context.
 //!
 //! Re-homed from the adapter **shape-unchanged**: this component is
 //! loom-verified, so its trait surface and supporting types are preserved
@@ -137,8 +138,8 @@ pub struct ReclaimedClaim {
     pub sentinel: SentinelState,
 }
 
-/// Cross-replica claim store (ADR-0041 §3.2). Shape preserved verbatim from
-/// the loom-verified adapter trait.
+/// Cross-replica claim store. Shape preserved verbatim from the loom-verified
+/// adapter trait.
 #[async_trait::async_trait]
 pub trait RefreshClaimStore: Send + Sync + 'static {
     /// Try to acquire a refresh claim for `credential_id` on behalf of

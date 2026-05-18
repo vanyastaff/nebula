@@ -6,8 +6,8 @@
 //! without declaring the scope, the expected CAS version, and the lease
 //! [`FencingToken`]. `commit` writes `new_state` + `outbox` + `journal` in
 //! one transaction (or one mutex-guarded mutation for InMemory), gated by the
-//! version CAS *and* the fencing token. This makes the canon §14 "two truths"
-//! split impossible by construction: there is exactly one call site and one
+//! version CAS *and* the fencing token. This makes a split between durable
+//! state and outbox/journal impossible by construction: there is exactly one call site and one
 //! transaction for the triple.
 use crate::dto::{ControlMsg, JournalEntry};
 use crate::error::StorageError;

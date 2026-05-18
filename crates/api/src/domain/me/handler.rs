@@ -9,7 +9,7 @@
 //! carry-over where `list_my_orgs` was an honest 501 and `orgs_count` was
 //! omitted because no enumeration backing existed).
 //!
-//! ## Durability (canon §11.6 / §11.5 — operator-facing)
+//! ## Durability (provisioning durability / engine durability — operator-facing)
 //!
 //! These endpoints are **implemented and work end-to-end**, but the only
 //! wired `AuthBackend` is the in-memory one (`InMemoryAuthBackend`) and
@@ -69,7 +69,7 @@ fn require_user_id(auth: &AuthContext) -> Result<String, ApiError> {
 /// Borrow the wired Plane-A auth backend, or fail closed with 503.
 ///
 /// When the port is unwired the identity surface is genuinely absent;
-/// returning 503 (orchestration absent — mirrors the §13-step-6 pattern
+/// returning 503 (orchestration absent — mirrors the integration seam-step-6 pattern
 /// Phase 1 used for the control queue) is the honest degradation, not a
 /// fabricated empty success.
 fn auth_backend_or_503(state: &AppState) -> Result<&std::sync::Arc<dyn AuthBackend>, ApiError> {
@@ -97,7 +97,7 @@ fn token_summary(record: &PatRecord) -> TokenSummary {
 ///
 /// `Some(n)` from the shared [`MembershipStore`] when wired;
 /// **`None` (field omitted)** when the store is absent — honest
-/// degradation, never a synthesized `0` (canon §4.5 / §12.2). The
+/// degradation, never a synthesized `0` (honest capability contract / durable control queue). The
 /// `usize`→`u32` cast saturates (a user with more than `u32::MAX`
 /// memberships is impossible in practice, but the cast is explicit
 /// rather than silently wrapping).
@@ -117,7 +117,7 @@ async fn orgs_count_for(state: &AppState, principal: &Principal) -> Result<Optio
 /// `orgs_count` is the **real** principal→orgs membership count from the
 /// shared [`MembershipStore`](crate::state::MembershipStore) (Phase 3 —
 /// see [`list_my_orgs`]); it degrades to *absent* (never a synthesized
-/// `0`) only if the membership store is unwired — canon §4.5 / §12.2.
+/// `0`) only if the membership store is unwired — honest capability contract / durable control queue.
 #[utoipa::path(
     get,
     path = "/me",
@@ -152,7 +152,7 @@ pub async fn get_me(
         email_verified: profile.email_verified,
         mfa_enabled: profile.mfa_enabled,
         // Real principal→orgs count from the shared MembershipStore;
-        // absent (not 0) only if the store is unwired — canon §4.5.
+        // absent (not 0) only if the store is unwired — honest capability contract.
         orgs_count,
         tokens_count,
     }))
@@ -211,7 +211,7 @@ pub async fn update_me(
         email_verified: profile.email_verified,
         mfa_enabled: profile.mfa_enabled,
         // Real principal→orgs count from the shared MembershipStore;
-        // absent (not 0) only if the store is unwired — canon §4.5.
+        // absent (not 0) only if the store is unwired — honest capability contract.
         orgs_count,
         tokens_count,
     }))
@@ -224,7 +224,7 @@ pub async fn update_me(
 /// enumeration — the same store [`crate::middleware::rbac`] consults, so
 /// this list is exactly the set of orgs the caller can actually access.
 /// Each entry carries `{ id, role }` only; `slug` is intentionally absent
-/// (no `OrgId`→slug reverse directory exists — canon §4.5, see
+/// (no `OrgId`→slug reverse directory exists — honest capability contract, see
 /// [`OrgSummary`]). 503 (honest degradation) if the store is unwired.
 #[utoipa::path(
     get,

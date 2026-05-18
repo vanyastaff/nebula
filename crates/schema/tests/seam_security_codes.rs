@@ -1,4 +1,4 @@
-//! ADR-0052 (P2) lockdown #2: security-relevant codes are invariant.
+//! (P2) lockdown #2: security-relevant codes are invariant.
 //!
 //! Dropping the validator→schema code translation changes the *rule-failure*
 //! vocabulary (a deliberate, canon-legal breaking change). It must NOT change

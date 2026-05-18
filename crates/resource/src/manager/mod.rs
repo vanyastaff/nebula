@@ -4,8 +4,8 @@
 //! the registry, recovery-group registry, and a [`CancellationToken`] for
 //! coordinated shutdown.
 //!
-//! Phase 4 / ADR-0044: the public API drops the `R::Credential` projection
-//! that ADR-0036 used to thread `scheme: &<R::Credential as Credential>::Scheme`
+//! Phase 4 / slot model: the public API drops the `R::Credential` projection
+//! that credential isolation used to thread `scheme: &<R::Credential as Credential>::Scheme`
 //! through every acquire/warmup/register call. Resources now declare
 //! credential dependencies as typed slot fields on the struct (via
 //! `#[credential]` attributes), and the framework resolves them BEFORE
@@ -87,7 +87,7 @@ pub struct ResourceHealthSnapshot {
 /// A resource registry row whose credential slot has been **synchronously
 /// tainted** by [`Manager::taint_slot`](Manager::taint_slot) /
 /// [`Manager::taint_slot_for`](Manager::taint_slot_for) — phase 1 of the
-/// two-phase revoke port (ADR-0067 §Deferred).
+/// two-phase revoke port (per-resource revoke deferral).
 ///
 /// Holding one is proof the taint already ran to completion: new acquires on
 /// this row's credential are already rejected. It is consumed by
@@ -142,7 +142,7 @@ impl std::fmt::Debug for TaintedSlot {
 /// `tokio::time::timeout` wrapping the whole tail — that wrapper used to
 /// be able to drop the future *before the hook ran* when the drain was
 /// slow, contradicting the "hook still runs after a timed-out drain"
-/// contract (ADR-0067 §Deferred). So the three terminal states are
+/// contract (per-resource revoke deferral). So the three terminal states are
 /// reported here rather than inferred from a dropped outer future:
 ///
 /// - [`Done`](Self::Done) — the revoke hook completed `Ok`.
@@ -290,7 +290,7 @@ impl Manager {
     /// Registers a resource with its config, scope, topology, and optional
     /// resilience / recovery gate configuration.
     ///
-    /// Per ADR-0044 the `resource: R` value passed in is expected to have
+    /// Per slot model the `resource: R` value passed in is expected to have
     /// **all `#[credential]` slot fields already resolved and populated**.
     /// `Manager::register` does not itself resolve credential bindings —
     /// that is the responsibility of the caller (typically the engine
@@ -738,7 +738,7 @@ impl Manager {
     /// `TopologyRuntime<R>`. It is the seam a config-CRUD writer uses to
     /// reject a bad `ResourceEntry.config` *before* persistence, keeping
     /// config validation strictly separate from engine-activation live
-    /// registration (INTEGRATION_MODEL §13.1 — live registration happens
+    /// registration (INTEGRATION_MODEL integration seam.1 — live registration happens
     /// at engine activation, never at config-create time).
     ///
     /// Template resolution is deliberately excluded: `{{ … }}` is resolved
@@ -761,7 +761,7 @@ impl Manager {
     ///   `R::Config` schema does not declare (closed-set guard):
     ///   `ResourceConfig` must carry no secrets, so an inlined
     ///   secret-shaped field is rejected here rather than silently ignored
-    ///   (PRODUCT_CANON §3.5). The error names only the offending key,
+    ///   (product credential boundary). The error names only the offending key,
     ///   never its value.
     pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<R::Config, Error>
     where
@@ -791,7 +791,7 @@ impl Manager {
         // could inline a secret-shaped field (e.g. `password`) into
         // `ResourceConfig` and get no signal — `ResourceConfig` must carry no
         // secrets; secrets reach a resource ONLY via typed credential slots
-        // (PRODUCT_CANON §3.5; ADR-0044 slot model; ADR-0030 redaction; ADR-0036
+        // (product credential boundary; slot model; engine credential orchestration redaction; credential isolation
         // isolation). The error names only the offending KEY, never its value, so
         // a mis-wired secret can never leak through the rejection message.
         //
@@ -809,7 +809,7 @@ impl Manager {
                 "validate_config_value: config field `{unknown}` is not declared by \
                  the `{ty}` schema; secrets must not be inlined into ResourceConfig \
                  — bind them through a typed credential slot instead \
-                 (PRODUCT_CANON §3.5)",
+                 (product credential boundary)",
                 unknown = unknown.as_str(),
                 ty = std::any::type_name::<R::Config>(),
             )));
@@ -844,16 +844,16 @@ impl Manager {
     ///    (slots already filled by the caller), `topology`, `scope`, and optional
     ///    `resilience`/`recovery_gate`.
     ///
-    /// `slot_bindings` carries the slot-name → credential id map per ADR-0042 hybrid binding.
+    /// `slot_bindings` carries the slot-name → credential id map per slot binding hybrid binding.
     /// Credential resolution is the engine dispatch layer's responsibility; the manager itself is
-    /// credential-agnostic post-ADR-0044 (see Phase 4 — `R::Credential` was deleted), so this
+    /// credential-agnostic post-slot model (see Phase 4 — `R::Credential` was deleted), so this
     /// argument is recorded for tracing only and asserted to match the slot fields the resource
     /// declared via [`DeclaresDependencies`](nebula_core::DeclaresDependencies). The caller
     /// (engine) is expected to have already used these bindings to resolve credentials into the
     /// `resource: R` it hands in.
     ///
     /// `nebula-resource → nebula-expression` is allowed under deny.toml's `[[bans]]`
-    /// `nebula-resource` wrapper allowlist (Business → Core layer edge per ADR-0043 §9 / Phase 9,
+    /// `nebula-resource` wrapper allowlist (Business → Core layer edge per typed ref fields / Phase 9,
     /// R-040 R8).
     ///
     /// # Errors
@@ -863,7 +863,7 @@ impl Manager {
     /// - [`Error::permanent`] when the config carries a top-level field the `R::Config` schema
     ///   does not declare (closed-set guard): `ResourceConfig` must carry no secrets, so an
     ///   inlined secret-shaped field is rejected here rather than silently ignored
-    ///   (PRODUCT_CANON §3.5). The error names only the offending key, never its value.
+    ///   (product credential boundary). The error names only the offending key, never its value.
     /// - [`Error::permanent`] when a `slot_bindings` key does not correspond to a declared
     ///   credential slot on `R`.
     /// - Any [`Error`](Error) returned by the underlying typed [`register`](Self::register).
@@ -934,7 +934,7 @@ impl Manager {
         //    JSON path (the caller has already resolved these bindings into `resource: R`). Folding
         //    it into the registry row keeps two registrations that resolved *different* credentials
         //    on separate rows with separate runtimes — the structural barrier against cross-tenant
-        //    runtime bleed (ADR-0036 isolation intent, ADR-0044 slot model). It is a hash over
+        //    runtime bleed (credential isolation isolation intent, slot model). It is a hash over
         //    `(slot_key, credential_key)` pairs only — it carries no secret bytes.
         let slot_id = {
             let pairs: Vec<(String, String)> = slot_bindings
@@ -1103,8 +1103,8 @@ impl Manager {
     /// `revoke_slot` could taint *after* the gate but *before* the increment.
     /// Re-checking here — once this acquire is reflected in the resource's
     /// own in-flight counter (the exact counter `revoke_slot` drains,
-    /// ADR-0067 §Deferred) — closes that revoke-vs-acquire TOCTOU so a guard
-    /// is never handed out on a just-revoked credential (ADR-0044/0036).
+    /// per-resource revoke deferral) — closes that revoke-vs-acquire TOCTOU so a guard
+    /// is never handed out on a just-revoked credential (slot + isolation model).
     /// Same error/classification as the gate so the caller-facing category
     /// is unchanged (`Revoked` → `ErrorCategory::Unavailable`).
     fn reject_if_tainted_post_count<R: Resource>(
@@ -1268,7 +1268,7 @@ impl Manager {
     /// new acquires accepted on a credential whose revoke "timed out". This
     /// function is plain `fn`: the taint is applied eagerly at the call site,
     /// fully completed before this returns, and therefore *outside* and
-    /// *before* any per-resource timeout (ADR-0067 §Deferred).
+    /// *before* any per-resource timeout (per-resource revoke deferral).
     ///
     /// Identity routing: resolves the registry row whose `slot_identity`
     /// matches via the unambiguous-by-construction
@@ -1356,7 +1356,7 @@ impl Manager {
         // pipelines re-check this taint *after* their per-resource in-flight
         // increment, so an acquire that passed the taint gate but had not yet
         // incremented cannot slip a guard out on the just-revoked credential
-        // (ADR-0044/0036 "no authenticated traffic on a revoked credential
+        // (slot + isolation model "no authenticated traffic on a revoked credential
         // post-revoke"). Because this function is not `async`, the store has
         // *already happened* by the time control returns to the caller — a
         // subsequently-dropped timeout future on the drain tail cannot
@@ -1378,7 +1378,7 @@ impl Manager {
     /// uses and the value [`drain_and_revoke`](Self::drain_and_revoke)
     /// previously hard-coded for the drain wait. The engine rotation
     /// fan-out does **not** use this: it passes its own per-resource
-    /// rotation budget so the timeout has one owner end-to-end (ADR-0067
+    /// rotation budget so the timeout has one owner end-to-end (resource runtime status
     /// §Deferred / #690 review).
     pub const DEFAULT_REVOKE_DRAIN_TIMEOUT: std::time::Duration =
         std::time::Duration::from_secs(30);
@@ -1389,12 +1389,12 @@ impl Manager {
     /// synchronously) and performs the remaining steps:
     ///
     /// 1. **Drain** only *this resource's* in-flight handles via its own per-resource counter
-    ///    (ADR-0067 §Deferred) — never the manager-wide `drain_tracker`, so a revoke is isolated
+    ///    (per-resource revoke deferral) — never the manager-wide `drain_tracker`, so a revoke is isolated
     ///    from in-flight traffic to unrelated resources.
     /// 2. **Dispatch** [`Resource::on_credential_revoke`] against the live runtime per topology.
     /// 3. Emit [`ResourceEvent::SlotRevoked`] / `SlotRevokeFailed`.
     ///
-    /// **Single budget owner (ADR-0067 §Deferred / #690 review).** The
+    /// **Single budget owner (per-resource revoke deferral / #690 review).** The
     /// `drain_timeout` argument is the caller's per-resource budget and is
     /// the *only* timeout governing this tail. It bounds **two** waits
     /// independently:
@@ -1446,7 +1446,7 @@ impl Manager {
             tainted_at,
         } = tainted;
 
-        // 1. Drain **only this resource's** in-flight handles (ADR-0067
+        // 1. Drain **only this resource's** in-flight handles (resource runtime status
         //    §Deferred): a revoke on resource A must not block on in-flight
         //    traffic to an unrelated resource B, so this awaits the row's
         //    own per-resource counter — not the manager-wide `drain_tracker`
@@ -1541,7 +1541,7 @@ impl Manager {
     /// rotation fan-out deliberately does **not** call this: it must run the
     /// synchronous taint phase *outside* its `tokio::time::timeout` and wrap
     /// only the awaited drain/hook tail, so a dropped timeout future can
-    /// never skip the taint (ADR-0067 §Deferred). This convenience is for the
+    /// never skip the taint (per-resource revoke deferral). This convenience is for the
     /// no-timeout caller where the two phases run back-to-back on the same
     /// task.
     ///
@@ -1576,7 +1576,7 @@ impl Manager {
     /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous). Like
     /// [`revoke_slot`](Self::revoke_slot) this is the back-compat
     /// back-to-back path; the engine fan-out calls the two phases separately
-    /// (sync taint outside the timeout) per ADR-0067 §Deferred.
+    /// (sync taint outside the timeout) per per-resource revoke deferral.
     ///
     /// # Errors
     ///
@@ -1758,7 +1758,7 @@ impl Manager {
         // relies on.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check (ADR-0044/0036 "no authenticated traffic
+        // Post-count taint re-check (slot + isolation model "no authenticated traffic
         // on a revoked credential post-revoke"): the taint gate ran in
         // `lookup_for_acquire`, but a revoke could have tainted *after* that
         // gate yet *before* the in-flight increment above. Re-checking here —
@@ -1887,8 +1887,8 @@ impl Manager {
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
-        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
+        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
         // this acquire is reflected in the per-resource counter `revoke_slot`
         // drains.
         Self::reject_if_tainted_post_count::<R>(&managed)?;
@@ -2003,8 +2003,8 @@ impl Manager {
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
-        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
+        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
         // this acquire is reflected in the per-resource counter `revoke_slot`
         // drains.
         Self::reject_if_tainted_post_count::<R>(&managed)?;
@@ -2127,8 +2127,8 @@ impl Manager {
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
-        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
+        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
         // this acquire is reflected in the per-resource counter `revoke_slot`
         // drains.
         Self::reject_if_tainted_post_count::<R>(&managed)?;
@@ -2255,8 +2255,8 @@ impl Manager {
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
-        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
+        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
         // this acquire is reflected in the per-resource counter `revoke_slot`
         // drains.
         Self::reject_if_tainted_post_count::<R>(&managed)?;
@@ -2334,8 +2334,8 @@ impl Manager {
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (ADR-0044/0036
-        // / ADR-0067 §Deferred): closes the revoke-vs-acquire TOCTOU now that
+        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
+        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
         // this acquire is reflected in the per-resource counter `revoke_slot`
         // drains.
         Self::reject_if_tainted_post_count::<R>(&managed)?;
@@ -2389,7 +2389,7 @@ impl Manager {
 
     /// Pre-warms a registered Pool resource.
     ///
-    /// Per ADR-0044, the resource's `#[credential]` slot fields are
+    /// Per slot model, the resource's `#[credential]` slot fields are
     /// already populated on the resource value — `Pool::warmup` calls
     /// `R::create(config, ctx)` directly, no scheme parameter required.
     ///
@@ -2424,7 +2424,7 @@ impl Manager {
                 // `warmup` runs `R::create` against the resolved credential
                 // to materialize fresh pool instances — it is acquire-like
                 // and must observe the SAME revoke-vs-acquire TOCTOU close
-                // the `run_*_acquire` pipelines use (#679 / ADR-0044/0036).
+                // the `run_*_acquire` pipelines use (#679 / slot + isolation model).
                 // The `lookup_for_acquire` taint gate above ran *before*
                 // this in-flight increment, leaving a window where a
                 // concurrent `revoke_slot` could taint after the gate yet
@@ -2749,7 +2749,7 @@ pub(crate) struct InFlightCounter {
     /// Manager-wide drain tracker — the `graceful_shutdown` drain primitive.
     manager: crate::guard::DrainTracker,
     /// Per-`ManagedResource` in-flight tracker — the *only* counter
-    /// `revoke_slot` drains (ADR-0067 §Deferred), so a revoke on one
+    /// `revoke_slot` drains (per-resource revoke deferral), so a revoke on one
     /// resource never blocks on a sibling's in-flight work.
     per_resource: crate::guard::DrainTracker,
     armed: bool,
@@ -2758,7 +2758,7 @@ pub(crate) struct InFlightCounter {
 impl InFlightCounter {
     /// Pre-counts an in-flight acquire against **both** the manager-wide
     /// drain tracker (shutdown) and the per-resource tracker (revoke drain
-    /// + the taint→increment→re-check TOCTOU close, ADR-0044/0036/0067).
+    /// + the taint→increment→re-check TOCTOU close, slot + isolation model/0067).
     pub(crate) fn new(
         manager: crate::guard::DrainTracker,
         per_resource: crate::guard::DrainTracker,

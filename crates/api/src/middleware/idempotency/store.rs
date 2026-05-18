@@ -20,7 +20,7 @@ use nebula_storage::repos::{CachedRecord, IdempotencyStoreRepo};
 /// Storage backends bubble these through the middleware. The handler
 /// translates them to a 500 response — silently treating a `Decode`
 /// error as a cache miss would drop replay protection on data
-/// corruption (rejected by ADR-0048).
+/// corruption (rejected by idempotency backend).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum IdempotencyStoreError {
@@ -70,7 +70,7 @@ pub trait IdempotencyStore: Send + Sync + fmt::Debug {
     /// Returns `Ok(None)` for a cache miss, `Ok(Some(_))` for a hit, or
     /// [`IdempotencyStoreError`] when the read itself failed (backend
     /// connection error or decode failure). The middleware translates
-    /// errors to 500 — see ADR-0048: silent cache-miss fallback would
+    /// errors to 500 — see idempotency backend: silent cache-miss fallback would
     /// drop replay protection on data corruption.
     async fn get(&self, key: &str) -> Result<Option<Arc<CachedResponse>>, IdempotencyStoreError>;
 
@@ -122,7 +122,7 @@ pub trait IdempotencyStore: Send + Sync + fmt::Debug {
 /// `CachedRecord ↔ CachedResponse` (`StatusCode` / `HeaderMap`). Decode
 /// failures map to [`IdempotencyStoreError::Decode`] and bubble up to
 /// the middleware as 500 — silently treating them as cache misses
-/// would drop replay protection on data corruption (ADR-0048).
+/// would drop replay protection on data corruption (idempotency backend).
 pub struct StorageBackedIdempotencyStore<R: IdempotencyStoreRepo> {
     repo: Arc<R>,
     ttl: Duration,

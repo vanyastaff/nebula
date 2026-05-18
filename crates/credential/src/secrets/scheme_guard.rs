@@ -94,7 +94,7 @@ impl<C: Credential> SchemeGuard<'_, C> {
     /// Mirrors [`SchemeGuard::new`] but is publicly callable so external
     /// integration tests (notably `nebula-resource`'s rotation dispatch
     /// suite) can fabricate guards for fixture resources. Gated behind
-    /// `#[cfg(any(test, feature = "test-util"))]` per ADR-0023 — this
+    /// `#[cfg(any(test, feature = "test-util"))]` per test-util gating — this
     /// constructor MUST NOT be exposed in a production release build.
     ///
     /// Production code paths use the engine-driven flow that calls
@@ -188,7 +188,7 @@ impl<C: Credential> SchemeFactory<C> {
     /// Mirrors [`SchemeFactory::new`] but is publicly callable so external
     /// integration tests (notably `nebula-resource`'s rotation dispatch
     /// suite) can fabricate factories for fixture resources. Gated behind
-    /// `#[cfg(any(test, feature = "test-util"))]` per ADR-0023 — this
+    /// `#[cfg(any(test, feature = "test-util"))]` per test-util gating — this
     /// constructor MUST NOT be exposed in a production release build.
     ///
     /// The closure shape matches the canonical engine wiring: per call it
@@ -234,7 +234,7 @@ where
     /// Production code never relies on `Scheme: Clone`; only the test path
     /// requires it.
     ///
-    /// Gated behind `#[cfg(any(test, feature = "test-util"))]` per ADR-0023.
+    /// Gated behind `#[cfg(any(test, feature = "test-util"))]` per test-util gating.
     pub fn for_test_static(scheme: <C as Credential>::Scheme) -> Self {
         Self::for_test(move || {
             let scheme = scheme.clone();
@@ -260,7 +260,7 @@ impl<C: Credential> std::fmt::Debug for SchemeFactory<C> {
 }
 
 // Refresh-notification hook lives on `nebula_resource::Resource` itself
-// (`Resource::on_credential_refresh`) per ADR-0036 + Tech Spec §15.4. The
+// (`Resource::on_credential_refresh`) per credential isolation + Tech Spec §15.4. The
 // previously-defined parallel `OnCredentialRefresh<C>` trait was a
 // transitional bridge while `Resource` still bound `Auth: AuthScheme`; the
 // П1 reshape moved the canonical hook onto `Resource`, П2 wired Manager

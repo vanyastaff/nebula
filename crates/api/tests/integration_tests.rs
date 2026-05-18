@@ -2061,7 +2061,7 @@ async fn get_workflow_parses_rfc3339_timestamps() {
 }
 
 /// Activation of a valid workflow definition succeeds with 200 OK.
-/// Canon §10 step 2 regression lock: the validation gate must not block
+/// documentation honesty step 2 regression lock: the validation gate must not block
 /// structurally correct definitions.
 #[tokio::test]
 async fn activate_valid_returns_200() {
@@ -2108,7 +2108,7 @@ async fn activate_valid_returns_200() {
 
 /// Activation of a definitionally invalid workflow returns 422 Unprocessable
 /// Entity with a structured RFC 9457 body.
-/// Canon §10 step 2: activation MUST reject invalid definitions — not silently
+/// documentation honesty step 2: activation MUST reject invalid definitions — not silently
 /// flip the active flag.
 #[tokio::test]
 async fn activate_invalid_returns_422() {
@@ -2195,16 +2195,16 @@ async fn activate_invalid_returns_422() {
     }
 }
 
-// ── §12.2 / audit §2.2 cancel control-queue wiring tests ────────────────────
+// ── durable control queue / audit §2.2 cancel control-queue wiring tests ────────────────────
 
-/// Canon §12.2 regression lock: cancelling a non-terminal execution must both
+/// durable control queue regression lock: cancelling a non-terminal execution must both
 /// (1) persist the `cancelled` state in the execution row, AND
 /// (2) enqueue a `Cancel` command in the durable control queue.
 ///
 /// Before this fix only (1) happened — the engine never saw the cancel signal.
 ///
 /// Audit ref: 2026-04-16-workspace-health-audit.md §2.2
-/// Knife ref: PRODUCT_CANON.md §13 step 5
+/// Knife ref: PRODUCT_CANON.md integration seam step 5
 #[tokio::test]
 async fn cancel_enqueues_durable_control_signal() {
     use axum::{
@@ -2282,7 +2282,7 @@ async fn cancel_enqueues_durable_control_signal() {
     );
 
     // (2) A Cancel command must have been written to the control queue — this is
-    //     the engine-visible signal required by canon §12.2 and §13 step 5.
+    //     the engine-visible signal required by durable control queue and integration seam step 5.
     let queued = handles.control_queue.snapshot();
     assert_eq!(
         queued.len(),
@@ -2513,7 +2513,7 @@ async fn cancel_timed_out_execution_rejected() {
 
 // ── Issue #327 regression ─────────────────────────────────────────────────────
 //
-// Canon §4.5: a public surface exists iff the engine honors it end-to-end.
+// honest capability contract: a public surface exists iff the engine honors it end-to-end.
 // The API's `start_execution` previously persisted a hand-rolled JSON with
 // `status: "pending"` — a string that is not in `ExecutionStatus` and that
 // neither `list_running` (storage filter) nor `ExecutionState::deserialize`
@@ -2663,7 +2663,7 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
     assert!(
         exec_state.started_at.is_none(),
         "#327: started_at must be None until the engine transitions to Running \
-         (canon §11.1: authority over lifecycle transitions lives in the engine)"
+         (lifecycle authority: transitions live in the engine)"
     );
     assert!(
         exec_state.completed_at.is_none(),
@@ -2691,18 +2691,18 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
 
 // ── Issue #332 regression ────────────────────────────────────────────────────
 //
-// Canon §4.5: a public surface exists iff the engine honors it end-to-end.
-// Canon §12.2: every engine-visible signal must travel the durable control
+// honest capability contract: a public surface exists iff the engine honors it end-to-end.
+// durable control queue: every engine-visible signal must travel the durable control
 // queue — in-process channels are not a durable backbone.
-// Knife §13 step 3: starting an execution must cause node dispatch.
+// Knife integration seam step 3: starting an execution must cause node dispatch.
 //
 // Before this fix the API `start_execution` / `execute_workflow` handlers
 // persisted a row and returned 202 without ever notifying the engine — so
 // the execution sat in `Created` forever and no node ran. This is the
-// §4.5 "advertise capability engine doesn't deliver end-to-end" violation.
+// honest capability "advertise capability engine doesn't deliver end-to-end" violation.
 //
 // The fix enqueues `ControlCommand::Start` on the shared durable control
-// queue immediately after persisting the row (ADR-0008). The engine-side
+// queue immediately after persisting the row (durable control queue). The engine-side
 // `ControlConsumer` drains that queue to drive the actual run.
 //
 // These regression tests pin the exact contract that was missing:
@@ -2792,7 +2792,7 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
 
     // Assert: exactly one Start entry exists on the queue, targeting the
     // execution id the API just returned. This is the engine-visible signal
-    // canon §12.2 requires — without it the engine never dispatches and
+    // durable control queue requires — without it the engine never dispatches and
     // the execution stays `Created` forever (the bug).
     let queued = handles.control_queue.snapshot();
     assert_eq!(

@@ -1,26 +1,24 @@
-//! In-memory pending state store — **canonical home** per ADR-0029 §4 / ADR-0032.
+//! In-memory pending state store — **canonical storage-side home**.
 //!
 //! Data is lost when the store is dropped. Use this in tests and for local
 //! development rather than mocking [`PendingStateStore`] directly.
 //!
-//! # Dual-home note (ADR-0032 §7)
+//! # Dual-home note
 //!
 //! A body-identical shim exists at
 //! `nebula_credential::pending_store_memory::InMemoryPendingStore` because
 //! credential's own `executor.rs` `#[cfg(test)]` tests reference it directly
 //! and cannot dev-dep on `nebula-storage` (the dev-dep path produces a
 //! two-copies cargo resolution that breaks the `PendingStateStore` trait
-//! bound — empirically confirmed in P6.2). Both copies implement the same
-//! trait with the same semantics. Production consumers and composition
-//! roots should prefer this storage-side copy.
+//! bound). Both copies implement the same trait with the same semantics.
+//! Production consumers and composition roots should prefer this storage-side copy.
 //!
-//! # ADR-0029 §4 invariants
+//! # Invariants
 //!
 //! | # | Invariant                          | Enforcement in this impl                           |
 //! |---|------------------------------------|-----------------------------------------------------|
 //! | 1 | Encryption at rest                 | **Moot** — process memory, no disk persistence.     |
-//! |   |                                    | Durable impls (Postgres/Redis) must wrap via a      |
-//! |   |                                    | future `EncryptedPendingLayer` — see ADR-0029 §4.1. |
+//! |   |                                    | Durable impls must wrap via a future encrypted layer. |
 //! | 2 | TTL ≤ 10 min                       | Determined per-type by `PendingState::expires_in`;  |
 //! |   |                                    | expired rows are evicted on `get`/`consume` and     |
 //! |   |                                    | surface as `Expired`.                               |
@@ -34,10 +32,9 @@
 //! | 6 | Zeroize on drop                    | `PendingState: Zeroize` trait bound; implementers   |
 //! |   |                                    | zeroize on drop. Serialized bytes in this store     |
 //! |   |                                    | are `Vec<u8>`; wrapping in `Zeroizing<Vec<u8>>` is  |
-//! |   |                                    | a tracked follow-up (see ADR-0029 §4).              |
+//! |   |                                    | a tracked follow-up.                                |
 //!
-//! Ref: [ADR-0029 §4](../../../../docs/adr/0029-storage-owns-credential-persistence.md)
-//! Ref: [ADR-0032 §7](../../../../docs/adr/0032-credential-store-canonical-home.md)
+//! See `crates/storage/README.md` for credential persistence layout.
 
 use std::{collections::HashMap, sync::Arc};
 

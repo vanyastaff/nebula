@@ -17,7 +17,7 @@ use super::key::WebhookKey;
 ///
 /// Holds the handler pointer, a template [`TriggerRuntimeContext`]
 /// that the transport clones on every request, and the
-/// [`WebhookConfig`] enforced before dispatch (per ADR-0022). Cloning
+/// [`WebhookConfig`] enforced before dispatch (per ). Cloning
 /// the context gives each dispatch its own independent context
 /// without locking — the capability arcs inside (`emitter`, `health`,
 /// `webhook`, etc.) share state as designed.
@@ -88,7 +88,7 @@ impl RoutingMap {
     /// Replace all slug entries with a new set. Used by the admin
     /// reload endpoint (E3); programmatic activations are preserved.
     ///
-    /// **Atomicity note (M3.3 / ADR-0049 § "Out of scope"):**
+    /// **Atomicity note (webhook activation § "Out of scope"):**
     /// The swap is performed by removing every slug entry and then
     /// inserting the new set into the shared `DashMap`. Concurrent
     /// readers between the two phases can observe a transient empty
@@ -113,7 +113,7 @@ impl RoutingMap {
     }
 
     /// Number of entries with the given kind label, for telemetry
-    /// gauges (M3.3 / `NEBULA_WEBHOOK_REGISTRATIONS`).
+    /// gauges (`NEBULA_WEBHOOK_REGISTRATIONS`).
     #[must_use]
     #[allow(dead_code)] // wired into G2 metrics in a subsequent commit
     pub(crate) fn count_by_kind(&self, kind: &'static str) -> usize {
