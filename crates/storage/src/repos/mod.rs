@@ -5,20 +5,20 @@
 //! (`crate::inmem` / `crate::sqlite` / `crate::postgres`). What lives
 //! here is the remaining surface:
 //!
-//! - **Control-command outbox** — [`ControlQueueRepo`] with
-//!   [`InMemoryControlQueueRepo`] and, behind the `postgres` feature,
+//! - **Control-command outbox** — `ControlQueueRepo` with
+//!   `InMemoryControlQueueRepo` and, behind the `postgres` feature,
 //!   `pg::PgControlQueueRepo` (`FOR UPDATE SKIP LOCKED`, ADR-0008 §1).
 //!   The five commands (`Start` / `Resume` / `Restart` / `Cancel` /
-//!   `Terminate`) and the crashed-runner [`reclaim_stuck`] sweep
+//!   `Terminate`) and the crashed-runner `reclaim_stuck` sweep
 //!   (ADR-0008 / ADR-0017) are implemented on both backings.
-//! - **Idempotency-cache store** — [`IdempotencyStoreRepo`] /
-//!   [`InMemoryIdempotencyStoreRepo`], consumed by the API idempotency
+//! - **Idempotency-cache store** — `IdempotencyStoreRepo` /
+//!   `InMemoryIdempotencyStoreRepo`, consumed by the API idempotency
 //!   middleware (`StorageBackedIdempotencyStore`).
-//! - **Webhook-activation store** — [`WebhookActivationRepo`].
-//! - **Identity-row surface** — [`AuditRepo`], [`BlobRepo`],
-//!   [`CredentialRepo`], [`OrgRepo`], [`QuotaRepo`], [`ResourceRepo`],
-//!   [`TriggerRepo`], [`UserRepo`], [`WorkspaceRepo`]. The Postgres glue
-//!   in [`crate::pg`] implements the subset the API consumes.
+//! - **Webhook-activation store** — `WebhookActivationRepo`.
+//! - **Identity-row surface** — `AuditRepo`, `BlobRepo`, `CredentialRepo`,
+//!   `OrgRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`,
+//!   `WorkspaceRepo`. The Postgres glue in `crate::pg` implements the
+//!   subset the API consumes.
 //!
 //! ## Conventions
 //!
@@ -29,8 +29,6 @@
 //!   construction (`workspace_id` / `org_id` are mandatory columns).
 //! - All errors funnel through [`crate::StorageError`].
 //!
-//! [`reclaim_stuck`]: ControlQueueRepo::reclaim_stuck
-
 mod audit;
 mod blob;
 mod control_queue;

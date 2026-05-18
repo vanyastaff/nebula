@@ -1,6 +1,6 @@
 //! Repository traits — ISP-segregated, object-safe, `#[async_trait]`.
 //!
-//! One atomic aggregate ([`ExecutionStore`]) owns the §12.2 unit (state
+//! One atomic aggregate ([`crate::store::ExecutionStore`]) owns the §12.2 unit (state
 //! transition + outbox + journal). All read-only and non-atomic concerns are
 //! separate role traits so no impl becomes a god-object and consumers depend
 //! only on what they use. Every trait is `dyn`-compatible — the engine/api

@@ -86,7 +86,7 @@ impl IdempotencyStore for InMemoryIdempotencyStore {
 /// structurally impossible.
 type ActivationKey = (String, String, String);
 
-/// In-memory webhook-activation store. Keyed by [`ActivationKey`].
+/// In-memory webhook-activation store keyed by the private activation-key tuple.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryWebhookActivationStore {
     inner: Arc<Mutex<HashMap<ActivationKey, WebhookActivationRecord>>>,

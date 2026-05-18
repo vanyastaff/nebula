@@ -13,9 +13,9 @@
 //! trait via those aliases.
 //!
 //! The only behavioral delta from the pre-move definition is the
-//! backend-error variant: the port's [`RefreshClaimError::Storage`] carries
-//! a `String` (the port has no sqlx dependency). The SQL adapters map their
-//! driver error into that variant at the edge via [`SqlxClaimResultExt`].
+//! backend-error variant: the port's `RepoError::Storage` carries a
+//! `String` (the port has no sqlx dependency). The SQL adapters map their
+//! driver error into that variant at the edge via `SqlxClaimResultExt`.
 
 mod in_memory;
 pub use in_memory::InMemoryRefreshClaimRepo;
@@ -44,7 +44,7 @@ pub use nebula_storage_port::store::{
 /// Maps a SQL driver error into the port's string-typed backend-error
 /// variant at the adapter edge.
 ///
-/// The port crate has no sqlx dependency, so [`RefreshClaimError::Storage`]
+/// The port crate has no sqlx dependency, so `RepoError::Storage`
 /// carries a `String` rather than `#[from] sqlx::Error`. Each SQL adapter
 /// (`sqlite`, `postgres`) calls `.store_err()?` on its driver results so the
 /// CAS / heartbeat / sentinel / reclaim invariants stay byte-for-byte

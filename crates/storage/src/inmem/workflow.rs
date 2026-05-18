@@ -54,7 +54,7 @@ type SharedVersions = Arc<Mutex<HashMap<WfVerKey, WorkflowVersionRecord>>>;
 /// via [`Self::new_with_versions`], so the version map is *always* shared
 /// between the two. There is deliberately no parameterless constructor:
 /// [`WorkflowStore::save_with_published_version`] writes the published
-/// version into [`Self::versions`], and a private unshared map would make
+/// version into the `versions` field, and a private unshared map would make
 /// that write invisible to every `WorkflowVersionStore` reader (a
 /// just-created workflow would 404). This mirrors
 /// [`super::InMemoryControlQueue`] / [`super::InMemoryJournalReader`],

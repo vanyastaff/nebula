@@ -14,9 +14,9 @@
 //!   `InMemoryNodeResultStore`, `InMemoryIdempotencyGuard`,
 //!   `InMemoryIdempotencyStore`, `InMemoryControlQueue`,
 //!   `InMemoryWebhookActivationStore`.
-//! - [`sqlite`] — SQLite adapter behind the `sqlite` feature
+//! - `sqlite` — SQLite adapter behind the `sqlite` feature
 //!   (dev / edge single-writer; spec §5 SQLite parity boundary).
-//! - [`postgres`] — PostgreSQL adapter behind the `postgres` feature
+//! - `postgres` — PostgreSQL adapter behind the `postgres` feature
 //!   (production multi-process; real tx + `FOR UPDATE SKIP LOCKED`).
 //!
 //! This is the layer the knife scenario (`docs/PRODUCT_CANON.md` §13)
@@ -26,12 +26,12 @@
 //!
 //! The persistence concerns that have **not** moved onto the port
 //! contract: the durable control-command outbox
-//! ([`repos::ControlQueueRepo`] + [`repos::InMemoryControlQueueRepo`],
+//! (`repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo`,
 //! `pg::PgControlQueueRepo` behind the `postgres` feature), the
-//! idempotency-cache store ([`repos::IdempotencyStoreRepo`], consumed by
+//! idempotency-cache store (`repos::IdempotencyStoreRepo`, consumed by
 //! the API idempotency middleware), the webhook-activation store, and the
 //! identity-row repository surface implemented by the Postgres glue in
-//! [`pg`]. `pg::PgControlQueueRepo` is the multi-process /
+//! `pg`. `pg::PgControlQueueRepo` is the multi-process /
 //! restart-tolerant control-queue backing (`FOR UPDATE SKIP LOCKED` per
 //! ADR-0008 §1); no composition root selects it by default yet — a future
 //! `apps/server` (ADR-0008 follow-up) wires it in.
@@ -80,12 +80,12 @@ pub mod postgres;
 /// Execution and workflow persistence are served by the spec-16 port
 /// adapters (`inmem` / `sqlite` / `postgres`); this module is what
 /// remains: the durable control-command outbox
-/// ([`repos::ControlQueueRepo`] + [`repos::InMemoryControlQueueRepo`],
+/// (`repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo`,
 /// `pg::PgControlQueueRepo` behind the `postgres` feature), the
-/// idempotency-cache store ([`repos::IdempotencyStoreRepo`], consumed by
+/// idempotency-cache store (`repos::IdempotencyStoreRepo`, consumed by
 /// the API idempotency middleware), the webhook-activation store, and
 /// the identity-row repository surface implemented by the Postgres glue
-/// in [`pg`].
+/// in `pg`.
 ///
 /// `pg::PgControlQueueRepo` is only present under the `postgres` feature,
 /// so it is referenced with plain backticks (not an intra-doc link) to
