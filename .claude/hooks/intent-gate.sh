@@ -43,5 +43,53 @@ if [ "${attempts:-0}" -ge 2 ]; then
   ig_log escalate "loop-bound-after-2"; allow
 fi
 
-ig_log allow "skeleton-default"
+# Turn diff scope: committed-this-turn (turn_base..HEAD) + working tree +
+# staged + UNTRACKED. Agents typically leave new files unstaged, so a diff-
+# only view misses them; stop-gate.sh (C) uses the same `git status -u`
+# ground truth. Code files only.
+tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
+CODE_RE='\.(rs|toml|sh|md)$'
+
+# Unified added-content stream: a `+++ <path>` header per file then each added
+# line prefixed `+`. Tracked deltas from `git diff --unified=0`; every
+# untracked code file is wholly added. blob / dup / budget all consume this.
+ig_added_lines() {
+  { [ -n "$tb" ] && git -C "$cwd" diff --unified=0 "$tb"..HEAD 2>/dev/null; \
+    git -C "$cwd" diff --unified=0 2>/dev/null; \
+    git -C "$cwd" diff --unified=0 --cached 2>/dev/null; } \
+  | grep -E '^(\+\+\+ |\+)'
+  while IFS= read -r uf; do
+    [ -n "$uf" ] || continue
+    printf '+++ %s\n' "$uf"
+    sed 's/^/+/' "$cwd/$uf" 2>/dev/null
+  done < <(git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null \
+            | grep -E "$CODE_RE" || true)
+}
+
+# net = added − deleted. added = stream added lines minus `+++ ` headers;
+# deleted = numstat deletions on tracked changes (untracked delete nothing).
+added="$(ig_added_lines | grep -cE '^\+([^+]|$)')"
+deleted=0
+while read -r _a d _; do
+  [[ "$d" =~ ^[0-9]+$ ]] && deleted=$((deleted + d))
+done < <( { [ -n "$tb" ] && git -C "$cwd" diff --numstat "$tb"..HEAD 2>/dev/null; \
+            git -C "$cwd" diff --numstat 2>/dev/null; \
+            git -C "$cwd" diff --numstat --cached 2>/dev/null; } \
+          | grep -E "$CODE_RE" || true )
+net=$((added - deleted))
+
+# Net-negative (cleanup / deletion) is always allowed — positive constraint.
+if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
+
+# Escape token: `// budget-justified:` on any added line this turn.
+budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'; }
+
+NET_CAP=400
+if [ "$net" -gt "$NET_CAP" ] && ! budget_justified; then
+  ig_bump
+  ig_log block "net-loc-over-cap"
+  deny "Turn net +$net LoC exceeds the structural budget ($NET_CAP). Split the change into reviewable commits, delete dead code, or add a \`// budget-justified: <reason>\` line to an intentional large addition (e.g. generated/table data). (ADR-0083 structural-budget tier; large diffs are a top review-rejection cause.)"
+fi
+
+ig_log allow "within-budget"
 allow
