@@ -87,12 +87,12 @@ if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'; }
 
 # Large-blob proxy for per-fn complexity (clippy.toml too-many-lines = 100).
-# Longest run of consecutive ADDED lines in any .rs file in the turn diff.
-# Consumes ig_added_lines (untracked-aware) filtered to .rs files only.
+# Longest run of consecutive added lines within one file, consuming the
+# shared ig_added_lines stream (untracked-aware, per-file via the `+++ `
+# header reset — uniform with the net-LoC / dup-symbol consumers).
 BLOB_CAP=100
 longest_added_run() {
-  ig_added_lines | grep -E '^(\+\+\+ .*\.rs|\+)' \
-  | awk '
+  ig_added_lines | awk '
       /^\+\+\+ /      { run=0; next }
       /^\+/           { run++; if (run>max) max=run; next }
       { run=0 }
@@ -102,7 +102,7 @@ blob="$(longest_added_run)"
 if [ "${blob:-0}" -gt "$BLOB_CAP" ] && ! budget_justified; then
   ig_bump
   ig_log block "blob-over-cap"
-  deny "Turn adds a $blob-line contiguous block in a single .rs file (cap $BLOB_CAP, the clippy.toml too-many-lines threshold). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line for intentional generated/table code. (ADR-0083 structural-budget tier.)"
+  deny "Turn adds a $blob-line contiguous block in a single file (cap $BLOB_CAP, the clippy.toml too-many-lines threshold). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line for intentional generated/table code. (ADR-0083 structural-budget tier.)"
 fi
 
 # New-file budget (ToF is the 2nd strongest decay predictor). ls-files
