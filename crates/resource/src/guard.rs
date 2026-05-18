@@ -26,7 +26,7 @@ type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send + S
 /// A drain tracker: an in-flight `(active_count, waiters)` pair. One is the
 /// manager-wide `graceful_shutdown` tracker; another is each
 /// `ManagedResource`'s own counter that `Manager::revoke_slot` drains in
-/// isolation (ADR-0067 §Deferred).
+/// isolation (per-resource revoke deferral).
 pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
 
 /// The `(manager_wide, per_resource)` pair an acquire pre-increments and
@@ -53,10 +53,10 @@ pub struct ResourceGuard<R: Resource> {
     /// The first element is `Manager::drain_tracker` (`graceful_shutdown`
     /// drain); the second is the originating `ManagedResource`'s own
     /// in-flight tracker, which `Manager::revoke_slot` drains in isolation
-    /// (ADR-0067 §Deferred). Both are pre-incremented by `InFlightCounter`
+    /// (per-resource revoke deferral). Both are pre-incremented by `InFlightCounter`
     /// and handed off here, so a guard handed out for a row reflects in that
     /// row's revoke drain — closing the revoke-vs-acquire TOCTOU
-    /// (ADR-0044/0036).
+    /// (slot + isolation model).
     drain_counters: Option<DrainTrackers>,
 }
 
@@ -172,9 +172,9 @@ impl<R: Resource> ResourceGuard<R> {
     /// `graceful_shutdown` race: an acquire that passed `lookup()` before
     /// `cancel.cancel()` could otherwise complete *after* `wait_for_drain()`
     /// observed `0` and the registry was cleared. (2) The revoke-vs-acquire
-    /// TOCTOU (ADR-0044/0036): because the per-resource counter is
+    /// TOCTOU (slot + isolation model): because the per-resource counter is
     /// incremented before the post-taint re-check and decremented only when
-    /// this guard drops, `revoke_slot`'s per-resource drain (ADR-0067
+    /// this guard drops, `revoke_slot`'s per-resource drain (resource runtime status
     /// §Deferred) cannot complete while a guard handed out for that row is
     /// still live.
     pub(crate) fn with_drain_tracker(mut self, trackers: DrainTrackers) -> Self {
@@ -339,7 +339,7 @@ impl<R: Resource> Drop for ResourceGuard<R> {
         // active counts, waking each owning `Notify` on its 1 → 0 edge. The
         // manager-wide tracker unblocks `graceful_shutdown`; the per-resource
         // tracker unblocks `revoke_slot`'s isolated per-resource drain
-        // (ADR-0067 §Deferred).
+        // (per-resource revoke deferral).
         if let Some((ref manager, ref per_resource)) = self.drain_counters {
             for tracker in [manager, per_resource] {
                 if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {

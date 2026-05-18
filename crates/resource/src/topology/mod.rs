@@ -10,8 +10,8 @@
 //! | [`Transport`] | Shared connection, multiplexed sessions |
 //! | [`Exclusive`] | One caller at a time via semaphore |
 //!
-//! `Daemon` and `EventSource` live in `nebula_engine::daemon` per ADR-0037 —
-//! canon §3.5 reserves "Resource" for pool/SDK clients.
+//! `Daemon` and `EventSource` live in `nebula_engine::daemon` per engine daemon topology —
+//! integration model boundary reserves "Resource" for pool/SDK clients.
 
 pub mod exclusive;
 pub mod pooled;

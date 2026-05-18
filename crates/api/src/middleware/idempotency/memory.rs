@@ -6,7 +6,7 @@
 //! deployments running more than one API replica, use
 //! [`super::store::StorageBackedIdempotencyStore`] (PG-backed) instead —
 //! the in-memory store loses dedup state across restarts and across runners
-//! (ADR-0048).
+//! (idempotency backend).
 
 use std::{fmt, sync::Arc, time::Duration};
 

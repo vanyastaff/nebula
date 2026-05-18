@@ -3,13 +3,13 @@
 //! Boots [`nebula_api::build_app`], fetches `/api/v1/openapi.json`, and
 //! verifies the spec is structurally valid and stable:
 //!
-//! - **Version pin** — `openapi == "3.1.0"` (ADR-0047 §1).
+//! - **Version pin** — `openapi == "3.1.0"` (1).
 //! - **operationId uniqueness** — utoipa-axum derives the id from the
 //!   handler function name; collisions crash client generators.
 //! - **$ref resolution** — every `$ref` under `paths.../responses/.../schema`
 //!   resolves to a declared component.
 //! - **Required security schemes** — `bearer`, `api_key`, and `csrf` are
-//!   published per ADR-0047 §2.
+//!   published per 2.
 //! - **Drift parity** — the spec mentions every key path mounted under
 //!   `routes::create_routes`; if a handler is added but not annotated
 //!   (or vice versa) this test catches it.
@@ -64,7 +64,7 @@ async fn served_spec_pins_openapi_3_1_0() {
         .expect("spec.openapi must be a string");
     assert_eq!(
         version, "3.1.0",
-        "ADR-0047 pins the generator to OpenAPI 3.1.0; got {version}"
+        "stub-endpoint policy pins the generator to OpenAPI 3.1.0; got {version}"
     );
 }
 
@@ -152,12 +152,12 @@ async fn security_schemes_match_adr_0047() {
         .get("components")
         .and_then(|c| c.get("securitySchemes"))
         .and_then(Value::as_object)
-        .expect("components.securitySchemes must be present per ADR-0047 §2");
+        .expect("components.securitySchemes must be present per OpenAPI contract");
 
     for required in ["bearer", "api_key", "csrf"] {
         assert!(
             schemes.contains_key(required),
-            "ADR-0047 mandates security scheme `{required}` in the spec; \
+            "OpenAPI contract mandates security scheme `{required}` in the spec; \
              got {:?}",
             schemes.keys().collect::<Vec<_>>()
         );
@@ -207,7 +207,7 @@ async fn drift_smoke_known_paths_are_present() {
         // sub-route, and it is GET-only: resource lifecycle
         // (acquire/release/drain/reload) is engine-owned and
         // deliberately never exposed over HTTP (INTEGRATION_MODEL
-        // §13.1). Pinning the status path here makes that
+        // integration seam.1). Pinning the status path here makes that
         // "observe-only, no lifecycle verbs" boundary drift-detected —
         // if a mutating `{res}` sub-route is ever added, the contract
         // change is visible against this list.
@@ -216,11 +216,11 @@ async fn drift_smoke_known_paths_are_present() {
         // mounted directly by `WebhookTransport::router()` (a plain
         // axum Router, not an OpenApiRouter) so it does not appear in
         // the served OpenAPI spec — operator-configured webhook URLs
-        // are documented in the README and ADR-0049, not the spec.
+        // are documented in the README and webhook activation, not the spec.
         // The slug surface is consumed by external providers, not by
         // SDK / Swagger users; promoting it back into the spec would
         // require typed schemas for every provider's request envelope.
-        // ADR-0049 § "Out of scope (1.0 follow-ups)" tracks the
+        // webhook activation § "Out of scope (1.0 follow-ups)" tracks the
         // re-promotion option.
     ];
 
@@ -236,7 +236,7 @@ async fn drift_smoke_known_paths_are_present() {
     // The resource runtime-status sub-route is **observe-only**: it must
     // expose ONLY a `get` operation. Resource lifecycle
     // (acquire/release/drain/reload) is engine-owned and deliberately
-    // never exposed over HTTP (INTEGRATION_MODEL §13.1), so an accidental
+    // never exposed over HTTP (INTEGRATION_MODEL integration seam.1), so an accidental
     // mutating verb on this path is a contract regression — fail drift
     // here rather than silently shipping a lifecycle write endpoint.
     let status_item = paths

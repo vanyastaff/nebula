@@ -1,5 +1,5 @@
 //! End-to-end tests for the idempotency middleware against the real
-//! `build_app` router (M3.4 — ADR-0048).
+//! `build_app` router (M3.4 — idempotency backend).
 //!
 //! These tests differ from `tests/idempotency_middleware.rs` in two ways:
 //!
@@ -12,7 +12,7 @@
 //! 2. Test fixtures (`POST /api/v1/_test/echo`, `POST /api/v1/_test/fail`)
 //!    are mounted via `axum::Router::merge` BEFORE the idempotency layer
 //!    inside `build_app` (gated behind `feature = "test-util"`); they
-//!    never appear in the served OpenAPI 3.1 spec (ADR-0047 honesty).
+//!    never appear in the served OpenAPI 3.1 spec (stub-honesty).
 //!
 //! Roadmap: §M3.4 Idempotency-Key dedup — fourth box (end-to-end test
 //! against the real `build_app`).

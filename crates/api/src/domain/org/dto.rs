@@ -1,6 +1,6 @@
 //! Organisation-management DTOs.
 //!
-//! ## §4.5 status
+//! ## honest capability status
 //!
 //! The **member** DTOs ([`MemberSummary`], [`MembersResponse`],
 //! [`AddMemberRequest`]) back **live** endpoints (`GET`/`POST`/`DELETE`
@@ -11,7 +11,7 @@
 //! **service-account** DTOs ([`ServiceAccountSummary`],
 //! [`CreateServiceAccountRequest`], …) still describe the **planned**
 //! payload of honest-501 stubs (no org-record store; no end-to-end
-//! `Principal::ServiceAccount` auth path — canon §4.5). RBAC
+//! `Principal::ServiceAccount` auth path — honest capability contract). RBAC
 //! `tenant.require(...)` gates on those stubs are real today (403).
 //!
 //! ### Member contract — "Option 1" honest redesign (breaking)
@@ -20,7 +20,7 @@
 //! email invitation. The fabricated `email` / `invitation_id` /
 //! `expires_at` fields were removed: there is no invitation/email
 //! subsystem and no email→principal directory, so those fields could only
-//! ever be synthesized — exactly the canon §4.5 false capability this
+//! ever be synthesized — exactly the honest capability contract false capability this
 //! refactor rejects. `MemberSummary` likewise carries only what the RBAC
 //! role index actually knows (`user_id` + `role`); `email`/`joined_at`
 //! would require a member-record/identity-join model that does not exist.
@@ -52,7 +52,7 @@ pub struct UpdateOrgRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Org-level settings blob — caller-defined, validated downstream.
-    /// Per ADR-0047 §3 cross-layer schema strategy, an opaque
+    /// Per 3 cross-layer schema strategy, an opaque
     /// `serde_json::Value` field documents itself as an object with
     /// `additionalProperties: true` so consumers know the shape is
     /// genuinely caller-defined.
@@ -64,7 +64,7 @@ pub struct UpdateOrgRequest {
 /// One member entry inside [`MembersResponse`].
 ///
 /// Carries **only** what the RBAC role index knows. `email`/`joined_at`
-/// are intentionally absent (canon §4.5 — see the module docs): the
+/// are intentionally absent (honest capability contract — see the module docs): the
 /// membership store is not a user-identity directory and synthesizing
 /// those fields would be a false capability.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

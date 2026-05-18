@@ -11,7 +11,7 @@
 //! 1. **Slot binding** (preferred for production code) — declare an `#[resource(key = "...")]`
 //!    field on the action struct; the `#[derive(Action)]` macro emits a `FromWorkflowNode` factory
 //!    that calls `ActionContextExt::acquire_resource_by_id` (in `nebula-action`) with the per-node
-//!    binding from [ADR-0042](https://github.com/vanyastaff/nebula/blob/main/docs/adr/0042-node-binding-mechanism.md).
+//!    binding from [slot binding]().
 //!    Per-node overrides via workflow JSON `node.slot_bindings` are honored automatically.
 //!
 //! 2. **`ctx.resource::<R>()` ad-hoc** (this module) — type-only lookup by `R::key()`. No per-node

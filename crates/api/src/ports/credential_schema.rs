@@ -1,4 +1,4 @@
-//! API-owned credential-schema port (ADR-0052 P4).
+//! API-owned credential-schema port (credential-schema validation).
 //!
 //! `nebula-api` never imports `nebula-schema`/`nebula-validator` types into
 //! its DTOs; this object-safe port carries only api-safe values. The
@@ -7,14 +7,14 @@
 //! `json_schema()` — authority sits with the validator
 //! (INTEGRATION_MODEL §29/§33 proof-token custody unchanged). When no port
 //! is wired the credential write path and credential-type catalog return an
-//! honest 503, mirroring `AppState::action_registry` (canon §4.5).
+//! honest 503, mirroring `AppState::action_registry` (honest capability contract).
 
 use serde::Serialize;
 use utoipa::ToSchema;
 
 /// One field-level validation failure — secret-safe by construction:
 /// an RFC-6901 path, a validator code, and a static message. **Never**
-/// the submitted value (ADR-0034 redaction).
+/// the submitted value (credential redaction redaction).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialFieldError {
     /// RFC-6901 JSON Pointer to the offending field (e.g. `/api_key`).

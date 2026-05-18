@@ -19,7 +19,7 @@ use super::{
 ///
 /// This is the **port-level** patch shape — deliberately decoupled from the
 /// `me` HTTP DTO (`UpdateMeRequest`) so storage/transport schemas never leak
-/// across the API boundary (ADR-0047 §3). The handler maps the wire DTO onto
+/// across the API boundary (3). The handler maps the wire DTO onto
 /// this struct. Each `Some` field is applied; `None` leaves the field
 /// unchanged.
 #[derive(Debug, Clone, Default)]
@@ -33,7 +33,7 @@ pub struct ProfilePatch {
 /// PAT-creation parameters for [`AuthBackend::create_pat`].
 ///
 /// Port-level shape decoupled from the `me` HTTP DTO (`CreateTokenRequest`),
-/// per ADR-0047 §3. The handler maps the wire DTO onto this struct after
+/// per 3. The handler maps the wire DTO onto this struct after
 /// validation.
 #[derive(Debug, Clone)]
 pub struct CreatePatParams {
@@ -141,7 +141,7 @@ pub trait AuthBackend: Send + Sync {
     // The endpoints under `/api/v1/me/*` are authenticated, no tenant
     // scope, and operate strictly on the *caller's own* identity. They
     // delegate here so the handler never touches storage/`nebula_storage`
-    // types directly (ADR-0047 §3) and the same single Plane-A contract
+    // types directly (3) and the same single Plane-A contract
     // backs profile reads, profile patches, and PAT lifecycle.
 
     /// Resolve a user's own profile by id (`GET /me`). `Err(UserNotFound)`

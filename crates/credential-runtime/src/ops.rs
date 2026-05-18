@@ -39,7 +39,7 @@ use crate::error::CredentialServiceError;
 pub(crate) struct ResolvedState {
     /// Serialized `C::State` bytes. Plaintext in-process (the store's
     /// `EncryptionLayer` ciphers it at rest); held in `Zeroizing` so this
-    /// intermediate is wiped on drop per canon §12.5.
+    /// intermediate is wiped on drop per credential secrecy.
     pub(crate) data: Zeroizing<Vec<u8>>,
     /// `<C::State as CredentialState>::KIND`.
     pub(crate) state_kind: String,
@@ -127,7 +127,7 @@ type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<
 ///
 /// Re-writing the un-mutated local copy on the coalesced path either
 /// spuriously `VersionConflict`s or clobbers the fresher state another
-/// replica just wrote (canon §13.2): the upstream
+/// replica just wrote (concurrent-refresh contract): the upstream
 /// [`RefreshOutcome::CoalescedByOtherReplica`](nebula_credential::RefreshOutcome)
 /// contract says the caller must re-read, not re-write.
 pub(crate) enum RefreshOutcomeKind {
@@ -185,7 +185,7 @@ type SnapshotFn = Arc<
 /// for the captured concrete `C` —
 /// `schema_of::<C::Properties>().validate(FieldValues)` then a typed
 /// `serde_json::from_value::<C::Properties>` round-trip. The typed step
-/// is the `{"$expr": ..}` refusal point (canon §12.5). Returns only the
+/// is the `{"$expr": ..}` refusal point (credential secrecy). Returns only the
 /// schema `code`/`path` on failure, never raw property values.
 type ValidateFn =
     Arc<dyn Fn(&serde_json::Value) -> Result<(), CredentialServiceError> + Send + Sync>;
@@ -315,7 +315,7 @@ impl<B: CredentialStore, PS: PendingStateStore> DispatchOps<B, PS> {
 
     /// Run the canonical credential properties validation pipeline for
     /// the type at `key` against `props` (schema + typed-deserialize;
-    /// `{"$expr": ..}` refused at the typed step, canon §12.5).
+    /// `{"$expr": ..}` refused at the typed step, credential secrecy).
     ///
     /// # Errors
     ///
@@ -573,7 +573,7 @@ where
         // validate, then a typed `from_value` round-trip. The credential
         // pipeline never resolves expressions, so a `{"$expr": ..}`
         // envelope passes schema validation but is refused by the typed
-        // deserialize below (canon §12.5 defense-in-depth #2).
+        // deserialize below (credential secrecy defense-in-depth #2).
         let schema = nebula_schema::schema_of::<C::Properties>();
         let values = FieldValues::from_json(props.clone()).map_err(|e| {
             CredentialServiceError::ValidationFailed {
@@ -742,7 +742,7 @@ where
                 // the *un-mutated* pre-refresh copy: re-writing it would
                 // either spuriously `VersionConflict` or clobber the
                 // fresher state the other replica just persisted (the
-                // canon §13.2 bug). Signal the service to skip the write
+                // concurrent-refresh contract bug). Signal the service to skip the write
                 // and re-read instead.
                 nebula_credential::RefreshOutcome::CoalescedByOtherReplica => {
                     Ok(RefreshOutcomeKind::CoalescedReRead)

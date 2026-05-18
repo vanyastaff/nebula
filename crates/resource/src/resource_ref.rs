@@ -1,6 +1,6 @@
 //! Typed resource reference (`ResourceRef<R>`) — slot-binding handle for action fields.
 //!
-//! Per ADR-0043 §9, `ResourceRef<R>` is the canonical field type for the
+//! Per typed ref fields, `ResourceRef<R>` is the canonical field type for the
 //! slot-binding pattern: an action declares
 //!
 //! ```ignore
@@ -11,7 +11,7 @@
 //! }
 //! ```
 //!
-//! and the framework resolves the slot per ADR-0042's binding mechanism: the
+//! and the framework resolves the slot per slot binding's binding mechanism: the
 //! `key` attribute supplies a default resource id; workflow-JSON
 //! `slot_bindings.<slot_key>.resource_id` overrides it per node.
 //!
@@ -28,7 +28,7 @@
 //! ## Composability
 //!
 //! `Option<ResourceRef<R>>` and `Lazy<ResourceRef<R>>` (from `nebula_core::Lazy`)
-//! compose for optional / lazy semantics per ADR-0043 §3.
+//! compose for optional / lazy semantics per optional ref composition.
 
 use std::{fmt, marker::PhantomData};
 
@@ -41,7 +41,7 @@ use crate::{
 
 /// Typed reference to a registered resource.
 ///
-/// The reference carries a resource id (slot binding per ADR-0042) and a
+/// The reference carries a resource id (slot binding per slot binding) and a
 /// type-level marker selecting the concrete `Resource` impl whose
 /// `Lease` should be acquired on resolve. The field type alone tells the
 /// framework what slot kind, what concrete resource type, and (via wrapper
@@ -54,7 +54,7 @@ use crate::{
 /// does **not** acquire a new resource lease — leases materialize only
 /// during `.resolve()`.
 pub struct ResourceRef<R: ?Sized> {
-    /// Resolved resource id (per ADR-0042 — slot-key default OR workflow-JSON override).
+    /// Resolved resource id (per slot binding — slot-key default OR workflow-JSON override).
     id: String,
     /// Type-level marker for the concrete `Resource` impl. `fn() -> R` so
     /// `ResourceRef<R>` is `Send + Sync` regardless of `R`.

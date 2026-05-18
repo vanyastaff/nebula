@@ -1,5 +1,5 @@
 //! `/internal/v1/...` routes — ops tooling consumed out-of-band
-//! (M3.3 / ADR-0049 — E3).
+//! (webhook activation — E3).
 //!
 //! Internal routes are **not** advertised in OpenAPI; operators
 //! discover them via runbooks. The token check lives in

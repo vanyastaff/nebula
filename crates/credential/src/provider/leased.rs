@@ -1,6 +1,6 @@
 //! `LeasedProvider` sub-trait — renew / revoke for time-bounded grants.
 //!
-//! Per ADR-0051 the base [`ExternalProvider`] surface stays oblivious to
+//! Per external provider the base [`ExternalProvider`] surface stays oblivious to
 //! lease lifecycle: it only resolves secrets and carries optional lease
 //! metadata on the [`ProviderResolution`] envelope. Lease-aware providers
 //! (HashiCorp Vault dynamic secrets, AWS STS-issued temporary creds, GCP

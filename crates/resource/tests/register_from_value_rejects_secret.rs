@@ -1,8 +1,8 @@
 //! Regression: `Manager::register_from_value` must reject a config that inlines
 //! a secret-shaped field not declared by the typed `R::Config` schema.
 //!
-//! Invariant (PRODUCT_CANON §3.5; ADR-0044 slot model; ADR-0030 redaction;
-//! ADR-0036 isolation): secrets reach a resource ONLY via typed credential
+//! Invariant (product credential boundary; slot model; engine credential orchestration redaction;
+//! credential isolation isolation): secrets reach a resource ONLY via typed credential
 //! slots (credential *references*), NEVER inline in `ResourceEntry.config` —
 //! `ResourceConfig` carries no secrets. `register_from_value` schema-validates
 //! the JSON against `<R::Config as HasSchema>::schema()`; a JSON carrying an

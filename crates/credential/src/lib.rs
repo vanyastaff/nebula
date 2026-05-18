@@ -1,7 +1,7 @@
 //! # nebula-credential
 //!
 //! **Role:** Credential Contract — stored state vs projected auth material;
-//! engine-owned rotation and refresh. Canon §3.5, §12.5.
+//! engine-owned rotation and refresh. Integration-model boundary; credential secrecy.
 //!
 //! The engine owns the split between stored `State` (encrypted at rest) and the
 //! projected auth material action code receives. Action authors bind to a
@@ -23,13 +23,13 @@
 //!   Tech Spec §15.4 — `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic`. Phase 5 of
 //!   the M6 redesign renamed `Credential::Input` → `Credential::Properties` to mirror
 //!   `Action::Input` / `Resource::Config`; the `Properties: HasSchema` bound is the single
-//!   source of truth, read via `nebula_schema::schema_of::<C::Properties>()` (ADR-0052 P3 — no
+//!   source of truth, read via `nebula_schema::schema_of::<C::Properties>()` (schema-of properties — no
 //!   per-trait schema method).
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
 //! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
-//!   `CacheLayer`, `AuditLayer`) live in `nebula_storage::credential` per ADR-0032; the multi-tenant
+//!   `CacheLayer`, `AuditLayer`) live in `nebula_storage::credential` per storage credential layers; the multi-tenant
 //!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
 //! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
@@ -38,7 +38,7 @@
 //!   exposed (SEC-11 hardening 2026-04-27).
 //! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
 //!
-//! ## Security invariant (canon §12.5)
+//! ## Security invariant (credential secrecy)
 //!
 //! Encryption at rest: AES-256-GCM with Argon2id KDF, credential ID bound as AAD.
 //! No bypass for debugging. All intermediate plaintext in `Zeroizing<Vec<u8>>`.
@@ -72,7 +72,7 @@ pub mod provider;
 pub mod rotation;
 /// Authentication scheme types — AuthScheme trait, AuthPattern, 12 built-in schemes.
 pub mod scheme;
-/// §12.5 secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
+/// credential secrecy secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
 pub mod secrets;
 
 // ── Flattened modules (previously nested under accessor/ and metadata/) ───
@@ -81,13 +81,13 @@ pub mod secrets;
 mod accessor;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
-/// Typed credential reference — `CredentialRef<C>` slot-binding handle (ADR-0043 §9).
+/// Typed credential reference — `CredentialRef<C>` slot-binding handle (typed ref fields).
 mod credential_ref;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
 mod metadata;
-/// `NoCredential` opt-out type — for resources without an authenticated binding (ADR-0036).
+/// `NoCredential` opt-out type — for resources without an authenticated binding (credential isolation).
 mod no_credential;
 /// Credential record — runtime operational state (timestamps, version, tags).
 mod record;
@@ -104,9 +104,9 @@ pub mod pending_store;
 /// In-memory pending state store — **test shim only**.
 ///
 /// The canonical production impl lives in
-/// `nebula_storage::credential::InMemoryPendingStore` per ADR-0032.
+/// `nebula_storage::credential::InMemoryPendingStore` per storage credential layers.
 /// This copy exists solely for credential's own `#[cfg(test)]` code
-/// which cannot depend on `nebula-storage` (dep-cycle, ADR-0032 §3).
+/// which cannot depend on `nebula-storage` (dep-cycle, storage credential layers §3).
 #[cfg(any(test, feature = "test-util"))]
 pub mod pending_store_memory;
 /// Credential snapshot.
@@ -116,9 +116,9 @@ pub mod store;
 /// In-memory `CredentialStore` impl — **test shim only**.
 ///
 /// The canonical production impl lives in
-/// `nebula_storage::credential::InMemoryStore` per ADR-0032.
+/// `nebula_storage::credential::InMemoryStore` per storage credential layers.
 /// This copy exists solely for credential's own `#[cfg(test)]` code
-/// which cannot depend on `nebula-storage` (dep-cycle, ADR-0032 §3).
+/// which cannot depend on `nebula-storage` (dep-cycle, storage credential layers §3).
 #[cfg(any(test, feature = "test-util"))]
 pub mod store_memory;
 
@@ -159,19 +159,19 @@ pub use nebula_core::accessor::CredentialAccessor;
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // Re-exported so `#[derive(Credential)]` can emit `::nebula_credential::schema_of`
 // without forcing plugin authors onto a direct `nebula-schema` dependency
-// (ADR-0052 P3: `Self::Properties: HasSchema` is the single source of truth).
+// (schema-of properties: `Self::Properties: HasSchema` is the single source of truth).
 pub use nebula_schema::schema_of;
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Opt-out built-in (lives at root, not under credentials::, because it has
 // no Input form and is never registered in CredentialRegistry — it's a
-// Resource-side type marker per ADR-0036).
+// Resource-side type marker per credential isolation).
 pub use no_credential::{NoCredential, NoCredentialState};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 #[cfg(any(test, feature = "test-util"))]
 pub use pending_store_memory::InMemoryPendingStore;
-// External provider abstraction (redesigned per ADR-0051):
+// External provider abstraction (redesigned per external provider):
 // - Trait & data types (ExternalProvider, ExternalReference, ProviderError, ProviderKind)
 // - Future newtype (ProviderFuture) for dyn-safe + zero-alloc-ready resolve
 // - Envelope (ProviderResolution, LeaseHandle) carrying secret + lease + TTL
@@ -182,7 +182,7 @@ pub use provider::{
     ExternalProvider, ExternalProviderChain, ExternalReference, LeaseEvent, LeaseExpiryReason,
     LeaseHandle, LeasedProvider, ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
 };
-// Refresh coordination — moved to nebula-engine::credential::refresh (ADR-0030 §3 amendment)
+// Refresh coordination — moved to nebula-engine::credential::refresh (engine credential orchestration §3 amendment)
 // Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.
 // Auth schemes — open trait + 11-variant classification + 9 built-in scheme types.
 // Pruned 2026-04-24: FederatedAssertion (Plane A), OtpSeed + ChallengeSecret
@@ -191,10 +191,10 @@ pub use scheme::{
     AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
     KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
 };
-// §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers,
+// credential secrecy secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard refresh surface (§15.7). The refresh-notification hook
 // itself lives on `nebula_resource::Resource::on_credential_refresh`
-// per ADR-0036; the previously-defined parallel `OnCredentialRefresh<C>`
+// per credential isolation; the previously-defined parallel `OnCredentialRefresh<C>`
 // trait was removed in nebula-resource П2.
 //
 // SEC-11 (security hardening 2026-04-27 Stage 1): bare `encrypt` removed
@@ -205,10 +205,10 @@ pub use secrets::{
     SecretString, decrypt, decrypt_with_aad, encrypt_with_aad, encrypt_with_key_id,
     generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
-// Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)
+// Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
 // In-memory impl — test shim only; production consumers use
-// `nebula_storage::credential::InMemoryStore` (ADR-0032).
+// `nebula_storage::credential::InMemoryStore` (storage credential layers).
 #[cfg(any(test, feature = "test-util"))]
 pub use store_memory::InMemoryStore;
 

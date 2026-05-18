@@ -4,11 +4,11 @@
 //! `signing_key`) are all static — none implements `Refreshable` /
 //! `Testable` / `Revocable` / `Interactive`, so every *positive*
 //! capability path of the facade (refresh CAS + retry, the coalesced
-//! re-read branch, the §13.2 version-conflict branch, `on_refresh`
+//! re-read branch, the concurrent-refresh version-conflict branch, `on_refresh`
 //! emission) is otherwise unexercised. [`RefreshableFixtureCredential`]
 //! is a minimal refreshable type that drives those paths.
 //!
-//! # ADR-0023
+//! # test-util gating
 //!
 //! This module is gated `cfg(any(test, feature = "test-util"))` and is
 //! **never** part of the production surface. It wires only over the
@@ -47,7 +47,7 @@ pub struct RefreshableFixtureProperties {
 /// `expires_at` so the type carries an expiry like a real rotating
 /// credential.
 ///
-/// `ZeroizeOnDrop` is mandatory for any [`CredentialState`] (§12.5
+/// `ZeroizeOnDrop` is mandatory for any [`CredentialState`] (credential secrecy
 /// deterministic plaintext drop). The counter / timestamp are not
 /// secret, but the derive zeroizes the whole struct uniformly.
 #[derive(Clone, Serialize, Deserialize, ZeroizeOnDrop)]

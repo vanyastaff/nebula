@@ -1,4 +1,4 @@
-//! Credential management request/response DTOs — **Plane B** (ADR-0033).
+//! Credential management request/response DTOs — **Plane B** (auth plane separation).
 //!
 //! These types form the HTTP API contract for credential lifecycle management.
 //! Response types **never** include secret material (encrypted state, tokens, keys).

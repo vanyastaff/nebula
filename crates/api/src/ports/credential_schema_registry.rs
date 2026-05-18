@@ -1,5 +1,5 @@
 //! Concrete [`CredentialSchemaPort`] over a
-//! `nebula_credential::CredentialRegistry` (ADR-0052 P4).
+//! `nebula_credential::CredentialRegistry` (credential-schema validation).
 //!
 //! Per the user's adjudication of the deny.toml-vs-#671 conflict, the
 //! concrete impl lives in `nebula-api` (already an allow-listed
@@ -8,15 +8,15 @@
 //! crate (which would have required a wrapper-allowlist edit). `nebula-api`
 //! takes a `nebula-schema` production dep + `schemars`, but **no
 //! `ValidSchema` type enters any DTO** — the port returns only
-//! `serde_json::Value` / api-owned structs, so ADR-0047's DTO-purity rule
+//! `serde_json::Value` / api-owned structs, so stub-endpoint policy's DTO-purity rule
 //! is intact (only the informal "api never imports nebula-schema" prose is
-//! relaxed; recorded in the ADR-0052 P4 / ADR-0047 amendments).
+//! relaxed; recorded in the credential-schema validation / stub-endpoint policy amendments).
 //!
 //! Authority sits with the validator: `ValidSchema::validate` is invoked
-//! here; credential `data` is **never** `.resolve()`-d (canon §12.5 —
+//! here; credential `data` is **never** `.resolve()`-d (credential secrecy —
 //! secrets must not depend on workflow state). Errors are secret-safe by
 //! construction (RFC-6901 path + validator code + static message; never a
-//! submitted value — ADR-0034).
+//! submitted value — credential redaction).
 
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ use crate::ports::credential_schema::{
 /// message. The seam NEVER forwards a lower-layer `ValidationError.message`
 /// (some validators embed the submitted input — e.g. `'{input}' is not a
 /// valid IPv4 address` — and `validate_json_keys` embeds the raw object
-/// key). Deriving the message from the code makes the ADR-0034 "never the
+/// key). Deriving the message from the code makes the credential redaction "never the
 /// submitted value" invariant hold *by construction* at this seam,
 /// independent of any upstream validator's message hygiene.
 fn safe_field_message(code: &str) -> &'static str {
@@ -135,7 +135,7 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
             )]);
         };
         let schema = any.metadata().base.schema;
-        // Ingest only (NEVER `.resolve()` — canon §12.5: credential data
+        // Ingest only (NEVER `.resolve()` — credential secrecy: credential data
         // must not be expression-resolved against workflow state).
         let values = FieldValues::from_json(data.clone())
             .map_err(|e| vec![field_error(e.path.to_string(), e.code.as_ref())])?;
@@ -184,7 +184,7 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
 }
 
 /// Build the default port with the first-party credential types
-/// registered (ADR-0052 P4). Used by the composition root so
+/// registered (credential-schema validation). Used by the composition root so
 /// `apps/server` needs no `nebula-credential`/`nebula-schema` dep.
 ///
 /// # Errors

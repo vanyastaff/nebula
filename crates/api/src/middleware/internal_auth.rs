@@ -1,5 +1,5 @@
 //! Shared-token authentication for `/internal/v1/...` routes
-//! (M3.3 / ADR-0049 — E3).
+//! (webhook activation — E3).
 //!
 //! Internal routes are deliberately separate from the Plane-A auth
 //! stack:

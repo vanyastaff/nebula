@@ -1,6 +1,6 @@
 //! Bonus probe (Stage 4) - `dyn Credential` not dyn-compatible.
 //!
-//! Per Tech Spec 15.4 line 3237 + ADR-0035 context section, the
+//! Per Tech Spec 15.4 line 3237 + capability macro context section, the
 //! `Credential` trait carries `const KEY: &'static str` plus several
 //! associated types (`Input`, `State`, `Scheme`, `Pending`). Any one of
 //! those alone is enough to block dyn-compatibility:
@@ -11,7 +11,7 @@
 //!   in a `dyn` position.
 //!
 //! This probe documents the structural reason the phantom-shim
-//! pattern exists (ADR-0035 1): a `dyn Credential` trait object
+//! pattern exists (capability macro 1): a `dyn Credential` trait object
 //! is not constructible at the type level, regardless of any runtime
 //! vtable considerations. The phantom pattern resolves the gap by
 //! introducing a separate dyn-safe phantom trait (no `const KEY`, no

@@ -1,4 +1,4 @@
-//! Parsed `#[resource(...)]` attributes for the Phase 4 / ADR-0044
+//! Parsed `#[resource(...)]` attributes for the Phase 4 / slot model
 //! `#[derive(Resource)]`.
 
 use nebula_macro_support::{attrs, diag};

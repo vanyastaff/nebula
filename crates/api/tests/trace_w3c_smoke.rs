@@ -3,7 +3,7 @@
 //! Proves that `nebula_api::init_api_telemetry` actually wires a
 //! `tracing_opentelemetry::OpenTelemetryLayer` into the global Subscriber — without that layer
 //! the middleware in `crates/api/src/middleware/trace_w3c.rs` would compile and run but emit
-//! no `traceparent` header (ADR-0050).
+//! no `traceparent` header (W3C trace propagation).
 //!
 //! The assertion is intentionally narrow: under an active per-request span produced by
 //! `tower_http::trace::TraceLayer`, the response carries a structurally-valid W3C `traceparent`.
@@ -54,7 +54,7 @@ async fn init_api_telemetry_emits_traceparent_on_response() {
         .get("traceparent")
         .expect(
             "response is missing `traceparent` — the global Subscriber is not wiring \
-             `tracing_opentelemetry::OpenTelemetryLayer` (M3.5 / ADR-0050 regression)",
+             `tracing_opentelemetry::OpenTelemetryLayer` (W3C trace propagation regression)",
         )
         .to_str()
         .expect("traceparent must be ASCII");
@@ -152,6 +152,6 @@ async fn inbound_traceparent_round_trips_with_same_trace_id() {
     let returned_trace_id_hex = format!("{:032x}", parsed.trace_id.0);
     assert_eq!(
         returned_trace_id_hex, INBOUND_TRACE_ID,
-        "response traceparent must carry the inbound trace id — propagation broken (M3.5 / ADR-0050)"
+        "response traceparent must carry the inbound trace id — propagation broken (W3C trace propagation)"
     );
 }

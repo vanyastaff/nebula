@@ -1,6 +1,6 @@
 //! In-memory pending state store — **behaviour-identical shim** of the
 //! canonical impl at `nebula_storage::credential::pending::InMemoryPendingStore`
-//! (ADR-0029 §4 / ADR-0032 §7).
+//! (pending store / storage credential layers §7).
 //!
 //! # Why a dual-home shim?
 //!
@@ -12,7 +12,7 @@
 //! generic executor no longer accepts the storage-side type
 //! (empirically confirmed in P6.2 with `InMemoryStore`).
 //!
-//! The fix is the same narrowly-scoped exception ADR-0032 §7 carved out
+//! The fix is the same narrowly-scoped exception storage credential layers §7 carved out
 //! for `store_memory`: keep a body-identical copy in credential for
 //! internal tests; production consumers and composition roots prefer the
 //! storage-side canonical home.
@@ -21,7 +21,7 @@
 //! `nebula_storage::credential::InMemoryPendingStore`. Only credential's
 //! internal `#[cfg(test)]` code should touch this module.
 //!
-//! Ref: `docs/adr/0032-credential-store-canonical-home.md` §7
+//! Ref:  §7
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -54,7 +54,7 @@ pub struct InMemoryPendingStore {
     /// map, and returns without awaiting under the guard, so a
     /// `parking_lot::RwLock` in a sync block would be cheaper. Perf is
     /// irrelevant in this shim; production storage lives in
-    /// `nebula-storage` per ADR-0029 §4 / ADR-0032 §7. Do **NOT**
+    /// `nebula-storage` per pending store / storage credential layers §7. Do **NOT**
     /// cargo-cult this `tokio::RwLock<HashMap<...>>` pattern into a
     /// production module where the guard could cross an `.await` —
     /// that's the issue-#587-shaped perf cost the audit flagged.

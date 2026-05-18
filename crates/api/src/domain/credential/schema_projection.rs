@@ -1,4 +1,4 @@
-//! Public-schema projection (ADR-0052 P4, design-spec hole #6).
+//! Public-schema projection (credential-schema validation, design-spec hole #6).
 //!
 //! `ValidSchema::json_schema()` emits the credential type's internal rule
 //! graph as Nebula vendor extensions: `x-nebula-root-rules`

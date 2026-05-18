@@ -1,9 +1,9 @@
 //! `POST /executions/:id/terminate` end-to-end + parity coverage.
 //!
-//! `terminate_execution` graduated stub→implemented as a real canon §12.2
-//! durable-control-plane endpoint (ADR-0008 A3 / ADR-0016). It mirrors
+//! `terminate_execution` graduated stub→implemented as a real durable control queue
+//! durable-control-plane endpoint (control-queue terminate dispatch / cooperative cancel). It mirrors
 //! `cancel_execution` exactly except it enqueues
-//! `ControlCommand::Terminate`. Per ADR-0016 the engine has no distinct
+//! `ControlCommand::Terminate`. Per cooperative cancel the engine has no distinct
 //! forced-shutdown path: `Terminate` is wired end-to-end
 //! (`ControlConsumer` → `EngineControlDispatch::dispatch_terminate` →
 //! `dispatch_cancel` → the engine cancel registry's live
@@ -19,7 +19,7 @@
 //!
 //! | Scenario | What is asserted | Test |
 //! |----------|------------------|------|
-//! | Engine-visible seam (canon §13 bar) | Running exec + POST terminate → control_queue gets a `Terminate` entry → the wired real engine consumer drives the execution to terminal `Cancelled`, well inside the 30s slow-handler window | `terminate_engine_drives_running_execution_to_terminal_end_to_end` |
+//! | Engine-visible seam (integration seam bar) | Running exec + POST terminate → control_queue gets a `Terminate` entry → the wired real engine consumer drives the execution to terminal `Cancelled`, well inside the 30s slow-handler window | `terminate_engine_drives_running_execution_to_terminal_end_to_end` |
 //! | Producer durability | POST terminate persists `cancelled` + enqueues exactly one `Terminate` entry referencing the execution | `terminate_enqueues_durable_control_signal` |
 //! | Atomic outbox | legacy control-queue handle down → POST terminate still commits state + `Terminate` outbox together via `TransitionBatch` | `terminate_control_signal_is_atomic_with_state` |
 //! | 404 | unknown execution → 404 | `terminate_unknown_execution_returns_404` |
@@ -36,16 +36,16 @@ use common::*;
 use nebula_api::{ApiConfig, app};
 use tower::ServiceExt;
 
-// ── Engine-visible seam (canon §13 integration bar) ──────────────────────────
+// ── Engine-visible seam (integration seam integration bar) ──────────────────────────
 //
 // Symmetric to `knife.rs::knife_step5_engine_cancels_running_execution_end_to_end`,
 // but exercises the `Terminate` command instead of `Cancel`. The wiring:
 //
 //   POST /executions/:id/terminate
-//     → execution_store CAS-transition (Cancelled)    [API handler, §12.2 order]
-//     → control_queue.enqueue(Terminate)              [API handler, §12.2 order]
+//     → execution_store CAS-transition (Cancelled)    [API handler, durable control queue order]
+//     → control_queue.enqueue(Terminate)              [API handler, durable control queue order]
 //     → ControlConsumer.claim_pending
-//     → EngineControlDispatch::dispatch_terminate     (ADR-0008 A3 / ADR-0016)
+//     → EngineControlDispatch::dispatch_terminate     (control-queue terminate dispatch / cooperative cancel)
 //     → EngineControlDispatch::dispatch_cancel        (Terminate == cooperative
 //                                                      cancel synonym today)
 //     → WorkflowEngine::cancel_execution              (live cancel registry)
@@ -58,12 +58,12 @@ use tower::ServiceExt;
 // command/terminal assertion. Asserting the execution reaches a terminal
 // state inside the 30s slow window proves the `Terminate` signal reached
 // the engine's *live* loop — not merely that the API CAS-flipped the row
-// (the two-truth gap canon §14 calls out).
+// (the two-truth gap two-truth gap calls out).
 
 /// Engine-visible seam: a Running execution + `POST .../terminate` drives
 /// the execution all the way to a terminal state via the real engine
 /// consumer — proving the durable `Terminate` signal reaches the live
-/// frontier loop (ADR-0008 A3 / ADR-0016), not just the DB row.
+/// frontier loop (control-queue terminate dispatch / cooperative cancel), not just the DB row.
 #[tokio::test]
 async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     use std::time::Duration;
@@ -152,12 +152,12 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     assert_eq!(
         terminated["status"].as_str(),
         Some("cancelled"),
-        "terminate response must show terminal `cancelled` status (ADR-0016: \
+        "terminate response must show terminal `cancelled` status (cooperative cancel: \
          Terminate is a cooperative-cancel synonym, no `Terminated` variant)"
     );
 
     // The control queue must hold the `Start` from the producer path AND a
-    // fresh `Terminate` from the endpoint under test — proving the §12.2
+    // fresh `Terminate` from the endpoint under test — proving the durable control queue
     // same-logical-operation enqueue happened, engine-visible.
     let queued = handles.control_queue.snapshot();
     let (terminate_msg, _status) = queued
@@ -190,14 +190,14 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     .await
     .expect(
         "engine reached a terminal state within 10s (Terminate dispatch signalled the \
-         live frontier loop via the ADR-0016 cancel registry) — the 30s slow handler \
+         live frontier loop via the cooperative-cancel registry) — the 30s slow handler \
          was aborted cooperatively, not left sleeping",
     );
 
     assert!(
         final_status.is_terminal(),
         "execution reached a terminal state after Terminate — the engine honors \
-         ControlCommand::Terminate end-to-end (ADR-0008 A3 / ADR-0016). got: {final_status:?}"
+         ControlCommand::Terminate end-to-end (control-queue terminate / cooperative cancel). got: {final_status:?}"
     );
 
     // Graceful shutdown so the spawned consumer task doesn't leak.
@@ -206,7 +206,7 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
 
 // ── Producer durability + parity coverage (mirrors cancel) ───────────────────
 
-/// Canon §12.2: terminating a non-terminal execution must both
+/// durable control queue: terminating a non-terminal execution must both
 /// (1) persist the terminal state in the execution row, AND
 /// (2) enqueue a `Terminate` command in the durable control queue.
 /// Mirror of `integration_tests.rs::cancel_enqueues_durable_control_signal`.
@@ -442,7 +442,7 @@ async fn terminate_invalid_execution_id_rejected_by_middleware() {
 }
 
 /// Terminating an already-terminal execution must be rejected with 400 and
-/// must NOT enqueue a spurious `Terminate` signal (idempotency / §12.2
+/// must NOT enqueue a spurious `Terminate` signal (idempotency / durable control queue
 /// terminal-state guard). Mirror of
 /// `integration_tests.rs::cancel_terminal_execution_does_not_enqueue`.
 #[tokio::test]

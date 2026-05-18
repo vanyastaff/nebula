@@ -114,11 +114,11 @@ impl Default for ManagerConfig {
 /// Used with the `register_*_with` convenience methods to configure
 /// resilience and recovery beyond the simple `register_*` defaults.
 ///
-/// Per ADR-0044, credential bindings are no longer threaded through
+/// Per slot model, credential bindings are no longer threaded through
 /// registration: the `resource: R` value handed to `Manager::register*`
 /// already carries resolved credentials in its slot fields. The
 /// [`slot_identity`](Self::slot_identity) here is a *stable hash over those
-/// resolved bindings* (per ADR-0036 / ADR-0044) — it does **not** carry
+/// resolved bindings* (per credential isolation / slot model) — it does **not** carry
 /// secrets; it only lets the registry keep two resolved-credential
 /// registrations on **separate rows** so they cannot share one runtime
 /// (cross-tenant bleed). Compute it with

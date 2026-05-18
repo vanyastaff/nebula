@@ -1,4 +1,4 @@
-//! `#[derive(Resource)]` macro implementation — Phase 4 / ADR-0044.
+//! `#[derive(Resource)]` macro implementation — Phase 4 / slot model.
 //!
 //! Emits:
 //! - `impl Resource for Foo` with `key()` returning the `#[resource(key = ...)]` value, and the
@@ -89,7 +89,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 }
             }
 
-            // ADR-0067 §Deferred: an order-sensitive positional fold over
+            // per-resource revoke deferral: an order-sensitive positional fold over
             // every declared `#[credential]` `SlotCell` field's
             // generation (NOT `max` — `max` misses a rotation of a
             // non-max slot, #690 review / #680). Derive-emitted so a
@@ -128,7 +128,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     // Inherent read accessors over the author-declared `SlotCell` slot
     // fields. The macro adds no fields — the cell is declared by the author
-    // and populated/rotated by the framework through `&self` (ADR-0044).
+    // and populated/rotated by the framework through `&self` (slot model).
     let slot_accessor_impl = quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {
             #slot_accessors

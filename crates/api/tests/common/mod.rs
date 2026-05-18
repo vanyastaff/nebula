@@ -146,7 +146,7 @@ pub(crate) fn create_test_jwt() -> String {
 
 /// Permissive [`CredentialSchemaPort`] test double: accepts any `data`,
 /// exposes no catalog types. Wired by default into [`create_state_with_queue`]
-/// so credential happy-path tests keep their pre-ADR-0052-P4 behavior
+/// so credential happy-path tests keep their pre--P4 behavior
 /// (the old fail-open persisted unvalidated; the correct test default is
 /// "a validator is present and permissive"). The reject / no-port cases
 /// are exercised explicitly by `tests/seam_credential_write_path_validation.rs`.
@@ -219,7 +219,7 @@ pub(crate) struct PortHandles {
 /// tuple. The engine's internal `engine_scope()` placeholder is
 /// substituted by the request-scope-bound decorator the seam wraps the
 /// stores in (engine per-execution scoping is a separate, tracked
-/// follow-up — see ADR-0072 "Known follow-up").
+/// follow-up — see storage port migration "Known follow-up").
 pub(crate) fn port_scope() -> Scope {
     Scope::new(TEST_WS, TEST_ORG)
 }
@@ -338,7 +338,7 @@ impl PortHandles {
 ///
 /// When `with_credential_port` is `true` a [`PermissiveCredentialSchemaPort`]
 /// is wired (the credential happy-path default); when `false` the
-/// credential-schema port is left unset so the ADR-0052 P4 seam test can
+/// credential-schema port is left unset so the credential-schema validation seam test can
 /// assert the unconfigured write path returns 503 (never persists
 /// unvalidated).
 async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHandles) {
@@ -459,14 +459,14 @@ pub(crate) async fn create_state_with_port_handles() -> (AppState, PortHandles) 
 
 /// Create an `AppState` wired through the scoped storage port, returning
 /// the state and the raw `InMemoryControlQueue` handle. This is the
-/// canonical §13-knife wiring; the asserted invariants are unchanged
+/// canonical integration seam-knife wiring; the asserted invariants are unchanged
 /// from the pre-port path (see this file's header).
 pub(crate) async fn create_state_with_port_queue() -> (AppState, InMemoryControlQueue) {
     create_state_with_queue().await
 }
 
 /// Same as [`create_state_with_queue`] but with **no** credential-schema
-/// port wired — for the ADR-0052 P4 seam test that asserts the
+/// port wired — for the credential-schema validation seam test that asserts the
 /// unconfigured write path returns 503 (never persists unvalidated).
 /// Port-wired exactly like [`build_port_state`], minus the
 /// `with_credential_schema` call.
@@ -479,7 +479,7 @@ pub(crate) async fn create_state_with_queue_no_credential_port() -> (AppState, I
 // ── `me/*` end-to-end harness (Phase 2) ──────────────────────────────────────
 //
 // Builds an `AppState` wired with a real `InMemoryAuthBackend` (the
-// §4.5-honest production-quality Plane-A backend — Argon2id / RFC 6238
+// honest capability-honest production-quality Plane-A backend — Argon2id / RFC 6238
 // TOTP / SHA-256 PAT lookup), registers one user, and hands back a JWT
 // whose `sub` is that user's real `UserId`. The auth middleware's JWT
 // path parses `sub` via `UserId::from_str` → `Principal::User`, so the
@@ -711,10 +711,10 @@ pub(crate) mod org_support {
     }
 }
 
-// ── Orchestration-absent control queue (canon §13 step 6) ─────────────────────
+// ── Orchestration-absent control queue (integration seam step 6) ─────────────────────
 
 /// A scoped control-queue port whose `enqueue` always fails — simulates
-/// the "orchestration backend unavailable" scenario (canon §13 step 6).
+/// the "orchestration backend unavailable" scenario (integration seam step 6).
 /// `StorageError::Internal` is the sentinel `cancel_execution` /
 /// `terminate_execution` map to `ApiError::ServiceUnavailable` → HTTP 503.
 #[derive(Debug)]
@@ -773,12 +773,12 @@ impl nebula_storage_port::store::ControlQueue for AlwaysFailControlQueue {
 }
 
 /// Create an `AppState` wired through the storage port whose **control
-/// queue** always fails on `enqueue` (canon §13 step 6). Every other
+/// queue** always fails on `enqueue` (integration seam step 6). Every other
 /// store is the normal in-memory port adapter behind its `nebula-tenancy`
 /// scoping decorator — only the control queue is the always-fail double.
 ///
 /// Returns the state plus the raw (undecorated) [`InMemoryExecutionStore`]
-/// so the §13 step-6 test can seed a running execution row directly under
+/// so the integration seam step-6 test can seed a running execution row directly under
 /// [`port_scope`] before asserting the enqueue-fails-503 path. The store is
 /// `Clone` over an `Arc<Mutex<…>>`, so the returned handle shares state
 /// with the scoping-decorated one inside `AppState`.
@@ -814,7 +814,7 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
     (state, exec_store)
 }
 
-// ── Engine seam harness (canon §13 step 5 / ADR-0008 A3 / ADR-0016) ──────────
+// ── Engine seam harness (integration seam step 5 / control-queue terminate dispatch / cooperative cancel) ──────────
 //
 // Shared real-engine-consumer wiring for the durable-control-plane seam
 // tests. The producer half (API enqueues `Cancel` / `Terminate`) is
@@ -824,7 +824,7 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
 // repos the API writes to.
 //
 // `knife.rs::knife_step5_engine_cancels_running_execution_end_to_end`
-// (the canon §13 seam) and
+// (the integration seam seam) and
 // `execution_terminate_e2e.rs::terminate_engine_drives_running_execution_to_terminal_end_to_end`
 // both source the wiring here so they differ ONLY in the final HTTP call
 // (DELETE-cancel vs POST-terminate) and the command/terminal assertion.
@@ -1028,7 +1028,7 @@ pub(crate) mod engine_seam {
         // per-request tenant scope in its accessors; the engine, by
         // contrast, still calls its store handles with the internal
         // `engine_scope()` placeholder (a separate, tracked follow-up —
-        // see ADR-0072 "Known follow-up: engine per-execution tenant
+        // see storage port migration "Known follow-up: engine per-execution tenant
         // scoping"). To keep the seam coherent the engine-side handles
         // are wrapped here in `nebula-tenancy` decorators bound to
         // `port_scope()` — the request scope the API derives and the

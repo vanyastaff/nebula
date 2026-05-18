@@ -166,7 +166,7 @@ impl AckResponse {
 
 /// Wrapper around `nebula_core::OrgRole` exposed at the API boundary.
 ///
-/// Per ADR-0047 cross-layer schema strategy, the API contract MUST NOT embed
+/// Per stub-endpoint policy cross-layer schema strategy, the API contract MUST NOT embed
 /// `nebula_core` types directly in OpenAPI components. The string form is
 /// stable across role-set evolutions in the core crate.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -178,7 +178,7 @@ impl OrgRoleDto {
     /// The canonical lowercase wire token for an [`nebula_core::OrgRole`].
     ///
     /// This is the **single** place the `OrgRole` ↔ wire-string mapping
-    /// lives (ADR-0047 §3: the public spec must not embed `nebula_core`
+    /// lives (3: the public spec must not embed `nebula_core`
     /// enum names — `OrgMember`/`OrgOwner` are internal Rust identifiers).
     /// The tokens (`member`/`billing`/`admin`/`owner`) are stable across
     /// core role-set evolution.
@@ -189,7 +189,7 @@ impl OrgRoleDto {
     /// `org_role_token_roundtrips_every_variant` (a unit test that
     /// enumerates the current set) plus this debug assertion make the
     /// omission loud the moment a variant is added, so the gap is fixed
-    /// at the mapping, not silently shipped (canon §4.5).
+    /// at the mapping, not silently shipped (honest capability contract).
     #[must_use]
     pub fn token(role: nebula_core::OrgRole) -> &'static str {
         use nebula_core::OrgRole::{OrgAdmin, OrgBilling, OrgMember, OrgOwner};
@@ -212,7 +212,7 @@ impl OrgRoleDto {
     /// Parse a wire token back into an [`nebula_core::OrgRole`].
     ///
     /// `None` for any token outside the canonical set — the handler maps
-    /// that to a 400 (RFC 9457) rather than guessing a role (canon §4.5:
+    /// that to a 400 (RFC 9457) rather than guessing a role (honest capability contract:
     /// no silent coercion of an unrecognised privilege level).
     #[must_use]
     pub fn parse(token: &str) -> Option<nebula_core::OrgRole> {

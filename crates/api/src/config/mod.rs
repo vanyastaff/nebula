@@ -45,8 +45,8 @@ use crate::middleware::idempotency::{
 ///
 /// The 1 MiB figure is a guard rail from the 2026-04-19 audit
 /// (`docs/audit/2026-04-19-codebase-quality-audit.md` §"Guard rails"
-/// #2) and a pre-condition of ADR-0020
-/// (`docs/adr/0020-library-first-gtm.md` §3 #3) for any
+/// #2) and a pre-condition of REST limits
+/// ( §3 #3) for any
 /// composition-root binary.
 ///
 /// The webhook transport applies its own cap on its sub-router
@@ -127,11 +127,11 @@ pub struct ApiConfig {
     /// Pagination defaults and caps.
     pub pagination: PaginationConfig,
 
-    /// Idempotency-Key middleware configuration (see ADR-0048).
+    /// Idempotency-Key middleware configuration (see idempotency backend).
     #[serde(default)]
     pub idempotency: IdempotencyApiConfig,
 
-    /// Webhook subsystem configuration (M3.3 / ADR-0049).
+    /// Webhook subsystem configuration (webhook activation).
     #[serde(default)]
     pub webhook: WebhookApiConfig,
 }

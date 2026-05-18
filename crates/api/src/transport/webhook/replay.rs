@@ -1,4 +1,4 @@
-//! Replay-window rejection reason mapping (M3.3 / ADR-0049).
+//! Replay-window rejection reason mapping (webhook activation).
 //!
 //! Maps a signature-failure reason code to the corresponding
 //! replay-window rejection reason code used by the

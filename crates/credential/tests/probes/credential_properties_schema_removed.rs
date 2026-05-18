@@ -1,4 +1,4 @@
-//! Probe — ADR-0052 P3: `Credential::properties_schema()` is removed.
+//! Probe — schema-of properties: `Credential::properties_schema()` is removed.
 //!
 //! The `Properties: HasSchema` associated-type bound is the single source of
 //! truth; schema is reached via `nebula_schema::schema_of::<C::Properties>()`.

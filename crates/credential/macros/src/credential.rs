@@ -1,4 +1,4 @@
-//! `#[derive(Credential)]` macro implementation — Phase 5 / ADR-0044 / M6 redesign.
+//! `#[derive(Credential)]` macro implementation — Phase 5 / slot model / M6 redesign.
 //!
 //! Mirrors `#[derive(Resource)]` (Phase 4) and `#[derive(Action)]` (Phase 3) on
 //! the slot-binding family. Credentials are the *leaf* of the dependency
@@ -17,7 +17,7 @@
 //! - `properties = TypePath` — Direct path to the `<Name>Properties` struct that owns the
 //!   setup-form schema. Mutually exclusive with `protocol`. The macro emits `type Properties =
 //!   #properties`; the generated metadata reads the schema via
-//!   `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3 — no per-trait schema method).
+//!   `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties — no per-trait schema method).
 //!   When
 //!   `properties` is supplied, the user is responsible for implementing [`Credential::resolve`]
 //!   (and [`Credential::project`] when scheme ≠ state) on a separate inherent impl block.
@@ -43,7 +43,7 @@
 //! - Renamed emitted `type Input` → `type Properties` to mirror `Action::Input` /
 //!   `Resource::Config` and shift schema ownership from instance metadata to a type-level companion
 //!   struct. Generated metadata reads the schema via
-//!   `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3 — the
+//!   `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties — the
 //!   `Properties: HasSchema` bound is the single source of truth; no schema method on the trait).
 //! - Added a `properties = TypePath` attribute as the canonical, direct way to specify the
 //!   companion struct (no longer requires plumbing through a `StaticProtocol` indirection when the

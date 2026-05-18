@@ -45,7 +45,7 @@ pub struct ProviderResolution {
     pub lease: Option<LeaseHandle>,
     /// Suggested time-to-live for the resolved secret. `None` means the
     /// provider has no TTL hint — the consumer (e.g.
-    /// `ProviderCacheLayer` in `nebula-storage`, future work per ADR-0051)
+    /// `ProviderCacheLayer` in `nebula-storage`, future work per external provider)
     /// applies its own default, which may itself be "do not cache".
     pub ttl: Option<Duration>,
 }

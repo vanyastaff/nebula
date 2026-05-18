@@ -13,7 +13,7 @@
 //!   independently of the assoc-type set.
 //!
 //! Together these capture the structural reason the phantom-shim
-//! pattern (ADR-0035 1) exists: `dyn Credential` is doubly blocked,
+//! pattern (capability macro 1) exists: `dyn Credential` is doubly blocked,
 //! and any `dyn`-position use must route through a phantom trait that
 //! has neither `const KEY` nor unspecified associated types.
 

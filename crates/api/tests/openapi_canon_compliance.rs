@@ -1,10 +1,10 @@
-//! Canon §4.5 stub-honesty gate (M3.2 Task 6.5).
+//! honest capability contract stub-honesty gate (M3.2 Task 6.5).
 //!
 //! Locks the OpenAPI document against the failure mode where a stub
 //! handler is silently advertised as a fully-shipped endpoint.
 //!
 //! **Static check** — every operation flagged `deprecated = true` MUST
-//! declare a `501` response (ADR-0047 Stub Endpoint Policy).
+//! declare a `501` response (stub endpoint policy).
 //!
 //! **Runtime check** — every honest-501 stub endpoint is probed against a
 //! booted in-memory app. The remaining inventory is the org-record
@@ -13,19 +13,19 @@
 //! handlers.
 //!
 //! Graduated stub→implemented (removed from this inventory):
-//! `execution::terminate` via the durable control queue (ADR-0008 A3 /
-//! ADR-0016, covered by `execution_terminate_e2e.rs`); the five `me/*`
+//! `execution::terminate` via the durable control queue (control-queue terminate dispatch /
+//! cooperative cancel, covered by `execution_terminate_e2e.rs`); the five `me/*`
 //! profile/PAT endpoints (`get_me`, `update_me`, `list_my_tokens`,
 //! `create_token`, `delete_token`) via the Plane-A `AuthBackend` port
 //! (covered by `me_e2e.rs`); — Phase 3 — `me::list_my_orgs` plus the
 //! three org member endpoints (`org::list_members`, `org::add_member`,
-//! `org::remove_member`) via the shared `MembershipStore` (canon §4.5
+//! `org::remove_member`) via the shared `MembershipStore` (honest capability contract
 //! "Option 1" honest contract — the fake email-invitation shape was
 //! dropped for direct add-by-principal; covered, incl. abuse cases, by
 //! `org_e2e.rs`); and the resource catalog surface
 //! (`resource::{list,get,create,update,delete}_resource` +
 //! `resource::get_resource_status`) — config-CRUD + CAS + a read-only
-//! runtime-status projection (ADR-0067; covered by
+//! runtime-status projection (resource runtime status; covered by
 //! `resource_handlers.rs`). The org-record + service-account endpoints
 //! stay honest-501 (no org-record store; no end-to-end
 //! `Principal::ServiceAccount` auth path).
@@ -35,7 +35,7 @@
 //! body and **403** (`ApiError::InsufficientRole` / `Forbidden`) for
 //! stubs whose RBAC gate (`tenant.require(...)`) runs before the handler.
 //! Both 403 and 501 are explicitly advertised in the spec for RBAC-gated
-//! stubs (see ADR-0047 §4 Stub Endpoint Policy + the per-handler
+//! stubs (see 4 Stub Endpoint Policy + the per-handler
 //! `responses(...)` blocks). The legacy 500 outcome (when the stub
 //! returned `ApiError::Internal("not implemented")`) is no longer
 //! accepted — that deviation closed when stubs migrated to
@@ -117,8 +117,8 @@ async fn deprecated_operations_must_advertise_501_response() {
                 });
             assert!(
                 responses.contains_key("501"),
-                "Deprecated operation {method} {path} MUST declare a 501 response per ADR-0047 \
-                 Stub Endpoint Policy; got responses: {:?}",
+                "Deprecated operation {method} {path} MUST declare a 501 response per stub \
+                 endpoint policy; got responses: {:?}",
                 responses.keys().collect::<Vec<_>>()
             );
         }
@@ -172,11 +172,11 @@ fn stub_endpoints() -> Vec<(&'static str, String, Option<&'static str>)> {
         ),
         // resource — 0 stubs (the whole resource catalog surface
         // graduated stub→implemented: config-CRUD + CAS + a read-only
-        // runtime-status projection, ADR-0067; covered end-to-end by
+        // runtime-status projection, resource runtime status; covered end-to-end by
         // resource_handlers.rs).
         // execution — 1 stub (terminate graduated stub→implemented:
-        // real §12.2 durable-control-queue endpoint, ADR-0008 A3 /
-        // ADR-0016; covered end-to-end by execution_terminate_e2e.rs).
+        // real durable control queue durable-control-queue endpoint, control-queue terminate dispatch /
+        // cooperative cancel; covered end-to-end by execution_terminate_e2e.rs).
         (
             "POST",
             format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}/executions/{_exec_id}/restart"),
@@ -199,13 +199,13 @@ async fn stub_endpoints_return_501_at_runtime() {
         "stub coverage list must enumerate all remaining audit class-(c) \
          endpoints. The M3.2 audit identified 18. Graduated \
          stub→implemented (removed from this inventory): \
-         `execution::terminate` (ADR-0008 A3 / ADR-0016 — \
+         `execution::terminate` (control-queue terminate / cooperative cancel — \
          execution_terminate_e2e.rs); the five `me/*` profile/PAT \
          endpoints (Plane-A `AuthBackend` port — me_e2e.rs); **Phase \
          3** `me::list_my_orgs` + the three org member endpoints \
          (`list_members`/`add_member`/`remove_member`) via the shared \
          `MembershipStore` (org_e2e.rs); and the resource catalog surface \
-         (config-CRUD + CAS + read-only status, ADR-0067 — \
+         (config-CRUD + CAS + read-only status, resource runtime status — \
          resource_handlers.rs). That leaves 7 honest-501: 3 org-record \
          (`get`/`update`/`delete_org`) + 3 service-account + execution \
          restart; got {}",
@@ -235,8 +235,8 @@ async fn stub_endpoints_return_501_at_runtime() {
         let status = response.status().as_u16();
         assert!(
             status == 501 || status == 403,
-            "Stub endpoint {method} {path} expected 501 (per ADR-0047 Stub \
-             Endpoint Policy + the `ApiError::NotImplemented` variant) or \
+            "Stub endpoint {method} {path} expected 501 (per stub endpoint \
+             policy + the `ApiError::NotImplemented` variant) or \
              403 (per the RBAC gate, when the handler carries one); got \
              {status}. Either the stub got accidentally implemented (drop \
              the `#[deprecated]` + 501 response declaration) or auth/tenancy \
@@ -249,7 +249,7 @@ async fn stub_endpoints_return_501_at_runtime() {
         // application/problem+json` per RFC 9457. A 501 emitted by
         // middleware (or a generic axum error path) would carry a
         // different content-type — this assertion confirms the request
-        // actually reached the handler and the canon §4.5 honesty
+        // actually reached the handler and the honest capability contract honesty
         // contract was exercised end-to-end.
         let content_type = response
             .headers()

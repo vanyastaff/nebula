@@ -262,8 +262,8 @@ impl Manager {
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released. The credential reverse-
-        // index (used by ADR-0036's singular rotation dispatch) was
-        // removed in Phase 4 / ADR-0044; per-slot rotation will be
+        // index (used by credential isolation's singular rotation dispatch) was
+        // removed in Phase 4 / slot model; per-slot rotation will be
         // wired in a follow-up (.ai-factory/PHASE4_BLOCKED.md).
         self.registry.clear();
 

@@ -1,6 +1,6 @@
 //! OpenAPI 3.1 spec generation for `nebula-api`.
 //!
-//! See [ADR-0047](../../../../docs/adr/0047-openapi-31-generator.md) for
+//! See [stub-endpoint policy](../../../../) for
 //! the library choice rationale, drift-detection guarantees, stub-endpoint
 //! policy, and cross-layer schema strategy.
 //!

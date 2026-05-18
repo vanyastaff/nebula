@@ -150,7 +150,7 @@ pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
     pub(crate) observer: Arc<dyn CredentialObserver>,
     // Read by `ensure_local_source` on every secret-resolving entry
     // point. `External` is configurable but its resolution wiring (the
-    // ADR-0051 Phase-D bridge) is not implemented here yet, so it fails
+    // external provider bridge bridge) is not implemented here yet, so it fails
     // typed rather than silently resolving from the local store.
     pub(crate) source: StateSource,
 }
@@ -189,7 +189,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     ///
     /// [`external_providers`](crate::CredentialServiceBuilder::external_providers)
     /// records an [`StateSource::External`] but the resolution wiring that
-    /// would route through the provider chain is the ADR-0051 Phase-D
+    /// would route through the provider chain is the external provider bridge
     /// bridge, not yet implemented in this crate. Without this guard a
     /// caller that configured Vault would silently get material resolved
     /// from the *local* store — a wrong-source security hazard. Every
@@ -223,7 +223,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// resolve it to encrypted state, and persist it scoped to `scope`.
     ///
     /// The validation pipeline is the canonical credential pipeline
-    /// (canon §12.5): `schema_of::<Properties>().validate(FieldValues)`
+    /// (credential secrecy): `schema_of::<Properties>().validate(FieldValues)`
     /// then a typed `serde_json::from_value` round-trip — a `{"$expr": ..}`
     /// envelope survives schema validation but is refused by the typed
     /// deserialize, so secrets never depend on workflow state.
@@ -533,7 +533,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// is written back under compare-and-swap on the version observed at
     /// load; a concurrent refresh/update wins and this attempt fails
     /// explicitly with [`CredentialServiceError::VersionConflict`] —
-    /// canon §13.2: refresh must never silently strand a concurrent
+    /// concurrent-refresh contract: refresh must never silently strand a concurrent
     /// write. If another replica coalesced the refresh
     /// (`RefreshOutcome::CoalescedByOtherReplica`) the write is **skipped
     /// entirely** and the now-fresher state is re-read from the store
@@ -588,7 +588,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             // Another replica already refreshed and persisted fresher
             // state. Re-writing the un-mutated local copy here would
             // either spuriously `VersionConflict` or clobber that fresher
-            // state (canon §13.2). Skip the write entirely and return the
+            // state (concurrent-refresh contract). Skip the write entirely and return the
             // store's current (post-coalesce) snapshot.
             crate::ops::RefreshOutcomeKind::CoalescedReRead => {
                 let credential_id = CredentialId::parse(&stored.id).map_err(|e| {
@@ -629,7 +629,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         // Re-persist under compare-and-swap on the version observed at
         // load. A concurrent refresh/update that landed in between wins
         // and this attempt fails *explicitly* with `VersionConflict`
-        // (canon §13.2: refresh must never silently strand a concurrent
+        // (concurrent-refresh contract: refresh must never silently strand a concurrent
         // write; failure is explicit). Blind `Overwrite` here would
         // last-writer-wins and clobber the racing write.
         self.store
@@ -722,7 +722,7 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// interactive flows.
     ///
     /// Validation is the canonical credential pipeline (the `$expr`
-    /// refusal point, canon §12.5). A `Complete` resolution is persisted
+    /// refusal point, credential secrecy). A `Complete` resolution is persisted
     /// through the same path as [`create`](Self::create) and returned as
     /// [`Acquisition::Complete`]; a `Pending` kickoff returns
     /// [`Acquisition::Pending`] with the opaque token + UI instruction.
@@ -1021,7 +1021,7 @@ pub mod test_support {
     //! three first-party builtins registered into the
     //! registry/dispatch/ops, and a `NoopObserver`.
     //!
-    //! # ADR-0023
+    //! # test-util gating
     //!
     //! This module is gated `cfg(any(test, feature = "test-util"))`. The
     //! `test-util` feature MUST NOT be enabled in a release/production
@@ -1179,7 +1179,7 @@ pub mod test_support {
     /// prove the success path fired the observer hook.
     ///
     /// The static builtins cannot exercise any positive capability path
-    /// (refresh CAS + retry, the coalesced re-read branch, the §13.2
+    /// (refresh CAS + retry, the coalesced re-read branch, the concurrent-refresh
     /// version-conflict branch); this fixture-enabled variant does.
     pub fn in_memory_service_with_fixtures() -> (
         CredentialService<InMemoryStore, InMemoryPendingStore>,
@@ -1638,7 +1638,7 @@ mod tests {
     /// A concurrent version bump landing between refresh's internal load
     /// and its compare-and-swap re-persist makes `refresh()` fail
     /// *explicitly* with `VersionConflict` rather than silently
-    /// clobbering the racing write (the canon §13.2 contract).
+    /// clobbering the racing write (the concurrent-refresh contract contract).
     ///
     /// Determinism: the fixture's `refresh` parks on a 2-party rendezvous
     /// barrier *after* mutating its local state but *before* the service

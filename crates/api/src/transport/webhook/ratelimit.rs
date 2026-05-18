@@ -1,4 +1,4 @@
-//! Per-path webhook rate limiting (M3.3 / ADR-0049).
+//! Per-path webhook rate limiting (webhook activation).
 //!
 //! Wraps [`nebula_resilience::SlidingWindow`] with per-path tracking:
 //! each unique webhook path gets an independent sliding-window
@@ -19,7 +19,7 @@
 //! Lives under `transport::webhook` (not `middleware/`) because it is
 //! consumed exclusively by [`super::WebhookTransport`] — no axum
 //! `Layer`/`Service` plumbing exists. The previous `middleware/`
-//! placement was a misnomer; M3.3 / ADR-0049 phase F1 collapses the
+//! placement was a misnomer; webhook activation phase F1 collapses the
 //! parallel slug pipeline so the only consumer is the transport.
 
 use std::{sync::Arc, time::Duration};

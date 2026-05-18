@@ -114,7 +114,7 @@ impl PendingToken {
     ///
     /// Callable by pending-store impls that live outside this crate (see
     /// `nebula_storage::credential::pending::InMemoryPendingStore` —
-    /// canonical home per ADR-0032 §7).
+    /// canonical home per storage credential layers §7).
     pub fn generate() -> Self {
         use rand::RngExt;
         let mut rng = rand::rng();

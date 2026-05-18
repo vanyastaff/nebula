@@ -77,7 +77,7 @@ pub async fn list_credentials(
 ///
 /// Validates the request body, then delegates to the credential store
 /// for persistence. When a credential-schema port is configured
-/// (ADR-0052 P4), `data` is validated against the credential type's
+/// (credential-schema validation), `data` is validated against the credential type's
 /// resolved schema before encryption and storage; if no validator is
 /// configured the request is rejected with 503 — `data` is never
 /// persisted unvalidated.
@@ -96,7 +96,7 @@ pub async fn list_credentials(
         (status = 400, description = "Validation error: `data` failed the credential type's schema, or key/name shape invalid.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured: `data` cannot be validated, so it is not persisted (ADR-0052 P4, canon §4.5 fail-closed).", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured: `data` cannot be validated, so it is not persisted (credential-schema validation, honest capability fail-closed).", body = ProblemDetails),
     ),
 )]
 pub async fn create_credential(
@@ -175,7 +175,7 @@ pub async fn get_credential(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
         (status = 409, description = "Optimistic-concurrency version mismatch.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured: supplied `data` cannot be validated, so it is not persisted (ADR-0052 P4, canon §4.5 fail-closed).", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured: supplied `data` cannot be validated, so it is not persisted (credential-schema validation, honest capability fail-closed).", body = ProblemDetails),
     ),
 )]
 pub async fn update_credential(
@@ -384,7 +384,7 @@ pub async fn revoke_credential(
         (status = 400, description = "Validation error (key or data shape).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Honest stub (canon §4.5): the route is reachable but generic credential resolution is engine-owned (`Credential::resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
+        (status = 503, description = "Honest stub (honest capability contract): the route is reachable but generic credential resolution is engine-owned (`Credential::resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
     ),
 )]
 pub async fn resolve_credential(
@@ -423,7 +423,7 @@ pub async fn resolve_credential(
         (status = 400, description = "Validation error (e.g. empty `pending_token`).", body = ProblemDetails),
         (status = 401, description = "Authentication required or pending token expired/already-consumed.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Honest stub (canon §4.5): the route is reachable but generic interactive continuation is engine-owned (`Interactive::continue_resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
+        (status = 503, description = "Honest stub (honest capability contract): the route is reachable but generic interactive continuation is engine-owned (`Interactive::continue_resolve` dispatch via `nebula-engine::credential`) and requires a `CredentialRegistry` not wired into this build, so it refuses rather than faking success.", body = ProblemDetails),
     ),
 )]
 pub async fn continue_resolve_credential(
@@ -460,7 +460,7 @@ pub async fn continue_resolve_credential(
     responses(
         (status = 200, description = "Registered credential types with capability flags and input schema.", body = ListCredentialTypesResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured (ADR-0052 P4, honest §4.5 stub).", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured (credential-schema validation, honest capability stub).", body = ProblemDetails),
     ),
 )]
 pub async fn list_credential_types(
@@ -487,7 +487,7 @@ pub async fn list_credential_types(
         (status = 400, description = "Invalid credential type key.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 404, description = "Credential type not registered.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured (ADR-0052 P4, honest §4.5 stub).", body = ProblemDetails),
+        (status = 503, description = "Credential-schema port not configured (credential-schema validation, honest capability stub).", body = ProblemDetails),
     ),
 )]
 pub async fn get_credential_type(

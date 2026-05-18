@@ -1,6 +1,6 @@
 //! Per-domain modules + route assembly for the Nebula API.
 //!
-//! Per canon §12.7 each domain is a self-contained module
+//! Per domain-module layout each domain is a self-contained module
 //! `domain/<x>/{routes,handler,dto}.rs` instead of the old triple-spread
 //! across `handlers/` + `routes/` + `models/`. Cross-domain shared DTOs
 //! live in [`shared`]; the Plane-A auth backend subsystem lives under
@@ -20,7 +20,7 @@
 //! with `#[utoipa::path]`-derived **relative** paths (e.g. `/auth/signup`);
 //! the `/api/v1` prefix is applied via `OpenApiRouter::nest` inside
 //! `build_openapi_router` so the published spec and the served route
-//! table share one source of truth (ADR-0047 drift-detection guarantee).
+//! table share one source of truth (stub-endpoint policy drift-detection guarantee).
 
 pub mod auth;
 pub mod catalog;
@@ -72,7 +72,7 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     // Auth routes — no auth middleware, no tenant scope.
     let auth_routes = auth::routes::router();
 
-    // Webhook routes (M3.3 / ADR-0049): mounted by `transport.router()`
+    // Webhook routes (webhook activation): mounted by `transport.router()`
     // in `app::build_app` directly. The legacy `routes::webhook`
     // module has been absorbed into `transport::webhook::transport`
     // — slug and programmatic surfaces share `dispatch_inner` there.
@@ -109,7 +109,7 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
             auth_middleware,
         ));
 
-    // Credential OAuth callback routes (Plane B — ADR-0031).
+    // Credential OAuth callback routes (Plane B — API-owned OAuth flow).
     let credential_routes = credential::routes::router().layer(middleware::from_fn_with_state(
         state.clone(),
         auth_middleware,

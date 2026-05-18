@@ -96,8 +96,8 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialServiceBuilder<B, PS> 
     ///
     /// **Not yet wired.** This records the provider on the service, but
     /// the resolution path that routes through an external chain is the
-    /// ADR-0051 Phase-D external-source bridge, which is out of this
-    /// crate's current scope (see `docs/adr/0066` / the credential-runtime
+    /// external provider bridge external-source bridge, which is out of this
+    /// crate's current scope (see  / the credential-runtime
     /// subsystem spec §8). Until that lands, a service built with an
     /// external source rejects every secret-resolving call
     /// (`create` / `resolve` / `continue_resolve`) with

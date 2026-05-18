@@ -152,7 +152,7 @@ pub enum UserInput {
 /// were waiting on the cross-replica claim. Callers treat it as success
 /// and re-read the credential state from the store.
 ///
-/// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)
+/// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh)
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum RefreshOutcome {

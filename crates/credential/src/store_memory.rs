@@ -1,11 +1,11 @@
 //! Test-only in-memory credential store.
 //!
 //! This is a **test shim**. The canonical production `InMemoryStore` lives
-//! in `nebula_storage::credential::InMemoryStore` per ADR-0032. A copy
+//! in `nebula_storage::credential::InMemoryStore` per storage credential layers. A copy
 //! is kept here (and only here) under `#[cfg(any(test, feature = "test-util"))]`
 //! because credential's own internal tests (`resolver.rs`, layer tests, etc.)
 //! must not depend on `nebula-storage` — that would introduce a dep cycle
-//! that ADR-0032 §3 explicitly forbids ("`nebula-credential → nebula-storage`
+//! that storage credential layers §3 explicitly forbids ("`nebula-credential → nebula-storage`
 //! is forbidden. Credential's `Cargo.toml` MUST NOT list `nebula-storage`").
 //!
 //! Production consumers (composition roots, examples, docs) should import
@@ -32,7 +32,7 @@ pub struct InMemoryStore {
     /// map, and returns without awaiting under the guard, so a
     /// `parking_lot::RwLock` in a sync block would be cheaper. Perf is
     /// irrelevant in this shim; production storage lives in
-    /// `nebula-storage` per ADR-0032. Do **NOT** cargo-cult this
+    /// `nebula-storage` per storage credential layers. Do **NOT** cargo-cult this
     /// `tokio::RwLock<HashMap<...>>` pattern into a production module
     /// where the guard could cross an `.await` — that's the
     /// issue-#587-shaped perf cost the audit flagged.

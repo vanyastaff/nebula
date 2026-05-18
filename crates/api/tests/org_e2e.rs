@@ -5,7 +5,7 @@
 //! `GET`/`POST`/`DELETE` under `…/orgs/{org}/members`. These tests drive
 //! the full middleware → RBAC → handler → store path against a real
 //! in-memory backing (not a mock), reusing the `common::org_support`
-//! harness (no fixture duplication — Phase-1/2 shared-harness rule).
+//! harness (no fixture duplication — 2 shared-harness rule).
 //!
 //! The org-record (`GET`/`PATCH`/`DELETE /orgs/{org}`) and service-account
 //! endpoints stay honest-501; their 501 contract is locked by
@@ -77,7 +77,7 @@ fn get(uri: &str, jwt: &str) -> Request<Body> {
 }
 
 /// State-changing request with the double-submit CSRF pair the JWT auth
-/// path requires (identical contract to the Phase-1/2 mutating helper).
+/// path requires (identical contract to the 2 mutating helper).
 fn mutating(method: &str, uri: &str, jwt: &str, json_body: Option<&str>) -> Request<Body> {
     let mut b = Request::builder()
         .method(method)
@@ -181,7 +181,7 @@ async fn list_members_returns_seeded_admin() {
     assert_eq!(members.len(), 1);
     assert_eq!(members[0]["principal_id"], admin.user_id);
     assert_eq!(members[0]["role"], "admin");
-    // §4.5: dropped fields must NOT reappear.
+    // honest capability: dropped fields must NOT reappear.
     assert!(
         members[0].get("email").is_none() && members[0].get("joined_at").is_none(),
         "MemberSummary must not carry synthesized email/joined_at"
@@ -678,7 +678,7 @@ async fn member_endpoints_require_auth() {
 // longer auto-seeds a `MembershipStore` (an auto-seeded bootstrap owner
 // could never authenticate against the empty default `AuthBackend`, so a
 // seeded store would 404-deadlock every org/workspace route — a
-// deployment-level §4.5 false capability). `create_org_state_without_store`
+// deployment-level honest capability false capability). `create_org_state_without_store`
 // reproduces that exact shape (`membership_store == None`, auth wired).
 // The contract: RBAC stays inert (request reaches the handler, NOT a 404)
 // and the org member handlers fail closed with an honest **503** — the

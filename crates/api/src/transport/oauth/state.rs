@@ -6,7 +6,7 @@
 //! attempt to a specific credential and preventing cross-credential
 //! state confusion attacks.
 //!
-//! See ADR-0031 for the OAuth flow ownership decision.
+//! See API-owned OAuth flow for the OAuth flow ownership decision.
 
 use std::time::Duration;
 

@@ -5,7 +5,7 @@
 //! request extensions so downstream middleware and handlers can use either.
 //!
 //! This is **not** integration credential OAuth (**Plane B**). Integration OAuth client routes
-//! live in the `credential` module; see ADR-0033.
+//! live in the `credential` module; see auth plane separation.
 
 use std::str::FromStr;
 

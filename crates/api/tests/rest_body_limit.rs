@@ -1,4 +1,4 @@
-//! REST router body-limit integration test (ADR-0020 §3 pre-condition #3).
+//! REST router body-limit integration test (REST body limit pre-condition #3).
 //!
 //! The webhook transport caps itself at
 //! `crates/api/src/webhook/transport.rs`. The REST surface
@@ -26,7 +26,7 @@ async fn create_test_state() -> AppState {
 }
 
 /// A 2 MiB POST on `/api/v1/workflows` must return `413 Payload Too Large`
-/// — the REST router carries a 1 MiB `DefaultBodyLimit` per ADR-0020 §3.
+/// — the REST router carries a 1 MiB `DefaultBodyLimit` per REST body limit.
 #[tokio::test]
 async fn rest_post_exceeding_limit_returns_413() {
     let state = create_test_state().await;

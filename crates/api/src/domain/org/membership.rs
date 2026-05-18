@@ -1,12 +1,12 @@
 //! Canonical in-memory [`MembershipStore`] implementation.
 //!
-//! This is the §4.5-honest production-quality default backing for org
+//! This is the honest capability-honest production-quality default backing for org
 //! membership — the same "the real impl *is* the in-memory one" posture
 //! the durable control queue ([`InMemoryControlQueueRepo`]) and the
 //! Plane-A identity backend ([`InMemoryAuthBackend`]) carry. There is no
 //! storage-backed alternative to wire: `nebula_storage` ships no
 //! `MembershipRepo` (the trait is an API-tier port, not a storage repo —
-//! cf. ADR-0047 §3 / the Phase-2 `AuthBackend` precedent).
+//! cf. 3 / the Phase-2 `AuthBackend` precedent).
 //!
 //! ## One shared store — RBAC coherence
 //!
@@ -17,7 +17,7 @@
 //! RBAC check (no propagation window) — locked by
 //! `tests/org_e2e.rs::added_member_is_immediately_rbac_authorized`.
 //!
-//! ## Provisioning (canon §4.5 / §12.5 — NOT auto-wired)
+//! ## Provisioning (honest capability contract / credential secrecy — NOT auto-wired)
 //!
 //! The default `apps/server` binary deliberately leaves
 //! [`crate::AppState::membership_store`] **unwired** (`None`). It is an
@@ -27,14 +27,14 @@
 //! route). Auto-seeding a bootstrap owner was removed (PR #671 P1) —
 //! the default `AuthBackend` is empty, so an auto-seeded owner could
 //! never authenticate and a seeded store would 404-deadlock every
-//! org/workspace route (a deployment-level §4.5 false capability); a
+//! org/workspace route (a deployment-level honest capability false capability); a
 //! hardcoded auto-seeded admin would also be a default-credential
-//! surface (§12.5). An operator/integrator provisions via
+//! surface (credential secrecy). An operator/integrator provisions via
 //! [`InMemoryMembershipStore::seeded_bootstrap`] +
 //! [`crate::AppState::with_membership_store`], registering the same
 //! bootstrap-owner identity in the wired `AuthBackend`.
 //!
-//! ## Durability (canon §11.6 / §11.5 — operator-facing)
+//! ## Durability (provisioning durability / engine durability — operator-facing)
 //!
 //! State is **process-local**: org memberships are held in a
 //! [`tokio::sync::RwLock`]-guarded map, lost on restart and **not** shared
@@ -64,7 +64,7 @@ use crate::{
 /// nothing, which would leave a wired-but-empty store dead-locking the
 /// RBAC gate — `feedback_no_shims`). String-typed parsing is kept in the
 /// API tier so an integrator crate that does not depend on `nebula_core`
-/// can still provision a store (ADR-0047 §3).
+/// can still provision a store (3).
 #[derive(Debug, Error)]
 pub enum BootstrapSeedError {
     /// `org_id` is not a valid `org_<ULID>`.
@@ -214,12 +214,12 @@ impl InMemoryMembershipStore {
     /// **not** called by the default `apps/server` composition — see
     /// `apps/server/src/compose.rs::default_state` for why auto-seeding
     /// would deadlock RBAC (no authenticatable owner) or introduce a
-    /// hardcoded-credential surface (canon §12.5); the default binary
+    /// hardcoded-credential surface (credential secrecy); the default binary
     /// returns an honest 503 for org member endpoints instead.
     ///
     /// String-typed (not `OrgId`/`UserId`) so an integrator in a crate
     /// that does not depend on `nebula_core` can still call it — the id
-    /// parsing stays in the API tier (ADR-0047 §3). A malformed identity
+    /// parsing stays in the API tier (3). A malformed identity
     /// is a hard [`BootstrapSeedError`] (fail closed — never seed
     /// nothing, which would dead-lock the RBAC gate).
     pub fn seeded_bootstrap(

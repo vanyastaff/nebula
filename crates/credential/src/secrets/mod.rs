@@ -1,4 +1,4 @@
-//! §12.5 primitives — AES-256-GCM, Argon2id KDF, PKCE, zeroizing secret wrappers.
+//! credential secrecy primitives — AES-256-GCM, Argon2id KDF, PKCE, zeroizing secret wrappers.
 //!
 //! Canon-level secret-handling primitives. Every plaintext buffer here is
 //! wrapped in `Zeroizing<T>` or a zeroize-on-drop newtype.

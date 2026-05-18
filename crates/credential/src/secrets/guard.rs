@@ -65,7 +65,7 @@ impl<S: Zeroize> Drop for CredentialGuard<S> {
 
 // SEC-05 (security hardening 2026-04-27 Stage 2): `Clone` impl removed.
 // Cloning a guard would create a second zeroize point on the same plaintext,
-// violating PRODUCT_CANON §4.2 invariant N10 ("plaintext does not cross
+// violating plaintext boundary invariant N10 ("plaintext does not cross
 // spawn boundary"). Each acquired secret has exactly one drop site.
 //
 // Pre-removal pattern (incorrect):

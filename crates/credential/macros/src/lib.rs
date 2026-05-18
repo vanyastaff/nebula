@@ -144,7 +144,7 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 /// Attribute macro for declaring a capability sub-trait.
 ///
 /// Expands a single capability trait declaration into the full
-/// ADR-0035 canonical form: real trait, service/scheme blanket impl,
+/// capability macro canonical form: real trait, service/scheme blanket impl,
 /// sealed-blanket, phantom trait, and phantom blanket. Hides the
 /// two-trait verbosity from everyday plugin and built-in code.
 ///
@@ -154,12 +154,12 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 ///   satisfy (e.g. `AcceptsBearer`).
 /// - `sealed = <Ident>` - the per-capability inner sealed trait inside the crate-root `mod
 ///   sealed_caps` (e.g. `BearerSealed`). The crate author must declare this module manually; see
-///   ADR-0035 4.1 / 4.2.
+///   capability macro 4.1 / 4.2.
 ///
 /// # Visibility
 ///
 /// The emitted phantom trait inherits the visibility of the capability
-/// trait (visibility-symmetry, per ADR-0035 §1 amendment 2026-04-26).
+/// trait (visibility-symmetry, per capability macro §1 amendment 2026-04-26).
 /// `pub trait Cap` produces `pub trait CapPhantom`; `pub(crate) trait
 /// Cap` produces `pub(crate) trait CapPhantom`. This composes correctly
 /// with crate-internal capabilities — forcing the phantom to a fixed
@@ -204,7 +204,7 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 /// - The trait has zero or multiple non-marker supertraits.
 ///
 /// A missing `mod sealed_caps` or missing inner sealed trait surfaces
-/// as `E0433` at the emitted blanket impl line per ADR-0035 4.1.
+/// as `E0433` at the emitted blanket impl line per capability macro 4.1.
 #[proc_macro_attribute]
 pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
     capability::expand(args, input)

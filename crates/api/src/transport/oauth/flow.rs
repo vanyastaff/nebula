@@ -1,6 +1,6 @@
 //! OAuth HTTP flow helpers for the API layer.
 //!
-//! ADR-0031: the API layer owns the OAuth flow HTTP ceremony (auth URI
+//! API-owned OAuth flow: the API layer owns the OAuth flow HTTP ceremony (auth URI
 //! construction, code→token exchange). Token endpoint policy and bounded
 //! body reads live in the sibling [`super::http`] module.
 

@@ -3,7 +3,7 @@
 //! The **member** routes (`list_members` / `add_member` / `remove_member`)
 //! are live (real 200/201 + typed errors). The **org-record** and
 //! **service-account** routes are still honest-501 stubs marked
-//! `#[deprecated]` so the generated OpenAPI spec flags them per ADR-0047
+//! `#[deprecated]` so the generated OpenAPI spec flags them per stub-endpoint policy
 //! Stub Endpoint Policy. The deprecation lint is silenced at module level
 //! because the stub handlers are intentionally mounted (returning 501) so
 //! the route table stays in sync with the published spec — the

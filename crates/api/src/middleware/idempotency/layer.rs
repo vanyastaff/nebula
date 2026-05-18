@@ -1,6 +1,6 @@
 //! Tower [`Layer`] + [`Service`] implementing idempotent-replay middleware.
 //!
-//! [`IdempotencyLayer`] wraps any inner service with the full ADR-0048
+//! [`IdempotencyLayer`] wraps any inner service with the full idempotency backend
 //! idempotency contract: request-body buffering, SHA-256 fingerprinting,
 //! cache lookup, 422 on body mismatch, 5xx pass-through (not cached),
 //! response-header filtering, `Idempotent-Replay: true` on replay, and
@@ -371,7 +371,7 @@ where
             record_outcome(&metrics, "error:get", MetricOutcome::None);
             tracing::error!(
                 error = %err,
-                "idempotency-store get failed — failing the request closed (ADR-0048)"
+                "idempotency-store get failed — failing the request closed (idempotency backend)"
             );
             return Ok(internal_error(
                 "idempotency store unavailable; request rejected to preserve replay protection",

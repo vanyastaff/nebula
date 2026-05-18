@@ -207,7 +207,7 @@ impl Error {
 
     /// An unknown credential slot rotated.
     ///
-    /// Per ADR-0044 invariant: the engine emits a slot-name to
+    /// Per slot model invariant: the engine emits a slot-name to
     /// `Resource::on_credential_refresh`; the implementer must handle
     /// every declared slot. If rotation arrives for a slot that was
     /// not declared via `#[credential]`, the engine surfaces this

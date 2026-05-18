@@ -1,4 +1,4 @@
-//! OAuth controller endpoints (ADR-0031 rollout slice).
+//! OAuth controller endpoints (API-owned OAuth flow rollout slice).
 
 use std::future::Future;
 

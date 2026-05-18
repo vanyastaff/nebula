@@ -7,8 +7,8 @@
 //! construction path is the only path.
 //!
 //! Exec tier. Narrowly supersedes the facade-ownership slice of
-//! ADR-0030 (engine retains the low-level resolver / RefreshCoordinator
-//! / lease mechanism); see `docs/adr/0066-credential-runtime-crate.md`.
+//! engine credential orchestration (engine retains the low-level resolver / RefreshCoordinator
+//! / lease mechanism); see .
 //!
 //! This increment ships only the crate scaffold and the
 //! [`CredentialServiceError`] taxonomy.
@@ -25,7 +25,7 @@ pub mod state_source;
 
 /// Test-only credential fixtures (a refreshable type the static builtins
 /// cannot provide). Gated `cfg(any(test, feature = "test-util"))`;
-/// ADR-0023 forbids `test-util` in a release build.
+/// test-util gating forbids `test-util` in a release build.
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_fixtures;
 
@@ -44,7 +44,7 @@ pub use service::{
 pub use state_source::StateSource;
 
 /// In-memory `CredentialService` test-support seam. Gated
-/// `cfg(any(test, feature = "test-util"))`; ADR-0023 forbids `test-util`
+/// `cfg(any(test, feature = "test-util"))`; test-util gating forbids `test-util`
 /// in a release build (see [`service::test_support`] for the rationale).
 #[cfg(any(test, feature = "test-util"))]
 pub use service::test_support;

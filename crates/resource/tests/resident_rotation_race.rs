@@ -1,6 +1,6 @@
 //! #680 — resident create-vs-rotate lost-update.
 //!
-//! ADR-0067 §Deferred. The Resident arm of `dispatch_slot_hook` used to map
+//! per-resource revoke deferral. The Resident arm of `dispatch_slot_hook` used to map
 //! `current() == None` to `Ok(())` (a silent no-op recorded as a rotation
 //! *success*). When a refresh raced the **first** acquire of a Resident
 //! resource, the runtime could be built from the pre-rotation credential
@@ -448,7 +448,7 @@ async fn never_activated_resident_refresh_is_legitimate_noop() {
 }
 
 /// Sanity: with a runtime already warm and *no* intervening rotation, a
-/// refresh still delivers the hook exactly once (idempotent per ADR-0067
+/// refresh still delivers the hook exactly once (idempotent per resource runtime status
 /// D1) and never spuriously reports the runtime stale. Guards against the
 /// epoch compare mis-classifying an up-to-date runtime.
 #[tokio::test]

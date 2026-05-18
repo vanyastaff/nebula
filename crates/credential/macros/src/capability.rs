@@ -1,6 +1,6 @@
-//! `#[capability]` attribute macro per ADR-0035 4 + Tech Spec 2.6.
+//! `#[capability]` attribute macro per capability macro 4 + Tech Spec 2.6.
 //!
-//! Expands a single capability trait declaration into the full ADR-0035
+//! Expands a single capability trait declaration into the full capability macro
 //! canonical form: real trait, service/scheme blanket impl,
 //! sealed-blanket, phantom trait, and phantom blanket. Hides the
 //! two-trait verbosity from everyday plugin and built-in code.
@@ -36,7 +36,7 @@
 //!
 //! ## Caller obligations
 //!
-//! Per ADR-0035 4.1 / 4.2, the macro does NOT emit `mod sealed_caps`.
+//! Per capability macro 4.1 / 4.2, the macro does NOT emit `mod sealed_caps`.
 //! Crate authors declare it manually at crate root with one inner trait
 //! per capability. A missing module produces `E0433` at the emitted
 //! sealed-blanket impl line, with the standard "unresolved module"

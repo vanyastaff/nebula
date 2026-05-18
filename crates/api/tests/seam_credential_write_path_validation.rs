@@ -1,8 +1,8 @@
-//! ADR-0052 P4 seam (V2): the credential write path validates `data`
+//! credential-schema validation seam (V2): the credential write path validates `data`
 //! against the credential type's schema **before persist**; rejection is
 //! secret-safe (no submitted value echoed); an unconfigured port yields
 //! 503 — `data` is never persisted unvalidated (closes the verified
-//! §4.5/§10 fail-open).
+//! honest capability/§10 fail-open).
 
 mod common;
 
@@ -190,7 +190,7 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
 
 #[tokio::test]
 async fn update_credential_rejects_invalid_data_secret_safe() {
-    // ADR-0052 P4: the V2 gate also covers the update path (validates the
+    // credential-schema validation: the V2 gate also covers the update path (validates the
     // supplied `data` against the *existing* credential type's schema).
     let (state, _q) = create_state_with_queue().await;
     let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));

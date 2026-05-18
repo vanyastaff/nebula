@@ -16,7 +16,7 @@ use crate::{
 /// the legacy `BasicAuthInput`).
 ///
 /// `#[derive(Schema)]` provides the `HasSchema` impl read via
-/// `nebula_schema::schema_of::<Self::Properties>()` (ADR-0052 P3). The
+/// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). The
 /// plaintext password lives
 /// in a `String` here for schema derivation and is wrapped into
 /// [`SecretString`] inside [`Credential::resolve`] before it leaves the

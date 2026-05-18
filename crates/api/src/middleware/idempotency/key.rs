@@ -84,7 +84,7 @@ impl std::fmt::Display for IdempotencyKey {
 ///
 /// Stored in [`super::store::CachedResponse::request_fingerprint`] and
 /// compared on every cache hit to detect "same key, different body" reuse
-/// (draft §2.5 → 422 per ADR-0048).
+/// (draft §2.5 → 422 per idempotency backend).
 pub(super) fn fingerprint_request_body(body: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(body);

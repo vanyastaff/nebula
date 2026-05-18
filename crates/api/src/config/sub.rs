@@ -86,7 +86,7 @@ impl Default for VersioningConfig {
 
 /// Idempotency-Key middleware configuration.
 ///
-/// See ADR-0048 for the backend selection contract.
+/// See idempotency backend for the backend selection contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdempotencyApiConfig {
     /// Storage backend for cached idempotent responses.
@@ -118,14 +118,14 @@ pub struct IdempotencyApiConfig {
     ///
     /// `0` disables the sweep (dev / single-process runs); the memory
     /// backend ignores this field because `moka` evicts on TTL. A value
-    /// `< 60` triggers a startup `tracing::warn!` (see ADR-0048
+    /// `< 60` triggers a startup `tracing::warn!` (see idempotency backend
     /// "sweep cadence sanity floor") but is not rejected.
     pub sweep_interval_secs: u64,
 }
 
 /// Backend selection for the idempotency store.
 ///
-/// See ADR-0048 for the decision rationale and the fail-closed contract
+/// See idempotency backend for the decision rationale and the fail-closed contract
 /// in the composition root (selecting `Postgres` without a configured
 /// `DATABASE_URL` is a hard startup error).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,7 +135,7 @@ pub enum IdempotencyBackend {
     /// for single-process tests; loses state on restart and cannot be
     /// shared across runners.
     Memory,
-    /// PostgreSQL-backed durable store (see ADR-0048). Survives restart
+    /// PostgreSQL-backed durable store (see idempotency backend). Survives restart
     /// and is shared across runners that point at the same database.
     Postgres,
 }
@@ -161,7 +161,7 @@ impl Default for IdempotencyApiConfig {
     }
 }
 
-/// Webhook subsystem configuration (M3.3 / ADR-0049).
+/// Webhook subsystem configuration (webhook activation).
 ///
 /// Controls how the slug-routed webhook surface boots. Default is
 /// `bootstrap_from_storage = true` so production deployments wire

@@ -6,7 +6,7 @@
 //! concrete implementations live in downstream crates (e.g., `nebula-storage`)
 //! behind feature gates.
 //!
-//! # Trait shape (per ADR-0051)
+//! # Trait shape (per external provider)
 //!
 //! [`ExternalProvider`] returns [`ProviderFuture<'a>`], a dyn-safe envelope
 //! around `Pin<Box<dyn Future + Send>>` that also supports a zero-allocation
@@ -17,7 +17,7 @@
 //!
 //! Resolutions return a [`ProviderResolution`] envelope (secret + optional
 //! lease + optional TTL) rather than a bare [`SecretString`], so a downstream
-//! `ProviderCacheLayer` (planned in `nebula-storage` per ADR-0032) can cache
+//! `ProviderCacheLayer` (planned in `nebula-storage` per storage credential layers) can cache
 //! provider responses according to provider-suggested TTLs without further
 //! trait changes.
 //!
@@ -163,7 +163,7 @@ pub enum ProviderError {
 ///
 /// # Lease support
 ///
-/// Per ADR-0051 the [`LeasedProvider`] sub-trait adds `renew` / `revoke`
+/// Per external provider the [`LeasedProvider`] sub-trait adds `renew` / `revoke`
 /// for time-bounded grants. Providers advertise the capability without
 /// runtime downcasts by overriding [`lease_renewal`](Self::lease_renewal)
 /// to return `Some(self)`; composed providers

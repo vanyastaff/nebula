@@ -1,4 +1,4 @@
-//! ADR-0052 P4 seam (V3 + #6): the credential-type catalog is populated
+//! credential-schema validation seam (V3 + #6): the credential-type catalog is populated
 //! from the `CredentialSchemaPort` (`json_schema()` produced behind the
 //! seam); the api-owned public projection strips `x-nebula-root-rules` +
 //! predicate operands before the wire. No port ⇒ honest 503.

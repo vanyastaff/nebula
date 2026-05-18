@@ -50,12 +50,12 @@ pub trait WorkspaceResolver: Send + Sync {
 /// One organisation membership row, as seen by the org/* handlers.
 ///
 /// **Port-level type — deliberately decoupled from the wire DTO**
-/// ([`crate::domain::org::dto::MemberSummary`]) per ADR-0047 §3. It carries
+/// ([`crate::domain::org::dto::MemberSummary`]) per 3. It carries
 /// only what the RBAC store actually knows: *who* (the resolved
 /// [`Principal`]) and *what role*. There is intentionally **no** `email`
 /// or `joined_at` — the membership store is the RBAC role index, not a
 /// user-identity directory, so synthesizing those fields would be a
-/// canon §4.5 false capability (the Phase-3 "Option 1" honest contract:
+/// honest capability contract false capability (the Phase-3 "Option 1" honest contract:
 /// see the module docs of [`crate::domain::org::handler`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrgMember {
@@ -237,9 +237,9 @@ pub struct AppState {
     /// When `None`, the `GET /plugins` endpoints return 503.
     pub plugin_registry: Option<Arc<RwLock<PluginRegistry>>>,
 
-    /// Optional credential-schema port (ADR-0052 P4). When `None`, the
+    /// Optional credential-schema port (credential-schema validation). When `None`, the
     /// credential write path and credential-type catalog return 503
-    /// (honest §4.5 stub, mirroring `action_registry`).
+    /// (honest capability stub, mirroring `action_registry`).
     pub credential_schema: Option<Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>>,
 
     /// Optional webhook HTTP transport. When `None`, no `/webhooks/*`
@@ -248,7 +248,7 @@ pub struct AppState {
     /// will never fire until the transport is attached.
     pub webhook_transport: Option<WebhookTransport>,
 
-    /// OAuth pending state store (ADR-0031 §4.2 — TTL ≤ 10 min, single-use).
+    /// OAuth pending state store (API-owned OAuth flow §4.2 — TTL ≤ 10 min, single-use).
     pub oauth_pending_store: Arc<InMemoryPendingStore>,
 
     /// Maps signed state -> pending token so callback can consume pending data.
@@ -290,13 +290,13 @@ pub struct AppState {
     /// endpoints have no replay protection — acceptable for tests that build
     /// minimal routers but a misconfiguration in production.
     ///
-    /// See ADR-0048 for the backend selection contract; the composition root
+    /// See idempotency backend for the backend selection contract; the composition root
     /// chooses between [`crate::middleware::InMemoryIdempotencyStore`] and a
     /// PG-backed bridge (`StorageBackedIdempotencyStore<PgIdempotencyStore>`)
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 
-    /// Optional webhook-activation repository (M3.3 / ADR-0049).
+    /// Optional webhook-activation repository (webhook activation).
     ///
     /// When `Some`, the composition root invokes
     /// [`crate::transport::webhook::bootstrap_webhook_activations`] before
@@ -305,7 +305,7 @@ pub struct AppState {
     /// (`POST /internal/v1/webhooks/reload`).
     pub webhook_activation_repo: Option<Arc<dyn WebhookActivationRepo>>,
 
-    /// Optional lifecycle event bus (M3.3 / ADR-0049 — E2).
+    /// Optional lifecycle event bus (webhook activation — E2).
     ///
     /// Producers (storage CRUD callsites) emit
     /// [`crate::transport::webhook::TriggerLifecycleEvent`] on this
@@ -314,15 +314,15 @@ pub struct AppState {
     /// wiring is deferred to a follow-up.
     pub trigger_lifecycle_bus: Option<crate::transport::webhook::TriggerLifecycleBus>,
 
-    /// Webhook credential resolver (M3.3 / ADR-0049 — E1+E3).
+    /// Webhook credential resolver (webhook activation — E1+E3).
     ///
     /// Required for storage-driven slug bootstrap and admin reload.
     pub webhook_secret_resolver: Option<Arc<dyn crate::transport::webhook::WebhookSecretResolver>>,
 
-    /// Webhook ctx-template factory (M3.3 / ADR-0049 — E1+E3).
+    /// Webhook ctx-template factory (webhook activation — E1+E3).
     pub webhook_ctx_factory: Option<Arc<dyn crate::transport::webhook::WebhookContextFactory>>,
 
-    /// Internal-routes shared token (M3.3 / ADR-0049 — E3).
+    /// Internal-routes shared token (webhook activation — E3).
     ///
     /// Required for `POST /internal/v1/webhooks/reload`. When `None`,
     /// every request to `/internal/v1/...` returns 503.
@@ -347,7 +347,7 @@ pub struct AppState {
     pub workflow_store: Arc<dyn WorkflowStore>,
 
     /// Spec-16 scoped control-queue port handle (the cancel / start
-    /// enqueue durable outbox — canon §12.2). Every control signal is
+    /// enqueue durable outbox — durable control queue). Every control signal is
     /// enqueued here; the engine dispatcher drains it.
     pub control_queue: Arc<dyn ControlQueue>,
 
@@ -371,7 +371,7 @@ pub struct AppState {
     /// [`ResourceRegistrarRegistry::validate`](nebula_engine::ResourceRegistrarRegistry::validate)
     /// runs the kind's `R::Config` schema + closed-set guard with **no**
     /// `nebula_resource::Manager` mutation — live registration stays an
-    /// engine-activation concern (INTEGRATION_MODEL §13.1). When `None`,
+    /// engine-activation concern (INTEGRATION_MODEL integration seam.1). When `None`,
     /// `create_resource` fails closed (422) rather than persist an
     /// unvalidated config. Set via
     /// [`AppState::with_resource_registrars`].
@@ -387,7 +387,7 @@ pub struct AppState {
     /// status counterpart of the engine's resource accessor: it observes
     /// a phase and **cannot** mutate a resource — there is no
     /// acquire/release/drain seam here (resource lifecycle is
-    /// engine-owned, INTEGRATION_MODEL §13.1). When `None`, the
+    /// engine-owned, INTEGRATION_MODEL integration seam.1). When `None`, the
     /// `GET .../resources/{res}/status` endpoint reports `503 Service
     /// Unavailable` (the catalog None-convention — never a fabricated
     /// status). Set via [`AppState::with_resource_status`]; compose in
@@ -796,7 +796,7 @@ impl AppState {
     /// caller's tenant. The control message is enqueued through a freshly
     /// bound `ScopedControlQueue`, so the row is stamped with that tenant
     /// scope (a forged `scope` field on the message is rebound to the
-    /// bound tenant). The §13-step-6 503-vs-500 error policy is
+    /// bound tenant). The integration seam-step-6 503-vs-500 error policy is
     /// centralized here.
     pub(crate) async fn enqueue_control_scoped(
         &self,
@@ -805,20 +805,20 @@ impl AppState {
         execution_id: ExecutionId,
         w3c: Option<nebula_core::W3cTraceContext>,
     ) -> Result<(), ApiError> {
-        // §13 step 6: a backend that is intentionally absent or
+        // integration seam step 6: a backend that is intentionally absent or
         // unreachable (`Internal`/`Connection`) is a 503 (infra down,
         // not a logic bug); any other write failure is a 500.
         let to_api_err = |is_unavailable: bool, detail: String| {
             if is_unavailable {
                 ApiError::ServiceUnavailable(format!(
                     "Execution {execution_id} persisted but control-queue backend is \
-                     unavailable — orchestration absent (canon §13 step 6, §12.2 \
-                     orphan): {detail}"
+                     unavailable — orchestration absent (integration seam step 6, \
+                     durable control queue orphan): {detail}"
                 ))
             } else {
                 ApiError::Internal(format!(
                     "Execution {execution_id} persisted but failed to enqueue control \
-                     signal (canon §12.2 orphan — caller should retry): {detail}"
+                     signal (durable control queue orphan — caller should retry): {detail}"
                 ))
             }
         };
@@ -987,7 +987,7 @@ impl AppState {
         self
     }
 
-    /// Attach the credential-schema port (ADR-0052 P4) used to validate
+    /// Attach the credential-schema port (credential-schema validation) used to validate
     /// credential `data` before persist and to populate the credential-type
     /// catalog. When absent, those endpoints return an honest 503.
     #[must_use = "builder methods must be chained or built"]
@@ -1059,14 +1059,14 @@ impl AppState {
     /// [`crate::middleware::IdempotencyLayer`] on the API router when this is
     /// `Some`.
     ///
-    /// See ADR-0048 for the backend selection contract.
+    /// See idempotency backend for the backend selection contract.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_idempotency_store(mut self, store: Arc<dyn IdempotencyStore>) -> Self {
         self.idempotency_store = Some(store);
         self
     }
 
-    /// Attach a webhook-activation repository (M3.3 / ADR-0049).
+    /// Attach a webhook-activation repository (webhook activation).
     ///
     /// Required for storage-driven slug bootstrap and for the admin
     /// reload endpoint. Composition roots that do not enable
@@ -1079,7 +1079,7 @@ impl AppState {
     }
 
     /// Attach a [`crate::transport::webhook::TriggerLifecycleBus`]
-    /// for slug-routed activation lifecycle events (M3.3 / ADR-0049).
+    /// for slug-routed activation lifecycle events (webhook activation).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_trigger_lifecycle_bus(
         mut self,
@@ -1089,7 +1089,7 @@ impl AppState {
         self
     }
 
-    /// Attach a webhook secret resolver (M3.3 / ADR-0049 — E1+E3).
+    /// Attach a webhook secret resolver (webhook activation — E1+E3).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_secret_resolver(
         mut self,
@@ -1099,7 +1099,7 @@ impl AppState {
         self
     }
 
-    /// Attach a webhook ctx-template factory (M3.3 / ADR-0049 — E1+E3).
+    /// Attach a webhook ctx-template factory (webhook activation — E1+E3).
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_ctx_factory(
         mut self,
@@ -1137,7 +1137,7 @@ impl AppState {
     ///
     /// This is the config-CRUD validation seam (schema + closed-kind),
     /// **not** engine activation: it never live-registers into a
-    /// `nebula_resource::Manager` (INTEGRATION_MODEL §13.1). Compose this
+    /// `nebula_resource::Manager` (INTEGRATION_MODEL integration seam.1). Compose this
     /// in production from the same registry the engine is built with
     /// ([`WorkflowEngine::resource_registrars`](nebula_engine::WorkflowEngine::resource_registrars));
     /// when left `None`, `create_resource` fails closed (422) rather than
@@ -1157,7 +1157,7 @@ impl AppState {
     /// Projects a live resource's lifecycle phase in api-safe types — it
     /// observes a phase and cannot mutate a resource (no
     /// acquire/release/drain; resource lifecycle is engine-owned,
-    /// INTEGRATION_MODEL §13.1). Compose this in production from the same
+    /// INTEGRATION_MODEL integration seam.1). Compose this in production from the same
     /// `nebula_resource::Manager` the engine is built with (via
     /// `nebula_engine::EngineManagerResourceStatus`). When left `None`
     /// the status endpoint reports `503` rather than fabricate a status.
