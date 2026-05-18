@@ -1803,6 +1803,86 @@ async fn cors_preflight_allows_authorization() {
 }
 
 #[tokio::test]
+async fn workflow_definition_payload_must_be_object() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let app = app::build_app(state.clone(), &api_config);
+    let create_request = serde_json::json!({
+        "name": "Bad Definition Shape",
+        "definition": []
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path("/workflows"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let app = app::build_app(state.clone(), &api_config);
+    let create_request = serde_json::json!({
+        "name": "Good Definition Shape",
+        "definition": { "nodes": [], "edges": [] }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path("/workflows"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created["id"].as_str().unwrap();
+
+    let update_request = serde_json::json!({
+        "definition": null
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(serde_json::to_string(&update_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn update_workflow_rejects_immutable_identity_fields() {
     // Regression for #344: update_workflow must refuse payloads that try to
     // overwrite identity/control fields (id, version, owner_id, schema_version)

@@ -3332,7 +3332,18 @@ impl WorkflowEngine {
         // Best-effort persist through the spec-16 node-result store when
         // a store bundle is configured (in-memory-only mode skips it).
         if let Some(stores) = &self.stores {
-            let record = crate::store_seam::node_result_record(value);
+            let record = match crate::store_seam::node_result_record(value) {
+                Ok(record) => record,
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        error = %e,
+                        "refusing to persist malformed action result"
+                    );
+                    return;
+                },
+            };
             if let Err(e) = stores
                 .node_results
                 .save_node_result(

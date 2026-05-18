@@ -33,7 +33,7 @@ use nebula_storage_port::store::{
     CheckpointStore, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, NodeResultStore,
     WorkflowStore, WorkflowVersionStore,
 };
-use nebula_storage_port::{FencingToken, Scope};
+use nebula_storage_port::{FencingToken, Scope, StorageError};
 
 /// Wrap a raw node-output payload in the port's [`NodeResultRecord`].
 ///
@@ -52,32 +52,24 @@ pub fn node_output_record(json: serde_json::Value) -> NodeResultRecord {
 /// Wrap a serialized `ActionResult<Value>` in the port's
 /// [`NodeResultRecord`], stamping the variant discriminant as the kind tag
 /// so idempotent replay can reconstruct exact routing semantics.
-#[must_use]
-pub fn node_result_record(json: serde_json::Value) -> NodeResultRecord {
-    let kind_tag = if let Some(tag) = json.get("type").and_then(serde_json::Value::as_str) {
-        tag.to_owned()
-    } else {
-        // A serialized `ActionResult` must carry its `type`
-        // discriminant; a missing one means malformed JSON and
-        // idempotent replay cannot reconstruct routing. Surface it
-        // (observability DoD) and fail loud in debug rather than
-        // silently persisting an unroutable `"Unknown"`.
-        debug_assert!(
-            false,
-            "node_result_record: ActionResult JSON has no `type` discriminant"
-        );
-        tracing::warn!(
-            target: "nebula_engine::store_seam",
-            "node result JSON missing `type` discriminant; \
-             persisting kind_tag=\"Unknown\" (replay routing degraded)"
-        );
-        "Unknown".to_owned()
+pub fn node_result_record(json: serde_json::Value) -> Result<NodeResultRecord, StoreSeamError> {
+    let Some(kind_tag) = json.get("type").and_then(serde_json::Value::as_str) else {
+        return Err(StoreSeamError::MissingActionResultDiscriminant);
     };
-    NodeResultRecord {
-        kind_tag,
+    Ok(NodeResultRecord {
+        kind_tag: kind_tag.to_owned(),
         json,
         schema_version: nebula_storage_port::dto::MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
-    }
+    })
+}
+
+/// Errors raised while translating engine values into storage-port DTOs.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StoreSeamError {
+    /// Serialized `ActionResult<T>` values must carry their serde tag.
+    #[error("serialized ActionResult JSON missing `type` discriminant")]
+    MissingActionResultDiscriminant,
 }
 
 /// Wrap the workflow trigger input in a [`NodeResultRecord`] for the
@@ -144,6 +136,15 @@ impl std::fmt::Debug for WorkflowStores {
     }
 }
 
+/// Typed lease-backend failure.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub(crate) enum LeaseBackendError {
+    /// The storage port rejected or failed the lease operation.
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
+
 /// The engine's held execution lease, backed by the spec-16 port.
 ///
 /// A [`FencingToken`] is threaded into every committed transition batch
@@ -181,16 +182,16 @@ impl LeaseBackend {
 
     /// Renew the lease. Returns `Ok(true)` when still held, `Ok(false)`
     /// when superseded/expired (the caller treats either non-true as
-    /// loss). The error string is for diagnostics only.
+    /// loss).
     pub(crate) async fn renew(
         &self,
         execution_id: nebula_core::id::ExecutionId,
         ttl: std::time::Duration,
-    ) -> Result<bool, String> {
-        self.store
+    ) -> Result<bool, LeaseBackendError> {
+        Ok(self
+            .store
             .renew_lease(&self.scope, &execution_id.to_string(), self.token, ttl)
-            .await
-            .map_err(|e| format!("{e}"))
+            .await?)
     }
 
     /// Release the lease (best-effort). Returns `Ok(true)` when released,
@@ -198,10 +199,41 @@ impl LeaseBackend {
     pub(crate) async fn release(
         &self,
         execution_id: nebula_core::id::ExecutionId,
-    ) -> Result<bool, String> {
-        self.store
+    ) -> Result<bool, LeaseBackendError> {
+        Ok(self
+            .store
             .release_lease(&self.scope, &execution_id.to_string(), self.token)
-            .await
-            .map_err(|e| format!("{e}"))
+            .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn node_result_record_uses_action_result_type_tag() {
+        let record = node_result_record(json!({
+            "type": "Success",
+            "value": 42
+        }))
+        .expect("record");
+
+        assert_eq!(record.kind_tag, "Success");
+    }
+
+    #[test]
+    fn node_result_record_rejects_missing_type_tag() {
+        let err = node_result_record(json!({
+            "value": 42
+        }))
+        .expect_err("missing type must be rejected");
+
+        assert!(matches!(
+            err,
+            StoreSeamError::MissingActionResultDiscriminant
+        ));
     }
 }

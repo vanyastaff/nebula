@@ -1,7 +1,16 @@
 //! Workflow DTOs
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
+
+fn deserialize_present_json_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
 
 /// Create workflow request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -29,7 +38,11 @@ pub struct UpdateWorkflowRequest {
     pub description: Option<String>,
 
     /// Workflow definition (JSON)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_json_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub definition: Option<serde_json::Value>,
 }
 

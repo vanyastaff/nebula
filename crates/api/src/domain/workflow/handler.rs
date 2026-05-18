@@ -259,48 +259,45 @@ pub async fn create_workflow(
     let now_secs = now.timestamp();
     let now_rfc3339 = now.to_rfc3339();
 
-    // Build workflow definition by merging request definition with metadata
+    // Build workflow definition by merging request definition with metadata.
+    // A workflow definition must be an object: wrapping arrays / strings /
+    // null into an outer metadata object creates JSON that cannot
+    // deserialize as `WorkflowDefinition` on activation.
     let mut definition = payload.definition.clone();
-    if let Some(obj) = definition.as_object_mut() {
-        // The server owns every immutable identity/control field — a
-        // client must not smuggle its own `id` / `version` / `owner_id`
-        // / `schema_version` through the create `definition` (the update
-        // path *rejects* these per issue #344; create previously
-        // persisted them verbatim, so the stored definition's identity
-        // could diverge from the server-generated `workflow_id` used as
-        // the repository key). These are *overwritten* with
-        // server-authoritative values, not stripped: `id` / `version` /
-        // `schema_version` are required by the canonical
-        // `WorkflowDefinition` schema, so removing them would yield a
-        // blob that fails the `from_str::<WorkflowDefinition>` parse the
-        // activate path performs. A client-supplied `owner_id` is
-        // dropped (the field is optional; create assigns no owner here).
-        obj.insert("id".to_string(), serde_json::json!(workflow_id.to_string()));
-        obj.insert(
-            "version".to_string(),
-            serde_json::json!({ "major": 0, "minor": 1, "patch": 0 }),
-        );
-        obj.insert(
-            "schema_version".to_string(),
-            serde_json::json!(nebula_workflow::CURRENT_SCHEMA_VERSION),
-        );
-        obj.remove("owner_id");
-        obj.insert("name".to_string(), serde_json::json!(payload.name));
-        if let Some(desc) = &payload.description {
-            obj.insert("description".to_string(), serde_json::json!(desc));
-        }
-        obj.insert("created_at".to_string(), serde_json::json!(now_rfc3339));
-        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
-    } else {
-        // If definition is not an object, wrap it with metadata
-        definition = serde_json::json!({
-            "name": payload.name,
-            "description": payload.description,
-            "created_at": now_rfc3339,
-            "updated_at": now_rfc3339,
-            "definition": definition,
-        });
+    let Some(obj) = definition.as_object_mut() else {
+        return Err(ApiError::validation_message(
+            "Workflow definition must be a JSON object",
+        ));
+    };
+    // The server owns every immutable identity/control field — a
+    // client must not smuggle its own `id` / `version` / `owner_id`
+    // / `schema_version` through the create `definition` (the update
+    // path *rejects* these per issue #344; create previously
+    // persisted them verbatim, so the stored definition's identity
+    // could diverge from the server-generated `workflow_id` used as
+    // the repository key). These are *overwritten* with
+    // server-authoritative values, not stripped: `id` / `version` /
+    // `schema_version` are required by the canonical
+    // `WorkflowDefinition` schema, so removing them would yield a
+    // blob that fails the `from_str::<WorkflowDefinition>` parse the
+    // activate path performs. A client-supplied `owner_id` is
+    // dropped (the field is optional; create assigns no owner here).
+    obj.insert("id".to_string(), serde_json::json!(workflow_id.to_string()));
+    obj.insert(
+        "version".to_string(),
+        serde_json::json!({ "major": 0, "minor": 1, "patch": 0 }),
+    );
+    obj.insert(
+        "schema_version".to_string(),
+        serde_json::json!(nebula_workflow::CURRENT_SCHEMA_VERSION),
+    );
+    obj.remove("owner_id");
+    obj.insert("name".to_string(), serde_json::json!(payload.name));
+    if let Some(desc) = &payload.description {
+        obj.insert("description".to_string(), serde_json::json!(desc));
     }
+    obj.insert("created_at".to_string(), serde_json::json!(now_rfc3339));
+    obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
 
     // Save workflow with version 0 (new workflow) scoped to the tenant.
     state
@@ -392,9 +389,12 @@ pub async fn update_workflow(
         // wants a different identity must create a new workflow — otherwise
         // the stored id/version/owner would silently diverge from the
         // repository key used to route the request.
-        if let Some(new_def) = &payload.definition
-            && let Some(new_obj) = new_def.as_object()
-        {
+        if let Some(new_def) = &payload.definition {
+            let Some(new_obj) = new_def.as_object() else {
+                return Err(ApiError::validation_message(
+                    "Workflow definition must be a JSON object",
+                ));
+            };
             for key in new_obj.keys() {
                 if IMMUTABLE_DEFINITION_FIELDS.contains(&key.as_str()) {
                     return Err(ApiError::validation_message(format!(
