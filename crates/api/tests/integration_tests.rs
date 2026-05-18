@@ -69,6 +69,38 @@ async fn test_workflow_list_empty() {
 }
 
 #[tokio::test]
+async fn tenant_routes_without_membership_store_fail_closed() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = build_me_state();
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(ws_path("/workflows"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "tenant routes must fail closed when no MembershipStore is configured"
+    );
+}
+
+#[tokio::test]
 async fn test_error_format_rfc9457() {
     use axum::{
         body::Body,

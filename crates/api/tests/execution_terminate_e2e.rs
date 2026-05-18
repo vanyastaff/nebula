@@ -11,10 +11,9 @@
 //! `ExecutionStatus::Cancelled` (no `Terminated` variant exists —
 //! `crates/execution/src/status.rs`).
 //!
-//! The engine-seam harness (`common::engine_seam`) and the
-//! orchestration-absent control queue (`common::create_state_with_failing_queue`)
-//! are shared with `knife.rs` so the cancel/terminate seam wiring lives in
-//! exactly one place.
+//! The engine-seam harness (`common::engine_seam`) and the legacy failing
+//! control queue (`common::create_state_with_failing_queue`) are shared with
+//! `knife.rs` so the cancel/terminate seam wiring lives in exactly one place.
 //!
 //! ## Coverage
 //!
@@ -22,7 +21,7 @@
 //! |----------|------------------|------|
 //! | Engine-visible seam (canon §13 bar) | Running exec + POST terminate → control_queue gets a `Terminate` entry → the wired real engine consumer drives the execution to terminal `Cancelled`, well inside the 30s slow-handler window | `terminate_engine_drives_running_execution_to_terminal_end_to_end` |
 //! | Producer durability | POST terminate persists `cancelled` + enqueues exactly one `Terminate` entry referencing the execution | `terminate_enqueues_durable_control_signal` |
-//! | 503 orchestration absent | control-queue backend down → 503 (mirrors knife step 6) | `terminate_queue_failure_returns_503` |
+//! | Atomic outbox | legacy control-queue handle down → POST terminate still commits state + `Terminate` outbox together via `TransitionBatch` | `terminate_control_signal_is_atomic_with_state` |
 //! | 404 | unknown execution → 404 | `terminate_unknown_execution_returns_404` |
 //! | 404 malformed id | malformed execution-id path segment → 404 (tenancy middleware rejects it before the handler runs) | `terminate_invalid_execution_id_rejected_by_middleware` |
 //! | 400 terminal guard | already-terminal execution → 400, no spurious enqueue | `terminate_terminal_execution_rejected_and_does_not_enqueue` |
@@ -305,13 +304,11 @@ async fn terminate_enqueues_durable_control_signal() {
     );
 }
 
-/// Canon §13 step 6 — "orchestration absent": when the control-queue
-/// backend is unavailable, terminate must return **503** with RFC 9457
-/// problem+json, not fake success and not an unparsable 500. Uses the
-/// shared `common::create_state_with_failing_queue` double (mirror of
-/// `knife.rs::knife_step6_queue_failure_returns_error`).
+/// Terminate writes the terminal state and control signal through one
+/// `TransitionBatch`, so the legacy separately-wired control queue can fail
+/// without creating a cancelled-row / missing-signal orphan.
 #[tokio::test]
-async fn terminate_queue_failure_returns_503() {
+async fn terminate_control_signal_is_atomic_with_state() {
     use nebula_core::{ExecutionId, WorkflowId};
 
     let (state, exec_store) = create_state_with_failing_queue().await;
@@ -359,19 +356,21 @@ async fn terminate_queue_failure_returns_503() {
 
     assert_eq!(
         response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "orchestration-absent enqueue failure must return 503 (canon §13 step 6)"
+        StatusCode::OK,
+        "terminate should not orphan a state transition when the legacy queue handle fails"
     );
 
-    // RFC 9457: failure body must be application/problem+json (§12.4).
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok());
+    let queue = nebula_storage::inmem::InMemoryControlQueue::new(&exec_store);
+    let queued = queue.snapshot();
+    assert_eq!(queued.len(), 1);
     assert_eq!(
-        content_type,
-        Some("application/problem+json"),
-        "503 body must use the RFC 9457 content-type"
+        queued[0].0.command,
+        nebula_storage_port::dto::ControlCommand::Terminate
+    );
+    assert_eq!(
+        queued[0].0.execution_id,
+        execution_id.to_string(),
+        "atomic outbox row must reference the terminated execution"
     );
 }
 

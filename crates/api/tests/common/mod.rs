@@ -369,7 +369,8 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    .with_insecure_tenant_rbac_bypass_for_tests();
 
     let state = if with_credential_port {
         state.with_credential_schema(Arc::new(PermissiveCredentialSchemaPort))
@@ -807,7 +808,8 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
-    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
+    .with_insecure_tenant_rbac_bypass_for_tests();
 
     (state, exec_store)
 }

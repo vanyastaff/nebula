@@ -83,6 +83,11 @@ pub fn router() -> OpenApiRouter<AppState> {
             credential::update_credential,
             credential::delete_credential
         ))
+        .routes(routes!(credential::get_oauth2_authorize_url_scoped))
+        .routes(routes!(
+            credential::get_oauth2_callback_scoped,
+            credential::post_oauth2_callback_scoped
+        ))
         .routes(routes!(credential::test_credential))
         .routes(routes!(credential::refresh_credential))
         .routes(routes!(credential::revoke_credential))

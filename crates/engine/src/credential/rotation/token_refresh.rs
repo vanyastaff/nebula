@@ -19,6 +19,8 @@
 //! the sentinel clears by row removal, no separate "clear" call is
 //! needed.
 
+use std::net::IpAddr;
+
 use chrono::Utc;
 use nebula_credential::{
     SecretString,
@@ -26,6 +28,7 @@ use nebula_credential::{
 };
 use reqwest::Response;
 use serde_json::Value;
+use url::Url;
 
 use super::token_http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
@@ -70,6 +73,7 @@ pub enum TokenRefreshError {
 /// our code; the unavoidable in-flight copy lives in reqwest's request
 /// body and is released when the response future resolves.
 pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRefreshError> {
+    validate_token_endpoint(&state.token_url).map_err(TokenRefreshError::Request)?;
     let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
 
     // Inner block scopes secret borrows tightly. After the block returns
@@ -116,6 +120,44 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
     let body = parse_token_response(resp).await?;
     update_state_from_token_response(state, &body)?;
     Ok(())
+}
+
+fn validate_token_endpoint(raw: &str) -> Result<(), String> {
+    let url = Url::parse(raw).map_err(|e| format!("invalid OAuth token endpoint URL: {e}"))?;
+    if url.scheme() != "https" {
+        return Err("OAuth token endpoint must use https".to_owned());
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| "OAuth token endpoint must include a host".to_owned())?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Err("OAuth token endpoint must not target localhost".to_owned());
+    }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && forbidden_token_endpoint_ip(ip)
+    {
+        return Err("OAuth token endpoint must not target private or local addresses".to_owned());
+    }
+    Ok(())
+}
+
+fn forbidden_token_endpoint_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+        },
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || matches!(ip.segments()[0] & 0xfe00, 0xfc00)
+                || matches!(ip.segments()[0] & 0xffc0, 0xfe80)
+        },
+    }
 }
 
 async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
@@ -234,7 +276,7 @@ fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
 /// - `[control_chars_in_error_uri_redacted]` — control byte found
 fn sanitize_error_uri(raw: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
-    let parsed = match url::Url::parse(raw) {
+    let parsed = match Url::parse(raw) {
         Ok(u) if u.scheme() == "https" => u,
         _ => return Cow::Borrowed("[invalid_error_uri_redacted]"),
     };

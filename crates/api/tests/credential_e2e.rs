@@ -43,6 +43,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 /// A secret value that must never surface in any response, error, or log.
 const SECRET_TOKEN: &str = "sk-phase4-NEVER-LEAK-0xC0FFEE-abcdef0123456789";
+const OTHER_WS: &str = "ws_00000000000000000000000002";
 
 // ── Log-capture helper (mirrors crates/credential/tests/redaction.rs) ─────────
 
@@ -397,6 +398,45 @@ async fn credential_stale_version_conflicts_409_without_secret() {
     assert!(
         !problem.contains(SECRET_TOKEN),
         "409 conflict body leaked the request secret: {problem}"
+    );
+}
+
+#[tokio::test]
+async fn credential_created_in_one_workspace_is_404_from_another_workspace() {
+    let (state, _q) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let body = serde_json::json!({
+        "credential_key": "api_key",
+        "name": "scoped credential",
+        "data": { "api_key": SECRET_TOKEN }
+    });
+    let app = app::build_app(state.clone(), &config);
+    let created = app
+        .oneshot(auth_json("POST", &ws_path("/credentials"), &token, &body))
+        .await
+        .unwrap();
+    assert!(
+        created.status().is_success(),
+        "credential create must succeed before cross-workspace probe"
+    );
+
+    let created_body: serde_json::Value =
+        serde_json::from_str(&body_string(created).await).expect("created credential json");
+    let id = created_body["id"].as_str().expect("created credential id");
+    let other_ws_path = format!(
+        "/api/v1/orgs/{}/workspaces/{OTHER_WS}/credentials/{id}",
+        common::TEST_ORG
+    );
+
+    let app = app::build_app(state, &config);
+    let probe = app.oneshot(auth_get(&other_ws_path, &token)).await.unwrap();
+
+    assert_eq!(
+        probe.status(),
+        StatusCode::NOT_FOUND,
+        "credential IDs must not resolve across workspace scopes"
     );
 }
 

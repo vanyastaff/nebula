@@ -547,11 +547,11 @@ async fn create_token_without_auth_is_401() {
 /// surfaces in tracing output. Mirrors the
 /// `crates/credential/tests/redaction.rs` capturing-subscriber pattern.
 ///
-/// `current_thread` flavor + `with_default` keeps the capturing
-/// subscriber thread-local for the whole request lifecycle (no worker
-/// threads, so no event escapes the capture — the same constraint the
-/// credential redaction helper documents).
-#[tokio::test(flavor = "current_thread")]
+/// Uses a global subscriber for this integration-test binary. A thread-local
+/// `set_default` capture is too narrow here: the full package test run can
+/// poll parts of the request outside that thread-local dispatch, making the
+/// buffer spuriously empty even though the handler emits the event.
+#[tokio::test]
 async fn create_token_plaintext_never_leaks_to_logs() {
     use std::sync::{Arc, Mutex};
 
@@ -581,7 +581,8 @@ async fn create_token_plaintext_never_leaks_to_logs() {
         .with_ansi(false)
         .with_max_level(tracing::Level::TRACE)
         .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("me_e2e installs one capture subscriber for this test binary");
 
     let (state, _backend, user) = create_me_state().await;
     let api_config = ApiConfig::for_test();
@@ -598,8 +599,6 @@ async fn create_token_plaintext_never_leaks_to_logs() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = body_json(response).await;
     let token = body["token"].as_str().unwrap().to_owned();
-
-    drop(_guard);
 
     assert!(
         token.starts_with(PAT_PLAINTEXT_PREFIX) && token.len() > 20,

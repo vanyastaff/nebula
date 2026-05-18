@@ -11,7 +11,7 @@ use axum::{
     http::{Request, StatusCode},
     routing::post,
 };
-use common::{create_state_with_queue, create_test_jwt};
+use common::{create_state_with_queue, create_test_jwt, ws_path};
 use nebula_api::{ApiConfig, app};
 use nebula_credential::{
     Credential, CredentialContext, CredentialState, CredentialStore, OAuth2Credential, OAuth2State,
@@ -64,6 +64,78 @@ async fn spawn_mock_token_endpoint() -> (String, tokio::task::JoinHandle<()>) {
     });
 
     (format!("http://{addr}/token"), handle)
+}
+
+#[tokio::test]
+async fn system_level_oauth_authorize_route_is_disabled() {
+    let (state, _queue) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let app = app::build_app(state, &config);
+    let token = create_test_jwt();
+
+    let auth_query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("auth_url", "https://provider.example.com/oauth/authorize")
+        .append_pair("token_url", "https://provider.example.com/oauth/token")
+        .append_pair("client_id", "client")
+        .append_pair("client_secret", "secret")
+        .append_pair("redirect_uri", "https://app.example.com/oauth/callback")
+        .finish();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/api/v1/credentials/cred_00000000000000000000000001/oauth2/auth?{auth_query}"
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("oauth auth request"),
+        )
+        .await
+        .expect("oauth auth response");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::GONE,
+        "OAuth credential flow must be tenant-scoped, not system-level"
+    );
+}
+
+#[tokio::test]
+async fn oauth_authorize_rejects_loopback_token_url() {
+    let (state, _queue) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let app = app::build_app(state, &config);
+    let token = create_test_jwt();
+
+    let auth_query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("auth_url", "https://provider.example.com/oauth/authorize")
+        .append_pair("token_url", "http://127.0.0.1:1/token")
+        .append_pair("client_id", "client")
+        .append_pair("client_secret", "secret")
+        .append_pair("redirect_uri", "https://app.example.com/oauth/callback")
+        .finish();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(ws_path(&format!(
+                    "/credentials/cred_00000000000000000000000001/oauth2/auth?{auth_query}"
+                )))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("oauth auth request"),
+        )
+        .await
+        .expect("oauth auth response");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "OAuth token endpoint must reject loopback/private URLs before exchange"
+    );
 }
 
 // IGNORED 2026-04-24: test exercises engine's OAuth2 refresh path which requires
@@ -244,58 +316,18 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     token_server_handle.abort();
 }
 
-/// `form_post` response mode posts `code` and `state` as URL-encoded form fields.
 #[tokio::test]
-async fn e2e_oauth2_callback_accepts_form_post_body() {
+async fn system_level_oauth_callback_post_route_is_disabled() {
     let (state, _queue) = create_state_with_queue().await;
     let config = ApiConfig::for_test();
-    let app = app::build_app(state.clone(), &config);
+    let app = app::build_app(state, &config);
     let token = create_test_jwt();
-    let credential_id = "oauth-e2e-credential-formpost";
-    let client_id = "e2e-client-id-fp";
-    let client_secret = "e2e-client-secret-fp";
-    let redirect_uri = "https://app.example.com/oauth/callback";
-    let auth_url = "https://provider.example.com/oauth/authorize";
-    let (token_url, token_server_handle) = spawn_mock_token_endpoint().await;
-
-    let auth_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("auth_url", auth_url)
-        .append_pair("token_url", &token_url)
-        .append_pair("client_id", client_id)
-        .append_pair("client_secret", client_secret)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scopes", "repo workflow")
-        .finish();
-    let auth_uri = format!("/api/v1/credentials/{credential_id}/oauth2/auth?{auth_query}");
-
-    let auth_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(auth_uri)
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("oauth auth request"),
-        )
-        .await
-        .expect("oauth auth response");
-    assert_eq!(auth_response.status(), StatusCode::OK);
-
-    let auth_body = axum::body::to_bytes(auth_response.into_body(), usize::MAX)
-        .await
-        .expect("oauth auth body");
-    let auth_json: serde_json::Value =
-        serde_json::from_slice(&auth_body).expect("oauth auth response json");
-    let signed_state = auth_json["state"]
-        .as_str()
-        .expect("signed state")
-        .to_owned();
 
     let callback_body = form_urlencoded::Serializer::new(String::new())
-        .append_pair("code", "e2e-auth-code-formpost")
-        .append_pair("state", &signed_state)
+        .append_pair("code", "unused-auth-code")
+        .append_pair("state", "unused-signed-state")
         .finish();
+    let credential_id = "cred_00000000000000000000000001";
     let callback_uri = format!("/api/v1/credentials/{credential_id}/oauth2/callback");
 
     let callback_response = app
@@ -310,15 +342,9 @@ async fn e2e_oauth2_callback_accepts_form_post_body() {
         )
         .await
         .expect("oauth callback response");
-    assert_eq!(callback_response.status(), StatusCode::OK);
-
-    let callback_body_out = axum::body::to_bytes(callback_response.into_body(), usize::MAX)
-        .await
-        .expect("oauth callback body");
-    let callback_json: serde_json::Value =
-        serde_json::from_slice(&callback_body_out).expect("oauth callback response json");
-    assert_eq!(callback_json["credential_id"], credential_id);
-    assert_eq!(callback_json["exchanged"], true);
-
-    token_server_handle.abort();
+    assert_eq!(
+        callback_response.status(),
+        StatusCode::GONE,
+        "OAuth form_post callback must also be tenant-scoped"
+    );
 }

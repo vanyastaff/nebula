@@ -9,6 +9,7 @@ use axum::{
     Extension, Form, Json,
     extract::{Path, Query, State},
 };
+use nebula_core::TenantContext;
 
 // Re-export the request/response types used by route wiring.
 pub use super::oauth::{
@@ -62,10 +63,13 @@ use crate::{
 pub async fn list_credentials(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws)): Path<(String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws)): Path<(String, String)>,
     Query(query): Query<ListCredentialsQuery>,
 ) -> ApiResult<Json<ListCredentialsResponse>> {
-    let response = crate::transport::credential::list_credentials(&state, &org, &ws, query).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    let response = crate::transport::credential::list_credentials(&state, &owner_id, query).await?;
     Ok(Json(response))
 }
 
@@ -98,7 +102,8 @@ pub async fn list_credentials(
 pub async fn create_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws)): Path<(String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws)): Path<(String, String)>,
     Json(body): Json<CreateCredentialRequest>,
 ) -> ApiResult<Json<CredentialResponse>> {
     // --- Input validation ---
@@ -106,7 +111,9 @@ pub async fn create_credential(
     let _name = validate_credential_name(&body.name)?;
     validate_data_is_object(&body.data)?;
 
-    let response = crate::transport::credential::create_credential(&state, &org, &ws, body).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    let response = crate::transport::credential::create_credential(&state, &owner_id, body).await?;
     Ok(Json(response))
 }
 
@@ -134,12 +141,15 @@ pub async fn create_credential(
 pub async fn get_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws, cred)): Path<(String, String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<CredentialResponse>> {
     // Validate path parameter.
     validate_credential_id(&cred)?;
 
-    let response = crate::transport::credential::get_credential(&state, &org, &ws, &cred).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    let response = crate::transport::credential::get_credential(&state, &owner_id, &cred).await?;
     Ok(Json(response))
 }
 
@@ -171,7 +181,8 @@ pub async fn get_credential(
 pub async fn update_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws, cred)): Path<(String, String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
     Json(body): Json<UpdateCredentialRequest>,
 ) -> ApiResult<Json<CredentialResponse>> {
     // Validate path parameter.
@@ -199,8 +210,10 @@ pub async fn update_credential(
         validate_data_is_object(data)?;
     }
 
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
     let response =
-        crate::transport::credential::update_credential(&state, &org, &ws, &cred, body).await?;
+        crate::transport::credential::update_credential(&state, &owner_id, &cred, body).await?;
     Ok(Json(response))
 }
 
@@ -229,12 +242,15 @@ pub async fn update_credential(
 pub async fn delete_credential(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthenticatedUser>,
-    Path((org, ws, cred)): Path<(String, String, String)>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<AckResponse>> {
     // Validate path parameter.
     validate_credential_id(&cred)?;
 
-    crate::transport::credential::delete_credential(&state, &org, &ws, &cred).await?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    crate::transport::credential::delete_credential(&state, &owner_id, &cred).await?;
     Ok(Json(AckResponse::ok()))
 }
 
@@ -489,9 +505,9 @@ pub async fn get_credential_type(
 
 /// GET /credentials/{id}/oauth2/auth — Generate OAuth2 authorization URL.
 ///
-/// Builds the provider authorization URL with PKCE challenge and signed
-/// state parameter. The frontend redirects the user to this URL to begin
-/// the OAuth2 authorization code flow.
+/// System-level OAuth credential routes are intentionally disabled. OAuth
+/// state contains credential ownership and must be created through the
+/// workspace-scoped route below.
 #[utoipa::path(
     get,
     path = "/credentials/{id}/oauth2/auth",
@@ -507,18 +523,21 @@ pub async fn get_credential_type(
     ),
 )]
 pub async fn get_oauth2_authorize_url(
-    path: Path<String>,
-    state: State<AppState>,
-    user: Extension<AuthenticatedUser>,
-    query: Query<crate::transport::oauth::flow::AuthorizationUriRequest>,
+    Path(_cred): Path<String>,
+    State(_state): State<AppState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Query(_query): Query<crate::transport::oauth::flow::AuthorizationUriRequest>,
 ) -> ApiResult<Json<AuthorizationUriResponse>> {
-    oauth_controller::get_oauth2_authorize_url(path, state, user, query).await
+    Err(ApiError::Gone(
+        "OAuth credential flow must use workspace-scoped routes".to_owned(),
+    ))
 }
 
 /// GET /credentials/{id}/oauth2/callback — Handle OAuth2 callback (query params).
 ///
-/// Receives the authorization code and signed state via query parameters,
-/// exchanges the code for tokens, and persists the OAuth2 credential state.
+/// System-level callback routes are intentionally disabled. The signed
+/// pending state is tenant-bound and must be consumed through the
+/// workspace-scoped callback route below.
 #[utoipa::path(
     get,
     path = "/credentials/{id}/oauth2/callback",
@@ -535,18 +554,21 @@ pub async fn get_oauth2_authorize_url(
     ),
 )]
 pub async fn get_oauth2_callback(
-    path: Path<String>,
-    state: State<AppState>,
-    user: Extension<AuthenticatedUser>,
-    query: Query<OAuthCallbackQuery>,
+    Path(_cred): Path<String>,
+    State(_state): State<AppState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Query(_query): Query<OAuthCallbackQuery>,
 ) -> ApiResult<Json<OAuthCallbackResponse>> {
-    oauth_controller::get_oauth2_callback(path, state, user, query).await
+    Err(ApiError::Gone(
+        "OAuth credential flow must use workspace-scoped routes".to_owned(),
+    ))
 }
 
 /// POST /credentials/{id}/oauth2/callback — Handle OAuth2 callback (form_post).
 ///
-/// Accepts `application/x-www-form-urlencoded` bodies for providers that use
-/// the `form_post` response mode.
+/// System-level callback routes are intentionally disabled. The signed
+/// pending state is tenant-bound and must be consumed through the
+/// workspace-scoped callback route below.
 #[utoipa::path(
     post,
     path = "/credentials/{id}/oauth2/callback",
@@ -562,10 +584,133 @@ pub async fn get_oauth2_callback(
     ),
 )]
 pub async fn post_oauth2_callback(
-    path: Path<String>,
-    state: State<AppState>,
-    user: Extension<AuthenticatedUser>,
-    body: Form<OAuthCallbackBody>,
+    Path(_cred): Path<String>,
+    State(_state): State<AppState>,
+    Extension(_user): Extension<AuthenticatedUser>,
+    Form(_body): Form<OAuthCallbackBody>,
 ) -> ApiResult<Json<OAuthCallbackResponse>> {
-    oauth_controller::post_oauth2_callback(path, state, user, body).await
+    Err(ApiError::Gone(
+        "OAuth credential flow must use workspace-scoped routes".to_owned(),
+    ))
+}
+
+/// GET /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/auth — Generate OAuth2 authorization URL.
+///
+/// Builds the provider authorization URL with PKCE challenge and tenant-bound
+/// signed state. The frontend redirects the user to this URL to begin the
+/// OAuth2 authorization code flow.
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/auth",
+    tag = "workspaces.credentials",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
+    ),
+    responses(
+        (status = 200, description = "Authorization URL plus signed opaque state.", body = AuthorizationUriResponse),
+        (status = 400, description = "Invalid OAuth configuration (e.g. malformed authorization URL or unsafe token endpoint).", body = ProblemDetails),
+        (status = 401, description = "Authentication required.", body = ProblemDetails),
+        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+    ),
+)]
+pub async fn get_oauth2_authorize_url_scoped(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
+    Query(query): Query<crate::transport::oauth::flow::AuthorizationUriRequest>,
+) -> ApiResult<Json<AuthorizationUriResponse>> {
+    validate_credential_id(&cred)?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    oauth_controller::get_oauth2_authorize_url_for_owner(
+        &cred,
+        &state,
+        &user,
+        query,
+        Some(owner_id),
+    )
+    .await
+}
+
+/// GET /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback — Handle OAuth2 callback.
+#[utoipa::path(
+    get,
+    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback",
+    tag = "workspaces.credentials",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
+        ("code" = String, Query, description = "Authorization code from the provider."),
+        ("state" = String, Query, description = "Signed opaque state from `oauth2/auth`."),
+    ),
+    responses(
+        (status = 200, description = "Tokens exchanged and persisted.", body = OAuthCallbackResponse),
+        (status = 401, description = "State validation failed, tenant mismatch, or pending state expired/already-consumed.", body = ProblemDetails),
+    ),
+)]
+pub async fn get_oauth2_callback_scoped(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> ApiResult<Json<OAuthCallbackResponse>> {
+    validate_credential_id(&cred)?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    oauth_controller::handle_callback_for_owner(
+        &cred,
+        &state,
+        &user,
+        query.code,
+        query.state,
+        owner_id,
+        |req| async move { crate::transport::oauth::flow::exchange_code(&req).await },
+    )
+    .await
+}
+
+/// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback — Handle OAuth2 form_post callback.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback",
+    tag = "workspaces.credentials",
+    security(("bearer" = []), ("api_key" = [])),
+    params(
+        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
+        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
+        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
+    ),
+    request_body(content = OAuthCallbackBody, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Tokens exchanged and persisted.", body = OAuthCallbackResponse),
+        (status = 401, description = "State validation failed, tenant mismatch, or pending state expired/already-consumed.", body = ProblemDetails),
+    ),
+)]
+pub async fn post_oauth2_callback_scoped(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthenticatedUser>,
+    Extension(tenant): Extension<TenantContext>,
+    Path((_org, _ws, cred)): Path<(String, String, String)>,
+    Form(body): Form<OAuthCallbackBody>,
+) -> ApiResult<Json<OAuthCallbackResponse>> {
+    validate_credential_id(&cred)?;
+    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
+    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
+    oauth_controller::handle_callback_for_owner(
+        &cred,
+        &state,
+        &user,
+        body.code,
+        body.state,
+        owner_id,
+        |req| async move { crate::transport::oauth::flow::exchange_code(&req).await },
+    )
+    .await
 }
