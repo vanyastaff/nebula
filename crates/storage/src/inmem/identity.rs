@@ -761,11 +761,23 @@ impl BlobStore for InMemoryBlobStore {
     }
 
     async fn evict_expired(&self) -> Result<u64, StorageError> {
-        let now = now_rfc3339();
+        // Compare parsed instants, not RFC3339 strings: a lexical compare
+        // is wrong across differing offsets / fractional-second precision
+        // / timezones (`…T00:00:00Z` vs `…T01:00:00+01:00` denote the same
+        // instant but don't order lexically). A blob with an unparseable
+        // `expires_at` is treated as already expired (fail-closed — never
+        // retain a row we cannot prove is still fresh), mirroring the
+        // idempotency cache's `expires_at_ms`.
+        let now = chrono::Utc::now().timestamp_millis();
         let mut map = self.inner.lock();
         let before = map.len();
         map.retain(|_, b| match &b.expires_at {
-            Some(exp) => exp.as_str() > now.as_str(),
+            Some(exp) => {
+                chrono::DateTime::parse_from_rfc3339(exp)
+                    .map(|dt| dt.timestamp_millis())
+                    .unwrap_or(i64::MIN)
+                    > now
+            },
             None => true,
         });
         Ok((before - map.len()) as u64)
