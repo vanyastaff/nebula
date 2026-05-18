@@ -151,11 +151,18 @@ between siblings at the same layer.
 
 | Document               | Path                          | Description |
 |------------------------|-------------------------------|-------------|
+| **Agent doc map**      | `docs/README.md`              | **Start here for docs** — Tier 0–1 only; do not bulk-read `docs/adr/0*` |
+| Removed doc trees      | `docs/ARCHIVE.md`             | superpowers / audits / brainstorms moved out of repo |
 | Agent rules + map      | `CLAUDE.md`                   | **Canonical** — this file — branch / commit / PR rules + project map + enforced discipline |
+| Product strategy       | `STRATEGY.md`                 | Direction, 2026 standard bar, flagship, tracks (complements canon) |
 | Product overview       | `README.md`                   | What Nebula is, design principles, architecture |
 | Cross-tool pointer     | `AGENTS.md`                   | Thin pointer naming `CLAUDE.md` canonical |
+| Product canon          | `docs/PRODUCT_CANON.md`       | Binding invariants (durability, credentials, operational honesty) |
+| Integration model      | `docs/INTEGRATION_MODEL.md`   | Authoritative integration mechanics (canon §3.5 points here) |
+| Maturity model         | `docs/MATURITY.md`            | L0–L4 definitions per area |
+| Observability canon    | `docs/OBSERVABILITY.md`       | Metrics / tracing / logging boundaries |
 | Security policy        | `.github/SECURITY.md`         | Reporting vulnerabilities |
-| Architecture decisions | `docs/adr/`                   | M6 / M11 cascade ADRs (0042+) accepted in this worktree (ADR-0047 covers OpenAPI 3.1 generation + Stub Endpoint Policy) |
+| Architecture decisions | `docs/adr/` | ADRs 0042+ active; 0001–0041 index at `docs/adr/HISTORICAL.md` |
 | Per-crate READMEs      | `crates/<crate>/README.md`    | Crate-level usage and design notes |
 | Per-crate design docs  | `crates/<crate>/docs/`        | Where present |
 | Recurring pitfalls     | `docs/pitfalls.md`            | Source of truth for trap classes |

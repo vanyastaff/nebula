@@ -25,6 +25,9 @@ Nebula is a modular, type-safe **workflow automation engine** in Rust
 - Managed cloud/IDE worktrees that cannot live under `.worktrees/` still
   follow these branch/commit rules — CI and `lefthook` are the gate.
 
+For **which markdown files are authoritative vs archive**, read
+[`docs/README.md`](docs/README.md) before pulling product or ADR context.
+
 Everything else — project map, layered dependency map, command catalog, full
 agent rules, and the mechanically enforced discipline (guard hooks) — is in
 [`CLAUDE.md`](CLAUDE.md).

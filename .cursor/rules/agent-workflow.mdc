@@ -8,6 +8,9 @@ Use [`CLAUDE.md`](../../CLAUDE.md) as the canonical source of truth for project
 layout, architecture, Git workflow, and coding rules. (`AGENTS.md` is only a
 thin pointer to it.)
 
+For product/architecture markdown, read [`docs/README.md`](../../docs/README.md)
+first. Do not search `docs/superpowers` (removed — see [`docs/ARCHIVE.md`](../../docs/ARCHIVE.md)).
+
 For persistent task branches, create worktrees through the repository wrapper:
 
 ```sh

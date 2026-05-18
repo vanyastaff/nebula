@@ -76,7 +76,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   reclaim sweep can detect mid-refresh crashes; `record_sentinel_event` +
   `count_sentinel_events_in_window` back the engine's N=3-in-1h `ReauthRequired`
   escalation per sub-spec
-  [`2026-04-24-credential-refresh-coordination.md`](../../docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md)
+  credential refresh coordination design (archived; see [`docs/ARCHIVE.md`](../../docs/ARCHIVE.md))
   §3.4-§3.6.
 - `RefreshClaim`, `ClaimAttempt`, `ClaimToken`, `RepoError`, `HeartbeatError`,
   `ReclaimedClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at
@@ -182,7 +182,7 @@ Structured rows, mandatory multi-tenancy (`workspace_id` / `org_id`), split
 `WorkflowRow` + `WorkflowVersionRow`, idempotency as a column on `ExecutionNodeRow`. Trait
 definitions only — no in-memory or Postgres implementations exist yet; the engine / API cannot
 compile against these signatures without a broader refactor ("Sprint E — adopt spec-16 row
-model" in `docs/superpowers/specs/2026-04-16-workspace-health-audit.md`).
+model" — workspace health audit archived; see [`docs/ARCHIVE.md`](../../docs/ARCHIVE.md)).
 
 **Exception:** `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo` are implemented;
 the API cancel path produces into them and `nebula_engine::ControlConsumer` (ADR-0008) is the

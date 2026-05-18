@@ -235,6 +235,9 @@ targets/
 # Serena local state (mirrors .claudeignore policy)
 .serena/
 
+# Compound Engineering machine-local preferences
+.compound-engineering/*.local.yaml
+
 # Fuzz crate lockfiles — not redistributed and trip dep-review's
 # license check on libfuzzer-sys (`(MIT OR Apache-2.0) AND NCSA`).
 crates/*/fuzz/Cargo.lock

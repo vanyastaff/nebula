@@ -978,7 +978,7 @@ conference:
 | **0073** | OAuth interactive flow security — mandatory CSRF `state` + PKCE S256, pending-store TTL/single-use (Day 9 R2) | core team (Filippo Valsorda advisory) | Q4 2026 |
 | **0074** | `nebula-credential` audience split — thin contract / `-builtin` / engine-internal; remove `credentials/` dup; ADR-0035 phantom-shim revisit vs Rust 1.95 (Day 9 R2-B) | core team (matklad / Niko advisory) | Q3-Q4 2026 |
 | **0075** | Bevy-path many-crate discipline — two-layer umbrella (`nebula-sdk`/`nebula-internal`), single-version lockstep, one-crate-one-responsibility, `nebula-dylib` dev-iteration, `nebula-macro-utils`; kill `nebula-metadata`/`storage-loom-probe`-as-crate; supersedes the consolidation proposal (Day 9 audit + Bevy correction) | core team (Cart advisory) | Q3 2026 |
-| **0076** | `nebula-value` v2 — Foundation-zero lean value substrate (Decimal+precision/scale, Bytes, IndexMap, `NotNan` Float, `Arc<[Value]>`, no Secret/Redacted, durable=bytes+codec_id); ТЗ at `superpowers/specs/2026-05-14-nebula-value-v2-design.md` (Day 9 Round V) | core team | Q3-Q4 2026 |
+| **0076** | `nebula-value` v2 — Foundation-zero lean value substrate (Decimal+precision/scale, Bytes, IndexMap, `NotNan` Float, `Arc<[Value]>`, no Secret/Redacted, durable=bytes+codec_id); ТЗ archived — see `docs/ARCHIVE.md` (nebula-value v2 design, Day 9 Round V) | core team | Q3-Q4 2026 |
 
 ---
 
@@ -992,7 +992,7 @@ conference:
 > its F-numbering (footnote discipline, RC-13), new principles
 > appended as F21+.
 > Companion ТЗ:
-> [`nebula-value v2`](./superpowers/specs/2026-05-14-nebula-value-v2-design.md).
+> Nebula-value v2 design (archived — see [`docs/ARCHIVE.md`](./ARCHIVE.md)).
 
 ### 14.1 New principles (appended to §3)
 
