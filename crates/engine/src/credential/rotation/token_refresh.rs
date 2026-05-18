@@ -197,6 +197,16 @@ async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError
         .map_err(|e| TokenRefreshError::Parse(e.to_string()))
 }
 
+/// Test-support hook for integration tests that validate token endpoint
+/// response parsing/redaction without weakening production endpoint validation.
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub async fn parse_oauth_token_response_for_tests(
+    resp: Response,
+) -> Result<Value, TokenRefreshError> {
+    parse_token_response(resp).await
+}
+
 fn update_state_from_token_response(
     state: &mut OAuth2State,
     body: &Value,
@@ -452,7 +462,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_oauth2_state_maps_401_to_token_endpoint_error() {
+    async fn parse_token_response_maps_401_to_token_endpoint_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         const BODY: &[u8] = b"{\"error\":\"invalid_client\"}";
@@ -469,9 +479,12 @@ mod tests {
             let _ = stream.write_all(BODY).await;
         });
 
-        let mut state = sample_state();
-        state.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = refresh_oauth2_state(&mut state)
+        let resp = oauth_token_http_client()
+            .post(format!("http://127.0.0.1:{}/token", addr.port()))
+            .send()
+            .await
+            .expect("token endpoint response");
+        let err = parse_token_response(resp)
             .await
             .expect_err("401 from token");
         assert!(
@@ -481,7 +494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_oauth2_state_maps_invalid_json_to_parse_error() {
+    async fn parse_token_response_maps_invalid_json_to_parse_error() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let body: &[u8] = b"not json {";
@@ -498,9 +511,12 @@ mod tests {
             let _ = stream.write_all(body).await;
         });
 
-        let mut state = sample_state();
-        state.token_url = format!("http://127.0.0.1:{}/token", addr.port());
-        let err = refresh_oauth2_state(&mut state)
+        let resp = oauth_token_http_client()
+            .post(format!("http://127.0.0.1:{}/token", addr.port()))
+            .send()
+            .await
+            .expect("token endpoint response");
+        let err = parse_token_response(resp)
             .await
             .expect_err("invalid json body");
         assert!(

@@ -1,11 +1,11 @@
-#![cfg(feature = "rotation")]
+#![cfg(all(feature = "rotation", feature = "test-util"))]
 
 //! ADR-0030 §4 redaction CI gate. **One row per token_refresh code path.**
 //!
-//! Each test injects a secret-bearing IdP response, invokes the refresh
-//! code path end-to-end, and asserts that the resulting error rendering
-//! (Display, Debug, summary fields) does NOT contain the submitted secret
-//! and DOES contain the `[REDACTED]` sentinel.
+//! Each test injects a secret-bearing IdP response through the bounded
+//! response parser and asserts that the resulting error rendering (Display,
+//! Debug, summary fields) does NOT contain the submitted secret and DOES
+//! contain the `[REDACTED]` sentinel.
 //!
 //! Adding a new token_refresh code path = adding a new row here.
 //!
@@ -14,11 +14,9 @@
 //! Source: `docs/tracking/credential-audit-2026-04-27.md` §XII Errata,
 //! security hardening spec Stage 0.5.
 
-use nebula_credential::{
-    SecretString,
-    credentials::{OAuth2State, oauth2::AuthStyle},
+use nebula_engine::credential::rotation::{
+    TokenRefreshError, token_refresh::parse_oauth_token_response_for_tests,
 };
-use nebula_engine::credential::rotation::{TokenRefreshError, refresh_oauth2_state};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -48,23 +46,8 @@ async fn drain_incoming_request(stream: &mut tokio::net::TcpStream) {
     }
 }
 
-fn sample_state(token_url: String) -> OAuth2State {
-    OAuth2State {
-        access_token: SecretString::new("old-access-token"),
-        token_type: "Bearer".to_owned(),
-        refresh_token: Some(SecretString::new("placeholder-not-the-secret-under-test")),
-        expires_at: None,
-        scopes: vec!["read".to_owned()],
-        client_id: SecretString::new("my-client"),
-        client_secret: SecretString::new("placeholder-secret"),
-        token_url,
-        auth_style: AuthStyle::Header,
-    }
-}
-
 /// Spawn a one-shot mock token endpoint that returns the given JSON body
-/// with the given HTTP status. Returns the `http://127.0.0.1:PORT/token`
-/// URL the caller should set on `OAuth2State::token_url`.
+/// with the given HTTP status.
 async fn spawn_idp_returning(status: u16, body: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
@@ -89,6 +72,18 @@ async fn spawn_idp_returning(status: u16, body: &'static str) -> String {
     format!("http://127.0.0.1:{}/token", addr.port())
 }
 
+async fn parse_idp_error_response(status: u16, body: &'static str) -> TokenRefreshError {
+    let token_url = spawn_idp_returning(status, body).await;
+    let resp = reqwest::Client::new()
+        .post(token_url)
+        .send()
+        .await
+        .expect("token endpoint response");
+    parse_oauth_token_response_for_tests(resp)
+        .await
+        .expect_err("non-2xx token response expected")
+}
+
 /// Asserts a string does NOT contain any plausible-looking
 /// secret literal that the IdP echoed.
 fn assert_no_secret_substring(haystack: &str, secret: &str, context: &str) {
@@ -105,7 +100,7 @@ fn assert_no_secret_substring(haystack: &str, secret: &str, context: &str) {
 #[tokio::test]
 async fn sec13_refresh_token_in_error_description_is_redacted() {
     const SECRET: &str = "abc123-leaked-refresh-token-value";
-    let token_url = spawn_idp_returning(
+    let err = parse_idp_error_response(
         400,
         // IdP echoes the submitted refresh_token inside error_description.
         // Real-world pattern observed on some buggy IdPs returning invalid_grant.
@@ -113,11 +108,6 @@ async fn sec13_refresh_token_in_error_description_is_redacted() {
         "{\"error\":\"invalid_grant\",\"error_description\":\"refresh_token=abc123-leaked-refresh-token-value expired\"}",
     )
     .await;
-
-    let mut state = sample_state(token_url);
-    let err = refresh_oauth2_state(&mut state)
-        .await
-        .expect_err("400 expected");
 
     let TokenRefreshError::TokenEndpoint { summary, status } = &err else {
         panic!("expected TokenEndpoint, got: {err:?}");
@@ -150,16 +140,12 @@ async fn sec13_refresh_token_in_error_description_is_redacted() {
 #[tokio::test]
 async fn access_token_in_error_description_is_redacted() {
     const SECRET: &str = "xyz789-leaked-access-token-value";
-    let token_url = spawn_idp_returning(
+    let err = parse_idp_error_response(
         400,
         "{\"error\":\"invalid_grant\",\"error_description\":\"access_token=xyz789-leaked-access-token-value revoked\"}",
     )
     .await;
 
-    let mut state = sample_state(token_url);
-    let err = refresh_oauth2_state(&mut state)
-        .await
-        .expect_err("400 expected");
     let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
         panic!("expected TokenEndpoint, got: {err:?}");
     };
@@ -175,16 +161,12 @@ async fn access_token_in_error_description_is_redacted() {
 #[tokio::test]
 async fn client_secret_in_error_description_is_redacted() {
     const SECRET: &str = "supersecretvalue123abc";
-    let token_url = spawn_idp_returning(
+    let err = parse_idp_error_response(
         400,
         "{\"error\":\"invalid_client\",\"error_description\":\"client_secret=supersecretvalue123abc mismatch\"}",
     )
     .await;
 
-    let mut state = sample_state(token_url);
-    let err = refresh_oauth2_state(&mut state)
-        .await
-        .expect_err("400 expected");
     let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
         panic!("expected TokenEndpoint, got: {err:?}");
     };
@@ -199,16 +181,12 @@ async fn client_secret_in_error_description_is_redacted() {
 #[tokio::test]
 async fn case_insensitive_key_match() {
     const SECRET: &str = "casevariantsecret456";
-    let token_url = spawn_idp_returning(
+    let err = parse_idp_error_response(
         400,
         "{\"error\":\"invalid_grant\",\"error_description\":\"RefreshToken=casevariantsecret456 invalid\"}",
     )
     .await;
 
-    let mut state = sample_state(token_url);
-    let err = refresh_oauth2_state(&mut state)
-        .await
-        .expect_err("400 expected");
     let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
         panic!("expected TokenEndpoint, got: {err:?}");
     };
@@ -221,16 +199,12 @@ async fn case_insensitive_key_match() {
 
 #[tokio::test]
 async fn non_secret_error_description_passes_through() {
-    let token_url = spawn_idp_returning(
+    let err = parse_idp_error_response(
         400,
         "{\"error\":\"invalid_grant\",\"error_description\":\"the grant has expired\"}",
     )
     .await;
 
-    let mut state = sample_state(token_url);
-    let err = refresh_oauth2_state(&mut state)
-        .await
-        .expect_err("400 expected");
     let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {
         panic!("expected TokenEndpoint, got: {err:?}");
     };

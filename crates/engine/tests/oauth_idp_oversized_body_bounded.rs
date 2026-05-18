@@ -1,4 +1,4 @@
-#![cfg(feature = "rotation")]
+#![cfg(all(feature = "rotation", feature = "test-util"))]
 
 //! SEC-01 (security hardening 2026-04-27 Stage 3) — bounded reader on the
 //! OAuth2 token endpoint error path.
@@ -14,11 +14,9 @@
 
 use std::time::{Duration, Instant};
 
-use nebula_credential::{
-    SecretString,
-    credentials::{OAuth2State, oauth2::AuthStyle},
+use nebula_engine::credential::rotation::{
+    TokenRefreshError, token_refresh::parse_oauth_token_response_for_tests,
 };
-use nebula_engine::credential::rotation::{TokenRefreshError, refresh_oauth2_state};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -42,20 +40,6 @@ async fn drain_incoming_request(stream: &mut tokio::net::TcpStream) {
         if acc.len() > 64 * 1024 {
             return;
         }
-    }
-}
-
-fn sample_state(token_url: String) -> OAuth2State {
-    OAuth2State {
-        access_token: SecretString::new("old-access"),
-        token_type: "Bearer".to_owned(),
-        refresh_token: Some(SecretString::new("rt")),
-        expires_at: None,
-        scopes: vec![],
-        client_id: SecretString::new("cid"),
-        client_secret: SecretString::new("csecret"),
-        token_url,
-        auth_style: AuthStyle::Header,
     }
 }
 
@@ -84,9 +68,13 @@ async fn oversized_error_body_returns_bounded_failure_fast() {
         }
     });
 
-    let mut state = sample_state(format!("http://127.0.0.1:{}/token", addr.port()));
     let started = Instant::now();
-    let err = refresh_oauth2_state(&mut state)
+    let resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/token", addr.port()))
+        .send()
+        .await
+        .expect("token endpoint response");
+    let err = parse_oauth_token_response_for_tests(resp)
         .await
         .expect_err("400 expected");
     let elapsed = started.elapsed();
@@ -131,8 +119,12 @@ async fn oversized_content_length_rejected_before_read() {
         let _ = stream.write_all(b"x").await;
     });
 
-    let mut state = sample_state(format!("http://127.0.0.1:{}/token", addr.port()));
-    let err = refresh_oauth2_state(&mut state)
+    let resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/token", addr.port()))
+        .send()
+        .await
+        .expect("token endpoint response");
+    let err = parse_oauth_token_response_for_tests(resp)
         .await
         .expect_err("400 expected");
     let TokenRefreshError::TokenEndpoint { summary, .. } = &err else {

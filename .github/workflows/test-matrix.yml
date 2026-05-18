@@ -169,8 +169,9 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # - `nebula-engine`: OAuth2 `refresh_oauth2_state` + tests live behind `rotation`.
-      #   We enable `rotation` explicitly rather than `--all-features` because the
+      # - `nebula-engine`: OAuth2 rotation tests live behind `rotation`; parser
+      #   integration tests use `test-util` to avoid weakening endpoint validation.
+      #   We enable explicit features rather than `--all-features` because the
       #   latter also turns on `chaos-full`, which defeats the
       #   `cfg_attr(not(feature = "chaos-full"), ignore)` gate on
       #   `refresh_coordinator_chaos::three_replicas_zero_double_idp_calls` and
@@ -183,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ matrix.package }}" == "nebula-engine" ]]; then
-            cargo nextest run -p nebula-engine --features rotation --profile ci --no-tests=pass
+            cargo nextest run -p nebula-engine --features "rotation,test-util" --profile ci --no-tests=pass
           elif [[ "${{ matrix.package }}" == "nebula-storage" ]]; then
             cargo nextest run -p nebula-storage --features "test-util,credential-in-memory" --profile ci --no-tests=pass
           else
