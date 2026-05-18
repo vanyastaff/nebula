@@ -114,13 +114,18 @@ inherit the in-progress merge).
   knife_scenario, caught + fixed). nebula-api 366/366 (1 pg-gated
   skip), clippy/fmt green.
 
-### REMAINING (D) FIX items (not yet started)
+- **`bccf3d43` — done (storage-verified; postgres pg-unverified).**
+  Cross-dialect 0027 normalization (coderabbit 3255514559): postgres
+  `lease_expires_at`/`processed_at` `TIMESTAMPTZ` → `*_ms BIGINT`,
+  idempotency `expires_at` single `TIMESTAMPTZ` → two-column
+  `expires_at TEXT` + `expires_at_ms BIGINT` (matches sqlite exactly);
+  postgres execution/control_queue/idempotency adapters rewritten to
+  epoch-millis. storage 230/230 (in-memory+sqlite), clippy/fmt green;
+  postgres path DATABASE_URL-gated, NOT pg-executed (honest
+  done-but-pg-unverified). **ALL (D) FIX items now complete.**
 
-- `3255514559` storage migrations/postgres/0027 column drift
-  (TIMESTAMPTZ vs SQLite `*_ms` BIGINT) → normalize to `*_ms BIGINT`
-  both dialects + fix postgres adapter rows that read these. NOTE:
-  postgres-only schema; DATABASE_URL-gated, cannot pg-verify locally —
-  classify done-but-pg-unverified.
+### REMAINING (D): ADOPT group + 3255514540 + PUSHBACK reply
+
 - ADOPT items: `3255514551` (idempotency `&Scope` param),
   `3255514553` (membership enum ScopeKind/PrincipalKind),
   postgres/control_queue cleanup DELETE, store_seam node_result warn,
