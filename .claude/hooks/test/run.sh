@@ -164,10 +164,10 @@ printf '{"tool_name":"Write","tool_input":{"file_path":"crates/engine/src/ok.rs"
 # E intent-gate (ADR-0083 deterministic structural-budget tier)
 egate() { printf '%s' "$1" | bash "$HERE/intent-gate.sh" >/dev/null 2>&1; echo $?; }
 E_SID="e-skel"; E_P="$(turn_state_path "$E_SID" "$PWD")"; mkdir -p "$(dirname "$E_P")"
-printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$E_P"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$E_P"
 chk "E loop-guard allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":true}')"
 chk "E default allows"      0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
-printf '{"impl_files_edited":["crates/engine/src/x.rs"],"gate_green":[],"turn_base":""}' >"$E_P"
+printf '{"impl_files_edited":["crates/engine/src/x.rs"],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$E_P"
 chk "E defers to C broken"  0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":2}' >"$E_P"
 chk "E loop-bound allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"

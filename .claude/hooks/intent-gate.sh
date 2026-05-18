@@ -21,7 +21,7 @@ ig_log() { # $1=verdict $2=reason
 
 # Loop counter lives in the RAW turn-state file (load_state projects it away;
 # turn-reset.sh rewrites the file fresh at A0 so it is naturally per-turn).
-ig_attempts() { jq -r '.intent_attempts // 0' "$TS_PATH" 2>/dev/null || echo 0; }
+ig_attempts() { have_jq || { echo 0; return 0; }; jq -r '.intent_attempts // 0' "$TS_PATH" 2>/dev/null || echo 0; }
 ig_bump() {
   have_jq || return 0; [ -f "$TS_PATH" ] || return 0
   local t; t="$(jq -c '.intent_attempts = ((.intent_attempts // 0) + 1)' "$TS_PATH" 2>/dev/null)" \
