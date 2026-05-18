@@ -601,14 +601,22 @@ impl WorkflowEngine {
     }
 
     /// Merges engine-default and per-run tenant fields for resource acquire.
+    ///
+    /// Per-run values override the engine default field-by-field; unset run
+    /// fields fall back to the engine default.
     fn merged_acquire_scope(
         engine_default: &Option<nebula_core::scope::Scope>,
         run_scope: Option<&nebula_core::scope::Scope>,
     ) -> nebula_core::scope::Scope {
-        let pick = run_scope.or(engine_default.as_ref());
+        let default = engine_default.as_ref();
+        let run = run_scope;
         nebula_core::scope::Scope {
-            org_id: pick.and_then(|s| s.org_id),
-            workspace_id: pick.and_then(|s| s.workspace_id),
+            org_id: run
+                .and_then(|s| s.org_id)
+                .or_else(|| default.and_then(|s| s.org_id)),
+            workspace_id: run
+                .and_then(|s| s.workspace_id)
+                .or_else(|| default.and_then(|s| s.workspace_id)),
             ..Default::default()
         }
     }

@@ -1183,27 +1183,8 @@ impl Manager {
         }
     }
 
-    /// [`lookup`](Self::lookup) plus the resource-level taint check.
-    ///
-    /// Every `acquire_*` path funnels through here so a single check
-    /// rejects new leases once `revoke_slot` has tainted the resource —
-    /// the same single-funnel discipline `lookup` uses for the
-    /// `shutting_down` race. Diagnostic paths (`health_check`,
-    /// `pool_stats`, `reload_config`) intentionally use the plain
-    /// `lookup` so they keep working on a tainted resource.
-    ///
-    /// `warmup_pool` is intentionally routed through here (taint-gated),
-    /// **not** the plain `lookup`: it runs `R::create` to materialize new
-    /// instances against the credential, so it is acquire-like and must
-    /// be blocked once the resource is tainted by a revoke.
-    ///
-    /// A tainted resource is rejected with
-    /// [`ErrorKind::Revoked`](crate::error::ErrorKind::Revoked) — a
-    /// non-terminal, retryable classification (the taint clears when the
-    /// credential is re-registered), distinct from the
-    /// [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) that
-    /// the `shutting_down` funnel raises.
-    /// Acquire-side lookup walking the scope bag from most specific to Global.
+    /// Typed acquire lookup walking [`scope_levels_for_acquire`](crate::context::scope_levels_for_acquire)
+    /// on the context scope bag, then [`taint_gate`](Self::taint_gate).
     fn lookup_for_acquire_scope<R: Resource>(
         &self,
         ctx: &ResourceContext,
@@ -1244,6 +1225,18 @@ impl Manager {
     }
 
     /// Shared taint check tail for the acquire-side lookups.
+    ///
+    /// Every `acquire_*` path funnels through here so a single check
+    /// rejects new leases once `revoke_slot` has tainted the resource.
+    /// Diagnostic paths (`health_check`, `pool_stats`, `reload_config`) use
+    /// the plain `lookup` so they keep working on a tainted resource.
+    ///
+    /// `warmup_pool` is routed through the acquire funnel (taint-gated) because
+    /// it materializes instances via `R::create`.
+    ///
+    /// Taint rejects with [`ErrorKind::Revoked`](crate::error::ErrorKind::Revoked),
+    /// distinct from [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled)
+    /// raised by [`Self::shutdown_guard`].
     fn taint_gate<R: Resource>(
         managed: Arc<ManagedResource<R>>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
@@ -1787,20 +1780,7 @@ impl Manager {
         }
     }
 
-    /// [`lookup_any_for_slot`](Self::lookup_any_for_slot) pinned to a
-    /// resolved per-slot credential identity.
-    ///
-    /// Resolves through [`Registry::get_for`](crate::registry::Registry::get_for),
-    /// which selects the single row whose `(scope, slot_identity)` matches
-    /// and is therefore **unambiguous by construction** — a resolved
-    /// credential pins exactly one row, so the
-    /// [`LookupOutcome::Ambiguous`](crate::registry::LookupOutcome) arm
-    /// cannot occur here (no fail-closed path is bypassed: the engine
-    /// fan-out supplies the resolved identity it recorded at register time).
-    /// A `slot_identity` that was never registered is
-    /// [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound), never an
-    /// accidental alias to another tenant's row.
-    /// Acquires a [`ResourceGuard`] through the registry row's erased dispatch
+    /// Acquires a [`crate::guard::ResourceGuard`] through the registry row's erased dispatch
     /// hook (key + scope + resolved slot identity).
     ///
     /// This is the object-safe entry point used by the engine/action accessor
@@ -1896,6 +1876,8 @@ impl Manager {
         self.has_registered_for_scope(key, &scope_bag, slot_identity)
     }
 
+    /// [`lookup_any_for_slot`](Self::lookup_any_for_slot) pinned to a resolved
+    /// per-slot credential identity via [`Registry::get_for`](crate::registry::Registry::get_for).
     fn lookup_any_for_slot_identity(
         &self,
         key: &ResourceKey,

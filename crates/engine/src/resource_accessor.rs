@@ -118,9 +118,7 @@ impl ResourceAccessor for EngineResourceAccessor {
         Box::pin(async move {
             match Manager::acquire_erased(manager, &key, &ctx, &options, slot_identity).await {
                 Ok(value) => Ok(Some(value)),
-                Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::Cancelled) => {
-                    Ok(None)
-                },
+                Err(e) if matches!(e.kind(), ErrorKind::NotFound) => Ok(None),
                 Err(e) => Err(Self::map_err(&key, e)),
             }
         })

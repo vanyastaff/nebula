@@ -221,8 +221,7 @@ impl Error {
         .with_resource_key(key)
     }
 
-    /// Maps this error into the credential-shaped [`CoreError`] surface used by
-    /// [`ResourceAccessor`](nebula_core::accessor::ResourceAccessor).
+    /// Maps this error into the accessor [`nebula_core::CoreError`] surface.
     #[must_use]
     pub fn to_core_error(&self) -> nebula_core::CoreError {
         let key_label = self
@@ -236,7 +235,12 @@ impl Error {
             ErrorKind::Cancelled => {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
             },
-            ErrorKind::Permanent => nebula_core::CoreError::CredentialNotConfigured(detail),
+            ErrorKind::Permanent => nebula_core::CoreError::resource_unavailable(
+                key_label,
+                detail,
+                false,
+                None,
+            ),
             ErrorKind::Transient
             | ErrorKind::Exhausted { .. }
             | ErrorKind::Backpressure
