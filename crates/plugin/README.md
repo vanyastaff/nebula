@@ -63,6 +63,6 @@ See `docs/MATURITY.md` row for `nebula-plugin`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §1 (plugin as integration surface), §3.5 (Plugin = distribution + registration unit, returns runnable trait objects), §7.1 (packaging: `Cargo.toml` + `plugin.toml` + `impl Plugin`; unit of registration not size), §13.1 (plugin load → registry contract).
-- ADRs: `docs/adr/0018-plugin-metadata-to-manifest.md` (rename rationale); ADR-0027 (`ResolvedPlugin`, namespace invariant, registry accessors) lands with slice B — file will live at `docs/adr/0027-plugin-load-path-stable.md`.
+- ADRs: ADR-0018 (rename rationale), ADR-0027 (`ResolvedPlugin`, namespace invariant, registry accessors) — historical, indexed in `docs/adr/HISTORICAL.md`.
 - Integration model: `docs/INTEGRATION_MODEL.md` §7 — full plugin packaging mechanics, three-sources-of-truth rule, cross-plugin dependency rule, signing rationale, discovery / load lifecycle, ABI policy, tooling notes.
 - Siblings: `nebula-metadata` (canonical `PluginManifest`), `nebula-plugin-sdk` (authoring SDK on top of these traits), `nebula-sandbox` (loading and isolation), `nebula-core` (`PluginKey` identity type), `nebula-action` (`Action` trait), `nebula-resource` (`AnyResource` trait), `nebula-credential` (`AnyCredential` trait).

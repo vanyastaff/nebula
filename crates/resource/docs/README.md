@@ -41,7 +41,7 @@ Choose the topology that matches the resource's concurrency model.
 
 > **Background workers and event sources** live in
 > [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`)
-> per [ADR-0037](../../../docs/adr/0037-daemon-eventsource-engine-fold.md).
+> per [ADR-0037](../../../docs/adr/HISTORICAL.md).
 > They are not part of the `nebula-resource` topology surface.
 
 ---

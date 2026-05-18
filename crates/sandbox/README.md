@@ -111,7 +111,7 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §4.5, §7.1, §12.6.
-- ADR: `docs/adr/0006-sandbox-phase1-broker.md` — duplex JSON-RPC over UDS / Named Pipe.
+- ADR: ADR-0006 (historical — `docs/adr/HISTORICAL.md`) — duplex JSON-RPC over UDS / Named Pipe.
 - Plugin model: `docs/INTEGRATION_MODEL.md` §7.
 - Glossary: `docs/GLOSSARY.md` §4 (sandbox / resource).
 - Siblings: `nebula-plugin-sdk` (plugin-author side / wire protocol), `nebula-plugin`
@@ -126,7 +126,7 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 1. **Broker scope model.** There is no per-plugin capability enum. Egress,
    credential, and filesystem mediation is the host-side broker's
    responsibility, keyed by the workflow-config credential-scope hash per
-   [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md)
+   [ADR-0025](../../docs/adr/HISTORICAL.md)
    (D4 + §2 / §3 / §6). The broker module is slice 1d work, not yet built.
 2. **`plugin.toml` signing verification** — canon §7.1; tooling (`cargo-nebula` or equivalent)
    verifies signatures before the host trusts a plugin's `plugin.toml`.
@@ -148,7 +148,7 @@ above) is the remaining piece, tracked under ADR-0025 slice 1d.
 
 ### ADR 0006 status
 
-ADR 0006 (`docs/adr/0006-sandbox-phase1-broker.md`) covers the Phase 1 duplex broker:
+ADR 0006 (historical — `docs/adr/HISTORICAL.md`) covers the Phase 1 duplex broker:
 
 - Slices 1a (`c6b9d531`), 1b (`f3b6701b`), 1c (`b5723f28`) — **landed**: long-lived plugin
   process, duplex line-delimited JSON envelope over UDS / Named Pipe, cooperative cancel.
