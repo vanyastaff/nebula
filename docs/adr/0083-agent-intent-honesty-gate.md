@@ -254,6 +254,9 @@ tier only on flagged-ambiguous-high-risk (rare). Bounded retry caps worst case.
 - The deterministic core is **skill-ecosystem-agnostic** (gates git / clippy /
   nextest only); the AI-Factory → `ce-*` migration re-points named integration
   hooks but cannot weaken or bypass the core.
+- ADR sprawl is bounded: the whole 3-workstream program is **one ADR**;
+  follow-ups are plans, not ADRs; 0083 is slimmed post-plan so agent context
+  is not eaten by this program's documentation.
 
 ## Follow-up workstream (sequenced, not part of this ADR)
 
@@ -263,7 +266,8 @@ complexity/duplication debt accumulate with no observable gate. Therefore:
 
 1. **0083 lands first** — the binding structural-budget + semantic gate is
    installed and proven (`task hooks:test`).
-2. **Legacy structural-debt burn-down** (own spec → plan → impl cycle). Shape,
+2. **Legacy structural-debt burn-down** (own plan in `docs/plans/`, **no new
+   ADR** — execution under this decision, not a new decision). Shape,
    grounded in cleanup-loop practice (Propel, Fowler net-negative): a
    background cleanup loop on a fixed cadence producing **net-negative**,
    evidence-carrying (lint/structure deltas) small PRs, prioritised by churn
@@ -271,7 +275,8 @@ complexity/duplication debt accumulate with no observable gate. Therefore:
    `QUALITY_GATES.md` `cognitive_complexity` / `too_many_lines` allowance
    crate-by-crate. The 0083 gate runs throughout, so cleaned crates cannot
    re-accrue debt and the slope cannot reverse.
-3. **AI-Factory removal / `ce-*` default** (own spec → plan → impl cycle).
+3. **AI-Factory removal / `ce-*` default** (own plan in `docs/plans/`, **no
+   new ADR**).
    `aif-*` skills and the AI-Factory subagent fleet are retired
    (`project_ai_factory_abandoned` already froze curation); `ce-*` becomes the
    default skill set. This workstream owns re-pointing 0083's *named*
@@ -283,6 +288,23 @@ complexity/duplication debt accumulate with no observable gate. Therefore:
 Items 2 and 3 are sequenced **after** 0083 and are independent of each other.
 This ADR does **not** design either; it only fixes the order so both are
 durable and migration-safe.
+
+## Documentation discipline (one-ADR program)
+
+ADR count is itself an agent-context cost (CLAUDE.md already forbids bulk-
+reading `docs/adr/0*`; the thematic index is the access path). This program is
+deliberately **one ADR — 0083**:
+
+- Workstreams 2 and 3 produce **plans in `docs/plans/`, not ADRs**. They are
+  execution under this decision, not new architectural decisions.
+- Future related changes **amend or absorb into 0083** (the repo's
+  stub/absorb pattern — cf. 0080/0081/0082 contract ADRs), never a sibling
+  ADR number. If a genuinely new decision arises it supersedes 0083 in place.
+- After `writing-plans` produces the 0083 implementation plan, this ADR is
+  **slimmed to the lean decision** (Context → Decision → Consequences); the
+  component/design detail moves into the plan, matching the 0082 convention
+  ("implementation detail not duplicated in the ADR body"). The ADR stays
+  context-cheap and reachable via the thematic index, not by bulk read.
 
 ## Supersession
 
