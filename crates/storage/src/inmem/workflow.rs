@@ -131,10 +131,15 @@ impl WorkflowStore for InMemoryWorkflowStore {
         let key = wf_key(scope, &record.id);
         let mut map = self.inner.lock();
         // Read the current version out of the borrow so the error paths
-        // can move `record.id` without an extra clone.
+        // can move `record.id` without an extra clone. A soft-deleted row
+        // is invisible to `update` — the map keeps tombstones (only
+        // `get`/`list` filter them), so without the `!deleted` guard an
+        // `update` would resurrect a row `get`/`get_by_slug`/`list`
+        // already treat as gone. A tombstone ⇒ `NotFound`, matching the
+        // SQL backends' `WHERE … AND deleted = FALSE`.
         let current_version = match map.get(&key) {
-            Some(current) => current.version,
-            None => return Err(StorageError::not_found("workflow", record.id)),
+            Some(current) if !current.deleted => current.version,
+            _ => return Err(StorageError::not_found("workflow", record.id)),
         };
         if current_version != expected_version {
             return Err(StorageError::Conflict {

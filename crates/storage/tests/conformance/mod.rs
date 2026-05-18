@@ -874,6 +874,36 @@ pub async fn assert_workflow_store_contract(backend: &dyn Backend) {
         "[{}] soft-deleted row must not appear in list",
         backend.name()
     );
+    // A soft-deleted row is invisible to `update` too: updating a
+    // tombstone must be `NotFound` (matching `get`), never resurrect the
+    // row and never report a spurious `Conflict`. Without the
+    // `deleted = FALSE` / `!deleted` guard on every backend's `update`
+    // this would rewrite the tombstone back into a live row.
+    let revive = wf
+        .update(
+            &s,
+            WorkflowRecord {
+                id: "wf_c".into(),
+                deleted: false,
+                version: 2,
+                ..by_id.clone()
+            },
+            1,
+        )
+        .await;
+    assert!(
+        matches!(revive, Err(StorageError::NotFound { .. })),
+        "[{}] update of a soft-deleted row must be NotFound (no revival, \
+         no spurious Conflict), got {revive:?}",
+        backend.name()
+    );
+    assert!(
+        wf.get(&s, "wf_c").await.expect("get").is_none(),
+        "[{}] soft-deleted row must stay a read miss after a rejected \
+         update",
+        backend.name()
+    );
+
     // Soft-deleting an absent row is NotFound.
     let del_missing = wf.soft_delete(&s, "wf_absent").await;
     assert!(

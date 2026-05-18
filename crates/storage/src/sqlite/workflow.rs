@@ -115,13 +115,18 @@ impl WorkflowStore for SqliteWorkflowStore {
         expected_version: u64,
     ) -> Result<(), StorageError> {
         // CAS in one statement: the row is rewritten only when the stored
-        // version still equals `expected_version`. Zero rows affected then
-        // means either the row is gone (NotFound) or the version moved
-        // (Conflict) — disambiguated by a follow-up read.
+        // version still equals `expected_version` AND it is not a
+        // tombstone. `deleted = 0` is mandatory — without it an `update`
+        // on a soft-deleted row would rewrite it (clearing the tombstone)
+        // and resurrect a row that `get`/`get_by_slug`/`list` already
+        // treat as gone. Zero rows affected then means the row is
+        // gone/tombstoned (NotFound) or the version moved (Conflict) —
+        // disambiguated by a follow-up read.
         let res = sqlx::query(
             "UPDATE port_workflows \
              SET version = ?, slug = ?, deleted = ? \
-             WHERE id = ? AND workspace_id = ? AND org_id = ? AND version = ?",
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND version = ? AND deleted = 0",
         )
         .bind(record.version as i64)
         .bind(&record.slug)
@@ -136,9 +141,13 @@ impl WorkflowStore for SqliteWorkflowStore {
         if res.rows_affected() > 0 {
             return Ok(());
         }
+        // Disambiguate behind the same tombstone-invisible predicate the
+        // UPDATE used: a soft-deleted row must surface as `NotFound`
+        // (a read miss, matching `get`), never a spurious `Conflict`.
         let current = sqlx::query_scalar::<_, i64>(
             "SELECT version FROM port_workflows \
-             WHERE id = ? AND workspace_id = ? AND org_id = ?",
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND deleted = 0",
         )
         .bind(&record.id)
         .bind(&scope.workspace_id)

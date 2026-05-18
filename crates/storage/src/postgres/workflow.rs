@@ -120,13 +120,18 @@ impl WorkflowStore for PgWorkflowStore {
         expected_version: u64,
     ) -> Result<(), StorageError> {
         // CAS in one statement: the row is rewritten only when the stored
-        // version still equals `expected_version`. Zero rows affected then
-        // means either the row is gone (NotFound) or the version moved
-        // (Conflict) — disambiguated by a follow-up read.
+        // version still equals `expected_version` AND it is not a
+        // tombstone. `deleted = FALSE` is mandatory — without it an
+        // `update` on a soft-deleted row would rewrite it (clearing the
+        // tombstone) and resurrect a row that `get`/`get_by_slug`/`list`
+        // already treat as gone. Zero rows affected then means the row is
+        // gone/tombstoned (NotFound) or the version moved (Conflict) —
+        // disambiguated by a follow-up read.
         let res = sqlx::query(
             "UPDATE port_workflows \
              SET version = $1, slug = $2, deleted = $3 \
-             WHERE id = $4 AND workspace_id = $5 AND org_id = $6 AND version = $7",
+             WHERE id = $4 AND workspace_id = $5 AND org_id = $6 \
+               AND version = $7 AND deleted = FALSE",
         )
         .bind(record.version as i64)
         .bind(&record.slug)
@@ -141,9 +146,13 @@ impl WorkflowStore for PgWorkflowStore {
         if res.rows_affected() > 0 {
             return Ok(());
         }
+        // Disambiguate behind the same tombstone-invisible predicate the
+        // UPDATE used: a soft-deleted row must surface as `NotFound`
+        // (a read miss, matching `get`), never a spurious `Conflict`.
         let current = sqlx::query_scalar::<_, i64>(
             "SELECT version FROM port_workflows \
-             WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
+             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 \
+               AND deleted = FALSE",
         )
         .bind(&record.id)
         .bind(&scope.workspace_id)
