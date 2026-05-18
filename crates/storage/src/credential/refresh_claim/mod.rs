@@ -1,8 +1,7 @@
 //! Durable cross-replica claim repository for credential refresh
 //! coordination.
 //!
-//! Per ADR-0041 + sub-spec
-//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`.
+//! See `docs/INTEGRATION_MODEL.md` (credential refresh) for integration context.
 //!
 //! The canonical trait + supporting types now live in the spec-16 port
 //! crate (`nebula_storage_port::store`) — this component is loom-verified,

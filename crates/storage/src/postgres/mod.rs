@@ -4,7 +4,7 @@
 //! Per spec §5: `commit` uses a real transaction so the §12.2 triple
 //! (CAS + fencing check + state + outbox + journal) is atomic and
 //! serializable across processes; the control-queue claim uses
-//! `FOR UPDATE SKIP LOCKED` (multi-consumer, ADR-0008 §1) — wired by the
+//! `FOR UPDATE SKIP LOCKED` (multi-consumer queue claim) — wired by the
 //! control-queue store in a later task.
 //!
 //! The adapter owns a port-scoped schema (`schema.sql`, `port_*` tables)

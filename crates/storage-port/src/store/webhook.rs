@@ -1,4 +1,4 @@
-//! Webhook-activation store trait (ADR-0049).
+//! Webhook-activation store trait (durable activation rows for outbound webhooks).
 use crate::dto::WebhookActivationRecord;
 use crate::error::StorageError;
 use crate::scope::Scope;

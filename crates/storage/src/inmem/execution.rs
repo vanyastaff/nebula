@@ -256,8 +256,8 @@ impl ExecutionStore for InMemoryExecutionStore {
             // second acquire by the *same* holder. Renewal is the
             // dedicated `renew_lease` op (fencing-token gated); a second
             // `acquire_lease` while the lease is live is contention, not
-            // a silent renew (§12.2 zombie-runner closure, ADR-0008 —
-            // two concurrent runners must see exactly one winner).
+            // a silent renew (zombie-runner closure — two concurrent
+            // runners must see exactly one winner).
             return Ok(None);
         }
         // No live lease: acquire it. Every successful acquire bumps the
@@ -265,8 +265,8 @@ impl ExecutionStore for InMemoryExecutionStore {
         // — including one held by the *same* holder string (a
         // crashed-then-restarted runner reusing its `instance_id` is a
         // zombie w.r.t. its pre-crash token). Generation 0 therefore
-        // universally means "no lease ever issued / stale" (§12.2
-        // zombie-runner closure, ADR-0008).
+        // universally means "no lease ever issued / stale"
+        // (zombie-runner closure).
         row.fencing_generation += 1;
         row.lease_holder = Some(holder.to_string());
         row.lease_expires_at = Some(now.checked_add(ttl).unwrap_or(now));

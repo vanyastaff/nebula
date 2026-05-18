@@ -3,7 +3,7 @@
 //!
 //! The claim path uses `FOR UPDATE SKIP LOCKED` so multiple consumers can
 //! drain the queue concurrently without double-dispatch (multi-consumer,
-//! ADR-0008 §1). Ids are the raw 16-byte ULID (`BYTEA`), never
+//! multi-consumer claim). Ids are the raw 16-byte ULID (`BYTEA`), never
 //! UTF-8-of-ULID. `enqueue` carries the tenant `Scope`; `mark_*` are
 //! fenced by the claiming processor.
 

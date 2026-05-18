@@ -1,14 +1,14 @@
-//! Idempotency traits (spec-16 §11.3 + ADR-0048 hybrid backend).
+//! Idempotency traits (per-attempt guard + durable hybrid replay store).
 use std::time::Duration;
 
 use crate::dto::CachedRecord;
 use crate::error::StorageError;
 use crate::scope::Scope;
 
-/// Per-attempt idempotency guard (spec-16 §11.3).
+/// Per-attempt idempotency guard.
 ///
-/// The key shape is unchanged — `{execution_id}:{node_id}:{attempt}` (the
-/// ADR-0042 `attempts.len()+1` derivation is preserved). The decorator
+/// The key shape is unchanged — `{execution_id}:{node_id}:{attempt}` (attempt
+/// index is `stored_attempts.len() + 1`). The decorator
 /// namespaces it by tenant so tenant A cannot probe or poison tenant B's
 /// dedup entry (replay-oracle mitigation, §6.1).
 #[async_trait::async_trait]
@@ -26,7 +26,7 @@ pub trait IdempotencyGuard: Send + Sync + std::fmt::Debug {
     ) -> Result<bool, StorageError>;
 }
 
-/// Durable idempotent-replay response store (ADR-0048 hybrid backend).
+/// Durable idempotent-replay response store (in-memory + durable hybrid).
 ///
 /// First-writer-wins: `put` for an existing key is a no-op (the original
 /// record stays). `scope` is an explicit parameter (consistent with
@@ -35,8 +35,8 @@ pub trait IdempotencyGuard: Send + Sync + std::fmt::Debug {
 /// nor poison tenant B's dedup entry (§6.1 replay-oracle), rather than
 /// relying on the caller to hand in a pre-namespaced string. A
 /// [`StorageError`] from `get` must NOT be treated as a cache miss —
-/// silently dropping replay protection on corruption is rejected by
-/// ADR-0048.
+/// silently dropping replay protection on corruption is forbidden (storage
+/// errors must surface, not masquerade as cache misses).
 #[async_trait::async_trait]
 pub trait IdempotencyStore: Send + Sync + std::fmt::Debug {
     /// Look up a cached record by `cache_key` within `scope`.

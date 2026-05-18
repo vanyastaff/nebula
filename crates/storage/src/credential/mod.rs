@@ -11,19 +11,13 @@
 //!   re-composes outermost at the composition root.
 //! - `ExternalProvider` wrappers — `ProviderCacheLayer`. They compose
 //!   around an `Arc<dyn ExternalProvider>` that resolves secrets from a
-//!   remote system (Vault, AWS SM, env var, …) per ADR-0051. The
-//!   `Provider`-prefixed types are scoped to that trait and do not interact
-//!   with the `CredentialStore` cache.
+//!   remote system (Vault, AWS SM, env var, …). The `Provider`-prefixed types
+//!   are scoped to that trait and do not interact with the `CredentialStore`
+//!   cache.
 //!
-//! The `CredentialStore` trait + DTOs live in `nebula_credential` per
-//! [ADR-0032](../../../../docs/adr/0032-credential-store-canonical-home.md);
-//! only the concrete implementations are owned by storage
-//! ([ADR-0029](../../../../docs/adr/0029-storage-owns-credential-persistence.md)).
-//!
-//! See also [ADR-0028](../../../../docs/adr/0028-cross-crate-credential-invariants.md)
-//! for the umbrella cross-crate invariants, and
-//! [ADR-0051](../../../../docs/adr/0051-external-provider-redesign.md) for
-//! the `ExternalProvider` design that motivates `ProviderCacheLayer`.
+//! The `CredentialStore` trait + DTOs live in `nebula_credential`; concrete
+//! implementations and layers live here. See `crates/storage/README.md` and
+//! `docs/INTEGRATION_MODEL.md` (Credential) for integration context.
 
 pub mod key_provider;
 pub mod layer;
@@ -38,7 +32,7 @@ pub mod pending;
 #[cfg(feature = "rotation")]
 pub mod backup;
 
-/// Cross-replica refresh claim repository — see ADR-0041.
+/// Cross-replica refresh claim repository (CAS + heartbeat).
 pub mod refresh_claim;
 
 #[cfg(feature = "rotation")]

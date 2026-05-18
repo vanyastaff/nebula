@@ -1,4 +1,4 @@
-//! Postgres implementation of [`ControlQueueRepo`] (ADR-0008 / ADR-0017).
+//! Postgres implementation of [`ControlQueueRepo`].
 //!
 //! Schema: migrations `0013_execution_lifecycle.sql` (base table) +
 //! `0021_add_control_queue_reclaim_count.sql` (reclaim column + partial
@@ -70,16 +70,16 @@ fn tuple_to_entry(t: EntryTuple) -> Result<ControlQueueEntry, StorageError> {
     })
 }
 
-/// Postgres-backed durable control queue (canon §12.2).
+/// Postgres-backed durable control queue.
 ///
 /// Implements the [`ControlQueueRepo`] trait against the
 /// `execution_control_queue` table defined by migration 0013 + 0021 + 0026.
 ///
-/// - `claim_pending` uses `FOR UPDATE SKIP LOCKED` per ADR-0008 §1; two concurrent claimers never
+/// - `claim_pending` uses `FOR UPDATE SKIP LOCKED`; two concurrent claimers never
 ///   double-claim a row.
 /// - `reclaim_stuck` runs two `UPDATE ... WHERE status = 'Processing' ... RETURNING id` statements
 ///   inside one transaction; the `status = 'Processing'` predicate is the CAS that fences
-///   concurrent sweepers (ADR-0017). The exhausted-message encodes `processed_by` as lowercase hex
+///   concurrent sweepers. The exhausted-message encodes `processed_by` as lowercase hex
 ///   to stay byte-identical with `InMemoryControlQueueRepo`.
 #[derive(Clone)]
 pub struct PgControlQueueRepo {
@@ -144,7 +144,7 @@ impl ControlQueueRepo for PgControlQueueRepo {
         processor: &[u8],
         batch_size: u32,
     ) -> Result<Vec<ControlQueueEntry>, StorageError> {
-        // Canonical Postgres SKIP LOCKED claim (ADR-0008 §1).
+        // Canonical Postgres SKIP LOCKED claim.
         // The CTE's SELECT ... FOR UPDATE SKIP LOCKED skips rows another
         // runner has already locked; the outer UPDATE stamps the survivors
         // atomically and returns them via RETURNING.
@@ -177,7 +177,7 @@ impl ControlQueueRepo for PgControlQueueRepo {
         // worker whose row was reclaimed and re-claimed by a different
         // runner sees `processed_by != $processor` → zero rows affected,
         // the newer claim's state is preserved. An idempotent no-op under
-        // the at-least-once contract of ADR-0008 §5.
+        // the at-least-once delivery contract.
         sqlx::query(
             "UPDATE execution_control_queue \
              SET status = 'Completed' \
@@ -686,7 +686,7 @@ mod tests {
         // after the row has already been terminalised (e.g. by
         // reclaim-exhaustion → Failed, or never-claimed → Pending) must
         // not overwrite the newer status. Guarded UPDATE returns zero
-        // rows; the repo method still returns Ok per ADR-0008 §5.
+        // rows; the repo method still returns Ok (idempotent no-op).
         let Some(pool) = pool().await else { return };
         let _guard = TEST_LOCK.lock().await;
         clean_control_queue(&pool).await;

@@ -1,4 +1,4 @@
-//! Idempotency dedup record DTO (ADR-0048 hybrid backend).
+//! Idempotency dedup record DTO (hybrid replay cache).
 use serde::{Deserialize, Serialize};
 
 /// One cached idempotent-replay response.

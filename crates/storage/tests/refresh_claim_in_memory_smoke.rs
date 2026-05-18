@@ -1,7 +1,6 @@
 //! Behavioural smoke tests for `InMemoryRefreshClaimRepo`.
 //!
-//! Verifies the CAS / heartbeat / release / reclaim contract per ADR-0041
-//! and sub-spec §3.2.
+//! Verifies the CAS / heartbeat / release / reclaim contract.
 
 use std::time::Duration;
 

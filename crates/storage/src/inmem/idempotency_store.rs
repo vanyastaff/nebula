@@ -1,5 +1,5 @@
-//! In-memory `IdempotencyStore` (ADR-0048 durable-replay cache) +
-//! `WebhookActivationStore` (ADR-0049).
+//! In-memory `IdempotencyStore` (durable idempotent-replay cache) +
+//! `WebhookActivationStore` (webhook activation specs).
 //!
 //! Both share-nothing (their own `Arc<Mutex<…>>`): the cache is keyed by
 //! `{workspace_id}:{org_id}:{cache_key}` (the store folds the scope in, so

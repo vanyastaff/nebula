@@ -1,5 +1,5 @@
-//! Postgres `IdempotencyStore` (ADR-0048 durable-replay cache) +
-//! `WebhookActivationStore` (ADR-0049) over the port-scoped schema.
+//! Postgres `IdempotencyStore` (durable idempotent-replay cache) +
+//! `WebhookActivationStore` (webhook activation specs) over the port-scoped schema.
 //!
 //! The cache is keyed by `{workspace_id}:{org_id}:{cache_key}` (the store
 //! folds the scope into the key, so tenant A can neither probe nor poison

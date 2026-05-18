@@ -5,7 +5,7 @@
 //! `CredentialScopeResolver`, spec §8) — scope *policy* does not belong in
 //! the storage adapter. These layers (`EncryptionLayer`, `CacheLayer`,
 //! `AuditLayer`) stay here and re-compose **on top** of the tenancy scope
-//! layer at the composition root; the ADR-0029 fail-closed audit +
+//! layer at the composition root; the fail-closed audit +
 //! zeroize-on-drop invariants are unaffected by the move (layer order
 //! `ScopeLayer → AuditLayer → EncryptionLayer → CacheLayer → Backend` is
 //! preserved by the composition root, not by this module).

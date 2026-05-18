@@ -1,4 +1,4 @@
-//! Idempotent-replay dedup store (M3.4 — ADR-0048).
+//! Idempotent-replay dedup store.
 //!
 //! Storage-layer port for the API's idempotency middleware. Two impls
 //! ship in this crate today:
@@ -70,7 +70,7 @@ pub trait IdempotencyStoreRepo: Send + Sync + std::fmt::Debug {
     /// [`StorageError`] if the read itself failed (e.g. PG connection
     /// error, malformed payload). Callers MUST NOT treat
     /// [`StorageError`] as a cache miss — silently dropping replay
-    /// protection on data corruption is rejected by ADR-0048.
+    /// protection on data corruption — storage errors must not be treated as cache misses.
     async fn get(&self, cache_key: &str) -> Result<Option<CachedRecord>, StorageError>;
 
     /// Persist a cached record under `cache_key` with `ttl`.

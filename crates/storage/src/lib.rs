@@ -32,22 +32,21 @@
 //! the API idempotency middleware), the webhook-activation store, and the
 //! identity-row repository surface implemented by the Postgres glue in
 //! `pg`. `pg::PgControlQueueRepo` is the multi-process /
-//! restart-tolerant control-queue backing (`FOR UPDATE SKIP LOCKED` per
-//! ADR-0008 §1); no composition root selects it by default yet — a future
-//! `apps/server` (ADR-0008 follow-up) wires it in.
+//! restart-tolerant control-queue backing (`FOR UPDATE SKIP LOCKED`); no
+//! composition root selects it by default yet — the server binary wires it in.
 //!
-//! ## Canon
+//! ## Durability surfaces (port)
 //!
-//! - §11.1 CAS transitions via the port `ExecutionStore` commit path.
-//! - §11.3 idempotency check-and-mark via the port `IdempotencyGuard`.
-//! - §11.5 journal (`append_journal`) and checkpoint (`save_stateful_checkpoint`).
-//! - §12.2 outbox atomicity: `execution_control_queue` writes share the same operation as state
+//! - CAS transitions via the port `ExecutionStore` commit path.
+//! - Per-attempt idempotency via the port `IdempotencyGuard`.
+//! - Journal (`append_journal`) and checkpoint (`save_stateful_checkpoint`).
+//! - Outbox atomicity: `execution_control_queue` writes share the same operation as state
 //!   transitions.
-//! - §12.3 local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
+//! - Local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
 //!   in-process tests.
-//! - ADR-0009 resume-persistence schema: `set_workflow_input` / `get_workflow_input` and
-//!   `save_node_result` / `load_node_result` / `load_all_results` expose the seam; engine consumers
-//!   (chips B2 / B3 / B4) wire the resume path.
+//! - Resume persistence: `set_workflow_input` / `get_workflow_input` and
+//!   `save_node_result` / `load_node_result` / `load_all_results` expose the seam for engine
+//!   resume wiring.
 //!
 //! See `crates/storage/README.md` for the full durability matrix and
 //! backend status table.
@@ -55,8 +54,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-/// Credential persistence — see
-/// [ADR-0029](../../../docs/adr/0029-storage-owns-credential-persistence.md).
+/// Credential persistence (encryption, audit, refresh claims, pending state).
 pub mod credential;
 mod error;
 /// Serialization format abstraction (JSON / MessagePack).

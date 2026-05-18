@@ -1,4 +1,4 @@
-//! Webhook-activation record DTO (ADR-0049).
+//! Webhook-activation record DTO.
 use crate::Scope;
 use serde::{Deserialize, Serialize};
 

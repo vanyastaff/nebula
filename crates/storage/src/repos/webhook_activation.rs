@@ -1,4 +1,4 @@
-//! Webhook-activation repository (M3.3 / ADR-0049).
+//! Webhook-activation repository.
 //!
 //! Storage seam for the API's slug-routed webhook bootstrap. Sibling
 //! to the generic [`crate::repos::TriggerRepo`] (whose contract is

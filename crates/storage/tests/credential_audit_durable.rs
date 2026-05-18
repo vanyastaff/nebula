@@ -1,4 +1,4 @@
-//! CI gate for ADR-0028 invariant 4 (§14 no discard-and-log):
+//! CI gate for fail-closed credential audit (no discard-and-log):
 //! audit is in-line durable. If the audit sink errors, the credential
 //! operation errors. No "log and continue" path.
 //!

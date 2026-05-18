@@ -1,4 +1,4 @@
-//! Rotation Backup System — canonical home per ADR-0029 / ADR-0032.
+//! Rotation Backup System — canonical storage-side home for credential backups.
 //!
 //! Creates encrypted backups of credentials before rotation for disaster
 //! recovery. Feature-gated behind storage's `rotation` feature, which forwards

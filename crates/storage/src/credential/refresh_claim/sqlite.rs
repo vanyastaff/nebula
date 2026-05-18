@@ -80,7 +80,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
 
         // Atomic CAS via UPSERT with conditional UPDATE clause. Mirrors the
         // Postgres `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at < ...`
-        // pattern (ADR-0008 + ADR-0041). Requires SQLite 3.35+ for
+        // pattern (control-queue + refresh-claim CAS). Requires SQLite 3.35+ for
         // `RETURNING`.
         //
         // Win path: the row we wrote (or overwrote in place) comes back via

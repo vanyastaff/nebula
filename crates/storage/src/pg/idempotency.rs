@@ -1,4 +1,4 @@
-//! Postgres implementation of [`IdempotencyStoreRepo`] (M3.4 / ADR-0048).
+//! Postgres implementation of [`IdempotencyStoreRepo`].
 //!
 //! Schema: migration `0024_add_idempotency_dedup.sql`.
 //!
@@ -29,7 +29,7 @@ use crate::{
     repos::{CachedRecord, IdempotencyStoreRepo},
 };
 
-/// Postgres-backed durable dedup store (canon §M3.4 / ADR-0048).
+/// Postgres-backed durable dedup store (survives process restart).
 #[derive(Clone, Debug)]
 pub struct PgIdempotencyStore {
     pool: Pool<Postgres>,

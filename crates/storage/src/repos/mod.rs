@@ -7,10 +7,10 @@
 //!
 //! - **Control-command outbox** — `ControlQueueRepo` with
 //!   `InMemoryControlQueueRepo` and, behind the `postgres` feature,
-//!   `pg::PgControlQueueRepo` (`FOR UPDATE SKIP LOCKED`, ADR-0008 §1).
+//!   `pg::PgControlQueueRepo` (`FOR UPDATE SKIP LOCKED`).
 //!   The five commands (`Start` / `Resume` / `Restart` / `Cancel` /
 //!   `Terminate`) and the crashed-runner `reclaim_stuck` sweep
-//!   (ADR-0008 / ADR-0017) are implemented on both backings.
+//!   are implemented on both backings.
 //! - **Idempotency-cache store** — `IdempotencyStoreRepo` /
 //!   `InMemoryIdempotencyStoreRepo`, consumed by the API idempotency
 //!   middleware (`StorageBackedIdempotencyStore`).

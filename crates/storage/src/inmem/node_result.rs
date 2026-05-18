@@ -1,6 +1,6 @@
 //! In-memory `NodeResultStore` + `CheckpointStore`.
 //!
-//! These back the engine's resume seam (ADR-0009 node outputs/results +
+//! These back the engine's resume seam (node outputs/results +
 //! workflow input) and the stateful-action checkpoint optimisation
 //! (spec-16 §11.5). Each is its own `parking_lot::Mutex`-guarded map keyed
 //! by `(scope, execution_id, node_id)` so a cross-tenant read can never
@@ -13,7 +13,7 @@
 //! The schema version on every loaded record is checked against
 //! [`MAX_SUPPORTED_RESULT_SCHEMA_VERSION`] and a newer record fails closed
 //! with [`StorageError::UnknownSchemaVersion`] rather than being silently
-//! misinterpreted (ADR-0009 §2).
+//! misinterpreted (unknown schema version fails closed).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,8 +54,7 @@ fn input_key(scope: &Scope, execution_id: &str) -> InputKey {
 ///
 /// A newer writer may have stored a shape this process does not
 /// understand; surfacing it as a typed error keeps resume loud instead of
-/// silently reconstructing a node from a misread payload (ADR-0009 §2,
-/// PRODUCT_CANON §4.5).
+/// silently reconstructing a node from a misread payload.
 fn guard_schema(record: &NodeResultRecord) -> Result<(), StorageError> {
     if record.schema_version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION {
         return Err(StorageError::UnknownSchemaVersion {
