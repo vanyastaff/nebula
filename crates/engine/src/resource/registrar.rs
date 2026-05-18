@@ -583,8 +583,6 @@ impl ResourceRegistrarRegistry {
         // reverse-index binding so a later rotation / lease-revoke fans
         // to this exact resolved row.
         if let Some((idx, scope, slot_bindings, credential_ids)) = bind_plan {
-            let resource_key = outcome.resource_key;
-            let slot_identity = outcome.slot_identity;
             for (slot_name, cred_id) in &credential_ids {
                 // Only bind slots the resource actually declared (those
                 // present in `slot_bindings`): a stray `credential_ids`
@@ -593,10 +591,10 @@ impl ResourceRegistrarRegistry {
                 if slot_bindings.contains_key(slot_name) {
                     idx.bind(
                         *cred_id,
-                        resource_key.clone(),
+                        outcome.resource_key.clone(),
                         scope.clone(),
                         slot_name.clone(),
-                        slot_identity,
+                        outcome.slot_identity,
                     );
                 }
             }
