@@ -1,7 +1,7 @@
 //! Chaos test — refresh-coordinator multi-replica race regression.
 //!
 //! Per sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` §5.4.
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §5.4.
 //!
 //! # Gating
 //!

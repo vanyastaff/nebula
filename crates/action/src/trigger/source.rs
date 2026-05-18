@@ -10,7 +10,7 @@
 //! ## Why the shape is `Source: TriggerSource` and not `type Event` directly
 //!
 //! Per spike Iter-2 §2.2
-//! (`docs/superpowers/drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md`) the indirection
+//! (`docs/adr/0069-action-surface-hybrid.md`) the indirection
 //! lets a trigger family carry transport-specific invariants on the `Source` type (e.g.,
 //! `WebhookSource` documents `WebhookRequest` body-size caps, `PollSource` documents cursor
 //! invariants) without leaking into the base trait.

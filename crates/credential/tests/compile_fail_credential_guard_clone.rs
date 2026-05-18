@@ -6,7 +6,7 @@
 //! spawn boundary»). This probe verifies the impl is gone via fully-qualified
 //! syntax (FQS) so `Clone` cannot resolve through `Deref` to the inner `S`.
 //!
-//! See `docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md` §4.
+//! See `docs/adr/HISTORICAL.md (ADR-0028 credential invariants)` §4.
 
 #[test]
 fn compile_fail_credential_guard_clone() {

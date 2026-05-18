@@ -1,3 +1,5 @@
+Doc gate: complete Wave A in docs/plans/2026-05-18-001-refactor-docs-stack-contract-consolidation-plan.md (U7) before flagship U0+.
+
 ---
 title: "feat: Integrator flagship platform (milestone 1)"
 type: feat

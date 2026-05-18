@@ -489,7 +489,7 @@ pub const NEBULA_CREDENTIAL_EXPIRED_TOTAL: &str = "nebula_credential_expired_tot
 
 // ---------------------------------------------------------------------------
 // Credential refresh coordinator (two-tier L1+L2 — sub-spec
-// `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` §6)
+// `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §6)
 // ---------------------------------------------------------------------------
 
 /// Counter: L2 claim acquisition outcomes.

@@ -2,7 +2,7 @@
 name: Nebula integration model
 description: Authoritative integration-model mechanics — Resource / Credential / Action / Schema / Plugin contract, plugin packaging, cross-plugin dependency rules. Canon §3.5 states invariants; this document carries the mechanics.
 status: accepted
-last-reviewed: 2026-05-17
+last-reviewed: 2026-05-18
 related: [docs/PRODUCT_CANON.md, docs/adr/README.md, docs/adr/HISTORICAL.md]
 ---
 
@@ -367,7 +367,7 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 | [0050](adr/0050-m3-5-w3c-trace-context-propagation.md) | W3C trace context | → `docs/OBSERVABILITY.md` |
 | [0051](adr/0051-external-provider-redesign.md) | External provider redesign | § Credential |
 | [0052](adr/0052-schema-validator-condition-seam.md) | Validator condition seam | § Schema |
-| [0052-action](adr/0052-action-surface-hybrid.md) | Action surface hybrid | §3.8 `nebula-action` |
+| [0069](adr/0069-action-surface-hybrid.md) | Action surface hybrid | §3.8 `nebula-action` |
 | [0053](adr/0053-two-struct-dx-consolidation.md) | Two-struct DX | §3.8 |
 | [0054](adr/0054-typed-capability-system.md) | Typed capabilities | § Credential caps |
 | [0055](adr/0055-nebula-sdk-facade.md) | `nebula-sdk` façade | § Plugin / SDK |
@@ -384,3 +384,4 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 | [0066](adr/0066-credential-runtime-crate.md) | Credential runtime crate | Engine / credential plane |
 | [0067](adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Rotation fan-out + `&self` refresh hook | § Credential rotation |
 | [0068](adr/0068-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
+| [0072](adr/0072-nebula-storage-spec16-port-adapter-tenancy.md) | Spec-16 storage port / adapter / tenancy | Storage plane (pointer) |

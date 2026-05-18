@@ -7,7 +7,7 @@
 //! # Sentinel marking
 //!
 //! Per sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` §3.4
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §3.4
 //! the holder marks the L2 claim row `sentinel = RefreshInFlight`
 //! immediately before the IdP POST. That mark is set by the
 //! `CredentialResolver::refresh_via_coordinator` closure (the caller of

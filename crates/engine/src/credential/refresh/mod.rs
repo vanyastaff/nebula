@@ -1,7 +1,7 @@
 //! Two-tier refresh coordinator (L1 in-process + L2 cross-replica claim).
 //!
 //! Per ADR-0041 + sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` §3.
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)` §3.
 //!
 //! `RefreshCoordinator` is the public outer surface. Stage 2.1 wires the
 //! type as a delegating wrapper around the renamed-to-private

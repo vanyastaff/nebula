@@ -1,6 +1,6 @@
 # Archived documentation (outside this repo)
 
-The following were **removed from the Nebula git tree** on 2026-05-17 to
+The following were **removed from the Nebula git tree** (including `docs/superpowers/` as of 2026-05-18) on 2026-05-17 to
 shrink agent context. They remain on disk for humans; agents must not search
 for them inside this repository.
 

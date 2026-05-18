@@ -20,7 +20,7 @@ the §12.2 outbox atomicity was implicit, and lease handoff had a
 zombie-runner hole (a superseded holder whose CAS version still matched
 could still commit).
 
-The redesign (`docs/superpowers/specs/2026-05-15-nebula-storage-spec16-redesign-design.md`)
+The redesign (`docs/adr/0072-nebula-storage-spec16-port-adapter-tenancy.md`)
 replaces the dual model with one object-safe storage port, a
 multi-backend adapter, and a tenancy security decorator, then rewires
 engine/api/core onto the port. Breaking changes were sanctioned.
@@ -86,7 +86,7 @@ record the two new crates.
 
 | Superseded | By | Note |
 |---|---|---|
-| "Sprint E — adopt spec-16 row model" deferral (`docs/superpowers/specs/2026-04-16-workspace-health-audit.md`, ROADMAP "Out of scope for 1.0") | This ADR | The spec-16 row model is no longer deferred — it is the single shipped storage architecture. The Layer-1 `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` surface and the never-implemented Layer-2 `repos::{execution,workflow,execution_node,journal}` placeholders were deleted; `engine`/`api`/knife/loom run on the port. The retained `repos::*` (control-queue, idempotency, webhook-activation, identity glue) keep live consumers and are no longer framed as "planned spec-16". |
+| "Sprint E — adopt spec-16 row model" deferral (`docs/ARCHIVE.md (removed execution specs)`, ROADMAP "Out of scope for 1.0") | This ADR | The spec-16 row model is no longer deferred — it is the single shipped storage architecture. The Layer-1 `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` surface and the never-implemented Layer-2 `repos::{execution,workflow,execution_node,journal}` placeholders were deleted; `engine`/`api`/knife/loom run on the port. The retained `repos::*` (control-queue, idempotency, webhook-activation, identity glue) keep live consumers and are no longer framed as "planned spec-16". |
 
 ## Correctness bugs found and fixed during the migration
 

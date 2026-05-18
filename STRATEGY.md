@@ -127,6 +127,11 @@ Integrators declare deps via slot fields (`#[credential]`, `#[resource]`) and `D
 
 There is no single universal wiring diagram; there is a **small set of slot kinds** (credential, resource, tool, model, …) and **consistent resolve + validation rules** so any allowed graph is safe and explainable in the journal.
 
+
+## North Star
+
+Binding success criteria for integrators, operators, and trigger delivery live in [docs/PRODUCT_CANON.md](docs/PRODUCT_CANON.md) §9 — not duplicated here.
+
 ## Who it's for
 
 **Primary:** A Rust developer writing integrations (actions, credentials, resources, plugins, **AgentTool / ResourceTool / AgentAction**). They hire Nebula to describe node and tool logic and trust the engine for concurrency, retry, credential rotation, durable state, and agent loops—without hand-rolling orchestration infrastructure.

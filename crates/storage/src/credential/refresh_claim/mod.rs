@@ -2,7 +2,7 @@
 //! coordination.
 //!
 //! Per ADR-0041 + sub-spec
-//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`.
+//! `docs/INTEGRATION_MODEL.md (credential refresh; ADR-0030/0041)`.
 //!
 //! The canonical trait + supporting types now live in the spec-16 port
 //! crate (`nebula_storage_port::store`) — this component is loom-verified,
