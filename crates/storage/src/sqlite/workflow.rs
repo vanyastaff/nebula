@@ -314,6 +314,21 @@ impl WorkflowStore for SqliteWorkflowStore {
             })
             .collect())
     }
+
+    async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
+        // Same active-in-scope predicate as `list`, answered with
+        // COUNT(*) so callers on the hot path never materialize rows.
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM port_workflows \
+             WHERE workspace_id = ? AND org_id = ? AND deleted = 0",
+        )
+        .bind(&scope.workspace_id)
+        .bind(&scope.org_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        Ok(n.max(0) as u64)
+    }
 }
 
 /// SQLite-backed workflow-version store.

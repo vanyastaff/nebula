@@ -57,6 +57,15 @@ pub trait WorkflowStore: Send + Sync + std::fmt::Debug {
 
     /// List active workflows in `scope`.
     async fn list(&self, scope: &Scope) -> Result<Vec<WorkflowRecord>, StorageError>;
+
+    /// Count active (non-soft-deleted) workflows in `scope`.
+    ///
+    /// Semantically equivalent to `list(scope).await?.len()` but the SQL
+    /// backends answer it with a `SELECT COUNT(*)` rather than
+    /// materializing every row — the readiness probe and pagination
+    /// totals call it on the hot path, so it must not be `O(n)` in the
+    /// row count.
+    async fn count(&self, scope: &Scope) -> Result<u64, StorageError>;
 }
 
 /// Workflow-version aggregate.

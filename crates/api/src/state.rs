@@ -721,12 +721,14 @@ impl AppState {
     }
 
     /// Total workflow count (matches [`Self::workflow_list`]'s filter
-    /// scope) — the `WorkflowStore::list` length.
+    /// scope) via the `WorkflowStore::count` port — a `SELECT COUNT(*)`
+    /// on the SQL backends, not an `O(n)` `list().len()` (the readiness
+    /// probe and pagination total are on the hot path).
     pub(crate) async fn workflow_count(&self) -> Result<usize, ApiError> {
         self.workflow_store
-            .list(&placeholder_scope())
+            .count(&placeholder_scope())
             .await
-            .map(|v| v.len())
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 

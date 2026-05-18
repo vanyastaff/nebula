@@ -318,6 +318,22 @@ impl WorkflowStore for PgWorkflowStore {
             })
             .collect()
     }
+
+    async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
+        // Same active-in-scope predicate as `list`, answered with
+        // COUNT(*) so the readiness probe / pagination total never
+        // materializes the row set.
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM port_workflows \
+             WHERE workspace_id = $1 AND org_id = $2 AND deleted = FALSE",
+        )
+        .bind(&scope.workspace_id)
+        .bind(&scope.org_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        Ok(n.max(0) as u64)
+    }
 }
 
 /// Postgres-backed workflow-version store.

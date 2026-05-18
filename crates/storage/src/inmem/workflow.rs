@@ -240,6 +240,19 @@ impl WorkflowStore for InMemoryWorkflowStore {
         rows.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(rows)
     }
+
+    async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
+        let map = self.inner.lock();
+        // Same active-in-scope predicate as `list`, counted without
+        // cloning the rows.
+        let n = map
+            .iter()
+            .filter(|((ws, org, _), r)| {
+                ws == &scope.workspace_id && org == &scope.org_id && !r.deleted
+            })
+            .count();
+        Ok(n as u64)
+    }
 }
 
 /// In-memory workflow-version store.

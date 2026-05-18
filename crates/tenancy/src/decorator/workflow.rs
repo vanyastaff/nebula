@@ -101,6 +101,10 @@ impl WorkflowStore for ScopedWorkflowStore {
     async fn list(&self, _scope: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
         self.inner.list(&self.bound).await
     }
+
+    async fn count(&self, _scope: &Scope) -> Result<u64, StorageError> {
+        self.inner.count(&self.bound).await
+    }
 }
 
 /// Wraps a [`WorkflowVersionStore`] and forces every call into the bound
