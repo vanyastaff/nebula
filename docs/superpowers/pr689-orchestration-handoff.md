@@ -64,6 +64,52 @@ inherit the in-progress merge).
   Strengthened `assert_cross_scope_commit_is_rejected` to assert the
   oracle stays closed across all backends. storage 230/230, clippy/fmt
   green.
+- **`7ca3731f` — done&verified.** `WorkflowStore::count(&Scope)` O(1)
+  (coderabbit 3255514542 — NOT discharged by da216ca4 despite its
+  message; verified absent then added): port trait + 3 backends
+  (`SELECT COUNT(*)` SQL / filter-count inmem) + tenancy decorator;
+  `AppState::workflow_count` swapped off `list().len()`; readiness test
+  doubles' fail/slow behavior moved from `list` to `count`. storage+
+  tenancy 256/256, nebula-api readiness+count tests green, clippy/fmt
+  green.
+- **`014a5a73` — done&verified.** `WorkflowStore::update`
+  tombstone-invisible (coderabbit 3255514595 — flagged postgres; same
+  defect on all 3 backends, fixed cross-backend for conformance
+  consistency): pg+sqlite `update` CAS UPDATE + disambig SELECT gain
+  `deleted = FALSE`/`= 0`; inmem guards lookup with `!current.deleted`;
+  a tombstone ⇒ `NotFound` uniformly. `assert_workflow_store_contract`
+  gains an update-on-tombstone assertion. storage 230/230, clippy/fmt
+  green.
+
+### REMAINING (D) FIX items (not yet started)
+
+- `3255514598` storage sqlite/control_queue.rs claim UPDATE by id only
+  + unconditional push → returns work not actually claimed.
+  `WHERE id=? AND status='Pending'` + only push when
+  `rows_affected==1`.
+- `3255514577` storage inmem/identity.rs update paths skip create's
+  active-uniqueness (email/slug). Add same uniqueness scan to all
+  update sites (90-104,174-188,267-282,456-476 per triage).
+- `3255514579` storage inmem/identity.rs blob `evict_expired` lexical
+  RFC3339 compare → parse+compare timestamps (mirror idempotency cache).
+- `3255514543` engine control_consumer processor-id silent
+  truncate/pad to 16B → typed `[u8;16]` processor id end-to-end.
+- `3255514559` storage migrations/postgres/0027 column drift
+  (TIMESTAMPTZ vs SQLite `*_ms` BIGINT) → normalize to `*_ms BIGINT`
+  both dialects + fix postgres adapter rows that read these.
+- outside-diff workflow.rs:729-740 `validate_workflow_handler`
+  `from_value` vs activate `from_str` → use `from_str` both.
+- outside-diff workflow.rs:289-307 create persists client
+  id/version/owner_id/schema_version verbatim → strip on create too
+  (update guard already strips).
+- ADOPT items: `3255514551` (idempotency `&Scope` param),
+  `3255514553` (membership enum ScopeKind/PrincipalKind),
+  postgres/control_queue cleanup DELETE, store_seam node_result warn,
+  control_consumer traceparent warn, stale doc fixes (storage/lib.rs,
+  credential/layer/mod.rs, storage-port/README MD040).
+- PUSHBACK `3255514555`: reply with reasoned decline (YAGNI for current
+  call sites), do NOT implement.
+- `3255514540`: dedicated session (see below) — port-scoping refactor.
 
 ### 3255514540 — VERIFIED diagnosis (largest item; dedicated session)
 
