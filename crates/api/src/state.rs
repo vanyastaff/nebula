@@ -15,10 +15,12 @@ use nebula_storage::{
     credential::{InMemoryPendingStore, InMemoryStore},
     repos::WebhookActivationRepo,
 };
+use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, WorkflowStore,
     WorkflowVersionStore,
 };
+use nebula_tenancy::{ScopedWorkflowStore, ScopedWorkflowVersionStore};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -399,8 +401,8 @@ pub struct AppState {
 /// per-request scoping is threaded through call site by call site.
 /// Removed once every accessor takes a `&Scope` (see the scoped
 /// accessor pair below).
-fn placeholder_scope() -> nebula_storage_port::Scope {
-    nebula_storage_port::Scope::new("nebula", "nebula")
+fn placeholder_scope() -> Scope {
+    Scope::new("nebula", "nebula")
 }
 
 impl AppState {
@@ -525,8 +527,18 @@ impl AppState {
         &self,
         id: nebula_core::id::WorkflowId,
     ) -> Result<Option<serde_json::Value>, ApiError> {
+        self.workflow_definition_scoped(&placeholder_scope(), id)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::workflow_definition`].
+    pub(crate) async fn workflow_definition_scoped(
+        &self,
+        scope: &Scope,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<Option<serde_json::Value>, ApiError> {
         Ok(self
-            .workflow_with_version(id)
+            .workflow_with_version_scoped(scope, id)
             .await?
             .map(|(_, definition)| definition))
     }
@@ -543,19 +555,36 @@ impl AppState {
         &self,
         id: nebula_core::id::WorkflowId,
     ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
-        let scope = placeholder_scope();
+        self.workflow_with_version_scoped(&placeholder_scope(), id)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::workflow_with_version`]: the workflow
+    /// row + its published version's definition are read through a
+    /// freshly bound `nebula-tenancy` decorator pair, so the lookup is
+    /// keyed by the caller's real tenant `scope` (the confused-deputy
+    /// boundary is the decorator, bound per request — not a static
+    /// placeholder).
+    pub(crate) async fn workflow_with_version_scoped(
+        &self,
+        scope: &Scope,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
+        let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
+        let versions = ScopedWorkflowVersionStore::new(
+            Arc::clone(&self.workflow_version_store),
+            scope.clone(),
+        );
         let id_str = id.to_string();
-        let Some(row) = self
-            .workflow_store
-            .get(&scope, &id_str)
+        let Some(row) = rows
+            .get(scope, &id_str)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
         else {
             return Ok(None);
         };
-        let published = self
-            .workflow_version_store
-            .get_published(&scope, &id_str)
+        let published = versions
+            .get_published(scope, &id_str)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
         Ok(published.map(|v| (row.version, v.definition)))
@@ -585,7 +614,23 @@ impl AppState {
         version: u64,
         definition: serde_json::Value,
     ) -> Result<(), ApiError> {
-        let scope = placeholder_scope();
+        self.workflow_save_scoped(&placeholder_scope(), id, version, definition)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::workflow_save`]: the atomic
+    /// row+published-version unit of work runs through a freshly bound
+    /// `ScopedWorkflowStore`, so it commits into the caller's real tenant
+    /// `scope` and the decorator rebinds the embedded record scope to it
+    /// (a forged cross-tenant record cannot escape the bound tenant).
+    pub(crate) async fn workflow_save_scoped(
+        &self,
+        scope: &Scope,
+        id: nebula_core::id::WorkflowId,
+        version: u64,
+        definition: serde_json::Value,
+    ) -> Result<(), ApiError> {
+        let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
         let id_str = id.to_string();
         let conflict =
             || ApiError::Conflict("Workflow was modified by another request".to_string());
@@ -602,36 +647,35 @@ impl AppState {
             (next, u32::try_from(next).unwrap_or(u32::MAX), Some(version))
         };
 
-        self.workflow_store
-            .save_with_published_version(
-                &scope,
-                nebula_storage_port::dto::WorkflowRecord {
-                    id: id_str.clone(),
-                    scope: scope.clone(),
-                    version: row_version,
-                    slug: id_str.clone(),
-                    deleted: false,
-                },
-                nebula_storage_port::dto::WorkflowVersionRecord {
-                    workflow_id: id_str,
-                    number: ver_number,
-                    published: true,
-                    pinned: false,
-                    definition,
-                },
-                expected,
-            )
-            .await
-            .map_err(|e| match e {
-                // A row/version conflict, a missing row on CAS, or a
-                // duplicate (create raced, or the version slot is taken)
-                // all mean "modified by another request" — the exact
-                // legacy message, byte-identical for callers.
-                nebula_storage_port::StorageError::Conflict { .. }
-                | nebula_storage_port::StorageError::NotFound { .. }
-                | nebula_storage_port::StorageError::Duplicate { .. } => conflict(),
-                other => ApiError::Internal(format!("Failed to save workflow: {other}")),
-            })
+        rows.save_with_published_version(
+            scope,
+            nebula_storage_port::dto::WorkflowRecord {
+                id: id_str.clone(),
+                scope: scope.clone(),
+                version: row_version,
+                slug: id_str.clone(),
+                deleted: false,
+            },
+            nebula_storage_port::dto::WorkflowVersionRecord {
+                workflow_id: id_str,
+                number: ver_number,
+                published: true,
+                pinned: false,
+                definition,
+            },
+            expected,
+        )
+        .await
+        .map_err(|e| match e {
+            // A row/version conflict, a missing row on CAS, or a
+            // duplicate (create raced, or the version slot is taken)
+            // all mean "modified by another request" — the exact
+            // legacy message, byte-identical for callers.
+            nebula_storage_port::StorageError::Conflict { .. }
+            | nebula_storage_port::StorageError::NotFound { .. }
+            | nebula_storage_port::StorageError::Duplicate { .. } => conflict(),
+            other => ApiError::Internal(format!("Failed to save workflow: {other}")),
+        })
     }
 
     /// Soft-delete a workflow via `WorkflowStore::soft_delete` (a missing
@@ -640,11 +684,17 @@ impl AppState {
         &self,
         id: nebula_core::id::WorkflowId,
     ) -> Result<bool, ApiError> {
-        match self
-            .workflow_store
-            .soft_delete(&placeholder_scope(), &id.to_string())
-            .await
-        {
+        self.workflow_delete_scoped(&placeholder_scope(), id).await
+    }
+
+    /// Per-request-scoped [`Self::workflow_delete`].
+    pub(crate) async fn workflow_delete_scoped(
+        &self,
+        scope: &Scope,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<bool, ApiError> {
+        let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
+        match rows.soft_delete(scope, &id.to_string()).await {
             Ok(()) => Ok(true),
             Err(nebula_storage_port::StorageError::NotFound { .. }) => Ok(false),
             Err(e) => Err(ApiError::Internal(format!(
@@ -665,18 +715,33 @@ impl AppState {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<(nebula_core::id::WorkflowId, serde_json::Value)>, ApiError> {
-        let scope = placeholder_scope();
-        let listed = self
-            .workflow_store
-            .list(&scope)
+        self.workflow_list_scoped(&placeholder_scope(), offset, limit)
+            .await
+    }
+
+    /// Per-request-scoped [`Self::workflow_list`]: rows + each row's
+    /// published definition are read through a freshly bound decorator
+    /// pair, so the listing is the caller's tenant only.
+    pub(crate) async fn workflow_list_scoped(
+        &self,
+        scope: &Scope,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<(nebula_core::id::WorkflowId, serde_json::Value)>, ApiError> {
+        let rows_store = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
+        let versions = ScopedWorkflowVersionStore::new(
+            Arc::clone(&self.workflow_version_store),
+            scope.clone(),
+        );
+        let listed = rows_store
+            .list(scope)
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?;
         let mut out: Vec<(nebula_core::id::WorkflowId, i64, serde_json::Value)> =
             Vec::with_capacity(listed.len());
         for row in listed {
-            let Some(published) = self
-                .workflow_version_store
-                .get_published(&scope, &row.id)
+            let Some(published) = versions
+                .get_published(scope, &row.id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {e}")))?
             else {
@@ -718,8 +783,15 @@ impl AppState {
     /// on the SQL backends, not an `O(n)` `list().len()` (the readiness
     /// probe and pagination total are on the hot path).
     pub(crate) async fn workflow_count(&self) -> Result<usize, ApiError> {
-        self.workflow_store
-            .count(&placeholder_scope())
+        self.workflow_count_scoped(&placeholder_scope()).await
+    }
+
+    /// Per-request-scoped [`Self::workflow_count`]: `SELECT COUNT(*)`
+    /// through a freshly bound decorator, so the total is the caller's
+    /// tenant only.
+    pub(crate) async fn workflow_count_scoped(&self, scope: &Scope) -> Result<usize, ApiError> {
+        let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
+        rows.count(scope)
             .await
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))

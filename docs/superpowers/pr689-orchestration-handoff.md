@@ -221,11 +221,22 @@ Sequenced (each step workspace+lefthook-green → its own commit):
   --all-targets --all-features -D (nebula-api) clean; nextest nebula-api 366/366
   (1 pg-gated skip) incl. knife step5 + execution_terminate e2e (engine↔API
   row-share through raw handles); lefthook green.
-- **1b-ii BATCHES (next):** add per-request `*_scoped(&Scope, …)` AppState
-  methods (build a freshly bound `ScopedX::new(self.raw.clone(), scope)` per
-  call) alongside the placeholder ones; migrate handlers a few files per
-  commit (bind `tenant`, `let scope = request_scope(&tenant)?;`). Un-migrated
-  handlers keep the placeholder methods → green per batch.
+- **1b-ii.workflow SCOPED SIBLINGS — done&verified (commit below).** Added
+  `workflow_with_version_scoped` / `workflow_definition_scoped` /
+  `workflow_save_scoped` / `workflow_delete_scoped` / `workflow_list_scoped` /
+  `workflow_count_scoped` (each builds a freshly bound
+  `ScopedWorkflowStore`/`ScopedWorkflowVersionStore` from the raw handle +
+  passed `&Scope`, applying the confused-deputy rebind per request). The 6
+  placeholder workflow methods are now one-line delegates passing
+  `placeholder_scope()` → provably behavior-identical, callers untouched.
+  No handler migrated yet (next sub-batch). fmt + clippy --all-targets
+  --all-features -D (nebula-api) clean; nextest nebula-api 366/366 (1 pg-gated
+  skip) incl. workflow CRUD/list/count/activate + knife step5; lefthook green.
+- **1b-ii.exec SCOPED SIBLINGS + handler migration (next):** same pattern for
+  the execution/control/journal/node-result methods, then migrate handlers a
+  few files per commit (bind `tenant`, `let scope = request_scope(&tenant)?;`,
+  call the `*_scoped` method). Un-migrated handlers keep the placeholder
+  delegates → green per batch.
 - **1c CONTRACT:** when `rg placeholder_scope crates/`==0 delete
   `placeholder_scope()` + every placeholder method + the placeholder-bound
   `AppState::new` decorator construction; flip `common/mod.rs` `port_scope`
