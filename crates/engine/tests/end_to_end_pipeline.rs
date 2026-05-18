@@ -47,6 +47,7 @@ use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     Manager, ResidentConfig, ResourceContext,
+    dedup::SLOT_IDENTITY_UNBOUND,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -353,6 +354,7 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
             TopologyRuntime::Resident(ResidentRuntime::<WitnessResource>::new(
                 ResidentConfig::default(),
             )),
+            Manager::erased_acquire_resident::<WitnessResource>(SLOT_IDENTITY_UNBOUND),
             None,
             None,
         )

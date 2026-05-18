@@ -113,6 +113,10 @@ impl DeclaresDependencies for Postgres {
     }
 }
 
+fn postgres_acquire_for_slot(slot: u64) -> nebula_resource::ErasedAcquireFn {
+    Manager::erased_acquire_resident::<Postgres>(slot)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -136,6 +140,7 @@ async fn register_from_value_resolves_template_and_registers() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            &postgres_acquire_for_slot,
             None,
             None,
         )
@@ -169,6 +174,7 @@ async fn register_from_value_validates_schema_failure() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            &postgres_acquire_for_slot,
             None,
             None,
         )
@@ -201,6 +207,7 @@ async fn register_from_value_resourceconfig_validate_fires() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            &postgres_acquire_for_slot,
             None,
             None,
         )
@@ -232,6 +239,7 @@ async fn register_from_value_unknown_slot_binding_rejected() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            &postgres_acquire_for_slot,
             None,
             None,
         )
@@ -264,6 +272,7 @@ async fn register_from_value_passthrough_no_templates() {
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
+            &postgres_acquire_for_slot,
             None,
             None,
         )

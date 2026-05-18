@@ -164,6 +164,17 @@ impl nebula_error::Classify for RegistrarError {
     }
 }
 
+/// Metadata returned after a successful live registration through the
+/// closed allowlist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRegistrationOutcome {
+    /// Catalog key the row was registered under.
+    pub resource_key: nebula_core::ResourceKey,
+    /// Structural slot identity hashed from `slot_bindings` (matches the
+    /// manager registry row and must be recorded on the engine for acquire).
+    pub slot_identity: u64,
+}
+
 /// Type-agnostic inputs the *caller* (the engine registration loop)
 /// threads into a typed registration.
 ///
@@ -291,44 +302,52 @@ pub trait ErasedResourceRegistrar: Send + Sync {
 /// `TopologyRuntime<R>` by value, and a registrar may be invoked more
 /// than once (re-activation, multiple scopes), so both are *factories*
 /// rather than stored values.
-pub struct TypedResourceRegistrar<R, FRes, FTopo>
+pub struct TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
     R: Resource + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
+    FAcq: Fn(u64) -> nebula_resource::ErasedAcquireFn + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
+    acquire_for_slot: FAcq,
 }
 
-impl<R, FRes, FTopo> TypedResourceRegistrar<R, FRes, FTopo>
+impl<R, FRes, FTopo, FAcq> TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
     R: Resource + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
+    FAcq: Fn(u64) -> nebula_resource::ErasedAcquireFn + Send + Sync,
 {
     /// Builds a typed registrar for resource type `R`.
     ///
     /// `resource_factory` yields the `R` value (with credential slots
-    /// already resolved by the engine per );
+    /// already resolved by the engine per registration scope).
     /// `topology_factory` yields the `TopologyRuntime<R>` declared for
     /// this kind. Both are invoked once per registration call.
-    pub fn new(resource_factory: FRes, topology_factory: FTopo) -> Self {
+    /// `acquire_for_slot` builds the erased acquire hook for a resolved
+    /// per-slot credential identity (for example
+    /// [`Manager::erased_acquire_resident`](nebula_resource::manager::Manager::erased_acquire_resident)).
+    pub fn new(resource_factory: FRes, topology_factory: FTopo, acquire_for_slot: FAcq) -> Self {
         Self {
             resource_factory,
             topology_factory,
+            acquire_for_slot,
         }
     }
 }
 
-impl<R, FRes, FTopo> ErasedResourceRegistrar for TypedResourceRegistrar<R, FRes, FTopo>
+impl<R, FRes, FTopo, FAcq> ErasedResourceRegistrar for TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
     R: Resource + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
+    FAcq: Fn(u64) -> nebula_resource::ErasedAcquireFn + Send + Sync,
 {
     fn register<'a>(
         &'a self,
@@ -337,6 +356,7 @@ where
     ) -> BoxFut<'a, Result<(), nebula_resource::Error>> {
         let resource = (self.resource_factory)();
         let topology = (self.topology_factory)();
+        let acquire_for_slot = &self.acquire_for_slot;
         Box::pin(async move {
             manager
                 .register_from_value::<R>(
@@ -346,6 +366,7 @@ where
                     resource,
                     request.scope,
                     topology,
+                    acquire_for_slot,
                     request.resilience,
                     request.recovery_gate,
                 )
@@ -446,18 +467,29 @@ impl ResourceRegistrarRegistry {
         kind: &str,
         manager: &Manager,
         request: RegisterRequest<'_>,
-    ) -> Result<(), RegistrarError> {
+    ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         let registrar = self
             .registrars
             .get(kind)
             .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        let resource_key = registrar.resource_key();
+        let slot_identity = nebula_resource::slot_identity(
+            request
+                .slot_bindings
+                .iter()
+                .map(|(slot, key)| (slot.as_str(), key.as_str())),
+        );
         registrar
             .register(manager, request)
             .await
             .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
-            })
+            })?;
+        Ok(ResourceRegistrationOutcome {
+            resource_key,
+            slot_identity,
+        })
     }
 
     /// Resolves `kind` through the closed allowlist, dispatches into its
@@ -531,12 +563,7 @@ impl ResourceRegistrarRegistry {
         manager: &Manager,
         request: RegisterRequest<'_>,
         fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
-    ) -> Result<(), RegistrarError> {
-        let registrar = self
-            .registrars
-            .get(kind)
-            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
-
+    ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         // Snapshot the bind inputs before `request` is moved into the
         // typed `register` call. Cheap clones (a small slot map + scope);
         // the resource key comes from the erased registrar so the
@@ -545,36 +572,18 @@ impl ResourceRegistrarRegistry {
         let bind_plan = fanout_index.map(|idx| {
             (
                 idx,
-                registrar.resource_key(),
                 request.scope.clone(),
                 request.slot_bindings.clone(),
                 request.credential_ids.clone(),
             )
         });
 
-        registrar
-            .register(manager, request)
-            .await
-            .map_err(|source| RegistrarError::Register {
-                kind: kind.to_owned(),
-                source,
-            })?;
+        let outcome = self.register(kind, manager, request).await?;
 
         // Registration succeeded — the registry row exists. Record the
         // reverse-index binding so a later rotation / lease-revoke fans
         // to this exact resolved row.
-        if let Some((idx, resource_key, scope, slot_bindings, credential_ids)) = bind_plan {
-            // Recompute the structural slot identity EXACTLY as
-            // `Manager::register_from_value` does (a stable hash over the
-            // `(slot_key, CredentialKey)` pairs) so the reverse-index row
-            // and the manager registry row share one identity. Mismatch
-            // here would route a rotation to a non-existent row
-            // (`Ambiguous` / silent miss).
-            let slot_identity = nebula_resource::slot_identity(
-                slot_bindings
-                    .iter()
-                    .map(|(slot, key)| (slot.as_str(), key.as_str())),
-            );
+        if let Some((idx, scope, slot_bindings, credential_ids)) = bind_plan {
             for (slot_name, cred_id) in &credential_ids {
                 // Only bind slots the resource actually declared (those
                 // present in `slot_bindings`): a stray `credential_ids`
@@ -583,15 +592,15 @@ impl ResourceRegistrarRegistry {
                 if slot_bindings.contains_key(slot_name) {
                     idx.bind(
                         *cred_id,
-                        resource_key.clone(),
+                        outcome.resource_key.clone(),
                         scope.clone(),
                         slot_name.clone(),
-                        slot_identity,
+                        outcome.slot_identity,
                     );
                 }
             }
         }
-        Ok(())
+        Ok(outcome)
     }
 
     /// Resolves `kind` through the closed allowlist and validates
@@ -652,7 +661,7 @@ mod tests {
         error::Error as ResourceError,
         resource::{Resource, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
-        topology::resident,
+        topology::resident::{self, Resident},
     };
 
     use super::*;
@@ -751,14 +760,21 @@ mod tests {
     // `DeclaresDependencies` (empty) impl is correct.
     impl nebula_core::DeclaresDependencies for TestRes {}
 
+    impl Resident for TestRes {
+        fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
+            runtime.load(Ordering::Relaxed) < u64::MAX
+        }
+    }
+
     fn test_registrar(create_counter: Arc<AtomicU64>) -> Arc<dyn ErasedResourceRegistrar> {
-        Arc::new(TypedResourceRegistrar::<TestRes, _, _>::new(
+        Arc::new(TypedResourceRegistrar::<TestRes, _, _, _>::new(
             move || TestRes::new(create_counter.clone()),
             || {
                 TopologyRuntime::Resident(ResidentRuntime::<TestRes>::new(
                     resident::config::Config::default(),
                 ))
             },
+            |slot| Manager::erased_acquire_resident::<TestRes>(slot),
         ))
     }
 

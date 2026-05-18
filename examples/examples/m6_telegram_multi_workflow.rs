@@ -36,6 +36,7 @@ use std::{
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, ResidentConfig, ResourceContext,
+    dedup::SLOT_IDENTITY_UNBOUND,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -196,6 +197,7 @@ async fn main() -> anyhow::Result<()> {
         },
         ScopeLevel::Organization(org),
         TopologyRuntime::Resident(resident_runtime),
+        Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
         None,
         None,
     )?;

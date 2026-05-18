@@ -153,6 +153,7 @@ async fn register_from_value_rejects_inline_secret_field() {
         "password": secret,
     });
 
+    let acquire_for_slot = |slot: u64| Manager::erased_acquire_resident::<Db>(slot);
     let err = manager
         .register_from_value::<Db>(
             config_json,
@@ -161,6 +162,7 @@ async fn register_from_value_rejects_inline_secret_field() {
             Db,
             ScopeLevel::Global,
             topology(),
+            &acquire_for_slot,
             None,
             None,
         )
@@ -206,6 +208,7 @@ async fn register_from_value_accepts_clean_config_same_resource() {
         "port": 5432,
     });
 
+    let acquire_for_slot = |slot: u64| Manager::erased_acquire_resident::<Db>(slot);
     manager
         .register_from_value::<Db>(
             config_json,
@@ -214,6 +217,7 @@ async fn register_from_value_accepts_clean_config_same_resource() {
             Db,
             ScopeLevel::Global,
             topology(),
+            &acquire_for_slot,
             None,
             None,
         )

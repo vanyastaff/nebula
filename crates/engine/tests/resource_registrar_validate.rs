@@ -30,11 +30,12 @@ use std::sync::Arc;
 use nebula_core::{ResourceKey, resource_key};
 use nebula_engine::{RegistrarError, ResourceRegistrarRegistry, TypedResourceRegistrar};
 use nebula_resource::{
-    ScopeLevel,
+    Manager, ScopeLevel,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident,
+    topology::resident::Resident,
 };
 use nebula_schema::{HasSchema, Schema};
 use serde::Deserialize;
@@ -112,17 +113,24 @@ impl Resource for HttpPool {
 
 impl nebula_core::DeclaresDependencies for HttpPool {}
 
+impl Resident for HttpPool {
+    fn is_alive_sync(&self, _runtime: &()) -> bool {
+        true
+    }
+}
+
 fn registry_with_http_pool() -> ResourceRegistrarRegistry {
     let mut registry = ResourceRegistrarRegistry::new();
     registry.insert(
         "http_pool",
-        Arc::new(TypedResourceRegistrar::<HttpPool, _, _>::new(
+        Arc::new(TypedResourceRegistrar::<HttpPool, _, _, _>::new(
             || HttpPool,
             || {
                 TopologyRuntime::Resident(ResidentRuntime::<HttpPool>::new(
                     resident::config::Config::default(),
                 ))
             },
+            |slot| Manager::erased_acquire_resident::<HttpPool>(slot),
         )),
     );
     registry
@@ -150,7 +158,7 @@ async fn known_kind_schema_valid_config_is_ok_and_no_manager_mutation() {
     // nothing registered, proving validation never reached registration.
     // (`Manager::new` spawns a release-queue reactor task, hence the
     // Tokio context.)
-    let manager = nebula_resource::Manager::new();
+    let manager = Manager::new();
     assert!(
         manager
             .get_any(&<HttpPool as Resource>::key(), &ScopeLevel::Global)

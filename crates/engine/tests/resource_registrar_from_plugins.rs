@@ -54,7 +54,7 @@ use nebula_engine::{
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AnyResource, ScopeLevel,
+    AnyResource, Manager, ScopeLevel,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -152,6 +152,12 @@ impl Resource for DemoResource {
 
 impl nebula_core::DeclaresDependencies for DemoResource {}
 
+impl resident::Resident for DemoResource {
+    fn is_alive_sync(&self, runtime: &Arc<AtomicU64>) -> bool {
+        runtime.load(Ordering::Relaxed) < u64::MAX
+    }
+}
+
 /// `AnyResource` is the type-erased shape `Plugin::resources()` returns —
 /// metadata-only. This impl mirrors what `#[derive(Resource)]` would emit
 /// for the erased view (key + metadata); it deliberately exposes **no**
@@ -215,13 +221,14 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceRegistrarRegistry {
 
     registrars.insert(
         kind.as_str().to_owned(),
-        Arc::new(TypedResourceRegistrar::<DemoResource, _, _>::new(
+        Arc::new(TypedResourceRegistrar::<DemoResource, _, _, _>::new(
             DemoResource::new,
             || {
                 TopologyRuntime::Resident(ResidentRuntime::<DemoResource>::new(
                     resident::config::Config::default(),
                 ))
             },
+            |slot| Manager::erased_acquire_resident::<DemoResource>(slot),
         )),
     );
     registrars
@@ -328,8 +335,7 @@ async fn wired_registrar_performs_typed_registration() {
     let expr = ExpressionEngine::with_cache_size(16);
 
     engine
-        .resource_registrars()
-        .register(
+        .register_resource(
             "demo.widget",
             &manager,
             RegisterRequest {

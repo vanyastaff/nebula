@@ -158,6 +158,9 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             SlowConfig,
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<SlowCreateResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -270,6 +273,9 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
             SlowConfig,
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<SlowCreateResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )

@@ -445,6 +445,9 @@ async fn manager_register_and_acquire_pooled() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -484,6 +487,9 @@ async fn manager_register_and_acquire_resident() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -515,6 +521,9 @@ async fn manager_shutdown_rejects_acquire() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -695,6 +704,9 @@ async fn register_transitions_phase_to_ready() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -720,6 +732,9 @@ async fn reload_config_bumps_status_generation() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -757,6 +772,9 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -913,6 +931,9 @@ async fn register_emits_registered_event() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -938,6 +959,9 @@ async fn remove_emits_removed_event() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -967,6 +991,9 @@ async fn acquire_emits_success_event() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1114,6 +1141,9 @@ async fn manager_scope_exact_match() {
             test_config(),
             scope.clone(),
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1152,6 +1182,9 @@ async fn manager_scope_fallback_to_global() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1192,6 +1225,9 @@ async fn manager_scope_mismatch_not_found() {
             test_config(),
             ScopeLevel::Organization(org_id),
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1240,6 +1276,9 @@ async fn metrics_track_acquire_release_create_destroy() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1292,6 +1331,9 @@ async fn manager_multiple_resources_coexist() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1308,6 +1350,9 @@ async fn manager_multiple_resources_coexist() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -1746,6 +1791,9 @@ async fn service_acquire_via_manager() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Service(svc_rt),
+            Manager::erased_acquire_service::<ServiceTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2275,6 +2323,9 @@ async fn registry_backed_metrics_record_operations() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2290,6 +2341,9 @@ async fn registry_backed_metrics_record_operations() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2355,6 +2409,9 @@ async fn graceful_shutdown_stops_new_acquires() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2396,6 +2453,9 @@ async fn graceful_shutdown_clears_registry() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2583,6 +2643,9 @@ async fn acquire_retries_on_transient_failure() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             Some(resilience),
             None,
         )
@@ -2624,6 +2687,9 @@ async fn acquire_no_retry_on_permanent_failure() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             Some(resilience),
             None,
         )
@@ -2656,6 +2722,9 @@ async fn acquire_succeeds_without_resilience() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2696,6 +2765,9 @@ async fn acquire_timeout_fires() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             Some(resilience),
             None,
         )
@@ -2729,6 +2801,9 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2778,6 +2853,9 @@ async fn topology_mismatch_returns_permanent_error() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -2829,6 +2907,9 @@ async fn retry_exhaustion_returns_last_transient_error() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             Some(resilience),
             None,
         )
@@ -2879,6 +2960,9 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             Some(gate.clone()),
         )
@@ -3369,6 +3453,9 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             Some(Arc::new(gate)),
         )
@@ -3404,6 +3491,9 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             Some(Arc::new(gate)),
         )
@@ -3437,6 +3527,9 @@ async fn recovery_gate_allows_acquire_when_idle() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             Some(Arc::new(gate)),
         )
@@ -3471,6 +3564,9 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             Some(Arc::new(gate)),
         )
@@ -3498,6 +3594,9 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3617,6 +3716,9 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3654,6 +3756,9 @@ async fn reload_config_rejects_invalid_config() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3698,6 +3803,9 @@ async fn reload_config_emits_event() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3733,6 +3841,9 @@ async fn reload_config_evicts_stale_pool_instances() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3798,6 +3909,9 @@ async fn reload_config_rejected_when_shutdown() {
             ReloadConfig::new(1),
             ScopeLevel::Global,
             TopologyRuntime::Pool(pool_rt),
+            Manager::erased_acquire_pooled::<PoolTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3833,6 +3947,9 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3893,6 +4010,9 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -3978,6 +4098,9 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -4024,6 +4147,9 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             None,
         )
@@ -4076,6 +4202,9 @@ async fn probe_boundary_serializes_callers_under_herd() {
             test_config(),
             ScopeLevel::Global,
             TopologyRuntime::Resident(resident_rt),
+            Manager::erased_acquire_resident::<ResidentTestResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
             None,
             Some(gate.clone()),
         )

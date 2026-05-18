@@ -220,6 +220,35 @@ impl Error {
         ))
         .with_resource_key(key)
     }
+
+    /// Maps this error into the accessor [`nebula_core::CoreError`] surface.
+    #[must_use]
+    pub fn to_core_error(&self) -> nebula_core::CoreError {
+        let key_label = self
+            .resource_key()
+            .map(|k| k.as_str().to_owned())
+            .unwrap_or_else(|| "resource".to_owned());
+        let detail = self.to_string();
+        match self.kind() {
+            ErrorKind::NotFound => nebula_core::CoreError::CredentialNotFound { key: detail },
+            ErrorKind::Ambiguous => nebula_core::CoreError::scope_violation(key_label, detail),
+            ErrorKind::Cancelled => {
+                nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
+            },
+            ErrorKind::Permanent => {
+                nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
+            },
+            ErrorKind::Transient
+            | ErrorKind::Exhausted { .. }
+            | ErrorKind::Backpressure
+            | ErrorKind::Revoked => nebula_core::CoreError::resource_unavailable(
+                key_label,
+                detail,
+                true,
+                self.retry_after(),
+            ),
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -316,6 +345,32 @@ mod tests {
         let err = Error::exhausted("quota depleted", None);
         assert!(err.is_retryable());
         assert_eq!(err.retry_after(), None);
+    }
+
+    #[test]
+    fn to_core_error_maps_retryable_transient() {
+        use nebula_error::Classify as _;
+        let key = nebula_core::resource_key!("postgres");
+        let err = Error::transient("upstream timeout").with_resource_key(key);
+        let core = err.to_core_error();
+        assert!(matches!(
+            core,
+            nebula_core::CoreError::ResourceUnavailable {
+                retryable: true,
+                ..
+            }
+        ));
+        assert!(core.is_retryable());
+    }
+
+    #[test]
+    fn to_core_error_maps_not_found_to_credential_not_found() {
+        let key = nebula_core::resource_key!("postgres");
+        let err = Error::not_found(&key);
+        assert!(matches!(
+            err.to_core_error(),
+            nebula_core::CoreError::CredentialNotFound { .. }
+        ));
     }
 
     #[test]

@@ -152,6 +152,11 @@ impl ResourceContext {
     pub fn execution_id(&self) -> Option<nebula_core::ExecutionId> {
         self.scope().execution_id
     }
+
+    /// Copies scope + cancellation for type-erased acquire dispatch (no accessor clone).
+    pub fn clone_for_acquire(&self) -> Self {
+        Self::minimal(self.scope().clone(), self.cancellation().clone())
+    }
 }
 
 impl std::fmt::Debug for ResourceContext {
@@ -205,7 +210,7 @@ impl HasCredentials for ResourceContext {
 // ---------------------------------------------------------------------------
 
 /// Converts a [`Scope`] bag to the most specific [`ScopeLevel`].
-fn scope_to_level(scope: &Scope) -> ScopeLevel {
+pub fn scope_to_level(scope: &Scope) -> ScopeLevel {
     if let Some(id) = scope.execution_id {
         ScopeLevel::Execution(id)
     } else if let Some(id) = scope.workflow_id {
@@ -217,6 +222,42 @@ fn scope_to_level(scope: &Scope) -> ScopeLevel {
     } else {
         ScopeLevel::Global
     }
+}
+
+/// Scope levels to probe for acquire/lookup, most specific first.
+///
+/// When an execution-scoped context carries `org_id` / `workspace_id`, registry
+/// rows registered at those levels remain reachable without falling through to
+/// an unrelated Global row.
+pub fn scope_levels_for_acquire(scope: &Scope) -> Vec<ScopeLevel> {
+    let mut levels = Vec::with_capacity(5);
+    if let Some(id) = scope.execution_id {
+        levels.push(ScopeLevel::Execution(id));
+    }
+    if let Some(id) = scope.workflow_id {
+        levels.push(ScopeLevel::Workflow(id));
+    }
+    if let Some(id) = scope.workspace_id {
+        levels.push(ScopeLevel::Workspace(id));
+    }
+    if let Some(id) = scope.org_id {
+        levels.push(ScopeLevel::Organization(id));
+    }
+    levels.push(ScopeLevel::Global);
+    levels
+}
+
+/// Builds a minimal [`Scope`] bag containing only the given level's id field.
+pub fn minimal_scope_for_level(level: &ScopeLevel) -> Scope {
+    let mut scope = Scope::default();
+    match level {
+        ScopeLevel::Global => {},
+        ScopeLevel::Organization(id) => scope.org_id = Some(*id),
+        ScopeLevel::Workspace(id) => scope.workspace_id = Some(*id),
+        ScopeLevel::Workflow(id) => scope.workflow_id = Some(*id),
+        ScopeLevel::Execution(id) => scope.execution_id = Some(*id),
+    }
+    scope
 }
 
 #[cfg(test)]
@@ -252,6 +293,21 @@ mod tests {
         };
         let ctx = ResourceContext::minimal(scope, CancellationToken::new());
         assert_eq!(ctx.scope_level(), ScopeLevel::Execution(eid));
+    }
+
+    #[test]
+    fn scope_levels_for_acquire_includes_ancestors() {
+        let org = nebula_core::OrgId::new();
+        let eid = ExecutionId::new();
+        let scope = Scope {
+            execution_id: Some(eid),
+            org_id: Some(org),
+            ..Default::default()
+        };
+        let levels = scope_levels_for_acquire(&scope);
+        assert_eq!(levels[0], ScopeLevel::Execution(eid));
+        assert_eq!(levels[1], ScopeLevel::Organization(org));
+        assert_eq!(levels.last(), Some(&ScopeLevel::Global));
     }
 
     #[test]
