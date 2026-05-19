@@ -541,45 +541,55 @@ impl ResourceRegistrarRegistry {
     /// is recorded. `bind` is idempotent, so a re-registration of the
     /// same resolved row does not duplicate the entry.
     ///
-    /// Binding happens **only after `register` returns `Ok`**: a
-    /// registration that failed schema / deserialize / slot validation
-    /// created no registry row, so no reverse-index row may exist for it
-    /// either (no orphan binds, no bogus future `failed` fan-out rows).
     /// `fanout_index = None` (or an empty `credential_ids`) skips the
     /// bind entirely — registration is unchanged.
     ///
-    /// # Ordering contract — caller must quiesce fan-out during activation
+    /// # Ordering guarantee — structural, no observable window
     ///
-    /// `register(...).await` makes the `Manager` row **discoverable**
-    /// before this method records the reverse-index bind. Those two
-    /// steps are deliberately **not** atomic (atomicity would require a
-    /// transactional `Manager::register_resolved` "register-then-
-    /// publish" surface — a heavy Manager API change with no production
-    /// consumer yet). There is therefore a window in which the Manager
-    /// row exists but the reverse-index row does not: a credential
-    /// rotation / lease-revoke for this row that the fan-out driver
-    /// processes *inside that window* would fan to zero rows (a silent
-    /// miss for this row) even though the row is live.
+    /// The reverse-index bind is recorded **before** the typed
+    /// `register` call makes the `Manager` row discoverable, and a
+    /// failed `register` removes the staged bind via RAII compensation.
+    /// The ordering is therefore *structural*, not a caller-discipline
+    /// contract:
     ///
-    /// **The caller MUST ensure the rotation fan-out is quiescent for
-    /// the credentials being bound while it activates a row through this
-    /// seam** (e.g. activate before the driver is spawned, or serialise
-    /// activation against rotation for the affected credentials). This
-    /// is a documented contract, not an enforced invariant, because the
-    /// seam has **no production caller today**: *bind-population* (the
-    /// production credential→slot resolution that would call this) is the
-    /// deferred resource-activation path ( — *bind-
-    /// population producer*). The driver cannot observe a row that
-    /// nothing activated, so the window is not reachable in production
-    /// until that deferred producer lands; when it does, it must honour
-    /// this contract (or the seam must first gain a transactional
-    /// register+bind surface).
+    /// * **No silent-miss window.** The fan-out driver can never observe
+    ///   a discoverable `Manager` row whose reverse-index row is absent:
+    ///   the bind exists no later than the row. (The previous
+    ///   register-then-bind ordering had a window in which a
+    ///   rotation/lease-revoke processed between `register` returning and
+    ///   the bind being recorded fanned to zero rows on a live row.)
+    /// * **No orphan reverse-index row.** If `register` returns `Err`
+    ///   (schema / deserialize / slot validation), it created no registry
+    ///   row; a `scopeguard` removes the staged bind on that path so no
+    ///   reverse-index row survives a failed registration (no bogus
+    ///   future `failed` fan-out rows). A prior successful registration
+    ///   of an identical resolved row keeps its binding — only entries
+    ///   *this* call freshly inserted are rolled back.
+    /// * **No dual-derive divergence.** The staged bind's
+    ///   [`SlotIdentity`] is derived from `request.slot_bindings` via the
+    ///   canonical
+    ///   [`SlotIdentity::from_bindings`](nebula_resource::SlotIdentity::from_bindings)
+    ///   — the *sanctioned wire form* every consumer must reconstruct
+    ///   through, which yields a byte-identical key to the one
+    ///   `Manager::register_resolved` derives from the same bindings and
+    ///   returns. This is the canonical recompute, not a forbidden second
+    ///   construction site: `register_resolved` derives the identity from
+    ///   the same `slot_bindings` with the same function, so the staged
+    ///   key and the returned key are equal by construction.
+    ///
+    /// Inverting the order (rather than the weaker
+    /// compensation-on-failure-only variant) is possible without any
+    /// `Manager` API change precisely because `slot_identity` is a pure
+    /// function of `slot_bindings` (which is *not* template-resolved) via
+    /// the canonical constructor — so the exact row key is knowable
+    /// before `register` runs.
     ///
     /// # Errors
     ///
-    /// Same as [`register`](Self::register): the bind step runs only on
-    /// the `Ok` path and cannot itself fail (it is an in-memory index
-    /// insert), so it does not add an error variant.
+    /// Same as [`register`](Self::register): the bind step is an
+    /// in-memory index insert and cannot itself fail, so it adds no error
+    /// variant. On the `register`-`Err` path the staged bind is rolled
+    /// back before the error is returned.
     ///
     /// Feature-gated with the reverse index itself (`rotation`): the
     /// `ResourceFanoutIndex` type only exists under that feature, so the
@@ -594,44 +604,102 @@ impl ResourceRegistrarRegistry {
         request: RegisterRequest<'_>,
         fanout_index: Option<&crate::credential::rotation::ResourceFanoutIndex>,
     ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
-        // Snapshot the bind inputs before `request` is moved into the
-        // typed `register` call. Cheap clones (a small slot map + scope);
-        // the resource key comes from the erased registrar and the
-        // structural slot identity from `register_resolved`'s return, so
-        // the reverse index addresses the same `(key, scope, slot_identity)`
-        // row the manager registers under.
-        let bind_plan = fanout_index.map(|idx| {
-            (
-                idx,
-                request.scope.clone(),
-                request.slot_bindings.clone(),
-                request.credential_ids.clone(),
-            )
-        });
+        // Resolve the registrar up front (same closed-allowlist lookup +
+        // `UnknownKind` fault as `register`). The erased registrar yields
+        // the row's `ResourceKey`, and the structural `SlotIdentity` is
+        // recomputed from `request.slot_bindings` through the canonical
+        // `SlotIdentity::from_bindings` — the sanctioned wire form
+        // `Manager::register_resolved` itself uses, so the staged key is
+        // byte-identical to the one it derives and returns (no
+        // dual-derive divergence; `slot_bindings` is not template-
+        // resolved, so the key is knowable before `register` runs).
+        let registrar = self
+            .registrars
+            .get(kind)
+            .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
+        let resource_key = registrar.resource_key();
+        let staged_slot_identity = SlotIdentity::from_bindings(
+            request
+                .slot_bindings
+                .iter()
+                .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
+        );
 
-        let outcome = self.register(kind, manager, request).await?;
-
-        // Registration succeeded — the registry row exists. Record the
-        // reverse-index binding so a later rotation / lease-revoke fans
-        // to this exact resolved row.
-        if let Some((idx, scope, slot_bindings, credential_ids)) = bind_plan {
-            for (slot_name, cred_id) in &credential_ids {
+        // Stage the reverse-index binds BEFORE the typed register makes
+        // the `Manager` row discoverable. Track which entries this call
+        // actually inserted (not ones a prior successful registration of
+        // an identical resolved row legitimately created) so the failure
+        // rollback removes exactly those — never a live row's binding.
+        let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
+        if let Some(idx) = fanout_index {
+            for (slot_name, cred_id) in &request.credential_ids {
                 // Only bind slots the resource actually declared (those
                 // present in `slot_bindings`): a stray `credential_ids`
                 // entry for an unbound slot must not create a phantom
                 // reverse-index row.
-                if slot_bindings.contains_key(slot_name) {
-                    idx.bind(
-                        *cred_id,
-                        outcome.resource_key.clone(),
-                        scope.clone(),
-                        slot_name.clone(),
-                        outcome.slot_identity.clone(),
-                    );
+                if !request.slot_bindings.contains_key(slot_name) {
+                    continue;
+                }
+                let bind = crate::credential::rotation::Bind {
+                    resource_key: resource_key.clone(),
+                    scope: request.scope.clone(),
+                    slot_name: slot_name.clone(),
+                    slot_identity: staged_slot_identity.clone(),
+                };
+                // `bind` de-dups: if a prior successful registration of
+                // the identical resolved row already recorded this exact
+                // entry, our insert is a no-op and that pre-existing
+                // binding must NOT be rolled back on our failure.
+                let pre_existing = idx.affected(cred_id).contains(&bind);
+                idx.bind(
+                    *cred_id,
+                    resource_key.clone(),
+                    request.scope.clone(),
+                    slot_name.clone(),
+                    staged_slot_identity.clone(),
+                );
+                if !pre_existing {
+                    staged.push((*cred_id, bind));
                 }
             }
         }
-        Ok(outcome)
+
+        // Arm RAII compensation: if the typed `register` fails (or this
+        // scope unwinds), every freshly-staged entry is removed so a
+        // failed registration leaves no orphan reverse-index row. Defused
+        // on the success path — the binds are kept and already address
+        // the exact `(key, scope, slot_identity)` the manager filed.
+        let rollback = scopeguard::guard((fanout_index, staged), |(idx, staged)| {
+            if let Some(idx) = idx {
+                for (cred_id, bind) in &staged {
+                    idx.unbind_staged_entry(cred_id, bind);
+                }
+            }
+        });
+
+        let slot_identity = registrar
+            .register(manager, request)
+            .await
+            .map_err(|source| RegistrarError::Register {
+                kind: kind.to_owned(),
+                source,
+            })?;
+
+        // Registration succeeded — keep the pre-staged binds. They were
+        // recorded under `staged_slot_identity`, which equals the
+        // manager-returned `slot_identity` by the canonical-wire-form
+        // contract (both derive from the same `slot_bindings` via
+        // `SlotIdentity::from_bindings`).
+        debug_assert_eq!(
+            slot_identity, staged_slot_identity,
+            "register_resolved returned a slot identity that diverged from \
+             the canonical from_bindings recompute — cross-tenant aliasing risk"
+        );
+        scopeguard::ScopeGuard::into_inner(rollback);
+        Ok(ResourceRegistrationOutcome {
+            resource_key,
+            slot_identity,
+        })
     }
 
     /// Resolves `kind` through the closed allowlist and validates
@@ -948,5 +1016,341 @@ mod tests {
             .await
             .expect_err("an empty allowlist is fail-closed");
         assert!(matches!(err, RegistrarError::UnknownKind(k) if k == "anything"));
+    }
+
+    // ── Finding #4: register_and_bind ordering has no observable window ──
+    //
+    // The reverse-index bind must be recorded **before** the `Manager`
+    // row becomes discoverable, and a failed registration must leave no
+    // reverse-index row. The discriminator is `ResourceConfig::validate`,
+    // which `Manager::register` runs *before* it inserts (makes
+    // discoverable) the registry row. A `validate` that snapshots
+    // `fanout_index.affected(cid)` therefore observes:
+    //   * register-then-bind ordering  → empty at validate (the bind has
+    //     not run yet — RED), and
+    //   * bind-then-register ordering   → non-empty at validate (the bind
+    //     was staged first — GREEN).
+    // budget-justified: deterministic register-then-bind ordering
+    // characterization harness — one cohesive scenario (probe + fake
+    // Resource + the no-observable-window assertion). Decomposing it
+    // would hide the very ordering window the test exists to prove.
+    #[cfg(feature = "rotation")]
+    mod register_and_bind_ordering {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use nebula_core::{
+            CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
+            dependencies::{SlotField, SlotKind},
+            resource_key,
+        };
+        use nebula_credential::CredentialId;
+        use nebula_expression::ExpressionEngine;
+        use nebula_resource::{
+            Manager, ScopeLevel,
+            error::Error as ResourceError,
+            resource::{Resource, ResourceConfig, ResourceMetadata},
+            runtime::{TopologyRuntime, resident::ResidentRuntime},
+            topology::resident,
+        };
+        use nebula_schema::HasSchema;
+
+        use super::super::*;
+        use crate::credential::rotation::ResourceFanoutIndex;
+
+        const SLOT_KEY: &str = "auth";
+
+        /// Test observation channel: `OConfig::validate` snapshots, into
+        /// `seen_at_validate`, how many rows the fanout index has bound
+        /// for `cid` *at the instant validate runs* (i.e. before the
+        /// `Manager` registry row is inserted / discoverable).
+        struct Probe {
+            idx: Arc<ResourceFanoutIndex>,
+            cid: CredentialId,
+            seen_at_validate: AtomicUsize,
+            validate_should_fail: bool,
+        }
+
+        // One probe per test; each `#[tokio::test]` here installs its own
+        // before driving a registration, so the slot is single-writer.
+        static PROBE: std::sync::Mutex<Option<Arc<Probe>>> = std::sync::Mutex::new(None);
+
+        fn install_probe(probe: Arc<Probe>) {
+            match PROBE.lock() {
+                Ok(mut g) => *g = Some(probe),
+                Err(poisoned) => *poisoned.into_inner() = Some(probe),
+            }
+        }
+
+        fn probe() -> Arc<Probe> {
+            let guard = match PROBE.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let Some(p) = guard.clone() else {
+                // guard-justified: test-only harness; every test here
+                // installs a probe before driving a registration, so this
+                // branch is structurally unreachable in the test flow.
+                unreachable!("probe must be installed before registration")
+            };
+            p
+        }
+
+        fn cred_key(s: &str) -> CredentialKey {
+            let Ok(k) = CredentialKey::new(s) else {
+                // guard-justified: test-only; the call sites pass static
+                // lowercase ASCII keys that always satisfy CredentialKey.
+                unreachable!("static test credential key `{s}` must be valid")
+            };
+            k
+        }
+
+        #[derive(Debug, Clone)]
+        struct OError(String);
+        impl std::fmt::Display for OError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+        impl std::error::Error for OError {}
+        impl From<OError> for ResourceError {
+            fn from(e: OError) -> Self {
+                ResourceError::transient(e.0)
+            }
+        }
+
+        #[derive(Clone, Debug, serde::Deserialize)]
+        struct OConfig {
+            #[serde(default)]
+            label: String,
+        }
+        nebula_schema::impl_empty_has_schema!(OConfig);
+
+        impl ResourceConfig for OConfig {
+            fn validate(&self) -> Result<(), ResourceError> {
+                // Runs inside `Manager::register`, BEFORE the registry row
+                // is inserted. Snapshot the reverse-index state for `cid`:
+                // a non-zero count here means the bind was staged before
+                // register (the post-fix ordering).
+                let p = probe();
+                let bound = p.idx.affected(&p.cid).len();
+                p.seen_at_validate.store(bound, Ordering::SeqCst);
+                if p.validate_should_fail {
+                    return Err(ResourceError::permanent("register intentionally fails"));
+                }
+                if self.label.is_empty() {
+                    return Err(ResourceError::permanent("label must not be empty"));
+                }
+                Ok(())
+            }
+        }
+
+        #[derive(Clone)]
+        struct OResource;
+
+        impl Resource for OResource {
+            type Config = OConfig;
+            type Runtime = ();
+            type Lease = ();
+            type Error = OError;
+
+            fn key() -> ResourceKey {
+                resource_key!("ordering.widget")
+            }
+
+            async fn create(
+                &self,
+                _config: &OConfig,
+                _ctx: &nebula_resource::ResourceContext,
+            ) -> Result<(), OError> {
+                Ok(())
+            }
+
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::new(
+                    <Self as Resource>::key(),
+                    "ordering.widget".to_owned(),
+                    String::new(),
+                    <OConfig as HasSchema>::schema(),
+                )
+            }
+        }
+
+        impl DeclaresDependencies for OResource {
+            fn dependencies() -> Dependencies {
+                Dependencies::new().slot_field(SlotField {
+                    slot_key: SLOT_KEY,
+                    default_id: SLOT_KEY,
+                    kind: SlotKind::Credential {
+                        type_id: std::any::TypeId::of::<()>(),
+                        type_name: "test-credential",
+                        key: cred_key("auth"),
+                    },
+                    required: true,
+                    lazy: false,
+                })
+            }
+        }
+
+        impl resident::Resident for OResource {
+            fn is_alive_sync(&self, _runtime: &()) -> bool {
+                true
+            }
+        }
+
+        fn registry() -> ResourceRegistrarRegistry {
+            let mut reg = ResourceRegistrarRegistry::new();
+            reg.insert(
+                "ordering.widget",
+                Arc::new(TypedResourceRegistrar::<OResource, _, _, _>::new(
+                    || OResource,
+                    || {
+                        TopologyRuntime::Resident(ResidentRuntime::<OResource>::new(
+                            resident::config::Config::default(),
+                        ))
+                    },
+                    || Manager::erased_acquire_resident_for::<OResource>(),
+                )),
+            );
+            reg
+        }
+
+        fn request(expr: &ExpressionEngine, cid: CredentialId) -> RegisterRequest<'_> {
+            let mut slot_bindings = HashMap::new();
+            slot_bindings.insert(SLOT_KEY.to_owned(), cred_key("cred-tenant-a"));
+            let mut credential_ids = HashMap::new();
+            credential_ids.insert(SLOT_KEY.to_owned(), cid);
+            RegisterRequest {
+                config_json: serde_json::json!({ "label": "x" }),
+                expr_engine: expr,
+                slot_bindings,
+                credential_ids,
+                scope: ScopeLevel::Global,
+                resilience: None,
+                recovery_gate: None,
+            }
+        }
+
+        /// Two properties, asserted sequentially in **one** test so the
+        /// process-global `PROBE` cannot race a sibling test thread:
+        ///
+        /// 1. *No observable window.* At the instant the resource is being
+        ///    registered (`validate`, which `Manager::register` runs
+        ///    *before* it inserts / makes discoverable the registry row),
+        ///    the reverse-index bind already exists. Equivalent statement:
+        ///    the fan-out can never see a discoverable `Manager` row whose
+        ///    reverse-index row is missing. (RED against register-then-bind
+        ///    ordering: validate observes zero bound rows because
+        ///    `idx.bind` has not run yet.) Also pins the staged identity ==
+        ///    the manager-returned identity (no dual-derive divergence).
+        ///
+        /// 2. *Failed register leaves no reverse-index row.* Even though
+        ///    the bind is staged *before* `register`, the scopeguard
+        ///    compensation removes the staged row when `register` returns
+        ///    `Err`; neither the `Manager` row nor the reverse-index row
+        ///    survives (no orphan fan-out rows).
+        #[tokio::test]
+        async fn register_and_bind_has_no_observable_window() {
+            // ── Property 1: success path, bind visible pre-discoverable ──
+            {
+                let manager = Manager::new();
+                let expr = ExpressionEngine::with_cache_size(16);
+                let reg = registry();
+                let idx = Arc::new(ResourceFanoutIndex::new());
+                let cid = CredentialId::new();
+
+                install_probe(Arc::new(Probe {
+                    idx: Arc::clone(&idx),
+                    cid,
+                    seen_at_validate: AtomicUsize::new(usize::MAX),
+                    validate_should_fail: false,
+                }));
+
+                let result = reg
+                    .register_and_bind("ordering.widget", &manager, request(&expr, cid), Some(&idx))
+                    .await;
+                assert!(
+                    result.is_ok(),
+                    "registration of a credential-bound resource must succeed: {result:?}"
+                );
+                let Ok(outcome) = result else { return };
+
+                // The reverse-index bind was observable from inside
+                // `validate`, which runs strictly before the registry row
+                // is inserted / discoverable. Zero == the dangerous window.
+                assert_eq!(
+                    probe().seen_at_validate.load(Ordering::SeqCst),
+                    1,
+                    "the reverse-index bind must be recorded BEFORE the \
+                     Manager row becomes discoverable — a zero here is the \
+                     silent-miss window (row live, reverse-index row absent)"
+                );
+
+                assert!(
+                    manager.has_registered_for_identity(
+                        &<OResource as Resource>::key(),
+                        &ScopeLevel::Global,
+                        &outcome.slot_identity,
+                    ),
+                    "registered row must be resolvable under the recorded identity"
+                );
+                let affected = idx.affected(&cid);
+                assert_eq!(affected.len(), 1, "exactly one bound row for the cid");
+                assert_eq!(
+                    affected[0].slot_identity, outcome.slot_identity,
+                    "the staged reverse-index identity must equal the \
+                     identity Manager::register_resolved returned (no \
+                     dual-derive divergence)"
+                );
+            }
+
+            // ── Property 2: failed register ⇒ no orphan reverse-index ──
+            {
+                let manager = Manager::new();
+                let expr = ExpressionEngine::with_cache_size(16);
+                let reg = registry();
+                let idx = Arc::new(ResourceFanoutIndex::new());
+                let cid = CredentialId::new();
+
+                install_probe(Arc::new(Probe {
+                    idx: Arc::clone(&idx),
+                    cid,
+                    seen_at_validate: AtomicUsize::new(usize::MAX),
+                    validate_should_fail: true,
+                }));
+
+                let result = reg
+                    .register_and_bind("ordering.widget", &manager, request(&expr, cid), Some(&idx))
+                    .await;
+                assert!(
+                    matches!(result, Err(RegistrarError::Register { .. })),
+                    "registration must fail inside validate: {result:?}"
+                );
+
+                // The bind WAS staged before register (the inversion is
+                // active even on the failure path)…
+                assert_eq!(
+                    probe().seen_at_validate.load(Ordering::SeqCst),
+                    1,
+                    "the bind is staged before register even on the failing path"
+                );
+                // …but the scopeguard compensation removed it.
+                assert!(
+                    idx.affected(&cid).is_empty(),
+                    "a failed registration must leave NO reverse-index row \
+                     (scopeguard compensation must undo the staged bind)"
+                );
+                assert!(
+                    !manager.has_registered_for_identity(
+                        &<OResource as Resource>::key(),
+                        &ScopeLevel::Global,
+                        &SlotIdentity::from_bindings([(SLOT_KEY, "cred-tenant-a")]),
+                    ),
+                    "a failed registration must create no Manager registry row"
+                );
+            }
+        }
     }
 }

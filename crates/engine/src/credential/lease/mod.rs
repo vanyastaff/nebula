@@ -74,18 +74,43 @@ pub use scheduler::LeaseLifecycleConfig;
 
 use scheduler::{Command, RevokeOutcome, SchedulerInputs};
 
+/// Bound on the in-flight lease-lifecycle command queue.
+///
+/// The channel has a single consumer (the scheduler task), and each
+/// `Track` / `Revoke` it dequeues can block that consumer for up to one
+/// `provider_call_timeout` (default 30s) inside `provider.renew` /
+/// `provider.revoke`. An unbounded queue therefore lets a registration
+/// burst against a slow or wedged backend grow without limit → OOM.
+///
+/// This capacity is sized to absorb the expected concurrent
+/// lease-acquisition burst that can pile up while the consumer is busy
+/// with one provider call: a few hundred slots is far more than any
+/// realistic number of distinct dynamic-secret leases acquired
+/// simultaneously on one engine, while still being a hard ceiling that
+/// converts a pathological backend stall into a fast typed error
+/// ([`LeaseLifecycleError::LifecycleBusy`]) instead of unbounded memory
+/// growth. It is a deliberate, documented bound — not a tuning knob and
+/// not a magic literal.
+pub(super) const LEASE_COMMAND_CHANNEL_CAPACITY: usize = 256;
+
 /// Public handle to the lease lifecycle scheduler.
 ///
-/// Cheap to clone — internally an `Arc` over an unbounded command
-/// channel. The scheduler task is spawned at construction time and
-/// runs until the supplied [`CancellationToken`] fires.
+/// Cheap to clone — internally an `Arc` over a **bounded** command
+/// channel ([`LEASE_COMMAND_CHANNEL_CAPACITY`]). The scheduler task is
+/// spawned at construction time and runs until the supplied
+/// [`CancellationToken`] fires. Backpressure is **fail-fast, not
+/// blocking**: when the queue is full the producing call returns
+/// [`LeaseLifecycleError::LifecycleBusy`] immediately (`try_send`)
+/// rather than parking the caller behind a wedged backend — a stalled
+/// lease subsystem must never stall the credential-resolution path that
+/// feeds it.
 #[derive(Clone)]
 pub struct LeaseLifecycle {
     inner: Arc<LeaseLifecycleInner>,
 }
 
 struct LeaseLifecycleInner {
-    commands: mpsc::UnboundedSender<Command>,
+    commands: mpsc::Sender<Command>,
 }
 
 impl LeaseLifecycle {
@@ -96,7 +121,7 @@ impl LeaseLifecycle {
         metrics: Option<Arc<dyn MetricsEmitter>>,
         shutdown: CancellationToken,
     ) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(LEASE_COMMAND_CHANNEL_CAPACITY);
         let inputs = SchedulerInputs {
             config,
             commands: rx,
@@ -132,13 +157,13 @@ impl LeaseLifecycle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.inner
             .commands
-            .send(Command::Track {
+            .try_send(Command::Track {
                 provider,
                 lease,
                 credential_id,
                 reply: reply_tx,
             })
-            .map_err(|_| LeaseLifecycleError::Shutdown)?;
+            .map_err(send_error)?;
         reply_rx.await.map_err(|_| LeaseLifecycleError::Shutdown)
     }
 
@@ -150,11 +175,11 @@ impl LeaseLifecycle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.inner
             .commands
-            .send(Command::Revoke {
+            .try_send(Command::Revoke {
                 token,
                 reply: reply_tx,
             })
-            .map_err(|_| LeaseLifecycleError::Shutdown)?;
+            .map_err(send_error)?;
         let outcome = reply_rx.await.map_err(|_| LeaseLifecycleError::Shutdown)?;
         match outcome {
             RevokeOutcome::Revoked | RevokeOutcome::Unknown => Ok(()),
@@ -170,19 +195,27 @@ impl LeaseLifecycle {
     /// See spec : revoke-on-rotate is best-effort cleanup.
     pub async fn revoke_for_credential(&self, credential_id: CredentialId) -> usize {
         let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .inner
-            .commands
-            .send(Command::RevokeForCredential {
-                credential_id,
-                reply: reply_tx,
-            })
-            .is_err()
-        {
+        if let Err(err) = self.inner.commands.try_send(Command::RevokeForCredential {
+            credential_id,
+            reply: reply_tx,
+        }) {
+            // Best-effort cleanup per the revoke-on-rotate contract: a
+            // saturated or shut-down lease subsystem must not block (or
+            // fail) the rotation pipeline that called this. The degraded
+            // state is observable via this warn (the queue-full and
+            // shutdown cases are distinguished so an operator can tell a
+            // wedged backend from a stopped lifecycle).
+            let reason = match err {
+                mpsc::error::TrySendError::Full(_) => {
+                    "command queue saturated (slow/wedged backend)"
+                },
+                mpsc::error::TrySendError::Closed(_) => "lease lifecycle is shut down",
+            };
             tracing::warn!(
                 target: "nebula_engine::credential::lease",
                 %credential_id,
-                "lease lifecycle is shut down; revoke_for_credential is a no-op"
+                reason,
+                "revoke_for_credential is a no-op"
             );
             return 0;
         }
@@ -202,15 +235,21 @@ impl LeaseLifecycle {
     /// emits a `warn` at this site so the degraded state is observable.
     pub async fn active_lease_count(&self) -> usize {
         let (reply_tx, reply_rx) = oneshot::channel();
-        if self
+        if let Err(err) = self
             .inner
             .commands
-            .send(Command::Snapshot { reply: reply_tx })
-            .is_err()
+            .try_send(Command::Snapshot { reply: reply_tx })
         {
+            let reason = match err {
+                mpsc::error::TrySendError::Full(_) => {
+                    "command queue saturated (slow/wedged backend)"
+                },
+                mpsc::error::TrySendError::Closed(_) => "lease lifecycle is shut down",
+            };
             tracing::warn!(
                 target: "nebula_engine::credential::lease",
-                "lease lifecycle is shut down; active_lease_count returns 0"
+                reason,
+                "active_lease_count returns 0"
             );
             return 0;
         }
@@ -253,6 +292,36 @@ pub enum LeaseLifecycleError {
     /// is no longer accepting commands.
     #[error("lease lifecycle is shut down")]
     Shutdown,
+
+    /// The bounded lease-lifecycle command queue
+    /// ([`LEASE_COMMAND_CHANNEL_CAPACITY`] in flight) is full because the
+    /// single scheduler consumer is blocked on a slow or wedged provider
+    /// `renew` / `revoke`. This is explicit fail-fast backpressure: the
+    /// command was **not** enqueued and the lease was **not** tracked /
+    /// revoked. The caller decides how to react (retry later, surface a
+    /// degraded-mode error) — the lease subsystem must never block the
+    /// credential path behind a stalled backend, nor grow this queue
+    /// without bound. Transient: a later attempt can succeed once the
+    /// consumer drains.
+    #[error(
+        "lease lifecycle command queue is full ({LEASE_COMMAND_CHANNEL_CAPACITY} in flight) — \
+         scheduler consumer is blocked on a slow provider; command not enqueued"
+    )]
+    LifecycleBusy,
+}
+
+/// Maps a bounded-channel `try_send` failure to the typed public error.
+///
+/// `Full` is explicit fail-fast backpressure
+/// ([`LeaseLifecycleError::LifecycleBusy`]); `Closed` means the scheduler
+/// task is gone ([`LeaseLifecycleError::Shutdown`]). The dropped command
+/// (and its `oneshot` reply) are discarded with the error — the caller
+/// sees a typed failure rather than a lost in-flight request.
+fn send_error<T>(err: mpsc::error::TrySendError<T>) -> LeaseLifecycleError {
+    match err {
+        mpsc::error::TrySendError::Full(_) => LeaseLifecycleError::LifecycleBusy,
+        mpsc::error::TrySendError::Closed(_) => LeaseLifecycleError::Shutdown,
+    }
 }
 
 #[cfg(test)]
@@ -675,5 +744,180 @@ mod tests {
         assert_eq!(count, 0);
         // We did NOT attempt upstream revoke on shutdown.
         assert_eq!(provider.revoke_calls.load(Ordering::SeqCst), 0);
+    }
+
+    // budget-justified: bounded-channel saturation characterization
+    // harness — a hang-proof parked-consumer fixture plus the typed
+    // LifecycleBusy assertion form one cohesive scenario; splitting it
+    // would obscure the backpressure path under test.
+    /// Provider whose `revoke` never resolves, used to park the single
+    /// scheduler consumer so the bounded command channel can be filled
+    /// from the producer side.
+    #[derive(Debug)]
+    struct HangingRevokeProvider {
+        name: &'static str,
+    }
+
+    impl ExternalProvider for HangingRevokeProvider {
+        fn resolve<'a>(&'a self, _r: &'a ExternalReference) -> ProviderFuture<'a> {
+            ProviderFuture::ready(Ok(ProviderResolution::from_secret(SecretString::new(
+                "ignored",
+            ))))
+        }
+
+        fn provider_name(&self) -> &str {
+            self.name
+        }
+
+        fn lease_renewal(&self) -> Option<&dyn LeasedProvider> {
+            Some(self)
+        }
+    }
+
+    impl LeasedProvider for HangingRevokeProvider {
+        fn renew<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            // Renew is irrelevant here; succeed trivially.
+            let refreshed = LeaseHandle::new(
+                Cow::Borrowed("hanging"),
+                lease.lease_id.clone(),
+                chrono::Utc::now(),
+                Duration::from_secs(100),
+            );
+            ProviderFuture::ready(Ok(ProviderResolution::with_lease(
+                SecretString::new("renewed"),
+                refreshed,
+            )))
+        }
+
+        fn revoke<'a>(&'a self, _lease: &'a LeaseHandle) -> ProviderFuture<'a> {
+            // Never resolves: the consumer parks here for the whole
+            // `provider_call_timeout`, modelling a wedged backend.
+            ProviderFuture::new(async {
+                std::future::pending::<()>().await;
+                Ok(ProviderResolution::empty())
+            })
+        }
+    }
+
+    /// A registration burst against a wedged backend must surface a typed
+    /// saturation error to the producer instead of growing the command
+    /// queue without bound.
+    ///
+    /// The single scheduler consumer is parked inside a never-resolving
+    /// `revoke` (the per-call timeout is set huge so it cannot rescue the
+    /// consumer within the test). With the consumer parked, the producer
+    /// keeps issuing `track` commands; once the bounded channel is full a
+    /// further `track` must fail fast with
+    /// [`LeaseLifecycleError::LifecycleBusy`] rather than block or grow
+    /// memory unbounded. (Red against an unbounded channel: every `track`
+    /// send succeeds, so the busy error is never observed.)
+    #[tokio::test]
+    async fn track_surfaces_typed_saturation_when_consumer_parked() {
+        let shutdown = CancellationToken::new();
+        // Default `provider_call_timeout` (30s) is far longer than the
+        // detect window below: the parked `revoke` cannot time out and
+        // free the consumer before the test has observed saturation and
+        // torn down.
+        let lifecycle = LeaseLifecycle::spawn(
+            LeaseLifecycleConfig::default(),
+            None,
+            None,
+            shutdown.clone(),
+        );
+        let provider =
+            Arc::new(HangingRevokeProvider { name: "hanging" }) as Arc<dyn LeasedProvider>;
+
+        // Track one lease, then revoke it: the revoke parks the single
+        // consumer permanently (its `revoke` future never resolves).
+        let first = lifecycle
+            .track(
+                Arc::clone(&provider),
+                make_resolution("hanging", 100, "park-lease"),
+                None,
+            )
+            .await;
+        assert!(
+            first.is_ok(),
+            "first track must succeed before the consumer is parked: {first:?}"
+        );
+        let Ok(token) = first else { return };
+        let revoke_handle = {
+            let lifecycle = lifecycle.clone();
+            tokio::spawn(async move { lifecycle.revoke(token).await })
+        };
+        // Yield enough for the scheduler to dequeue the Revoke command and
+        // enter the never-resolving provider call.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        // The consumer is now wedged. Flood `track` from many tasks. A
+        // `track` whose `try_send` *succeeds* parks forever on its reply
+        // (the consumer never drains), so those join handles never
+        // resolve — the test must NOT await them. A `track` whose
+        // `try_send` is rejected returns `LifecycleBusy` **synchronously**
+        // (before any `.await`), so that task finishes almost
+        // immediately. We therefore detect saturation by polling for any
+        // *finished* task that returned `LifecycleBusy`, under an overall
+        // bounded timeout so this can never hang (an unbounded — buggy —
+        // channel never rejects, so no task finishes with the busy error
+        // and the timeout makes the test fail loudly instead of growing
+        // the queue without limit).
+        let mut pending = Vec::new();
+        for i in 0..(LEASE_COMMAND_CHANNEL_CAPACITY * 4 + 64) {
+            let lifecycle = lifecycle.clone();
+            let provider = Arc::clone(&provider);
+            let id = format!("burst-{i}");
+            let h = tokio::spawn(async move {
+                lifecycle
+                    .track(provider, make_resolution("hanging", 100, &id), None)
+                    .await
+            });
+            pending.push(h);
+            // Let the send actually attempt against the bounded channel.
+            tokio::task::yield_now().await;
+        }
+
+        let detect = async {
+            loop {
+                // Drain only the *finished* handles. A `LifecycleBusy`
+                // result is produced before any await, so its task is
+                // finished here; parked-on-reply tasks are not and are
+                // left untouched (never awaited).
+                let mut found = false;
+                let mut still_pending = Vec::with_capacity(pending.len());
+                for h in std::mem::take(&mut pending) {
+                    if h.is_finished() {
+                        if matches!(h.await, Ok(Err(LeaseLifecycleError::LifecycleBusy))) {
+                            found = true;
+                        }
+                    } else {
+                        still_pending.push(h);
+                    }
+                }
+                pending = still_pending;
+                if found {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let saw_busy = tokio::time::timeout(Duration::from_secs(20), detect)
+            .await
+            .is_ok();
+        assert!(
+            saw_busy,
+            "a registration burst against a parked consumer must surface \
+             LeaseLifecycleError::LifecycleBusy (bounded channel), not grow \
+             the queue unbounded"
+        );
+
+        // Tear down without awaiting the forever-parked tasks.
+        shutdown.cancel();
+        revoke_handle.abort();
+        for h in pending {
+            h.abort();
+        }
     }
 }
