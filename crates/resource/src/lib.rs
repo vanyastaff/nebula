@@ -17,7 +17,7 @@
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
-//! | `Cell` | Lock-free `ArcSwap`-based cell for resident topologies |
+//! | `SlotCell` | Lock-free generation-stamped holder for a resolved credential slot |
 //! | `Error`, `ErrorKind` | Unified typed error with retry classification |
 //! | `ResourceContext` | Execution context with cancellation and capabilities |
 //! | `ResourceEvent` | Lifecycle events for observability |
@@ -35,7 +35,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod cell;
+pub(crate) mod cell;
 pub mod context;
 pub mod dedup;
 pub mod error;
@@ -58,7 +58,12 @@ pub mod state;
 pub mod topology;
 pub mod topology_tag;
 
-pub use cell::Cell;
+// NOTE: `cell::Cell` is intentionally NOT re-exported. It is an internal
+// lock-free `ArcSwapOption` holder for the resident runtime; it carries no
+// generation/epoch and is a strict subset of the public `SlotCell`. The
+// `cell` module is crate-internal (`pub(crate) mod`) so consumers reach for
+// the generation-bearing `SlotCell` and are not misled into using the
+// epoch-blind cell at a credential-slot boundary.
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
