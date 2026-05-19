@@ -182,6 +182,143 @@
 //! slot is ever stored by concurrent writers; that is an upstream
 //! rotation-driver serialization fact, guarded by a dedicated concurrency
 //! test, not an `arc-swap` property.
+//!
+//! # Deferred follow-up ledger (durable record, no ADR)
+//!
+//! The topology collapse + cross-tenant-barrier + latent-bug closure that
+//! produced this module deliberately did **not** fix every issue it
+//! surfaced. This ledger is the durable record of what was consciously left
+//! for separate work, so nothing is silently inherited once the originating
+//! plan is gone. Every item is also filed as a tracked issue (linked); this
+//! ledger is the in-tree index, not the sole record. Severity is the item's
+//! own risk, independent of when it is scheduled.
+//!
+//! ## Latent bugs surfaced but out of scope
+//!
+//! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH**
+//!   ([#712]). `reload_config` swaps the config `ArcSwap` (and the Pool
+//!   fingerprint) but never drains in-flight work or rebuilds the
+//!   caller-supplied live `Arc<R::Runtime>` for any topology, so a reload
+//!   that should rotate the running runtime is silently not applied to it.
+//!   Deferred because the reload redesign (drain-then-rebuild + a truthful
+//!   outcome contract) is a separate concern; see the **accepted relabel**
+//!   note below for why this is a preserved no-op, not a regression.
+//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED** ([#713]).
+//!   A *cancelled* acquire whose in-flight `create` already built a runtime
+//!   drops it synchronously without the async `destroy()`, leaking the
+//!   server-side handle. (The *other* `CreateGuard` race — an in-flight
+//!   create completing *after a revoke* — is the same isolation defect as
+//!   the revoke→recycle TOCTOU and **was fixed** by the pooled revoke-epoch
+//!   fence; only the cancelled-acquire leak remains.)
+//! - **Resident recreate `take()`+destroy-under-lock vs dispatch — MED**
+//!   ([#714]). The resident recreate clears the slot then destroys under the
+//!   lock; a concurrent revoke/refresh dispatch in that window can run
+//!   against the absent/old runtime, losing the revoke for that window.
+//!   Resident internals, out of the collapse seam.
+//! - **`graceful_shutdown` phase-4 detached workers can outlive
+//!   `release_queue_timeout` — LOW** ([#715]). The timeout bounds the wait,
+//!   not the detached release work; it eventually drains. shutdown.rs was
+//!   not opened by the collapse.
+//! - **`RecoveryTicket` Drop counts a panicked probe as an attempt — LOW**
+//!   ([#716]). A defensible-but-untested default; recovery internals.
+//!
+//! ## Separable acquire-path perf micro-folds — LOW ([#717])
+//!
+//! The collapse took only the perf wins **inseparable** from it (one
+//! generic acquire pipeline instead of five byte-identical ones; a single
+//! registry resolution instead of a double `DashMap` walk). The separable
+//! micro-allocation folds — per-acquire config re-clone hoist,
+//! `resilience.clone()` → borrow, `OnceLock`-gated erased no-op accessors,
+//! broadcast send gated on `receiver_count() > 0` — were excluded to honor
+//! the shape-only scope boundary. The `InFlightCounter` `AcqRel` ordering
+//! is the revoke-vs-acquire TOCTOU primitive and is preserved verbatim
+//! regardless; any ordering tuning is a separate reviewed change with a
+//! re-stated memory-model proof.
+//!
+//! ## Cross-crate dedup / layer placement — LOW ([#718])
+//!
+//! Cross-layer type relocation was explicitly out of scope (no ADR in this
+//! work). Deferred: `ErrorKind` ≈ `nebula_error::ErrorCategory`
+//! reconciliation; hardcoded acquire backoff vs
+//! `nebula_resilience::BackoffConfig`; relocating the live `RecoveryGate` +
+//! `ReleaseQueue` to `nebula-resilience`; `events.rs` raw `broadcast` →
+//! `nebula_eventbus::EventBus`; unifying `CreateGuard`/`SessionGuard` into
+//! one `DefuseGuard<T>`; revisiting the `register_resolved` JSON/`{{ }}`
+//! expression coupling and its engine-ABI positional shape (see the
+//! accepted-exception note below).
+//!
+//! ## Further `Manager` code-line reduction — LOW ([#719])
+//!
+//! `crates/resource/src/manager/mod.rs` is 2552 lines: ~1224 comment/doc,
+//! ~117 blank, ~1211 code. The structural de-spaghettification root-cause
+//! goals **are** met — 5→3 topology, one generic `run_acquire` (no
+//! `run_*_acquire` clones), the ~17 register shorthands + 3-deep chain
+//! folded into one `register(RegistrationSpec)` funnel, the 8 prose
+//! restatements of the revoke invariant collapsed into the single canonical
+//! block above, dead surface removed, all type-enforced so the duplication
+//! cannot regress. The literal origin "~800 line" target is **not** met:
+//! the raw count is inflated by the canonical doc this refactor
+//! deliberately centralizes here (it replaces an ADR), and the residual
+//! code is the legitimate identity-agnostic-vs-identity-pinned method-pair
+//! axis (two real lookup modes), not copy-paste. A generic over that axis
+//! could fold the remaining `<op>` / `<op>_for_identity` pairs — a cosmetic
+//! tightening, not a correctness fix.
+//!
+//! ## Accepted carve-outs (recorded, not silently inherited)
+//!
+//! - **`reload_config` outcome relabel — no-op-preserving.** The former
+//!   `Service` topology returned `ReloadOutcome::PendingDrain { .. }`;
+//!   post-collapse a former-Service row is `TopologyRuntime::Bounded` and
+//!   the `Service(_) => PendingDrain` arm is gone, so `reload_config` now
+//!   returns `ReloadOutcome::SwappedImmediately`. This is **only an enum
+//!   label change**: `reload_config` never drained or rebuilt the live
+//!   runtime for that topology under either label (that missing behavior is
+//!   exactly [#712]). A characterization net pins the per-topology
+//!   `reload_config` outcome so the relabel is auditable as a preserved
+//!   no-op, not a silent behavior change. `ReloadOutcome::PendingDrain`
+//!   now has **zero constructors** — it is a prune candidate, intentionally
+//!   left in place because it is still referenced by reload-path docs and
+//!   the carve-out characterization test; pruning it is a separate trivial
+//!   change, not done here to avoid coupling a public-enum edit into a
+//!   verification pass.
+//! - **`register_resolved` carries one `// guard-justified:`
+//!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
+//!   `too_many_arguments` allows the collapse targeted are gone; this last
+//!   one is the irreducible engine ABI — the production engine registrar
+//!   dispatches into `register_resolved` positionally with a 9-param
+//!   JSON-driven shape, and collapsing it into a struct would re-introduce
+//!   the navigation hop the single register funnel removed for the one
+//!   erased call site. It is a candidate for the cross-crate-dedup
+//!   follow-up ([#718]), not a defect. (The three `too_many_arguments`
+//!   allows in `runtime/pool.rs` are pre-existing pool internals untouched
+//!   by this work.)
+//! - **R15/R16 cross-tenant fixes were latent, not live.** The original
+//!   64-bit `DefaultHasher` barrier defect ([#684], **closed** —
+//!   structurally fixed here via the collision-free `SlotIdentity`
+//!   structural set) and the pooled revoke→recycle TOCTOU were not
+//!   reachable in production (this crate is `frontier`; there is no
+//!   production credential→slot resolver), which is why seam-coupled
+//!   remediation was acceptable over a standalone hotfix.
+//!
+//! ## Consumer-migration history (honest record)
+//!
+//! The expand-contract migration of in-tree consumers initially named, but
+//! did **not** migrate, the three `m6_*` example binaries
+//! (`m6_postgres_pool`, `m6_resident_http`, `m6_telegram_multi_workflow`);
+//! they were migrated to `RegistrationSpec` / the structural `SlotIdentity`
+//! in a later, separately-committed step before the old surface was
+//! deleted. Recorded so the migration history is not misread as
+//! single-step.
+//!
+//! [#684]: https://github.com/vanyastaff/nebula/issues/684
+//! [#712]: https://github.com/vanyastaff/nebula/issues/712
+//! [#713]: https://github.com/vanyastaff/nebula/issues/713
+//! [#714]: https://github.com/vanyastaff/nebula/issues/714
+//! [#715]: https://github.com/vanyastaff/nebula/issues/715
+//! [#716]: https://github.com/vanyastaff/nebula/issues/716
+//! [#717]: https://github.com/vanyastaff/nebula/issues/717
+//! [#718]: https://github.com/vanyastaff/nebula/issues/718
+//! [#719]: https://github.com/vanyastaff/nebula/issues/719
 
 use std::{
     future::Future,
