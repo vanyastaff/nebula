@@ -40,9 +40,11 @@ use std::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, ResourceContext,
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext,
+    dedup::SlotIdentity,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
+    runtime::{TopologyRuntime, pool::PoolRuntime},
     topology::pooled::{BrokenCheck, Pooled, RecycleDecision, config::Config as PoolConfig},
 };
 use serde::Deserialize;
@@ -362,14 +364,22 @@ async fn main() -> anyhow::Result<()> {
         create_timeout: Duration::from_secs(2),
         ..PoolConfig::default()
     };
-    manager.register_pooled(
-        postgres.clone(),
-        PostgresConfig {
-            application_name: "nebula-example".into(),
-            statement_timeout_ms: 30_000,
-        },
-        pool_config,
-    )?;
+    let pg_config = PostgresConfig {
+        application_name: "nebula-example".into(),
+        statement_timeout_ms: 30_000,
+    };
+    let pool_runtime =
+        PoolRuntime::<Postgres>::new(pool_config, ResourceConfig::fingerprint(&pg_config));
+    manager.register(RegistrationSpec {
+        resource: postgres.clone(),
+        config: pg_config,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(pool_runtime),
+        acquire: Manager::erased_acquire_pooled_for::<Postgres>(),
+        resilience: None,
+        recovery_gate: None,
+    })?;
     println!("[1] Postgres pool registered (min=0, max=4)");
 
     // 2. ScopedTestSchema simulates an engine branch entering a `ResourceAction` scope. The handle
