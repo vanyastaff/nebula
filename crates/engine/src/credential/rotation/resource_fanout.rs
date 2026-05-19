@@ -104,6 +104,23 @@ impl RotationOutcome {
     }
 }
 
+/// One reverse-index row plus the number of live registrations that
+/// resolved it.
+///
+/// Identical resolved rows dedupe to a single fan-out target (one
+/// [`Bind`]); `refs` counts how many `register_and_bind` stagings
+/// currently depend on it. A failed registration releases exactly one
+/// reference; the row is removed only when the last referent is gone, so
+/// a failing staging can never delete a row a concurrent successful
+/// registration still holds. `refs` is `>= 1` for any present entry (the
+/// entry is removed at zero), so a plain `usize` with that invariant is
+/// sufficient — no `NonZero` ceremony.
+#[derive(Debug, Clone)]
+struct BindRef {
+    bind: Bind,
+    refs: usize,
+}
+
 /// Engine-owned reverse index from a rotated `CredentialId` to the resource
 /// registry rows that resolved it.
 ///
@@ -116,12 +133,13 @@ impl RotationOutcome {
 /// is never persisted or sent across a trust boundary.
 #[derive(Debug, Default)]
 pub struct ResourceFanoutIndex {
-    /// `CredentialId` -> rows whose resolved slot bound that credential.
+    /// `CredentialId` -> refcounted rows whose resolved slot bound that
+    /// credential.
     ///
     /// `nebula-engine` has no direct `smallvec` dependency, so the
     /// per-credential row list is a plain `Vec`. Promoting this to a small
     /// inline buffer is a deferred, dependency-gated optimisation.
-    by_credential: DashMap<CredentialId, Vec<Bind>>,
+    by_credential: DashMap<CredentialId, Vec<BindRef>>,
 }
 
 impl ResourceFanoutIndex {
@@ -136,8 +154,16 @@ impl ResourceFanoutIndex {
     /// one of its credential slots.
     ///
     /// Re-binding an identical row under the same credential is idempotent
-    /// (no duplicate entry) so a resource that re-registers without changing
-    /// its resolved binding does not fan out twice.
+    /// *at the fan-out level* — [`affected`](Self::affected) still returns
+    /// one entry and a rotation fans out once — but each call takes a
+    /// reference (see [`BindRef`]). The presence check and the
+    /// increment/insert both run under the `DashMap` shard lock held by
+    /// `entry(cid)`, so a concurrent `bind` / `unbind_staged_entry` for the
+    /// same `cid` cannot interleave between them. This closes the
+    /// stage-then-roll-back TOCTOU in
+    /// [`register_and_bind`](crate::resource::ResourceRegistrarRegistry::register_and_bind):
+    /// a failing registration releases only its own reference and can
+    /// never delete a row a concurrent successful registration still holds.
     pub fn bind(
         &self,
         cid: CredentialId,
@@ -153,8 +179,12 @@ impl ResourceFanoutIndex {
             slot_identity,
         };
         let mut rows = self.by_credential.entry(cid).or_default();
-        if !rows.contains(&entry) {
-            rows.push(entry);
+        match rows.iter_mut().find(|r| r.bind == entry) {
+            Some(existing) => existing.refs += 1,
+            None => rows.push(BindRef {
+                bind: entry,
+                refs: 1,
+            }),
         }
     }
 
@@ -166,7 +196,7 @@ impl ResourceFanoutIndex {
     pub fn affected(&self, cid: &CredentialId) -> Vec<Bind> {
         self.by_credential
             .get(cid)
-            .map(|rows| rows.clone())
+            .map(|rows| rows.iter().map(|r| r.bind.clone()).collect())
             .unwrap_or_default()
     }
 
@@ -179,7 +209,7 @@ impl ResourceFanoutIndex {
     /// `unbind_resource_identity`.
     pub fn unbind_resource(&self, resource_key: &ResourceKey, scope: &ScopeLevel) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|b| b.resource_key != *resource_key || b.scope != *scope);
+            rows.retain(|r| r.bind.resource_key != *resource_key || r.bind.scope != *scope);
             !rows.is_empty()
         });
     }
@@ -203,10 +233,10 @@ impl ResourceFanoutIndex {
         slot_identity: &SlotIdentity,
     ) {
         self.by_credential.retain(|_, rows| {
-            rows.retain(|b| {
-                b.resource_key != *resource_key
-                    || b.scope != *scope
-                    || b.slot_identity != *slot_identity
+            rows.retain(|r| {
+                r.bind.resource_key != *resource_key
+                    || r.bind.scope != *scope
+                    || r.bind.slot_identity != *slot_identity
             });
             !rows.is_empty()
         });
@@ -224,22 +254,33 @@ impl ResourceFanoutIndex {
     ///
     /// It is the compensation primitive for the *stage-bind-before-
     /// register-then-roll-back-on-failure* ordering in
-    /// [`ResourceRegistrarRegistry::register_and_bind`]: only the entries
-    /// that call actually inserted (not ones a prior successful
-    /// registration of an identical resolved row legitimately created) may
-    /// be removed when `register` fails, so the rollback cannot corrupt a
-    /// live row's fan-out. At most one match exists because `bind`
-    /// de-duplicates, so this removes a single entry.
+    /// [`ResourceRegistrarRegistry::register_and_bind`]: it **releases one
+    /// reference** taken by [`bind`](Self::bind) and removes the row only
+    /// when the last referent is gone. A registration that fails after
+    /// staging therefore drops just its own reference; a concurrent (or
+    /// prior) successful registration of the identical resolved row keeps
+    /// its reference, so its live fan-out row survives. This makes the
+    /// rollback correct without the registrar having to decide "did I
+    /// insert this entry?" — a decision that could not be made atomically
+    /// with the insert and was the source of the cross-registration
+    /// corruption.
     pub(crate) fn unbind_staged_entry(&self, cid: &CredentialId, bind: &Bind) {
         // `remove_if_mut` holds the shard lock across the whole closure:
-        // the matching entry is retained-out and the credential bucket is
-        // dropped iff it became empty — atomically, with no TOCTOU between
-        // "is it empty" and "remove it" (mirrors the `retain(!is_empty())`
-        // discipline of the bulk unbinds). `bind` de-dups, so there is at
-        // most one structurally-equal entry; `retain` removes precisely it
-        // and keeps any other credential's binding for the same row.
+        // the matching entry is decremented (or removed at the last
+        // reference) and the credential bucket is dropped iff it became
+        // empty — atomically, with no TOCTOU between the decrement, the
+        // emptiness check, and the bucket removal (mirrors the
+        // `retain(!is_empty())` discipline of the bulk unbinds). `bind`
+        // de-dups into one refcounted entry, so at most one structurally-
+        // equal entry exists; an absent `(cid, bind)` is a no-op.
         self.by_credential.remove_if_mut(cid, |_, rows| {
-            rows.retain(|b| b != bind);
+            if let Some(pos) = rows.iter().position(|r| &r.bind == bind) {
+                if rows[pos].refs > 1 {
+                    rows[pos].refs -= 1;
+                } else {
+                    rows.remove(pos);
+                }
+            }
             rows.is_empty()
         });
     }
@@ -755,6 +796,57 @@ mod tests {
             idx.affected(&c2),
             vec![bound(&key, &scope, "db", id)],
             "a structurally-different bind must not be removed"
+        );
+    }
+
+    #[test]
+    fn staged_bind_refcount_protects_a_concurrent_live_row() {
+        // Two `register_and_bind` calls stage the IDENTICAL resolved row
+        // (same cid + Bind). One fails and rolls back; the other
+        // succeeds. The failing rollback must NOT delete the surviving
+        // registration's live reverse-index row.
+        //
+        // Before the refcount fix the registrar read
+        // `affected(cid).contains(&bind)` before `bind` to decide whether
+        // to roll the entry back — a check-then-act race: both calls
+        // could observe "absent", both stage it, and the failing call's
+        // `unbind_staged_entry` would then delete the row the successful
+        // call depends on, leaving a registered resource with no fan-out
+        // (silent miss on the next rotation/revoke). This test pins the
+        // refcounted ownership that makes the rollback correct without any
+        // such read.
+        let idx = ResourceFanoutIndex::new();
+        let cid = cred();
+        let key = rk("pg");
+        let scope = wf_scope();
+        let id = SlotIdentity::from_bindings([("k", "cred-0x1234")]);
+
+        // Call A stages the row, call B stages the identical row: one
+        // refcounted entry, two references.
+        idx.bind(cid, key.clone(), scope.clone(), "db", id.clone());
+        idx.bind(cid, key.clone(), scope.clone(), "db", id.clone());
+        assert_eq!(
+            idx.affected(&cid),
+            vec![bound(&key, &scope, "db", id.clone())],
+            "identical stagings dedupe to one fan-out target"
+        );
+
+        // Call A's `register` fails -> its scopeguard releases A's
+        // reference. B is still live, so the row MUST survive.
+        idx.unbind_staged_entry(&cid, &bound(&key, &scope, "db", id.clone()));
+        assert_eq!(
+            idx.affected(&cid),
+            vec![bound(&key, &scope, "db", id.clone())],
+            "a failed concurrent staging must not delete the surviving \
+             registration's live fan-out row"
+        );
+
+        // B is later removed too -> last reference gone -> row dropped,
+        // empty bucket reclaimed.
+        idx.unbind_staged_entry(&cid, &bound(&key, &scope, "db", id));
+        assert!(
+            idx.affected(&cid).is_empty(),
+            "the row is removed only when the last referent is gone"
         );
     }
 
