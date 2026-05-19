@@ -233,5 +233,23 @@ printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts"
 chk "E skiplist allows dup new" 0 "$(egate '{"session_id":"'"$EDN_SID"'","cwd":"'"$EDN_DIR"'","stop_hook_active":false}')"
 rm -rf "$EDN_DIR"
 
+# E abstention-as-success: empty diff + nothing edited => allow (not a block)
+EA_DIR="$(mktemp -d)"; ( cd "$EA_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty )
+EA_SID="e-abs"; EA_P="$(turn_state_path "$EA_SID" "$EA_DIR")"; mkdir -p "$(dirname "$EA_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EA_P"
+chk "E abstention allowed" 0 "$(egate '{"session_id":"'"$EA_SID"'","cwd":"'"$EA_DIR"'","stop_hook_active":false}')"
+# E small clean turn (<400 net, <=5 files, no blob, no dup) => allow
+( cd "$EA_DIR" && mkdir -p crates/ok/src && printf 'pub fn small(){}\n' > crates/ok/src/lib.rs )
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EA_P"
+chk "E small clean allowed" 0 "$(egate '{"session_id":"'"$EA_SID"'","cwd":"'"$EA_DIR"'","stop_hook_active":false}')"
+rm -rf "$EA_DIR"
+# E boundary: exactly NF_CAP (5) new files is ALLOWED (guard is -gt, not -ge)
+EC_DIR="$(mktemp -d)"; ( cd "$EC_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ec/src && for i in 1 2 3 4 5; do echo "fn f${i}(){}" > "crates/ec/src/m${i}.rs"; done )
+EC_SID="e-cap"; EC_P="$(turn_state_path "$EC_SID" "$EC_DIR")"; mkdir -p "$(dirname "$EC_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EC_P"
+chk "E exactly-5 files allowed" 0 "$(egate '{"session_id":"'"$EC_SID"'","cwd":"'"$EC_DIR"'","stop_hook_active":false}')"
+rm -rf "$EC_DIR"
+
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
