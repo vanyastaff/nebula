@@ -542,6 +542,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// Returns the appropriate `CallError` variant depending on which pipeline
     /// step fails (timeout, retry exhaustion, circuit open, bulkhead full, or operation error).
     ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await`. Every pipeline
+    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
+    /// and circuit-breaker probe slots are released on drop — so no
+    /// crate-owned state is left partially mutated, and the pipeline does
+    /// not detach work via `spawn`. Whether a *partially executed* operation
+    /// is safe to abandon is the supplied operation's own contract.
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
@@ -589,6 +599,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// Returns `Err(CallError::Cancelled)` if cancellation fires before the pipeline
     /// completes, or the normal pipeline error otherwise.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await`. Every pipeline
+    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
+    /// and circuit-breaker probe slots are released on drop — so no
+    /// crate-owned state is left partially mutated, and the pipeline does
+    /// not detach work via `spawn`. Whether a *partially executed* operation
+    /// is safe to abandon is the supplied operation's own contract.
     pub async fn call_with_context<T, F, Fut>(
         &self,
         cancellation: &CancellationContext,
@@ -618,6 +638,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires, or the normal
     /// pipeline error otherwise.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await`. Every pipeline
+    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
+    /// and circuit-breaker probe slots are released on drop — so no
+    /// crate-owned state is left partially mutated, and the pipeline does
+    /// not detach work via `spawn`. Whether a *partially executed* operation
+    /// is safe to abandon is the supplied operation's own contract.
     pub async fn call_with_policy_context<T, F, Fut>(
         &self,
         context: &PolicyContext,
@@ -729,6 +759,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// Returns the fallback's error if both the pipeline and fallback fail.
     ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await`. Every pipeline
+    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
+    /// and circuit-breaker probe slots are released on drop — so no
+    /// crate-owned state is left partially mutated, and the pipeline does
+    /// not detach work via `spawn`. Whether a *partially executed* operation
+    /// is safe to abandon is the supplied operation's own contract.
+    ///
     /// # Examples
     ///
     /// ```rust,no_run
@@ -785,6 +825,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// Returns `Err(CallError::Cancelled)` if cancellation fires before the
     /// pipeline/fallback completes, or the normal pipeline/fallback error
     /// otherwise.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await`. Every pipeline
+    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
+    /// and circuit-breaker probe slots are released on drop — so no
+    /// crate-owned state is left partially mutated, and the pipeline does
+    /// not detach work via `spawn`. Whether a *partially executed* operation
+    /// is safe to abandon is the supplied operation's own contract.
     pub async fn call_with_context_and_fallback<T, F, Fut>(
         &self,
         cancellation: &CancellationContext,
@@ -812,6 +862,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     /// Returns `Err(CallError::Cancelled)` if the context is cancelled,
     /// `Err(CallError::Timeout)` if the context deadline expires, or the normal
     /// pipeline/fallback error otherwise.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await`. Every pipeline
+    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
+    /// and circuit-breaker probe slots are released on drop — so no
+    /// crate-owned state is left partially mutated, and the pipeline does
+    /// not detach work via `spawn`. Whether a *partially executed* operation
+    /// is safe to abandon is the supplied operation's own contract.
     pub async fn call_with_policy_context_and_fallback<T, F, Fut>(
         &self,
         context: &PolicyContext,

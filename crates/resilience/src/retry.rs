@@ -436,6 +436,15 @@ impl<E: 'static> RetryConfig<E> {
 /// Returns `Err(CallError::RetriesExhausted)` when all attempts are exhausted,
 /// or `Err(CallError::Operation)` if the error is not retryable.
 ///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight attempt at its current `.await` and discards all
+/// retry bookkeeping (attempt counter, last error, backoff delay) — no
+/// crate-owned state is left partially mutated, and no work is detached
+/// via `spawn`. Whether a *partially executed* attempt is safe to abandon
+/// is the supplied operation's own contract.
+///
 /// # Examples
 ///
 /// ```rust
@@ -586,6 +595,15 @@ where
 ///
 /// Returns `Err(CallError::RetriesExhausted)` when all `n` attempts are exhausted,
 /// or `Err(CallError::Operation)` if the error is not retryable.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight attempt at its current `.await` and discards all
+/// retry bookkeeping (attempt counter, last error, backoff delay) — no
+/// crate-owned state is left partially mutated, and no work is detached
+/// via `spawn`. Whether a *partially executed* attempt is safe to abandon
+/// is the supplied operation's own contract.
 ///
 /// # Examples
 ///

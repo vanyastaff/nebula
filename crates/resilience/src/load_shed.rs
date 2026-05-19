@@ -17,6 +17,15 @@ use crate::{
 /// Returns `Err(CallError::LoadShed)` when the shed predicate fires,
 /// or `Err(CallError::Operation)` if the operation itself fails.
 ///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` — the shed
+/// predicate and bookkeeping are stack-local, so no crate-owned state is
+/// left partially mutated, and no work is detached via `spawn`. Whether a
+/// *partially executed* operation is safe to abandon is the supplied
+/// operation's own contract.
+///
 /// # Examples
 ///
 /// ```rust,no_run
@@ -51,6 +60,15 @@ where
 ///
 /// Returns `Err(CallError::LoadShed)` when the shed predicate fires,
 /// or `Err(CallError::Operation)` if the operation itself fails.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` — the shed
+/// predicate and bookkeeping are stack-local, so no crate-owned state is
+/// left partially mutated, and no work is detached via `spawn`. Whether a
+/// *partially executed* operation is safe to abandon is the supplied
+/// operation's own contract.
 pub async fn load_shed_with_sink<T, E, S, Fut, F>(
     should_shed: S,
     f: F,
@@ -80,6 +98,15 @@ where
 /// `Err(CallError::Timeout)` when the context deadline expires,
 /// `Err(CallError::LoadShed)` when the shed predicate fires, or
 /// `Err(CallError::Operation)` if the operation itself fails.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` — the shed
+/// predicate and bookkeeping are stack-local, so no crate-owned state is
+/// left partially mutated, and no work is detached via `spawn`. Whether a
+/// *partially executed* operation is safe to abandon is the supplied
+/// operation's own contract.
 pub async fn load_shed_with_policy_context<T, E, S, Fut, F>(
     context: &PolicyContext,
     should_shed: S,
@@ -103,6 +130,15 @@ where
 /// `Err(CallError::Timeout)` when the context deadline expires,
 /// `Err(CallError::LoadShed)` when the shed predicate fires, or
 /// `Err(CallError::Operation)` if the operation itself fails.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` — the shed
+/// predicate and bookkeeping are stack-local, so no crate-owned state is
+/// left partially mutated, and no work is detached via `spawn`. Whether a
+/// *partially executed* operation is safe to abandon is the supplied
+/// operation's own contract.
 pub async fn load_shed_with_policy_context_and_sink<T, E, S, Fut, F>(
     context: &PolicyContext,
     should_shed: S,

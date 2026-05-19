@@ -19,6 +19,14 @@ use crate::{
 ///
 /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
 ///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` and discards the
+/// timeout bookkeeping — no crate-owned state is left partially mutated,
+/// and no work is detached via `spawn`. Whether a *partially executed*
+/// operation is safe to abandon is the supplied operation's own contract.
+///
 /// # Examples
 ///
 /// ```rust,no_run
@@ -46,6 +54,14 @@ where
 /// # Errors
 ///
 /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` and discards the
+/// timeout bookkeeping — no crate-owned state is left partially mutated,
+/// and no work is detached via `spawn`. Whether a *partially executed*
+/// operation is safe to abandon is the supplied operation's own contract.
 pub async fn timeout_with_sink<T, E, F>(
     duration: Duration,
     future: F,
@@ -79,6 +95,14 @@ where
 /// Returns `Err(CallError::Cancelled)` when the context is cancelled,
 /// `Err(CallError::Timeout)` when either deadline expires, or
 /// `Err(CallError::Operation)` if the operation itself fails.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` and discards the
+/// timeout bookkeeping — no crate-owned state is left partially mutated,
+/// and no work is detached via `spawn`. Whether a *partially executed*
+/// operation is safe to abandon is the supplied operation's own contract.
 pub async fn timeout_with_policy_context<T, E, F>(
     context: &PolicyContext,
     duration: Duration,
@@ -102,6 +126,14 @@ where
 /// Returns `Err(CallError::Cancelled)` when the context is cancelled,
 /// `Err(CallError::Timeout)` when either deadline expires, or
 /// `Err(CallError::Operation)` if the operation itself fails.
+///
+/// # Cancel safety
+///
+/// Cancel-safe with respect to this crate: dropping the returned future
+/// drops the in-flight operation at its current `.await` and discards the
+/// timeout bookkeeping — no crate-owned state is left partially mutated,
+/// and no work is detached via `spawn`. Whether a *partially executed*
+/// operation is safe to abandon is the supplied operation's own contract.
 pub async fn timeout_with_policy_context_and_sink<T, E, F>(
     context: &PolicyContext,
     duration: Duration,
@@ -207,6 +239,14 @@ impl TimeoutExecutor {
     ///
     /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation
     /// error.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await` and discards the
+    /// timeout bookkeeping — no crate-owned state is left partially mutated,
+    /// and no work is detached via `spawn`. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own contract.
     pub async fn call<T, E, F>(&self, future: F) -> Result<T, CallError<E>>
     where
         F: Future<Output = Result<T, E>>,
@@ -221,6 +261,14 @@ impl TimeoutExecutor {
     /// Returns `Err(CallError::Cancelled)` when the context is cancelled,
     /// `Err(CallError::Timeout)` when either deadline expires, or
     /// `Err(CallError::Operation)` if the operation itself fails.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the in-flight operation at its current `.await` and discards the
+    /// timeout bookkeeping — no crate-owned state is left partially mutated,
+    /// and no work is detached via `spawn`. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own contract.
     pub async fn call_with_policy_context<T, E, F>(
         &self,
         context: &PolicyContext,

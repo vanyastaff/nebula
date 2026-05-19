@@ -66,6 +66,15 @@ impl Deadline {
     ///
     /// Returns `CallError::Timeout` if the deadline is already expired or the
     /// future does not complete within the remaining budget.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: `Deadline` is a `Copy` value
+    /// with no shared state, so dropping the returned future drops the
+    /// in-flight future at its current `.await` and leaves nothing partially
+    /// mutated; no work is detached via `spawn`. Whether a *partially
+    /// executed* operation is safe to abandon is the wrapped future's own
+    /// contract.
     pub async fn timeout<T, E, Fut>(self, future: Fut) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = T> + Send,
@@ -82,6 +91,14 @@ impl Deadline {
     ///
     /// Returns `CallError::Timeout` if the deadline is already expired or `delay`
     /// is longer than the remaining budget.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: `Deadline` is a `Copy` value
+    /// with no shared state, so dropping the returned future drops the
+    /// in-flight sleep at its current `.await` and leaves nothing partially
+    /// mutated; no work is detached via `spawn`. The wrapped sleep has no
+    /// side effects, so abandoning it part-way is always safe.
     pub async fn sleep<E>(self, delay: Duration) -> Result<(), CallError<E>> {
         if delay.is_zero() {
             return Ok(());
