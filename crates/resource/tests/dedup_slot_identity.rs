@@ -269,43 +269,48 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
 }
 
 // ---------------------------------------------------------------------------
-// R15 — the cross-tenant barrier must be collision-free
+// R15 — the cross-tenant barrier is collision-free
 //
-// The current barrier is `slot_identity()`: a fixed-seed `DefaultHasher`
-// folded to `u64`, then equality-compared as the registry-row discriminator.
-// Equality on a 64-bit digest is collidable: two registrations whose
-// resolved credentials differ but whose digests collide silently merge into
-// one registry row (last-write-wins), so one tenant's topology runtime
-// serves another tenant's credential — bypassing the fail-closed
-// `Ambiguous` deny. The fix replaces the digest with a structural
-// `(SlotKey, CredentialKey)` identity whose `Eq` is exact, making collision
-// impossible by construction.
+// A 64-bit digest registry-row discriminator is collidable: two
+// registrations whose resolved credentials differ but whose digests
+// collide would silently merge into one registry row (last-write-wins), so
+// one tenant's topology runtime would serve another tenant's credential —
+// bypassing the fail-closed ambiguity deny. The barrier is the structural
+// resolved-`(slot, credential)` identity (`SlotIdentity`) whose `Eq` is
+// exact, so collision is impossible by construction and a forced digest
+// collision is unrepresentable on the structural path.
 // ---------------------------------------------------------------------------
 
-/// RED — proves R15. Two registrations of the same resource type at the same
-/// scope that resolve **different** credentials (each its own
-/// `Resource::create` counter) but are *forced onto the same 64-bit
-/// `slot_identity`* (the adversarial digest-collision input) must NOT share
-/// a runtime: each tenant must reach its own `create`, never the other's.
+/// Proves R15 is **closed**. Two registrations of the same resource type at
+/// the same scope that resolve **different** credentials (each its own
+/// `Resource::create` counter) must NOT share a runtime — each tenant
+/// reaches its own `create`, never the other's.
 ///
-/// Today the colliding identity collapses both to a single registry row
-/// (last-write-wins), so only one runtime exists and one tenant is served
-/// the other's credential — exactly the cross-tenant bleed. This is
-/// `#[ignore]`d until the structural-identity replacement lands; that unit
-/// re-expresses the scenario through distinct structural bindings (a u64
-/// collision is then unrepresentable) and this assertion passes.
+/// The U1 form of this scenario forced both tenants onto the *same* 64-bit
+/// `slot_identity` digest (the adversarial collision input) and the
+/// last-write-wins registry merged them into one row → cross-tenant bleed.
+/// With the structural identity that input is **unrepresentable**: the row
+/// is keyed by the exact resolved `(slot, credential)` bindings, so two
+/// distinct resolved credentials are two distinct rows by construction (no
+/// digest, no collidable space). The scenario is re-expressed through
+/// distinct structural bindings and now passes; we additionally assert
+/// that the legacy *digest* of tenant A's bindings (the original
+/// adversarial `u64`) cannot resolve A's structural row, so a forced
+/// digest collision has no structural row to merge.
 #[tokio::test]
-#[ignore = "RED until U2 — proves R15 (a slot_identity digest collision must not merge two tenants' rows)"]
 async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
+    use nebula_resource::SlotIdentity;
+
     let manager = Manager::new();
     let org = OrgId::new();
     let scope = ScopeLevel::Organization(org);
 
-    // The adversarial input: two *different* resolved credentials whose
-    // `slot_identity` digests collide to the SAME u64. Each tenant has its
-    // OWN create counter so a distinct row drives a distinct `create`; a
-    // merged row would show only one `create` total and a shared runtime.
-    let colliding_identity = 0x0BAD_F00D_DEAD_BEEF;
+    // Two *different* resolved credentials for the same slot. Each tenant
+    // has its OWN create counter so a distinct row drives a distinct
+    // `create`; a merged row would show one tenant served the other's
+    // runtime (a single `create` shared across both).
+    let bindings_a: [(&str, &str); 1] = [("db", "tenant-a-cred")];
+    let bindings_b: [(&str, &str); 1] = [("db", "tenant-b-cred")];
     let counter_a = Arc::new(AtomicU64::new(1_000));
     let counter_b = Arc::new(AtomicU64::new(2_000));
 
@@ -316,7 +321,7 @@ async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
             ResidentConfig::default(),
             RegisterOptions::default()
                 .with_scope(scope.clone())
-                .with_slot_identity(colliding_identity),
+                .with_slot_bindings(&bindings_a),
         )
         .expect("register tenant A must succeed");
     manager
@@ -326,34 +331,53 @@ async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
             ResidentConfig::default(),
             RegisterOptions::default()
                 .with_scope(scope.clone())
-                .with_slot_identity(colliding_identity),
+                .with_slot_bindings(&bindings_b),
         )
         .expect("register tenant B must succeed");
 
     let ctx = ctx_for_org(org);
+    let id_a = SlotIdentity::from_bindings(bindings_a.iter().copied());
+    let id_b = SlotIdentity::from_bindings(bindings_b.iter().copied());
+
     let lease_a = manager
-        .acquire_resident_for::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            colliding_identity,
-        )
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("tenant A acquire must succeed");
     let lease_b = manager
-        .acquire_resident_for::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            colliding_identity,
-        )
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect("tenant B acquire must succeed");
 
     assert_ne!(
         lease_a.id, lease_b.id,
         "two registrations resolving DIFFERENT credentials must never share \
-         a runtime even when their slot_identity digests collide — a digest \
-         collision must not merge tenant rows (cross-tenant bleed). The \
-         structural identity makes this collision unrepresentable."
+         a runtime — the structural identity keys the row by the exact \
+         resolved bindings, so a digest collision cannot merge tenant rows \
+         (cross-tenant bleed is unrepresentable)."
+    );
+
+    // Re-acquiring tenant A by its structural identity stays A's runtime —
+    // no cross-aliasing to B on repeat acquire.
+    let lease_a2 = manager
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .await
+        .expect("re-acquire tenant A must succeed");
+    assert_eq!(
+        lease_a.id, lease_a2.id,
+        "tenant A keeps its own structural row across acquires"
+    );
+
+    // The legacy collidable digest of A's bindings is in a disjoint
+    // identity space from A's structural row: a forced u64 collision has
+    // no structural row to merge into.
+    #[allow(deprecated)]
+    let legacy_digest_a = nebula_resource::slot_identity(bindings_a.iter().copied());
+    assert_ne!(
+        id_a,
+        SlotIdentity::Opaque(legacy_digest_a),
+        "structural identity must never equal the legacy digest of the \
+         same bindings (disjoint spaces — a digest cannot alias a \
+         structural row)"
     );
 }
 

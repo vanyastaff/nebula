@@ -404,12 +404,16 @@ impl Manager {
     /// scope)` dedup contract (one `Resource::create` for N acquires of the
     /// same credential).
     ///
-    /// Compute `slot_identity` from the resolved slot bindings via
-    /// [`slot_identity`](crate::dedup::slot_identity).
+    /// This `u64` is the *collidable* legacy identity (it is bridged onto
+    /// the collision-free structural
+    /// [`SlotIdentity`](crate::dedup::SlotIdentity) internally). Prefer
+    /// [`register_with_slot_identity`](Self::register_with_slot_identity),
+    /// which takes the structural identity directly.
     ///
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
+    // guard-justified: mirrors register<R>'s arity plus the identity pin (pre-existing allow, retained); the RegistrationSpec param-struct collapse is a separate unit.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors register<R>'s arity plus the slot-identity pin; collapsing into a struct would force the register_*_with shorthands and the engine resolution path through a builder for one extra u64"
@@ -420,6 +424,49 @@ impl Manager {
         config: R::Config,
         scope: ScopeLevel,
         slot_identity: u64,
+        topology: TopologyRuntime<R>,
+        acquire: ErasedAcquireFn,
+        resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
+    ) -> Result<(), Error> {
+        self.register_with_slot_identity(
+            resource,
+            config,
+            scope,
+            crate::dedup::SlotIdentity::from_opaque(slot_identity),
+            topology,
+            acquire,
+            resilience,
+            recovery_gate,
+        )
+    }
+
+    /// [`register_with_identity`](Self::register_with_identity) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// Two registrations of the same resource type at the same `scope`
+    /// whose resolved `(slot, credential)` bindings differ occupy
+    /// **distinct** registry rows with **distinct** topology runtimes —
+    /// the structural anti-bleed seam. Equality is exact and structural
+    /// (no digest), so two distinct resolved binding sets can never alias.
+    /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity::Unbound)
+    /// preserves the historical single-row-per-`(key, scope)` dedup
+    /// contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if config validation fails on the provided config.
+    // guard-justified: structural sibling of register_with_identity; same arity (the structural identity replaces the u64) — RegistrationSpec collapse is a separate unit.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "structural sibling of register_with_identity; same arity with the structural identity in place of the u64"
+    )]
+    pub fn register_with_slot_identity<R: Resource>(
+        &self,
+        resource: R,
+        config: R::Config,
+        scope: ScopeLevel,
+        slot_identity: crate::dedup::SlotIdentity,
         topology: TopologyRuntime<R>,
         acquire: ErasedAcquireFn,
         resilience: Option<AcquireResilience>,
@@ -442,6 +489,7 @@ impl Manager {
         )
     }
 
+    // guard-justified: internal row builder mirrors the public register arity (pre-existing allow, retained); the RegistrationSpec param-struct collapse is a separate unit, not this one.
     #[allow(
         clippy::too_many_arguments,
         reason = "internal row builder shared by register_with_identity; same arity as the public register path"
@@ -452,7 +500,7 @@ impl Manager {
         resource: R,
         config: R::Config,
         scope: ScopeLevel,
-        slot_identity: u64,
+        slot_identity: crate::dedup::SlotIdentity,
         topology: TopologyRuntime<R>,
         acquire: ErasedAcquireFn,
         resilience: Option<AcquireResilience>,
@@ -702,11 +750,12 @@ impl Manager {
         validate_pool_config(&pool_config)?;
 
         let fingerprint = config.fingerprint();
-        self.register_with_identity(
+        let slot_identity = options.effective_slot_identity();
+        self.register_with_slot_identity(
             resource,
             config,
             options.scope,
-            options.slot_identity,
+            slot_identity,
             TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
                 pool_config,
                 fingerprint,
@@ -737,11 +786,12 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        self.register_with_identity(
+        let slot_identity = options.effective_slot_identity();
+        self.register_with_slot_identity(
             resource,
             config,
             options.scope,
-            options.slot_identity,
+            slot_identity,
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
@@ -772,11 +822,12 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        self.register_with_identity(
+        let slot_identity = options.effective_slot_identity();
+        self.register_with_slot_identity(
             resource,
             config,
             options.scope,
-            options.slot_identity,
+            slot_identity,
             TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
                 runtime,
                 service_config,
@@ -808,11 +859,12 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        self.register_with_identity(
+        let slot_identity = options.effective_slot_identity();
+        self.register_with_slot_identity(
             resource,
             config,
             options.scope,
-            options.slot_identity,
+            slot_identity,
             TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
                 runtime,
                 transport_config,
@@ -844,11 +896,12 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        self.register_with_identity(
+        let slot_identity = options.effective_slot_identity();
+        self.register_with_slot_identity(
             resource,
             config,
             options.scope,
-            options.slot_identity,
+            slot_identity,
             TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
                 runtime,
                 exclusive_config,
@@ -1137,8 +1190,28 @@ impl Manager {
         scope: &ScopeLevel,
         slot_identity: u64,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
+        self.lookup_for_identity::<R>(
+            scope,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+    }
+
+    /// [`lookup_for`](Self::lookup_for) keyed by the **collision-free
+    /// structural** resolved-credential identity.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    pub fn lookup_for_identity<R: Resource>(
+        &self,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
-        Self::resolve_typed::<R>(self.registry.get_typed_for::<R>(scope, slot_identity))
+        Self::resolve_typed_pinned::<R>(self.registry.get_typed_for::<R>(scope, slot_identity))
     }
 
     /// Defense A against the `graceful_shutdown` race: reject any acquire
@@ -1183,6 +1256,28 @@ impl Manager {
         }
     }
 
+    /// Maps a [`PinnedLookup`](crate::registry::PinnedLookup) onto the typed
+    /// result.
+    ///
+    /// There is **no `Ambiguous` arm**: a resolved slot identity pins
+    /// exactly one row by construction, so the [`PinnedLookup`] type has no
+    /// `Ambiguous` variant for this to handle — the cross-tenant-bleed
+    /// failure mode the agnostic [`resolve_typed`](Self::resolve_typed)
+    /// guards against is type-unrepresentable on the pinned path rather
+    /// than a runtime branch.
+    fn resolve_typed_pinned<R: Resource>(
+        outcome: crate::registry::PinnedLookup,
+    ) -> Result<Arc<ManagedResource<R>>, Error> {
+        use crate::registry::PinnedLookup;
+        match outcome {
+            PinnedLookup::Found(any) => any
+                .as_any_arc()
+                .downcast::<ManagedResource<R>>()
+                .map_err(|_| Error::not_found(&R::key())),
+            PinnedLookup::NotFound => Err(Error::not_found(&R::key())),
+        }
+    }
+
     /// Typed acquire lookup walking [`scope_levels_for_acquire`](crate::context::scope_levels_for_acquire)
     /// on the context scope bag, then [`taint_gate`](Self::taint_gate).
     fn lookup_for_acquire_scope<R: Resource>(
@@ -1197,13 +1292,30 @@ impl Manager {
 
     /// [`lookup_for_acquire_scope`](Self::lookup_for_acquire_scope) pinned to
     /// a resolved per-slot credential identity.
+    ///
+    /// The `u64` is bridged onto the structural
+    /// [`SlotIdentity`](crate::dedup::SlotIdentity); the pinned lookup is
+    /// 2-variant (no `Ambiguous`).
     fn lookup_for_acquire_with_scope<R: Resource>(
         &self,
         ctx: &ResourceContext,
         slot_identity: u64,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
+        self.lookup_for_acquire_with_identity::<R>(
+            ctx,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+    }
+
+    /// [`lookup_for_acquire_with_scope`](Self::lookup_for_acquire_with_scope)
+    /// keyed by the structural resolved-credential identity.
+    fn lookup_for_acquire_with_identity<R: Resource>(
+        &self,
+        ctx: &ResourceContext,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
-        let managed = Self::resolve_typed::<R>(
+        let managed = Self::resolve_typed_pinned::<R>(
             self.registry
                 .get_typed_for_acquire::<R>(ctx.scope(), slot_identity),
         )?;
@@ -1217,10 +1329,11 @@ impl Manager {
         slot_identity: u64,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
-        let managed = Self::resolve_typed::<R>(
-            self.registry
-                .get_typed_at_acquire_scope::<R>(matched_scope, slot_identity),
-        )?;
+        let managed =
+            Self::resolve_typed_pinned::<R>(self.registry.get_typed_at_acquire_scope::<R>(
+                matched_scope,
+                &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+            ))?;
         Self::taint_gate::<R>(managed)
     }
 
@@ -1807,10 +1920,11 @@ impl Manager {
             slot_identity,
             "acquire_erased: resolving registry hook"
         );
-        match manager
-            .registry
-            .get_acquire_for(key, ctx.scope(), slot_identity)
-        {
+        match manager.registry.get_acquire_for(
+            key,
+            ctx.scope(),
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        ) {
             AcquireLookupOutcome::Found {
                 acquire,
                 matched_scope,
@@ -1856,7 +1970,11 @@ impl Manager {
             return false;
         }
         matches!(
-            self.registry.get_acquire_for(key, scope, slot_identity),
+            self.registry.get_acquire_for(
+                key,
+                scope,
+                &crate::dedup::SlotIdentity::from_opaque(slot_identity)
+            ),
             AcquireLookupOutcome::Found { .. }
         )
     }
@@ -1878,27 +1996,39 @@ impl Manager {
 
     /// [`lookup_any_for_slot`](Self::lookup_any_for_slot) pinned to a resolved
     /// per-slot credential identity via [`Registry::get_for`](crate::registry::Registry::get_for).
+    ///
+    /// [`get_for`](crate::registry::Registry::get_for) returns the
+    /// 2-variant [`PinnedLookup`](crate::registry::PinnedLookup): a
+    /// resolved slot identity pins exactly one `(scope, slot_identity)` row
+    /// by construction, so there is **no `Ambiguous` case to map** — the
+    /// "registry invariant breach" arm the old `u64` digest path had to
+    /// fabricate a fail-closed deny for is now type-unrepresentable.
     fn lookup_any_for_slot_identity(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
         slot_identity: u64,
     ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
-        use crate::registry::LookupOutcome;
+        self.lookup_any_for_slot_identity_structural(
+            key,
+            scope,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+    }
+
+    /// [`lookup_any_for_slot_identity`](Self::lookup_any_for_slot_identity)
+    /// keyed by the structural resolved-credential identity.
+    fn lookup_any_for_slot_identity_structural(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
+        use crate::registry::PinnedLookup;
         self.shutdown_guard()?;
         match self.registry.get_for(key, scope, slot_identity) {
-            LookupOutcome::Found(any) => Ok(any),
-            LookupOutcome::NotFound => Err(Error::not_found(key)),
-            // Unreachable: `get_for` pins a single `(scope, slot_identity)`
-            // row, so it never returns `Ambiguous`. Mapped to the same
-            // fail-closed deny `lookup_any_for_slot` uses rather than a
-            // panic, so a future registry change cannot turn an invariant
-            // breach into a process abort.
-            LookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
-                "{key}: {rows} rows matched a slot-identity-pinned lookup; \
-                 expected exactly one (registry invariant breach)"
-            ))
-            .with_resource_key(key.clone())),
+            PinnedLookup::Found(any) => Ok(any),
+            PinnedLookup::NotFound => Err(Error::not_found(key)),
         }
     }
 
@@ -2117,6 +2247,37 @@ impl Manager {
         R::Lease: Clone + Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
+        self.run_resident_acquire(managed, ctx, options).await
+    }
+
+    /// [`acquire_resident_for`](Self::acquire_resident_for) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// Two registrations whose resolved `(slot, credential)` bindings
+    /// differ are distinct rows with distinct runtimes; a caller that
+    /// resolved tenant A's bindings can only ever reach tenant A's runtime.
+    /// Equality is exact (no digest), so a forced digest collision cannot
+    /// merge two tenants here.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   resident topology.
+    /// - Propagates resident-specific acquire errors.
+    pub async fn acquire_resident_for_identity<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::resident::Resident + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.run_resident_acquire(managed, ctx, options).await
     }
 

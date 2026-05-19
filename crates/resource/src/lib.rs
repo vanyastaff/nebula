@@ -62,7 +62,7 @@ pub use cell::Cell;
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
-pub use dedup::{DedupKey, SLOT_IDENTITY_UNBOUND, slot_identity};
+pub use dedup::{DedupKey, SLOT_IDENTITY_UNBOUND, SlotIdentity, slot_identity};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
