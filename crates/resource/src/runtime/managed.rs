@@ -169,11 +169,16 @@ impl<R: Resource> ManagedResource<R> {
     /// per-slot credential hook — [`Resource::on_credential_refresh`] when
     /// `refresh` is `true`, [`Resource::on_credential_revoke`] otherwise.
     ///
-    /// Single-runtime topologies (Resident / Service / Transport /
-    /// Exclusive) dispatch once against the shared runtime; Pool dispatches
-    /// per idle instance (delegating to
+    /// Single-runtime topologies dispatch once against the shared runtime;
+    /// Pool dispatches per idle instance (delegating to
     /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle),
-    /// which carries the same `refresh` selector).
+    /// which carries the same `refresh` selector). The `Bounded` arm is
+    /// the consolidated single-runtime hook: it subsumes the three former
+    /// `Service` / `Transport` / `Exclusive` arms (all of which held one
+    /// shared `Arc<R::Runtime>` and dispatched the hook against it exactly
+    /// once) into one borrow of [`BoundedRuntime::runtime`](super::bounded::BoundedRuntime::runtime).
+    /// The `Service` / `Transport` / `Exclusive` arms are kept verbatim
+    /// while their construction sites are migrated onto `Bounded`.
     ///
     /// **Topology audit of the `current() == None → Ok(())` stale-skip
     /// (per-resource revoke deferral / #680).** Only **Resident** lazily builds its
@@ -185,11 +190,11 @@ impl<R: Resource> ManagedResource<R> {
     /// which serialises against `create` on the same lock and reconciles a
     /// runtime built against an older credential epoch instead of silently
     /// succeeding. The other arms do **not** share the defect:
-    /// Service / Transport / Exclusive take a caller-supplied runtime at
-    /// register time (no `None` window — the hook is always delivered);
-    /// Pool dispatches over every idle entry and rebuilds fresh instances
-    /// against the current (lock-free) slot, so an empty idle queue masks
-    /// no stale-bound runtime.
+    /// Service / Transport / Exclusive / Bounded take a caller-supplied
+    /// runtime at register time (no `None` window — the hook is always
+    /// delivered); Pool dispatches over every idle entry and rebuilds
+    /// fresh instances against the current (lock-free) slot, so an empty
+    /// idle queue masks no stale-bound runtime.
     ///
     /// The `refresh` flag selects the hook exactly once per topology arm
     /// (mirroring the pool selector); both directions share identical
@@ -211,6 +216,12 @@ impl<R: Resource> ManagedResource<R> {
                 self.invoke_slot_hook(slot, refresh, rt.runtime()).await
             },
             TopologyRuntime::Exclusive(rt) => {
+                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
+            },
+            // Consolidated single-runtime hook: one shared
+            // `Arc<R::Runtime>`, dispatched once. Subsumes the three
+            // arms above for runtimes constructed as `Bounded`.
+            TopologyRuntime::Bounded(rt) => {
                 self.invoke_slot_hook(slot, refresh, rt.runtime()).await
             },
             TopologyRuntime::Pool(rt) => rt

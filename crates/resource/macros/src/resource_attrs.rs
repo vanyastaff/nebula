@@ -9,7 +9,9 @@ use syn::{Ident, Result, Type};
 pub(crate) struct ResourceAttrs {
     /// Unique resource key (e.g. `"postgres"`).
     pub key: String,
-    /// Topology — `pool` / `resident` / `service` / `transport` / `exclusive`.
+    /// Topology — `pool` / `resident` / `bounded` (with `service` /
+    /// `transport` / `exclusive` still accepted while consumers migrate
+    /// onto `bounded`).
     pub topology: String,
     /// Required `Self::Config` type.
     pub config: Type,
@@ -49,18 +51,19 @@ impl ResourceAttrs {
             .ok_or_else(|| {
                 diag::error_spanned(
                     struct_name,
-                    "missing required attribute `topology = \"pool|resident|service|transport|exclusive\"`",
+                    "missing required attribute `topology = \"pool|resident|bounded|service|transport|exclusive\"`",
                 )
             })?;
-        // Validate topology value.
+        // Validate topology value. `service` / `transport` / `exclusive`
+        // are still accepted while consumers migrate onto `bounded`.
         match topology.as_str() {
-            "pool" | "resident" | "service" | "transport" | "exclusive" => {},
+            "pool" | "resident" | "bounded" | "service" | "transport" | "exclusive" => {},
             other => {
                 return Err(syn::Error::new_spanned(
                     struct_name,
                     format!(
                         "invalid `topology = \"{other}\"` — \
-                         must be one of: pool, resident, service, transport, exclusive"
+                         must be one of: pool, resident, bounded, service, transport, exclusive"
                     ),
                 ));
             },
@@ -99,9 +102,13 @@ impl ResourceAttrs {
         let variant = match self.topology.as_str() {
             "pool" => "Pool",
             "resident" => "Resident",
+            "bounded" => "Bounded",
             "service" => "Service",
             "transport" => "Transport",
             "exclusive" => "Exclusive",
+            // guard-justified: every reachable value is one of the six
+            // strings validated by `parse()` above; this arm is
+            // unreachable by construction.
             _ => unreachable!("topology validated in parse()"),
         };
         Ident::new(variant, proc_macro2::Span::call_site())

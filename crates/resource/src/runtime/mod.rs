@@ -1,15 +1,20 @@
 //! Topology runtime implementations.
 //!
-//! Each topology trait ([`Pooled`], [`Resident`], [`Service`], [`Transport`],
-//! [`Exclusive`]) has a corresponding runtime struct that manages instance
-//! lifecycle, and a dispatch enum ([`TopologyRuntime`]) that erases the
-//! topology at the registration level.
+//! Each topology trait ([`Pooled`], [`Resident`], [`Bounded`]) has a
+//! corresponding runtime struct that manages instance lifecycle, and a
+//! dispatch enum ([`TopologyRuntime`]) that erases the topology at the
+//! registration level.
+//!
+//! [`Bounded`] folds the former `Service` / `Transport` / `Exclusive`
+//! topologies behind a cap typestate; the [`ServiceRuntime`](service::ServiceRuntime)
+//! / [`TransportRuntime`](transport::TransportRuntime) /
+//! [`ExclusiveRuntime`](exclusive::ExclusiveRuntime) structs and their
+//! [`TopologyRuntime`] variants still exist while the consumers are
+//! migrated onto [`BoundedRuntime`](bounded::BoundedRuntime).
 //!
 //! [`Pooled`]: crate::topology::pooled::Pooled
 //! [`Resident`]: crate::topology::resident::Resident
-//! [`Service`]: crate::topology::service::Service
-//! [`Transport`]: crate::topology::transport::Transport
-//! [`Exclusive`]: crate::topology::exclusive::Exclusive
+//! [`Bounded`]: crate::topology::bounded::Bounded
 
 pub mod bounded;
 pub mod exclusive;
@@ -37,6 +42,14 @@ pub enum TopologyRuntime<R: Resource> {
     Transport(transport::TransportRuntime<R>),
     /// One caller at a time via semaphore(1).
     Exclusive(exclusive::ExclusiveRuntime<R>),
+    /// One long-lived runtime handing out capped short-lived leases.
+    ///
+    /// Folds the `Service` / `Transport` / `Exclusive` behaviors behind
+    /// the [`Cap`](crate::topology::bounded::Bounded::Cap) typestate. The
+    /// `Service` / `Transport` / `Exclusive` variants above remain while
+    /// their construction sites and acquire paths are migrated onto this
+    /// one.
+    Bounded(bounded::BoundedRuntime<R>),
 }
 
 impl<R: Resource> TopologyRuntime<R> {
@@ -48,6 +61,106 @@ impl<R: Resource> TopologyRuntime<R> {
             Self::Service(_) => TopologyTag::Service,
             Self::Transport(_) => TopologyTag::Transport,
             Self::Exclusive(_) => TopologyTag::Exclusive,
+            Self::Bounded(_) => TopologyTag::Bounded,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nebula_core::{ResourceKey, resource_key};
+
+    use super::*;
+    use crate::{
+        context::ResourceContext,
+        error::Error,
+        resource::{ResourceConfig, ResourceMetadata},
+        topology::bounded::{Bounded, Unbounded, config::Config as BoundedConfig},
+    };
+
+    #[derive(Clone)]
+    struct TagFixture;
+
+    /// Dedicated config/error newtypes — sibling test modules in this
+    /// crate already own `String`-based `ResourceConfig` / `From<_> for
+    /// Error` impls, and lib-test builds compile every `#[cfg(test)]`
+    /// module together, so this fixture must not reuse those types.
+    #[derive(Clone)]
+    struct TagCfg;
+
+    nebula_schema::impl_empty_has_schema!(TagCfg);
+
+    impl ResourceConfig for TagCfg {
+        fn validate(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct TagErr(String);
+
+    impl std::fmt::Display for TagErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for TagErr {}
+
+    impl From<TagErr> for Error {
+        fn from(e: TagErr) -> Self {
+            Error::transient(e.0)
+        }
+    }
+
+    impl Resource for TagFixture {
+        type Config = TagCfg;
+        type Runtime = String;
+        type Lease = String;
+        type Error = TagErr;
+
+        fn key() -> ResourceKey {
+            resource_key!("runtime-tag-fixture")
+        }
+
+        async fn create(&self, _config: &TagCfg, _ctx: &ResourceContext) -> Result<String, TagErr> {
+            Ok("runtime".into())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    // `Cap = Unbounded` ⇒ the blanket `BoundedRelease` no-op applies, so
+    // no release boilerplate is needed for this fixture.
+    impl Bounded for TagFixture {
+        type Cap = Unbounded;
+
+        async fn acquire_one(
+            &self,
+            runtime: &String,
+            _ctx: &ResourceContext,
+        ) -> Result<String, TagErr> {
+            Ok(format!("{runtime}-lease"))
+        }
+    }
+
+    /// `tag()` is total over every variant and the new `Bounded` variant
+    /// reports `TopologyTag::Bounded`. Constructing the variant also
+    /// proves `TopologyRuntime::Bounded(BoundedRuntime<R>)` type-checks
+    /// (the 3-arg `BoundedRuntime::new` used by the migration units).
+    #[test]
+    fn bounded_variant_tags_as_bounded() {
+        let rt = bounded::BoundedRuntime::<TagFixture>::new(
+            &TagFixture,
+            "runtime".to_owned(),
+            BoundedConfig::default(),
+        );
+        let topo: TopologyRuntime<TagFixture> = TopologyRuntime::Bounded(rt);
+        assert_eq!(topo.tag(), TopologyTag::Bounded);
+        // Round-trips through the tag string set kept in lockstep with
+        // the enum.
+        assert_eq!(topo.tag().as_str(), "bounded");
     }
 }

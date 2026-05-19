@@ -1,4 +1,4 @@
-error: missing required attribute `topology = "pool|resident|service|transport|exclusive"`
+error: missing required attribute `topology = "pool|resident|bounded|service|transport|exclusive"`
  --> tests/probes/derive_missing_topology.rs:7:8
   |
 7 | struct MissingTopology;
