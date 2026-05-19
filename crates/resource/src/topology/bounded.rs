@@ -226,7 +226,7 @@ pub trait BoundedRelease: Bounded {
     /// disconnection.
     ///
     /// Folds `Transport::keepalive`. Driven by the runtime on the
-    /// configured interval ([`Config::keepalive_interval`]); the default
+    /// configured interval (`Config::keepalive_interval`); the default
     /// is a no-op for caps that do not need it.
     ///
     /// # Errors
