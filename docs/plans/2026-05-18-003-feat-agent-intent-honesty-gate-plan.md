@@ -145,6 +145,16 @@ chk "E blocks >400 net-LoC" 2 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EB_P"
 chk "E budget-justified escapes" 0 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB_DIR"'","stop_hook_active":false}')"
 rm -rf "$EB_DIR"
+# Regression: an untracked code file whose lines start with `+` must still be
+# counted (the `+ ` space sentinel in ig_added_lines). Without it sed makes
+# `++…` which the `^\+([^+]|$)` count rejects → silent undercount → escapes.
+EBP_DIR="$(mktemp -d)"
+( cd "$EBP_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && { for i in $(seq 1 450); do echo "+marker $i"; done; } > plus.sh )
+EBP_SID="e-bud-plus"; EBP_P="$(turn_state_path "$EBP_SID" "$EBP_DIR")"; mkdir -p "$(dirname "$EBP_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBP_P"
+chk "E counts +-prefixed untracked" 2 "$(egate '{"session_id":"'"$EBP_SID"'","cwd":"'"$EBP_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBP_DIR"
 ```
 
 - [ ] **Step 2: Run to verify the new cases FAIL**
@@ -175,7 +185,9 @@ ig_added_lines() {
   while IFS= read -r uf; do
     [ -n "$uf" ] || continue
     printf '+++ %s\n' "$uf"
-    sed 's/^/+/' "$cwd/$uf" 2>/dev/null
+    # `+ ` (space sentinel) not `+`: a source line that itself starts with `+`
+    # would become `++…` and be miscounted as a header by `^\+([^+]|$)`.
+    sed 's/^/+ /' "$cwd/$uf" 2>/dev/null
   done < <(git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null \
             | grep -E "$CODE_RE" || true)
 }
@@ -262,7 +274,7 @@ new_files() {
   { [ -n "$tb" ] && git -C "$cwd" diff --name-only --diff-filter=A "$tb"..HEAD 2>/dev/null; \
     git -C "$cwd" diff --name-only --diff-filter=A --cached 2>/dev/null; \
     git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null; } \
-  | grep -E "$CODE_RE" | sort -u | grep -c .
+  | grep -E "$CODE_RE" | sort -u | grep -c . || true
 }
 NF_CAP=5
 nf="$(new_files)"
@@ -301,7 +313,7 @@ This is the deterministic proxy for the ADR's per-changed-fn complexity check (t
 After the Task-3 `E` cases:
 
 ```bash
-# E large-blob proxy (single added run > 100 lines in one .rs file)
+# E large-blob proxy (single added run > 100 lines in one code file)
 EL_DIR="$(mktemp -d)"
 ( cd "$EL_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
   && mkdir -p crates/el/src && { echo 'fn big(){'; for i in $(seq 1 130); do echo "  let v$i=$i;"; done; echo '}'; } > crates/el/src/f.rs )
@@ -322,13 +334,12 @@ In `.claude/hooks/intent-gate.sh`, immediately BEFORE the `# New-file budget` co
 
 ```bash
 # Large-blob proxy for per-fn complexity (clippy.toml too-many-lines = 100).
-# Longest run of consecutive ADDED lines in any .rs file in the turn diff.
+# Longest run of consecutive added lines within one file, consuming the
+# shared ig_added_lines stream (untracked-aware, per-file via the `+++ `
+# header reset — uniform with the net-LoC / dup-symbol consumers).
 BLOB_CAP=100
 longest_added_run() {
-  { [ -n "$tb" ] && git -C "$cwd" diff "$tb"..HEAD -- '*.rs' 2>/dev/null; \
-    git -C "$cwd" diff -- '*.rs' 2>/dev/null; \
-    git -C "$cwd" diff --cached -- '*.rs' 2>/dev/null; } \
-  | awk '
+  ig_added_lines | awk '
       /^\+\+\+ /      { run=0; next }
       /^\+/           { run++; if (run>max) max=run; next }
       { run=0 }
@@ -338,7 +349,7 @@ blob="$(longest_added_run)"
 if [ "${blob:-0}" -gt "$BLOB_CAP" ] && ! budget_justified; then
   ig_bump
   ig_log block "blob-over-cap"
-  deny "Turn adds a $blob-line contiguous block in a single .rs file (cap $BLOB_CAP, the clippy.toml too-many-lines threshold). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line for intentional generated/table code. (ADR-0083 structural-budget tier.)"
+  deny "Turn adds a $blob-line contiguous block in a single file (cap $BLOB_CAP, the clippy.toml too-many-lines threshold). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line for intentional generated/table code. (ADR-0083 structural-budget tier.)"
 fi
 ```
 
@@ -378,6 +389,16 @@ ED_SID="e-dup"; ED_P="$(turn_state_path "$ED_SID" "$ED_DIR")"; mkdir -p "$(dirna
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$ED_P"
 chk "E blocks dup pub symbol" 2 "$(egate '{"session_id":"'"$ED_SID"'","cwd":"'"$ED_DIR"'","stop_hook_active":false}')"
 rm -rf "$ED_DIR"
+# E skiplisted idiomatic name (pub fn new) must NOT block even when duplicated
+EDN_DIR="$(mktemp -d)"
+( cd "$EDN_DIR" && git init -q && mkdir -p crates/x/src crates/y/src \
+  && echo 'pub fn new() {}' > crates/x/src/lib.rs \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base \
+  && echo 'pub fn new() {}' > crates/y/src/lib.rs && git add -A )
+EDN_SID="e-dup-new"; EDN_P="$(turn_state_path "$EDN_SID" "$EDN_DIR")"; mkdir -p "$(dirname "$EDN_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EDN_P"
+chk "E skiplist allows dup new" 0 "$(egate '{"session_id":"'"$EDN_SID"'","cwd":"'"$EDN_DIR"'","stop_hook_active":false}')"
+rm -rf "$EDN_DIR"
 ```
 
 - [ ] **Step 2: Run to verify FAIL**
@@ -393,14 +414,24 @@ In `.claude/hooks/intent-gate.sh`, immediately BEFORE the `# Large-blob proxy` c
 # Duplicate public-symbol heuristic: a NEW `pub fn|struct|trait NAME` whose
 # NAME already exists (same kind) elsewhere in crates/*/src — the "47 date
 # formatters" pattern. Added lines via ig_added_lines (untracked included).
+# Idiomatic, legitimately-repeated names (constructors + trait/accessor
+# boilerplate) are skipped: they saturate any Rust workspace (`pub fn new`
+# is in hundreds of files) and are never the duplicate-utility smell, so
+# flagging them would invert the gate's signal. `pub async fn` is out of
+# scope by design (the smell is plain `pub fn`); widening it would enlarge
+# the false-positive surface this skiplist exists to contain.
 dup_symbol() {
   local added kind name hit
   added="$(ig_added_lines | grep -E '^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' || true)"
   [ -n "$added" ] || return 1
   while IFS= read -r line; do
     kind="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait).*/\1/')"
+    [ -n "$kind" ] || continue
     name="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\2/')"
     [ -n "$name" ] || continue
+    case "$name" in
+      new|default|len|is_empty|build|builder|from|try_from|into|iter|iter_mut|next|poll|fmt|clone|eq|hash|drop|deref|get|set|id|name|kind|value) continue ;;
+    esac
     hit="$(grep -rEl --include='*.rs' "(^|[^A-Za-z_])pub[[:space:]]+$kind[[:space:]]+$name([^A-Za-z0-9_]|$)" "$cwd"/crates/*/src 2>/dev/null | wc -l | tr -d ' ')"
     [ "${hit:-0}" -ge 2 ] && { printf '%s %s' "$kind" "$name"; return 0; }
   done <<< "$added"
@@ -450,12 +481,19 @@ chk "E abstention allowed" 0 "$(egate '{"session_id":"'"$EA_SID"'","cwd":"'"$EA_
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EA_P"
 chk "E small clean allowed" 0 "$(egate '{"session_id":"'"$EA_SID"'","cwd":"'"$EA_DIR"'","stop_hook_active":false}')"
 rm -rf "$EA_DIR"
+# E boundary: exactly NF_CAP (5) new files is ALLOWED (guard is -gt, not -ge)
+EC_DIR="$(mktemp -d)"; ( cd "$EC_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ec/src && for i in 1 2 3 4 5; do echo "fn f${i}(){}" > "crates/ec/src/m${i}.rs"; done )
+EC_SID="e-cap"; EC_P="$(turn_state_path "$EC_SID" "$EC_DIR")"; mkdir -p "$(dirname "$EC_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EC_P"
+chk "E exactly-5 files allowed" 0 "$(egate '{"session_id":"'"$EC_SID"'","cwd":"'"$EC_DIR"'","stop_hook_active":false}')"
+rm -rf "$EC_DIR"
 ```
 
 - [ ] **Step 2: Run to verify PASS**
 
 Run: `task hooks:test`
-Expected: `ok   - E abstention allowed`, `ok   - E small clean allowed`, `ALL GUARD TESTS PASSED`.
+Expected: `ok   - E abstention allowed`, `ok   - E small clean allowed`, `ok   - E exactly-5 files allowed`, `ALL GUARD TESTS PASSED`.
 
 - [ ] **Step 3: Commit**
 
