@@ -110,6 +110,7 @@ pub use slot::SlotCell;
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{
+    bounded::BoundedRuntime,
     exclusive::ExclusiveRuntime,
     managed::ManagedResource,
     pool::{PoolRuntime, PoolStats},
@@ -120,6 +121,10 @@ pub use runtime::{
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
+    bounded::{
+        Bounded, BoundedRelease, CapMarker, Capped, Exclusive as ExclusiveCap, Unbounded,
+        config::Config as BoundedConfig,
+    },
     exclusive::{Exclusive, config::Config as ExclusiveConfig},
     pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
     resident::{Resident, config::Config as ResidentConfig},

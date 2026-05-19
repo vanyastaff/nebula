@@ -36,3 +36,15 @@ fn derive_emits_slot_accessor() {
     let t = trybuild::TestCases::new();
     t.pass("tests/trybuild/derive_slot_accessor.rs");
 }
+
+/// The `Bounded` cap typestate makes "release-bearing cap with no release
+/// hook" a compile error: a `Capped<N>` / `Exclusive` resource that omits
+/// `impl BoundedRelease` fails the `R: BoundedRelease` bound the runtime
+/// requires (the blanket no-op covers only `Cap = Unbounded`). This is the
+/// type-enforcement that replaced the old silent `TOKEN_MODE ==` no-op.
+#[test]
+fn bounded_release_shape_is_type_enforced() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/bounded_capped_without_release.rs");
+    t.compile_fail("tests/probes/bounded_exclusive_without_reset.rs");
+}

@@ -1,35 +1,38 @@
-//! Release-hook error handling — characterization of the currently-swallowed
-//! `reset` / `close_session` / `release_token` failures.
+//! Release-hook error handling — characterization of the previously-swallowed
+//! `reset` / `close_session` / `release_token` failures, now fixed on the
+//! unified `BoundedRuntime` path (R17 / S4).
 //!
-//! Today every topology release helper discards the hook result with
-//! `let _ = resource.<hook>(...).await;` (see `runtime/exclusive.rs`,
-//! `runtime/service.rs`, `runtime/transport.rs`). A failed `reset` therefore
-//! silently hands the lock to the next caller as if the previous lease was
-//! cleanly reset — a half-reset instance can be served to the next acquirer.
+//! Before the fold every topology release helper discarded the hook result
+//! with `let _ = resource.<hook>(...).await;` (see the legacy
+//! `runtime/exclusive.rs`, `runtime/service.rs`, `runtime/transport.rs`). A
+//! failed `reset` therefore silently handed the lock to the next caller as
+//! if the previous lease was cleanly reset — a half-reset instance could be
+//! served to the next acquirer, and a failed token-return / session-close
+//! vanished without a trace.
 //!
-//! The contract the unified release path must enforce (S4):
+//! The contract the unified `BoundedRuntime` release path enforces (S4):
 //! - On `reset` `Err`, the permit IS still returned (withholding it would
 //!   deadlock the semaphore — it lives in the handle, outside the callback,
 //!   for exactly this reason) BUT the instance is **destroyed**, never
 //!   recycled or handed onward; the next acquirer gets a freshly built
 //!   instance, not the failed-reset one.
+//! - Every `release_one` `Err` (token return / session close / reset) is
+//!   **observed**: a `tracing::warn!` plus a bump of the release-error
+//!   metric (`ResourceOpsMetrics::record_release_error`), never
+//!   `let _ =`-swallowed.
 //!
 //! What is asserted here:
-//! - **RED (proves R17):** a failed `reset` destroys the instance instead of
-//!   silently handing it onward. `Resource::destroy` is never invoked on the
-//!   failed-reset runtime today, so this fails until the unified release path
-//!   lands — marked `#[ignore]` with a reason so the suite stays green while
-//!   the defect is recorded.
-//! - **GREEN preserve:** a failed `reset` must still return the permit so the
-//!   next acquire does not deadlock. S4 explicitly preserves this; it must
-//!   not regress when the destroy-on-failure behavior is added.
-//!
-//! The matching `release_token` / `close_session` "observed, not swallowed"
-//! assertions key off the release-error *metric* the unified path adds. That
-//! metric does not exist against the current API, so those assertions live
-//! with the unit that introduces it, not here — pinning them in this file
-//! would require referencing a not-yet-existing symbol (an `#[ignore]`d test
-//! must still compile).
+//! - **R17 (GREEN on the `Bounded` path):** a failed `reset` destroys the
+//!   instance instead of silently handing it onward. The fix lives on
+//!   `BoundedRuntime` with `Cap = Exclusive`, so the probe is expressed
+//!   against a directly-constructed `BoundedRuntime`.
+//! - **GREEN preserve (legacy + bounded):** a failed `reset` must still
+//!   return the permit so the next acquire does not deadlock. S4 explicitly
+//!   preserves this; it does not regress when the destroy-on-failure
+//!   behavior is added.
+//! - **Observed, not swallowed:** a failing `release_one` for a
+//!   release-bearing cap increments the release-error metric (the
+//!   `release_token` / `close_session` analogue).
 
 use std::{
     sync::{
@@ -39,11 +42,19 @@ use std::{
     time::Duration,
 };
 
+use nebula_core::{ExecutionId, scope::Scope};
 use nebula_core::{ResourceKey, resource_key};
+use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AcquireOptions, ExclusiveConfig, ExclusiveRuntime, Resource, ResourceConfig, ResourceContext,
-    error::Error, release_queue::ReleaseQueue, resource::ResourceMetadata,
+    AcquireOptions, BoundedConfig, BoundedRuntime, ExclusiveConfig, ExclusiveRuntime, Resource,
+    ResourceConfig, ResourceContext,
+    error::Error,
+    metrics::ResourceOpsMetrics,
+    release_queue::ReleaseQueue,
+    resource::ResourceMetadata,
+    topology::bounded::{Bounded, BoundedRelease, Capped, Exclusive as ExclusiveCap},
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 struct R17Error(String);
@@ -73,6 +84,14 @@ impl ResourceConfig for R17Config {
     }
 }
 
+fn ctx() -> ResourceContext {
+    let scope = Scope {
+        execution_id: Some(ExecutionId::new()),
+        ..Default::default()
+    };
+    ResourceContext::minimal(scope, CancellationToken::new())
+}
+
 /// Polls `cond` until it returns `true` or the deadline elapses.
 async fn poll_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let start = std::time::Instant::now();
@@ -85,10 +104,12 @@ async fn poll_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool 
     cond()
 }
 
+// ---------------------------------------------------------------------------
+// Legacy ExclusiveRuntime — GREEN preserve net (unchanged behavior)
+// ---------------------------------------------------------------------------
+
 /// An exclusive resource whose `reset` always fails and which counts every
-/// `reset` attempt and every `destroy` invocation. `destroy` being called on
-/// the failed-reset runtime is the post-fix observable (S4: the half-reset
-/// instance is destroyed, not handed onward).
+/// `reset` attempt and every `destroy` invocation.
 #[derive(Clone)]
 struct FailingResetExclusive {
     reset_attempts: Arc<AtomicUsize>,
@@ -135,36 +156,140 @@ impl nebula_resource::topology::exclusive::Exclusive for FailingResetExclusive {
     }
 }
 
-/// RED — proves R17. A failed `reset` must NOT be silently treated as a
-/// successful release: the half-reset instance must be destroyed rather than
-/// handed to the next acquirer. Today `release_exclusive` does
-/// `let _ = resource.reset(&runtime).await;` and never calls `destroy`, so
-/// `destroy_calls` stays `0` — the next caller can be served the half-reset
-/// instance. Passes once the unified release path destroys the instance on a
-/// reset error.
+/// GREEN preserve. The legacy `ExclusiveRuntime` keeps the "permit is still
+/// returned on a failed reset" behavior so the semaphore cannot deadlock.
+/// This is true today (the permit lives in the handle, not the callback)
+/// and the U3 fold does not touch the legacy runtime — it must stay true.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "RED until U3 — proves R17 (failed reset must destroy the instance, not silently hand it onward)"]
-async fn exclusive_failed_reset_destroys_instance_not_handed_onward() {
+async fn legacy_exclusive_failed_reset_still_returns_permit_no_deadlock() {
     let resource = FailingResetExclusive::new();
     let config = ExclusiveConfig {
         acquire_timeout: Duration::from_secs(5),
     };
-    let runtime: ExclusiveRuntime<FailingResetExclusive> = ExclusiveRuntime::new(1u32, config);
+    let runtime: Arc<ExclusiveRuntime<FailingResetExclusive>> =
+        Arc::new(ExclusiveRuntime::new(1u32, config));
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let h1 = runtime
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .await
+        .expect("first acquire must succeed");
+    drop(h1);
+
+    let h2 = runtime
+        .acquire(
+            &resource,
+            &rq,
+            0,
+            &AcquireOptions::default()
+                .with_deadline(std::time::Instant::now() + Duration::from_secs(2)),
+            None,
+        )
+        .await;
+    assert!(
+        h2.is_ok(),
+        "a failed reset must still return the permit so the next acquire \
+         does not deadlock (S4 preserve): {:?}",
+        h2.err()
+    );
+
+    drop(h2);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// BoundedRuntime, Cap = Exclusive — R17 fix (formerly the ignored RED probe)
+// ---------------------------------------------------------------------------
+
+/// `Bounded` view of the failing-reset exclusive resource: `release_one`
+/// IS the reset and always fails; `destroy` and `release_one` attempts are
+/// counted so the test can prove S4 (failed reset → instance destroyed,
+/// permit still returned).
+#[derive(Clone)]
+struct BoundedFailingReset {
+    release_attempts: Arc<AtomicUsize>,
+    destroy_calls: Arc<AtomicUsize>,
+}
+
+impl BoundedFailingReset {
+    fn new() -> Self {
+        Self {
+            release_attempts: Arc::new(AtomicUsize::new(0)),
+            destroy_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Resource for BoundedFailingReset {
+    type Config = R17Config;
+    type Runtime = u32;
+    type Lease = u32;
+    type Error = R17Error;
+
+    fn key() -> ResourceKey {
+        resource_key!("r17-bounded-failing-reset")
+    }
+
+    async fn create(&self, _config: &R17Config, _ctx: &ResourceContext) -> Result<u32, R17Error> {
+        Ok(1)
+    }
+
+    async fn destroy(&self, _runtime: u32) -> Result<(), R17Error> {
+        self.destroy_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Bounded for BoundedFailingReset {
+    type Cap = ExclusiveCap;
+
+    async fn acquire_one(&self, runtime: &u32, _ctx: &ResourceContext) -> Result<u32, R17Error> {
+        Ok(*runtime)
+    }
+}
+
+impl BoundedRelease for BoundedFailingReset {
+    async fn release_one(
+        &self,
+        _runtime: &u32,
+        _lease: u32,
+        _healthy: bool,
+    ) -> Result<(), R17Error> {
+        self.release_attempts.fetch_add(1, Ordering::SeqCst);
+        Err(R17Error("reset failed".to_owned()))
+    }
+}
+
+/// R17 — GREEN on the `Bounded` path. A failed `release_one` (the reset for
+/// the `Exclusive` cap) must NOT be silently treated as a successful
+/// release: the half-reset instance is destroyed rather than handed to the
+/// next acquirer. The unified release path calls `destroy` on a reset
+/// failure, so `destroy_calls` reaches `1`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_exclusive_failed_reset_destroys_instance_not_handed_onward() {
+    let resource = BoundedFailingReset::new();
+    let runtime: BoundedRuntime<BoundedFailingReset> =
+        BoundedRuntime::new(&resource, 1u32, BoundedConfig::default());
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     let handle = runtime
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire must succeed");
 
-    // Drop the lease → `reset` runs on the release queue and fails.
+    // Drop the lease → `release_one` (reset) runs on the release queue and
+    // fails.
     drop(handle);
 
-    // The reset attempt must have happened, and on its failure the instance
-    // must be destroyed (S4) rather than silently recycled.
     let reset_ran = poll_until(Duration::from_secs(2), || {
-        resource.reset_attempts.load(Ordering::SeqCst) >= 1
+        resource.release_attempts.load(Ordering::SeqCst) >= 1
     })
     .await;
     assert!(
@@ -188,35 +313,31 @@ async fn exclusive_failed_reset_destroys_instance_not_handed_onward() {
     ReleaseQueue::shutdown(rq_handle).await;
 }
 
-/// GREEN preserve. S4 explicitly keeps the "permit is still returned on a
-/// failed reset" behavior so the semaphore cannot deadlock. This is true
-/// today (the permit lives in the handle, not the callback) and must remain
-/// true after the destroy-on-failure behavior is added — adding the destroy
-/// must not also start withholding the permit.
+/// GREEN preserve on the `Bounded` path. S4 keeps the "permit is still
+/// returned on a failed reset" behavior so the semaphore cannot deadlock —
+/// even though the instance is destroyed, the permit is released after the
+/// reset (and any destroy) resolves, so the next acquire still succeeds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exclusive_failed_reset_still_returns_permit_no_deadlock() {
-    let resource = FailingResetExclusive::new();
-    let config = ExclusiveConfig {
-        acquire_timeout: Duration::from_secs(5),
-    };
-    let runtime: Arc<ExclusiveRuntime<FailingResetExclusive>> =
-        Arc::new(ExclusiveRuntime::new(1u32, config));
+async fn bounded_exclusive_failed_reset_still_returns_permit_no_deadlock() {
+    let resource = BoundedFailingReset::new();
+    let runtime: Arc<BoundedRuntime<BoundedFailingReset>> = Arc::new(BoundedRuntime::new(
+        &resource,
+        1u32,
+        BoundedConfig::default(),
+    ));
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     let h1 = runtime
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire must succeed");
     drop(h1);
 
-    // The second acquire must still succeed despite the reset failure: the
-    // permit was returned (it is held in the handle, outside the failing
-    // callback). A bounded deadline turns a regression into a fast failure
-    // rather than a hang.
     let h2 = runtime
         .acquire(
             &resource,
+            &ctx(),
             &rq,
             0,
             &AcquireOptions::default()
@@ -232,6 +353,115 @@ async fn exclusive_failed_reset_still_returns_permit_no_deadlock() {
     );
 
     drop(h2);
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// Observed-not-swallowed — release-error metric (release_token / close_session
+// analogue, Cap = Capped)
+// ---------------------------------------------------------------------------
+
+/// A capped (Tracked-service / Transport-shaped) resource whose
+/// `release_one` always fails. The release-error metric proves the failure
+/// is observed rather than `let _ =`-swallowed.
+#[derive(Clone)]
+struct CappedFailingRelease {
+    release_attempts: Arc<AtomicUsize>,
+}
+
+impl Resource for CappedFailingRelease {
+    type Config = R17Config;
+    type Runtime = &'static str;
+    type Lease = String;
+    type Error = R17Error;
+
+    fn key() -> ResourceKey {
+        resource_key!("r17-capped-failing-release")
+    }
+
+    async fn create(
+        &self,
+        _config: &R17Config,
+        _ctx: &ResourceContext,
+    ) -> Result<&'static str, R17Error> {
+        Ok("rt")
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Bounded for CappedFailingRelease {
+    type Cap = Capped<4>;
+
+    async fn acquire_one(
+        &self,
+        runtime: &&'static str,
+        _ctx: &ResourceContext,
+    ) -> Result<String, R17Error> {
+        Ok((*runtime).to_owned())
+    }
+}
+
+impl BoundedRelease for CappedFailingRelease {
+    async fn release_one(
+        &self,
+        _runtime: &&'static str,
+        _lease: String,
+        _healthy: bool,
+    ) -> Result<(), R17Error> {
+        self.release_attempts.fetch_add(1, Ordering::SeqCst);
+        Err(R17Error("release_token failed".to_owned()))
+    }
+}
+
+/// Observed, not swallowed: a failing `release_one` on a `Capped` cap (the
+/// Tracked `release_token` / Transport `close_session` analogue) bumps the
+/// release-error metric. Pre-fold the equivalent `let _ = …` discarded the
+/// error with no metric and no log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bounded_capped_failed_release_is_observed_via_metric() {
+    let registry = MetricsRegistry::new();
+    let metrics = ResourceOpsMetrics::new(&registry).expect("metrics");
+    let resource = CappedFailingRelease {
+        release_attempts: Arc::new(AtomicUsize::new(0)),
+    };
+    let runtime: BoundedRuntime<CappedFailingRelease> =
+        BoundedRuntime::new(&resource, "rt", BoundedConfig::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let before = metrics.snapshot().release_errors;
+
+    let handle = runtime
+        .acquire(
+            &resource,
+            &ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Some(metrics.clone()),
+        )
+        .await
+        .expect("acquire must succeed");
+    drop(handle);
+
+    let observed = poll_until(Duration::from_secs(2), || {
+        metrics.snapshot().release_errors > before
+    })
+    .await;
+    assert!(
+        observed,
+        "a failing release_one must increment the release-error metric \
+         (observed, not swallowed); release_errors stayed at {before}"
+    );
+    assert!(
+        resource.release_attempts.load(Ordering::SeqCst) >= 1,
+        "release_one must have been invoked"
+    );
+
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }

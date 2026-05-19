@@ -555,3 +555,519 @@ async fn transport_max_sessions_bounds_concurrency() {
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
+
+// ===========================================================================
+// Bounded-path equivalents — the same acceptance scenarios re-expressed on
+// the unified `BoundedRuntime`. These ADD coverage; they intentionally do
+// NOT call `assert_matches_golden` (the U1 goldens are replayed onto Bounded
+// by a later unit). They preserve the same observable behavior on the new
+// API: AE1 (Unbounded → owned), AE2 (Capped → release fires), AE3
+// (Exclusive cap → next acquire waits for reset), the `Capped<N>`
+// concurrency bound, and keepalive actually firing (the previously-unwired
+// `Transport::keepalive`).
+// ===========================================================================
+
+mod bounded_path {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use nebula_core::{ResourceKey, resource_key};
+    use nebula_resource::{
+        AcquireOptions, BoundedConfig, BoundedRuntime, Resource, ResourceConfig, ResourceContext,
+        error::Error,
+        release_queue::ReleaseQueue,
+        resource::ResourceMetadata,
+        topology::bounded::{
+            Bounded, BoundedRelease, Capped, Exclusive as ExclusiveCap, Unbounded,
+        },
+    };
+    use tokio::sync::Notify;
+
+    use super::{BoundedError, ctx, poll_until};
+
+    // -- AE1 Bounded: Unbounded cap → owned handle, no release callback ----
+
+    /// Unbounded-cap resource (Service `Cloned` analogue). It has no
+    /// `release_one` of its own — the blanket `BoundedRelease for
+    /// Cap = Unbounded` supplies the never-called no-op, which is itself
+    /// the proof that Cloned-mode authors write zero release boilerplate.
+    #[derive(Clone)]
+    struct UnboundedFixture {
+        // If this ever increments, the owned-handle contract broke.
+        release_calls: Arc<AtomicUsize>,
+    }
+
+    impl Resource for UnboundedFixture {
+        type Config = BoundedConfig2;
+        type Runtime = &'static str;
+        type Lease = String;
+        type Error = BoundedError;
+
+        fn key() -> ResourceKey {
+            resource_key!("bp-unbounded")
+        }
+
+        async fn create(
+            &self,
+            _config: &BoundedConfig2,
+            _ctx: &ResourceContext,
+        ) -> Result<&'static str, BoundedError> {
+            Ok("svc")
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Bounded for UnboundedFixture {
+        type Cap = Unbounded;
+
+        async fn acquire_one(
+            &self,
+            runtime: &&'static str,
+            _ctx: &ResourceContext,
+        ) -> Result<String, BoundedError> {
+            Ok(format!("{runtime}-token"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct BoundedConfig2;
+    nebula_resource::impl_empty_has_schema!(BoundedConfig2);
+    impl ResourceConfig for BoundedConfig2 {
+        fn validate(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn ae1_bounded_unbounded_yields_owned_no_release_callback() {
+        let resource = UnboundedFixture {
+            release_calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let runtime: BoundedRuntime<UnboundedFixture> =
+            BoundedRuntime::new(&resource, "svc", BoundedConfig::default());
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        let handle = runtime
+            .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
+            .await
+            .expect("unbounded acquire must succeed");
+        assert_eq!(&*handle, "svc-token");
+        // Owned handle — no generation, no callback.
+        assert!(handle.generation().is_none());
+
+        drop(handle);
+        let fired = poll_until(Duration::from_millis(200), || {
+            resource.release_calls.load(Ordering::SeqCst) > 0
+        })
+        .await;
+        assert!(
+            !fired,
+            "Unbounded cap must produce an owned handle with NO release \
+             callback"
+        );
+
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    // -- AE2 Bounded: Capped cap → guarded handle, release_one fires ------
+
+    #[derive(Clone)]
+    struct CappedFixture {
+        release_calls: Arc<AtomicUsize>,
+    }
+
+    impl Resource for CappedFixture {
+        type Config = BoundedConfig2;
+        type Runtime = &'static str;
+        type Lease = String;
+        type Error = BoundedError;
+
+        fn key() -> ResourceKey {
+            resource_key!("bp-capped")
+        }
+
+        async fn create(
+            &self,
+            _config: &BoundedConfig2,
+            _ctx: &ResourceContext,
+        ) -> Result<&'static str, BoundedError> {
+            Ok("svc")
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Bounded for CappedFixture {
+        type Cap = Capped<8>;
+
+        async fn acquire_one(
+            &self,
+            runtime: &&'static str,
+            _ctx: &ResourceContext,
+        ) -> Result<String, BoundedError> {
+            Ok(format!("{runtime}-tracked"))
+        }
+    }
+
+    impl BoundedRelease for CappedFixture {
+        async fn release_one(
+            &self,
+            _runtime: &&'static str,
+            _lease: String,
+            _healthy: bool,
+        ) -> Result<(), BoundedError> {
+            self.release_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn ae2_bounded_capped_release_one_fires_on_drop() {
+        let resource = CappedFixture {
+            release_calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let runtime: BoundedRuntime<CappedFixture> =
+            BoundedRuntime::new(&resource, "svc", BoundedConfig::default());
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        let handle = runtime
+            .acquire(&resource, &ctx(), &rq, 1, &AcquireOptions::default(), None)
+            .await
+            .expect("capped acquire must succeed");
+        assert_eq!(&*handle, "svc-tracked");
+        assert_eq!(handle.generation(), Some(1));
+
+        drop(handle);
+        let fired = poll_until(Duration::from_secs(2), || {
+            resource.release_calls.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        assert!(
+            fired,
+            "Capped cap must produce a guarded handle whose drop runs \
+             release_one exactly once; observed {}",
+            resource.release_calls.load(Ordering::SeqCst)
+        );
+
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    // -- AE3 Bounded: Exclusive cap → next acquire waits for reset --------
+
+    #[derive(Clone)]
+    struct GatedResetBounded {
+        reset_started: Arc<Notify>,
+        release_reset: Arc<Notify>,
+        reset_completed: Arc<AtomicUsize>,
+    }
+
+    impl Resource for GatedResetBounded {
+        type Config = BoundedConfig2;
+        type Runtime = u32;
+        type Lease = u32;
+        type Error = BoundedError;
+
+        fn key() -> ResourceKey {
+            resource_key!("bp-excl-gated")
+        }
+
+        async fn create(
+            &self,
+            _config: &BoundedConfig2,
+            _ctx: &ResourceContext,
+        ) -> Result<u32, BoundedError> {
+            Ok(1)
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Bounded for GatedResetBounded {
+        type Cap = ExclusiveCap;
+
+        async fn acquire_one(
+            &self,
+            runtime: &u32,
+            _ctx: &ResourceContext,
+        ) -> Result<u32, BoundedError> {
+            Ok(*runtime)
+        }
+    }
+
+    impl BoundedRelease for GatedResetBounded {
+        async fn release_one(
+            &self,
+            _runtime: &u32,
+            _lease: u32,
+            _healthy: bool,
+        ) -> Result<(), BoundedError> {
+            self.reset_started.notify_one();
+            self.release_reset.notified().await;
+            self.reset_completed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ae3_bounded_exclusive_next_acquire_waits_for_reset() {
+        let resource = GatedResetBounded {
+            reset_started: Arc::new(Notify::new()),
+            release_reset: Arc::new(Notify::new()),
+            reset_completed: Arc::new(AtomicUsize::new(0)),
+        };
+        let runtime: Arc<BoundedRuntime<GatedResetBounded>> = Arc::new(BoundedRuntime::new(
+            &resource,
+            1u32,
+            BoundedConfig::default(),
+        ));
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        let h1 = runtime
+            .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
+            .await
+            .expect("first exclusive-cap acquire must succeed");
+
+        drop(h1);
+        resource.reset_started.notified().await;
+
+        let second = {
+            let runtime = Arc::clone(&runtime);
+            let resource = resource.clone();
+            let rq = Arc::clone(&rq);
+            tokio::spawn(async move {
+                runtime
+                    .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
+                    .await
+            })
+        };
+
+        let mut second = second;
+        let pending = tokio::time::timeout(Duration::from_millis(150), &mut second).await;
+        assert!(
+            pending.is_err(),
+            "the second acquire must be parked while the previous lease's \
+             reset is still running (permit-held-until-reset, #384)"
+        );
+        assert_eq!(
+            resource.reset_completed.load(Ordering::SeqCst),
+            0,
+            "reset must not have completed yet"
+        );
+
+        resource.release_reset.notify_one();
+        let h2 = second
+            .await
+            .expect("second acquire task must not panic")
+            .expect("second acquire must succeed once reset completes");
+        assert_eq!(
+            resource.reset_completed.load(Ordering::SeqCst),
+            1,
+            "reset must have completed exactly once before the next acquire \
+             was granted"
+        );
+
+        drop(h2);
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    // -- Edge: Capped<1> bounds concurrency to 1 -------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bounded_capped_one_bounds_concurrency() {
+        // Capped<1>: a second acquire must wait for the first to release.
+        #[derive(Clone)]
+        struct Cap1 {
+            released: Arc<AtomicUsize>,
+        }
+        impl Resource for Cap1 {
+            type Config = BoundedConfig2;
+            type Runtime = &'static str;
+            type Lease = String;
+            type Error = BoundedError;
+            fn key() -> ResourceKey {
+                resource_key!("bp-cap1")
+            }
+            async fn create(
+                &self,
+                _c: &BoundedConfig2,
+                _x: &ResourceContext,
+            ) -> Result<&'static str, BoundedError> {
+                Ok("rt")
+            }
+            fn metadata() -> ResourceMetadata {
+                ResourceMetadata::from_key(&Self::key())
+            }
+        }
+        impl Bounded for Cap1 {
+            type Cap = Capped<1>;
+            async fn acquire_one(
+                &self,
+                r: &&'static str,
+                _x: &ResourceContext,
+            ) -> Result<String, BoundedError> {
+                Ok((*r).to_owned())
+            }
+        }
+        impl BoundedRelease for Cap1 {
+            async fn release_one(
+                &self,
+                _r: &&'static str,
+                _l: String,
+                _h: bool,
+            ) -> Result<(), BoundedError> {
+                self.released.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let resource = Cap1 {
+            released: Arc::new(AtomicUsize::new(0)),
+        };
+        let runtime: Arc<BoundedRuntime<Cap1>> = Arc::new(BoundedRuntime::new(
+            &resource,
+            "rt",
+            BoundedConfig::default(),
+        ));
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        let s1 = runtime
+            .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
+            .await
+            .expect("first acquire must succeed");
+
+        let second = {
+            let runtime = Arc::clone(&runtime);
+            let resource = resource.clone();
+            let rq = Arc::clone(&rq);
+            tokio::spawn(async move {
+                runtime
+                    .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
+                    .await
+            })
+        };
+        let mut second = second;
+        let pending = tokio::time::timeout(Duration::from_millis(150), &mut second).await;
+        assert!(
+            pending.is_err(),
+            "Capped<1> must block the second acquire until the first \
+             permit is released"
+        );
+
+        drop(s1);
+        let s2 = second
+            .await
+            .expect("second task must not panic")
+            .expect("second acquire must succeed once the permit is freed");
+        drop(s2);
+
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    // -- Edge: keepalive actually fires (previously-unwired path) ---------
+
+    #[derive(Clone)]
+    struct KeepaliveFixture {
+        keepalive_calls: Arc<AtomicUsize>,
+    }
+
+    impl Resource for KeepaliveFixture {
+        type Config = BoundedConfig2;
+        type Runtime = &'static str;
+        type Lease = String;
+        type Error = BoundedError;
+
+        fn key() -> ResourceKey {
+            resource_key!("bp-keepalive")
+        }
+
+        async fn create(
+            &self,
+            _config: &BoundedConfig2,
+            _ctx: &ResourceContext,
+        ) -> Result<&'static str, BoundedError> {
+            Ok("conn")
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Bounded for KeepaliveFixture {
+        type Cap = Capped<4>;
+
+        async fn acquire_one(
+            &self,
+            runtime: &&'static str,
+            _ctx: &ResourceContext,
+        ) -> Result<String, BoundedError> {
+            Ok((*runtime).to_owned())
+        }
+    }
+
+    impl BoundedRelease for KeepaliveFixture {
+        async fn release_one(
+            &self,
+            _runtime: &&'static str,
+            _lease: String,
+            _healthy: bool,
+        ) -> Result<(), BoundedError> {
+            Ok(())
+        }
+
+        async fn keepalive(&self, _runtime: &&'static str) -> Result<(), BoundedError> {
+            self.keepalive_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// The Bounded fold wires `keepalive` (the previously-unwired
+    /// `Transport::keepalive`): with a non-`None` interval the runtime
+    /// drives it on a background ticker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_keepalive_fires_on_interval() {
+        let resource = KeepaliveFixture {
+            keepalive_calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let config = BoundedConfig {
+            keepalive_interval: Some(Duration::from_millis(20)),
+            ..BoundedConfig::default()
+        };
+        let runtime: BoundedRuntime<KeepaliveFixture> =
+            BoundedRuntime::new(&resource, "conn", config);
+
+        let fired = poll_until(Duration::from_secs(2), || {
+            resource.keepalive_calls.load(Ordering::SeqCst) >= 2
+        })
+        .await;
+        assert!(
+            fired,
+            "keepalive must fire repeatedly on the configured interval; \
+             observed {}",
+            resource.keepalive_calls.load(Ordering::SeqCst)
+        );
+
+        // Dropping the runtime aborts the keepalive task.
+        drop(runtime);
+    }
+}

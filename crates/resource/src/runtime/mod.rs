@@ -11,6 +11,7 @@
 //! [`Transport`]: crate::topology::transport::Transport
 //! [`Exclusive`]: crate::topology::exclusive::Exclusive
 
+pub mod bounded;
 pub mod exclusive;
 pub mod managed;
 pub mod pool;

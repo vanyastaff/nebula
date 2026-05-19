@@ -16,6 +16,9 @@ pub enum TopologyTag {
     Transport,
     /// Exclusive — one caller at a time.
     Exclusive,
+    /// Bounded — one runtime, capped short-lived leases (folds
+    /// Service / Transport / Exclusive behind a cap typestate).
+    Bounded,
 }
 
 impl TopologyTag {
@@ -27,6 +30,7 @@ impl TopologyTag {
             Self::Service => "service",
             Self::Transport => "transport",
             Self::Exclusive => "exclusive",
+            Self::Bounded => "bounded",
         }
     }
 }
