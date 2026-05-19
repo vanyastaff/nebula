@@ -42,7 +42,12 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 /// be recycled or destroyed.
 #[must_use = "dropping a ResourceGuard immediately releases the resource"]
 pub struct ResourceGuard<R: Resource> {
-    inner: GuardInner<R>,
+    /// The live lease state. `Some` for the entire lifetime of a usable
+    /// guard; only [`ResourceGuard::detach`] sets it to `None`, and `detach`
+    /// consumes `self` by value — so a detached guard is not nameable and
+    /// `Deref`/`Drop` after detach are unrepresentable rather than guarded by
+    /// a runtime sentinel.
+    inner: Option<GuardInner<R>>,
     resource_key: ResourceKey,
     topology_tag: TopologyTag,
     /// When this guard was acquired — used for lifetime tracking and the `Guard` trait.
@@ -81,7 +86,7 @@ impl<R: Resource> ResourceGuard<R> {
     /// Creates an owned guard — no pool, no release callback.
     pub fn owned(lease: R::Lease, resource_key: ResourceKey, topology_tag: TopologyTag) -> Self {
         Self {
-            inner: GuardInner::Owned(lease),
+            inner: Some(GuardInner::Owned(lease)),
             resource_key,
             topology_tag,
             acquired_at: Instant::now(),
@@ -123,13 +128,13 @@ impl<R: Resource> ResourceGuard<R> {
         permit: Option<OwnedSemaphorePermit>,
     ) -> Self {
         Self {
-            inner: GuardInner::Guarded {
+            inner: Some(GuardInner::Guarded {
                 value: Some(lease),
                 on_release: Some(Box::new(on_release)),
                 permit,
                 tainted: false,
                 generation,
-            },
+            }),
             resource_key,
             topology_tag,
             acquired_at: Instant::now(),
@@ -146,12 +151,12 @@ impl<R: Resource> ResourceGuard<R> {
         on_release: impl FnOnce(bool) + Send + Sync + 'static,
     ) -> Self {
         Self {
-            inner: GuardInner::Shared {
+            inner: Some(GuardInner::Shared {
                 value: lease,
                 on_release: Some(Box::new(on_release)),
                 tainted: false,
                 generation,
-            },
+            }),
             resource_key,
             topology_tag,
             acquired_at: Instant::now(),
@@ -185,8 +190,8 @@ impl<R: Resource> ResourceGuard<R> {
     /// Marks the lease as tainted — it will be destroyed instead of recycled.
     pub fn taint(&mut self) {
         match &mut self.inner {
-            GuardInner::Owned(_) => {}, // no-op for owned
-            GuardInner::Guarded { tainted, .. } | GuardInner::Shared { tainted, .. } => {
+            None | Some(GuardInner::Owned(_)) => {}, // no-op for owned / detached
+            Some(GuardInner::Guarded { tainted, .. } | GuardInner::Shared { tainted, .. }) => {
                 *tainted = true;
             },
         }
@@ -197,44 +202,22 @@ impl<R: Resource> ResourceGuard<R> {
     /// Returns `Some(lease)` for owned and guarded guards, `None` for shared
     /// (since the `Arc` may have other holders).
     pub fn detach(mut self) -> Option<R::Lease> {
-        match &mut self.inner {
-            GuardInner::Owned(_) => {
-                // Move out via replacement — we'll forget self afterward.
-                let inner = std::mem::replace(
-                    &mut self.inner,
-                    // Dummy: immediately replaced, never accessed.
-                    GuardInner::Guarded {
-                        value: None,
-                        on_release: None,
-                        permit: None,
-                        tainted: true,
-                        generation: 0,
-                    },
-                );
-                match inner {
-                    GuardInner::Owned(lease) => Some(lease),
-                    _ => unreachable!(),
-                }
+        // `take()` moves the state out and leaves `None` behind. `self` is
+        // then dropped here; its `Drop` impl sees `None` and runs no release
+        // callback — identical to the old `mem::replace` sentinel, but the
+        // post-detach state is now structurally absent (no dummy variant, no
+        // dead match arm to assert away).
+        match self.inner.take() {
+            Some(GuardInner::Owned(lease)) => Some(lease),
+            Some(GuardInner::Guarded {
+                value: Some(lease), ..
+            }) => Some(lease),
+            // Shared (`Arc` may have other holders) and the post-detach
+            // already-`None` / `Guarded { value: None }` shapes all map to
+            // `None`, preserving the prior return mapping verbatim.
+            Some(GuardInner::Guarded { value: None, .. } | GuardInner::Shared { .. }) | None => {
+                None
             },
-            GuardInner::Guarded { .. } => {
-                let inner = std::mem::replace(
-                    &mut self.inner,
-                    GuardInner::Guarded {
-                        value: None,
-                        on_release: None,
-                        permit: None,
-                        tainted: true,
-                        generation: 0,
-                    },
-                );
-                match inner {
-                    GuardInner::Guarded {
-                        value: Some(lease), ..
-                    } => Some(lease),
-                    _ => None,
-                }
-            },
-            GuardInner::Shared { .. } => None,
         }
     }
 
@@ -256,10 +239,10 @@ impl<R: Resource> ResourceGuard<R> {
     /// Returns the generation counter, if this is a pooled guard.
     pub fn generation(&self) -> Option<u64> {
         match &self.inner {
-            GuardInner::Owned(_) => None,
-            GuardInner::Guarded { generation, .. } | GuardInner::Shared { generation, .. } => {
-                Some(*generation)
-            },
+            None | Some(GuardInner::Owned(_)) => None,
+            Some(
+                GuardInner::Guarded { generation, .. } | GuardInner::Shared { generation, .. },
+            ) => Some(*generation),
         }
     }
 }
@@ -269,29 +252,41 @@ impl<R: Resource> Deref for ResourceGuard<R> {
 
     fn deref(&self) -> &Self::Target {
         match &self.inner {
-            GuardInner::Owned(lease) => lease,
-            GuardInner::Guarded {
+            Some(GuardInner::Owned(lease)) => lease,
+            Some(GuardInner::Guarded {
                 value: Some(lease), ..
-            } => lease,
-            GuardInner::Guarded { value: None, .. } => {
-                panic!("ResourceGuard accessed after detach")
-            },
-            GuardInner::Shared { value, .. } => value,
+            }) => lease,
+            Some(GuardInner::Shared { value, .. }) => value,
+            // `None` and `Guarded { value: None }` are only produced by
+            // `detach`, which consumes `self` by value — so a detached guard
+            // cannot be named, let alone dereferenced. This arm exists solely
+            // to satisfy the total `Deref` signature for a state that is
+            // structurally impossible to construct here. The former runtime
+            // accessed-after-detach abort is now a compile error by
+            // construction rather than a discipline check.
+            // guard-justified: total Deref fn forces one arm for the
+            // detach-only state, which cannot be reached (detach moves self).
+            Some(GuardInner::Guarded { value: None, .. }) | None => unreachable!(),
         }
     }
 }
 
 impl<R: Resource> Drop for ResourceGuard<R> {
     fn drop(&mut self) {
+        // A detached guard left `inner` as `None`: nothing to release here
+        // (the lease is now caller-owned). The drain-tracker decrement below
+        // still runs unconditionally — identical to the old sentinel path,
+        // where the dummy `Guarded { value: None, on_release: None }` also
+        // ran no callback yet fell through to the same drain accounting.
         match &mut self.inner {
-            GuardInner::Owned(_) => {}, // nothing to do
-            GuardInner::Guarded {
+            None | Some(GuardInner::Owned(_)) => {}, // nothing to do
+            Some(GuardInner::Guarded {
                 value,
                 on_release,
                 permit,
                 tainted,
                 ..
-            } => {
+            }) => {
                 // Take the permit out BEFORE the callback runs. It will be
                 // dropped at the end of this scope — after catch_unwind —
                 // ensuring the semaphore slot is returned even if the
@@ -300,6 +295,10 @@ impl<R: Resource> Drop for ResourceGuard<R> {
 
                 if let (Some(lease), Some(callback)) = (value.take(), on_release.take()) {
                     // catch_unwind prevents double-panic abort if callback panics.
+                    // Unwind-safe: `lease` is *moved* into the closure and
+                    // `self` retains no alias to it (the permit was already
+                    // taken out above), so an unwind cannot leave shared
+                    // guard state observed in a torn condition.
                     let tainted = *tainted;
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         callback(lease, tainted);
@@ -314,11 +313,11 @@ impl<R: Resource> Drop for ResourceGuard<R> {
                 }
                 // _permit_guard drops here, returning the slot to the semaphore.
             },
-            GuardInner::Shared {
+            Some(GuardInner::Shared {
                 on_release,
                 tainted,
                 ..
-            } => {
+            }) => {
                 if let Some(callback) = on_release.take() {
                     let tainted = *tainted;
                     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -353,9 +352,12 @@ impl<R: Resource> Drop for ResourceGuard<R> {
 impl<R: Resource> std::fmt::Debug for ResourceGuard<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mode = match &self.inner {
-            GuardInner::Owned(_) => "Owned",
-            GuardInner::Guarded { .. } => "Guarded",
-            GuardInner::Shared { .. } => "Shared",
+            Some(GuardInner::Owned(_)) => "Owned",
+            Some(GuardInner::Guarded { .. }) => "Guarded",
+            Some(GuardInner::Shared { .. }) => "Shared",
+            // Unreachable for any nameable guard (detach consumes `self`);
+            // present only because `Debug` is total over the field.
+            None => "Detached",
         };
         f.debug_struct("ResourceGuard")
             .field("resource_key", &self.resource_key)
@@ -615,5 +617,117 @@ mod tests {
         use nebula_core::TypedGuard;
         let handle = ResourceGuard::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
         assert_eq!(*handle.as_inner(), 42);
+    }
+
+    // A lease whose `Drop` is observable, so we can prove detach does not
+    // double-invoke it or leak it.
+    struct DropProbe(Arc<AtomicU32>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct DropProbeResource;
+
+    impl Resource for DropProbeResource {
+        type Config = ();
+        type Runtime = ();
+        type Lease = DropProbe;
+        type Error = std::convert::Infallible;
+        fn key() -> ResourceKey {
+            nebula_core::resource_key!("dropprobe")
+        }
+
+        async fn create(
+            &self,
+            _config: &(),
+            _ctx: &crate::context::ResourceContext,
+        ) -> Result<(), std::convert::Infallible> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn detach_guarded_with_observable_drop_lease_does_not_double_drop_or_leak() {
+        let drops = Arc::new(AtomicU32::new(0));
+        let cb_fired = Arc::new(AtomicBool::new(false));
+        let cb_fired_clone = cb_fired.clone();
+
+        let lease = DropProbe(drops.clone());
+        let handle = ResourceGuard::<DropProbeResource>::guarded(
+            lease,
+            test_key(),
+            TopologyTag::Pool,
+            1,
+            move |_lease, _tainted| {
+                // Would normally recycle the lease; detach must skip this so
+                // the lease is handed to the caller, not also released here.
+                cb_fired_clone.store(true, Ordering::Relaxed);
+            },
+        );
+
+        let detached = handle.detach().expect("guarded detach yields the lease");
+        // Guard dropped during `detach`: the release callback must NOT have
+        // run, and the lease must NOT have been dropped yet (it moved out).
+        assert!(
+            !cb_fired.load(Ordering::Relaxed),
+            "detach must not fire the release callback"
+        );
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            0,
+            "lease must move to the caller, not be dropped by the guard"
+        );
+
+        drop(detached);
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            1,
+            "the detached lease drops exactly once, when the caller drops it"
+        );
+        assert!(
+            !cb_fired.load(Ordering::Relaxed),
+            "the release callback must never fire after detach"
+        );
+    }
+
+    #[tokio::test]
+    async fn panicking_release_callback_still_returns_the_permit() {
+        use std::sync::Arc as StdArc;
+
+        use tokio::sync::Semaphore;
+
+        // Single-slot semaphore: if the permit is destroyed with the
+        // unwinding callback instead of being returned, the second acquire
+        // below would block forever.
+        let sem = StdArc::new(Semaphore::new(1));
+        let permit = StdArc::clone(&sem)
+            .try_acquire_owned()
+            .expect("first permit is available");
+
+        {
+            let handle = ResourceGuard::<DummyResource>::guarded_with_permit(
+                7,
+                test_key(),
+                TopologyTag::Pool,
+                1,
+                |_lease, _tainted| panic!("release callback panics on purpose"),
+                Some(permit),
+            );
+            // Dropping `handle` runs the panicking callback inside
+            // catch_unwind; the permit was taken out *before* the callback,
+            // so it is returned to the semaphore even though the closure
+            // unwinds.
+            drop(handle);
+        }
+
+        // The slot must be reclaimable: this would fail if the panicking
+        // callback had taken the permit down with it.
+        let reclaimed = sem
+            .try_acquire()
+            .expect("permit must be returned despite the callback panic");
+        drop(reclaimed);
     }
 }
