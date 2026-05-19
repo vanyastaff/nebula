@@ -686,7 +686,7 @@ In the `## Context` section, keep the first paragraph (D10 summary), the bullet 
 - [ ] **Step 3: Verify the ADR is lean and still coherent**
 
 Run: `wc -l docs/adr/0083-agent-intent-honesty-gate.md`
-Expected: substantially fewer lines than before (target < 90, in line with 0082); the file still has `## Context`, `## Decision`, `## Consequences`, `## Follow-up workstream`, `## Documentation discipline`, `## Supersession`.
+Expected: substantially fewer lines than before — the heavy `## Design` body is replaced by a pointer to this plan. Target is "lean where it matters" (~190–200 lines), not a hard line count: the Follow-up-workstream and Documentation-discipline sections are decision content this ADR must retain, so the 0082-style <90 is not applicable here. Decision content is never sacrificed for a line target. The file still has `## Context`, `## Decision`, `## Consequences`, `## Follow-up workstream`, `## Documentation discipline`, `## Supersession`.
 
 - [ ] **Step 4: Commit**
 

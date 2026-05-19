@@ -57,8 +57,8 @@ Verified gap in *this* repo: `clippy.toml` declares
 `excessive-nesting-threshold = 5` — but `[workspace.lints.clippy]` sets
 `cognitive_complexity = "allow"` and `too_many_lines = "allow"` (a deliberate
 choice — flipping them workspace-wide on 36 crates is thousands of legacy
-warnings; rationale in `docs/QUALITY_GATES.md`). The thresholds are therefore
-**inert**. D10 cannot see volume, complexity, duplication, or intent.
+warnings). The thresholds are therefore **inert**. D10 cannot see volume,
+complexity, duplication, or intent.
 
 Five vectors remain open above D10:
 
