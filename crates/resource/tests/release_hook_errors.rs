@@ -422,3 +422,214 @@ async fn bounded_capped_failed_release_is_observed_via_metric() {
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
+
+// ---------------------------------------------------------------------------
+// Capped<1> failed release must NOT destroy the shared runtime (S4 is
+// Exclusive-only). RED-proof of the destroy-on-failed-release regression
+// and its fix: pre-collapse Transport/Service with a single-permit cap did
+// NOT destroy on a failed release; the shared multiplexer must survive so
+// the next acquirer can still use it. The S4 destroy is gated on
+// `Cap::RESET_ON_RELEASE`, which is `true` only for `Exclusive` and `false`
+// for every `Capped<N>` including `Capped<1>`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct Cap1Error(String);
+
+impl std::fmt::Display for Cap1Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Cap1Error {}
+
+impl From<Cap1Error> for Error {
+    fn from(e: Cap1Error) -> Self {
+        Error::transient(e.0)
+    }
+}
+
+#[derive(Clone)]
+struct Cap1Config;
+
+nebula_resource::impl_empty_has_schema!(Cap1Config);
+
+impl ResourceConfig for Cap1Config {
+    fn validate(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// A `Capped<1>` resource (a single-session shared multiplexer — e.g. a
+/// transport with `max_sessions = 1`) whose `release_one` (the session
+/// close / token return) always fails. `destroy` and `release_one` attempts
+/// are counted so the test can prove the shared runtime is NOT destroyed on
+/// a failed release while the error is still observed and the permit is
+/// still returned.
+#[derive(Clone)]
+struct Cap1FailingRelease {
+    release_attempts: Arc<AtomicUsize>,
+    destroy_calls: Arc<AtomicUsize>,
+}
+
+impl Resource for Cap1FailingRelease {
+    type Config = Cap1Config;
+    type Runtime = &'static str;
+    type Lease = String;
+    type Error = Cap1Error;
+
+    fn key() -> ResourceKey {
+        resource_key!("cap1-failing-release")
+    }
+
+    async fn create(
+        &self,
+        _config: &Cap1Config,
+        _ctx: &ResourceContext,
+    ) -> Result<&'static str, Cap1Error> {
+        Ok("shared-mux")
+    }
+
+    async fn destroy(&self, _runtime: &'static str) -> Result<(), Cap1Error> {
+        self.destroy_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Bounded for Cap1FailingRelease {
+    type Cap = Capped<1>;
+
+    async fn acquire_one(
+        &self,
+        runtime: &&'static str,
+        _ctx: &ResourceContext,
+    ) -> Result<String, Cap1Error> {
+        Ok((*runtime).to_owned())
+    }
+}
+
+impl BoundedRelease for Cap1FailingRelease {
+    async fn release_one(
+        &self,
+        _runtime: &&'static str,
+        _lease: String,
+        _healthy: bool,
+    ) -> Result<(), Cap1Error> {
+        self.release_attempts.fetch_add(1, Ordering::SeqCst);
+        Err(Cap1Error("close_session failed".to_owned()))
+    }
+}
+
+/// A failed `release_one` on a `Capped<1>` cap must:
+/// 1. be **observed** (release-error metric bumped) — same as any cap,
+/// 2. still **return the permit** so the next acquire does not deadlock,
+/// 3. **NOT destroy** the shared runtime — `destroy` is never called,
+///    because `Capped<1>` is a shared multiplexer (S4 destroy is
+///    `Exclusive`-only via `Cap::RESET_ON_RELEASE`). The next acquire must
+///    still succeed against the surviving shared runtime.
+///
+/// This is the RED-proof of the destroy-on-failed-release regression: with
+/// the old `PERMITS == Some(1) && RELEASE_REQUIRED` heuristic `destroy`
+/// fired here too (a `Capped<1>` matches that predicate); with the
+/// `RESET_ON_RELEASE` gate it does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capped_one_failed_release_observed_permit_returned_runtime_not_destroyed() {
+    let registry = MetricsRegistry::new();
+    let metrics = ResourceOpsMetrics::new(&registry).expect("metrics");
+    let resource = Cap1FailingRelease {
+        release_attempts: Arc::new(AtomicUsize::new(0)),
+        destroy_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let runtime: Arc<BoundedRuntime<Cap1FailingRelease>> = Arc::new(BoundedRuntime::new(
+        &resource,
+        "shared-mux",
+        BoundedConfig::default(),
+    ));
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let before = metrics.snapshot().release_errors;
+
+    // First acquire + release: release_one fails.
+    let h1 = runtime
+        .acquire(
+            &resource,
+            &ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            Some(metrics.clone()),
+        )
+        .await
+        .expect("first acquire must succeed");
+    drop(h1);
+
+    // (1) The failed release is observed via the release-error metric.
+    let observed = poll_until(Duration::from_secs(2), || {
+        metrics.snapshot().release_errors > before
+    })
+    .await;
+    assert!(
+        observed,
+        "a failing release_one on Capped<1> must increment the \
+         release-error metric (observed, not swallowed); release_errors \
+         stayed at {before}"
+    );
+    assert!(
+        resource.release_attempts.load(Ordering::SeqCst) >= 1,
+        "release_one must have been invoked"
+    );
+
+    // (3) The shared runtime must NOT have been destroyed. Give the release
+    // queue ample time to run the (mis-)destroy if the regression were
+    // present, then assert it never happened.
+    let wrongly_destroyed = poll_until(Duration::from_millis(500), || {
+        resource.destroy_calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(
+        !wrongly_destroyed,
+        "Capped<1> is a shared multiplexer: a failed release_one must NOT \
+         destroy the shared runtime (S4 destroy is Exclusive-only); \
+         observed destroy_calls={}",
+        resource.destroy_calls.load(Ordering::SeqCst)
+    );
+
+    // (2) The permit was returned, so a second acquire still succeeds —
+    // against the surviving shared runtime, proving it was not destroyed.
+    let h2 = runtime
+        .acquire(
+            &resource,
+            &ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default()
+                .with_deadline(std::time::Instant::now() + Duration::from_secs(2)),
+            Some(metrics.clone()),
+        )
+        .await;
+    assert!(
+        h2.is_ok(),
+        "the permit must be returned after a failed release_one so the \
+         next acquire does not deadlock, and the shared runtime must still \
+         be usable: {:?}",
+        h2.err()
+    );
+    drop(h2);
+
+    // Still no destroy after the second cycle.
+    assert_eq!(
+        resource.destroy_calls.load(Ordering::SeqCst),
+        0,
+        "the shared Capped<1> runtime must never be destroyed on a failed \
+         release"
+    );
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}

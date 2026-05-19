@@ -50,8 +50,11 @@ mod sealed {
 ///
 /// Sealed: the closed set is [`Unbounded`], [`Capped<N>`], and
 /// [`Exclusive`]. Each impl reports the runtime's semaphore sizing
-/// ([`PERMITS`](CapMarker::PERMITS)) and whether the release hook is
-/// part of the contract ([`RELEASE_REQUIRED`](CapMarker::RELEASE_REQUIRED)).
+/// ([`PERMITS`](CapMarker::PERMITS)), whether the release hook is part of
+/// the contract ([`RELEASE_REQUIRED`](CapMarker::RELEASE_REQUIRED)), and
+/// whether that release hook is a *reset* that can leave the single
+/// underlying instance half-mutated
+/// ([`RESET_ON_RELEASE`](CapMarker::RESET_ON_RELEASE)).
 ///
 /// The release-shape is wired through the *type* rather than a runtime
 /// `==`: a `Bounded` impl declares its cap as an associated type, so a
@@ -74,6 +77,27 @@ pub trait CapMarker: sealed::Sealed + Send + Sync + 'static {
     /// [`Capped<N>`] and [`Exclusive`] — the runtime hands out a guarded
     /// handle whose drop runs `release_one` and observes its error.
     const RELEASE_REQUIRED: bool;
+
+    /// Whether [`BoundedRelease::release_one`] is a **reset** that mutates
+    /// the single shared instance and can leave it half-mutated on `Err`.
+    ///
+    /// `true` **only** for [`Exclusive`]: there is exactly one lease, the
+    /// lease *is* the runtime, and `release_one` resets it in place — a
+    /// failed reset leaves that single instance in an unknown state, so
+    /// the runtime must `destroy` it rather than hand the half-reset
+    /// instance to the next acquirer (S4).
+    ///
+    /// `false` for [`Unbounded`] (no release hook) **and** for
+    /// [`Capped<N>`] — including `Capped<1>`. A `Capped<N>` runtime is a
+    /// shared multiplexer (e.g. a transport with `max_sessions = 1`):
+    /// `release_one` returns a token / closes one session, it does **not**
+    /// mutate-and-half-reset the shared runtime. A failed `release_one`
+    /// there is still observed (tracing + release-error metric) and the
+    /// permit is still returned, but the shared runtime must survive
+    /// because the next acquirer needs it — destroying it would be a
+    /// regression. Only `Exclusive` opts into the destroy-on-failed-reset
+    /// path.
+    const RESET_ON_RELEASE: bool;
 }
 
 /// Unbounded cap — no concurrency limit, no release hook.
@@ -87,6 +111,8 @@ impl sealed::Sealed for Unbounded {}
 impl CapMarker for Unbounded {
     const PERMITS: Option<usize> = None;
     const RELEASE_REQUIRED: bool = false;
+    // No release hook at all, so nothing can leave an instance half-reset.
+    const RESET_ON_RELEASE: bool = false;
 }
 
 /// Capped cap — at most `N` concurrent leases, release hook required.
@@ -102,6 +128,12 @@ impl<const N: usize> sealed::Sealed for Capped<N> {}
 impl<const N: usize> CapMarker for Capped<N> {
     const PERMITS: Option<usize> = Some(N);
     const RELEASE_REQUIRED: bool = true;
+    // The shared runtime is a multiplexer; `release_one` returns a token /
+    // closes one session, it does not reset the shared instance. False for
+    // every `N`, including `Capped<1>` (e.g. a transport with
+    // `max_sessions = 1`) — a failed release must not destroy the shared
+    // runtime the next acquirer still needs.
+    const RESET_ON_RELEASE: bool = false;
 }
 
 /// Exclusive cap — exactly one lease at a time, reset-on-release.
@@ -118,6 +150,11 @@ impl sealed::Sealed for Exclusive {}
 impl CapMarker for Exclusive {
     const PERMITS: Option<usize> = Some(1);
     const RELEASE_REQUIRED: bool = true;
+    // The single lease *is* the runtime and `release_one` resets it in
+    // place — a failed reset leaves that one instance half-mutated, so the
+    // runtime destroys it instead of handing it onward (S4). Exclusive is
+    // the only cap that opts into destroy-on-failed-reset.
+    const RESET_ON_RELEASE: bool = true;
 }
 
 /// A bounded resource: one long-lived runtime, capped short-lived leases.

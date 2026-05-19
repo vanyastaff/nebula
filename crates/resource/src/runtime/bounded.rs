@@ -251,13 +251,21 @@ async fn release_one_observed<R>(
             m.record_release_error();
         }
 
-        // S4: a failed release for the Exclusive cap means the runtime is
-        // in an unknown half-reset state — destroy it rather than letting
-        // the next acquirer be served a poisoned instance. `destroy`
+        // S4: a failed *reset* for the Exclusive cap means the single
+        // underlying instance is in an unknown half-reset state — destroy
+        // it rather than letting the next acquirer be served a poisoned
+        // instance. Gated on `RESET_ON_RELEASE`, which is `true` *only* for
+        // `Exclusive`. It is deliberately `false` for `Capped<1>`: that
+        // runtime is a shared multiplexer (e.g. a transport with
+        // `max_sessions = 1`), `release_one` returns a token / closes one
+        // session rather than resetting the shared runtime, and the next
+        // acquirer needs that runtime — destroying it would be a
+        // regression. (The failed-release error is still observed above and
+        // the permit is still returned below for every cap.) `destroy`
         // consumes an owned `R::Runtime`; the lease was minted by cloning
         // the shared runtime, so a clone is the matching instance to tear
         // down (the shared `Arc` stays pristine for the next acquire).
-        if R::Cap::PERMITS == Some(1) && R::Cap::RELEASE_REQUIRED {
+        if R::Cap::RESET_ON_RELEASE {
             let instance = (*runtime).clone();
             if let Err(de) = resource.destroy(instance).await {
                 tracing::warn!(

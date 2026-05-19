@@ -612,7 +612,7 @@ mod tests {
         assert!(matches!(gate.state(), GateState::Idle));
     }
 
-    /// R20 correctness-pin (NOT a RED-then-fix; no `enable()` change).
+    /// Correctness-pin (NOT a RED-then-fix; no `enable()` change).
     ///
     /// `RecoveryWaiter::wait` creates the `Notified` future *before* loading
     /// the gate state, and every gate notifier uses `notify_waiters()` (not

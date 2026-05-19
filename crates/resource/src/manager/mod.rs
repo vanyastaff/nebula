@@ -267,20 +267,17 @@
 //! ## Accepted carve-outs (recorded, not silently inherited)
 //!
 //! - **`reload_config` outcome relabel — no-op-preserving.** The former
-//!   `Service` topology returned `ReloadOutcome::PendingDrain { .. }`;
-//!   post-collapse a former-Service row is `TopologyRuntime::Bounded` and
-//!   the `Service(_) => PendingDrain` arm is gone, so `reload_config` now
-//!   returns `ReloadOutcome::SwappedImmediately`. This is **only an enum
-//!   label change**: `reload_config` never drained or rebuilt the live
-//!   runtime for that topology under either label (that missing behavior is
-//!   exactly [#712]). A characterization net pins the per-topology
-//!   `reload_config` outcome so the relabel is auditable as a preserved
-//!   no-op, not a silent behavior change. `ReloadOutcome::PendingDrain`
-//!   now has **zero constructors** — it is a prune candidate, intentionally
-//!   left in place because it is still referenced by reload-path docs and
-//!   the carve-out characterization test; pruning it is a separate trivial
-//!   change, not done here to avoid coupling a public-enum edit into a
-//!   verification pass.
+//!   `Service` topology returned a separate draining outcome; post-collapse
+//!   a former-Service row is `TopologyRuntime::Bounded` and that arm is
+//!   gone, so `reload_config` now returns
+//!   `ReloadOutcome::SwappedImmediately` for every variant. This is **only
+//!   an enum label change**: `reload_config` never drained or rebuilt the
+//!   live runtime for that topology under either label (that missing
+//!   behavior is exactly [#712]). A characterization net pins the
+//!   per-topology `reload_config` outcome so the relabel is auditable as a
+//!   preserved no-op, not a silent behavior change. The now-unreachable
+//!   draining variant was removed from `ReloadOutcome` once that net
+//!   landed.
 //! - **`register_resolved` carries one `// guard-justified:`
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last
@@ -982,30 +979,6 @@ impl Manager {
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
         Self::resolve_typed::<R>(self.registry.get_typed::<R>(scope))
-    }
-
-    /// [`lookup`](Self::lookup) pinned to the **collision-free structural**
-    /// resolved per-slot credential identity.
-    ///
-    /// Selects the registry row whose `slot_identity` matches, so a caller
-    /// that resolved tenant A's credential can only ever reach tenant A's
-    /// runtime. This is the read-side counterpart of
-    /// [`register_resolved`](Self::register_resolved); use it whenever the
-    /// resolved slot identity is known so the lookup is never ambiguous.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
-    ///   `(scope, slot_identity)`.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
-    ///   down.
-    pub fn lookup_for_identity<R: Resource>(
-        &self,
-        scope: &ScopeLevel,
-        slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<Arc<ManagedResource<R>>, Error> {
-        self.shutdown_guard()?;
-        Self::resolve_typed_pinned::<R>(self.registry.get_typed_for::<R>(scope, slot_identity))
     }
 
     /// Defense A against the `graceful_shutdown` race: reject any acquire
@@ -2384,7 +2357,7 @@ impl Manager {
         }
 
         // Bump generation — readers snapshot this to detect changes.
-        let prev_gen = managed
+        managed
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
 
@@ -2399,19 +2372,13 @@ impl Manager {
             .event_tx
             .send(ResourceEvent::ConfigReloaded { key: R::key() });
 
-        // Reload outcome. The former `Service` topology returned
-        // `PendingDrain { old_generation }` here; post-fold a former-Service
-        // row is `TopologyRuntime::Bounded`, and `reload_config` swaps the
-        // config `ArcSwap` without rebuilding the caller-supplied live
-        // `Arc<R::Runtime>` for *any* topology (it never did — only the Pool
-        // fingerprint is updated, above). So the honest outcome is
-        // `SwappedImmediately` for every variant: the config is swapped, the
-        // live runtime is not rebuilt. This is a no-op-preserving relabel of
-        // the old `PendingDrain` arm (which also never drained/rebuilt) — the
-        // genuine "drain + rebuild the live runtime on reload" behavior is
-        // the separately-tracked deferred `reload_config` redesign, not a
-        // regression introduced by the topology fold.
-        let _ = prev_gen;
+        // Reload outcome. `reload_config` swaps the config `ArcSwap`
+        // without rebuilding the caller-supplied live `Arc<R::Runtime>` for
+        // *any* topology — only the Pool fingerprint is updated, above. So
+        // the honest outcome is `SwappedImmediately` for every variant: the
+        // config is swapped, the live runtime is not rebuilt. The genuine
+        // "drain + rebuild the live runtime on reload" behavior is the
+        // separately-tracked deferred `reload_config` redesign ([#712]).
         let outcome = ReloadOutcome::SwappedImmediately;
 
         tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");
