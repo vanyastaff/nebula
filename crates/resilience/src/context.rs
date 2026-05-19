@@ -119,6 +119,16 @@ impl PolicyContext {
         })
     }
 
+    /// Run `future` under this context's cancellation and deadline.
+    ///
+    /// # Cancel safety
+    ///
+    /// Cancel-safe with respect to this crate: dropping the returned future
+    /// drops the wrapped future at its current `.await` (the `select!` arms
+    /// hold only stack-local state) — no crate-owned state is left partially
+    /// mutated, and no work is detached via `spawn`. Whether a *partially
+    /// executed* operation is safe to abandon is the wrapped future's own
+    /// contract.
     pub(crate) async fn run_result<T, E, Fut>(&self, future: Fut) -> Result<T, CallError<E>>
     where
         Fut: Future<Output = Result<T, CallError<E>>> + Send,
