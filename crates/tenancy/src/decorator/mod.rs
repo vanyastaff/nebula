@@ -25,6 +25,8 @@ mod execution;
 mod idempotency;
 mod journal;
 mod node_result;
+mod resource;
+mod trigger;
 mod webhook;
 mod workflow;
 
@@ -33,5 +35,7 @@ pub use execution::ScopedExecutionStore;
 pub use idempotency::{ScopedIdempotencyGuard, ScopedIdempotencyStore};
 pub use journal::ScopedExecutionJournalReader;
 pub use node_result::ScopedNodeResultStore;
+pub use resource::ScopedResourceStore;
+pub use trigger::ScopedTriggerStore;
 pub use webhook::ScopedWebhookActivationStore;
 pub use workflow::{ScopedWorkflowStore, ScopedWorkflowVersionStore};

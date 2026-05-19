@@ -40,8 +40,8 @@ mod resolver;
 pub use credential_scope::ScopeLayer as CredentialScopeLayer;
 pub use decorator::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
-    ScopedIdempotencyStore, ScopedNodeResultStore, ScopedWebhookActivationStore,
-    ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    ScopedIdempotencyStore, ScopedNodeResultStore, ScopedResourceStore, ScopedTriggerStore,
+    ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 pub use error::TenancyError;
 pub use nebula_credential::ScopeResolver as CredentialScopeResolver;
