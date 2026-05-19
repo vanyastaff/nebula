@@ -20,9 +20,9 @@
 //!   separation that keeps config CRUD distinct from activation).
 //!
 //! The validation core is shared verbatim with the live
-//! `Manager::register_from_value` path via
+//! `Manager::register_resolved` path via
 //! `Manager::validate_config_value`, so a green
-//! `register_from_value` suite plus this seam test together prove the
+//! `register_resolved` suite plus this seam test together prove the
 //! two paths cannot drift.
 
 use std::sync::Arc;
@@ -130,7 +130,7 @@ fn registry_with_http_pool() -> ResourceRegistrarRegistry {
                     resident::config::Config::default(),
                 ))
             },
-            |slot| Manager::erased_acquire_resident::<HttpPool>(slot),
+            || Manager::erased_acquire_resident_for::<HttpPool>(),
         )),
     );
     registry

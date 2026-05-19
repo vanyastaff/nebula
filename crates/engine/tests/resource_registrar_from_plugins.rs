@@ -13,7 +13,7 @@
 //! `impl Resource` whose `create` body is `todo!()`, a `DeclaresDependencies`
 //! impl, and a purely-informational `RESOURCE_TOPOLOGY` tag const — it emits
 //! no per-`R` value factory and no topology-runtime factory. The typed
-//! `Manager::register_from_value::<R>` consumes a `resource: R` and a
+//! `Manager::register_resolved::<R>` consumes a `resource: R` and a
 //! `TopologyRuntime<R>` *by value*, monomorphized; neither is recoverable
 //! from a `dyn AnyResource`.
 //!
@@ -228,7 +228,7 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceRegistrarRegistry {
                     resident::config::Config::default(),
                 ))
             },
-            |slot| Manager::erased_acquire_resident::<DemoResource>(slot),
+            || Manager::erased_acquire_resident_for::<DemoResource>(),
         )),
     );
     registrars

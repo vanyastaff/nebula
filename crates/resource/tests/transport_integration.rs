@@ -24,13 +24,13 @@ use std::{
 
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 use nebula_resource::{
-    AcquireOptions, AcquireResilience, AcquireRetryConfig, Manager, RegisterOptions,
-    RegistrationSpec, ResourceContext, SLOT_IDENTITY_UNBOUND, ScopeLevel, ShutdownConfig,
+    AcquireOptions, AcquireResilience, AcquireRetryConfig, BoundedConfig, BoundedRuntime, Manager,
+    RegisterOptions, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
     recovery::{RecoveryGate, RecoveryGateConfig},
     resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, transport::TransportRuntime},
-    topology::transport::{Transport, config::Config as TransportConfig},
+    runtime::TopologyRuntime,
+    topology::bounded::{Bounded, BoundedRelease, Capped},
     topology_tag::TopologyTag,
 };
 
@@ -117,14 +117,21 @@ impl MockTransport {
 // Macro to mint a fresh `MockTransport`-shaped type bound to a static key.
 // (Using a single type with a runtime key would break `Resource::key()`'s
 //  `() -> ResourceKey` signature.)
+// Folded onto `Bounded` with `Cap = Capped<N>`: the former
+// `Transport::open_session` is `Bounded::acquire_one`, `close_session` is
+// `BoundedRelease::release_one`, and the former `TransportConfig::max_sessions`
+// (a runtime field) is the cap **typestate** const generic `N` — it cannot
+// change without changing the type, by design. Each test instantiates the
+// `N` it needs (`TransportA::<4>` etc.), exactly mirroring the per-test
+// `max_sessions` it set on the old `TransportConfig`.
 macro_rules! mock_transport_type {
     ($name:ident, $key:literal) => {
         #[derive(Clone)]
-        struct $name {
+        struct $name<const N: usize> {
             inner: MockTransport,
         }
 
-        impl $name {
+        impl<const N: usize> $name<N> {
             fn new() -> Self {
                 Self {
                     inner: MockTransport::fresh(),
@@ -136,7 +143,7 @@ macro_rules! mock_transport_type {
             fn create_counter(&self) -> Arc<AtomicU64> { self.inner.create_counter.clone() }
         }
 
-        impl Resource for $name {
+        impl<const N: usize> Resource for $name<N> {
             type Config     = MockConfig;
             type Runtime    = Arc<MockTransportInner>;
             type Lease      = MockSession;
@@ -167,8 +174,11 @@ macro_rules! mock_transport_type {
             }
         }
 
-        impl Transport for $name {
-            fn open_session(
+        impl<const N: usize> Bounded for $name<N> {
+            type Cap = Capped<N>;
+
+            // Folds `Transport::open_session`.
+            fn acquire_one(
                 &self,
                 _transport: &Arc<MockTransportInner>,
                 _ctx: &ResourceContext,
@@ -179,8 +189,11 @@ macro_rules! mock_transport_type {
                     Ok(MockSession { id })
                 }
             }
+        }
 
-            fn close_session(
+        impl<const N: usize> BoundedRelease for $name<N> {
+            // Folds `Transport::close_session` (healthy flag preserved).
+            fn release_one(
                 &self,
                 _transport: &Arc<MockTransportInner>,
                 _session: MockSession,
@@ -214,31 +227,37 @@ fn ctx() -> ResourceContext {
     ResourceContext::minimal(scope, CancellationToken::new())
 }
 
-/// Register a transport-topology row, deriving scope + resolved-credential
-/// identity / resilience / recovery from a [`RegisterOptions`] exactly the
-/// way the (now-deleted) `register_transport[_with]` shorthands did
-/// (`RegisterOptions::default()` reproduces the plain `register_transport`
-/// path: `Global` scope, `Unbound` identity, no resilience / gate).
+/// Register a bounded-topology row (the Transport fold), deriving scope +
+/// resolved-credential identity / resilience / recovery from a
+/// [`RegisterOptions`]. The former `register_transport[_with]` shorthands'
+/// behavior is reproduced through the unified `RegistrationSpec` funnel;
+/// `RegisterOptions::default()` is `Global` scope, `Unbound` identity, no
+/// resilience / gate. The concurrency bound is `R::Cap` (the const-generic
+/// `Capped<N>`), not a config field — the caller picks the fixture's `N`.
 fn register_transport_spec<R>(
     manager: &Manager,
     resource: R,
     inner: R::Runtime,
-    transport_config: TransportConfig,
+    bounded_config: BoundedConfig,
     opts: RegisterOptions,
 ) -> Result<(), Error>
 where
-    R: Transport + Clone + Resource<Config = MockConfig> + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
+    R: BoundedRelease + Clone + Resource<Config = MockConfig> + Send + Sync + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
     let slot_identity = opts.effective_slot_identity();
     manager.register(RegistrationSpec {
-        resource,
+        resource: resource.clone(),
         config: MockConfig,
         scope: opts.scope,
         slot_identity,
-        topology: TopologyRuntime::Transport(TransportRuntime::<R>::new(inner, transport_config)),
-        acquire: Manager::erased_acquire_transport::<R>(SLOT_IDENTITY_UNBOUND),
+        topology: TopologyRuntime::Bounded(BoundedRuntime::<R>::new(
+            &resource,
+            inner,
+            bounded_config,
+        )),
+        acquire: Manager::erased_acquire_bounded_for::<R>(),
         resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
@@ -269,31 +288,31 @@ async fn wait_for_releases(close: &Arc<AtomicU64>, expected: u64) {
 #[tokio::test]
 async fn register_transport_then_acquire_via_manager() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<4>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "a" });
 
     register_transport_spec(
         &manager,
         resource.clone(),
         transport_inner,
-        TransportConfig {
-            max_sessions: 4,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
     .expect("transport registration should succeed");
 
-    assert!(manager.contains(&TransportA::key()));
-    assert!(manager.keys().contains(&TransportA::key()));
+    assert!(manager.contains(&TransportA::<4>::key()));
+    assert!(manager.keys().contains(&TransportA::<4>::key()));
 
     let handle = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<4>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire_transport should succeed");
 
-    assert_eq!(handle.topology_tag(), TopologyTag::Transport);
+    assert_eq!(handle.topology_tag(), TopologyTag::Bounded);
     // Single open_session call so far.
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);
     // `register_transport` wraps the user-supplied runtime directly, so
@@ -313,17 +332,17 @@ async fn register_transport_then_acquire_via_manager() {
 #[tokio::test]
 async fn multiple_sessions_share_one_transport() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<8>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "multiplex" });
 
     register_transport_spec(
         &manager,
         resource.clone(),
         transport_inner,
-        TransportConfig {
-            max_sessions: 8,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
@@ -335,7 +354,7 @@ async fn multiple_sessions_share_one_transport() {
     let manager_ref = &manager;
     let acquires = (0..5).map(|_| async move {
         manager_ref
-            .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+            .acquire_bounded::<TransportA<8>>(&ctx(), &AcquireOptions::default())
             .await
             .expect("acquire")
     });
@@ -343,7 +362,7 @@ async fn multiple_sessions_share_one_transport() {
 
     assert_eq!(handles.len(), 5);
     for h in &handles {
-        assert_eq!(h.topology_tag(), TopologyTag::Transport);
+        assert_eq!(h.topology_tag(), TopologyTag::Bounded);
     }
 
     assert_eq!(
@@ -364,34 +383,34 @@ async fn multiple_sessions_share_one_transport() {
 #[tokio::test]
 async fn session_limit_returns_backpressure_when_exhausted() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<2>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "limit" });
 
     register_transport_spec(
         &manager,
         resource.clone(),
         transport_inner,
-        TransportConfig {
-            max_sessions: 2,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_millis(50),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
     .expect("register");
 
     let h1 = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<2>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire");
     let h2 = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<2>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("second acquire");
 
     // Third must time out as Backpressure (semaphore exhausted).
     let result = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<2>>(&ctx(), &AcquireOptions::default())
         .await;
     let err = result.expect_err("third acquire must fail");
     assert!(
@@ -404,10 +423,10 @@ async fn session_limit_returns_backpressure_when_exhausted() {
     wait_for_releases(&resource.close_counter(), 1).await;
 
     let h3 = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<2>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("third acquire after release");
-    assert_eq!(h3.topology_tag(), TopologyTag::Transport);
+    assert_eq!(h3.topology_tag(), TopologyTag::Bounded);
 
     drop(h2);
     drop(h3);
@@ -421,7 +440,7 @@ async fn session_limit_returns_backpressure_when_exhausted() {
 #[tokio::test]
 async fn register_transport_with_recovery_gate_admits_when_idle() {
     let manager = Manager::new();
-    let resource = GatedTransport::new();
+    let resource = GatedTransport::<4>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "gated" });
     let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
 
@@ -429,10 +448,10 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
         &manager,
         resource.clone(),
         transport_inner,
-        TransportConfig {
-            max_sessions: 4,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default().with_recovery_gate(gate.clone()),
     )
@@ -440,11 +459,11 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
 
     // Gate is `Idle` by default — acquires pass through unimpeded.
     let handle = manager
-        .acquire_transport::<GatedTransport>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<GatedTransport<4>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire under healthy gate");
 
-    assert_eq!(handle.topology_tag(), TopologyTag::Transport);
+    assert_eq!(handle.topology_tag(), TopologyTag::Bounded);
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);
 
     drop(handle);
@@ -458,7 +477,7 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
 #[tokio::test]
 async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<4>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "resilient" });
 
     let resilience = AcquireResilience {
@@ -474,21 +493,21 @@ async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
         &manager,
         resource.clone(),
         transport_inner,
-        TransportConfig {
-            max_sessions: 4,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default().with_resilience(resilience),
     )
     .expect("transport registration with resilience");
 
     let handle = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<4>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire under happy resilience");
 
-    assert_eq!(handle.topology_tag(), TopologyTag::Transport);
+    assert_eq!(handle.topology_tag(), TopologyTag::Bounded);
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);
 
     drop(handle);
@@ -502,8 +521,8 @@ async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
 #[tokio::test]
 async fn manager_isolates_transports_by_key() {
     let manager = Manager::new();
-    let res_a = TransportA::new();
-    let res_b = TransportB::new();
+    let res_a = TransportA::<2>::new();
+    let res_b = TransportB::<2>::new();
     let inner_a = Arc::new(MockTransportInner { name: "a" });
     let inner_b = Arc::new(MockTransportInner { name: "b" });
 
@@ -511,10 +530,10 @@ async fn manager_isolates_transports_by_key() {
         &manager,
         res_a.clone(),
         inner_a,
-        TransportConfig {
-            max_sessions: 2,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
@@ -523,25 +542,25 @@ async fn manager_isolates_transports_by_key() {
         &manager,
         res_b.clone(),
         inner_b,
-        TransportConfig {
-            max_sessions: 2,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
     .expect("register B");
 
-    assert!(manager.contains(&TransportA::key()));
-    assert!(manager.contains(&TransportB::key()));
+    assert!(manager.contains(&TransportA::<2>::key()));
+    assert!(manager.contains(&TransportB::<2>::key()));
     assert_eq!(manager.keys().len(), 2);
 
     let h_a = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<2>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire A");
     let h_b = manager
-        .acquire_transport::<TransportB>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportB<2>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire B");
 
@@ -563,31 +582,31 @@ async fn manager_isolates_transports_by_key() {
 #[tokio::test]
 async fn remove_drops_transport_registration() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<2>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "removable" });
 
     register_transport_spec(
         &manager,
         resource,
         transport_inner,
-        TransportConfig {
-            max_sessions: 2,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
     .expect("register");
 
-    assert!(manager.contains(&TransportA::key()));
+    assert!(manager.contains(&TransportA::<2>::key()));
 
-    manager.remove(&TransportA::key()).expect("remove");
+    manager.remove(&TransportA::<2>::key()).expect("remove");
 
-    assert!(!manager.contains(&TransportA::key()));
+    assert!(!manager.contains(&TransportA::<2>::key()));
 
     // Acquire on a removed key returns NotFound.
     let result = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<2>>(&ctx(), &AcquireOptions::default())
         .await;
     let err = result.expect_err("acquire after remove must fail");
     assert!(
@@ -603,24 +622,24 @@ async fn remove_drops_transport_registration() {
 #[tokio::test]
 async fn graceful_shutdown_drains_held_sessions() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<4>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "shutdown" });
 
     register_transport_spec(
         &manager,
         resource.clone(),
         transport_inner,
-        TransportConfig {
-            max_sessions: 4,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default(),
     )
     .expect("register");
 
     let handle = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<4>>(&ctx(), &AcquireOptions::default())
         .await
         .expect("acquire");
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);
@@ -647,7 +666,7 @@ async fn graceful_shutdown_drains_held_sessions() {
 
     // Acquire after shutdown is rejected.
     let result = manager
-        .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
+        .acquire_bounded::<TransportA<4>>(&ctx(), &AcquireOptions::default())
         .await;
     assert!(
         result.is_err(),
@@ -662,7 +681,7 @@ async fn graceful_shutdown_drains_held_sessions() {
 #[tokio::test]
 async fn register_transport_with_custom_scope() {
     let manager = Manager::new();
-    let resource = TransportA::new();
+    let resource = TransportA::<4>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "scoped" });
     let workflow_id = WorkflowId::new();
 
@@ -670,20 +689,20 @@ async fn register_transport_with_custom_scope() {
         &manager,
         resource,
         transport_inner,
-        TransportConfig {
-            max_sessions: 4,
-            keepalive_interval: None,
+        BoundedConfig {
             acquire_timeout: Duration::from_secs(1),
+            keepalive_interval: None,
+            drain_timeout: None,
         },
         RegisterOptions::default().with_scope(ScopeLevel::Workflow(workflow_id)),
     )
     .expect("transport registration with custom scope");
 
-    assert!(manager.contains(&TransportA::key()));
+    assert!(manager.contains(&TransportA::<4>::key()));
 
     // lookup<R> at the registered scope returns the ManagedResource.
     let managed = manager
-        .lookup::<TransportA>(&ScopeLevel::Workflow(workflow_id))
+        .lookup::<TransportA<4>>(&ScopeLevel::Workflow(workflow_id))
         .expect("lookup at registered Workflow scope");
     assert_eq!(managed.generation(), 0);
 
@@ -702,16 +721,16 @@ async fn register_transport_with_custom_scope() {
         ResourceContext::minimal(scope, CancellationToken::new())
     };
     let handle = manager
-        .acquire_transport::<TransportA>(&scoped_ctx, &AcquireOptions::default())
+        .acquire_bounded::<TransportA<4>>(&scoped_ctx, &AcquireOptions::default())
         .await
         .expect("acquire under matching workflow scope");
-    assert_eq!(handle.topology_tag(), TopologyTag::Transport);
+    assert_eq!(handle.topology_tag(), TopologyTag::Bounded);
     drop(handle);
 
     // Lookup at Global (without a Global registration) must NOT resolve to the
     // workflow-scoped registration — confirms scope isolation.
     let err = manager
-        .lookup::<TransportA>(&ScopeLevel::Global)
+        .lookup::<TransportA<4>>(&ScopeLevel::Global)
         .err()
         .expect("lookup at Global must fail when only Workflow scope is registered");
     assert!(

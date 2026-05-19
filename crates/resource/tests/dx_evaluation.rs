@@ -149,9 +149,7 @@ async fn use_case_1_pooled_http_client() {
                 PoolConfig::default(),
                 fingerprint,
             )),
-            acquire: Manager::erased_acquire_pooled::<HttpResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -205,9 +203,7 @@ async fn use_case_1_invalid_config_is_rejected() {
             PoolConfig::default(),
             fingerprint,
         )),
-        acquire: Manager::erased_acquire_pooled::<HttpResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
         resilience: None,
         recovery_gate: None,
     });
@@ -293,9 +289,7 @@ async fn use_case_2_resident_config_store() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ConfigStoreResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ConfigStoreResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_resident_for::<ConfigStoreResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -426,9 +420,7 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
                 pool_config,
                 fingerprint,
             )),
-            acquire: Manager::erased_acquire_pooled::<DbResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
             resilience: Some(AcquireResilience::standard()),
             recovery_gate: None,
         })
@@ -529,9 +521,7 @@ async fn error_cancelled_after_shutdown() {
                 PoolConfig::default(),
                 fingerprint,
             )),
-            acquire: Manager::erased_acquire_pooled::<HttpResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
             resilience: None,
             recovery_gate: None,
         })

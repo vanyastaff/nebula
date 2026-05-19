@@ -209,10 +209,12 @@ pub struct WorkflowEngine {
     resource_acquire_scope: Option<nebula_core::scope::Scope>,
     /// Per-execution acquire scope (`org_id` / `workspace_id` for this run).
     execution_acquire_scopes: DashMap<ExecutionId, nebula_core::scope::Scope>,
-    /// Per-resource resolved slot identities recorded at activation (pre-run).
-    resource_slot_identities: RwLock<HashMap<ResourceKey, u64>>,
+    /// Per-resource resolved **collision-free structural** slot identities
+    /// recorded at activation (pre-run).
+    resource_slot_identities: RwLock<HashMap<ResourceKey, nebula_resource::SlotIdentity>>,
     /// Frozen slot-identity map per execution (snapshot at run start).
-    resource_slot_identities_by_execution: DashMap<ExecutionId, Arc<HashMap<ResourceKey, u64>>>,
+    resource_slot_identities_by_execution:
+        DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
     /// Optional spec-16 port bundle (execution-state / lease / journal /
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
@@ -647,8 +649,19 @@ impl WorkflowEngine {
             .insert(execution_id, acquire_scope);
     }
 
-    /// Record a resolved slot identity for a resource key (activation-time).
-    pub fn record_resource_slot_identity(&self, key: ResourceKey, slot_identity: u64) {
+    /// Record a resolved **collision-free structural** slot identity for a
+    /// resource key (activation-time).
+    ///
+    /// The recorded [`SlotIdentity`](nebula_resource::SlotIdentity) is the
+    /// exact structural key `Manager::register_resolved` derived for the same
+    /// resolved `(slot, credential)` bindings, so the action-time acquire
+    /// path addresses the *same* registry row (no digest aliasing across
+    /// tenants).
+    pub fn record_resource_slot_identity(
+        &self,
+        key: ResourceKey,
+        slot_identity: nebula_resource::SlotIdentity,
+    ) {
         match self.resource_slot_identities.write() {
             Ok(mut ids) => {
                 ids.insert(key, slot_identity);
@@ -658,7 +671,7 @@ impl WorkflowEngine {
                     target: "nebula_engine",
                     ?err,
                     %key,
-                    slot_identity,
+                    ?slot_identity,
                     "resource_slot_identities lock poisoned; slot identity not recorded"
                 );
             },

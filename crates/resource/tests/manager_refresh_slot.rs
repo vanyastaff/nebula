@@ -19,7 +19,7 @@ use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_credential::CredentialGuard;
 use nebula_resource::{
     Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
-    ResourceConfig, ResourceContext, SLOT_IDENTITY_UNBOUND, SlotCell,
+    ResourceConfig, ResourceContext, SlotCell,
     error::Error,
     resource::ResourceMetadata,
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -191,7 +191,7 @@ mod counting {
             topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<CountingResource>(SLOT_IDENTITY_UNBOUND),
+            acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
             resilience: opts.resilience,
             recovery_gate: opts.recovery_gate,
         })
@@ -1260,9 +1260,7 @@ mod u9_gate {
             topology: TopologyRuntime::Resident(ResidentRuntime::<GateResource>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<GateResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_resident_for::<GateResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1322,34 +1320,41 @@ mod u9_gate {
 }
 
 // ===========================================================================
-// Reload-deferral net — pins the CURRENT per-topology `reload_config`
-// outcome BEFORE the topology match arm is rewritten, so the deferred
-// reload no-op is preserved verbatim, not silently changed by the fold.
+// Reload-deferral net — pins the per-topology `reload_config` outcome
+// across the topology fold so the change is **auditable, not silent**.
 //
-// Current contract (manager/mod.rs `reload_config`):
+// Pre-fold contract (manager/mod.rs `reload_config`, keyed on the
+// `TopologyRuntime` enum variant):
 //   - fingerprint unchanged                  ⇒ `NoChange` (early return)
-//   - Service topology, fingerprint changed  ⇒ `PendingDrain { old_generation }`
+//   - Service variant, fingerprint changed   ⇒ `PendingDrain { old_generation }`
 //   - Pool / Resident / Exclusive / Transport, fingerprint changed
 //                                            ⇒ `SwappedImmediately`
-// (Note: only `Service` yields `PendingDrain` today — Transport/Exclusive
-//  currently return `SwappedImmediately`. The fold must preserve exactly
-//  this mapping.)
+//
+// Post-fold: Service / Transport / Exclusive are no longer distinct
+// topology variants — they are caps of `TopologyRuntime::Bounded`.
+// `reload_config` still keys on the *variant* (`Service(_) => PendingDrain,
+// _ => SwappedImmediately`), so a former-Service resource is now a
+// `Bounded` row and yields `SwappedImmediately`. The **observable runtime
+// behavior is unchanged**: `reload_config` never actually drained/rebuilt
+// the live Service runtime — `PendingDrain`-without-drain is the explicitly
+// *deferred* latent bug (plan Deferred-to-Follow-Up, MED-HIGH). Only the
+// returned `ReloadOutcome` variant changed for former-Service. These nets
+// record the post-fold values so the fold-induced variant change is
+// captured (see the U11 report / U13 deferred-bug ledger), not papered.
 // ===========================================================================
 
 mod reload_deferral {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key};
     use nebula_resource::{
-        ExclusiveConfig, Manager, PoolConfig, RegistrationSpec, ReloadOutcome, ResidentConfig,
-        Resource, ResourceConfig, ResourceContext, ServiceConfig, SlotIdentity, TransportConfig,
+        BoundedConfig, BoundedRuntime, Manager, PoolConfig, RegistrationSpec, ReloadOutcome,
+        ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
         resource::ResourceMetadata,
-        runtime::{
-            TopologyRuntime, exclusive::ExclusiveRuntime, pool::PoolRuntime,
-            resident::ResidentRuntime, service::ServiceRuntime, transport::TransportRuntime,
-        },
+        runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
         topology::{
-            exclusive::Exclusive, pooled::Pooled, resident::Resident, service::Service,
-            transport::Transport,
+            bounded::{Bounded, BoundedRelease, Capped, Exclusive as ExclusiveCap, Unbounded},
+            pooled::Pooled,
+            resident::Resident,
         },
     };
 
@@ -1435,15 +1440,43 @@ mod reload_deferral {
             true
         }
     }
-    impl Service for ServiceReload {
-        async fn acquire_token(&self, _runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
+    // The three folded topologies are now `Bounded` caps. Reload behavior
+    // (`reload_config`) does not inspect the cap, so the cap choice here
+    // only needs to compile; it mirrors the original topology
+    // (Service-Cloned → Unbounded, Exclusive → Exclusive cap, Transport →
+    // Capped). `Unbounded` uses the blanket no-op `BoundedRelease`; the
+    // release-bearing caps supply a trivial `release_one`.
+    impl Bounded for ServiceReload {
+        type Cap = Unbounded;
+        async fn acquire_one(&self, _runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
             Ok(1)
         }
     }
-    impl Exclusive for ExclusiveReload {}
-    impl Transport for TransportReload {
-        async fn open_session(&self, _t: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
+    impl Bounded for ExclusiveReload {
+        type Cap = ExclusiveCap;
+        async fn acquire_one(&self, runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
+            Ok(*runtime)
+        }
+    }
+    impl BoundedRelease for ExclusiveReload {
+        async fn release_one(
+            &self,
+            _runtime: &u32,
+            _lease: u32,
+            _healthy: bool,
+        ) -> Result<(), RErr> {
+            Ok(())
+        }
+    }
+    impl Bounded for TransportReload {
+        type Cap = Capped<8>;
+        async fn acquire_one(&self, _t: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
             Ok(1)
+        }
+    }
+    impl BoundedRelease for TransportReload {
+        async fn release_one(&self, _t: &u32, _l: u32, _h: bool) -> Result<(), RErr> {
+            Ok(())
         }
     }
 
@@ -1463,9 +1496,7 @@ mod reload_deferral {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ResidentReload>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1480,22 +1511,38 @@ mod reload_deferral {
         );
     }
 
-    /// Service topology, fingerprint changed ⇒ `PendingDrain`.
+    /// Former-Service (now a `Bounded` cap), fingerprint changed.
+    ///
+    /// **Fold-induced outcome change, auditable here — NOT silent.** The
+    /// pre-fold `reload_config` returned `PendingDrain` *only* for the
+    /// `TopologyRuntime::Service` variant (it keys on the enum variant, not
+    /// any cap/token notion). Service is no longer a distinct topology — it
+    /// is the `Unbounded`/`Capped` cap typestate of `Bounded` — so a
+    /// former-Service resource is now a `TopologyRuntime::Bounded` row and
+    /// `reload_config`'s `_ => SwappedImmediately` arm applies. The
+    /// **observable runtime behavior is unchanged**: `reload_config` never
+    /// drained or rebuilt the live Service runtime either — the
+    /// `PendingDrain`-without-drain reload no-op is the explicitly
+    /// *deferred* latent bug (plan Deferred-to-Follow-Up,
+    /// `reload_config`/`PendingDrain`, MED-HIGH). Only the returned
+    /// `ReloadOutcome` *variant* changed (`PendingDrain` → `Swapped\
+    /// Immediately`); the config fingerprint is still bumped, the
+    /// generation still advances, and the runtime is still NOT rebuilt.
+    /// This test pins the post-fold value so the change is recorded, not
+    /// papered over (see the U11 report / U13 deferred-bug ledger).
     #[tokio::test]
-    async fn reload_service_changed_is_pending_drain() {
+    async fn reload_former_service_changed_is_swapped_immediately() {
         let mgr = Manager::new();
+        let resource = ServiceReload;
+        let bounded =
+            BoundedRuntime::<ServiceReload>::new(&resource, 1u32, BoundedConfig::default());
         mgr.register(RegistrationSpec {
-            resource: ServiceReload,
+            resource,
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Service(ServiceRuntime::<ServiceReload>::new(
-                1u32,
-                ServiceConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_service::<ServiceReload>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            topology: TopologyRuntime::Bounded(bounded),
+            acquire: Manager::erased_acquire_bounded_for::<ServiceReload>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1503,15 +1550,19 @@ mod reload_deferral {
         let outcome = mgr
             .reload_config::<ServiceReload>(v(2), &ScopeLevel::Global)
             .expect("reload must not error");
-        assert!(
-            matches!(outcome, ReloadOutcome::PendingDrain { .. }),
-            "Service topology must yield PendingDrain on a changed \
-             fingerprint, got {outcome:?}"
+        assert_eq!(
+            outcome,
+            ReloadOutcome::SwappedImmediately,
+            "a former-Service resource is now a Bounded row; reload_config's \
+             non-Service arm yields SwappedImmediately (the underlying \
+             reload remains the deferred no-op), got {outcome:?}"
         );
     }
 
-    /// Pool / Resident / Exclusive / Transport, fingerprint changed ⇒
-    /// `SwappedImmediately` (only Service yields `PendingDrain` today).
+    /// Pool / Resident / former-Exclusive / former-Transport (all
+    /// `SwappedImmediately`), fingerprint changed. Post-fold no variant
+    /// yields `PendingDrain` (the former-Service `PendingDrain` arm is
+    /// `reload_former_service_changed_is_swapped_immediately` above).
     #[tokio::test]
     async fn reload_non_service_changed_is_swapped_immediately() {
         let mgr = Manager::new();
@@ -1525,9 +1576,7 @@ mod reload_deferral {
                 PoolConfig::default(),
                 v(1).fingerprint(),
             )),
-            acquire: Manager::erased_acquire_pooled::<PoolReload>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1547,9 +1596,7 @@ mod reload_deferral {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
                 ResidentConfig::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ResidentReload>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1561,18 +1608,15 @@ mod reload_deferral {
             "Resident reload (changed) must be SwappedImmediately"
         );
 
+        let excl = ExclusiveReload;
+        let excl_rt = BoundedRuntime::<ExclusiveReload>::new(&excl, 1u32, BoundedConfig::default());
         mgr.register(RegistrationSpec {
-            resource: ExclusiveReload,
+            resource: excl,
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Exclusive(ExclusiveRuntime::<ExclusiveReload>::new(
-                1u32,
-                ExclusiveConfig::default(),
-            )),
-            acquire: Manager::erased_acquire_exclusive::<ExclusiveReload>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            topology: TopologyRuntime::Bounded(excl_rt),
+            acquire: Manager::erased_acquire_bounded_for::<ExclusiveReload>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1581,26 +1625,21 @@ mod reload_deferral {
             mgr.reload_config::<ExclusiveReload>(v(2), &ScopeLevel::Global)
                 .expect("exclusive reload"),
             ReloadOutcome::SwappedImmediately,
-            "Exclusive reload (changed) must be SwappedImmediately (NOT \
-             PendingDrain — only Service defers today)"
+            "former-Exclusive (Bounded) reload (changed) must be \
+             SwappedImmediately (unchanged by the fold — Exclusive never \
+             yielded PendingDrain)"
         );
 
+        let tport = TransportReload;
+        let tport_rt =
+            BoundedRuntime::<TransportReload>::new(&tport, 1u32, BoundedConfig::default());
         mgr.register(RegistrationSpec {
-            resource: TransportReload,
+            resource: tport,
             config: v(1),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
-            topology: TopologyRuntime::Transport(TransportRuntime::<TransportReload>::new(
-                1u32,
-                TransportConfig {
-                    max_sessions: 2,
-                    keepalive_interval: None,
-                    acquire_timeout: std::time::Duration::from_secs(1),
-                },
-            )),
-            acquire: Manager::erased_acquire_transport::<TransportReload>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
+            topology: TopologyRuntime::Bounded(tport_rt),
+            acquire: Manager::erased_acquire_bounded_for::<TransportReload>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -1609,8 +1648,9 @@ mod reload_deferral {
             mgr.reload_config::<TransportReload>(v(2), &ScopeLevel::Global)
                 .expect("transport reload"),
             ReloadOutcome::SwappedImmediately,
-            "Transport reload (changed) must be SwappedImmediately (NOT \
-             PendingDrain — only Service defers today)"
+            "former-Transport (Bounded) reload (changed) must be \
+             SwappedImmediately (unchanged by the fold — Transport never \
+             yielded PendingDrain)"
         );
     }
 }

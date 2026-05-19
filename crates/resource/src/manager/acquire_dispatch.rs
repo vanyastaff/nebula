@@ -110,6 +110,22 @@ where
     })
 }
 
+fn arc_acquire_bounded<R>() -> ErasedAcquireFn
+where
+    R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
+    R::Lease: Send + 'static,
+{
+    Arc::new(move |mgr, ctx, opts, resolved| {
+        Box::pin(async move {
+            let guard = mgr
+                .acquire_bounded_at_scope::<R>(&ctx, &opts, resolved)
+                .await?;
+            Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
+        })
+    })
+}
+
 /// Erased acquire hook for a resident topology row.
 ///
 /// The hook downcasts the row resolved by the single
@@ -175,4 +191,19 @@ where
     R::Lease: Send + 'static,
 {
     arc_acquire_exclusive::<R>()
+}
+
+/// Erased acquire hook for a [`Bounded`](crate::topology::bounded::Bounded)
+/// topology row (the unified Service / Transport / Exclusive fold).
+///
+/// See [`erased_acquire_resident`] — downcasts the single-walk-resolved
+/// row, no second registry walk. The release shape is the resource's
+/// cap typestate, applied inside `acquire_bounded_at_scope`.
+pub(crate) fn erased_acquire_bounded<R>() -> ErasedAcquireFn
+where
+    R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
+    R::Lease: Send + 'static,
+{
+    arc_acquire_bounded::<R>()
 }

@@ -37,7 +37,7 @@
 //! - [`CredentialEvent::Refreshed`] — the credential-runtime facade has
 //!   already CAS-persisted the fresh material into the store
 //!   (`CredentialService::refresh`) before emitting this. That is exactly
-//! the "engine has stored the fresh material" point, so
+//!   the "engine has stored the fresh material" point, so
 //!   the driver calls
 //!   [`ResourceFanoutIndex::dispatch_refresh`].
 //! - [`CredentialEvent::Revoked`] and
@@ -47,7 +47,7 @@
 //!   `LeaseRevoked`; the facade additionally emits
 //!   `CredentialEvent::Revoked`). Either triggers
 //!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is
-//! already two-phase + cancellation-safe internally (
+//!   already two-phase + cancellation-safe internally (
 //!   §Deferred / #681): synchronous `taint_slot_for` outside the
 //!   per-resource timeout, then the timeout-wrapped
 //!   `drain_and_revoke` tail. This driver does **not** re-implement

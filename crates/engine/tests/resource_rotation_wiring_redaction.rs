@@ -34,7 +34,8 @@ use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEve
 use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
 use nebula_eventbus::EventBus;
 use nebula_resource::{
-    AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     resource::ResourceMetadata,
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -210,26 +211,32 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
     let mgr = Arc::new(Manager::new());
     let index = Arc::new(ResourceFanoutIndex::new());
     let cid = CredentialId::new();
-    let slot_identity: u64 = 0xDEAD_BEEF;
+    // The resolved-credential identity is the collision-free structural
+    // key derived from the same `(slot, credential)` binding the resource
+    // would resolve — used at register, acquire, and bind so all three
+    // address the same registry row.
+    let slot_identity = SlotIdentity::from_bindings([("db", "secret-cred")]);
 
     let slot: SlotCell<CredentialGuard<SecretCred>> = SlotCell::empty();
     slot.store(Arc::new(CredentialGuard::new(SecretCred(
         SECRET.to_owned(),
     ))));
 
-    mgr.register_with_identity(
-        SecretRes {
+    mgr.register(RegistrationSpec {
+        resource: SecretRes {
             db: Arc::new(slot),
             hook_entered: Arc::clone(&hook_entered),
         },
-        Cfg,
-        scope.clone(),
-        slot_identity,
-        TopologyRuntime::Resident(ResidentRuntime::<SecretRes>::new(ResidentConfig::default())),
-        Manager::erased_acquire_resident::<SecretRes>(slot_identity),
-        None,
-        None,
-    )
+        config: Cfg,
+        scope: scope.clone(),
+        slot_identity: slot_identity.clone(),
+        topology: TopologyRuntime::Resident(ResidentRuntime::<SecretRes>::new(
+            ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident_for::<SecretRes>(),
+        resilience: None,
+        recovery_gate: None,
+    })
     .expect("register resolved-credential row");
 
     let ctx = ResourceContext::minimal(
@@ -240,12 +247,22 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         CancellationToken::new(),
     );
     let g = mgr
-        .acquire_resident_for::<SecretRes>(&ctx, &AcquireOptions::default(), slot_identity)
+        .acquire_resident_for_identity::<SecretRes>(
+            &ctx,
+            &AcquireOptions::default(),
+            &slot_identity,
+        )
         .await
         .expect("warm secret-bearing runtime");
     drop(g);
 
-    index.bind(cid, SecretRes::key(), scope.clone(), "db", slot_identity);
+    index.bind(
+        cid,
+        SecretRes::key(),
+        scope.clone(),
+        "db",
+        slot_identity.clone(),
+    );
 
     let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));

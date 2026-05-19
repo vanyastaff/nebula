@@ -59,8 +59,8 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotCell,
+    AcquireOptions, Manager, ManagerConfig, RegistrationSpec, ResidentConfig, Resource,
+    ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
     error::Error as ResourceError,
     events::ResourceEvent,
     resource::ResourceMetadata,
@@ -342,8 +342,8 @@ impl EventSink {
 /// the drive step needs. A real `MetricsRegistry` is wired so the
 /// Prometheus snapshot reflects the `outcome`-labeled series.
 async fn setup(
-    ok_id: u64,
-    err_id: u64,
+    ok_id: SlotIdentity,
+    err_id: SlotIdentity,
 ) -> (
     ResourceFanoutIndex,
     Arc<Manager>,
@@ -368,22 +368,22 @@ async fn setup(
             SECRET.to_owned(),
         ))));
 
-        mgr.register_with_identity(
-            SecretBearingResource {
+        mgr.register(RegistrationSpec {
+            resource: SecretBearingResource {
                 behaviour,
                 db: Arc::new(slot),
                 hook_entered: Arc::clone(&hook_entered),
             },
-            Cfg,
-            scope.clone(),
-            id,
-            TopologyRuntime::Resident(ResidentRuntime::<SecretBearingResource>::new(
+            config: Cfg,
+            scope: scope.clone(),
+            slot_identity: id.clone(),
+            topology: TopologyRuntime::Resident(ResidentRuntime::<SecretBearingResource>::new(
                 ResidentConfig::default(),
             )),
-            Manager::erased_acquire_resident::<SecretBearingResource>(id),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident_for::<SecretBearingResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register resolved-credential row");
 
         // Resident materializes its shared runtime lazily on first
@@ -397,7 +397,11 @@ async fn setup(
             CancellationToken::new(),
         );
         let _g = mgr
-            .acquire_resident_for::<SecretBearingResource>(&ctx, &AcquireOptions::default(), id)
+            .acquire_resident_for_identity::<SecretBearingResource>(
+                &ctx,
+                &AcquireOptions::default(),
+                &id,
+            )
             .await
             .expect("warm tenant runtime");
 
@@ -413,7 +417,10 @@ async fn setup(
 /// leaked into none of them — and that the capture is genuinely
 /// non-empty.
 async fn run_redaction_gate(want_revoke: bool) {
-    let (ok_id, err_id) = (0x0Cu64, 0xEEu64);
+    // Two distinct resolved-credential rows under one cid — distinct
+    // structural identities so the fan-out routes each to its own row.
+    let ok_id = SlotIdentity::from_bindings([("db", "cred-ok")]);
+    let err_id = SlotIdentity::from_bindings([("db", "cred-err")]);
     let (idx, mgr, cid, hook_entered, registry) = setup(ok_id, err_id).await;
 
     // Subscribe to the event broadcast *before* driving so no slot

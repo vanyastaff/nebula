@@ -46,8 +46,7 @@ use nebula_engine::{
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    Manager, ResidentConfig, ResourceContext,
-    dedup::SLOT_IDENTITY_UNBOUND,
+    Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -345,20 +344,20 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
     // attaching a manager does not regress the resolver pipeline.
     let resource = WitnessResource::new();
     manager
-        .register_with_identity(
+        .register(RegistrationSpec {
             resource,
-            WitnessResourceConfig {
+            config: WitnessResourceConfig {
                 label: "test-witness".into(),
             },
-            ScopeLevel::Global,
-            SLOT_IDENTITY_UNBOUND,
-            TopologyRuntime::Resident(ResidentRuntime::<WitnessResource>::new(
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<WitnessResource>::new(
                 ResidentConfig::default(),
             )),
-            Manager::erased_acquire_resident::<WitnessResource>(SLOT_IDENTITY_UNBOUND),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident_for::<WitnessResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register witness resource");
 
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));

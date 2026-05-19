@@ -235,9 +235,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled::<PoolResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
         resilience: None,
         recovery_gate: None,
     })
@@ -327,9 +325,7 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled::<PoolResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
         resilience: None,
         recovery_gate: None,
     })
@@ -415,9 +411,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
             pool_config(),
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled::<PoolResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
         resilience: None,
         recovery_gate: None,
     })
@@ -529,9 +523,7 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
             cfg,
             PoolCfg.fingerprint(),
         )),
-        acquire: Manager::erased_acquire_pooled::<PoolResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
         resilience: None,
         recovery_gate: None,
     })

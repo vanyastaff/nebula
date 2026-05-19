@@ -516,6 +516,60 @@ impl Manager {
         acquire_dispatch::erased_acquire_exclusive::<R>()
     }
 
+    /// Erased acquire hook for a resident row, structural-identity form.
+    ///
+    /// The structural-native sibling of
+    /// [`erased_acquire_resident`](Self::erased_acquire_resident). It takes
+    /// **no** slot-identity argument at all: the single-walk acquire
+    /// resolution already pins the row by the *caller's* runtime slot
+    /// identity, so the registration-time identity never parameterised the
+    /// hook. The legacy `_for<R>(u64)` form only existed to thread the
+    /// now-collidable digest through; the structural register path
+    /// ([`register_resolved`](Self::register_resolved)) hands this hook in
+    /// by value with no identity threading.
+    #[must_use]
+    pub fn erased_acquire_resident_for<R>() -> ErasedAcquireFn
+    where
+        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Clone + Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_resident::<R>()
+    }
+
+    /// Erased acquire hook for a pooled row, structural-identity form.
+    ///
+    /// See [`erased_acquire_resident_for`](Self::erased_acquire_resident_for)
+    /// — no slot-identity argument; the single-walk resolution pins the row.
+    #[must_use]
+    pub fn erased_acquire_pooled_for<R>() -> ErasedAcquireFn
+    where
+        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+        R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_pooled::<R>()
+    }
+
+    /// Erased acquire hook for a [`Bounded`](crate::topology::bounded::Bounded)
+    /// row (the unified Service / Transport / Exclusive fold).
+    ///
+    /// The registration-time hook for a `TopologyRuntime::Bounded` row. No
+    /// slot-identity argument — the single-walk acquire resolution pins
+    /// the row by the caller's runtime slot identity, and the release
+    /// shape is the resource's [`Cap`](crate::topology::bounded::Bounded::Cap)
+    /// typestate (resolved inside the pipeline), not a registration
+    /// parameter.
+    #[must_use]
+    pub fn erased_acquire_bounded_for<R>() -> ErasedAcquireFn
+    where
+        R: crate::topology::bounded::BoundedRelease + Clone + Resource + Send + Sync + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        acquire_dispatch::erased_acquire_bounded::<R>()
+    }
+
     /// Registers a resource from a fully-specified [`RegistrationSpec`].
     ///
     /// This is the **single registration funnel**: the former 3-deep
@@ -908,6 +962,146 @@ impl Manager {
         })
     }
 
+    /// JSON-driven registration keyed by the **collision-free structural**
+    /// resolved-credential identity.
+    ///
+    /// The spec-native, structural-identity sibling of
+    /// [`register_from_value`](Self::register_from_value): same phase order
+    /// (slot-binding validation → `{{ … }}` template resolution → schema +
+    /// closed-set guard + `R::Config` deserialize → dispatch into the single
+    /// [`register`](Self::register) funnel) but the registry row is keyed by
+    /// the structural [`SlotIdentity`](crate::dedup::SlotIdentity) derived
+    /// from the resolved `(slot, credential)` bindings via
+    /// [`SlotIdentity::from_bindings`](crate::dedup::SlotIdentity::from_bindings)
+    /// — *not* the collidable legacy `u64` digest. Two registrations whose
+    /// resolved bindings differ are distinct rows by exact string equality
+    /// (collision-free by construction), eliminating the cross-tenant-bleed
+    /// failure mode a digest exposes rather than shrinking it.
+    ///
+    /// The derived structural identity is **returned** so the caller (the
+    /// engine activation loop) records it for the acquire path and the
+    /// rotation fan-out reverse index, addressing the *same* registry row
+    /// this method created. The erased `acquire` hook is passed by value
+    /// (not a `Fn(slot_id)` factory): the single-walk acquire resolution
+    /// pins the row by the *caller's* runtime slot identity, so the
+    /// registration-time identity no longer parameterises the hook.
+    ///
+    /// `nebula-resource → nebula-expression` is allowed under deny.toml's
+    /// `[[bans]]` `nebula-resource` wrapper allowlist (Business → Core layer
+    /// edge per typed ref fields / Phase 9, R-040 R8).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::permanent`] when expression resolution, JSON
+    ///   deserialization, or schema validation fails.
+    /// - [`Error::permanent`] when the config carries a top-level field the
+    ///   `R::Config` schema does not declare (closed-set guard):
+    ///   `ResourceConfig` must carry no secrets, so an inlined secret-shaped
+    ///   field is rejected here rather than silently ignored (product
+    ///   credential boundary). The error names only the offending key, never
+    ///   its value.
+    /// - [`Error::permanent`] when a `slot_bindings` key does not correspond
+    ///   to a declared credential slot on `R`.
+    /// - Any [`Error`](Error) returned by the underlying typed
+    ///   [`register`](Self::register).
+    #[tracing::instrument(
+        level = "debug",
+        target = "nebula_resource::register_resolved",
+        skip_all,
+        fields(
+            resource_key = %R::key(),
+            slot_count = slot_bindings.len(),
+        )
+    )]
+    // guard-justified: structural-identity sibling of register_from_value; the production engine registrar dispatches into it positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + the two optional policies), so the 9-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; the shape mirrors register_from_value's frozen ABI and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
+    )]
+    pub async fn register_resolved<R>(
+        &self,
+        config_json: serde_json::Value,
+        expr_engine: &nebula_expression::ExpressionEngine,
+        slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
+        resource: R,
+        scope: ScopeLevel,
+        topology: TopologyRuntime<R>,
+        acquire: ErasedAcquireFn,
+        resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
+    ) -> Result<crate::dedup::SlotIdentity, Error>
+    where
+        R: Resource + nebula_core::DeclaresDependencies,
+        R::Config: serde::de::DeserializeOwned,
+    {
+        // 0. Validate that every binding matches a declared credential slot.
+        //    Hard error on unknown slot — refuses to register a resource
+        //    whose credential surface diverged from the one the workflow
+        //    JSON specified, so misconfiguration surfaces at register time
+        //    rather than as a confusing rotation no-op later.
+        let deps = R::dependencies();
+        for slot_name in slot_bindings.keys() {
+            let known = deps.slot_fields().iter().any(|sf| {
+                sf.slot_key == slot_name.as_str()
+                    && matches!(
+                        sf.kind,
+                        nebula_core::dependencies::SlotKind::Credential { .. }
+                    )
+            });
+            if !known {
+                return Err(Error::permanent(format!(
+                    "register_resolved: slot binding `{slot_name}` does not match any declared credential slot on `{}`",
+                    std::any::type_name::<R>()
+                )));
+            }
+        }
+
+        // 1. Resolve `{{ … }}` templates inside the JSON tree.
+        let ctx = nebula_expression::EvaluationContext::new();
+        let resolved = resolve_json_templates(config_json, expr_engine, &ctx)?;
+
+        // 2/2b/3. Schema pass + closed-set guard + `R::Config` deserialize.
+        //    Shared verbatim with the config-CRUD validate seam via
+        //    [`validate_config_value`](Self::validate_config_value) so the
+        //    two paths cannot drift.
+        let config: R::Config = Self::validate_config_value::<R>(resolved)?;
+
+        // 4. Derive the **collision-free structural** slot identity from the
+        //    resolved slot bindings. Equality is exact string equality over
+        //    the canonical-sorted `(slot, credential)` pairs, so two
+        //    registrations whose resolved credentials differ are distinct
+        //    rows by construction (no digest, no collidable space). This is
+        //    the structural barrier against cross-tenant runtime bleed
+        //    (credential isolation, slot model). It carries no secret bytes
+        //    — only a stable identity over the resolved binding *names*.
+        let slot_identity = crate::dedup::SlotIdentity::from_bindings(
+            slot_bindings
+                .iter()
+                .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
+        );
+
+        // 5. Dispatch into the single typed register funnel via a
+        //    `RegistrationSpec`. ResourceConfig::validate() runs inside
+        //    `register`, so domain-level rules (PoolConfig sanity, host
+        //    non-empty) are still enforced.
+        tracing::debug!(
+            target: "nebula_resource::register_resolved",
+            ?slot_identity,
+            "all pre-register checks passed; dispatching into typed register"
+        );
+        self.register(RegistrationSpec {
+            resource,
+            config,
+            scope,
+            slot_identity: slot_identity.clone(),
+            topology,
+            acquire,
+            resilience,
+            recovery_gate,
+        })?;
+        Ok(slot_identity)
+    }
+
     /// Looks up a registered `ManagedResource<R>` by type and scope.
     ///
     /// This is the building block for acquire: callers retrieve the managed
@@ -1232,7 +1426,44 @@ impl Manager {
         slot_identity: u64,
     ) -> Result<(), Error> {
         tracing::Span::current().record("slot_identity", slot_identity);
-        let managed = self.lookup_any_for_slot_identity(key, &scope, slot_identity)?;
+        self.refresh_slot_for_identity(
+            key,
+            scope,
+            slot,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+        .await
+    }
+
+    /// [`refresh_slot_for`](Self::refresh_slot_for) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// The engine rotation fan-out records the structural
+    /// [`SlotIdentity`](crate::dedup::SlotIdentity) at bind time and drives
+    /// the rotation here, so a multi-tenant `(key, scope)` routes to the
+    /// *exact* resolved row by exact string equality (no digest aliasing).
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of `key` at `scope`
+    ///   matches `slot_identity`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - Whatever the resource's `on_credential_refresh` hook maps into [`Error`].
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_refresh",
+        skip(self, slot_identity),
+        fields(key = %key, slot = %slot, topology, duration_ms)
+    )]
+    pub async fn refresh_slot_for_identity(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<(), Error> {
+        let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
         self.refresh_resolved(key, slot, managed).await
     }
 
@@ -1335,7 +1566,43 @@ impl Manager {
         slot_identity: u64,
     ) -> Result<TaintedSlot, Error> {
         tracing::Span::current().record("slot_identity", slot_identity);
-        let managed = self.lookup_any_for_slot_identity(key, &scope, slot_identity)?;
+        self.taint_slot_for_identity(
+            key,
+            scope,
+            slot,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+    }
+
+    /// [`taint_slot_for`](Self::taint_slot_for) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// Phase 1 of the two-phase revoke for the engine fan-out: resolves the
+    /// *exact* resolved registry row by structural string equality (no
+    /// digest aliasing) and taints it synchronously before any `.await`
+    /// (the synchronous-before-`.await` taint guarantee; see the
+    /// [`manager`](crate::manager) module docs for the canonical invariant).
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of `key` at `scope`
+    ///   matches `slot_identity`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    #[tracing::instrument(
+        level = "debug",
+        name = "nebula.resource.slot_taint",
+        skip(self, slot_identity),
+        fields(key = %key, slot = %slot, topology, op = "revoke")
+    )]
+    pub fn taint_slot_for_identity(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<TaintedSlot, Error> {
+        let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
         Ok(Self::taint_now(key, slot, managed))
     }
 
@@ -1627,7 +1894,38 @@ impl Manager {
         slot: &str,
         slot_identity: u64,
     ) -> Result<(), Error> {
-        let tainted = self.taint_slot_for(key, scope, slot, slot_identity)?;
+        self.revoke_slot_for_identity(
+            key,
+            scope,
+            slot,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+        .await
+    }
+
+    /// [`revoke_slot_for`](Self::revoke_slot_for) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// Back-compat back-to-back convenience over the structural-identity
+    /// two-phase revoke; the engine fan-out drives the two phases separately
+    /// ([`taint_slot_for_identity`](Self::taint_slot_for_identity) outside
+    /// the timeout, then [`drain_and_revoke`](Self::drain_and_revoke)).
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of `key` at `scope`
+    ///   matches `slot_identity`.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - Whatever the resource's `on_credential_revoke` hook maps into [`Error`].
+    pub async fn revoke_slot_for_identity(
+        &self,
+        key: &ResourceKey,
+        scope: ScopeLevel,
+        slot: &str,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<(), Error> {
+        let tainted = self.taint_slot_for_identity(key, scope, slot, slot_identity)?;
         self.drain_and_revoke(tainted, Self::DEFAULT_REVOKE_DRAIN_TIMEOUT)
             .await
             .into_result()
@@ -1682,20 +1980,44 @@ impl Manager {
         options: &AcquireOptions,
         slot_identity: u64,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+        let identity = crate::dedup::SlotIdentity::from_opaque(slot_identity);
+        Self::acquire_erased_for(manager, key, ctx, options, &identity).await
+    }
+
+    /// [`acquire_erased`](Self::acquire_erased) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// This is the engine/action-accessor acquire entry: the accessor holds
+    /// the structural [`SlotIdentity`](crate::dedup::SlotIdentity) recorded
+    /// for the key at activation and passes it here, so the single scope
+    /// walk resolves the *exact* resolved row (no digest aliasing). The
+    /// resolved row is downcast by the hook with no second registry walk.
+    ///
+    /// # Errors
+    ///
+    /// Same as the typed `acquire_*_for` family: not found, ambiguous (when
+    /// `slot_identity` does not match a row), shutdown, taint, topology, and
+    /// acquire-time failures.
+    pub async fn acquire_erased_for(
+        manager: Arc<Self>,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
         use crate::registry::AcquireLookupOutcome;
 
         manager.shutdown_guard()?;
         tracing::debug!(
             target: "nebula.resource",
             %key,
-            slot_identity,
+            ?slot_identity,
             "acquire_erased: resolving registry hook"
         );
-        match manager.registry.get_acquire_for(
-            key,
-            ctx.scope(),
-            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
-        ) {
+        match manager
+            .registry
+            .get_acquire_for(key, ctx.scope(), slot_identity)
+        {
             AcquireLookupOutcome::Found { acquire, managed } => {
                 // `managed` is the row this single scope walk already
                 // resolved; the hook downcasts it to the concrete
@@ -1731,16 +2053,33 @@ impl Manager {
         scope: &nebula_core::Scope,
         slot_identity: u64,
     ) -> bool {
+        self.has_registered_for_scope_identity(
+            key,
+            scope,
+            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
+        )
+    }
+
+    /// [`has_registered_for_scope`](Self::has_registered_for_scope) keyed by
+    /// the **collision-free structural** resolved-credential identity.
+    ///
+    /// This is the engine-facing entry: the engine records a structural
+    /// [`SlotIdentity`](crate::dedup::SlotIdentity) at activation and asks
+    /// the same structural identity here, so a row is visible *only* under
+    /// its exact resolved binding set (no digest aliasing).
+    #[must_use]
+    pub fn has_registered_for_scope_identity(
+        &self,
+        key: &ResourceKey,
+        scope: &nebula_core::Scope,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> bool {
         use crate::registry::AcquireLookupOutcome;
         if self.shutdown_guard().is_err() {
             return false;
         }
         matches!(
-            self.registry.get_acquire_for(
-                key,
-                scope,
-                &crate::dedup::SlotIdentity::from_opaque(slot_identity)
-            ),
+            self.registry.get_acquire_for(key, scope, slot_identity),
             AcquireLookupOutcome::Found { .. }
         )
     }
@@ -1760,8 +2099,22 @@ impl Manager {
         self.has_registered_for_scope(key, &scope_bag, slot_identity)
     }
 
-    /// [`lookup_any_for_slot`](Self::lookup_any_for_slot) pinned to a resolved
-    /// per-slot credential identity via [`Registry::get_for`](crate::registry::Registry::get_for).
+    /// [`has_registered_for`](Self::has_registered_for) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    #[must_use]
+    pub fn has_registered_for_identity(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> bool {
+        let scope_bag = crate::context::minimal_scope_for_level(scope);
+        self.has_registered_for_scope_identity(key, &scope_bag, slot_identity)
+    }
+
+    /// [`lookup_any_for_slot`](Self::lookup_any_for_slot) pinned to a
+    /// resolved per-slot credential identity via
+    /// [`Registry::get_for`](crate::registry::Registry::get_for).
     ///
     /// [`get_for`](crate::registry::Registry::get_for) returns the
     /// 2-variant [`PinnedLookup`](crate::registry::PinnedLookup): a
@@ -1769,21 +2122,6 @@ impl Manager {
     /// by construction, so there is **no `Ambiguous` case to map** — the
     /// "registry invariant breach" arm the old `u64` digest path had to
     /// fabricate a fail-closed deny for is now type-unrepresentable.
-    fn lookup_any_for_slot_identity(
-        &self,
-        key: &ResourceKey,
-        scope: &ScopeLevel,
-        slot_identity: u64,
-    ) -> Result<Arc<dyn crate::registry::AnyManagedResource>, Error> {
-        self.lookup_any_for_slot_identity_structural(
-            key,
-            scope,
-            &crate::dedup::SlotIdentity::from_opaque(slot_identity),
-        )
-    }
-
-    /// [`lookup_any_for_slot_identity`](Self::lookup_any_for_slot_identity)
-    /// keyed by the structural resolved-credential identity.
     fn lookup_any_for_slot_identity_structural(
         &self,
         key: &ResourceKey,
@@ -2356,6 +2694,127 @@ impl Manager {
             async move {
                 match &managed.topology {
                     TopologyRuntime::Transport(rt) => {
+                        rt.acquire(
+                            &managed.resource,
+                            ctx,
+                            &managed.release_queue,
+                            generation,
+                            options,
+                            self.metrics.clone(),
+                        )
+                        .await
+                    },
+                    other => Err(Self::unexpected_topology::<R>(other)),
+                }
+            }
+        })
+        .await
+    }
+
+    /// Acquires a handle to a [`Bounded`](crate::topology::bounded::Bounded)
+    /// resource (the unified Service / Transport / Exclusive fold).
+    ///
+    /// The release shape is the resource's [`Cap`](crate::topology::bounded::Bounded::Cap)
+    /// typestate — `Unbounded` → owned handle (no release), `Capped<N>` /
+    /// `Exclusive` → guarded handle whose drop runs the observed
+    /// `release_one` (R17). Identity-agnostic: a multi-tenant `(R, scope)`
+    /// fails closed with
+    /// [`Ambiguous`](crate::error::ErrorKind::Ambiguous); use
+    /// [`acquire_bounded_for_identity`](Self::acquire_bounded_for_identity)
+    /// with the resolved structural identity.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   bounded topology.
+    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more
+    ///   than one resolved-credential registration exists for `(R, scope)`.
+    /// - Propagates the cap's acquire errors (permit timeout / closed).
+    pub async fn acquire_bounded<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
+        self.bounded_pipeline(managed, ctx, options).await
+    }
+
+    /// [`acquire_bounded`](Self::acquire_bounded) keyed by the
+    /// **collision-free structural** resolved-credential identity.
+    ///
+    /// Resolves the registry row whose `slot_identity` matches exactly (no
+    /// digest aliasing), so a caller that resolved tenant A's credential
+    /// reaches tenant A's runtime and never tenant B's.
+    ///
+    /// # Errors
+    ///
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
+    ///   `(scope, slot_identity)`.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   bounded topology.
+    /// - Propagates the cap's acquire errors.
+    pub async fn acquire_bounded_for_identity<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
+        self.bounded_pipeline(managed, ctx, options).await
+    }
+
+    /// [`acquire_bounded`](Self::acquire_bounded) for a row already resolved
+    /// by the erased-acquire scope walk (downcast, no re-walk).
+    pub(crate) async fn acquire_bounded_at_scope<R>(
+        &self,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        resolved: Arc<dyn crate::registry::AnyManagedResource>,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        self.bounded_pipeline(managed, ctx, options).await
+    }
+
+    /// Bounded topology dispatch into the shared
+    /// [`run_acquire`](Self::run_acquire) pipeline. One-arm
+    /// `TopologyRuntime::Bounded` match (same shape as transport:
+    /// `release_queue`/`generation`/`metrics`, no `config`). `generation`
+    /// is recomputed inside the dispatch closure so it is re-read on every
+    /// resilience retry.
+    async fn bounded_pipeline<R>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+        R::Runtime: Clone + Send + Sync + 'static,
+        R::Lease: Send + 'static,
+    {
+        self.run_acquire(Arc::clone(&managed), || {
+            let generation = managed.generation();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Bounded(rt) => {
                         rt.acquire(
                             &managed.resource,
                             ctx,

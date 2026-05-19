@@ -140,7 +140,7 @@ fn register_pool_res(
         scope: opts.scope,
         slot_identity,
         topology: TopologyRuntime::Pool(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
-        acquire: Manager::erased_acquire_pooled::<PoolRes>(nebula_resource::SLOT_IDENTITY_UNBOUND),
+        acquire: Manager::erased_acquire_pooled_for::<PoolRes>(),
         resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
@@ -161,7 +161,7 @@ fn register_res_res(
         topology: TopologyRuntime::Resident(ResidentRuntime::<ResRes>::new(
             nebula_resource::ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident::<ResRes>(nebula_resource::SLOT_IDENTITY_UNBOUND),
+        acquire: Manager::erased_acquire_resident_for::<ResRes>(),
         resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })

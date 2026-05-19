@@ -10,14 +10,11 @@ use std::{
 
 use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
-    dedup::SLOT_IDENTITY_UNBOUND,
+    AcquireOptions, BoundedRuntime, Manager, RegistrationSpec, ResourceContext, ScopeLevel,
+    SlotIdentity,
     error::Error,
     resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{
-        TopologyRuntime, exclusive::ExclusiveRuntime, pool::PoolRuntime, resident::ResidentRuntime,
-        service::ServiceRuntime, transport::TransportRuntime,
-    },
+    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::resident::{self, Resident},
 };
 use tokio_util::sync::CancellationToken;
@@ -107,7 +104,7 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -115,12 +112,12 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let key = ProbeResource::key();
-    let boxed = Manager::acquire_erased(
+    let boxed = Manager::acquire_erased_for(
         Arc::clone(&manager),
         &key,
         &ctx,
         &AcquireOptions::default(),
-        SLOT_IDENTITY_UNBOUND,
+        &SlotIdentity::Unbound,
     )
     .await
     .expect("acquire_erased");
@@ -147,7 +144,7 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -155,7 +152,11 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
 
     let key = ProbeResource::key();
     assert!(
-        manager.has_registered_for(&key, &ScopeLevel::Organization(org), SLOT_IDENTITY_UNBOUND),
+        manager.has_registered_for_identity(
+            &key,
+            &ScopeLevel::Organization(org),
+            &SlotIdentity::Unbound
+        ),
         "row must exist at org scope before acquire"
     );
 
@@ -165,18 +166,18 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
         ..Default::default()
     };
     assert!(
-        manager.has_registered_for_scope(&key, &scope, SLOT_IDENTITY_UNBOUND),
+        manager.has_registered_for_scope_identity(&key, &scope, &SlotIdentity::Unbound),
         "scope-chain lookup must find org row"
     );
 
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
 
-    let boxed = Manager::acquire_erased(
+    let boxed = Manager::acquire_erased_for(
         Arc::clone(&manager),
         &ProbeResource::key(),
         &ctx,
         &AcquireOptions::default(),
-        SLOT_IDENTITY_UNBOUND,
+        &SlotIdentity::Unbound,
     )
     .await
     .expect("execution-scoped acquire must reach org-scoped row");
@@ -207,7 +208,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -222,7 +223,7 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
             topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -236,12 +237,12 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
     let ctx = ResourceContext::minimal(scope, CancellationToken::new());
     let key = ProbeResource::key();
 
-    let boxed = Manager::acquire_erased(
+    let boxed = Manager::acquire_erased_for(
         Arc::clone(&manager),
         &key,
         &ctx,
         &AcquireOptions::default(),
-        SLOT_IDENTITY_UNBOUND,
+        &SlotIdentity::Unbound,
     )
     .await
     .expect("acquire_erased");
@@ -258,10 +259,10 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
     );
 
     let guard = manager
-        .acquire_resident_for::<ProbeResource>(
+        .acquire_resident_for_identity::<ProbeResource>(
             &ctx,
             &AcquireOptions::default(),
-            SLOT_IDENTITY_UNBOUND,
+            &SlotIdentity::Unbound,
         )
         .await
         .expect("typed acquire_resident_for");
@@ -401,7 +402,7 @@ mod pool_parity {
                     },
                     PoolParityCfg.fingerprint(),
                 )),
-                acquire: Manager::erased_acquire_pooled::<PoolParity>(SLOT_IDENTITY_UNBOUND),
+                acquire: Manager::erased_acquire_pooled_for::<PoolParity>(),
                 resilience: None,
                 recovery_gate: None,
             })
@@ -410,12 +411,12 @@ mod pool_parity {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = PoolParity::key();
 
-        let erased = Manager::acquire_erased(
+        let erased = Manager::acquire_erased_for(
             Arc::clone(&manager),
             &key,
             &ctx,
             &AcquireOptions::default(),
-            SLOT_IDENTITY_UNBOUND,
+            &SlotIdentity::Unbound,
         )
         .await
         .expect("erased pooled acquire");
@@ -451,7 +452,10 @@ mod pool_parity {
 }
 
 mod service_parity {
-    use nebula_resource::topology::service::{self, Service};
+    use nebula_resource::{
+        BoundedConfig,
+        topology::bounded::{Bounded, Unbounded},
+    };
 
     use super::*;
 
@@ -491,8 +495,14 @@ mod service_parity {
         }
     }
 
-    impl Service for SvcParity {
-        async fn acquire_token(
+    // Folds the former `Service` (Cloned token mode): `Cap = Unbounded`
+    // ⇒ owned handle, the blanket no-op `BoundedRelease` applies (a Cloned
+    // service writes no release boilerplate), `acquire_token` is now
+    // `acquire_one`.
+    impl Bounded for SvcParity {
+        type Cap = Unbounded;
+
+        async fn acquire_one(
             &self,
             runtime: &Arc<AtomicU64>,
             _ctx: &ResourceContext,
@@ -513,19 +523,25 @@ mod service_parity {
         // erased↔typed value match proves both reached the same runtime.
         let shared_runtime = Arc::new(AtomicU64::new(0xA5A5));
         let manager = Arc::new(Manager::new());
+        // `BoundedRuntime::new` borrows the resource (for the optional
+        // keepalive driver), so the resource is bound before the runtime
+        // and moved into the spec after.
+        let resource = SvcParity {
+            create_count: Arc::clone(&create_count),
+        };
+        let bounded = BoundedRuntime::<SvcParity>::new(
+            &resource,
+            Arc::clone(&shared_runtime),
+            BoundedConfig::default(),
+        );
         manager
             .register(RegistrationSpec {
-                resource: SvcParity {
-                    create_count: Arc::clone(&create_count),
-                },
+                resource,
                 config: SvcParityCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Service(ServiceRuntime::<SvcParity>::new(
-                    Arc::clone(&shared_runtime),
-                    service::config::Config::default(),
-                )),
-                acquire: Manager::erased_acquire_service::<SvcParity>(SLOT_IDENTITY_UNBOUND),
+                topology: TopologyRuntime::Bounded(bounded),
+                acquire: Manager::erased_acquire_bounded_for::<SvcParity>(),
                 resilience: None,
                 recovery_gate: None,
             })
@@ -534,12 +550,12 @@ mod service_parity {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = SvcParity::key();
 
-        let erased = Manager::acquire_erased(
+        let erased = Manager::acquire_erased_for(
             Arc::clone(&manager),
             &key,
             &ctx,
             &AcquireOptions::default(),
-            SLOT_IDENTITY_UNBOUND,
+            &SlotIdentity::Unbound,
         )
         .await
         .expect("erased service acquire");
@@ -549,7 +565,7 @@ mod service_parity {
         assert_eq!(erased_token, 0xA5A5, "erased token from shared runtime");
 
         let typed = manager
-            .acquire_service::<SvcParity>(&ctx, &AcquireOptions::default())
+            .acquire_bounded::<SvcParity>(&ctx, &AcquireOptions::default())
             .await
             .expect("typed service acquire (single-tenant Global)");
         let typed_token: u64 = *typed;
@@ -568,7 +584,10 @@ mod service_parity {
 }
 
 mod transport_parity {
-    use nebula_resource::topology::transport::{self, Transport};
+    use nebula_resource::{
+        BoundedConfig,
+        topology::bounded::{Bounded, BoundedRelease, Capped},
+    };
 
     use super::*;
 
@@ -608,13 +627,32 @@ mod transport_parity {
         }
     }
 
-    impl Transport for TportParity {
-        async fn open_session(
+    // Folds the former `Transport`: `open_session` is `acquire_one`,
+    // `close_session` is `release_one` (the old default close was a
+    // no-op `Ok`; `Capped` has no blanket release so it is supplied
+    // explicitly). The concurrency bound is the cap typestate; the
+    // parity test does not exercise it, so a generous `Capped<8>` stands
+    // in for the old `TransportConfig::default().max_sessions`.
+    impl Bounded for TportParity {
+        type Cap = Capped<8>;
+
+        async fn acquire_one(
             &self,
             transport: &Arc<AtomicU64>,
             _ctx: &ResourceContext,
         ) -> Result<u64, TportParityErr> {
             Ok(transport.load(Ordering::SeqCst))
+        }
+    }
+
+    impl BoundedRelease for TportParity {
+        async fn release_one(
+            &self,
+            _transport: &Arc<AtomicU64>,
+            _session: u64,
+            _healthy: bool,
+        ) -> Result<(), TportParityErr> {
+            Ok(())
         }
     }
 
@@ -627,19 +665,22 @@ mod transport_parity {
         let create_count = Arc::new(AtomicU64::new(0));
         let shared_runtime = Arc::new(AtomicU64::new(0x7E7E));
         let manager = Arc::new(Manager::new());
+        let resource = TportParity {
+            create_count: Arc::clone(&create_count),
+        };
+        let bounded = BoundedRuntime::<TportParity>::new(
+            &resource,
+            Arc::clone(&shared_runtime),
+            BoundedConfig::default(),
+        );
         manager
             .register(RegistrationSpec {
-                resource: TportParity {
-                    create_count: Arc::clone(&create_count),
-                },
+                resource,
                 config: TportParityCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Transport(TransportRuntime::<TportParity>::new(
-                    Arc::clone(&shared_runtime),
-                    transport::config::Config::default(),
-                )),
-                acquire: Manager::erased_acquire_transport::<TportParity>(SLOT_IDENTITY_UNBOUND),
+                topology: TopologyRuntime::Bounded(bounded),
+                acquire: Manager::erased_acquire_bounded_for::<TportParity>(),
                 resilience: None,
                 recovery_gate: None,
             })
@@ -648,12 +689,12 @@ mod transport_parity {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = TportParity::key();
 
-        let erased = Manager::acquire_erased(
+        let erased = Manager::acquire_erased_for(
             Arc::clone(&manager),
             &key,
             &ctx,
             &AcquireOptions::default(),
-            SLOT_IDENTITY_UNBOUND,
+            &SlotIdentity::Unbound,
         )
         .await
         .expect("erased transport acquire");
@@ -663,7 +704,7 @@ mod transport_parity {
         assert_eq!(erased_session, 0x7E7E, "erased session from shared runtime");
 
         let typed = manager
-            .acquire_transport::<TportParity>(&ctx, &AcquireOptions::default())
+            .acquire_bounded::<TportParity>(&ctx, &AcquireOptions::default())
             .await
             .expect("typed transport acquire (single-tenant Global)");
         let typed_session: u64 = *typed;
@@ -682,7 +723,10 @@ mod transport_parity {
 }
 
 mod exclusive_parity {
-    use nebula_resource::topology::exclusive::{self, Exclusive};
+    use nebula_resource::{
+        BoundedConfig,
+        topology::bounded::{Bounded, BoundedRelease, Exclusive as ExclusiveCap},
+    };
 
     use super::*;
 
@@ -725,7 +769,33 @@ mod exclusive_parity {
         }
     }
 
-    impl Exclusive for ExclParity {}
+    // Folds the former `Exclusive`: the old `ExclusiveRuntime` cloned the
+    // shared runtime into the lease, so `acquire_one` returns `*runtime`;
+    // the old default `reset` was a no-op `Ok`, so `release_one` (the
+    // reset) is `Ok(())`. `Cap = Exclusive` ⇒ Semaphore(1),
+    // permit-held-until-`release_one` (#384).
+    impl Bounded for ExclParity {
+        type Cap = ExclusiveCap;
+
+        async fn acquire_one(
+            &self,
+            runtime: &u64,
+            _ctx: &ResourceContext,
+        ) -> Result<u64, ExclParityErr> {
+            Ok(*runtime)
+        }
+    }
+
+    impl BoundedRelease for ExclParity {
+        async fn release_one(
+            &self,
+            _runtime: &u64,
+            _lease: u64,
+            _healthy: bool,
+        ) -> Result<(), ExclParityErr> {
+            Ok(())
+        }
+    }
 
     /// Exclusive's runtime is supplied at registration and handed to one
     /// caller at a time (no `Resource::create` on the acquire path). The
@@ -736,19 +806,19 @@ mod exclusive_parity {
     async fn exclusive_erased_and_typed_share_one_run_acquire() {
         let create_count = Arc::new(AtomicU64::new(0));
         let manager = Arc::new(Manager::new());
+        let resource = ExclParity {
+            create_count: Arc::clone(&create_count),
+        };
+        let bounded =
+            BoundedRuntime::<ExclParity>::new(&resource, 0xE0E0u64, BoundedConfig::default());
         manager
             .register(RegistrationSpec {
-                resource: ExclParity {
-                    create_count: Arc::clone(&create_count),
-                },
+                resource,
                 config: ExclParityCfg,
                 scope: ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
-                topology: TopologyRuntime::Exclusive(ExclusiveRuntime::<ExclParity>::new(
-                    0xE0E0u64,
-                    exclusive::config::Config::default(),
-                )),
-                acquire: Manager::erased_acquire_exclusive::<ExclParity>(SLOT_IDENTITY_UNBOUND),
+                topology: TopologyRuntime::Bounded(bounded),
+                acquire: Manager::erased_acquire_bounded_for::<ExclParity>(),
                 resilience: None,
                 recovery_gate: None,
             })
@@ -757,12 +827,12 @@ mod exclusive_parity {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let key = ExclParity::key();
 
-        let erased = Manager::acquire_erased(
+        let erased = Manager::acquire_erased_for(
             Arc::clone(&manager),
             &key,
             &ctx,
             &AcquireOptions::default(),
-            SLOT_IDENTITY_UNBOUND,
+            &SlotIdentity::Unbound,
         )
         .await
         .expect("erased exclusive acquire");
@@ -776,7 +846,7 @@ mod exclusive_parity {
         // explicitly below — the erased box was already consumed above.
 
         let typed = manager
-            .acquire_exclusive::<ExclParity>(&ctx, &AcquireOptions::default())
+            .acquire_bounded::<ExclParity>(&ctx, &AcquireOptions::default())
             .await
             .expect("typed exclusive acquire (single-tenant Global)");
         let typed_lease: u64 = *typed;

@@ -226,9 +226,7 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         topology: TopologyRuntime::Resident(ResidentRuntime::<RaceResource>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident::<RaceResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_resident_for::<RaceResource>(),
         resilience: None,
         recovery_gate: None,
     })

@@ -303,9 +303,7 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
         topology: TopologyRuntime::Resident(ResidentRuntime::<TwoSlotResident>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident::<TwoSlotResident>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_resident_for::<TwoSlotResident>(),
         resilience: None,
         recovery_gate: None,
     })

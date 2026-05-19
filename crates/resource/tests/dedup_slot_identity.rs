@@ -149,9 +149,7 @@ fn register_counting(
         topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
             ResidentConfig::default(),
         )),
-        acquire: Manager::erased_acquire_resident::<CountingResource>(
-            nebula_resource::SLOT_IDENTITY_UNBOUND,
-        ),
+        acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
         resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
