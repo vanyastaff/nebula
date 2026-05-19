@@ -1,7 +1,7 @@
 //! Closed-allowlist `kind → typed registrar` bridge.
 //!
-//! [`nebula_resource::Manager::register_from_value`] is a *typed* entry
-//! point (`register_from_value::<R>`): it monomorphizes on the concrete
+//! [`nebula_resource::Manager::register_resolved`] is a *typed* entry
+//! point (`register_resolved::<R>`): it monomorphizes on the concrete
 //! resource type so it can deserialize `R::Config`, schema-validate it,
 //! and build a `TopologyRuntime<R>`. A stored resource row only carries a
 //! `kind` string and opaque JSON, so the engine needs an erased
@@ -29,22 +29,27 @@
 //!
 //! # What the erased boundary can and cannot supply
 //!
-//! [`Manager::register_from_value::<R>`] requires, per its current
-//! signature:
+//! [`Manager::register_resolved::<R>`] requires, per its signature:
 //!
 //! ```text
-//! register_from_value(
+//! register_resolved(
 //!     config_json:   serde_json::Value,
 //!     expr_engine:   &nebula_expression::ExpressionEngine,
 //!     slot_bindings: HashMap<String, nebula_core::CredentialKey>,
 //!     resource:      R,
 //!     scope:         ScopeLevel,
 //!     topology:      TopologyRuntime<R>,
+//!     acquire:       ErasedAcquireFn,
 //!     resilience:    Option<AcquireResilience>,
 //!     recovery_gate: Option<Arc<RecoveryGate>>,
-//! ) -> Result<(), nebula_resource::Error>
+//! ) -> Result<SlotIdentity, nebula_resource::Error>
 //! where R: Resource + DeclaresDependencies, R::Config: DeserializeOwned
 //! ```
+//!
+//! It derives and **returns** the collision-free structural
+//! [`SlotIdentity`] the registry row is
+//! filed under, so the engine records the *exact* manager-side value (no
+//! independent recompute, no dual-derive divergence).
 //!
 //! Of those, only `config_json` is carried by the stored resource row.
 //! `resource: R` and `topology: TopologyRuntime<R>` are **`R`-typed** and
@@ -53,7 +58,11 @@
 //! factory from the `#[derive(Resource)]` macro. They must therefore be
 //! closed over per concrete `R` when the registrar is built (that is what
 //! [`TypedResourceRegistrar`] does: it holds a `resource`-producing
-//! factory and a `TopologyRuntime<R>`-producing factory).
+//! factory, a `TopologyRuntime<R>`-producing factory, and an erased
+//! `acquire`-hook factory). The acquire hook is **identity-independent**
+//! (the single-walk acquire resolution pins the row by the caller's
+//! runtime slot identity), so it is no longer parameterised by the
+//! registration-time digest.
 //!
 //! `expr_engine`, `scope`, `slot_bindings`, `resilience`, and
 //! `recovery_gate` are type-agnostic and supplied by the *caller* of
@@ -65,7 +74,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use nebula_resource::{
-    AcquireResilience, Manager, ScopeLevel, TopologyRuntime, recovery::RecoveryGate,
+    AcquireResilience, Manager, ScopeLevel, SlotIdentity, TopologyRuntime, recovery::RecoveryGate,
     resource::Resource,
 };
 
@@ -88,7 +97,7 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// operator must register the kind or fix the row.
 ///
 /// `Register` wraps the inner [`nebula_resource::Error`] from the typed
-/// `register_from_value` and classifies by delegation, so a deserialize/
+/// `register_resolved` and classifies by delegation, so a deserialize/
 /// schema/validation failure keeps its original category instead of
 /// being flattened.
 #[derive(Debug, thiserror::Error)]
@@ -105,7 +114,7 @@ pub enum RegistrarError {
     )]
     UnknownKind(String),
 
-    /// The typed `Manager::register_from_value` call failed.
+    /// The typed `Manager::register_resolved` call failed.
     ///
     /// Carries the underlying resource error (deserialize / schema /
     /// validation / slot-binding mismatch); classification delegates to
@@ -132,7 +141,7 @@ impl nebula_error::Classify for RegistrarError {
             // "caller asked for something the resolver cannot satisfy".
             Self::UnknownKind(_) => nebula_error::ErrorCategory::Conflict,
             // Preserve the inner resource error's category instead of
-            // flattening it. (Today every register_from_value failure is
+            // flattening it. (Today every register_resolved failure is
             // Error::permanent => Internal — deserialize, schema, and
             // slot-binding mismatch all land there; delegation keeps this
             // honest if the resource crate later differentiates those.)
@@ -170,9 +179,17 @@ impl nebula_error::Classify for RegistrarError {
 pub struct ResourceRegistrationOutcome {
     /// Catalog key the row was registered under.
     pub resource_key: nebula_core::ResourceKey,
-    /// Structural slot identity hashed from `slot_bindings` (matches the
-    /// manager registry row and must be recorded on the engine for acquire).
-    pub slot_identity: u64,
+    /// The **collision-free structural** slot identity
+    /// ([`SlotIdentity`]) the manager derived
+    /// from `slot_bindings` while registering this row.
+    ///
+    /// This is the value `Manager::register_resolved` *returned* — not an
+    /// independent recompute — so it is the *exact* structural key the
+    /// manager registry row is filed under (single construction site, no
+    /// dual-derive divergence risk). The engine records it for the acquire
+    /// path and the rotation fan-out reverse index so both address the same
+    /// row.
+    pub slot_identity: SlotIdentity,
 }
 
 /// Type-agnostic inputs the *caller* (the engine registration loop)
@@ -200,7 +217,7 @@ pub struct RegisterRequest<'a> {
     /// reverse index.
     ///
     /// `slot_bindings` carries the `CredentialKey` (the credential
-    /// *name*, what `Manager::register_from_value` hashes into the
+    /// *name*, what `Manager::register_resolved` folds into the
     /// structural `slot_identity`); the rotation fan-out index and the
     /// rotation/lease-revoke events are keyed by `CredentialId` (the
     /// resolved credential *record* — `CredentialEvent` /
@@ -231,18 +248,24 @@ pub struct RegisterRequest<'a> {
 ///
 /// One implementor exists per concrete resource type; it already knows
 /// its `R` and dispatches into the typed
-/// [`Manager::register_from_value::<R>`]. The returned future is boxed so
-/// the trait stays object-safe without `#[async_trait]` (matching
-/// `EngineResourceAccessor`'s erasure shape).
+/// [`Manager::register_resolved::<R>`](nebula_resource::Manager::register_resolved).
+/// The returned future is boxed so the trait stays object-safe without
+/// `#[async_trait]` (matching `EngineResourceAccessor`'s erasure shape).
 pub trait ErasedResourceRegistrar: Send + Sync {
     /// Registers this kind's resource against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
     /// topology this registrar owns.
     ///
+    /// On success returns the **collision-free structural**
+    /// [`SlotIdentity`] the manager derived
+    /// for this row (the value `Manager::register_resolved` returned), so
+    /// the registry records the exact manager-side key with no independent
+    /// recompute.
+    ///
     /// # Errors
     ///
     /// Returns the inner [`nebula_resource::Error`] verbatim if the typed
-    /// `register_from_value` fails (deserialize / schema / validation /
+    /// `register_resolved` fails (deserialize / schema / validation /
     /// slot-binding mismatch). The registry wraps it in
     /// [`RegistrarError::Register`]; the closed-allowlist `UnknownKind`
     /// check happens in [`ResourceRegistrarRegistry::register`] before
@@ -251,7 +274,7 @@ pub trait ErasedResourceRegistrar: Send + Sync {
         &'a self,
         manager: &'a Manager,
         request: RegisterRequest<'a>,
-    ) -> BoxFut<'a, Result<(), nebula_resource::Error>>;
+    ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>>;
 
     /// The static, type-level [`ResourceKey`](nebula_core::ResourceKey)
     /// (`R::key()`) of the concrete resource this registrar registers.
@@ -262,7 +285,7 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     /// keys a bound row by `(ResourceKey, ScopeLevel, slot_identity)`.
     /// Without `R` the registry cannot name the row it just registered,
     /// so the erased registrar exposes the key explicitly (the same
-    /// `R::key()` `register_from_value` registers the row under). Cheap,
+    /// `R::key()` `register_resolved` registers the row under). Cheap,
     /// pure, and type-stable — it is a `const`-ish accessor, not I/O.
     fn resource_key(&self) -> nebula_core::ResourceKey;
 
@@ -298,21 +321,24 @@ pub trait ErasedResourceRegistrar: Send + Sync {
 /// resolved by the engine) and a factory that produces the
 /// `TopologyRuntime<R>` declared for this kind.
 ///
-/// `register_from_value` consumes both `resource: R` and
-/// `TopologyRuntime<R>` by value, and a registrar may be invoked more
-/// than once (re-activation, multiple scopes), so both are *factories*
-/// rather than stored values.
+/// `register_resolved` consumes `resource: R`, `TopologyRuntime<R>`, and
+/// the erased `acquire` hook by value, and a registrar may be invoked
+/// more than once (re-activation, multiple scopes), so all three are
+/// *factories* rather than stored values. The acquire factory takes no
+/// slot-identity argument: the single-walk acquire resolution pins the
+/// row by the caller's runtime slot identity, so the hook is
+/// identity-independent (the legacy `Fn(u64)` digest threading is gone).
 pub struct TypedResourceRegistrar<R, FRes, FTopo, FAcq>
 where
     R: Resource + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn(u64) -> nebula_resource::ErasedAcquireFn + Send + Sync,
+    FAcq: Fn() -> nebula_resource::ErasedAcquireFn + Send + Sync,
 {
     resource_factory: FRes,
     topology_factory: FTopo,
-    acquire_for_slot: FAcq,
+    acquire_factory: FAcq,
 }
 
 impl<R, FRes, FTopo, FAcq> TypedResourceRegistrar<R, FRes, FTopo, FAcq>
@@ -321,22 +347,24 @@ where
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn(u64) -> nebula_resource::ErasedAcquireFn + Send + Sync,
+    FAcq: Fn() -> nebula_resource::ErasedAcquireFn + Send + Sync,
 {
     /// Builds a typed registrar for resource type `R`.
     ///
     /// `resource_factory` yields the `R` value (with credential slots
     /// already resolved by the engine per registration scope).
     /// `topology_factory` yields the `TopologyRuntime<R>` declared for
-    /// this kind. Both are invoked once per registration call.
-    /// `acquire_for_slot` builds the erased acquire hook for a resolved
-    /// per-slot credential identity (for example
-    /// [`Manager::erased_acquire_resident`](nebula_resource::manager::Manager::erased_acquire_resident)).
-    pub fn new(resource_factory: FRes, topology_factory: FTopo, acquire_for_slot: FAcq) -> Self {
+    /// this kind. `acquire_factory` builds the erased acquire hook (for
+    /// example
+    /// [`Manager::erased_acquire_resident_for`](nebula_resource::manager::Manager::erased_acquire_resident_for))
+    /// — it takes no slot-identity argument because the acquire hook is
+    /// identity-independent. All three are invoked once per registration
+    /// call.
+    pub fn new(resource_factory: FRes, topology_factory: FTopo, acquire_factory: FAcq) -> Self {
         Self {
             resource_factory,
             topology_factory,
-            acquire_for_slot,
+            acquire_factory,
         }
     }
 }
@@ -347,26 +375,26 @@ where
     R::Config: serde::de::DeserializeOwned,
     FRes: Fn() -> R + Send + Sync,
     FTopo: Fn() -> TopologyRuntime<R> + Send + Sync,
-    FAcq: Fn(u64) -> nebula_resource::ErasedAcquireFn + Send + Sync,
+    FAcq: Fn() -> nebula_resource::ErasedAcquireFn + Send + Sync,
 {
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
         request: RegisterRequest<'a>,
-    ) -> BoxFut<'a, Result<(), nebula_resource::Error>> {
+    ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>> {
         let resource = (self.resource_factory)();
         let topology = (self.topology_factory)();
-        let acquire_for_slot = &self.acquire_for_slot;
+        let acquire = (self.acquire_factory)();
         Box::pin(async move {
             manager
-                .register_from_value::<R>(
+                .register_resolved::<R>(
                     request.config_json,
                     request.expr_engine,
                     request.slot_bindings,
                     resource,
                     request.scope,
                     topology,
-                    acquire_for_slot,
+                    acquire,
                     request.resilience,
                     request.recovery_gate,
                 )
@@ -459,7 +487,7 @@ impl ResourceRegistrarRegistry {
     ///   client conflict. The lookup happens **before** any typed call,
     ///   so an unknown kind can never touch a resource type.
     /// - [`RegistrarError::Register`] if the typed
-    ///   `Manager::register_from_value` fails (deserialize / schema /
+    ///   `Manager::register_resolved` fails (deserialize / schema /
     ///   validation / slot-binding mismatch); classification delegates to
     ///   the inner error.
     pub async fn register(
@@ -473,13 +501,14 @@ impl ResourceRegistrarRegistry {
             .get(kind)
             .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
         let resource_key = registrar.resource_key();
-        let slot_identity = nebula_resource::slot_identity(
-            request
-                .slot_bindings
-                .iter()
-                .map(|(slot, key)| (slot.as_str(), key.as_str())),
-        );
-        registrar
+        // The structural identity comes from `register_resolved`'s return
+        // value — the *exact* key the manager filed the registry row under.
+        // There is deliberately **no** independent recompute here: a second
+        // construction site is the divergence risk the structural-identity
+        // change exists to eliminate (a digest mismatch between two
+        // construction sites would silently re-alias tenants). Single
+        // source of truth, propagated.
+        let slot_identity = registrar
             .register(manager, request)
             .await
             .map_err(|source| RegistrarError::Register {
@@ -500,12 +529,13 @@ impl ResourceRegistrarRegistry {
     /// or more `#[credential]` slots, so a later rotation / lease-revoke
     /// of any of those credentials must fan out to *this exact resolved
     /// row*. The structural row identity
-    /// (`slot_identity`) is recomputed here **verbatim** the way
-    /// `Manager::register_from_value` computes it
-    /// ([`nebula_resource::slot_identity`] over the `(slot_key,
-    /// CredentialKey)` pairs in `request.slot_bindings`), so the index
-    /// addresses the same registry row the manager just created. For
-    /// every `(slot_name, CredentialId)` in `request.credential_ids`
+    /// ([`SlotIdentity`]) is **not**
+    /// recomputed here — it is the value `Manager::register_resolved`
+    /// returned (`outcome.slot_identity`), the exact key the manager filed
+    /// the registry row under. A second construction site is precisely the
+    /// dual-derive divergence risk the collision-free structural identity
+    /// exists to eliminate, so the single manager-side value is propagated.
+    /// For every `(slot_name, CredentialId)` in `request.credential_ids`
     /// whose `slot_name` also appears in `slot_bindings`, one
     /// [`ResourceFanoutIndex::bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
     /// is recorded. `bind` is idempotent, so a re-registration of the
@@ -523,7 +553,7 @@ impl ResourceRegistrarRegistry {
     /// `register(...).await` makes the `Manager` row **discoverable**
     /// before this method records the reverse-index bind. Those two
     /// steps are deliberately **not** atomic (atomicity would require a
-    /// transactional `Manager::register_from_value` "register-then-
+    /// transactional `Manager::register_resolved` "register-then-
     /// publish" surface — a heavy Manager API change with no production
     /// consumer yet). There is therefore a window in which the Manager
     /// row exists but the reverse-index row does not: a credential
@@ -566,9 +596,10 @@ impl ResourceRegistrarRegistry {
     ) -> Result<ResourceRegistrationOutcome, RegistrarError> {
         // Snapshot the bind inputs before `request` is moved into the
         // typed `register` call. Cheap clones (a small slot map + scope);
-        // the resource key comes from the erased registrar so the
-        // reverse index addresses the same `(key, scope, slot_identity)`
-        // row `register_from_value` registers under.
+        // the resource key comes from the erased registrar and the
+        // structural slot identity from `register_resolved`'s return, so
+        // the reverse index addresses the same `(key, scope, slot_identity)`
+        // row the manager registers under.
         let bind_plan = fanout_index.map(|idx| {
             (
                 idx,
@@ -595,7 +626,7 @@ impl ResourceRegistrarRegistry {
                         outcome.resource_key.clone(),
                         scope.clone(),
                         slot_name.clone(),
-                        outcome.slot_identity,
+                        outcome.slot_identity.clone(),
                     );
                 }
             }
@@ -696,7 +727,7 @@ mod tests {
     impl ResourceConfig for TestConfig {
         fn validate(&self) -> Result<(), ResourceError> {
             // Exercises the deserialized field: confirms the JSON config
-            // threaded through `register_from_value` was actually parsed
+            // threaded through `register_resolved` was actually parsed
             // into `TestConfig` (mirrors the `name`-non-empty check used
             // by the resource crate's own integration mocks).
             if self.name.is_empty() {
@@ -774,7 +805,7 @@ mod tests {
                     resident::config::Config::default(),
                 ))
             },
-            |slot| Manager::erased_acquire_resident::<TestRes>(slot),
+            || Manager::erased_acquire_resident_for::<TestRes>(),
         ))
     }
 

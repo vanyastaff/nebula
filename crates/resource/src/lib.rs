@@ -17,7 +17,7 @@
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
-//! | `Cell` | Lock-free `ArcSwap`-based cell for resident topologies |
+//! | `SlotCell` | Lock-free generation-stamped holder for a resolved credential slot |
 //! | `Error`, `ErrorKind` | Unified typed error with retry classification |
 //! | `ResourceContext` | Execution context with cancellation and capabilities |
 //! | `ResourceEvent` | Lifecycle events for observability |
@@ -35,7 +35,7 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-pub mod cell;
+pub(crate) mod cell;
 pub mod context;
 pub mod dedup;
 pub mod error;
@@ -58,18 +58,23 @@ pub mod state;
 pub mod topology;
 pub mod topology_tag;
 
-pub use cell::Cell;
+// NOTE: `cell::Cell` is intentionally NOT re-exported. It is an internal
+// lock-free `ArcSwapOption` holder for the resident runtime; it carries no
+// generation/epoch and is a strict subset of the public `SlotCell`. The
+// `cell` module is crate-internal (`pub(crate) mod`) so consumers reach for
+// the generation-bearing `SlotCell` and are not misled into using the
+// epoch-blind cell at a credential-slot boundary.
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
-pub use dedup::{DedupKey, SLOT_IDENTITY_UNBOUND, slot_identity};
+pub use dedup::{DedupKey, SlotIdentity};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
 pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
-    DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions,
+    DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};
@@ -95,10 +100,7 @@ pub use nebula_resource_macros::Resource;
 // `nebula-schema` in extern_prelude either.
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
-pub use recovery::{
-    GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
-    RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
-};
+pub use recovery::{GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter};
 pub use registry::{AnyManagedResource, LookupOutcome, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
@@ -110,20 +112,19 @@ pub use slot::SlotCell;
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{
-    exclusive::ExclusiveRuntime,
+    bounded::BoundedRuntime,
     managed::ManagedResource,
     pool::{PoolRuntime, PoolStats},
     resident::ResidentRuntime,
-    service::ServiceRuntime,
-    transport::TransportRuntime,
 };
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    exclusive::{Exclusive, config::Config as ExclusiveConfig},
+    bounded::{
+        Bounded, BoundedRelease, CapMarker, Capped, Exclusive as ExclusiveCap, Unbounded,
+        config::Config as BoundedConfig,
+    },
     pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
     resident::{Resident, config::Config as ResidentConfig},
-    service::{Service, TokenMode, config::Config as ServiceConfig},
-    transport::{Transport, config::Config as TransportConfig},
 };
 pub use topology_tag::TopologyTag;

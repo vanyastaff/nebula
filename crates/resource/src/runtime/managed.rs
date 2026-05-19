@@ -65,14 +65,12 @@ pub struct ManagedResource<R: Resource> {
     /// Every `acquire_*` against *this* row pre-counts here (alongside the
     /// manager-wide `Manager::drain_tracker`) and the resulting
     /// [`ResourceGuard`](crate::guard::ResourceGuard) decrements + notifies
-    /// it on drop. `Manager::revoke_slot` drains **only this** counter
-    /// (per-resource revoke deferral): a revoke on resource A must not block on
-    /// in-flight traffic to an unrelated resource B, and the
-    /// taint→increment→post-taint-recheck ordering against this same counter
-    /// is what closes the revoke-vs-acquire TOCTOU that slot model/credential isolation
-    /// "no authenticated traffic on a revoked credential post-revoke"
-    /// requires. The manager-wide tracker stays the `graceful_shutdown`
-    /// drain primitive and is untouched here.
+    /// it on drop. `Manager::revoke_slot` drains **only this** counter, so a
+    /// revoke on resource A never blocks on in-flight traffic to an unrelated
+    /// resource B, and the `AcqRel` taint→increment→post-taint-recheck
+    /// ordering against this same counter is what closes the
+    /// revoke-vs-acquire TOCTOU. Two-phase-revoke / drain invariant: see the
+    /// [`manager`](crate::manager) module documentation.
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
 }
 
@@ -127,10 +125,11 @@ impl<R: Resource> ManagedResource<R> {
 
     /// Marks the resource tainted so the manager rejects new acquires.
     ///
-    /// Reuses the same "stop new leases" semantics as the per-handle
-    /// `ResourceGuard::taint` and the manager-wide `shutting_down` flag —
-    /// `Manager::revoke_slot` taints *before* draining so no caller can
-    /// acquire a lease on the credential being revoked.
+    /// Phase 1 of the two-phase revoke: `Manager::revoke_slot` calls this
+    /// synchronously, before draining, reusing the same "stop new leases"
+    /// mechanism as the per-handle `ResourceGuard::taint` and the
+    /// manager-wide `shutting_down` flag. See the [`manager`](crate::manager)
+    /// module docs for the canonical invariant.
     pub(crate) fn taint(&self) {
         self.tainted.store(true, Ordering::Release);
     }
@@ -140,12 +139,31 @@ impl<R: Resource> ManagedResource<R> {
         self.tainted.load(Ordering::Acquire)
     }
 
+    /// Advances the credential-revoke counter for a pooled topology so
+    /// every pool return-to-idle path destroys (never recycles or admits)
+    /// an instance authenticated with the now-revoked credential.
+    ///
+    /// Called synchronously by `Manager::revoke_slot` in phase 1, before the
+    /// revoke hook is dispatched — the same pre-`.await` discipline as
+    /// [`taint`](Self::taint). Only the [`Pool`](TopologyRuntime::Pool)
+    /// topology has an idle queue and the recycle / in-flight-create /
+    /// warmup / maintenance return-to-idle paths this counter guards; the
+    /// single-runtime topologies hold one shared `Arc<R::Runtime>` and
+    /// dispatch the revoke hook directly against it under no idle-queue race,
+    /// so there is no return-to-idle site to fence and this is a no-op for
+    /// them. See the [`manager`](crate::manager) module docs for the
+    /// canonical revoke-epoch-fence rationale.
+    pub(crate) fn bump_revoke_epoch(&self) {
+        if let TopologyRuntime::Pool(rt) = &self.topology {
+            rt.bump_revoke_epoch();
+        }
+    }
+
     /// Returns a clone of this resource's per-resource in-flight tracker so
     /// an acquire pipeline can pre-count against it (and hand it to the
     /// resulting guard). Distinct from the manager-wide `drain_tracker`:
-    /// `Manager::revoke_slot` drains *this* counter only (resource runtime status
-    /// §Deferred), so a revoke never blocks on a sibling resource's
-    /// in-flight work.
+    /// `Manager::revoke_slot` drains *this* counter only. See the
+    /// [`manager`](crate::manager) module docs for the canonical invariant.
     pub(crate) fn in_flight_tracker(&self) -> Arc<(AtomicU64, Notify)> {
         Arc::clone(&self.in_flight)
     }
@@ -153,14 +171,13 @@ impl<R: Resource> ManagedResource<R> {
     /// Drains *this* resource's in-flight acquires (bounded by `timeout`).
     ///
     /// The per-resource analogue of `Manager::wait_for_drain`: it waits on
-    /// this row's own counter, not the manager-wide one, so a revoke on this
-    /// resource is isolated from in-flight traffic to unrelated resources
-    /// (per-resource revoke deferral). Reuses the exact lost-wakeup-safe ordering of
-    /// the shared shutdown drain helper. Returns `Ok(())` once drained, or
-    /// `Err(outstanding)` with the counter snapshot at the moment the timer
-    /// fired (the caller — `revoke_resolved` — keeps the taint and proceeds
-    /// to the revoke hook regardless; the timeout is best-effort because the
-    /// taint already stops *new* leases).
+    /// this row's own counter, not the manager-wide one, and reuses the exact
+    /// lost-wakeup-safe ordering of the shared shutdown drain helper. Returns
+    /// `Ok(())` once drained, or `Err(outstanding)` with the counter snapshot
+    /// at the moment the timer fired (the caller — `revoke_resolved` — keeps
+    /// the taint and proceeds to the revoke hook regardless; the timeout is
+    /// best-effort because the taint already stops *new* leases). See the
+    /// [`manager`](crate::manager) module docs for the canonical invariant.
     pub(crate) async fn wait_for_in_flight_drain(&self, timeout: Duration) -> Result<(), u64> {
         crate::manager::shutdown::wait_for_tracker_drain(&self.in_flight, timeout).await
     }
@@ -169,11 +186,14 @@ impl<R: Resource> ManagedResource<R> {
     /// per-slot credential hook — [`Resource::on_credential_refresh`] when
     /// `refresh` is `true`, [`Resource::on_credential_revoke`] otherwise.
     ///
-    /// Single-runtime topologies (Resident / Service / Transport /
-    /// Exclusive) dispatch once against the shared runtime; Pool dispatches
-    /// per idle instance (delegating to
+    /// Resident dispatches once against its lazily-built runtime; Bounded
+    /// dispatches once against its caller-supplied shared runtime; Pool
+    /// dispatches per idle instance (delegating to
     /// [`PoolRuntime::dispatch_slot_hook_over_idle`](super::pool::PoolRuntime::dispatch_slot_hook_over_idle),
-    /// which carries the same `refresh` selector).
+    /// which carries the same `refresh` selector). The `Bounded` arm is the
+    /// single-runtime hook: it holds one shared `Arc<R::Runtime>` and
+    /// dispatches the hook against it exactly once, regardless of the
+    /// resource's [`Cap`](crate::topology::bounded::Bounded::Cap) typestate.
     ///
     /// **Topology audit of the `current() == None → Ok(())` stale-skip
     /// (per-resource revoke deferral / #680).** Only **Resident** lazily builds its
@@ -185,11 +205,11 @@ impl<R: Resource> ManagedResource<R> {
     /// which serialises against `create` on the same lock and reconciles a
     /// runtime built against an older credential epoch instead of silently
     /// succeeding. The other arms do **not** share the defect:
-    /// Service / Transport / Exclusive take a caller-supplied runtime at
-    /// register time (no `None` window — the hook is always delivered);
-    /// Pool dispatches over every idle entry and rebuilds fresh instances
-    /// against the current (lock-free) slot, so an empty idle queue masks
-    /// no stale-bound runtime.
+    /// `Bounded` takes a caller-supplied runtime at register time (no
+    /// `None` window — the hook is always delivered); Pool dispatches over
+    /// every idle entry and rebuilds fresh instances against the current
+    /// (lock-free) slot, so an empty idle queue masks no stale-bound
+    /// runtime.
     ///
     /// The `refresh` flag selects the hook exactly once per topology arm
     /// (mirroring the pool selector); both directions share identical
@@ -204,13 +224,9 @@ impl<R: Resource> ManagedResource<R> {
                 rt.dispatch_resident_hook(&self.resource, slot, refresh)
                     .await
             },
-            TopologyRuntime::Service(rt) => {
-                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
-            },
-            TopologyRuntime::Transport(rt) => {
-                self.invoke_slot_hook(slot, refresh, rt.runtime()).await
-            },
-            TopologyRuntime::Exclusive(rt) => {
+            // Single-runtime hook: one shared `Arc<R::Runtime>`, dispatched
+            // once, for every cap typestate.
+            TopologyRuntime::Bounded(rt) => {
                 self.invoke_slot_hook(slot, refresh, rt.runtime()).await
             },
             TopologyRuntime::Pool(rt) => rt

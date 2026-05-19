@@ -6,7 +6,8 @@
 //!
 //! - missing `config = ...` argument,
 //! - missing `topology = "..."` argument,
-//! - invalid `topology = "..."` value (not in {pool, resident, service, transport, exclusive}),
+//! - invalid `topology = "..."` value (not in {pool, resident,
+//!   bounded}),
 //! - unknown keys inside `#[resource(...)]`,
 //! - tuple struct rejection.
 //!
@@ -31,8 +32,30 @@ fn derive_resource_compile_pass_positive() {
     t.pass("tests/probes/derive_positive_unit_resource.rs");
 }
 
+/// `topology = "bounded"` is accepted (the folded topology that replaced
+/// the legacy `service` / `transport` / `exclusive` strings), alongside
+/// `pool` / `resident`. Each maps to its `TopologyTag` via the emitted
+/// informational const — the collapsed 3-tag set.
+#[test]
+fn derive_resource_accepts_collapsed_topologies() {
+    let t = trybuild::TestCases::new();
+    t.pass("tests/probes/derive_bounded_topology.rs");
+}
+
 #[test]
 fn derive_emits_slot_accessor() {
     let t = trybuild::TestCases::new();
     t.pass("tests/trybuild/derive_slot_accessor.rs");
+}
+
+/// The `Bounded` cap typestate makes "release-bearing cap with no release
+/// hook" a compile error: a `Capped<N>` / `Exclusive` resource that omits
+/// `impl BoundedRelease` fails the `R: BoundedRelease` bound the runtime
+/// requires (the blanket no-op covers only `Cap = Unbounded`). This is the
+/// type-enforcement that replaced the old silent `TOKEN_MODE ==` no-op.
+#[test]
+fn bounded_release_shape_is_type_enforced() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/probes/bounded_capped_without_release.rs");
+    t.compile_fail("tests/probes/bounded_exclusive_without_reset.rs");
 }

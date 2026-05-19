@@ -35,8 +35,8 @@ use std::{
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, ResidentConfig, ResourceContext,
-    dedup::SLOT_IDENTITY_UNBOUND,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
+    dedup::SlotIdentity,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -190,17 +190,18 @@ async fn main() -> anyhow::Result<()> {
     let resident_runtime = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
     let org = OrgId::new();
 
-    manager.register(
-        bot,
-        TelegramConfig {
+    manager.register(RegistrationSpec {
+        resource: bot,
+        config: TelegramConfig {
             handle: "@nebula_demo_bot".into(),
         },
-        ScopeLevel::Organization(org),
-        TopologyRuntime::Resident(resident_runtime),
-        Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-        None,
-        None,
-    )?;
+        scope: ScopeLevel::Organization(org),
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Resident(resident_runtime),
+        acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+        resilience: None,
+        recovery_gate: None,
+    })?;
     println!("[1] TelegramBot registered at Organization scope (org={org:?})");
 
     // 2. Spawn 10 simulated workflows. Each acquires the bot, sends one "message" (just records

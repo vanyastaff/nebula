@@ -30,7 +30,8 @@ use std::{
 
 use nebula_core::{ExecutionId, ResourceKey, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, ResourceContext, ScopeLevel, ShutdownConfig, TopologyTag,
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
+    SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -153,17 +154,16 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
         ResidentRuntime::<SlowCreateResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            SlowConfig,
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<SlowCreateResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: SlowConfig,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register succeeds");
 
     // Spawn the acquire — it will spend ~200ms inside `create()`. The task
@@ -268,17 +268,16 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
         ResidentRuntime::<SlowCreateResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            SlowCreateResource::new(Duration::ZERO),
-            SlowConfig,
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<SlowCreateResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: SlowCreateResource::new(Duration::ZERO),
+            config: SlowConfig,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register succeeds");
 
     // Run shutdown to completion first.

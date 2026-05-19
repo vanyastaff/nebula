@@ -1,0 +1,4 @@
+[
+  {"step": "acquired", "detail": "token=svc-runtime-token"},
+  {"step": "release_token_calls", "detail": "1"}
+]

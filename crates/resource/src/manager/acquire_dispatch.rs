@@ -1,8 +1,14 @@
 //! Type-erased acquire dispatch stored at registration time.
 //!
-//! [`Manager::register_with_identity`] captures a topology-specific
-//! `acquire_*_for` closure so callers that only know a [`ResourceKey`]
+//! [`Manager::register`] captures a topology-specific
+//! `acquire_*_at_scope` closure so callers that only know a [`ResourceKey`]
 //! (engine / action accessor) can still run the full lease pipeline.
+//!
+//! The hook receives the `Arc<dyn AnyManagedResource>` already resolved by
+//! [`Registry::get_acquire_for`](crate::registry::Registry::get_acquire_for)'s
+//! single scope walk and downcasts it — it does **not** perform a second
+//! `DashMap` walk at the matched scope. The registry resolves the row
+//! exactly once per erased acquire.
 
 use std::{any::Any, sync::Arc};
 
@@ -15,7 +21,7 @@ use crate::error::Error;
 #[cfg(test)]
 #[must_use]
 pub(crate) fn noop_erased_acquire() -> ErasedAcquireFn {
-    Arc::new(|_mgr, _ctx, _opts, _scope| {
+    Arc::new(|_mgr, _ctx, _opts, _resolved| {
         Box::pin(async {
             Err(Error::permanent(
                 "acquire dispatch not configured for this registry test entry",
@@ -24,80 +30,48 @@ pub(crate) fn noop_erased_acquire() -> ErasedAcquireFn {
     })
 }
 
-fn arc_acquire_resident<R>(slot_identity: u64) -> ErasedAcquireFn
+fn arc_acquire_resident<R>() -> ErasedAcquireFn
 where
     R: crate::topology::resident::Resident + Send + Sync + 'static,
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Clone + Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts, matched_scope| {
+    Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_resident_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
+                .acquire_resident_at_scope::<R>(&ctx, &opts, resolved)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
     })
 }
 
-fn arc_acquire_pooled<R>(slot_identity: u64) -> ErasedAcquireFn
+fn arc_acquire_pooled<R>() -> ErasedAcquireFn
 where
     R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Into<R::Runtime> + Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts, matched_scope| {
+    Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_pooled_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
+                .acquire_pooled_at_scope::<R>(&ctx, &opts, resolved)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
     })
 }
 
-fn arc_acquire_service<R>(slot_identity: u64) -> ErasedAcquireFn
+fn arc_acquire_bounded<R>() -> ErasedAcquireFn
 where
-    R: crate::topology::service::Service + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
+    R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
-    Arc::new(move |mgr, ctx, opts, matched_scope| {
+    Arc::new(move |mgr, ctx, opts, resolved| {
         Box::pin(async move {
             let guard = mgr
-                .acquire_service_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
-                .await?;
-            Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-        })
-    })
-}
-
-fn arc_acquire_transport<R>(slot_identity: u64) -> ErasedAcquireFn
-where
-    R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    Arc::new(move |mgr, ctx, opts, matched_scope| {
-        Box::pin(async move {
-            let guard = mgr
-                .acquire_transport_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
-                .await?;
-            Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-        })
-    })
-}
-
-fn arc_acquire_exclusive<R>(slot_identity: u64) -> ErasedAcquireFn
-where
-    R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    Arc::new(move |mgr, ctx, opts, matched_scope| {
-        Box::pin(async move {
-            let guard = mgr
-                .acquire_exclusive_at_scope::<R>(&ctx, &opts, slot_identity, matched_scope)
+                .acquire_bounded_at_scope::<R>(&ctx, &opts, resolved)
                 .await?;
             Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
         })
@@ -105,51 +79,44 @@ where
 }
 
 /// Erased acquire hook for a resident topology row.
-pub(crate) fn erased_acquire_resident<R>(slot_identity: u64) -> ErasedAcquireFn
+///
+/// The hook downcasts the row resolved by the single
+/// [`get_acquire_for`](crate::registry::Registry::get_acquire_for) scope
+/// walk — there is no second registry walk, so the row is no longer
+/// re-pinned by a captured slot identity (walk-1 already matched it).
+pub(crate) fn erased_acquire_resident<R>() -> ErasedAcquireFn
 where
     R: crate::topology::resident::Resident + Send + Sync + 'static,
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Clone + Send + 'static,
 {
-    arc_acquire_resident::<R>(slot_identity)
+    arc_acquire_resident::<R>()
 }
 
 /// Erased acquire hook for a pooled topology row.
-pub(crate) fn erased_acquire_pooled<R>(slot_identity: u64) -> ErasedAcquireFn
+///
+/// See [`erased_acquire_resident`] — downcasts the single-walk-resolved
+/// row, no second registry walk.
+pub(crate) fn erased_acquire_pooled<R>() -> ErasedAcquireFn
 where
     R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
     R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
     R::Lease: Into<R::Runtime> + Send + 'static,
 {
-    arc_acquire_pooled::<R>(slot_identity)
+    arc_acquire_pooled::<R>()
 }
 
-/// Erased acquire hook for a service topology row.
-pub(crate) fn erased_acquire_service<R>(slot_identity: u64) -> ErasedAcquireFn
+/// Erased acquire hook for a [`Bounded`](crate::topology::bounded::Bounded)
+/// topology row (the unified Service / Transport / Exclusive fold).
+///
+/// See [`erased_acquire_resident`] — downcasts the single-walk-resolved
+/// row, no second registry walk. The release shape is the resource's
+/// cap typestate, applied inside `acquire_bounded_at_scope`.
+pub(crate) fn erased_acquire_bounded<R>() -> ErasedAcquireFn
 where
-    R: crate::topology::service::Service + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
+    R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
+    R::Runtime: Clone + Send + Sync + 'static,
     R::Lease: Send + 'static,
 {
-    arc_acquire_service::<R>(slot_identity)
-}
-
-/// Erased acquire hook for a transport topology row.
-pub(crate) fn erased_acquire_transport<R>(slot_identity: u64) -> ErasedAcquireFn
-where
-    R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    arc_acquire_transport::<R>(slot_identity)
-}
-
-/// Erased acquire hook for an exclusive topology row.
-pub(crate) fn erased_acquire_exclusive<R>(slot_identity: u64) -> ErasedAcquireFn
-where
-    R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    arc_acquire_exclusive::<R>(slot_identity)
+    arc_acquire_bounded::<R>()
 }

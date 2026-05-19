@@ -11,26 +11,19 @@ use std::sync::{
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, Manager, ResourceContext, ScopeLevel, ShutdownConfig,
+    AcquireOptions, BoundedConfig, BoundedRuntime, Manager, RegistrationSpec, ResourceContext,
+    ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
     resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{
-        TopologyRuntime, exclusive::ExclusiveRuntime, pool::PoolRuntime, resident::ResidentRuntime,
-        service::ServiceRuntime, transport::TransportRuntime,
-    },
+    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
-        exclusive,
-        exclusive::Exclusive,
+        bounded::{Bounded, BoundedRelease, Capped, Exclusive as ExclusiveCap, Unbounded},
         pooled::{BrokenCheck, Pooled, RecycleDecision},
         resident,
         resident::Resident,
-        service,
-        service::{Service, TokenMode},
-        transport,
-        transport::Transport,
     },
 };
 
@@ -90,6 +83,13 @@ impl ResourceConfig for TestConfig {
 struct PoolTestResource {
     create_counter: Arc<AtomicU64>,
     break_flag: Arc<AtomicBool>,
+    /// Incremented by `destroy`. The deterministic completion signal for a
+    /// release that ends in destruction (tainted / broken / stale) — a
+    /// release runs on the [`ReleaseQueue`] worker, so a test that asserts
+    /// "the instance was NOT recycled" must wait for this rather than guess
+    /// a wall-clock delay (idle stays `0` the whole time, so polling idle is
+    /// not a usable settle signal for that case).
+    destroy_counter: Arc<AtomicU64>,
 }
 
 impl PoolTestResource {
@@ -97,6 +97,7 @@ impl PoolTestResource {
         Self {
             create_counter: Arc::new(AtomicU64::new(0)),
             break_flag: Arc::new(AtomicBool::new(false)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -124,6 +125,7 @@ impl Resource for PoolTestResource {
     }
 
     async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -150,9 +152,32 @@ impl Pooled for PoolTestResource {
     }
 }
 
-// Also impl Exclusive so we can test topology mismatch
-// (register as Pool, call acquire_exclusive).
-impl Exclusive for PoolTestResource {}
+// Also impl `Bounded` (Exclusive cap) so we can test topology mismatch:
+// register as Pool, then call the Bounded acquire path and assert it is
+// rejected (the bodies never run — the pipeline errors on the topology
+// mismatch before dispatch; this folds the old `impl Exclusive {}`).
+impl Bounded for PoolTestResource {
+    type Cap = ExclusiveCap;
+
+    async fn acquire_one(
+        &self,
+        runtime: &Arc<AtomicU64>,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicU64>, TestError> {
+        Ok(Arc::clone(runtime))
+    }
+}
+
+impl BoundedRelease for PoolTestResource {
+    async fn release_one(
+        &self,
+        _runtime: &Arc<AtomicU64>,
+        _lease: Arc<AtomicU64>,
+        _healthy: bool,
+    ) -> Result<(), TestError> {
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Resident mock resource
@@ -230,6 +255,70 @@ fn test_config() -> TestConfig {
     }
 }
 
+/// Polls `cond` until it returns `true` or the deadline elapses, then
+/// returns the final value of `cond`.
+///
+/// Replaces fixed `sleep(50ms)` "settle" points: release/recycle work runs
+/// on the [`ReleaseQueue`] background worker, so the test must wait for the
+/// *observable effect* (an idle count, a counter) rather than guess a
+/// wall-clock delay. A short poll interval keeps fast cases fast; the
+/// bounded deadline turns a real regression into a prompt failure instead of
+/// a hang.
+async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    cond()
+}
+
+/// Waits until a pool's idle count equals `expected` (bounded), failing the
+/// test with the observed count if it never does. The deterministic
+/// replacement for `drop(handle); sleep(50ms); assert_eq!(idle_count, n)`.
+async fn wait_idle_count<R>(pool: &PoolRuntime<R>, expected: usize)
+where
+    R: Pooled + Clone + Send + Sync + 'static,
+    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+    R::Lease: Into<R::Runtime> + Send + 'static,
+{
+    let deadline = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        let idle = pool.idle_count().await;
+        if idle == expected {
+            return;
+        }
+        assert!(
+            start.elapsed() < deadline,
+            "pool idle count never reached {expected}; last observed {idle}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// Waits until `counter` reaches at least `expected` (bounded). Used as the
+/// release-completion signal for the destroyed-not-recycled case, where the
+/// idle count stays `0` throughout and is therefore not a usable settle
+/// signal.
+async fn wait_count_at_least(counter: &Arc<AtomicU64>, expected: u64) {
+    let deadline = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        let observed = counter.load(Ordering::Relaxed);
+        if observed >= expected {
+            return;
+        }
+        assert!(
+            start.elapsed() < deadline,
+            "counter never reached {expected}; last observed {observed}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pool tests
 // ---------------------------------------------------------------------------
@@ -268,7 +357,9 @@ async fn pool_acquire_use_release_reacquire() {
 
     // Release by dropping.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Deterministic settle: wait for the release worker to recycle the
+    // instance back into idle instead of guessing a wall-clock delay.
+    wait_idle_count(&pool, 1).await;
 
     // Pool should have one idle instance now.
     assert_eq!(pool.idle_count().await, 1);
@@ -293,8 +384,8 @@ async fn pool_acquire_use_release_reacquire() {
         "should reuse, not create"
     );
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks, so no
+    // wall-clock settle is needed before tearing the queue down.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -325,7 +416,7 @@ async fn pool_broken_instance_gets_replaced() {
         .await
         .unwrap();
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_idle_count(&pool, 1).await;
     assert_eq!(pool.idle_count().await, 1);
 
     // Mark as broken.
@@ -352,10 +443,25 @@ async fn pool_broken_instance_gets_replaced() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // Broken flag still set, so the released instance was destroyed.
-    assert_eq!(pool.idle_count().await, 0);
+    // Broken flag still set: the released instance must be DESTROYED, not
+    // recycled. `idle_count == 0` is not a settle signal here — the pool
+    // never rises above idle 0 in this window, so waiting on it returns
+    // before the release worker has even run. The deterministic signal is
+    // the destroy counter. It is already 1 (the `acquire` above evicted +
+    // destroyed the first broken instance inline), so the event under test
+    // — releasing `handle2` destroys (not recycles) its instance — is the
+    // 1 -> 2 transition: wait for >= 2.
+    wait_count_at_least(&resource.destroy_counter, 2).await;
+    assert_eq!(
+        resource.destroy_counter.load(Ordering::Relaxed),
+        2,
+        "released broken instance must be destroyed, not recycled"
+    );
+    assert_eq!(
+        pool.idle_count().await,
+        0,
+        "destroyed instance must not return to the pool"
+    );
 
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
@@ -440,17 +546,16 @@ async fn manager_register_and_acquire_pooled() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     assert!(manager.contains(&resource_key!("test-pool")));
@@ -482,17 +587,16 @@ async fn manager_register_and_acquire_resident() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -516,17 +620,16 @@ async fn manager_shutdown_rejects_acquire() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     manager.shutdown();
@@ -546,40 +649,64 @@ async fn manager_shutdown_rejects_acquire() {
 // #390 — pool config validation + max_concurrent_creates enforcement
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn register_pooled_rejects_min_greater_than_max() {
-    let manager = Manager::new();
-    let resource = PoolTestResource::new();
+// #390 is now enforced *structurally* at `PoolRuntime` construction
+// rather than re-validated at register time: a `TopologyRuntime::Pool`
+// holding an invalid `(min_size, max_size)` is unrepresentable because
+// `PoolRuntime::new` panics before such a runtime can be built (the
+// deleted `register_pooled[_with]` shorthands surfaced a soft `Err` only
+// because they took the raw config *before* constructing the runtime).
+// These tests pin that the invariant still rejects a broken config — the
+// signal moved from a registration `Error` to a construction panic, but
+// "an invalid pool config cannot deadlock the pool" is preserved.
+
+#[test]
+fn pool_runtime_rejects_min_greater_than_max() {
     let pool_config = nebula_resource::topology::pooled::config::Config {
         min_size: 5,
         max_size: 2,
         ..Default::default()
     };
-
-    let err = manager
-        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
-        .expect_err("min > max must be rejected");
-    let msg = err.to_string();
+    let result = std::panic::catch_unwind(|| {
+        PoolRuntime::<PoolTestResource>::new(pool_config, test_config().fingerprint())
+    });
+    let panic = match result {
+        Ok(_) => panic!("min > max must be rejected at PoolRuntime construction"),
+        Err(p) => p,
+    };
+    let msg = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
     assert!(
         msg.contains("min_size") && msg.contains("max_size"),
-        "error message must mention min_size and max_size, got: {msg}",
+        "panic message must mention min_size and max_size, got: {msg}",
     );
 }
 
-#[tokio::test]
-async fn register_pooled_rejects_max_size_zero() {
-    let manager = Manager::new();
-    let resource = PoolTestResource::new();
+#[test]
+fn pool_runtime_rejects_max_size_zero() {
     let pool_config = nebula_resource::topology::pooled::config::Config {
         min_size: 0,
         max_size: 0,
         ..Default::default()
     };
-
-    let err = manager
-        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
-        .expect_err("max_size == 0 must be rejected");
-    assert!(err.to_string().contains("max_size"));
+    let result = std::panic::catch_unwind(|| {
+        PoolRuntime::<PoolTestResource>::new(pool_config, test_config().fingerprint())
+    });
+    let panic = match result {
+        Ok(_) => panic!("max_size == 0 must be rejected at PoolRuntime construction"),
+        Err(p) => p,
+    };
+    let msg = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("max_size"),
+        "panic message must mention max_size, got: {msg}",
+    );
 }
 
 #[derive(Clone)]
@@ -656,7 +783,19 @@ async fn pool_create_path_respects_max_concurrent_creates() {
         ..Default::default()
     };
     manager
-        .register_pooled::<SlowCreatePoolResource>(resource, test_config(), pool_config)
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<SlowCreatePoolResource>::new(
+                pool_config,
+                test_config().fingerprint(),
+            )),
+            acquire: Manager::erased_acquire_pooled_for::<SlowCreatePoolResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     // Fire 10 concurrent acquires so they all hit the create path.
@@ -699,17 +838,16 @@ async fn register_transitions_phase_to_ready() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let snap = manager
@@ -727,17 +865,16 @@ async fn reload_config_bumps_status_generation() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let updated_config = TestConfig {
@@ -767,17 +904,16 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let report = manager
@@ -903,7 +1039,10 @@ async fn tainted_handle_not_recycled() {
 
     handle.taint();
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // A tainted handle is destroyed, not recycled — wait for the release
+    // worker to run `destroy` (idle stays 0 throughout, so the destroy
+    // counter is the deterministic completion signal here).
+    wait_count_at_least(&resource.destroy_counter, 1).await;
 
     // Tainted handle should NOT be recycled.
     assert_eq!(pool.idle_count().await, 0);
@@ -926,17 +1065,16 @@ async fn register_emits_registered_event() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let event = rx.try_recv().expect("should have received an event");
@@ -954,17 +1092,16 @@ async fn remove_emits_removed_event() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let mut rx = manager.subscribe_events();
@@ -986,17 +1123,16 @@ async fn acquire_emits_success_event() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let mut rx = manager.subscribe_events();
@@ -1069,8 +1205,8 @@ async fn pool_concurrent_acquire_respects_max_size() {
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
 
     drop(handles);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1116,8 +1252,8 @@ async fn pool_backpressure_when_full() {
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
 
     drop(_held);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1136,17 +1272,16 @@ async fn manager_scope_exact_match() {
     let org_id = nebula_core::OrgId::new();
     let scope = ScopeLevel::Organization(org_id);
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            scope.clone(),
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: scope.clone(),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire with the same org scope.
@@ -1177,17 +1312,16 @@ async fn manager_scope_fallback_to_global() {
 
     // Register at Global scope.
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire with Organization scope — should fall back to Global.
@@ -1220,17 +1354,16 @@ async fn manager_scope_mismatch_not_found() {
     // Register at Organization(org_id) — no Global fallback.
     let org_id = nebula_core::OrgId::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Organization(org_id),
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Organization(org_id),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire with a different org scope — no match, no Global fallback.
@@ -1271,17 +1404,16 @@ async fn metrics_track_acquire_release_create_destroy() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // register calls record_create
@@ -1326,17 +1458,16 @@ async fn manager_multiple_resources_coexist() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
-            pool_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: pool_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("pool registration should succeed");
 
     // Register a resident resource.
@@ -1345,17 +1476,16 @@ async fn manager_multiple_resources_coexist() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resident_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resident_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("resident registration should succeed");
 
     assert!(manager.contains(&resource_key!("test-pool")));
@@ -1449,8 +1579,8 @@ async fn pool_acquire_with_deadline() {
     );
 
     drop(_held);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1488,18 +1618,22 @@ async fn pool_detach_removes_from_pool() {
     let lease = handle.detach();
     assert!(lease.is_some(), "guarded handle detach should return Some");
 
-    // Give time for any potential (but should-not-happen) release processing.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // `detach` disarms the release callback synchronously, so nothing can
+    // ever be submitted to the queue. Draining the release worker is the
+    // deterministic proof: after `shutdown` has run every buffered release
+    // task to completion, a (erroneously) enqueued return-to-pool would
+    // already have executed — so `idle_count == 0` afterward means "never",
+    // not merely "not yet" (a bare scheduler yield could only show the
+    // latter).
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
 
-    // Pool should NOT get the instance back — idle_count stays 0.
+    // Pool must NOT have gotten the instance back.
     assert_eq!(
         pool.idle_count().await,
         0,
         "detached handle should not return to pool"
     );
-
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1567,10 +1701,13 @@ impl Resource for ServiceTestResource {
     }
 }
 
-impl Service for ServiceTestResource {
-    const TOKEN_MODE: TokenMode = TokenMode::Cloned;
+// Folds the former `Service` in `TokenMode::Cloned`: `Cap = Unbounded`
+// ⇒ owned handle, blanket no-op `BoundedRelease` (no release boilerplate),
+// `acquire_token` is now `acquire_one`.
+impl Bounded for ServiceTestResource {
+    type Cap = Unbounded;
 
-    fn acquire_token(
+    fn acquire_one(
         &self,
         runtime: &Arc<ServiceInner>,
         _ctx: &ResourceContext,
@@ -1599,14 +1736,19 @@ struct SessionHandle {
     id: u64,
 }
 
+// Folds the former `Transport` onto `Bounded` with `Cap = Capped<N>`:
+// `open_session` is `acquire_one`, `close_session` is `release_one`. The
+// former `TransportConfig::max_sessions` (a runtime field) is the cap
+// **typestate** const generic `N`; each test instantiates the `N` it set
+// on the old `TransportConfig`.
 #[derive(Clone)]
-struct TransportTestResource {
+struct TransportTestResource<const N: usize> {
     create_counter: Arc<AtomicU64>,
     session_counter: Arc<AtomicU64>,
     close_counter: Arc<AtomicU64>,
 }
 
-impl TransportTestResource {
+impl<const N: usize> TransportTestResource<N> {
     fn new() -> Self {
         Self {
             create_counter: Arc::new(AtomicU64::new(0)),
@@ -1616,7 +1758,7 @@ impl TransportTestResource {
     }
 }
 
-impl Resource for TransportTestResource {
+impl<const N: usize> Resource for TransportTestResource<N> {
     type Config = TestConfig;
     type Runtime = Arc<TransportInner>;
     type Lease = SessionHandle;
@@ -1649,8 +1791,10 @@ impl Resource for TransportTestResource {
     }
 }
 
-impl Transport for TransportTestResource {
-    fn open_session(
+impl<const N: usize> Bounded for TransportTestResource<N> {
+    type Cap = Capped<N>;
+
+    fn acquire_one(
         &self,
         _transport: &Arc<TransportInner>,
         _ctx: &ResourceContext,
@@ -1658,8 +1802,10 @@ impl Transport for TransportTestResource {
         let id = self.session_counter.fetch_add(1, Ordering::Relaxed);
         async move { Ok(SessionHandle { id }) }
     }
+}
 
-    fn close_session(
+impl<const N: usize> BoundedRelease for TransportTestResource<N> {
+    fn release_one(
         &self,
         _transport: &Arc<TransportInner>,
         _session: SessionHandle,
@@ -1723,10 +1869,29 @@ impl Resource for ExclusiveTestResource {
     }
 }
 
-impl Exclusive for ExclusiveTestResource {
-    fn reset(
+// Folds the former `Exclusive` onto `Bounded` with `Cap = Exclusive`:
+// the old `ExclusiveRuntime` cloned the runtime into the lease, so
+// `acquire_one` returns a clone of the runtime; `release_one` IS the
+// reset (permit-held-until-`release_one`, #384).
+impl Bounded for ExclusiveTestResource {
+    type Cap = ExclusiveCap;
+
+    fn acquire_one(
+        &self,
+        runtime: &Arc<AtomicU64>,
+        _ctx: &ResourceContext,
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let lease = Arc::clone(runtime);
+        async move { Ok(lease) }
+    }
+}
+
+impl BoundedRelease for ExclusiveTestResource {
+    fn release_one(
         &self,
         _runtime: &Arc<AtomicU64>,
+        _lease: Arc<AtomicU64>,
+        _healthy: bool,
     ) -> impl Future<Output = Result<(), TestError>> + Send {
         self.reset_counter.fetch_add(1, Ordering::Relaxed);
         async { Ok(()) }
@@ -1744,7 +1909,7 @@ async fn service_acquire_cloned_token() {
         data: "svc-data".into(),
     });
     let rt =
-        ServiceRuntime::<ServiceTestResource>::new(runtime, service::config::Config::default());
+        BoundedRuntime::<ServiceTestResource>::new(&resource, runtime, BoundedConfig::default());
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1755,7 +1920,7 @@ async fn service_acquire_cloned_token() {
         .await
         .expect("first acquire should succeed");
 
-    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Service);
+    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Bounded);
     // Owned handle (Cloned mode) — generation is None.
     assert!(h1.generation().is_none());
 
@@ -1783,31 +1948,30 @@ async fn service_acquire_via_manager() {
         data: "managed-svc".into(),
     });
     let svc_rt =
-        ServiceRuntime::<ServiceTestResource>::new(runtime, service::config::Config::default());
+        BoundedRuntime::<ServiceTestResource>::new(&resource, runtime, BoundedConfig::default());
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Service(svc_rt),
-            Manager::erased_acquire_service::<ServiceTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Bounded(svc_rt),
+            acquire: Manager::erased_acquire_bounded_for::<ServiceTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     assert!(manager.contains(&resource_key!("test-service")));
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ServiceTestResource> = manager
-        .acquire_service(&ctx, &AcquireOptions::default())
+        .acquire_bounded(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Service);
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Bounded);
     assert_eq!(resource.token_counter.load(Ordering::Relaxed), 1);
 }
 
@@ -1817,15 +1981,12 @@ async fn service_acquire_via_manager() {
 
 #[tokio::test]
 async fn transport_acquire_opens_session() {
-    let resource = TransportTestResource::new();
+    let resource = TransportTestResource::<10>::new();
     let runtime = Arc::new(TransportInner {
         name: "test-conn".into(),
     });
-    let config = transport::config::Config {
-        max_sessions: 10,
-        ..Default::default()
-    };
-    let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
+    let config = BoundedConfig::default();
+    let rt = BoundedRuntime::<TransportTestResource<10>>::new(&resource, runtime, config);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1835,15 +1996,16 @@ async fn transport_acquire_opens_session() {
         .await
         .expect("acquire should succeed");
 
-    assert_eq!(
-        handle.topology_tag(),
-        nebula_resource::TopologyTag::Transport
-    );
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Bounded);
     assert_eq!(resource.session_counter.load(Ordering::Relaxed), 1);
 
-    // Drop triggers close_session via release queue.
+    // Drop triggers close_session via the release queue — wait for it to
+    // run rather than guess a delay.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.close_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     assert_eq!(resource.close_counter.load(Ordering::Relaxed), 1);
 
@@ -1853,16 +2015,17 @@ async fn transport_acquire_opens_session() {
 
 #[tokio::test]
 async fn transport_session_bounded_by_semaphore() {
-    let resource = TransportTestResource::new();
+    let resource = TransportTestResource::<2>::new();
     let runtime = Arc::new(TransportInner {
         name: "bounded-conn".into(),
     });
-    let config = transport::config::Config {
-        max_sessions: 2,
+    // max_sessions=2 is now the `Capped<2>` cap typestate (the fixture
+    // type param); only the non-cap fields remain in the config.
+    let config = BoundedConfig {
         keepalive_interval: None,
-        ..Default::default()
+        ..BoundedConfig::default()
     };
-    let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
+    let rt = BoundedRuntime::<TransportTestResource<2>>::new(&resource, runtime, config);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1902,9 +2065,20 @@ async fn transport_session_bounded_by_semaphore() {
 
     assert!(result.is_err(), "third acquire should have timed out");
 
-    // Release one session — frees a semaphore permit.
+    // Release one session — `close_session` (release queue) frees a
+    // semaphore permit. Wait for the close to complete so the permit is
+    // genuinely available before the next acquire. Assert the wait
+    // succeeded: a bug that frees the permit early (without running
+    // `close_session`) would otherwise let the next acquire pass and hide
+    // the regression.
     drop(h1);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        poll_until(std::time::Duration::from_secs(2), || {
+            resource.close_counter.load(Ordering::Relaxed) >= 1
+        })
+        .await,
+        "close_session never ran after releasing the first session"
+    );
 
     // Now third acquire should succeed.
     let h3 = rt
@@ -1916,24 +2090,25 @@ async fn transport_session_bounded_by_semaphore() {
 
     drop(h2);
     drop(h3);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
 
 #[tokio::test]
 async fn transport_acquire_timeout_when_sessions_exhausted() {
-    let resource = TransportTestResource::new();
+    let resource = TransportTestResource::<1>::new();
     let runtime = Arc::new(TransportInner {
         name: "timeout-conn".into(),
     });
-    let config = transport::config::Config {
-        max_sessions: 1,
+    // max_sessions=1 is now the `Capped<1>` cap typestate.
+    let config = BoundedConfig {
         keepalive_interval: None,
         acquire_timeout: std::time::Duration::from_millis(50),
+        drain_timeout: None,
     };
-    let rt = TransportRuntime::<TransportTestResource>::new(runtime, config);
+    let rt = BoundedRuntime::<TransportTestResource<1>>::new(&resource, runtime, config);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -1973,8 +2148,8 @@ async fn transport_acquire_timeout_when_sessions_exhausted() {
     );
 
     drop(_held);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1987,20 +2162,25 @@ async fn transport_acquire_timeout_when_sessions_exhausted() {
 async fn exclusive_acquire_one_at_a_time() {
     let resource = ExclusiveTestResource::new();
     let runtime = Arc::new(AtomicU64::new(42));
-    let rt = ExclusiveRuntime::<ExclusiveTestResource>::new(
-        runtime,
-        exclusive::config::Config::default(),
-    );
+    let rt =
+        BoundedRuntime::<ExclusiveTestResource>::new(&resource, runtime, BoundedConfig::default());
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     // First acquire succeeds.
     let h1 = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("first acquire should succeed");
 
-    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Exclusive);
+    assert_eq!(h1.topology_tag(), nebula_resource::TopologyTag::Bounded);
 
     // Second acquire should block (semaphore has 1 permit).
     let rt_ref = &rt;
@@ -2009,28 +2189,43 @@ async fn exclusive_acquire_one_at_a_time() {
 
     let result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
         rt_ref
-            .acquire(resource_ref, rq_ref, 0, &AcquireOptions::default(), None)
+            .acquire(
+                resource_ref,
+                &test_ctx(),
+                rq_ref,
+                0,
+                &AcquireOptions::default(),
+                None,
+            )
             .await
     })
     .await;
 
     assert!(result.is_err(), "second acquire should have timed out");
 
-    // Release the first handle.
+    // Release the first handle. The next acquire (no deadline) blocks on
+    // the semaphore until `reset` completes and the permit is dropped —
+    // that is itself the deterministic wait, no fixed sleep needed.
     drop(h1);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Now second acquire should succeed.
     let h2 = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("second acquire after release");
 
-    assert_eq!(h2.topology_tag(), nebula_resource::TopologyTag::Exclusive);
+    assert_eq!(h2.topology_tag(), nebula_resource::TopologyTag::Bounded);
 
     drop(h2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2039,23 +2234,31 @@ async fn exclusive_acquire_one_at_a_time() {
 async fn exclusive_reset_called_on_release() {
     let resource = ExclusiveTestResource::new();
     let runtime = Arc::new(AtomicU64::new(0));
-    let rt = ExclusiveRuntime::<ExclusiveTestResource>::new(
-        runtime,
-        exclusive::config::Config::default(),
-    );
+    let rt =
+        BoundedRuntime::<ExclusiveTestResource>::new(&resource, runtime, BoundedConfig::default());
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     let handle = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("acquire should succeed");
 
     assert_eq!(resource.reset_counter.load(Ordering::Relaxed), 0);
 
-    // Drop triggers reset via release queue.
+    // Drop triggers reset via the release queue — wait for it to run.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.reset_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     assert_eq!(
         resource.reset_counter.load(Ordering::Relaxed),
@@ -2065,12 +2268,22 @@ async fn exclusive_reset_called_on_release() {
 
     // Acquire and release again to confirm reset increments.
     let handle2 = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("second acquire");
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.reset_counter.load(Ordering::Relaxed) >= 2
+    })
+    .await;
 
     assert_eq!(
         resource.reset_counter.load(Ordering::Relaxed),
@@ -2086,22 +2299,37 @@ async fn exclusive_reset_called_on_release() {
 async fn exclusive_acquire_timeout_when_locked() {
     let resource = ExclusiveTestResource::new();
     let runtime = Arc::new(AtomicU64::new(0));
-    let config = exclusive::config::Config {
+    let config = BoundedConfig {
         acquire_timeout: std::time::Duration::from_millis(50),
+        ..BoundedConfig::default()
     };
-    let rt = ExclusiveRuntime::<ExclusiveTestResource>::new(runtime, config);
+    let rt = BoundedRuntime::<ExclusiveTestResource>::new(&resource, runtime, config);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     // Hold the exclusive lock.
     let _h1 = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("first acquire should succeed");
 
     // Second acquire should time out via config timeout.
     let result = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await;
     let err = match result {
         Err(e) => e,
@@ -2116,7 +2344,9 @@ async fn exclusive_acquire_timeout_when_locked() {
     // Also test deadline-based timeout via AcquireOptions.
     let short_deadline = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(10));
-    let result2 = rt.acquire(&resource, &rq, 0, &short_deadline, None).await;
+    let result2 = rt
+        .acquire(&resource, &test_ctx(), &rq, 0, &short_deadline, None)
+        .await;
     let err2 = match result2 {
         Err(e) => e,
         Ok(_) => panic!("deadline acquire should time out"),
@@ -2128,8 +2358,8 @@ async fn exclusive_acquire_timeout_when_locked() {
     );
 
     drop(_h1);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2171,10 +2401,28 @@ impl Resource for SlowResetExclusive {
     }
 }
 
-impl Exclusive for SlowResetExclusive {
-    fn reset(
+// Folds the former `Exclusive`: `release_one` IS the (slow) reset; the
+// permit is held until it resolves (#384), exactly as the old
+// `ExclusiveRuntime` held it across `reset`.
+impl Bounded for SlowResetExclusive {
+    type Cap = ExclusiveCap;
+
+    fn acquire_one(
+        &self,
+        runtime: &Arc<AtomicU64>,
+        _ctx: &ResourceContext,
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let lease = Arc::clone(runtime);
+        async move { Ok(lease) }
+    }
+}
+
+impl BoundedRelease for SlowResetExclusive {
+    fn release_one(
         &self,
         _runtime: &Arc<AtomicU64>,
+        _lease: Arc<AtomicU64>,
+        _healthy: bool,
     ) -> impl Future<Output = Result<(), TestError>> + Send {
         let in_progress = self.in_progress.clone();
         async move {
@@ -2198,12 +2446,19 @@ async fn exclusive_next_acquire_waits_until_reset_completes() {
     };
     let runtime = Arc::new(AtomicU64::new(0));
     let rt =
-        ExclusiveRuntime::<SlowResetExclusive>::new(runtime, exclusive::config::Config::default());
+        BoundedRuntime::<SlowResetExclusive>::new(&resource, runtime, BoundedConfig::default());
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     let h1 = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("first acquire");
     drop(h1);
@@ -2216,7 +2471,14 @@ async fn exclusive_next_acquire_waits_until_reset_completes() {
 
     let start = std::time::Instant::now();
     let h2 = rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("second acquire");
     let elapsed = start.elapsed();
@@ -2291,8 +2553,8 @@ async fn pool_permit_not_leaked_after_release() {
         .await
         .expect("second acquire must not block — permit should be available");
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2318,17 +2580,16 @@ async fn registry_backed_metrics_record_operations() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
-            pool_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: pool_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("pool registration should succeed");
 
     let resident_resource = ResidentTestResource::new();
@@ -2336,17 +2597,16 @@ async fn registry_backed_metrics_record_operations() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resident_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resident_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("resident registration should succeed");
 
     // Acquire the pooled resource once.
@@ -2356,7 +2616,16 @@ async fn registry_backed_metrics_record_operations() {
         .await
         .expect("pool acquire should succeed");
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // `acquire_total` / `create_total` are recorded synchronously during
+    // the acquire (not by the release worker). Poll the precondition the
+    // asserts depend on rather than guess a wall-clock delay.
+    poll_until(std::time::Duration::from_secs(2), || {
+        manager
+            .metrics()
+            .map(nebula_resource::ResourceOpsMetrics::snapshot)
+            .is_some_and(|s| s.acquire_total >= 1 && s.create_total >= 2)
+    })
+    .await;
 
     // Aggregate metrics via snapshot.
     let snap = manager
@@ -2404,17 +2673,16 @@ async fn graceful_shutdown_stops_new_acquires() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     manager
@@ -2448,17 +2716,16 @@ async fn graceful_shutdown_clears_registry() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     // Graceful shutdown now clears the registry to allow release queue
@@ -2638,17 +2905,16 @@ async fn acquire_retries_on_transient_failure() {
     };
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            Some(resilience),
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2682,17 +2948,16 @@ async fn acquire_no_retry_on_permanent_failure() {
     };
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            Some(resilience),
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<PermanentFailResource>(),
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2717,17 +2982,16 @@ async fn acquire_succeeds_without_resilience() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2760,17 +3024,16 @@ async fn acquire_timeout_fires() {
     };
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            Some(resilience),
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2796,17 +3059,16 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let short_drain =
@@ -2848,24 +3110,23 @@ async fn topology_mismatch_returns_permanent_error() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let ctx = test_ctx();
 
     // Pool resource, but we call acquire_exclusive — wrong topology.
     let result = manager
-        .acquire_exclusive::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire_bounded::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await;
 
     match result {
@@ -2902,17 +3163,16 @@ async fn retry_exhaustion_returns_last_transient_error() {
     };
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            Some(resilience),
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -2955,17 +3215,16 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            Some(gate.clone()),
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
+            resilience: None,
+            recovery_gate: Some(gate.clone()),
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -3071,7 +3330,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_idle_count(&pool, 1).await;
     assert_eq!(pool.idle_count().await, 1);
 
     // Change fingerprint — makes the idle entry stale.
@@ -3098,8 +3357,8 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -3137,10 +3396,11 @@ async fn pool_max_lifetime_evicts_expired_entry() {
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_idle_count(&pool, 1).await;
     assert_eq!(pool.idle_count().await, 1);
 
-    // Sleep past max_lifetime.
+    // Sleep past max_lifetime — a deliberate clock advance (the entry must
+    // actually age beyond its lifetime), not a release-settle guess.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Next acquire should destroy expired entry and create fresh.
@@ -3164,8 +3424,8 @@ async fn pool_max_lifetime_evicts_expired_entry() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -3178,12 +3438,17 @@ async fn pool_max_lifetime_evicts_expired_entry() {
 #[derive(Clone)]
 struct DropOnRecycleResource {
     create_counter: Arc<AtomicU64>,
+    /// Release-completion signal: the idle count stays `0` for this resource
+    /// (every release ends in `destroy`), so the destroy counter — not the
+    /// idle count — is the deterministic "release ran" signal.
+    destroy_counter: Arc<AtomicU64>,
 }
 
 impl DropOnRecycleResource {
     fn new() -> Self {
         Self {
             create_counter: Arc::new(AtomicU64::new(0)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -3211,6 +3476,7 @@ impl Resource for DropOnRecycleResource {
     }
 
     async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -3257,7 +3523,15 @@ async fn pool_recycle_drop_destroys_entry() {
         .expect("acquire should succeed");
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // recycle=Drop destroys the instance — wait for `destroy` to run (idle
+    // stays 0 throughout, so the destroy counter is the settle signal).
+    assert!(
+        poll_until(std::time::Duration::from_secs(2), || {
+            resource.destroy_counter.load(Ordering::Relaxed) >= 1
+        })
+        .await,
+        "destroy never ran for recycle=Drop"
+    );
 
     assert_eq!(
         pool.idle_count().await,
@@ -3296,8 +3570,12 @@ impl Resource for FailingSessionTransport {
     }
 }
 
-impl Transport for FailingSessionTransport {
-    async fn open_session(
+// Folds the former `Transport`: `open_session` (always failing) is
+// `acquire_one`; `release_one` is the old no-op default close.
+impl Bounded for FailingSessionTransport {
+    type Cap = Capped<1>;
+
+    async fn acquire_one(
         &self,
         _transport: &u32,
         _ctx: &ResourceContext,
@@ -3306,14 +3584,22 @@ impl Transport for FailingSessionTransport {
     }
 }
 
+impl BoundedRelease for FailingSessionTransport {
+    async fn release_one(
+        &self,
+        _transport: &u32,
+        _session: u32,
+        _healthy: bool,
+    ) -> Result<(), TestError> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn transport_open_session_failure_frees_permit() {
     let resource = FailingSessionTransport;
-    let config = transport::config::Config {
-        max_sessions: 1,
-        ..Default::default()
-    };
-    let transport_rt = TransportRuntime::<FailingSessionTransport>::new(1u32, config);
+    let transport_rt =
+        BoundedRuntime::<FailingSessionTransport>::new(&resource, 1u32, BoundedConfig::default());
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
     let ctx = test_ctx();
@@ -3380,8 +3666,27 @@ impl Resource for FailingResetExclusive {
     }
 }
 
-impl Exclusive for FailingResetExclusive {
-    async fn reset(&self, _runtime: &u32) -> Result<(), TestError> {
+// Folds the former `Exclusive`: `release_one` IS the (failing) reset.
+// The `Exclusive` cap's observed release (R17/S4) poisons the runtime on
+// a failed reset but STILL returns the permit, so the next acquire is not
+// deadlocked — it fails *closed* (a prompt `Permanent` error) rather than
+// being served the half-reset instance. That fail-closed-but-not-wedged
+// pair is exactly the invariant this test asserts.
+impl Bounded for FailingResetExclusive {
+    type Cap = ExclusiveCap;
+
+    async fn acquire_one(&self, runtime: &u32, _ctx: &ResourceContext) -> Result<u32, TestError> {
+        Ok(*runtime)
+    }
+}
+
+impl BoundedRelease for FailingResetExclusive {
+    async fn release_one(
+        &self,
+        _runtime: &u32,
+        _lease: u32,
+        _healthy: bool,
+    ) -> Result<(), TestError> {
         Err(TestError("reset failed".into()))
     }
 }
@@ -3389,28 +3694,46 @@ impl Exclusive for FailingResetExclusive {
 #[tokio::test]
 async fn exclusive_reset_failure_does_not_block_next_acquire() {
     let resource = FailingResetExclusive;
-    let config = exclusive::config::Config {
+    let config = BoundedConfig {
         acquire_timeout: std::time::Duration::from_secs(5),
+        ..BoundedConfig::default()
     };
-    let exclusive_rt = ExclusiveRuntime::<FailingResetExclusive>::new(1u32, config);
+    let exclusive_rt = BoundedRuntime::<FailingResetExclusive>::new(&resource, 1u32, config);
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     // First acquire should succeed.
     let handle = exclusive_rt
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(
+            &resource,
+            &test_ctx(),
+            &rq,
+            0,
+            &AcquireOptions::default(),
+            None,
+        )
         .await
         .expect("first acquire should succeed");
 
-    // Drop the handle — this triggers reset() which fails.
+    // Drop the handle — this triggers reset() which fails. The next acquire
+    // (bounded by its own deadline) blocks on the semaphore until the permit
+    // is dropped after `reset` resolves — that wait is the deterministic
+    // synchronization, no fixed sleep needed. The poison latch is set
+    // *before* the permit is dropped, so once the second acquire clears the
+    // permit it deterministically observes the poisoned runtime.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // Second acquire should still succeed — the permit was returned despite
-    // the reset failure.
+    // Second acquire must fail *closed* (S4): the failed reset poisoned the
+    // runtime, so it is NOT served the half-reset instance. But the permit
+    // was returned, so the rejection is a prompt `Permanent` error within
+    // the deadline — NOT a backpressure/timeout (which would mean the
+    // semaphore wedged). A pre-fix `is_ok()` here encoded the Thread-1 bug
+    // (half-reset instance handed onward).
+    let started = std::time::Instant::now();
     let handle2 = exclusive_rt
         .acquire(
             &resource,
+            &test_ctx(),
             &rq,
             0,
             &AcquireOptions::default()
@@ -3418,15 +3741,25 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
             None,
         )
         .await;
-    assert!(
-        handle2.is_ok(),
-        "second acquire should succeed despite reset failure: {:?}",
-        handle2.err()
+    let err = handle2.expect_err(
+        "second acquire must fail closed after a poisoning failed reset \
+         (S4): the half-reset instance must NOT be handed onward",
     );
-
-    drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Permanent,
+        "the poisoned-runtime rejection must be a `Permanent` error, NOT a \
+         backpressure/timeout (the permit was returned — no deadlock; S4 \
+         preserve): {err:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "the fail-closed rejection must be prompt (permit returned, no \
+         deadlock — within the 500ms deadline); took {:?}",
+        started.elapsed()
+    );
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -3448,17 +3781,16 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3486,17 +3818,16 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3522,17 +3853,16 @@ async fn recovery_gate_allows_acquire_when_idle() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3559,17 +3889,16 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3589,17 +3918,16 @@ async fn recovery_gate_none_does_not_affect_acquire() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3711,17 +4039,16 @@ async fn reload_config_swaps_config_and_bumps_generation() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     // Check initial generation.
@@ -3751,17 +4078,16 @@ async fn reload_config_rejects_invalid_config() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     // Reload with invalid config — should fail.
@@ -3798,17 +4124,16 @@ async fn reload_config_emits_event() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     // Drain the Registered event.
@@ -3836,17 +4161,16 @@ async fn reload_config_evicts_stale_pool_instances() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
-            resource.clone(),
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     let ctx = test_ctx();
@@ -3858,7 +4182,27 @@ async fn reload_config_evicts_stale_pool_instances() {
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for the release worker to recycle the instance back into idle so
+    // there is a stale entry for the reload to evict (deterministic settle
+    // via the observable idle count, not a wall-clock guess).
+    {
+        let deadline = std::time::Duration::from_secs(2);
+        let start = std::time::Instant::now();
+        loop {
+            let idle = manager
+                .pool_stats::<ReloadPoolResource>(&ScopeLevel::Global)
+                .await
+                .map_or(0, |s| s.idle);
+            if idle >= 1 {
+                break;
+            }
+            assert!(
+                start.elapsed() < deadline,
+                "released instance never recycled back into idle (idle={idle})"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
 
     // Reload with new fingerprint — stale instances should be evicted.
     manager
@@ -3904,17 +4248,16 @@ async fn reload_config_rejected_when_shutdown() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     manager.shutdown();
@@ -3942,17 +4285,16 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     // Hold a handle across the shutdown so drain cannot complete.
@@ -4005,17 +4347,16 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     // Subscribe BEFORE the shutdown so we can capture the
@@ -4093,17 +4434,16 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -4142,17 +4482,16 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            None,
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let report = manager
@@ -4197,17 +4536,16 @@ async fn probe_boundary_serializes_callers_under_herd() {
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
-                nebula_resource::SLOT_IDENTITY_UNBOUND,
-            ),
-            None,
-            Some(gate.clone()),
-        )
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
+            resilience: None,
+            recovery_gate: Some(gate.clone()),
+        })
         .unwrap();
 
     // First acquire becomes the probe and fails — gate transitions to Failed.

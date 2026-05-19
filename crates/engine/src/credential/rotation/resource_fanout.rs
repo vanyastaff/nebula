@@ -15,18 +15,23 @@
 //!
 //! The resource registry is keyed structurally by
 //! `(ResourceKey, ScopeLevel, slot_identity)` — see
-//! [`nebula_resource::dedup`] and [`nebula_resource::SLOT_IDENTITY_UNBOUND`].
-//! Two registrations of the same resource type at the same scope whose
+//! [`nebula_resource::dedup`] and [`nebula_resource::SlotIdentity`]. Two
+//! registrations of the same resource type at the same scope whose
 //! resolved credentials differ are *distinct rows* (the multi-tenant
 //! anti-bleed barrier). A `Manager::refresh_slot` call against a multi-row
 //! `(key, scope)` fails closed (`Ambiguous`) precisely because it cannot pick
 //! a row without the resolved identity.
 //!
-//! The reverse-index entry therefore records the resolved `slot_identity`
-//! alongside `(ResourceKey, ScopeLevel, slot_name)` so a rotation routes to
-//! the *specific* resolved registry row rather than the whole `(key, scope)`
-//! family. This is forward-correctness against the structural dedup model,
-//! not extra precision for its own sake.
+//! The reverse-index entry therefore records the resolved
+//! [`SlotIdentity`] alongside
+//! `(ResourceKey, ScopeLevel, slot_name)` so a rotation routes to the
+//! *specific* resolved registry row rather than the whole `(key, scope)`
+//! family. The identity is the **collision-free structural** value
+//! (`SlotIdentity`, exact string equality over the canonical-sorted
+//! resolved `(slot, credential)` pairs — *not* a collidable digest), so the
+//! reverse-index key cannot alias two tenants' rows. This is
+//! forward-correctness against the structural dedup model, not extra
+//! precision for its own sake.
 //!
 //! The engine consumes each credential rotation signal and translates it into typed `Manager` port
 //! calls; the resource layer never reaches back across the boundary. This index is an in-process,
@@ -37,20 +42,24 @@ use std::time::Duration;
 use dashmap::DashMap;
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::CredentialId;
+use nebula_resource::SlotIdentity;
 
 /// One resource registry row affected by a credential rotation.
 ///
 /// - `resource_key` / `scope`: the structural address of the registry row.
 /// - `slot_name`: the credential slot on that row that resolved the rotated
 ///   credential.
-/// - `slot_identity`: the resolved structural identity from
-///   [`nebula_resource::dedup::slot_identity`]; it disambiguates multi-tenant
-///   rows that share `(resource_key, scope)` so a rotation routes to exactly
-///   the row whose slot resolved to the rotated credential.
+/// - `slot_identity`: the resolved **collision-free structural** identity
+///   ([`SlotIdentity`]); it disambiguates
+///   multi-tenant rows that share `(resource_key, scope)` so a rotation
+///   routes to exactly the row whose slot resolved to the rotated
+///   credential. Equality is exact string equality (no digest), so two
+///   distinct resolved binding sets can never alias this reverse-index key.
 ///
-/// [`nebula_resource::SLOT_IDENTITY_UNBOUND`] is the `slot_identity` for a row
-/// that resolved no credential slots (single-row-per-`(key, scope)` legacy
-/// behaviour); such rows still appear here verbatim.
+/// [`SlotIdentity::Unbound`](nebula_resource::SlotIdentity) is the
+/// `slot_identity` for a row that resolved no credential slots
+/// (single-row-per-`(key, scope)` behaviour); such rows still appear here
+/// verbatim.
 ///
 /// Fields are named (rather than a positional tuple) so call sites that
 /// destructure a bind cannot transpose `resource_key`/`scope`/`slot_name`.
@@ -62,8 +71,9 @@ pub struct Bind {
     pub scope: ScopeLevel,
     /// Credential slot on the row that resolved the rotated credential.
     pub slot_name: String,
-    /// Resolved structural slot identity disambiguating multi-tenant rows.
-    pub slot_identity: u64,
+    /// Resolved **collision-free structural** slot identity disambiguating
+    /// multi-tenant rows (exact string equality, not a collidable digest).
+    pub slot_identity: SlotIdentity,
 }
 
 /// Aggregate of a per-slot rotation fan-out across every affected resource
@@ -134,7 +144,7 @@ impl ResourceFanoutIndex {
         resource_key: ResourceKey,
         scope: ScopeLevel,
         slot_name: impl Into<String>,
-        slot_identity: u64,
+        slot_identity: SlotIdentity,
     ) {
         let entry = Bind {
             resource_key,
@@ -190,13 +200,13 @@ impl ResourceFanoutIndex {
         &self,
         resource_key: &ResourceKey,
         scope: &ScopeLevel,
-        slot_identity: u64,
+        slot_identity: &SlotIdentity,
     ) {
         self.by_credential.retain(|_, rows| {
             rows.retain(|b| {
                 b.resource_key != *resource_key
                     || b.scope != *scope
-                    || b.slot_identity != slot_identity
+                    || b.slot_identity != *slot_identity
             });
             !rows.is_empty()
         });
@@ -204,7 +214,7 @@ impl ResourceFanoutIndex {
 
     /// Fans a completed credential refresh out to every resource registry
     /// row that resolved `cid`, calling
-    /// [`Manager::refresh_slot_for`](nebula_resource::Manager::refresh_slot_for)
+    /// [`Manager::refresh_slot_for_identity`](nebula_resource::Manager::refresh_slot_for_identity)
     /// per row.
     ///
     /// The engine (exec layer, ) owns rotation orchestration: it has
@@ -214,7 +224,7 @@ impl ResourceFanoutIndex {
     /// layer never reaches back.
     ///
     /// **Per-resource timeout isolation .** Each row's
-    /// `refresh_slot_for` is independently wrapped in
+    /// `refresh_slot_for_identity` is independently wrapped in
     /// `tokio::time::timeout(per_resource_timeout, …)` and all are driven
     /// concurrently via [`futures::future::join_all`]. One slow, failed, or
     /// timed-out row therefore **never aborts or fails a sibling** — every
@@ -224,15 +234,15 @@ impl ResourceFanoutIndex {
     /// Identity routing: a multi-tenant `(key, scope)` has more than one
     /// resolved row, so `Manager::refresh_slot` (identity-agnostic) would
     /// fail closed with `Ambiguous`. This drives the slot-identity-pinned
-    /// `refresh_slot_for` with the `slot_identity` recorded at
+    /// `refresh_slot_for_identity` with the `slot_identity` recorded at
     /// [`bind`](Self::bind) time so the rotation reaches exactly the
     /// resolved row.
     ///
     /// Redaction: only the aggregate counts and per-row key / slot / scope /
-    /// `slot_identity` (a `u64`) / duration reach spans — never credential
-    /// or secret material. The returned aggregate is a metrics/dashboard
-    /// signal, **not** an audit record ; the caller still owns
-    /// any audit write.
+    /// `slot_identity` (the resolved structural identity) / duration reach
+    /// spans — never credential or secret material. The returned aggregate
+    /// is a metrics/dashboard signal, **not** an audit record ; the caller
+    /// still owns any audit write.
     ///
     /// An empty `affected(cid)` returns
     /// [`RotationOutcome::default()`](RotationOutcome) (a no-op fan-out).
@@ -254,13 +264,14 @@ impl ResourceFanoutIndex {
 
     /// Fans a credential revoke (e.g. an lease revoke) out to every
     /// resource registry row that resolved `cid`, calling
-    /// [`Manager::revoke_slot_for`](nebula_resource::Manager::revoke_slot_for)
+    /// [`Manager::revoke_slot_for_identity`](nebula_resource::Manager::revoke_slot_for_identity)
     /// per row.
     ///
     /// Same per-resource timeout isolation, identity routing, redaction, and
     /// "aggregate is not an audit record" contract as
     /// [`dispatch_refresh`](Self::dispatch_refresh) — only the per-row port
-    /// differs (`revoke_slot_for` taints → drains → runs the revoke hook).
+    /// differs (`revoke_slot_for_identity` taints → drains → runs the revoke
+    /// hook).
     #[tracing::instrument(
         level = "debug",
         name = "nebula.credential.rotation.fanout_revoke",
@@ -290,13 +301,13 @@ impl ResourceFanoutIndex {
     /// fail a sibling — every row's outcome is recorded independently.
     ///
     /// **Revoke is two-phase and cancellation-safe .**
-    /// `Manager::revoke_slot_for` is *not* called inside the timeout: a Rust
-    /// `async fn` body is lazy, so a timeout future dropped before its first
-    /// poll would skip the synchronous taint and leave new acquires accepted
-    /// on a credential whose revoke "timed out". Instead the synchronous
-    /// `Manager::taint_slot_for` runs **first, outside and before** the
-    /// `tokio::time::timeout` (the taint is fully applied the instant it
-    /// returns), and **only** the cancellation-safe
+    /// `Manager::revoke_slot_for_identity` is *not* called inside the
+    /// timeout: a Rust `async fn` body is lazy, so a timeout future dropped
+    /// before its first poll would skip the synchronous taint and leave new
+    /// acquires accepted on a credential whose revoke "timed out". Instead
+    /// the synchronous `Manager::taint_slot_for_identity` runs **first,
+    /// outside and before** the `tokio::time::timeout` (the taint is fully
+    /// applied the instant it returns), and **only** the cancellation-safe
     /// `Manager::drain_and_revoke` tail is wrapped in the per-resource
     /// timeout. A timed-out (or otherwise dropped) drain tail therefore
     /// leaves the row tainted — recorded `timed_out`, never silently
@@ -304,7 +315,7 @@ impl ResourceFanoutIndex {
     /// row's terminal outcome (`failed`); the drain tail is then not entered.
     /// Refresh has no pre-`await` state mutation (the engine already stored
     /// the fresh material before this is called), so it stays a single
-    /// timeout-wrapped `refresh_slot_for` call.
+    /// timeout-wrapped `refresh_slot_for_identity` call.
     ///
     /// Each row's `Bind` is moved into its own dispatch future (the snapshot
     /// from [`affected`](Self::affected) is already an owned `Vec`, so no
@@ -332,11 +343,11 @@ impl ResourceFanoutIndex {
                 FanoutOp::Refresh => {
                     // Refresh has no pre-`await` state mutation, so the whole
                     // call is safe to wrap in the per-resource timeout.
-                    let refresh = mgr.refresh_slot_for(
+                    let refresh = mgr.refresh_slot_for_identity(
                         &b.resource_key,
                         b.scope.clone(),
                         &b.slot_name,
-                        b.slot_identity,
+                        &b.slot_identity,
                     );
                     match tokio::time::timeout(per_resource_timeout, refresh).await {
                         Ok(Ok(())) => RowOutcome::Success,
@@ -347,7 +358,7 @@ impl ResourceFanoutIndex {
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
-                                slot_identity = b.slot_identity,
+                                slot_identity = ?b.slot_identity,
                                 error = %err,
                                 "rotation fan-out: per-resource refresh failed; \
                                  siblings unaffected",
@@ -359,7 +370,7 @@ impl ResourceFanoutIndex {
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
-                                slot_identity = b.slot_identity,
+                                slot_identity = ?b.slot_identity,
                                 timeout_ms = per_resource_timeout.as_millis() as u64,
                                 "rotation fan-out: per-resource refresh timed out; \
                                  siblings unaffected",
@@ -375,11 +386,11 @@ impl ResourceFanoutIndex {
                     // never skip it . A taint failure
                     // (resolution miss / manager shutting down) is this
                     // row's terminal outcome — the drain tail is not entered.
-                    let tainted = match mgr.taint_slot_for(
+                    let tainted = match mgr.taint_slot_for_identity(
                         &b.resource_key,
                         b.scope.clone(),
                         &b.slot_name,
-                        b.slot_identity,
+                        &b.slot_identity,
                     ) {
                         Ok(t) => t,
                         Err(err) => {
@@ -387,7 +398,7 @@ impl ResourceFanoutIndex {
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
-                                slot_identity = b.slot_identity,
+                                slot_identity = ?b.slot_identity,
                                 error = %err,
                                 "rotation fan-out: per-resource revoke taint failed; \
                                  siblings unaffected",
@@ -415,7 +426,7 @@ impl ResourceFanoutIndex {
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
-                                slot_identity = b.slot_identity,
+                                slot_identity = ?b.slot_identity,
                                 error = %err,
                                 "rotation fan-out: per-resource revoke hook failed \
                                  (row stays tainted); siblings unaffected",
@@ -427,7 +438,7 @@ impl ResourceFanoutIndex {
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
-                                slot_identity = b.slot_identity,
+                                slot_identity = ?b.slot_identity,
                                 timeout_ms = per_resource_timeout.as_millis() as u64,
                                 "rotation fan-out: per-resource revoke hook timed out \
                                  (drain already completed or also timed out; row stays \
@@ -469,12 +480,12 @@ impl ResourceFanoutIndex {
 /// Which typed `Manager` slot port the fan-out drives per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FanoutOp {
-    /// `Manager::refresh_slot_for` — credential rotated, fresh material
-    /// already resolved and stored by the engine.
+    /// `Manager::refresh_slot_for_identity` — credential rotated, fresh
+    /// material already resolved and stored by the engine.
     Refresh,
     /// Credential revoked (e.g. lease revoke). Driven as the
-    /// two-phase port: synchronous `Manager::taint_slot_for` outside the
-    /// timeout, then the timeout-wrapped cancellation-safe
+    /// two-phase port: synchronous `Manager::taint_slot_for_identity`
+    /// outside the timeout, then the timeout-wrapped cancellation-safe
     /// `Manager::drain_and_revoke` tail.
     Revoke,
 }
@@ -515,7 +526,7 @@ mod tests {
         ScopeLevel::Workflow(WorkflowId::new())
     }
 
-    fn bound(key: &ResourceKey, scope: &ScopeLevel, slot: &str, identity: u64) -> Bind {
+    fn bound(key: &ResourceKey, scope: &ScopeLevel, slot: &str, identity: SlotIdentity) -> Bind {
         Bind {
             resource_key: key.clone(),
             scope: scope.clone(),
@@ -530,8 +541,22 @@ mod tests {
         let cid = cred();
         let key = rk("pg");
         let scope = wf_scope();
-        idx.bind(cid, key.clone(), scope.clone(), "db", 0x1234);
-        assert_eq!(idx.affected(&cid), vec![bound(&key, &scope, "db", 0x1234)]);
+        idx.bind(
+            cid,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0x1234")]),
+        );
+        assert_eq!(
+            idx.affected(&cid),
+            vec![bound(
+                &key,
+                &scope,
+                "db",
+                SlotIdentity::from_bindings([("k", "cred-0x1234")])
+            )]
+        );
         idx.unbind_resource(&key, &scope);
         assert!(idx.affected(&cid).is_empty());
     }
@@ -547,10 +572,38 @@ mod tests {
         let scope = wf_scope();
         let c1 = cred();
         let c2 = cred();
-        idx.bind(c1, key.clone(), scope.clone(), "db", 0xAAAA);
-        idx.bind(c2, key.clone(), scope.clone(), "db", 0xBBBB);
-        assert_eq!(idx.affected(&c1), vec![bound(&key, &scope, "db", 0xAAAA)]);
-        assert_eq!(idx.affected(&c2), vec![bound(&key, &scope, "db", 0xBBBB)]);
+        idx.bind(
+            c1,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0xaaaa")]),
+        );
+        idx.bind(
+            c2,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0xbbbb")]),
+        );
+        assert_eq!(
+            idx.affected(&c1),
+            vec![bound(
+                &key,
+                &scope,
+                "db",
+                SlotIdentity::from_bindings([("k", "cred-0xaaaa")])
+            )]
+        );
+        assert_eq!(
+            idx.affected(&c2),
+            vec![bound(
+                &key,
+                &scope,
+                "db",
+                SlotIdentity::from_bindings([("k", "cred-0xbbbb")])
+            )]
+        );
     }
 
     #[test]
@@ -559,8 +612,20 @@ mod tests {
         let cid = cred();
         let key = rk("pg");
         let scope = wf_scope();
-        idx.bind(cid, key.clone(), scope.clone(), "db", 0x1234);
-        idx.bind(cid, key, scope, "db", 0x1234);
+        idx.bind(
+            cid,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0x1234")]),
+        );
+        idx.bind(
+            cid,
+            key,
+            scope,
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0x1234")]),
+        );
         assert_eq!(idx.affected(&cid).len(), 1);
     }
 
@@ -574,10 +639,26 @@ mod tests {
         let scope = wf_scope();
         let c1 = cred();
         let c2 = cred();
-        idx.bind(c1, key.clone(), scope.clone(), "db", 0xAAAA);
-        idx.bind(c2, key.clone(), scope.clone(), "db", 0xBBBB);
+        idx.bind(
+            c1,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0xaaaa")]),
+        );
+        idx.bind(
+            c2,
+            key.clone(),
+            scope.clone(),
+            "db",
+            SlotIdentity::from_bindings([("k", "cred-0xbbbb")]),
+        );
 
-        idx.unbind_resource_identity(&key, &scope, 0xAAAA);
+        idx.unbind_resource_identity(
+            &key,
+            &scope,
+            &SlotIdentity::from_bindings([("k", "cred-0xaaaa")]),
+        );
 
         assert!(
             idx.affected(&c1).is_empty(),
@@ -585,7 +666,12 @@ mod tests {
         );
         assert_eq!(
             idx.affected(&c2),
-            vec![bound(&key, &scope, "db", 0xBBBB)],
+            vec![bound(
+                &key,
+                &scope,
+                "db",
+                SlotIdentity::from_bindings([("k", "cred-0xbbbb")])
+            )],
             "sibling sharing (key, scope) but a different identity must survive"
         );
     }
@@ -633,8 +719,10 @@ mod tests {
 
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
         use nebula_resource::{
-            Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig, ResourceContext,
-            error::Error as ResourceError, resource::ResourceMetadata,
+            Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+            error::Error as ResourceError,
+            resource::ResourceMetadata,
+            runtime::{TopologyRuntime, resident::ResidentRuntime},
             topology::resident::Resident,
         };
         use tokio_util::sync::CancellationToken;
@@ -669,8 +757,8 @@ mod tests {
 
         #[derive(Clone, Default)]
         struct Ledger {
-            /// slot_identity -> behaviour.
-            behaviour: Arc<Mutex<HashMap<u64, Behaviour>>>,
+            /// resolved structural slot_identity -> behaviour.
+            behaviour: Arc<Mutex<HashMap<SlotIdentity, Behaviour>>>,
             /// Total refresh-hook entries (proves siblings still ran).
             refresh_entered: Arc<AtomicUsize>,
             /// Total revoke-hook entries.
@@ -678,15 +766,15 @@ mod tests {
         }
 
         impl Ledger {
-            fn set(&self, identity: u64, b: Behaviour) {
+            fn set(&self, identity: SlotIdentity, b: Behaviour) {
                 self.behaviour.lock().expect("ledger").insert(identity, b);
             }
-            fn behaviour_for(&self, identity: u64) -> Behaviour {
+            fn behaviour_for(&self, identity: &SlotIdentity) -> Behaviour {
                 *self
                     .behaviour
                     .lock()
                     .expect("ledger")
-                    .get(&identity)
+                    .get(identity)
                     .unwrap_or(&Behaviour::FastOk)
             }
         }
@@ -709,7 +797,7 @@ mod tests {
 
         #[derive(Clone)]
         struct CtlResource {
-            identity: u64,
+            identity: SlotIdentity,
             ledger: Ledger,
         }
 
@@ -737,7 +825,7 @@ mod tests {
                 _rt: &Runtime,
             ) -> Result<(), HookError> {
                 self.ledger.refresh_entered.fetch_add(1, Ordering::SeqCst);
-                match self.ledger.behaviour_for(self.identity) {
+                match self.ledger.behaviour_for(&self.identity) {
                     Behaviour::FastOk => Ok(()),
                     Behaviour::FastErr => Err(HookError("refresh boom".to_owned())),
                     Behaviour::Hang => {
@@ -758,7 +846,7 @@ mod tests {
                 _rt: &Runtime,
             ) -> Result<(), HookError> {
                 self.ledger.revoke_entered.fetch_add(1, Ordering::SeqCst);
-                match self.ledger.behaviour_for(self.identity) {
+                match self.ledger.behaviour_for(&self.identity) {
                     Behaviour::FastOk => Ok(()),
                     Behaviour::FastErr => Err(HookError("revoke boom".to_owned())),
                     Behaviour::Hang => {
@@ -789,7 +877,7 @@ mod tests {
         /// `ResourceContext` for the registered scope without re-deriving it
         /// from `scope` (no destructure-or-panic at the call site).
         async fn setup(
-            identities: &[u64],
+            identities: &[SlotIdentity],
         ) -> (
             ResourceFanoutIndex,
             Arc<Manager>,
@@ -805,18 +893,22 @@ mod tests {
             let idx = ResourceFanoutIndex::new();
             let cid = CredentialId::new();
 
-            for &id in identities {
-                mgr.register_resident_with(
-                    CtlResource {
-                        identity: id,
+            for id in identities {
+                mgr.register(nebula_resource::RegistrationSpec {
+                    resource: CtlResource {
+                        identity: id.clone(),
                         ledger: ledger.clone(),
                     },
-                    Cfg,
-                    ResidentConfig::default(),
-                    RegisterOptions::default()
-                        .with_scope(scope.clone())
-                        .with_slot_identity(id),
-                )
+                    config: Cfg,
+                    scope: scope.clone(),
+                    slot_identity: id.clone(),
+                    topology: TopologyRuntime::Resident(ResidentRuntime::<CtlResource>::new(
+                        ResidentConfig::default(),
+                    )),
+                    acquire: Manager::erased_acquire_resident_for::<CtlResource>(),
+                    resilience: None,
+                    recovery_gate: None,
+                })
                 .expect("register tenant");
 
                 // Resident materializes its shared runtime lazily on first
@@ -830,7 +922,7 @@ mod tests {
                     CancellationToken::new(),
                 );
                 let _g = mgr
-                    .acquire_resident_for::<CtlResource>(
+                    .acquire_resident_for_identity::<CtlResource>(
                         &ctx,
                         &nebula_resource::AcquireOptions::default(),
                         id,
@@ -838,7 +930,7 @@ mod tests {
                     .await
                     .expect("warm tenant runtime");
 
-                idx.bind(cid, CtlResource::key(), scope.clone(), "db", id);
+                idx.bind(cid, CtlResource::key(), scope.clone(), "db", id.clone());
             }
 
             (idx, mgr, cid, scope, org, ledger)
@@ -849,8 +941,13 @@ mod tests {
         /// one `(key, scope)`; the middle one hangs.
         #[tokio::test]
         async fn refresh_fanout_isolates_a_timed_out_resource() {
-            let (a, b, c) = (0xAAAA_u64, 0xBBBB_u64, 0xCCCC_u64);
-            let (idx, mgr, cid, _scope, _org, ledger) = setup(&[a, b, c]).await;
+            let (a, b, c) = (
+                SlotIdentity::from_bindings([("k", "cred-0xaaaa_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0xbbbb_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0xcccc_u64")]),
+            );
+            let (idx, mgr, cid, _scope, _org, ledger) =
+                setup(&[a.clone(), b.clone(), c.clone()]).await;
             ledger.set(a, Behaviour::FastOk);
             ledger.set(b, Behaviour::Hang);
             ledger.set(c, Behaviour::FastOk);
@@ -884,8 +981,14 @@ mod tests {
         /// independently, none aborting the others.
         #[tokio::test]
         async fn refresh_fanout_mixed_outcomes_each_independent() {
-            let (a, b, c, d) = (0x1_u64, 0x2_u64, 0x3_u64, 0x4_u64);
-            let (idx, mgr, cid, _scope, _org, ledger) = setup(&[a, b, c, d]).await;
+            let (a, b, c, d) = (
+                SlotIdentity::from_bindings([("k", "cred-0x1_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0x2_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0x3_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0x4_u64")]),
+            );
+            let (idx, mgr, cid, _scope, _org, ledger) =
+                setup(&[a.clone(), b.clone(), c.clone(), d.clone()]).await;
             ledger.set(a, Behaviour::FastOk);
             ledger.set(b, Behaviour::FastErr);
             ledger.set(c, Behaviour::Hang);
@@ -909,8 +1012,13 @@ mod tests {
         /// Revoke analogue of the isolation test.
         #[tokio::test]
         async fn revoke_fanout_isolates_a_timed_out_resource() {
-            let (a, b, c) = (0xDEAD_u64, 0xBEEF_u64, 0xF00D_u64);
-            let (idx, mgr, cid, _scope, _org, ledger) = setup(&[a, b, c]).await;
+            let (a, b, c) = (
+                SlotIdentity::from_bindings([("k", "cred-0xdead_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0xbeef_u64")]),
+                SlotIdentity::from_bindings([("k", "cred-0xf00d_u64")]),
+            );
+            let (idx, mgr, cid, _scope, _org, ledger) =
+                setup(&[a.clone(), b.clone(), c.clone()]).await;
             ledger.set(a, Behaviour::FastOk);
             ledger.set(b, Behaviour::Hang);
             ledger.set(c, Behaviour::FastOk);
@@ -963,11 +1071,12 @@ mod tests {
             use nebula_error::{Classify, ErrorCategory};
             use nebula_resource::AcquireOptions;
 
-            let hung = 0x5151_u64;
-            let (idx, mgr, cid, _scope, org, ledger) = setup(&[hung]).await;
+            let hung = SlotIdentity::from_bindings([("k", "cred-0x5151_u64")]);
+            let (idx, mgr, cid, _scope, org, ledger) = setup(std::slice::from_ref(&hung)).await;
             // The revoke hook never returns -> `drain_and_revoke` (the
-            // timeout-wrapped phase 2) times out.
-            ledger.set(hung, Behaviour::Hang);
+            // timeout-wrapped phase 2) times out. `hung` is reused below
+            // (the structural identity is no longer `Copy`), so clone here.
+            ledger.set(hung.clone(), Behaviour::Hang);
 
             let out = idx
                 .dispatch_revoke(cid, &mgr, Duration::from_millis(150))
@@ -995,7 +1104,11 @@ mod tests {
             // exact resolved row stay rejected.
             let ctx = ctx_for(org);
             let acquired = mgr
-                .acquire_resident_for::<CtlResource>(&ctx, &AcquireOptions::default(), hung)
+                .acquire_resident_for_identity::<CtlResource>(
+                    &ctx,
+                    &AcquireOptions::default(),
+                    &hung,
+                )
                 .await;
             let err = match acquired {
                 Err(e) => e,
@@ -1033,17 +1146,22 @@ mod tests {
             use nebula_error::{Classify, ErrorCategory};
             use nebula_resource::AcquireOptions;
 
-            let id = 0x7A1D_u64;
-            let (_idx, mgr, _cid, scope, org, ledger) = setup(&[id]).await;
+            let id = SlotIdentity::from_bindings([("k", "cred-0x7a1d_u64")]);
+            let (_idx, mgr, _cid, scope, org, ledger) = setup(std::slice::from_ref(&id)).await;
             // Even a hook that *would* succeed: we never let phase 2 run.
-            ledger.set(id, Behaviour::FastOk);
+            // `id` is reused below (no longer `Copy`), so clone here.
+            ledger.set(id.clone(), Behaviour::FastOk);
 
             // Hold a real in-flight guard so phase 2's per-resource drain
             // blocks (counter stays at 1) — `drain_and_revoke` parks instead
             // of completing on its first poll, making the subsequent drop a
             // true mid-flight cancellation.
             let in_flight = match mgr
-                .acquire_resident_for::<CtlResource>(&ctx_for(org), &AcquireOptions::default(), id)
+                .acquire_resident_for_identity::<CtlResource>(
+                    &ctx_for(org),
+                    &AcquireOptions::default(),
+                    &id,
+                )
                 .await
             {
                 Ok(g) => g,
@@ -1056,7 +1174,7 @@ mod tests {
             };
 
             // Phase 1: synchronous taint, outside any timeout.
-            let tainted = match mgr.taint_slot_for(&CtlResource::key(), scope, "db", id) {
+            let tainted = match mgr.taint_slot_for_identity(&CtlResource::key(), scope, "db", &id) {
                 Ok(t) => t,
                 Err(e) => {
                     // guard-justified: the row was just registered+warmed by
@@ -1095,7 +1213,7 @@ mod tests {
             drop(in_flight);
             let ctx = ctx_for(org);
             let acquired = mgr
-                .acquire_resident_for::<CtlResource>(&ctx, &AcquireOptions::default(), id)
+                .acquire_resident_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &id)
                 .await;
             let err = match acquired {
                 Err(e) => e,
@@ -1119,7 +1237,11 @@ mod tests {
         /// All-OK fast path: every bound row refreshes, no failures/timeouts.
         #[tokio::test]
         async fn refresh_fanout_all_ok() {
-            let ids = [10_u64, 20, 30];
+            let ids = [
+                SlotIdentity::from_bindings([("k", "cred-10")]),
+                SlotIdentity::from_bindings([("k", "cred-20")]),
+                SlotIdentity::from_bindings([("k", "cred-30")]),
+            ];
             let (idx, mgr, cid, _scope, _org, ledger) = setup(&ids).await;
             for id in ids {
                 ledger.set(id, Behaviour::FastOk);

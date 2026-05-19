@@ -37,8 +37,8 @@ use std::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, ResidentConfig, ResourceContext,
-    dedup::SLOT_IDENTITY_UNBOUND,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
+    dedup::SlotIdentity,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -367,17 +367,18 @@ async fn main() -> anyhow::Result<()> {
     let create_counter = Arc::clone(&sheets.create_counter);
     let resident_runtime = ResidentRuntime::<GoogleSheets>::new(ResidentConfig::default());
 
-    manager.register(
-        sheets,
-        GoogleSheetsConfig {
+    manager.register(RegistrationSpec {
+        resource: sheets,
+        config: GoogleSheetsConfig {
             application: "nebula-sheets-demo".into(),
         },
-        ScopeLevel::Global,
-        TopologyRuntime::Resident(resident_runtime),
-        Manager::erased_acquire_resident::<GoogleSheets>(SLOT_IDENTITY_UNBOUND),
-        None,
-        None,
-    )?;
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Resident(resident_runtime),
+        acquire: Manager::erased_acquire_resident_for::<GoogleSheets>(),
+        resilience: None,
+        recovery_gate: None,
+    })?;
     println!("[1] GoogleSheets resource registered (Resident topology, Global scope)");
     println!("    Initial token issuance from Resource::create (count = 1)");
 

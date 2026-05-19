@@ -174,6 +174,42 @@ pub struct RecoveryWaiter {
 impl RecoveryWaiter {
     /// Waits for the gate to leave [`GateState::InProgress`], then returns
     /// the new state.
+    ///
+    /// # Why this is lost-wakeup free without `enable()`
+    ///
+    /// The `Notified` future is constructed **before** the `state` snapshot
+    /// is loaded, and every gate notifier wakes waiters with
+    /// [`Notify::notify_waiters`] — never `notify_one` — paired with the
+    /// `ArcSwap` state store at the same site (see [`RecoveryTicket::resolve`]
+    /// / [`fail_transient`](RecoveryTicket::fail_transient) /
+    /// [`fail_permanent`](RecoveryTicket::fail_permanent), the ticket `Drop`,
+    /// [`RecoveryGate::reset`], and the max-attempts transition).
+    ///
+    /// Tokio's documented `notify_waiters` contract: `Notify::notified()`
+    /// captures the current `notify_waiters` invocation count at the moment
+    /// the future is *created*. A `notify_waiters()` call that lands after
+    /// the future is created but before its first poll therefore advances
+    /// that count and is delivered on the first poll — no prior poll and no
+    /// `Notified::enable()` is required. So in the loop body, if a notifier
+    /// fires in the window between `notified()` construction and the `.await`,
+    /// either the freshly stored non-`InProgress` state is observed by the
+    /// `load()` below (and we return immediately) or the captured-by-count
+    /// notification satisfies the `.await` on first poll. No wakeup is lost
+    /// and no spin is needed.
+    ///
+    /// This is distinct from the drain wait in `manager::shutdown`
+    /// (`wait_for_tracker_drain`), which *does* need
+    /// `Notified::enable()`: that loop re-reads an **external `AtomicU64`**
+    /// the `Notify` does not gate, between waiter registration and the
+    /// `.await`. `enable()` registers the waiter synchronously *before* that
+    /// external re-check so a `notify_waiters()` firing in that gap is not
+    /// missed. Here there is no separate post-registration value to re-read —
+    /// the state transition and its `notify_waiters()` are captured by the
+    /// creation-time count on the very `Notify` this future listens on — so
+    /// the synchronous pre-registration `enable()` provides is unnecessary.
+    /// Switching any notifier to `notify_one`, or loading the state before
+    /// constructing the `Notified` future, would reintroduce a lost-wakeup
+    /// window; the `#[cfg(test)]` correctness-pin below guards that ordering.
     pub async fn wait(&self) -> GateState {
         loop {
             // Register notification BEFORE checking state to avoid missing
@@ -574,5 +610,74 @@ mod tests {
         t.resolve();
 
         assert!(matches!(gate.state(), GateState::Idle));
+    }
+
+    /// Correctness-pin (NOT a RED-then-fix; no `enable()` change).
+    ///
+    /// `RecoveryWaiter::wait` creates the `Notified` future *before* loading
+    /// the gate state, and every gate notifier uses `notify_waiters()` (not
+    /// `notify_one()`). tokio's documented contract: `notified()` captures
+    /// the `notify_waiters` call-count at creation, so a `notify_waiters()`
+    /// firing between the future's creation and its first `.await` is
+    /// delivered on first poll **without** `enable()` and without a prior
+    /// poll. This test pins that exact property on a bare `Notify` mirroring
+    /// `wait`'s construction order, so a future refactor that switches the
+    /// gate to `notify_one()` (or reorders the create-then-load) would break
+    /// this pin and surface the regression.
+    #[tokio::test]
+    async fn notify_waiters_between_notified_creation_and_await_is_delivered() {
+        let notify = Notify::new();
+
+        // Mirror `RecoveryWaiter::wait`: create the future first…
+        let fut = notify.notified();
+
+        // …then fire `notify_waiters()` *before* the future is ever polled
+        // / awaited (no `enable()` call). Per the tokio contract this is
+        // captured by the count taken at `notified()` creation.
+        notify.notify_waiters();
+
+        // The await must complete immediately on first poll — a missed
+        // wakeup would hang here. A bounded timeout converts a contract
+        // regression into a fast failure instead of a hung test.
+        tokio::time::timeout(Duration::from_secs(1), fut)
+            .await
+            .expect(
+                "notify_waiters() fired after notified() creation but before \
+                 .await must be delivered without enable() (tokio contract \
+                 — this is why RecoveryWaiter::wait's ordering is correct)",
+            );
+    }
+
+    /// End-to-end companion: a `RecoveryWaiter` obtained while a ticket is
+    /// held must unblock once the ticket resolves, even when `resolve()`
+    /// races immediately after the waiter is constructed (the
+    /// create-notified-before-state-load ordering is what guarantees no lost
+    /// wakeup). Deterministic — no sleeps, no yield-budget guessing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_waiter_unblocks_when_resolve_races_the_wait() {
+        let gate = default_gate();
+        let ticket = gate.try_begin().expect("first caller wins the ticket");
+
+        let waiter = match gate.try_begin() {
+            Err(TryBeginError::AlreadyInProgress(w)) => w,
+            other => panic!("expected AlreadyInProgress, got: {other:?}"),
+        };
+
+        // Resolve and wait are started "simultaneously": even if `resolve()`
+        // (state→Idle + notify_waiters) lands between the waiter's
+        // `notified()` creation and its `.await`, the wait must still
+        // observe a non-`InProgress` state or receive the captured notify —
+        // never hang.
+        let wait_task = tokio::spawn(async move { waiter.wait().await });
+        ticket.resolve();
+
+        let state = tokio::time::timeout(Duration::from_secs(2), wait_task)
+            .await
+            .expect("waiter must not hang when resolve races the wait")
+            .expect("wait task must not panic");
+        assert!(
+            matches!(state, GateState::Idle),
+            "resolve returns the gate to Idle; the waiter must observe it"
+        );
     }
 }

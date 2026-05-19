@@ -28,8 +28,7 @@ use nebula_engine::{
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    Manager, ResidentConfig, ResourceContext,
-    dedup::SLOT_IDENTITY_UNBOUND,
+    Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -390,17 +389,18 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
     let org = OrgId::new();
 
     manager
-        .register(
-            IntegrationProbeResource,
-            IntegrationProbeConfig,
-            ScopeLevel::Organization(org),
-            TopologyRuntime::Resident(ResidentRuntime::<IntegrationProbeResource>::new(
+        .register(RegistrationSpec {
+            resource: IntegrationProbeResource,
+            config: IntegrationProbeConfig,
+            scope: ScopeLevel::Organization(org),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<IntegrationProbeResource>::new(
                 ResidentConfig::default(),
             )),
-            Manager::erased_acquire_resident::<IntegrationProbeResource>(SLOT_IDENTITY_UNBOUND),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident_for::<IntegrationProbeResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register org-scoped resource");
 
     let registry = Arc::new(ActionRegistry::new());
@@ -430,7 +430,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
             org_id: Some(org),
             ..Default::default()
         });
-    engine.record_resource_slot_identity(IntegrationProbeResource::key(), SLOT_IDENTITY_UNBOUND);
+    engine.record_resource_slot_identity(IntegrationProbeResource::key(), SlotIdentity::Unbound);
 
     let node = node_key!("probe");
     let wf = make_workflow(vec![
@@ -526,8 +526,7 @@ mod shared_resource {
 
     use nebula_core::{ExecutionId, OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_resource::{
-        AcquireOptions, Manager, ResidentConfig, ResourceContext,
-        dedup::SLOT_IDENTITY_UNBOUND,
+        AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
         error::Error,
         resource::{Resource, ResourceConfig, ResourceMetadata},
         runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -758,15 +757,16 @@ mod shared_resource {
         let org = OrgId::new();
 
         manager
-            .register(
-                bot,
-                test_config(),
-                ScopeLevel::Organization(org),
-                TopologyRuntime::Resident(resident_rt),
-                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+            .register(RegistrationSpec {
+                resource: bot,
+                config: test_config(),
+                scope: ScopeLevel::Organization(org),
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(resident_rt),
+                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register should succeed");
 
         // 10 simulated workflows acquire concurrently.
@@ -833,30 +833,32 @@ mod shared_resource {
         let scope = ScopeLevel::Organization(org);
 
         manager
-            .register(
-                bot_a,
-                test_config(),
-                scope.clone(),
-                TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
+            .register(RegistrationSpec {
+                resource: bot_a,
+                config: test_config(),
+                scope: scope.clone(),
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register A should succeed");
         manager
-            .register(
-                bot_b,
-                test_config(),
+            .register(RegistrationSpec {
+                resource: bot_b,
+                config: test_config(),
                 scope,
-                TopologyRuntime::Resident(ResidentRuntime::<AlternateBot>::new(
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(ResidentRuntime::<AlternateBot>::new(
                     ResidentConfig::default(),
                 )),
-                Manager::erased_acquire_resident::<AlternateBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+                acquire: Manager::erased_acquire_resident_for::<AlternateBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register B should succeed");
 
         let ctx = ctx_for_org(org);
@@ -909,30 +911,32 @@ mod shared_resource {
         let org_b = OrgId::new();
 
         manager
-            .register(
-                bot_org_a,
-                test_config(),
-                ScopeLevel::Organization(org_a),
-                TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
+            .register(RegistrationSpec {
+                resource: bot_org_a,
+                config: test_config(),
+                scope: ScopeLevel::Organization(org_a),
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register org_a should succeed");
         manager
-            .register(
-                bot_org_b,
-                test_config(),
-                ScopeLevel::Organization(org_b),
-                TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
+            .register(RegistrationSpec {
+                resource: bot_org_b,
+                config: test_config(),
+                scope: ScopeLevel::Organization(org_b),
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
-                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register org_b should succeed");
 
         let lease_a = manager
@@ -985,15 +989,16 @@ mod shared_resource {
         let scope = ScopeLevel::Organization(org);
 
         manager
-            .register(
-                bot,
-                test_config(),
-                scope.clone(),
-                TopologyRuntime::Resident(resident_rt),
-                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+            .register(RegistrationSpec {
+                resource: bot,
+                config: test_config(),
+                scope: scope.clone(),
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(resident_rt),
+                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register should succeed");
 
         let mut events = manager.subscribe_events();
@@ -1063,15 +1068,16 @@ mod shared_resource {
         let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
 
         manager
-            .register(
-                bot,
-                test_config(),
-                ScopeLevel::Global,
-                TopologyRuntime::Resident(resident_rt),
-                Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
-                None,
-                None,
-            )
+            .register(RegistrationSpec {
+                resource: bot,
+                config: test_config(),
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(resident_rt),
+                acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register should succeed");
 
         // Execution-scoped ctx → not registered at Execution scope, but the

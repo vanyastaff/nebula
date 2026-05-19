@@ -10,12 +10,10 @@ pub enum TopologyTag {
     Pool,
     /// Resident — one shared instance, clone on acquire.
     Resident,
-    /// Service — long-lived runtime, short-lived tokens.
-    Service,
-    /// Transport — shared connection, multiplexed sessions.
-    Transport,
-    /// Exclusive — one caller at a time.
-    Exclusive,
+    /// Bounded — one runtime, capped short-lived leases. The cap typestate
+    /// (`Unbounded` / `Capped<N>` / `Exclusive`) selects the concurrency
+    /// bound and release shape.
+    Bounded,
 }
 
 impl TopologyTag {
@@ -24,9 +22,7 @@ impl TopologyTag {
         match self {
             Self::Pool => "pool",
             Self::Resident => "resident",
-            Self::Service => "service",
-            Self::Transport => "transport",
-            Self::Exclusive => "exclusive",
+            Self::Bounded => "bounded",
         }
     }
 }

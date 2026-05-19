@@ -67,7 +67,8 @@ mod resource_attrs;
 /// Type)]`
 ///
 /// - `key = "..."` — required. Unique resource identifier (lowercase + underscores).
-/// - `topology = "pool" | "resident" | "service" | "transport" | "exclusive"` — required.
+/// - `topology = "pool" | "resident" | "bounded"` — required. (`bounded`
+///   folds the former `service` / `transport` / `exclusive` topologies.)
 /// - `config = ConfigType` — required. The `Self::Config` associated type.
 /// - `runtime = RuntimeType` — optional. Defaults to `()`.
 /// - `lease = LeaseType` — optional. Defaults to `Self::Runtime`.

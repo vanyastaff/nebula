@@ -36,8 +36,11 @@ use nebula_engine::{
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotIdentity,
+    error::Error as ResourceError,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
@@ -149,7 +152,7 @@ struct Wired {
     mgr: Arc<Manager>,
     cid: CredentialId,
     org: OrgId,
-    slot_identity: u64,
+    slot_identity: SlotIdentity,
     rec: Recorder,
     // Held: dropping aborts the driver task.
     _driver: ResourceFanoutDriver,
@@ -162,20 +165,26 @@ async fn wire(behaviour: Behaviour) -> Wired {
     let mgr = Arc::new(Manager::new());
     let index = Arc::new(ResourceFanoutIndex::new());
     let cid = CredentialId::new();
-    // A stable non-zero slot identity for the single resolved row.
-    let slot_identity: u64 = 0xC0FF_EE01;
+    // The collision-free structural identity of the single resolved row,
+    // derived from the same `(slot, credential)` binding the resource
+    // would resolve — used at register, acquire, and bind.
+    let slot_identity = SlotIdentity::from_bindings([("db", "wired-cred")]);
 
-    mgr.register_resident_with(
-        Recording {
+    mgr.register(RegistrationSpec {
+        resource: Recording {
             behaviour,
             rec: rec.clone(),
         },
-        NoCfg,
-        ResidentConfig::default(),
-        RegisterOptions::default()
-            .with_scope(scope.clone())
-            .with_slot_identity(slot_identity),
-    )
+        config: NoCfg,
+        scope: scope.clone(),
+        slot_identity: slot_identity.clone(),
+        topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
+            ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident_for::<Recording>(),
+        resilience: None,
+        recovery_gate: None,
+    })
     .expect("register resolved-credential row");
 
     // Resident materializes its shared runtime lazily on first acquire —
@@ -188,7 +197,11 @@ async fn wire(behaviour: Behaviour) -> Wired {
         CancellationToken::new(),
     );
     let _g = mgr
-        .acquire_resident_for::<Recording>(&ctx, &AcquireOptions::default(), slot_identity)
+        .acquire_resident_for_identity::<Recording>(
+            &ctx,
+            &AcquireOptions::default(),
+            &slot_identity,
+        )
         .await
         .expect("warm resident runtime");
     drop(_g);
@@ -198,7 +211,13 @@ async fn wire(behaviour: Behaviour) -> Wired {
     // directly here (the production registrar bind path is covered by
     // the registrar unit tests) so this test isolates the *driver*
     // wiring: bus event → driver → fan-out → hook.
-    index.bind(cid, Recording::key(), scope.clone(), "db", slot_identity);
+    index.bind(
+        cid,
+        Recording::key(),
+        scope.clone(),
+        "db",
+        slot_identity.clone(),
+    );
 
     let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));
@@ -309,7 +328,11 @@ async fn lease_revoked_event_taints_row_and_delivers_revoke_hook() {
     );
     let acquired = w
         .mgr
-        .acquire_resident_for::<Recording>(&ctx, &AcquireOptions::default(), w.slot_identity)
+        .acquire_resident_for_identity::<Recording>(
+            &ctx,
+            &AcquireOptions::default(),
+            &w.slot_identity,
+        )
         .await;
     let err = match acquired {
         Err(e) => e,
@@ -367,8 +390,11 @@ async fn lease_revoked_with_hung_hook_still_taints_row() {
     );
     let acquired = tokio::time::timeout(
         Duration::from_secs(2),
-        w.mgr
-            .acquire_resident_for::<Recording>(&ctx, &AcquireOptions::default(), w.slot_identity),
+        w.mgr.acquire_resident_for_identity::<Recording>(
+            &ctx,
+            &AcquireOptions::default(),
+            &w.slot_identity,
+        ),
     )
     .await
     .expect("acquire on a tainted row must resolve immediately (rejected), not hang");
@@ -590,19 +616,23 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
     let scope = ScopeLevel::Organization(org);
     let mgr = Arc::new(Manager::new());
     let cid = CredentialId::new();
-    let slot_identity: u64 = 0xD1D1_D1D1;
+    let slot_identity = SlotIdentity::from_bindings([("db", "wired-cred-2")]);
 
-    mgr.register_resident_with(
-        Recording {
+    mgr.register(RegistrationSpec {
+        resource: Recording {
             behaviour: Behaviour::Ok,
             rec: rec.clone(),
         },
-        NoCfg,
-        ResidentConfig::default(),
-        RegisterOptions::default()
-            .with_scope(scope.clone())
-            .with_slot_identity(slot_identity),
-    )
+        config: NoCfg,
+        scope: scope.clone(),
+        slot_identity: slot_identity.clone(),
+        topology: TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(
+            ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident_for::<Recording>(),
+        resilience: None,
+        recovery_gate: None,
+    })
     .expect("register resolved-credential row");
 
     let ctx = ResourceContext::minimal(
@@ -613,7 +643,11 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         CancellationToken::new(),
     );
     let _g = mgr
-        .acquire_resident_for::<Recording>(&ctx, &AcquireOptions::default(), slot_identity)
+        .acquire_resident_for_identity::<Recording>(
+            &ctx,
+            &AcquireOptions::default(),
+            &slot_identity,
+        )
         .await
         .expect("warm resident runtime");
     drop(_g);
@@ -621,9 +655,13 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
     let engine = noop_engine_with_manager(Arc::clone(&mgr));
     // Bind the resolved row into the engine-owned reverse index so a
     // rotation has a row to fan to.
-    engine
-        .resource_fanout_index()
-        .bind(cid, Recording::key(), scope.clone(), "db", slot_identity);
+    engine.resource_fanout_index().bind(
+        cid,
+        Recording::key(),
+        scope.clone(),
+        "db",
+        slot_identity.clone(),
+    );
 
     let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));

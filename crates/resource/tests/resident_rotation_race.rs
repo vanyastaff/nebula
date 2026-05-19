@@ -24,8 +24,12 @@ use std::sync::{
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialGuard;
 use nebula_resource::{
-    AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell,
-    error::Error, resource::ResourceMetadata, topology::resident::Resident,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity,
+    error::Error,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::resident::Resident,
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -214,8 +218,19 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
         revoke_calls: Arc::new(AtomicUsize::new(0)),
     };
     let mgr = Manager::new();
-    mgr.register_resident(resource.clone(), RaceConfig, ResidentConfig::default())
-        .expect("register_resident must succeed");
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: RaceConfig,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Resident(ResidentRuntime::<RaceResource>::new(
+            ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident_for::<RaceResource>(),
+        resilience: None,
+        recovery_gate: None,
+    })
+    .expect("resident registration must succeed");
     (Arc::new(mgr), RaceResource::key(), resource)
 }
 

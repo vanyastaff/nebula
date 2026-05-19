@@ -152,6 +152,30 @@ impl<S> SlotCell<S> {
     }
 }
 
+#[cfg(test)]
+impl<S> SlotCell<S> {
+    /// Publish an entry whose value is *derived from the same generation it
+    /// is stamped with*, using the production publish sequence.
+    ///
+    /// The public [`store`](Self::store) takes the value *before*
+    /// [`bump_generation`](Self::bump_generation) assigns the entry's
+    /// generation, so under concurrent writers a caller cannot make the
+    /// stored value equal the published generation — which is exactly the
+    /// coupling a torn-read characterization test needs. This test-only
+    /// helper bumps the generation first, then builds the value from it via
+    /// `mk`, and publishes both inside the *same* single `ArcSwapOption`
+    /// store as production. A reader that observes a torn `(generation,
+    /// value)` pair (value from one transition, generation from another)
+    /// will see `value != mk(generation)`.
+    fn store_stamped(&self, mk: impl FnOnce(u64) -> Arc<S>) -> u64 {
+        let generation = self.bump_generation();
+        let value = mk(generation);
+        self.inner
+            .store(Some(Arc::new(SlotEntry { generation, value })));
+        generation
+    }
+}
+
 impl<S> Default for SlotCell<S> {
     fn default() -> Self {
         Self::empty()
@@ -258,5 +282,124 @@ mod tests {
             cell.generation() > 0,
             "take advances generation even when the slot was already empty"
         );
+    }
+
+    /// Concurrency characterization (informs the single-writer-per-slot
+    /// question; not a fix). Many tasks race `store`/`take` on one cell.
+    /// `load_versioned` must never observe a torn `(generation, value)`
+    /// pair — the generation must be exactly the one published with that
+    /// value (each store stamps the value with its own generation), never a
+    /// generation from a different transition.
+    ///
+    /// The coupling is what makes a torn read *detectable*: every entry is
+    /// published via `store_stamped` so its value is exactly its own
+    /// generation (`value == generation`). A single immutable `SlotEntry`
+    /// observed through one `ArcSwapOption` load must therefore always
+    /// satisfy `u64::from(value) == generation`. A torn read — the value of
+    /// one transition paired with the generation of another — would break
+    /// that equality and fail the assertion below.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_store_take_load_versioned_is_never_torn() {
+        let cell: Arc<SlotCell<FakeGuard>> = Arc::new(SlotCell::empty());
+
+        let writers = 8u32;
+        let iters = 200u32;
+        // Total transitions = stores + takes. The largest generation any
+        // store stamps is bounded by this, so it fits in the `u32` payload
+        // of `FakeGuard` and the `value == generation` round-trip is exact.
+        let total_transitions = u64::from(writers) * u64::from(iters) * 2;
+        assert!(
+            u32::try_from(total_transitions).is_ok(),
+            "test sizing must keep generations within FakeGuard's u32 payload"
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..writers {
+            let cell = Arc::clone(&cell);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..iters {
+                    // Stamp the value with the *exact* generation this entry
+                    // is published at, inside the production single-store
+                    // publish. `g as u32` is lossless: `g <=
+                    // total_transitions <= u32::MAX` (asserted above).
+                    cell.store_stamped(|g| Arc::new(FakeGuard(g as u32)));
+                    if let Some((observed_gen, val)) = cell.load_versioned() {
+                        assert!(
+                            observed_gen >= 1,
+                            "a published entry always has generation >= 1"
+                        );
+                        // The load-bearing torn-read check: value and
+                        // generation came from one immutable entry, so the
+                        // value must be the generation that entry stamped.
+                        // A torn `(generation, value)` pair (value from a
+                        // different transition than `observed_gen`) breaks
+                        // this equality.
+                        assert_eq!(
+                            u64::from(val.0),
+                            observed_gen,
+                            "torn read: value {} was not stamped with its \
+                             published generation {observed_gen}",
+                            val.0
+                        );
+                    }
+                    let _ = cell.take();
+                }
+            }));
+        }
+        for h in handles {
+            h.await.expect("writer task must not panic");
+        }
+
+        // After all transitions the generation is strictly positive and
+        // monotone: every store and every take bumped it exactly once, so
+        // it is at least the total number of transitions performed.
+        let total_transitions = u64::from(writers) * u64::from(iters) * 2;
+        assert!(
+            cell.generation() >= total_transitions,
+            "generation must have advanced at least once per transition \
+             (got {}, expected >= {total_transitions})",
+            cell.generation()
+        );
+    }
+
+    /// Reader/writer race: a dedicated reader continuously calls
+    /// `load_versioned` while a writer stores monotically-increasing
+    /// generations. The observed generation must be monotone non-decreasing
+    /// from this single reader's vantage (no torn read can surface a
+    /// generation older than one already observed paired with a newer
+    /// value).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn single_reader_observes_monotone_generations_under_concurrent_store() {
+        let cell: Arc<SlotCell<FakeGuard>> = Arc::new(SlotCell::empty());
+
+        let writer = {
+            let cell = Arc::clone(&cell);
+            tokio::spawn(async move {
+                for i in 1..=1_000u32 {
+                    cell.store(Arc::new(FakeGuard(i)));
+                }
+            })
+        };
+
+        let reader = {
+            let cell = Arc::clone(&cell);
+            tokio::spawn(async move {
+                let mut last = 0u64;
+                for _ in 0..5_000 {
+                    if let Some((observed_gen, _v)) = cell.load_versioned() {
+                        assert!(
+                            observed_gen >= last,
+                            "load_versioned regressed from {last} to \
+                             {observed_gen} (torn read / lost publish \
+                             ordering)"
+                        );
+                        last = observed_gen;
+                    }
+                }
+            })
+        };
+
+        writer.await.expect("writer task must not panic");
+        reader.await.expect("reader task must not panic");
     }
 }

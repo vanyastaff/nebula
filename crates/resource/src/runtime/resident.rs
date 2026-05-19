@@ -1,6 +1,6 @@
 //! Resident runtime — one shared instance, clone on acquire.
 //!
-//! The resident runtime holds a single [`Cell`] containing the shared
+//! The resident runtime holds a single `Cell` containing the shared
 //! runtime. On acquire, the runtime is cloned into an owned handle.
 //! If the runtime is missing or stale, it is (re)created.
 
@@ -28,7 +28,7 @@ use crate::{
 
 /// Runtime state for a resident topology.
 ///
-/// Holds a single shared runtime instance in a lock-free [`Cell`].
+/// Holds a single shared runtime instance in a lock-free `Cell`.
 /// On acquire, the runtime is cloned into an owned [`ResourceGuard`].
 ///
 /// A `create_lock` mutex serialises the slow path (create / recreate) while
@@ -54,6 +54,24 @@ pub struct ResidentRuntime<R: Resource> {
     /// *older* than the live slot epoch was bound to a pre-rotation
     /// credential — the lost-update the dispatch must reconcile rather
     /// than silently report success for (per-resource revoke deferral / #680).
+    ///
+    /// **Intentionally NOT the same counter as `SlotCell::generation()`,
+    /// and must not be folded into it.** `built_epoch` advances *only* on
+    /// a successful stale reconcile (the `stale && Ok(())` arm of
+    /// [`dispatch_resident_hook`]) or when stamped at create time;
+    /// `SlotCell::generation()` bumps on *every* slot transition, including
+    /// a no-op `take()` on an already-empty or never-bound slot (a "clear"
+    /// signal is meaningful to a rotation observer regardless of prior
+    /// state). A resident runtime can "catch up" to its own `built_epoch`
+    /// by completing a reconcile; it has no way to advance
+    /// `SlotCell::generation()`. Backing this counter with the slot
+    /// generation would leave a correctly-bound runtime perpetually
+    /// re-classified as stale after any unrelated no-op `take()`, forcing
+    /// redundant `on_credential_revoke` / `on_credential_refresh`
+    /// re-delivery — a credential-isolation behavior change. Keep the two
+    /// counters separate.
+    ///
+    /// [`dispatch_resident_hook`]: Self::dispatch_resident_hook
     built_epoch: AtomicU64,
 }
 

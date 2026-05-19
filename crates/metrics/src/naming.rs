@@ -369,6 +369,9 @@ pub const NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS: &str =
     "nebula_resource_acquire_wait_duration_seconds";
 /// Counter: resource releases.
 pub const NEBULA_RESOURCE_RELEASE_TOTAL: &str = "nebula_resource_release_total";
+/// Counter: release-hook failures (`release_one` / reset / close / destroy
+/// returned `Err`). Observed instead of swallowed.
+pub const NEBULA_RESOURCE_RELEASE_ERROR_TOTAL: &str = "nebula_resource_release_error_total";
 /// Histogram: usage duration in seconds.
 pub const NEBULA_RESOURCE_USAGE_DURATION_SECONDS: &str = "nebula_resource_usage_duration_seconds";
 /// Counter: resource cleanups.
@@ -663,16 +666,18 @@ mod tests {
         NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
-        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
-        idempotency_reject_reason, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
-        refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, rotation_outcome,
+        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+        NEBULA_RESOURCE_USAGE_DURATION_SECONDS, idempotency_reject_reason,
+        refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
+        refresh_coord_sentinel_action, rotation_outcome,
     };
 
-    const RESOURCE_METRIC_NAMES: [&str; 20] = [
+    const RESOURCE_METRIC_NAMES: [&str; 21] = [
         NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
         NEBULA_RESOURCE_RELEASE_TOTAL,
+        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
         NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
         NEBULA_RESOURCE_CLEANUP_TOTAL,
         NEBULA_RESOURCE_ERROR_TOTAL,
@@ -731,7 +736,7 @@ mod tests {
             }
         }
 
-        assert_eq!(unique.len(), 20);
+        assert_eq!(unique.len(), 21);
     }
 
     #[test]

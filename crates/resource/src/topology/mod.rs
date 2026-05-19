@@ -6,21 +6,21 @@
 //! |----------|---------|
 //! | [`Pooled`] | N interchangeable instances with checkout/recycle |
 //! | [`Resident`] | One shared instance, clone on acquire |
-//! | [`Service`] | Long-lived runtime, short-lived tokens |
-//! | [`Transport`] | Shared connection, multiplexed sessions |
-//! | [`Exclusive`] | One caller at a time via semaphore |
+//! | [`Bounded`] | One runtime, capped short-lived leases — the [`Cap`](bounded::CapMarker) typestate (`Unbounded` / `Capped<N>` / `Exclusive`) selects the concurrency bound and release shape |
+//!
+//! [`Bounded`] is the single parameterized capped-lease topology: its cap
+//! typestate covers the long-lived-runtime, multiplexed-session, and
+//! one-caller-at-a-time access patterns behind one trait + one runtime.
 //!
 //! `Daemon` and `EventSource` live in `nebula_engine::daemon` per engine daemon topology —
 //! integration model boundary reserves "Resource" for pool/SDK clients.
 
-pub mod exclusive;
+pub mod bounded;
 pub mod pooled;
 pub mod resident;
-pub mod service;
-pub mod transport;
 
-pub use exclusive::Exclusive;
+pub use bounded::{
+    Bounded, BoundedRelease, CapMarker, Capped, Exclusive as ExclusiveCap, Unbounded,
+};
 pub use pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision};
 pub use resident::Resident;
-pub use service::{Service, TokenMode};
-pub use transport::Transport;

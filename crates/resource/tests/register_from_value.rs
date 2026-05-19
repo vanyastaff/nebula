@@ -113,10 +113,6 @@ impl DeclaresDependencies for Postgres {
     }
 }
 
-fn postgres_acquire_for_slot(slot: u64) -> nebula_resource::ErasedAcquireFn {
-    Manager::erased_acquire_resident::<Postgres>(slot)
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -133,14 +129,14 @@ async fn register_from_value_resolves_template_and_registers() {
     });
 
     manager
-        .register_from_value::<Postgres>(
+        .register_resolved::<Postgres>(
             config_json,
             &engine,
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            &postgres_acquire_for_slot,
+            Manager::erased_acquire_resident_for::<Postgres>(),
             None,
             None,
         )
@@ -151,6 +147,22 @@ async fn register_from_value_resolves_template_and_registers() {
         manager.contains(&Postgres::key()),
         "resource must be registered after register_from_value"
     );
+
+    // The rendered config must be *observable*, not merely "registered":
+    // assert the `{{ "example.com" }}` template was actually resolved into
+    // the stored `PgConfig` (not passed through verbatim or dropped). This
+    // pins that `register_from_value` threads the resolved config all the
+    // way into the installed registry row through the collapsed
+    // `RegistrationSpec` funnel.
+    let managed = manager
+        .lookup::<Postgres>(&ScopeLevel::Global)
+        .expect("registered resident row must be resolvable");
+    let stored = managed.config();
+    assert_eq!(
+        stored.host, "db-example.com",
+        "the `{{{{ \"example.com\" }}}}` template must have rendered into the stored host"
+    );
+    assert_eq!(stored.port, 5432, "non-templated field must round-trip");
 }
 
 #[tokio::test]
@@ -167,14 +179,14 @@ async fn register_from_value_validates_schema_failure() {
     });
 
     let err = manager
-        .register_from_value::<Postgres>(
+        .register_resolved::<Postgres>(
             config_json,
             &engine,
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            &postgres_acquire_for_slot,
+            Manager::erased_acquire_resident_for::<Postgres>(),
             None,
             None,
         )
@@ -200,14 +212,14 @@ async fn register_from_value_resourceconfig_validate_fires() {
     });
 
     let err = manager
-        .register_from_value::<Postgres>(
+        .register_resolved::<Postgres>(
             config_json,
             &engine,
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            &postgres_acquire_for_slot,
+            Manager::erased_acquire_resident_for::<Postgres>(),
             None,
             None,
         )
@@ -232,14 +244,15 @@ async fn register_from_value_unknown_slot_binding_rejected() {
     bindings.insert("auth".to_owned(), CredentialKey::new("db_auth").unwrap());
 
     let err = manager
-        .register_from_value::<Postgres>(
-            json!({"host": "example.com", "port": 5432}),
+        .register_resolved::<Postgres>(
+            json!({"host": "example.com",
+            "port": 5432}),
             &engine,
             bindings,
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            &postgres_acquire_for_slot,
+            Manager::erased_acquire_resident_for::<Postgres>(),
             None,
             None,
         )
@@ -265,14 +278,14 @@ async fn register_from_value_passthrough_no_templates() {
     });
 
     manager
-        .register_from_value::<Postgres>(
+        .register_resolved::<Postgres>(
             config_json,
             &engine,
             HashMap::new(),
             Postgres,
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
-            &postgres_acquire_for_slot,
+            Manager::erased_acquire_resident_for::<Postgres>(),
             None,
             None,
         )

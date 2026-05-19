@@ -1,0 +1,22 @@
+error[E0271]: type mismatch resolving `<ExclusiveNoReset as Bounded>::Cap == Unbounded`
+  --> tests/probes/bounded_exclusive_without_reset.rs:77:29
+   |
+77 |         BoundedRuntime::new(&r, 1u32, BoundedConfig::default());
+   |         ------------------- ^^ type mismatch resolving `<ExclusiveNoReset as Bounded>::Cap == Unbounded`
+   |         |
+   |         required by a bound introduced by this call
+   |
+note: expected this to be `nebula_resource::Unbounded`
+  --> tests/probes/bounded_exclusive_without_reset.rs:65:16
+   |
+65 |     type Cap = ExclusiveCap;
+   |                ^^^^^^^^^^^^
+   = note: required for `ExclusiveNoReset` to implement `BoundedRelease`
+note: required by a bound in `BoundedRuntime::<R>::new`
+  --> src/runtime/bounded.rs
+   |
+   |     R: BoundedRelease + Clone + Send + Sync + 'static,
+   |        ^^^^^^^^^^^^^^ required by this bound in `BoundedRuntime::<R>::new`
+...
+   |     pub fn new(resource: &R, runtime: R::Runtime, config: Config) -> Self {
+   |            --- required by a bound in this associated function

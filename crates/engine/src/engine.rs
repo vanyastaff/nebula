@@ -135,7 +135,7 @@ pub struct WorkflowEngine {
     /// activation.
     ///
     /// A persisted resource row carries only a `kind` string plus opaque
-    /// JSON; turning it into a typed `Manager::register_from_value::<R>`
+    /// JSON; turning it into a typed `Manager::register_resolved::<R>`
     /// call needs a per-concrete-`R` registrar that already knows its
     /// resource and `TopologyRuntime<R>` (see [`ResourceRegistrarRegistry`]
     /// / [`crate::TypedResourceRegistrar`]). The map is **closed**: a kind
@@ -209,10 +209,12 @@ pub struct WorkflowEngine {
     resource_acquire_scope: Option<nebula_core::scope::Scope>,
     /// Per-execution acquire scope (`org_id` / `workspace_id` for this run).
     execution_acquire_scopes: DashMap<ExecutionId, nebula_core::scope::Scope>,
-    /// Per-resource resolved slot identities recorded at activation (pre-run).
-    resource_slot_identities: RwLock<HashMap<ResourceKey, u64>>,
+    /// Per-resource resolved **collision-free structural** slot identities
+    /// recorded at activation (pre-run).
+    resource_slot_identities: RwLock<HashMap<ResourceKey, nebula_resource::SlotIdentity>>,
     /// Frozen slot-identity map per execution (snapshot at run start).
-    resource_slot_identities_by_execution: DashMap<ExecutionId, Arc<HashMap<ResourceKey, u64>>>,
+    resource_slot_identities_by_execution:
+        DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
     /// Optional spec-16 port bundle (execution-state / lease / journal /
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
@@ -470,7 +472,7 @@ impl WorkflowEngine {
     /// The closed `kind → typed registrar` allowlist.
     ///
     /// This is the only path from a stored resource row (a `kind` string
-    /// plus opaque JSON) to a typed `Manager::register_from_value::<R>`
+    /// plus opaque JSON) to a typed `Manager::register_resolved::<R>`
     /// call. A kind is registrable only if a registrar was explicitly
     /// wired in (via [`with_resource_registrars`](Self::with_resource_registrars));
     /// an unknown kind is a wiring fault surfaced at activation, never a
@@ -490,7 +492,7 @@ impl WorkflowEngine {
     /// This is the [`bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
     /// producer for the §M11.5 fan-out: the resource-activation path
     /// (`ResourceRegistrarRegistry::register` →
-    /// `Manager::register_from_value`, which resolves a credential into a
+    /// `Manager::register_resolved`, which resolves a credential into a
     /// `#[credential]` slot) records a row here so a later rotation /
     /// revoke fans to exactly that resolved row. It is also the index the
     /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout)
@@ -647,8 +649,19 @@ impl WorkflowEngine {
             .insert(execution_id, acquire_scope);
     }
 
-    /// Record a resolved slot identity for a resource key (activation-time).
-    pub fn record_resource_slot_identity(&self, key: ResourceKey, slot_identity: u64) {
+    /// Record a resolved **collision-free structural** slot identity for a
+    /// resource key (activation-time).
+    ///
+    /// The recorded [`SlotIdentity`](nebula_resource::SlotIdentity) is the
+    /// exact structural key `Manager::register_resolved` derived for the same
+    /// resolved `(slot, credential)` bindings, so the action-time acquire
+    /// path addresses the *same* registry row (no digest aliasing across
+    /// tenants).
+    pub fn record_resource_slot_identity(
+        &self,
+        key: ResourceKey,
+        slot_identity: nebula_resource::SlotIdentity,
+    ) {
         match self.resource_slot_identities.write() {
             Ok(mut ids) => {
                 ids.insert(key, slot_identity);
@@ -658,7 +671,7 @@ impl WorkflowEngine {
                     target: "nebula_engine",
                     ?err,
                     %key,
-                    slot_identity,
+                    ?slot_identity,
                     "resource_slot_identities lock poisoned; slot identity not recorded"
                 );
             },
@@ -722,7 +735,7 @@ impl WorkflowEngine {
     /// `DeclaresDependencies` impl, and an informational topology *tag*
     /// const — it emits no per-`R` value factory and no
     /// `TopologyRuntime<R>` factory. The typed
-    /// `Manager::register_from_value::<R>` consumes a `resource: R` and a
+    /// `Manager::register_resolved::<R>` consumes a `resource: R` and a
     /// `TopologyRuntime<R>` by value, monomorphized, so neither is
     /// recoverable from `dyn AnyResource`.
     ///

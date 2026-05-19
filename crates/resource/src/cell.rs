@@ -1,6 +1,6 @@
 //! Lock-free cell for the Resident topology.
 //!
-//! [`Cell`] wraps an [`ArcSwapOption`] to provide a simple, lock-free
+//! `Cell` wraps an [`ArcSwapOption`] to provide a simple, lock-free
 //! store/load/take API for a single shared value.
 
 use std::sync::Arc;

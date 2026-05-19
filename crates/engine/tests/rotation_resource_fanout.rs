@@ -21,8 +21,11 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotIdentity,
+    error::Error as ResourceError,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
@@ -65,8 +68,8 @@ enum Behaviour {
 /// idle-queue release race).
 #[derive(Clone)]
 struct Ctl {
-    identity: u64,
-    behaviour: Arc<std::sync::Mutex<std::collections::HashMap<u64, Behaviour>>>,
+    identity: SlotIdentity,
+    behaviour: Arc<std::sync::Mutex<std::collections::HashMap<SlotIdentity, Behaviour>>>,
     refresh_entered: Arc<AtomicUsize>,
 }
 
@@ -127,24 +130,33 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
     let idx = ResourceFanoutIndex::new();
     let cid = CredentialId::new();
 
-    let (a, b, c) = (0xA_u64, 0xB_u64, 0xC_u64);
-    behaviour.lock().unwrap().insert(a, Behaviour::Ok);
-    behaviour.lock().unwrap().insert(b, Behaviour::Hang);
-    behaviour.lock().unwrap().insert(c, Behaviour::Ok);
+    // Three distinct resolved-credential rows under one cid — distinct
+    // collision-free structural identities so the fan-out routes each to
+    // its own registry row.
+    let a = SlotIdentity::from_bindings([("db", "cred-a")]);
+    let b = SlotIdentity::from_bindings([("db", "cred-b")]);
+    let c = SlotIdentity::from_bindings([("db", "cred-c")]);
+    behaviour.lock().unwrap().insert(a.clone(), Behaviour::Ok);
+    behaviour.lock().unwrap().insert(b.clone(), Behaviour::Hang);
+    behaviour.lock().unwrap().insert(c.clone(), Behaviour::Ok);
 
-    for &id in &[a, b, c] {
-        mgr.register_resident_with(
-            Ctl {
-                identity: id,
+    for id in [a.clone(), b.clone(), c.clone()] {
+        mgr.register(RegistrationSpec {
+            resource: Ctl {
+                identity: id.clone(),
                 behaviour: Arc::clone(&behaviour),
                 refresh_entered: Arc::clone(&refresh_entered),
             },
-            Cfg,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(id),
-        )
+            config: Cfg,
+            scope: scope.clone(),
+            slot_identity: id.clone(),
+            topology: TopologyRuntime::Resident(ResidentRuntime::<Ctl>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident_for::<Ctl>(),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register resolved-credential row");
 
         // Warm each tenant's resident runtime so the rotation hook has a
@@ -157,7 +169,7 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
             CancellationToken::new(),
         );
         let _g = mgr
-            .acquire_resident_for::<Ctl>(&ctx, &AcquireOptions::default(), id)
+            .acquire_resident_for_identity::<Ctl>(&ctx, &AcquireOptions::default(), &id)
             .await
             .expect("warm tenant runtime");
 

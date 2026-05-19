@@ -39,6 +39,21 @@ struct PoolEntry<R: Resource> {
     runtime: R::Runtime,
     metrics: InstanceMetrics,
     fingerprint: u64,
+    /// Snapshot of the pool's revoke epoch at the moment this instance
+    /// began creation (or, for an instance reconstructed on release, the
+    /// epoch carried verbatim from its original creation).
+    ///
+    /// Distinct from `fingerprint`: `fingerprint` tracks *config* changes,
+    /// this tracks *credential revocations*. A credential revoke bumps the
+    /// pool's live counter; every return-to-idle path compares this stored
+    /// snapshot against the live counter and destroys (never recycles or
+    /// admits) the instance when the counter advanced past it, so an
+    /// instance created or checked out against a since-revoked credential
+    /// can never re-enter the idle queue or be handed onward. The snapshot
+    /// is taken once at creation and carried unchanged through
+    /// idle → checkout → release: re-reading it at release time would read
+    /// the post-revoke value on a pre-revoke instance and fail to fence it.
+    revoke_epoch: u64,
     /// When this entry was last returned to the idle queue.
     /// `None` for freshly created entries that have never been idle.
     returned_at: Option<Instant>,
@@ -91,10 +106,85 @@ pub struct PoolRuntime<R: Resource> {
     create_semaphore: Arc<Semaphore>,
     config: Config,
     current_fingerprint: Arc<AtomicU64>,
+    /// Monotonic per-pool credential-revoke counter.
+    ///
+    /// Bumped synchronously by the manager when a credential bound to this
+    /// pool is revoked (before the revoke hook is dispatched, the same
+    /// synchronous-before-`.await` discipline as the resource taint). Every
+    /// instance carries the value this counter held when it began creation
+    /// ([`PoolEntry::revoke_epoch`]); every path that would return an
+    /// instance to the idle queue destroys it instead when this counter has
+    /// advanced past the instance's snapshot. This closes the revoke →
+    /// recycle / in-flight-create / warmup / maintenance window in which an
+    /// instance authenticated with a since-revoked credential could
+    /// otherwise re-enter idle and be served to the next acquirer
+    /// (cross-tenant reuse). Separate from `current_fingerprint` so a
+    /// config reload and a credential revoke remain independent triggers.
+    revoke_epoch: Arc<AtomicU64>,
 }
 
 impl<R: Resource> PoolRuntime<R> {
-    /// Creates a new pool runtime with the given config and initial fingerprint.
+    /// Fallibly creates a new pool runtime, returning a typed
+    /// [`Error::permanent`] instead of aborting on an invalid
+    /// `(min_size, max_size)` topology.
+    ///
+    /// This is the constructor the **registration path must use**. A
+    /// `TopologyRuntime::Pool` built from operator-/JSON-supplied config
+    /// (the engine activation registrar feeding
+    /// [`Manager::register`](crate::Manager::register) /
+    /// [`register_resolved`](crate::Manager::register_resolved)) flows
+    /// untrusted input here, so the #390 `(min_size, max_size)` sanity
+    /// check has to fail safely as a registration `Error` rather than
+    /// abort the process — an abort on library input is a CLAUDE.md
+    /// violation. [`new`](Self::new) is the infallible wrapper retained
+    /// only for compile-time-known callers (doctests, const-shaped
+    /// fixtures), where an invalid topology is a programmer error.
+    ///
+    /// The `fingerprint` is a config-change detection token; see
+    /// [`new`](Self::new) for its semantics.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::permanent`] when `max_size == 0` (would otherwise
+    ///   deadlock the checkout semaphore on first acquire).
+    /// - [`Error::permanent`] when `min_size > max_size`.
+    pub fn try_new(config: Config, fingerprint: u64) -> Result<Self, Error> {
+        // #390: reject an unworkable pool topology at construction rather
+        // than deadlock on first acquire. On the registration path the
+        // config is operator/JSON-derived, so this is a typed
+        // `Error::permanent` (aborting on library input is a CLAUDE.md
+        // violation); invariants that must hold for the pool to function
+        // at all are rejected here, never silently clamped.
+        if config.max_size == 0 {
+            return Err(Error::permanent(
+                "PoolRuntime: config.max_size must be > 0 (got 0 — would \
+                 deadlock the checkout semaphore on first acquire)",
+            ));
+        }
+        if config.min_size > config.max_size {
+            return Err(Error::permanent(format!(
+                "PoolRuntime: config.min_size ({}) must be <= max_size ({})",
+                config.min_size, config.max_size,
+            )));
+        }
+
+        let semaphore = Arc::new(Semaphore::new(config.max_size as usize));
+        // #390: cap concurrent instance creation. `max(1)` protects us
+        // from a pathological `max_concurrent_creates = 0` config that
+        // would otherwise deadlock the pool on first acquire.
+        let create_semaphore = Arc::new(Semaphore::new(
+            (config.max_concurrent_creates as usize).max(1),
+        ));
+        Ok(Self {
+            idle: Arc::new(Mutex::new(VecDeque::new())),
+            semaphore,
+            create_semaphore,
+            config,
+            current_fingerprint: Arc::new(AtomicU64::new(fingerprint)),
+            revoke_epoch: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
     /// Creates a new pool runtime with the given configuration.
     ///
     /// The `fingerprint` is a config-change detection token. When
@@ -104,13 +194,23 @@ impl<R: Resource> PoolRuntime<R> {
     /// automatically on reload. Implement
     /// [`ResourceConfig::fingerprint()`](crate::ResourceConfig::fingerprint)
     /// on your config type to enable change detection.
+    ///
+    /// # Panics
+    ///
+    /// Aborts if `max_size == 0` or `min_size > max_size`. This is the
+    /// infallible constructor for **compile-time-known** configs only
+    /// (doctests, const-shaped fixtures), where an invalid topology is a
+    /// programmer error caught at the first test run. Any path that builds
+    /// a pool from runtime/operator/JSON config (registration) **must**
+    /// use [`try_new`](Self::try_new), which returns a typed
+    /// [`Error::permanent`] instead of aborting the process.
     pub fn new(config: Config, fingerprint: u64) -> Self {
         // #390: fail loudly at construction rather than deadlock on first
-        // acquire. `Manager::register_pooled*` surfaces the same check as
-        // a typed `Error::permanent`, but this guard also protects direct
-        // callers of the public `PoolRuntime::new` (e.g. the README and
-        // doctests). Invariants that must hold for the pool to function
-        // at all are asserted here rather than silently clamped.
+        // acquire. `try_new` surfaces the same check as a typed
+        // `Error::permanent` for the registration path; this assert form
+        // is kept only for direct compile-time-known callers (the README
+        // and doctests). Invariants that must hold for the pool to
+        // function at all are asserted here rather than silently clamped.
         assert!(
             config.max_size > 0,
             "PoolRuntime: config.max_size must be > 0 (got 0 — would deadlock \
@@ -136,6 +236,7 @@ impl<R: Resource> PoolRuntime<R> {
             create_semaphore,
             config,
             current_fingerprint: Arc::new(AtomicU64::new(fingerprint)),
+            revoke_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -148,6 +249,24 @@ impl<R: Resource> PoolRuntime<R> {
     pub fn set_fingerprint(&self, fingerprint: u64) {
         self.current_fingerprint
             .store(fingerprint, Ordering::Release);
+    }
+
+    /// Advances the pool's credential-revoke counter by one.
+    ///
+    /// Called synchronously by the manager when a credential bound to this
+    /// pool is revoked — before the revoke hook is dispatched, so by the
+    /// time the hook walks the idle queue every still-live instance created
+    /// against the now-revoked credential already has a snapshot strictly
+    /// behind this counter and is destroyed (never recycled or admitted) on
+    /// whichever return-to-idle path it reaches. `Release` pairs with the
+    /// `Acquire` load on every return-to-idle site.
+    pub fn bump_revoke_epoch(&self) {
+        self.revoke_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Reads the pool's current credential-revoke counter.
+    fn current_revoke_epoch(&self) -> u64 {
+        self.revoke_epoch.load(Ordering::Acquire)
     }
 
     /// Returns the number of idle instances currently in the pool.
@@ -244,8 +363,9 @@ where
     R::Lease: Into<R::Runtime>,
     R::Runtime: Clone,
 {
-    /// Runs one maintenance cycle: evicts idle-timeout, max-lifetime, and
-    /// stale-fingerprint entries from the idle queue.
+    /// Runs one maintenance cycle: evicts idle-timeout, max-lifetime,
+    /// stale-fingerprint, and credential-revoked entries from the idle
+    /// queue.
     ///
     /// Returns the number of entries evicted. Each evicted entry is destroyed
     /// via [`Resource::destroy`].
@@ -253,13 +373,21 @@ where
         let to_destroy = {
             let mut idle = self.idle.lock().await;
             let current_fp = self.current_fingerprint.load(Ordering::Acquire);
+            // Read under the idle lock — the same lock the revoke idle-walk
+            // holds — so an entry whose credential was revoked (its snapshot
+            // now behind this counter) is evicted here rather than
+            // re-deposited. The revoke hook visits but does not evict idle
+            // entries, so without this arm a non-stale, non-timed-out
+            // pre-revoke instance would be `keep.push_back`-ed and served to
+            // the next acquirer.
+            let current_revoke_epoch = self.current_revoke_epoch();
             let now = Instant::now();
 
             let mut keep = VecDeque::with_capacity(idle.len());
             let mut evict = Vec::new();
 
             for entry in idle.drain(..) {
-                if Self::should_evict(&entry, &self.config, current_fp, now) {
+                if Self::should_evict(&entry, &self.config, current_fp, current_revoke_epoch, now) {
                     evict.push(entry.runtime);
                 } else {
                     keep.push_back(entry);
@@ -281,7 +409,19 @@ where
     }
 
     /// Checks whether a pool entry should be evicted during maintenance.
-    fn should_evict(entry: &PoolEntry<R>, config: &Config, current_fp: u64, now: Instant) -> bool {
+    fn should_evict(
+        entry: &PoolEntry<R>,
+        config: &Config,
+        current_fp: u64,
+        current_revoke_epoch: u64,
+        now: Instant,
+    ) -> bool {
+        // Credential revoked since this instance was created. Distinct from
+        // the fingerprint arm: a config reload and a credential revoke are
+        // independent triggers, so `should_evict` checks both.
+        if entry.revoke_epoch != current_revoke_epoch {
+            return true;
+        }
         // Stale fingerprint.
         if entry.fingerprint != current_fp {
             return true;
@@ -377,6 +517,9 @@ where
         }
 
         let entry = guard.defuse();
+        // Fence: a revoke that landed while this create was in flight must
+        // not be handed onward (HikariCP #1836).
+        let entry = self.fence_freshly_created(entry, resource).await?;
         let lease: R::Lease = entry.runtime.clone().into();
         Ok(self.build_guarded_handle(
             lease,
@@ -426,6 +569,18 @@ where
             // Stale fingerprint — destroy silently.
             let current_fp = self.current_fingerprint.load(Ordering::Acquire);
             if guard.entry().fingerprint != current_fp {
+                let entry = guard.defuse();
+                let _ = resource.destroy(entry.runtime).await;
+                continue;
+            }
+
+            // Credential revoked while this instance sat idle — destroy it
+            // rather than hand it onward. The synchronous acquire-side taint
+            // re-check already rejects an acquire that races a revoke, but
+            // an idle instance whose credential was revoked must not be
+            // served even on a path that somehow reaches here, so this is
+            // the same symmetric guard as the stale-fingerprint pop above.
+            if guard.entry().revoke_epoch != self.current_revoke_epoch() {
                 let entry = guard.defuse();
                 let _ = resource.destroy(entry.runtime).await;
                 continue;
@@ -522,6 +677,16 @@ where
         ctx: &ResourceContext,
         non_blocking: bool,
     ) -> Result<PoolEntry<R>, Error> {
+        // Snapshot the revoke counter *before* the create-semaphore wait
+        // and `resource.create()`. An instance whose creation straddles a
+        // revoke (in flight when the credential is revoked, completing
+        // after) must be fenced: capturing the epoch at create-start means
+        // a revoke landing during the create advances the live counter past
+        // this snapshot, so every return-to-idle path destroys the instance
+        // instead of admitting it (HikariCP #1836). Reading it after the
+        // create returns would capture the already-bumped value and let the
+        // post-revoke instance through.
+        let revoke_epoch = self.current_revoke_epoch();
         let deadline = Instant::now() + self.config.create_timeout;
 
         let _create_permit = if non_blocking {
@@ -578,8 +743,38 @@ where
                 created_at: Instant::now(),
             },
             fingerprint: self.current_fingerprint.load(Ordering::Acquire),
+            revoke_epoch,
             returned_at: None,
         })
+    }
+
+    /// Fences a freshly created instance before it is handed to the
+    /// caller: if a credential revoke advanced the pool's counter while the
+    /// `create` was in flight, the instance was authenticated with the
+    /// now-revoked credential and must be destroyed, not admitted (HikariCP
+    /// #1836 — the in-flight-create-completing-after-revoke race that an
+    /// idle-walk / evict-only approach cannot catch).
+    ///
+    /// `Ok(entry)` when the snapshot still matches the live counter (admit
+    /// it); `Err` after destroying the instance when the counter advanced —
+    /// the acquire fails closed rather than serving a revoked-credential
+    /// runtime. The revoke epoch is captured at the *start* of
+    /// `create_entry`, so a revoke that lands any time during the create is
+    /// observed here.
+    async fn fence_freshly_created(
+        &self,
+        entry: PoolEntry<R>,
+        resource: &R,
+    ) -> Result<PoolEntry<R>, Error> {
+        if entry.revoke_epoch != self.current_revoke_epoch() {
+            let _ = resource.destroy(entry.runtime).await;
+            return Err(Error::permanent(format!(
+                "{}: credential revoked while a pool instance was being \
+                 created — instance destroyed, not handed to the caller",
+                R::key(),
+            )));
+        }
+        Ok(entry)
     }
 
     /// Builds a guarded handle with an on-release callback that submits
@@ -608,6 +803,7 @@ where
     ) -> ResourceGuard<R> {
         let idle = self.idle.clone();
         let current_fp_ref = self.current_fingerprint.clone();
+        let revoke_epoch_ref = self.revoke_epoch.clone();
         let max_lifetime = self.config.max_lifetime;
 
         ResourceGuard::guarded_with_permit(
@@ -632,18 +828,32 @@ where
                     runtime,
                     metrics: instance_metrics,
                     fingerprint: entry.fingerprint,
+                    // Carry the creation-time revoke snapshot verbatim. It
+                    // must NOT be re-read here: a release-time load would
+                    // observe the post-revoke counter on a pre-revoke
+                    // instance too, so it could never distinguish an
+                    // instance whose credential was revoked while it was
+                    // checked out from one created after the revoke.
+                    revoke_epoch: entry.revoke_epoch,
                     returned_at: None, // set by release_entry on idle push
                 };
 
                 // Load fingerprint at release time (not checkout time) to detect
                 // config changes that happened while the handle was checked out.
                 let current_fp = current_fp_ref.load(Ordering::Acquire);
+                // Hand the *live* revoke counter (not a load) into
+                // `release_entry`: the recycle decision can park, and a
+                // revoke landing during that park must still fence this
+                // instance, so the counter is re-read inside the release
+                // logic rather than captured here.
+                let revoke_epoch = revoke_epoch_ref.clone();
                 release_queue.submit(move || {
                     Box::pin(release_entry(
                         resource,
                         entry,
                         tainted,
                         current_fp,
+                        revoke_epoch,
                         max_lifetime,
                         idle,
                     ))
@@ -725,6 +935,9 @@ where
         }
 
         let entry = guard.defuse();
+        // Fence: a revoke that landed while this create was in flight must
+        // not be handed onward (HikariCP #1836).
+        let entry = self.fence_freshly_created(entry, resource).await?;
         let lease: R::Lease = entry.runtime.clone().into();
         Ok(self.build_guarded_handle(
             lease,
@@ -789,6 +1002,28 @@ where
         }
     }
 
+    /// Admits a freshly warmed instance to the idle queue, or destroys it
+    /// if a credential revoke landed during its (possibly slow) creation.
+    ///
+    /// Returns `true` when the instance was admitted, `false` when it was
+    /// fenced and destroyed. The instance carries the revoke snapshot taken
+    /// at the start of its `create_entry`; comparing it against the live
+    /// counter under the idle lock makes the compare-then-push atomic
+    /// against the revoke idle-walk (which holds the same lock), so a
+    /// warmup running concurrently with — or after — a revoke can never
+    /// deposit an instance authenticated with the revoked credential.
+    async fn admit_warmed_entry(&self, mut entry: PoolEntry<R>, resource: &R) -> bool {
+        let mut idle = self.idle.lock().await;
+        if entry.revoke_epoch != self.current_revoke_epoch() {
+            drop(idle);
+            let _ = resource.destroy(entry.runtime).await;
+            return false;
+        }
+        entry.returned_at = Some(Instant::now());
+        idle.push_back(entry);
+        true
+    }
+
     /// Sequential warmup helper: creates one instance at a time.
     async fn warmup_sequential(
         &self,
@@ -803,16 +1038,22 @@ where
                 .create_entry(resource, resource_config, ctx, false)
                 .await
             {
-                Ok(mut entry) => {
-                    entry.returned_at = Some(Instant::now());
-                    self.idle.lock().await.push_back(entry);
-                    created += 1;
-                    tracing::debug!(
-                        key = %R::key(),
-                        created,
-                        target,
-                        "pool warmup: instance created"
-                    );
+                Ok(entry) => {
+                    if self.admit_warmed_entry(entry, resource).await {
+                        created += 1;
+                        tracing::debug!(
+                            key = %R::key(),
+                            created,
+                            target,
+                            "pool warmup: instance created"
+                        );
+                    } else {
+                        tracing::debug!(
+                            key = %R::key(),
+                            target,
+                            "pool warmup: instance fenced by credential revoke, destroyed"
+                        );
+                    }
                 },
                 Err(e) => {
                     tracing::warn!(
@@ -850,16 +1091,22 @@ where
                 .create_entry(resource, resource_config, ctx, false)
                 .await
             {
-                Ok(mut entry) => {
-                    entry.returned_at = Some(Instant::now());
-                    self.idle.lock().await.push_back(entry);
-                    created += 1;
-                    tracing::debug!(
-                        key = %R::key(),
-                        created,
-                        target,
-                        "pool warmup (staggered): instance created"
-                    );
+                Ok(entry) => {
+                    if self.admit_warmed_entry(entry, resource).await {
+                        created += 1;
+                        tracing::debug!(
+                            key = %R::key(),
+                            created,
+                            target,
+                            "pool warmup (staggered): instance created"
+                        );
+                    } else {
+                        tracing::debug!(
+                            key = %R::key(),
+                            target,
+                            "pool warmup (staggered): instance fenced by credential revoke, destroyed"
+                        );
+                    }
                 },
                 Err(e) => {
                     tracing::warn!(
@@ -895,6 +1142,7 @@ async fn release_entry<R>(
     entry: PoolEntry<R>,
     tainted: bool,
     current_fp: u64,
+    revoke_epoch: Arc<AtomicU64>,
     max_lifetime: Option<Duration>,
     idle: Arc<Mutex<VecDeque<PoolEntry<R>>>>,
 ) where
@@ -908,6 +1156,19 @@ async fn release_entry<R>(
 
     // Stale fingerprint — config changed since checkout.
     if entry.fingerprint != current_fp {
+        let _ = resource.destroy(entry.runtime).await;
+        return;
+    }
+
+    // Credential revoked while this handle was checked out (or while its
+    // release sat queued). The counter is re-read live here, not taken from
+    // the value captured when the release was submitted: `recycle()` below
+    // can park arbitrarily long, and the revoke that must fence this
+    // instance may land *during* that park (after submit). Reading it now,
+    // before the recycle decision can keep the instance, guarantees a
+    // revoke at any point up to this check destroys the instance instead of
+    // returning it to idle.
+    if entry.revoke_epoch != revoke_epoch.load(Ordering::Acquire) {
         let _ = resource.destroy(entry.runtime).await;
         return;
     }
@@ -927,9 +1188,20 @@ async fn release_entry<R>(
     // Async recycle check.
     match resource.recycle(&entry.runtime, &entry.metrics).await {
         Ok(RecycleDecision::Keep) => {
+            // Re-check after the recycle await: a revoke can land while
+            // `recycle()` is in flight (it may park), so the pre-recycle
+            // check above is not sufficient on its own. Holding the idle
+            // lock across the compare-then-push makes the decision atomic
+            // against the revoke idle-walk (which also takes this lock).
+            let mut idle = idle.lock().await;
+            if entry.revoke_epoch != revoke_epoch.load(Ordering::Acquire) {
+                drop(idle);
+                let _ = resource.destroy(entry.runtime).await;
+                return;
+            }
             let mut entry = entry;
             entry.returned_at = Some(Instant::now());
-            idle.lock().await.push_back(entry);
+            idle.push_back(entry);
         },
         Ok(RecycleDecision::Drop) | Err(_) => {
             let _ = resource.destroy(entry.runtime).await;
@@ -1385,6 +1657,84 @@ mod tests {
         ReleaseQueue::shutdown(rq_handle).await;
     }
 
+    // -- `try_new` registration-path topology validation (#390) --
+    //
+    // Ports the behaviour the U6-deleted `register_pooled_rejects_*`
+    // tests covered onto the surviving fallible constructor: an invalid
+    // `(min_size, max_size)` from operator/JSON config must fail the
+    // registration path as a typed `Error::permanent`, never abort the
+    // process. `PoolRuntime::new`'s assert is the compile-time-known
+    // counterpart and is exercised by the const-shaped `new(...)` calls
+    // throughout the rest of this module.
+
+    #[test]
+    fn try_new_rejects_max_size_zero_with_permanent_error() {
+        let config = Config {
+            min_size: 0,
+            max_size: 0,
+            ..Config::default()
+        };
+        let err = match PoolRuntime::<MockPool>::try_new(config, 1) {
+            Err(e) => e,
+            Ok(_) => panic!("max_size == 0 must be a typed registration error, not a pool"),
+        };
+        assert_eq!(*err.kind(), crate::error::ErrorKind::Permanent);
+        assert!(
+            err.to_string().contains("max_size"),
+            "error message must name max_size, got: {err}",
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_min_greater_than_max_with_permanent_error() {
+        let config = Config {
+            min_size: 5,
+            max_size: 2,
+            ..Config::default()
+        };
+        let err = match PoolRuntime::<MockPool>::try_new(config, 1) {
+            Err(e) => e,
+            Ok(_) => panic!("min > max must be a typed registration error, not a pool"),
+        };
+        assert_eq!(*err.kind(), crate::error::ErrorKind::Permanent);
+        assert!(
+            err.to_string().contains("min_size") && err.to_string().contains("max_size"),
+            "error message must name min_size and max_size, got: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn try_new_accepts_valid_config_and_pool_is_usable() {
+        let resource = MockPool::new();
+        let config = Config {
+            min_size: 0,
+            max_size: 2,
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::try_new(config, 1)
+            .expect("valid (min_size, max_size) must construct");
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+        let ctx = test_ctx();
+
+        let handle = pool
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+                None,
+            )
+            .await;
+        assert!(handle.is_ok(), "valid pool from try_new must acquire");
+
+        drop(handle);
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
     // -- Maintenance tests --
 
     /// Helper: pushes a fake idle entry with custom timestamps.
@@ -1402,6 +1752,11 @@ mod tests {
                 created_at,
             },
             fingerprint,
+            // Stamp the pool's live revoke counter so the revoke-eviction
+            // arm is inert for these maintenance tests (no revoke occurred)
+            // and they keep asserting the fingerprint / lifetime / timeout
+            // behaviour they target.
+            revoke_epoch: pool.current_revoke_epoch(),
             returned_at,
         });
     }
@@ -1505,5 +1860,44 @@ mod tests {
 
         let evicted = pool.run_maintenance(&resource).await;
         assert_eq!(evicted, 0);
+    }
+
+    /// Site 5 (`run_maintenance` re-deposit): a non-stale, non-timed-out
+    /// idle entry whose credential was revoked must be evicted by
+    /// `should_evict`'s revoke-epoch arm — not `keep.push_back`-ed. With
+    /// idle/lifetime disabled and a current fingerprint, the revoke arm is
+    /// the *only* arm that can remove it, so this isolates that arm.
+    #[tokio::test]
+    async fn maintenance_evicts_revoked_idle_entry() {
+        let resource = MockPool::new();
+        let config = Config {
+            max_size: 5,
+            idle_timeout: None,
+            max_lifetime: None,
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::new(config, 1);
+
+        // Two healthy, current-fingerprint, non-timed-out idle entries.
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+        push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
+
+        // No revoke yet → the revoke arm is inert, nothing is evicted.
+        assert_eq!(pool.run_maintenance(&resource).await, 0);
+        assert_eq!(pool.idle_count().await, 2);
+
+        // Revoke: bump the per-pool counter. Both entries snapshotted the
+        // pre-bump value, so their snapshot is now strictly behind.
+        pool.bump_revoke_epoch();
+
+        let evicted = pool.run_maintenance(&resource).await;
+        assert_eq!(
+            evicted, 2,
+            "should_evict's revoke-epoch arm must evict every idle entry \
+             whose snapshot is behind the bumped counter (the re-deposit \
+             gap), even though fingerprint/lifetime/timeout would all keep \
+             them"
+        );
+        assert_eq!(pool.idle_count().await, 0);
     }
 }

@@ -34,7 +34,7 @@ use nebula_metrics::{
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
-        NEBULA_RESOURCE_RELEASE_TOTAL, rotation_outcome,
+        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL, rotation_outcome,
     },
 };
 
@@ -66,16 +66,19 @@ fn outcome_label(registry: &MetricsRegistry, outcome: &str) -> LabelSet {
 /// metrics.record_acquire();
 /// metrics.record_acquire();
 /// metrics.record_acquire_error();
+/// metrics.record_release_error();
 ///
 /// let snap = metrics.snapshot();
 /// assert_eq!(snap.acquire_total, 2);
 /// assert_eq!(snap.acquire_errors, 1);
+/// assert_eq!(snap.release_errors, 1);
 /// ```
 #[derive(Debug, Clone)]
 pub struct ResourceOpsMetrics {
     acquire_total: Counter,
     acquire_errors: Counter,
     release_total: Counter,
+    release_errors: Counter,
     create_total: Counter,
     destroy_total: Counter,
     slot_refresh_outcomes: OutcomeCounters,
@@ -156,6 +159,7 @@ impl ResourceOpsMetrics {
             acquire_total: registry.counter(NEBULA_RESOURCE_ACQUIRE_TOTAL)?,
             acquire_errors: registry.counter(NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL)?,
             release_total: registry.counter(NEBULA_RESOURCE_RELEASE_TOTAL)?,
+            release_errors: registry.counter(NEBULA_RESOURCE_RELEASE_ERROR_TOTAL)?,
             create_total: registry.counter(NEBULA_RESOURCE_CREATE_TOTAL)?,
             destroy_total: registry.counter(NEBULA_RESOURCE_DESTROY_TOTAL)?,
             slot_refresh_outcomes: OutcomeCounters::new(
@@ -182,6 +186,16 @@ impl ResourceOpsMetrics {
     /// Records a release (handle drop).
     pub fn record_release(&self) {
         self.release_total.inc();
+    }
+
+    /// Records a release-hook failure.
+    ///
+    /// Incremented by the bounded release path when `release_one` (a
+    /// token return / session close / exclusive reset) — or a follow-up
+    /// destroy after a failed reset — returns `Err`. The error is observed
+    /// here instead of being `let _ =`-swallowed (R17).
+    pub fn record_release_error(&self) {
+        self.release_errors.inc();
     }
 
     /// Records a new resource instance creation.
@@ -229,6 +243,7 @@ impl ResourceOpsMetrics {
             acquire_total: self.acquire_total.get(),
             acquire_errors: self.acquire_errors.get(),
             release_total: self.release_total.get(),
+            release_errors: self.release_errors.get(),
             create_total: self.create_total.get(),
             destroy_total: self.destroy_total.get(),
             slot_refresh_outcomes: self.slot_refresh_outcomes.snapshot(),
@@ -265,6 +280,9 @@ pub struct ResourceOpsSnapshot {
     pub acquire_errors: u64,
     /// Total releases (handle drops).
     pub release_total: u64,
+    /// Total release-hook failures (`release_one` / reset / close /
+    /// post-failed-reset destroy returned `Err`). Observed, not swallowed.
+    pub release_errors: u64,
     /// Total resource instances created.
     pub create_total: u64,
     /// Total resource instances destroyed.
@@ -291,6 +309,7 @@ mod tests {
         assert_eq!(snap.acquire_total, 0);
         assert_eq!(snap.acquire_errors, 0);
         assert_eq!(snap.release_total, 0);
+        assert_eq!(snap.release_errors, 0);
         assert_eq!(snap.create_total, 0);
         assert_eq!(snap.destroy_total, 0);
     }
@@ -303,6 +322,8 @@ mod tests {
         metrics.record_acquire();
         metrics.record_acquire_error();
         metrics.record_release();
+        metrics.record_release_error();
+        metrics.record_release_error();
         metrics.record_create();
         metrics.record_create();
         metrics.record_create();
@@ -312,6 +333,7 @@ mod tests {
         assert_eq!(snap.acquire_total, 2);
         assert_eq!(snap.acquire_errors, 1);
         assert_eq!(snap.release_total, 1);
+        assert_eq!(snap.release_errors, 2);
         assert_eq!(snap.create_total, 3);
         assert_eq!(snap.destroy_total, 1);
     }

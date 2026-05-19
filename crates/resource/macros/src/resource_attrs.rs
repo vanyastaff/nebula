@@ -4,13 +4,29 @@
 use nebula_macro_support::{attrs, diag};
 use syn::{Ident, Result, Type};
 
+/// Validated resource topology.
+///
+/// Parsed once in [`ResourceAttrs::parse`] from the accepted
+/// `pool` / `resident` / `bounded` strings (the former
+/// `service` / `transport` / `exclusive` topologies are folded into
+/// `bounded`, selected by the resource's `Bounded::Cap` typestate).
+/// Holding the validated enum instead of the raw string lets
+/// [`ResourceAttrs::topology_ident`] be an exhaustive match with no
+/// panic path — a panicking proc macro is a poor failure mode.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Topology {
+    Pool,
+    Resident,
+    Bounded,
+}
+
 /// Parsed resource container attributes.
 #[derive(Debug, Clone)]
 pub(crate) struct ResourceAttrs {
     /// Unique resource key (e.g. `"postgres"`).
     pub key: String,
-    /// Topology — `pool` / `resident` / `service` / `transport` / `exclusive`.
-    pub topology: String,
+    /// Validated topology, parsed from the `topology = "..."` attribute.
+    pub topology: Topology,
     /// Required `Self::Config` type.
     pub config: Type,
     /// Optional `Self::Runtime` type — defaults to `()`.
@@ -44,27 +60,29 @@ impl ResourceAttrs {
         }
 
         let key = attr_args.require_string("key", struct_name)?;
-        let topology = attr_args
-            .get_string("topology")
-            .ok_or_else(|| {
-                diag::error_spanned(
-                    struct_name,
-                    "missing required attribute `topology = \"pool|resident|service|transport|exclusive\"`",
-                )
-            })?;
-        // Validate topology value.
-        match topology.as_str() {
-            "pool" | "resident" | "service" | "transport" | "exclusive" => {},
+        let topology = attr_args.get_string("topology").ok_or_else(|| {
+            diag::error_spanned(
+                struct_name,
+                "missing required attribute `topology = \"pool|resident|bounded\"`",
+            )
+        })?;
+        // Validate + classify the topology value. The former
+        // `service` / `transport` / `exclusive` topologies are folded
+        // into `bounded`.
+        let topology = match topology.as_str() {
+            "pool" => Topology::Pool,
+            "resident" => Topology::Resident,
+            "bounded" => Topology::Bounded,
             other => {
                 return Err(syn::Error::new_spanned(
                     struct_name,
                     format!(
                         "invalid `topology = \"{other}\"` — \
-                         must be one of: pool, resident, service, transport, exclusive"
+                         must be one of: pool, resident, bounded"
                     ),
                 ));
             },
-        }
+        };
 
         let config = attr_args.get_type("config")?.ok_or_else(|| {
             diag::error_spanned(
@@ -96,13 +114,10 @@ impl ResourceAttrs {
 
     /// Returns the topology variant identifier for the corresponding `TopologyTag`.
     pub(crate) fn topology_ident(&self) -> Ident {
-        let variant = match self.topology.as_str() {
-            "pool" => "Pool",
-            "resident" => "Resident",
-            "service" => "Service",
-            "transport" => "Transport",
-            "exclusive" => "Exclusive",
-            _ => unreachable!("topology validated in parse()"),
+        let variant = match self.topology {
+            Topology::Pool => "Pool",
+            Topology::Resident => "Resident",
+            Topology::Bounded => "Bounded",
         };
         Ident::new(variant, proc_macro2::Span::call_site())
     }
