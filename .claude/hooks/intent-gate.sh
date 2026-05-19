@@ -86,6 +86,28 @@ if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 # Escape token: `// budget-justified:` on any added line this turn.
 budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'; }
 
+# Duplicate public-symbol heuristic: a NEW `pub fn|struct|trait NAME` whose
+# NAME already exists (same kind) elsewhere in crates/*/src — the "47 date
+# formatters" pattern. Added lines via ig_added_lines (untracked included).
+dup_symbol() {
+  local added kind name hit
+  added="$(ig_added_lines | grep -E '^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' || true)"
+  [ -n "$added" ] || return 1
+  while IFS= read -r line; do
+    kind="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait).*/\1/')"
+    name="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\2/')"
+    [ -n "$name" ] || continue
+    hit="$(grep -rEl --include='*.rs' "(^|[^A-Za-z_])pub[[:space:]]+$kind[[:space:]]+$name([^A-Za-z0-9_]|$)" "$cwd"/crates/*/src 2>/dev/null | wc -l | tr -d ' ')"
+    [ "${hit:-0}" -ge 2 ] && { printf '%s %s' "$kind" "$name"; return 0; }
+  done <<< "$added"
+  return 1
+}
+if d="$(dup_symbol)" && ! budget_justified; then
+  ig_bump
+  ig_log block "duplicate-symbol"
+  deny "New public \`$d\` collides with an existing workspace symbol of the same kind. Reuse the existing one (search crates/*/src), or add a \`// budget-justified: <reason>\` line if the duplication is intentional. (ADR-0083; agents that do not search the codebase re-implement existing utilities.)"
+fi
+
 # Large-blob proxy for per-fn complexity (clippy.toml too-many-lines = 100).
 # Longest run of consecutive added lines within one file, consuming the
 # shared ig_added_lines stream (untracked-aware, per-file via the `+++ `

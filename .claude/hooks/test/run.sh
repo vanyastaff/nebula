@@ -212,5 +212,16 @@ printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EL_P"
 chk "E blocks >100-line blob" 2 "$(egate '{"session_id":"'"$EL_SID"'","cwd":"'"$EL_DIR"'","stop_hook_active":false}')"
 rm -rf "$EL_DIR"
 
+# E duplicate public symbol (new `pub fn NAME` colliding with existing one)
+ED_DIR="$(mktemp -d)"
+( cd "$ED_DIR" && git init -q && mkdir -p crates/a/src crates/b/src \
+  && echo 'pub fn parse_token() {}' > crates/a/src/lib.rs \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base \
+  && echo 'pub fn parse_token() {}' > crates/b/src/lib.rs && git add -A )
+ED_SID="e-dup"; ED_P="$(turn_state_path "$ED_SID" "$ED_DIR")"; mkdir -p "$(dirname "$ED_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$ED_P"
+chk "E blocks dup pub symbol" 2 "$(egate '{"session_id":"'"$ED_SID"'","cwd":"'"$ED_DIR"'","stop_hook_active":false}')"
+rm -rf "$ED_DIR"
+
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
