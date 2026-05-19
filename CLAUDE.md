@@ -195,6 +195,7 @@ between siblings at the same layer.
 | `.cursor/rules/*.mdc`         | Cursor project rules that defer to `CLAUDE.md` |
 | `.claude/hooks/`              | Committed guard hooks (enforced discipline) |
 | `.claude/skills/`             | Claude Code `/aif-*` skill definitions |
+| `.claude/skills/rust-intel/`  | Vendored LLM-Rust-failure-mode skill — v0.2.2, MIT, advisory (not hook-enforced); `/rust-cc-{audit,fix,plan}` (see its `UPSTREAM.md`) |
 | `.claude/agents/`             | Subagent definitions (sidecars, workers, loop roles) |
 
 ## Agent Git Workflow
