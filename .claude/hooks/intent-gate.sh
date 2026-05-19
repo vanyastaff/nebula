@@ -52,9 +52,11 @@ fi
 # only view misses them; stop-gate.sh (C) uses the same `git status -u`
 # ground truth. Code files only. effective_turn_base repins a turn_base that a
 # rebase/squash-merge orphaned (else net-LoC / new-file / blob / dup all count
-# the whole rebased-in upstream delta, not just this turn).
+# the whole rebased-in upstream delta AND any pre-turn branch commits that the
+# rebase replayed — patch-ids stored at A0 locate the rewritten turn_base on
+# the new line so the budget stays scoped to THIS turn).
 tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
-tb="$(effective_turn_base "$cwd" "$tb")"
+tb="$(printf '%s' "$st" | jq -r '.turn_base_patch_ids[]?' 2>/dev/null | effective_turn_base "$cwd" "$tb")"
 CODE_RE='\.(rs|toml|sh|md)$'
 
 # Unified added-content stream: a `+++ <path>` header per file then each added

@@ -29,9 +29,11 @@ done < <(git -C "$cwd" status --porcelain -z -u 2>/dev/null)
 # Spec §4.C 3rd source: changes COMMITTED this turn (git status goes clean
 # after a commit; turn-state isn't reset by commit). turn_base = HEAD at A0;
 # effective_turn_base repins it if a rebase/squash-merge orphaned that SHA so
-# the diff stays scoped to THIS turn, not the whole rebased-in upstream delta.
+# the diff stays scoped to THIS turn (not the whole rebased-in delta nor any
+# pre-turn branch commits that the rebase replayed — patch-ids stored at A0
+# locate the rewritten turn_base counterpart on the new line).
 tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
-tb="$(effective_turn_base "$cwd" "$tb")"
+tb="$(printf '%s' "$st" | jq -r '.turn_base_patch_ids[]?' 2>/dev/null | effective_turn_base "$cwd" "$tb")"
 if [ -n "$tb" ]; then
   while IFS= read -r -d '' f; do [ -n "$f" ] && _consider "$f"; done \
     < <(git -C "$cwd" diff --name-only -z "$tb"..HEAD 2>/dev/null)

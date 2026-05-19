@@ -42,9 +42,47 @@ mk_rebase_repo() {
   printf '%s|%s' "$d" "$b1"
 }
 
+# Variant covering Codex review #3269664222 (P1): the branch already has a
+# pre-turn commit (`crates/old`) when the turn begins; `git rebase --onto main`
+# replays BOTH `old` and this turn's `new` onto an unrelated upstream. A0
+# stores the patch-id of `old`; effective_turn_base walks the rebased branch
+# and matches that patch-id against the new line, recovering the rewritten
+# `old'` as the effective base so the diff stays scoped to `crates/new` only.
+# Echoes "<dir>|<pre_turn_base_sha>|<patch_id_of_old>|<rewritten_old_sha>".
+# $1=#lines crates/up/src/u.rs   $2=#lines crates/old/src/o.rs (pre-turn)
+# $3=#lines crates/new/src/n.rs (this turn)
+mk_rebase_repo_preturn() {
+  local d up_n="$1" old_n="$2" new_n="$3" root pre_tb pid rewritten i
+  d="$(mktemp -d)"
+  git -C "$d" init -q -b base 2>/dev/null || git -C "$d" init -q
+  git -C "$d" symbolic-ref HEAD refs/heads/base 2>/dev/null || true
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm root --allow-empty
+  root="$(git -C "$d" rev-parse HEAD)"
+  git -C "$d" checkout -q -b feature
+  mkdir -p "$d/crates/old/src"
+  for i in $(seq 1 "$old_n"); do echo "// old $i"; done > "$d/crates/old/src/o.rs"
+  git -C "$d" add -A
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm old
+  pre_tb="$(git -C "$d" rev-parse HEAD)"
+  pid="$(git -C "$d" show "$pre_tb" 2>/dev/null | git patch-id --stable 2>/dev/null | awk 'NF>0{print $1; exit}')"
+  mkdir -p "$d/crates/new/src"
+  for i in $(seq 1 "$new_n"); do echo "// new $i"; done > "$d/crates/new/src/n.rs"
+  git -C "$d" add -A
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm new
+  git -C "$d" checkout -q -b main "$root"
+  mkdir -p "$d/crates/up/src"
+  for i in $(seq 1 "$up_n"); do echo "// up $i"; done > "$d/crates/up/src/u.rs"
+  git -C "$d" add -A
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm squash-unrelated
+  git -C "$d" checkout -q feature
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t rebase --onto main "$root" feature -q >/dev/null 2>&1
+  rewritten="$(git -C "$d" rev-list --reverse main..feature 2>/dev/null | head -n 1)"
+  printf '%s|%s|%s|%s' "$d" "$pre_tb" "$pid" "$rewritten"
+}
+
 # --- _lib unit checks ---
 LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
-chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' "$(load_state "$LS_T")"; rm -f "$LS_T"
+chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[],"turn_base":"","turn_base_patch_ids":[]}' "$(load_state "$LS_T")"; rm -f "$LS_T"
 chk "crate_of extracts" engine "$(crate_of 'crates/engine/src/engine.rs')"
 chk "crate_of windows path" engine "$(crate_of 'crates\\engine\\src\\engine.rs')"
 chk "crate_of none" "" "$(crate_of 'README.md')"
@@ -62,16 +100,27 @@ git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit 
 ETB_B1="$(git -C "$ETB_D" rev-parse HEAD)"
 echo x > "$ETB_D/f.txt"; git -C "$ETB_D" add -A
 git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm work
-chk "eff-base ancestor passthrough" "$ETB_B1" "$(effective_turn_base "$ETB_D" "$ETB_B1")"
-chk "eff-base empty stays empty"    ""         "$(effective_turn_base "$ETB_D" "")"
+chk "eff-base ancestor passthrough" "$ETB_B1" "$(effective_turn_base "$ETB_D" "$ETB_B1" </dev/null)"
+chk "eff-base empty stays empty"    ""         "$(effective_turn_base "$ETB_D" "" </dev/null)"
 git -C "$ETB_D" checkout -q -b main "$ETB_ROOT"
 echo y > "$ETB_D/g.txt"; git -C "$ETB_D" add -A
 git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm upstream
 git -C "$ETB_D" checkout -q feature
 git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t rebase --onto main "$ETB_B1" feature -q >/dev/null 2>&1
 ETB_MB="$(git -C "$ETB_D" merge-base HEAD main)"
-chk "eff-base repins stale base"    "$ETB_MB"   "$(effective_turn_base "$ETB_D" "$ETB_B1")"
+chk "eff-base repins stale base"    "$ETB_MB"   "$(effective_turn_base "$ETB_D" "$ETB_B1" </dev/null)"
 rm -rf "$ETB_D"
+# eff-base with stored patch-ids: pre-turn branch commit replayed by rebase.
+# Walking the new line and matching the stored patch-id recovers the rewritten
+# pre-turn commit (NOT just the upstream merge-base), so the diff arm scopes
+# to this turn's `crates/new` and ignores the replayed `crates/old`.
+ETBP="$(mk_rebase_repo_preturn 1 1 1)"
+ETBP_DIR="$(printf '%s' "$ETBP" | awk -F'|' '{print $1}')"
+ETBP_PRE="$(printf '%s' "$ETBP" | awk -F'|' '{print $2}')"
+ETBP_PID="$(printf '%s' "$ETBP" | awk -F'|' '{print $3}')"
+ETBP_REWRITTEN="$(printf '%s' "$ETBP" | awk -F'|' '{print $4}')"
+chk "eff-base patch-id recovers rewritten" "$ETBP_REWRITTEN" "$(printf '%s\n' "$ETBP_PID" | effective_turn_base "$ETBP_DIR" "$ETBP_PRE")"
+rm -rf "$ETBP_DIR"
 
 # A0 turn-reset
 TS_SID="t-a0"; TS_P="$(turn_state_path "$TS_SID" "$PWD")"
@@ -213,6 +262,24 @@ chk "C ignores rebased-in crate" 0 "$(cstop '{"session_id":"'"$RB_SID"'","cwd":"
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "$RB_B1" >"$RB_P"
 chk "C still blocks real post-rebase crate" 2 "$(cstop '{"session_id":"'"$RB_SID"'","cwd":"'"$RB_DIR"'","stop_hook_active":false}')"
 rm -rf "$RB_DIR"
+# P1 (Codex review #3269664222): when the branch already had pre-turn commits
+# before A0, `git rebase --onto` replays them onto the new base. A0 stores the
+# patch-ids of those pre-turn commits; effective_turn_base walks the rebased
+# line, matches the patch-id of `old`, and uses the rewritten `old'` as the
+# effective base — so C ignores the replayed pre-turn crate and only flags
+# this-turn's `crates/new` (which is green here).
+RBP="$(mk_rebase_repo_preturn 1 1 1)"
+RBP_DIR="$(printf '%s' "$RBP" | awk -F'|' '{print $1}')"
+RBP_PRE="$(printf '%s' "$RBP" | awk -F'|' '{print $2}')"
+RBP_PID="$(printf '%s' "$RBP" | awk -F'|' '{print $3}')"
+RBP_SID="c-rebase-pre"; RBP_P="$(turn_state_path "$RBP_SID" "$RBP_DIR")"; mkdir -p "$(dirname "$RBP_P")"
+printf '{"impl_files_edited":[],"gate_green":["new"],"turn_base":"%s","turn_base_patch_ids":["%s"]}' "$RBP_PRE" "$RBP_PID" >"$RBP_P"
+chk "C ignores pre-turn branch commit (P1)" 0 "$(cstop '{"session_id":"'"$RBP_SID"'","cwd":"'"$RBP_DIR"'","stop_hook_active":false}')"
+# Genuine protection survives: same fixture, this-turn crate `new` NOT green
+# -> still blocked (patch-id walk must not over-relax).
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s","turn_base_patch_ids":["%s"]}' "$RBP_PRE" "$RBP_PID" >"$RBP_P"
+chk "C still blocks real this-turn crate (P1)" 2 "$(cstop '{"session_id":"'"$RBP_SID"'","cwd":"'"$RBP_DIR"'","stop_hook_active":false}')"
+rm -rf "$RBP_DIR"
 # D fmt (must always exit 0, never block)
 dfmt() { printf '%s' "$1" | bash "$HERE/fmt.sh" >/dev/null 2>&1; echo $?; }
 chk "D exits 0 non-rust"  0 "$(dfmt '{"tool_name":"Write","tool_input":{"file_path":"README.md"},"cwd":"'"$PWD"'"}')"
@@ -336,6 +403,18 @@ ERB_SID="e-rebase"; ERB_P="$(turn_state_path "$ERB_SID" "$ERB_DIR")"; mkdir -p "
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s","intent_attempts":0}' "$ERB_B1" >"$ERB_P"
 chk "E ignores rebased-in net-LoC" 0 "$(egate '{"session_id":"'"$ERB_SID"'","cwd":"'"$ERB_DIR"'","stop_hook_active":false}')"
 rm -rf "$ERB_DIR"
+# E P1 (Codex review #3269664222): big pre-turn `crates/old` (450 LoC) +
+# this-turn `crates/new` (1 LoC); after rebase, A0-stored patch-id of `old`
+# locates the rewritten `old'`, so intent-gate counts only the +1 net delta,
+# not the replayed 450 LoC.
+ERBP="$(mk_rebase_repo_preturn 1 450 1)"
+ERBP_DIR="$(printf '%s' "$ERBP" | awk -F'|' '{print $1}')"
+ERBP_PRE="$(printf '%s' "$ERBP" | awk -F'|' '{print $2}')"
+ERBP_PID="$(printf '%s' "$ERBP" | awk -F'|' '{print $3}')"
+ERBP_SID="e-rebase-pre"; ERBP_P="$(turn_state_path "$ERBP_SID" "$ERBP_DIR")"; mkdir -p "$(dirname "$ERBP_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s","turn_base_patch_ids":["%s"],"intent_attempts":0}' "$ERBP_PRE" "$ERBP_PID" >"$ERBP_P"
+chk "E ignores pre-turn branch LoC (P1)" 0 "$(egate '{"session_id":"'"$ERBP_SID"'","cwd":"'"$ERBP_DIR"'","stop_hook_active":false}')"
+rm -rf "$ERBP_DIR"
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
