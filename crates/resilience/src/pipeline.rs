@@ -544,13 +544,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Cancel safety
     ///
-    /// Cancel-safe with respect to this crate: dropping the returned future
-    /// drops the in-flight operation at its current `.await`. Every pipeline
-    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
-    /// and circuit-breaker probe slots are released on drop — so no
-    /// crate-owned state is left partially mutated, and the pipeline does
-    /// not detach work via `spawn`. Whether a *partially executed* operation
-    /// is safe to abandon is the supplied operation's own contract.
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`, and the pipeline does not detach work via `spawn`.
+    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
+    /// permits and circuit-breaker probe slots are released on drop. The
+    /// exception is a rate-limiter step: once its permit is acquired the
+    /// limiter's shared quota is consumed, and dropping the future before
+    /// the operation finishes does *not* refund it — cancellation can still
+    /// burn rate-limit capacity, by design. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own
+    /// contract.
     ///
     /// # Examples
     ///
@@ -602,13 +605,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Cancel safety
     ///
-    /// Cancel-safe with respect to this crate: dropping the returned future
-    /// drops the in-flight operation at its current `.await`. Every pipeline
-    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
-    /// and circuit-breaker probe slots are released on drop — so no
-    /// crate-owned state is left partially mutated, and the pipeline does
-    /// not detach work via `spawn`. Whether a *partially executed* operation
-    /// is safe to abandon is the supplied operation's own contract.
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`, and the pipeline does not detach work via `spawn`.
+    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
+    /// permits and circuit-breaker probe slots are released on drop. The
+    /// exception is a rate-limiter step: once its permit is acquired the
+    /// limiter's shared quota is consumed, and dropping the future before
+    /// the operation finishes does *not* refund it — cancellation can still
+    /// burn rate-limit capacity, by design. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own
+    /// contract.
     pub async fn call_with_context<T, F, Fut>(
         &self,
         cancellation: &CancellationContext,
@@ -641,13 +647,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Cancel safety
     ///
-    /// Cancel-safe with respect to this crate: dropping the returned future
-    /// drops the in-flight operation at its current `.await`. Every pipeline
-    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
-    /// and circuit-breaker probe slots are released on drop — so no
-    /// crate-owned state is left partially mutated, and the pipeline does
-    /// not detach work via `spawn`. Whether a *partially executed* operation
-    /// is safe to abandon is the supplied operation's own contract.
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`, and the pipeline does not detach work via `spawn`.
+    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
+    /// permits and circuit-breaker probe slots are released on drop. The
+    /// exception is a rate-limiter step: once its permit is acquired the
+    /// limiter's shared quota is consumed, and dropping the future before
+    /// the operation finishes does *not* refund it — cancellation can still
+    /// burn rate-limit capacity, by design. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own
+    /// contract.
     pub async fn call_with_policy_context<T, F, Fut>(
         &self,
         context: &PolicyContext,
@@ -761,13 +770,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Cancel safety
     ///
-    /// Cancel-safe with respect to this crate: dropping the returned future
-    /// drops the in-flight operation at its current `.await`. Every pipeline
-    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
-    /// and circuit-breaker probe slots are released on drop — so no
-    /// crate-owned state is left partially mutated, and the pipeline does
-    /// not detach work via `spawn`. Whether a *partially executed* operation
-    /// is safe to abandon is the supplied operation's own contract.
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`, and the pipeline does not detach work via `spawn`.
+    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
+    /// permits and circuit-breaker probe slots are released on drop. The
+    /// exception is a rate-limiter step: once its permit is acquired the
+    /// limiter's shared quota is consumed, and dropping the future before
+    /// the operation finishes does *not* refund it — cancellation can still
+    /// burn rate-limit capacity, by design. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own
+    /// contract.
     ///
     /// # Examples
     ///
@@ -828,13 +840,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Cancel safety
     ///
-    /// Cancel-safe with respect to this crate: dropping the returned future
-    /// drops the in-flight operation at its current `.await`. Every pipeline
-    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
-    /// and circuit-breaker probe slots are released on drop — so no
-    /// crate-owned state is left partially mutated, and the pipeline does
-    /// not detach work via `spawn`. Whether a *partially executed* operation
-    /// is safe to abandon is the supplied operation's own contract.
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`, and the pipeline does not detach work via `spawn`.
+    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
+    /// permits and circuit-breaker probe slots are released on drop. The
+    /// exception is a rate-limiter step: once its permit is acquired the
+    /// limiter's shared quota is consumed, and dropping the future before
+    /// the operation finishes does *not* refund it — cancellation can still
+    /// burn rate-limit capacity, by design. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own
+    /// contract.
     pub async fn call_with_context_and_fallback<T, F, Fut>(
         &self,
         cancellation: &CancellationContext,
@@ -865,13 +880,16 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
     ///
     /// # Cancel safety
     ///
-    /// Cancel-safe with respect to this crate: dropping the returned future
-    /// drops the in-flight operation at its current `.await`. Every pipeline
-    /// step's bookkeeping is stack-local or a drop guard — bulkhead permits
-    /// and circuit-breaker probe slots are released on drop — so no
-    /// crate-owned state is left partially mutated, and the pipeline does
-    /// not detach work via `spawn`. Whether a *partially executed* operation
-    /// is safe to abandon is the supplied operation's own contract.
+    /// Dropping the returned future drops the in-flight operation at its
+    /// current `.await`, and the pipeline does not detach work via `spawn`.
+    /// Most step bookkeeping is stack-local or a drop guard — bulkhead
+    /// permits and circuit-breaker probe slots are released on drop. The
+    /// exception is a rate-limiter step: once its permit is acquired the
+    /// limiter's shared quota is consumed, and dropping the future before
+    /// the operation finishes does *not* refund it — cancellation can still
+    /// burn rate-limit capacity, by design. Whether a *partially executed*
+    /// operation is safe to abandon is the supplied operation's own
+    /// contract.
     pub async fn call_with_policy_context_and_fallback<T, F, Fut>(
         &self,
         context: &PolicyContext,
