@@ -58,8 +58,33 @@ pub struct SlotCell<S> {
     inner: ArcSwapOption<SlotEntry<S>>,
     /// Source of strictly increasing generations. `fetch_add` returns the
     /// *previous* value, so the first transition observes `0` and stamps
-    /// `1` (generation `0` ≡ "never bound").
+    /// `1` (generation `0` ≡ "never bound"). This is the *allocator*: it
+    /// hands each transition a unique number but does **not** decide which
+    /// transition's effect is live — that is [`committed`](Self::committed).
     next_generation: AtomicU64,
+    /// Highest generation whose effect (a `store` publish *or* a `take`
+    /// clear) has actually won the race to become the live state.
+    ///
+    /// `next_generation` only *allocates* numbers; `bump_generation()` and
+    /// the entry swap are two separate steps, so two writers can reorder so
+    /// the slower one (lower allocated generation) reaches the swap *last*.
+    /// An unconditional store would then leave the **older** generation
+    /// live while a newer transition had already happened — a
+    /// rotated/revoked credential resurrected on the live slot. `committed`
+    /// is the monotone floor that closes that: a transition publishes its
+    /// effect only by winning a `compare_exchange` that advances
+    /// `committed` to its own (strictly greater) generation, so the live
+    /// generation is monotone non-decreasing under any number of concurrent
+    /// writers and a `take` cannot be undone by a stale `store`.
+    ///
+    /// This is **not** `ArcSwapOption::rcu`: the module rejects `rcu`
+    /// because its `FnMut` closure is retried under contention and a
+    /// side-effecting generation bump inside it would *gap* the
+    /// strictly-monotone sequence the create-vs-rotate reconcile compares.
+    /// The generation here is allocated *once* by `bump_generation()`
+    /// before the loop; the loop only decides whether this already-numbered
+    /// transition wins — it never re-numbers anything, so there is no gap.
+    committed: AtomicU64,
 }
 
 impl<S> SlotCell<S> {
@@ -68,18 +93,67 @@ impl<S> SlotCell<S> {
         Self {
             inner: ArcSwapOption::empty(),
             next_generation: AtomicU64::new(0),
+            committed: AtomicU64::new(0),
         }
     }
 
-    /// Returns the next strictly-increasing generation for a transition.
+    /// Allocates the next strictly-increasing generation for a transition.
     fn bump_generation(&self) -> u64 {
         // `fetch_add` returns the prior value; the first call yields `0`,
-        // so `+ 1` makes the first published generation `1` and every
+        // so `+ 1` makes the first allocated generation `1` and every
         // subsequent transition strictly greater. `Relaxed` is sufficient:
-        // ordering of the generation w.r.t. the stored value is carried by
-        // the single `ArcSwapOption` publish/observe of the `SlotEntry`,
-        // not by this counter's memory order.
+        // this only *allocates* a unique number. Torn-read freedom of the
+        // value↔generation pair is carried by the single `ArcSwapOption`
+        // publish/observe of the immutable `SlotEntry`; *which* transition
+        // becomes live (and the happens-before for that decision) is
+        // carried by the `AcqRel` `committed` `compare_exchange` in
+        // `publish` / `take`, not by this allocator's memory order.
         self.next_generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Generation-guarded publish of `(generation, value)` as the live
+    /// entry.
+    ///
+    /// `generation` was already allocated by [`bump_generation`] *before*
+    /// this call, so the loop only decides whether this already-numbered
+    /// transition wins the publish race — it never re-numbers anything (no
+    /// epoch gap, unlike an `rcu` retry). The transition becomes live only
+    /// by winning a `compare_exchange` that advances
+    /// [`committed`](Self::committed) from a strictly smaller value to
+    /// `generation`; the entry swap then publishes the value+generation as
+    /// one immutable [`SlotEntry`] (so [`load_versioned`] stays torn-read
+    /// free). A slower writer that allocated an *earlier* generation but
+    /// reaches here *after* a newer transition observes
+    /// `committed >= generation` and drops its stale entry rather than
+    /// regressing the live generation.
+    ///
+    /// [`bump_generation`]: Self::bump_generation
+    /// [`load_versioned`]: Self::load_versioned
+    fn publish(&self, generation: u64, value: Arc<S>) {
+        let entry = Arc::new(SlotEntry { generation, value });
+        loop {
+            let committed = self.committed.load(Ordering::Acquire);
+            if committed >= generation {
+                // A transition with an equal-or-newer generation already
+                // won. Publishing our older entry would resurrect a stale
+                // (rotated/revoked) credential on the live slot — drop it.
+                return;
+            }
+            // Claim the right to publish *this* generation. `AcqRel` so the
+            // subsequent entry swap is ordered after the win and a
+            // concurrent loser's `Acquire` re-read observes it.
+            if self
+                .committed
+                .compare_exchange(committed, generation, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.inner.store(Some(Arc::clone(&entry)));
+                return;
+            }
+            // Lost the floor race to another writer; re-read and re-decide.
+            // No re-numbering happens here, so the strictly-monotone
+            // generation sequence the reconcile compares is never gapped.
+        }
     }
 
     /// Install (or replace) the resolved value, bumping the generation.
@@ -87,13 +161,17 @@ impl<S> SlotCell<S> {
     /// The new generation is published atomically *with* the value inside a
     /// single internal entry swap, so a concurrent [`load_versioned`] never
     /// observes the new value paired with an old generation (or vice
-    /// versa).
+    /// versa). The publish is **generation-guarded** (see
+    /// [`publish`](Self::publish)): under concurrent writers a slower
+    /// writer that allocated an *earlier* generation cannot overwrite a
+    /// *newer* live entry, so the live generation is monotone
+    /// non-decreasing and a rotated/revoked credential is never resurrected
+    /// on the live slot.
     ///
     /// [`load_versioned`]: Self::load_versioned
     pub fn store(&self, value: Arc<S>) {
         let generation = self.bump_generation();
-        self.inner
-            .store(Some(Arc::new(SlotEntry { generation, value })));
+        self.publish(generation, value);
     }
 
     /// Snapshot the current value, if resolved.
@@ -114,36 +192,77 @@ impl<S> SlotCell<S> {
     }
 
     /// The current generation: `0` if never bound, otherwise the
-    /// generation of the latest transition (`store` *or* `take`).
+    /// generation of the latest *committed* transition (`store` *or*
+    /// `take`).
     ///
     /// A cleared slot keeps the generation of the `take` that cleared it
     /// (a clear is itself a credential-state transition — a runtime built
     /// before a revoke must still see a strictly newer epoch), so this is
     /// `> 0` after the first transition even when [`load`](Self::load)
     /// returns `None`.
+    ///
+    /// When an entry is live its own (published, torn-read-free)
+    /// generation is authoritative. When there is no entry the fallback is
+    /// [`committed`](Self::committed) — the monotone floor — **not**
+    /// `next_generation` (a stale `store` that lost the publish race never
+    /// advances `committed`, so the post-`take` generation cannot be
+    /// regressed by a slower writer; `next_generation` is only the
+    /// allocator and can run ahead of what actually became live).
     pub fn generation(&self) -> u64 {
         match self.inner.load_full() {
             Some(entry) => entry.generation,
-            // No live entry: either never bound (`next_generation == 0`)
-            // or cleared by `take` (the post-take generation we recorded).
-            None => self.next_generation.load(Ordering::Relaxed),
+            // No live entry: either never bound (`committed == 0`) or
+            // cleared by the `take` that won the floor (its generation).
+            None => self.committed.load(Ordering::Acquire),
         }
     }
 
     /// Revoke the slot, returning the previously held value (if any).
     ///
-    /// A clear is a credential-state transition, so it bumps the
+    /// A clear is a credential-state transition, so it advances the
     /// generation: a runtime built against the pre-clear guard is then
-    /// detectably stale on the next rotation/revoke dispatch (resource runtime status
-    /// §Deferred). The post-clear generation is observable via
-    /// [`generation`](Self::generation) even though [`load`](Self::load)
+    /// detectably stale on the next rotation/revoke dispatch (resource
+    /// runtime status §Deferred). The post-clear generation is observable
+    /// via [`generation`](Self::generation) even though [`load`](Self::load)
     /// is now `None`.
+    ///
+    /// **Regression-safe** (Finding #3b): like [`publish`](Self::publish),
+    /// the clear takes effect only by winning a `compare_exchange` that
+    /// advances [`committed`](Self::committed) to this clear's freshly
+    /// allocated generation. A clear that allocated an *earlier*
+    /// generation but reaches here *after* a newer transition does **not**
+    /// undo that newer transition (it would otherwise wipe a freshly
+    /// rotated-in credential); the newer transition already advanced the
+    /// generation a pre-clear runtime observes as stale, so the clear's
+    /// intent (a strictly newer epoch is visible) is already satisfied.
+    /// A `take` on an already-empty / never-bound slot still wins the
+    /// floor (no newer transition raced it) and so still advances the
+    /// generation — the "clear signal" stays meaningful regardless of
+    /// prior state.
     pub fn take(&self) -> Option<Arc<S>> {
-        // Bump first so that even if the slot was already empty, the
-        // generation still advances monotonically (a "clear" signal is
-        // meaningful to a rotation observer regardless of prior state).
-        let _post_clear_generation = self.bump_generation();
-        self.inner.swap(None).map(|entry| Arc::clone(&entry.value))
+        // Allocate this clear's generation first so that even an
+        // already-empty slot's clear is a numbered transition.
+        let generation = self.bump_generation();
+        loop {
+            let committed = self.committed.load(Ordering::Acquire);
+            if committed >= generation {
+                // A transition with an equal-or-newer generation already
+                // won. Clearing now would undo it (resurrecting "empty"
+                // over a freshly stored credential). The newer transition
+                // already advanced the generation past any pre-clear
+                // runtime, so the clear's observable intent is met; return
+                // the current value snapshot without regressing the state.
+                return self.load();
+            }
+            if self
+                .committed
+                .compare_exchange(committed, generation, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return self.inner.swap(None).map(|entry| Arc::clone(&entry.value));
+            }
+            // Lost the floor race; re-read and re-decide (no re-numbering).
+        }
     }
 
     /// Returns `true` if the slot currently holds a resolved value.
@@ -170,8 +289,27 @@ impl<S> SlotCell<S> {
     fn store_stamped(&self, mk: impl FnOnce(u64) -> Arc<S>) -> u64 {
         let generation = self.bump_generation();
         let value = mk(generation);
-        self.inner
-            .store(Some(Arc::new(SlotEntry { generation, value })));
+        self.publish(generation, value);
+        generation
+    }
+
+    /// Production `store`, but with a caller-controlled barrier fired
+    /// **between** `bump_generation()` and the publish.
+    ///
+    /// `bump_generation()` (a `fetch_add`) and the publish are two separate
+    /// steps; that gap is exactly where two writers can reorder so the
+    /// slower one (lower generation) publishes *last* and regresses the
+    /// live entry. The race window is a few instructions wide in
+    /// production, so a characterization test cannot reliably hit it by
+    /// chance. This seam exposes the gap deterministically: the test runs
+    /// `gap` between the bump and the publish, so it can force the exact
+    /// *A-bump / B-bump / B-publish / A-publish* interleave. It routes
+    /// through the same [`publish`](Self::publish) path production uses, so
+    /// it stays faithful before and after the generation-guard fix.
+    fn store_with_gap(&self, value: Arc<S>, gap: impl FnOnce(u64)) -> u64 {
+        let generation = self.bump_generation();
+        gap(generation);
+        self.publish(generation, value);
         generation
     }
 }
@@ -401,5 +539,144 @@ mod tests {
 
         writer.await.expect("writer task must not panic");
         reader.await.expect("reader task must not panic");
+    }
+}
+
+#[cfg(test)]
+mod slot_publish_race_tests {
+    //! Finding #3b — the LIVE published entry must not regress under >=2
+    //! concurrent writers.
+    //!
+    //! `bump_generation()` (a `fetch_add`) and the entry publish are two
+    //! separate steps. Two writers can interleave as
+    //! *A bumps->1, B bumps->2, B publishes(2), A publishes(1)* — an
+    //! unconditional `inner.store` then leaves generation 1 live while 2
+    //! was the newer transition (a rotated/revoked credential resurrected
+    //! on the live slot). The existing multi-writer test only checks
+    //! per-entry `value == generation` and counter monotonicity, not
+    //! *live-entry non-regression* — this is the missing characterization.
+    //!
+    //! The reorder window is a few instructions in production, so this
+    //! drives it deterministically with `store_with_gap`: writer A bumps,
+    //! then blocks in the gap on a channel; writer B bumps + publishes its
+    //! (newer) entry; the test then releases A, which publishes its
+    //! (older) entry strictly last. The live entry must still be B's.
+    //!
+    //! `.expect()` is the idiomatic test-only failure here; `clippy.toml`
+    //! exempts tests from the no-unwrap rule, and this whole module is
+    //! `#[cfg(test)]`.
+
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeGuard(u32);
+    impl zeroize::Zeroize for FakeGuard {
+        fn zeroize(&mut self) {
+            self.0 = 0;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn live_entry_generation_never_regresses_under_two_writers() {
+        let cell: Arc<SlotCell<FakeGuard>> = Arc::new(SlotCell::empty());
+        // Precondition: a fresh slot is unbound (no live entry).
+        assert!(
+            cell.load().is_none(),
+            "a fresh slot must start unbound (no live entry)"
+        );
+
+        // A signals "I have bumped" on `a_bumped_tx`, then blocks reading
+        // `release_a_rx` until the test (having observed B's publish) lets
+        // it proceed to publish its OLDER-generation entry last.
+        let (a_bumped_tx, a_bumped_rx) = std::sync::mpsc::channel::<()>();
+        let (release_a_tx, release_a_rx) = std::sync::mpsc::channel::<()>();
+
+        let writer_a = {
+            let cell = Arc::clone(&cell);
+            tokio::task::spawn_blocking(move || {
+                cell.store_with_gap(Arc::new(FakeGuard(1)), move |_g| {
+                    // A has its (lower) generation but has NOT published.
+                    let _ = a_bumped_tx.send(());
+                    // Block until the test releases A — deterministic: the
+                    // test only sends after B's newer publish is observed.
+                    let _ = release_a_rx.recv();
+                })
+            })
+        };
+
+        // Wait until A has bumped (lower generation), parked pre-publish.
+        a_bumped_rx
+            .recv()
+            .expect("writer A must reach the gap and signal");
+
+        // Writer B: bumps the HIGHER generation and publishes immediately.
+        let cell_b = Arc::clone(&cell);
+        let gen_b = tokio::task::spawn_blocking(move || {
+            cell_b.store_with_gap(Arc::new(FakeGuard(2)), |_g| {})
+        })
+        .await
+        .expect("writer B must not panic");
+
+        // B's newer entry is live before A's stale publish.
+        assert!(gen_b > 1, "B must hold a strictly higher generation");
+        assert_eq!(
+            cell.generation(),
+            gen_b,
+            "B's newer entry must be live before A's stale publish"
+        );
+
+        // Release A -> it publishes its OLDER-generation entry LAST.
+        let _ = release_a_tx.send(());
+        let gen_a = writer_a.await.expect("writer A must not panic");
+
+        // The decisive invariant: A published an OLDER generation strictly
+        // AFTER B published a NEWER one. The live entry must STILL be B's.
+        // Pre-fix the unconditional publish let A's older entry win, so
+        // the live generation regressed to A's (B's value resurrected away
+        // in favour of A's older one).
+        assert!(gen_b > gen_a, "B bumped after A, so gen_b > gen_a");
+        assert_eq!(
+            cell.generation(),
+            gen_b,
+            "LIVE entry regressed: writer A (generation {gen_a}) published \
+             after writer B (generation {gen_b}) and overwrote the newer \
+             entry — a rotated/revoked credential resurrected on the live \
+             slot"
+        );
+
+        // The live entry must still be present and, read torn-read-free
+        // via `load_versioned`, its generation and value must be B's
+        // (not A's resurrected older pair).
+        let versioned = cell.load_versioned();
+        assert!(
+            versioned.is_some(),
+            "a value must be live after both writers published"
+        );
+        let (lv_gen, lv_val) = versioned.expect("live entry present");
+        assert_eq!(
+            lv_gen, gen_b,
+            "live entry generation must be B's {gen_b}, not A's stale {gen_a}"
+        );
+        assert_eq!(
+            lv_val.0, 2,
+            "live entry value (coupled with generation {lv_gen}) must be \
+             B's, not A's stale resurrection"
+        );
+        // `generation()` agrees with the torn-read-free published
+        // generation (no skew between the two read paths).
+        assert_eq!(
+            cell.generation(),
+            lv_gen,
+            "generation() must agree with the live entry's published \
+             generation"
+        );
+        let live = cell.load().expect("a value must be live");
+        assert_eq!(
+            live.0, 2,
+            "live value must be B's (generation {gen_b}), not A's stale \
+             resurrection"
+        );
     }
 }
