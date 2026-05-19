@@ -34,17 +34,45 @@ architecture). `SKILL.md` auto-loads on any Rust task; the three
 (`rust-cc-install.{sh,ps1,bat}`) are **deliberately not vendored** — no
 executable third-party code enters the tree.
 
-## Maintenance rules
+## Vendoring delta (Nebula adaptation)
 
-- **Verbatim. Do not hand-edit `SKILL.md` / `docs/` / `rust-cc-*.md`.**
-  They are byte-exact upstream copies; hand-edits silently fork the spec
-  and break re-sync. Frontmatter (`name:` absent — skill name derives
-  from the directory) is upstream-as-is by design.
-- **Re-sync** = clone upstream at the new tag, re-copy the mapped files,
-  bump the version/commit table above, re-run `/rust-cc-audit` on the
-  changed surface, commit as `chore(claude): sync rust-intel <ver>`.
-- Local divergence, if ever required, goes in **this file** as an
-  override note — never inline in the vendored files.
+Not byte-exact. Vendoring renamed files (`rust-intel.md` → `SKILL.md`;
+`commands/rust-intel-cc/*` → flat `rust-cc-*`), which broke the
+upstream's internal cross-references. A **small, mechanical, documented
+delta** is applied so the skill actually functions in-tree — a
+compatibility-shim file was rejected; the references are corrected at
+source:
+
+| Vendored file | Delta vs upstream |
+|---|---|
+| `SKILL.md` | `+ name: rust-intel` frontmatter line (Nebula skill convention) |
+| `commands/rust-cc-{audit,fix,plan}.md` | literal `` `rust-intel.md` `` rule-source refs → `` the `rust-intel` skill (`SKILL.md`) `` |
+| `commands/rust-cc-audit.md` | empty-arg default scope `src/**/*.rs` → Nebula workspace (`crates/*/src`, `examples/src`, `apps/*/src`) — no root `src/` here |
+| `docs/roadmap.md` | command names `/rust-{audit,fix,plan}` → `/rust-cc-*`; links `../commands/rust-*.md` → `../../../commands/rust-cc-*.md` (correct depth + prefix) |
+| `docs/sources.md` | prose `` `rust-intel.md` `` → `` the `rust-intel` skill (`SKILL.md`) `` |
+
+Conceptual mentions of the upstream filename inside upstream prose (e.g.
+`roadmap.md` "should `rust-intel.md` be split") are left as-is — only
+navigational links and the command-doc rule-source references were
+corrected. Everything outside this table is upstream-verbatim.
+
+**Re-sync** = clone upstream at the new tag, re-copy the mapped files,
+re-apply exactly the delta table above (mechanical find/replace), bump
+the version/commit table, re-run `/rust-cc-audit` on the changed
+surface, commit as `chore(claude): sync rust-intel <ver>`. Any further
+Nebula-only divergence is added to the delta table here — never left
+undocumented in the vendored files.
+
+## Structural-budget note (ADR-0083)
+
+Vendoring a ~760-line third-party spec plus command docs is an
+intentional bulk import, not re-implemented workspace utility code. The
+Layer-2 duplicate-symbol gate matches `pub fn` examples inside
+`SKILL.md` code fences (a false positive on documentation). The escape
+token below satisfies the deterministic structural-budget gate on the
+vendor commit and on every re-sync commit (which re-touches this file):
+
+    // budget-justified: vendored third-party rust-intel spec (SKILL.md + docs + rust-cc-* commands) — reviewed bulk import; the only pub-fn collisions are markdown code-fence examples, not duplicate utilities
 
 ## Nebula-specific caveats (read before trusting blindly)
 

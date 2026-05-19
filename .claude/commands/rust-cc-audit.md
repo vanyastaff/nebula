@@ -18,12 +18,12 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 2. **Pin the world.** Read `Cargo.toml` (and `CLAUDE.md`, if present). Record the exact versions of `tokio`, `axum`, `sqlx`, `reqwest`, `serde`, `hyper`, `clap`, and any other key dependency. Without this, §A1 (API hallucinations) cannot be checked — block instead of guessing.
 
 3. **Determine scope.**
-   - If `$ARGUMENTS` is empty: walk `src/**/*.rs` relative to cwd.
+   - If `$ARGUMENTS` is empty: this repo has no root `src/` — walk the Nebula workspace `crates/*/src/**/*.rs`, `examples/src/**/*.rs`, and `apps/*/src/**/*.rs` (exclude `target/`).
    - If a file: just that file.
    - If a directory: every `*.rs` recursively, excluding `target/`.
    - Skip generated code (`OUT_DIR`, `build.rs` output).
 
-4. **Walk every category in the skill.** Iterate §A1 through §C7 as enumerated in `rust-intel.md`. For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness.
+4. **Walk every category in the skill.** Iterate §A1 through §C7 as enumerated in the `rust-intel` skill (`SKILL.md`). For each, apply that category's BANNED/REQUIRED rules verbatim from the skill — do not re-state them here. The skill is the single source of rule wording; this command is the workflow harness.
 
 5. **For every finding, produce:**
    - **Category:** `§XN — name`
@@ -36,7 +36,7 @@ Audits Rust code against the full taxonomy in the `rust-intel` skill. Removes th
 6. **Report grouping:**
    - By severity (critical → info).
    - Inside a severity, by tier (A → B → C).
-   - End with a Post-flight summary in the spec's canonical form (every `unsafe`, `unwrap`, `Arc<Mutex<_>>`, double lock, `.lock().unwrap()`, crypto call, new dependency, etc. — the list at the bottom of `rust-intel.md`).
+   - End with a Post-flight summary in the spec's canonical form (every `unsafe`, `unwrap`, `Arc<Mutex<_>>`, double lock, `.lock().unwrap()`, crypto call, new dependency, etc. — the list at the bottom of the `rust-intel` skill (`SKILL.md`)).
 
 ## Report format
 

@@ -17,9 +17,9 @@ Catches mistakes at the design stage, while rolling them back is still cheap. Th
 
 2. **Pin the world.** Read `Cargo.toml` and `CLAUDE.md` (if present). Record versions. If they're missing or insufficient for the task, ask — don't invent.
 
-3. **Run the trigger table.** Match phrases from `$ARGUMENTS` against the trigger table in `rust-intel.md` (the "Self-monitoring" section near the top of the spec). Record **every** activated category — the table is the source of truth for the phrase→category mapping; this command does not duplicate it. If ≥2 categories fire, flag the task as high-risk and enumerate exactly which ones the plan defends against.
+3. **Run the trigger table.** Match phrases from `$ARGUMENTS` against the trigger table in the `rust-intel` skill (`SKILL.md`, the "Self-monitoring" section near the top of the spec). Record **every** activated category — the table is the source of truth for the phrase→category mapping; this command does not duplicate it. If ≥2 categories fire, flag the task as high-risk and enumerate exactly which ones the plan defends against.
 
-4. **Pre-flight checklist.** Walk the 7-question Pre-flight checklist defined at the end of `rust-intel.md` (section "Pre-flight checklist"). For each question, ask the user only if the answer isn't already implied by context or by step 2. Don't ask all seven mechanically — that becomes noise. The skill is the canonical source of question wording; this command does not duplicate it.
+4. **Pre-flight checklist.** Walk the 7-question Pre-flight checklist defined at the end of the `rust-intel` skill (`SKILL.md`, section "Pre-flight checklist"). For each question, ask the user only if the answer isn't already implied by context or by step 2. Don't ask all seven mechanically — that becomes noise. The skill is the canonical source of question wording; this command does not duplicate it.
 
 5. **Compose the plan.** Format:
 

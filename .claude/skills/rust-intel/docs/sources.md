@@ -1,6 +1,6 @@
 # Sources
 
-The empirical basis for `rust-intel.md`. Grouped by source type.
+The empirical basis for the `rust-intel` skill (`SKILL.md`). Grouped by source type.
 
 > **Discipline:** every numeric figure or categorical claim in the spec must be traceable to an entry below. If a source is missing here, the claim is considered under-grounded and belongs in [`roadmap.md`](roadmap.md), not the main ruleset.
 

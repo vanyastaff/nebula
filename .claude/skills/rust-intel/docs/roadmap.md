@@ -6,7 +6,7 @@ What's planned beyond v0.1. Ordered by value-per-cost.
 
 Goal: turn the passive skill into active tools that **find and fix** mistakes themselves, so a developer doesn't need to memorize all 26 categories.
 
-### `/rust-audit [path]` — ✅ shipped
+### `/rust-cc-audit [path]` — ✅ shipped
 
 **Use case:** "Check my code."
 
@@ -21,9 +21,9 @@ Goal: turn the passive skill into active tools that **find and fix** mistakes th
 
 **Why first:** maximum value, minimum friction. Existing code in → triaged report out. Activates every category in one pass.
 
-See [`../commands/rust-audit.md`](../commands/rust-audit.md).
+See [`rust-cc-audit`](../../../commands/rust-cc-audit.md).
 
-### `/rust-fix <error-message>` — ✅ shipped
+### `/rust-cc-fix <error-message>` — ✅ shipped
 
 **Use case:** "I have an error / panic / weird behavior."
 
@@ -37,9 +37,9 @@ See [`../commands/rust-audit.md`](../commands/rust-audit.md).
 
 **Value:** removes the developer's need to navigate rustc docs and stale StackOverflow answers.
 
-See [`../commands/rust-fix.md`](../commands/rust-fix.md).
+See [`rust-cc-fix`](../../../commands/rust-cc-fix.md).
 
-### `/rust-plan <task>` — ✅ shipped
+### `/rust-cc-plan <task>` — ✅ shipped
 
 **Use case:** "I want to write X."
 
@@ -53,7 +53,7 @@ See [`../commands/rust-fix.md`](../commands/rust-fix.md).
 
 **Value:** catches mistakes at the design stage, when rolling them back is still cheap.
 
-See [`../commands/rust-plan.md`](../commands/rust-plan.md).
+See [`rust-cc-plan`](../../../commands/rust-cc-plan.md).
 
 ## 2. Category expansions
 
@@ -75,7 +75,7 @@ Categories with observed patterns but insufficient empirical backing or sharp BA
 
 - `git init` and a public repository.
 - CI: markdown linting, broken-internal-link checks.
-- Test corpus: `examples/` with deliberately broken Rust per category, to run through `/rust-audit` as a regression suite.
+- Test corpus: `examples/` with deliberately broken Rust per category, to run through `/rust-cc-audit` as a regression suite.
 
 ## Open questions
 

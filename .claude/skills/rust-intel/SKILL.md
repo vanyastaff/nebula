@@ -1,4 +1,5 @@
 ---
+name: rust-intel
 description: Hard rules for writing Rust that LLMs systematically get wrong. Load this BEFORE writing any Rust code. Defends against the full known taxonomy of LLM failure modes in Rust as of 2026.
 ---
 

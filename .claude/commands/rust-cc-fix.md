@@ -26,7 +26,7 @@ Removes the developer's need to navigate rustc docs and StackOverflow. Takes a s
    - For runtime symptoms — need `Cargo.toml` for versions and a repro scenario, if the category depends on either (§A1, §B4).
    - If context is insufficient, emit a blocking message in the spec's canonical form.
 
-4. **Map to a category.** Use the routing table below — it is **only a router** (symptom → category number). The actual rule wording, BANNED/REQUIRED bullets, and remediation guidance live in the skill, never duplicated here. Whenever a new category lands in `rust-intel.md`, extend this routing table accordingly. Table is non-exhaustive — when no row matches, read the spec's taxonomy directly.
+4. **Map to a category.** Use the routing table below — it is **only a router** (symptom → category number). The actual rule wording, BANNED/REQUIRED bullets, and remediation guidance live in the skill, never duplicated here. Whenever a new category lands in the `rust-intel` skill (`SKILL.md`), extend this routing table accordingly. Table is non-exhaustive — when no row matches, read the spec's taxonomy directly.
 
    | Symptom | Category |
    |---|---|
