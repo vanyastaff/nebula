@@ -443,10 +443,25 @@ async fn pool_broken_instance_gets_replaced() {
     );
 
     drop(handle2);
-    // Broken flag still set, so the released instance must be destroyed —
-    // wait for the release worker to settle on idle == 0.
-    wait_idle_count(&pool, 0).await;
-    assert_eq!(pool.idle_count().await, 0);
+    // Broken flag still set: the released instance must be DESTROYED, not
+    // recycled. `idle_count == 0` is not a settle signal here — the pool
+    // never rises above idle 0 in this window, so waiting on it returns
+    // before the release worker has even run. The deterministic signal is
+    // the destroy counter. It is already 1 (the `acquire` above evicted +
+    // destroyed the first broken instance inline), so the event under test
+    // — releasing `handle2` destroys (not recycles) its instance — is the
+    // 1 -> 2 transition: wait for >= 2.
+    wait_count_at_least(&resource.destroy_counter, 2).await;
+    assert_eq!(
+        resource.destroy_counter.load(Ordering::Relaxed),
+        2,
+        "released broken instance must be destroyed, not recycled"
+    );
+    assert_eq!(
+        pool.idle_count().await,
+        0,
+        "destroyed instance must not return to the pool"
+    );
 
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
@@ -1604,20 +1619,21 @@ async fn pool_detach_removes_from_pool() {
     assert!(lease.is_some(), "guarded handle detach should return Some");
 
     // `detach` disarms the release callback synchronously, so nothing can
-    // ever be submitted to the queue. A single scheduler yield lets any
-    // (erroneously) spawned release task run before we assert — a
-    // deterministic turn, not a wall-clock guess.
-    tokio::task::yield_now().await;
+    // ever be submitted to the queue. Draining the release worker is the
+    // deterministic proof: after `shutdown` has run every buffered release
+    // task to completion, a (erroneously) enqueued return-to-pool would
+    // already have executed — so `idle_count == 0` afterward means "never",
+    // not merely "not yet" (a bare scheduler yield could only show the
+    // latter).
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
 
-    // Pool should NOT get the instance back — idle_count stays 0.
+    // Pool must NOT have gotten the instance back.
     assert_eq!(
         pool.idle_count().await,
         0,
         "detached handle should not return to pool"
     );
-
-    drop(rq);
-    ReleaseQueue::shutdown(rq_handle).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2051,12 +2067,18 @@ async fn transport_session_bounded_by_semaphore() {
 
     // Release one session — `close_session` (release queue) frees a
     // semaphore permit. Wait for the close to complete so the permit is
-    // genuinely available before the next acquire.
+    // genuinely available before the next acquire. Assert the wait
+    // succeeded: a bug that frees the permit early (without running
+    // `close_session`) would otherwise let the next acquire pass and hide
+    // the regression.
     drop(h1);
-    poll_until(std::time::Duration::from_secs(2), || {
-        resource.close_counter.load(Ordering::Relaxed) >= 1
-    })
-    .await;
+    assert!(
+        poll_until(std::time::Duration::from_secs(2), || {
+            resource.close_counter.load(Ordering::Relaxed) >= 1
+        })
+        .await,
+        "close_session never ran after releasing the first session"
+    );
 
     // Now third acquire should succeed.
     let h3 = rt
