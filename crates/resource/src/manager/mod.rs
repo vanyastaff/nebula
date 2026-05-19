@@ -83,28 +83,39 @@
 //!
 //! The acquire pipeline pre-counts every acquire on the **per-resource**
 //! in-flight counter using `InFlightCounter`, with an `AcqRel`
-//! `fetch_add` issued **strictly before** a post-taint re-check
-//! (`Manager::reject_if_tainted_post_count`). The taint gate runs
-//! at lookup, but a concurrent `revoke_slot` could taint *after* that gate
-//! yet *before* the increment. Re-checking once this acquire is reflected in
-//! the exact counter `revoke_slot` drains closes the window: `revoke_slot`
-//! taints, then drains this same counter, so either the acquire observes the
-//! taint at the re-check, or its increment is visible to the drain and the
-//! drain waits for the resulting guard to drop. The increment is held
-//! continuously — pre-counted at acquire, handed off to the
-//! [`ResourceGuard`](crate::guard::ResourceGuard) on success (RAII
+//! `fetch_add` issued **strictly before** a post-count re-check
+//! (`Manager::reject_if_tainted_or_shutting_down_post_count`). The taint
+//! gate runs at lookup, but a concurrent `revoke_slot` could taint *after*
+//! that gate yet *before* the increment. Re-checking once this acquire is
+//! reflected in the exact counter `revoke_slot` drains closes the window:
+//! `revoke_slot` taints, then drains this same counter, so either the
+//! acquire observes the taint at the re-check, or its increment is visible
+//! to the drain and the drain waits for the resulting guard to drop. The
+//! increment is held continuously — pre-counted at acquire, handed off to
+//! the [`ResourceGuard`](crate::guard::ResourceGuard) on success (RAII
 //! decrements and notifies on any failure / cancel / panic), decremented
 //! only when the guard drops — so a guard handed out for a row is always
 //! reflected in that row's revoke drain. The `AcqRel` ordering is the
 //! TOCTOU primitive and is load-bearing: it is preserved verbatim and any
 //! ordering tuning is a separate, separately-reviewed change.
 //!
-//! This same pre-count also closes a second race — the `graceful_shutdown`
-//! race (an acquire that passed `lookup()` before `cancel.cancel()` must not
-//! complete *after* the drain saw `0` and the registry was cleared). The
-//! per-resource counter feeds the revoke drain; the manager-wide
-//! `drain_tracker` feeds `graceful_shutdown`. An acquire pre-counts on
-//! **both**; the guard decrements + notifies **both** on drop.
+//! The **same post-count re-check** also closes the structurally identical
+//! `graceful_shutdown` race (an acquire that passed `lookup()`'s
+//! `shutdown_guard` while `shutting_down == false` must not complete *after*
+//! the drain saw `0` and the registry was cleared). The pre-count alone is
+//! *not* sufficient here: an acquire whose `InFlightCounter::new()`
+//! increment lands *after* `wait_for_drain` already read `0` is invisible to
+//! that drain, so without a re-check it would still hand out a
+//! [`ResourceGuard`] for a drained-and-cleared resource (a logical
+//! use-after-drain). `shutdown_guard` is therefore re-run *on the same
+//! post-`InFlightCounter::new()` line* as the taint re-check: once the
+//! increment is visible to `graceful_shutdown`'s drain, either the acquire
+//! observes `shutting_down`/`cancel` and is rejected, or its increment is
+//! seen by the drain and the drain waits for the resulting guard — exactly
+//! symmetric with the revoke close. The per-resource counter feeds the
+//! revoke drain; the manager-wide `drain_tracker` feeds `graceful_shutdown`.
+//! An acquire pre-counts on **both**; the guard decrements + notifies
+//! **both** on drop.
 //!
 //! ## Per-resource drain primitive
 //!
@@ -1123,24 +1134,49 @@ impl Manager {
         Ok(managed)
     }
 
-    /// Post-`InFlightCounter::new` taint re-check shared by every
-    /// `run_*_acquire` / `try_acquire_*` pipeline.
+    /// Post-`InFlightCounter::new` re-check shared by every
+    /// `run_*_acquire` / `try_acquire_*` pipeline. Re-observes **both**
+    /// revoke taint *and* `graceful_shutdown` once this acquire is reflected
+    /// in the in-flight counters the respective drains read.
     ///
-    /// The acquire-side [`taint_gate`](Self::taint_gate) ran before the
-    /// in-flight counter was constructed, leaving a window where a concurrent
-    /// `revoke_slot` could taint *after* the gate but *before* the increment.
-    /// Re-checking here — once this acquire is reflected in the resource's
-    /// own in-flight counter (the exact counter `revoke_slot` drains) — closes
-    /// the revoke-vs-acquire TOCTOU. See the [`manager`](crate::manager) module
-    /// docs for the canonical invariant. Same error/classification as the gate
-    /// so the caller-facing category is unchanged
-    /// (`Revoked` → `ErrorCategory::Unavailable`).
-    fn reject_if_tainted_post_count<R: Resource>(
+    /// Two structurally identical pre-check/post-count-recheck closes funnel
+    /// through here:
+    ///
+    /// - **Revoke (`revoke_slot`).** The acquire-side
+    ///   [`taint_gate`](Self::taint_gate) ran before the in-flight counter
+    ///   was constructed, leaving a window where a concurrent `revoke_slot`
+    ///   could taint *after* the gate but *before* the increment.
+    ///   Re-checking taint here — once this acquire is reflected in the
+    ///   resource's own in-flight counter (the exact counter `revoke_slot`
+    ///   drains) — closes the revoke-vs-acquire TOCTOU.
+    /// - **Graceful shutdown (`graceful_shutdown`).** `lookup`'s
+    ///   [`shutdown_guard`](Self::shutdown_guard) ran before the in-flight
+    ///   counter too, leaving the *symmetric* window: an acquire that
+    ///   passed `lookup` while `shutting_down == false` could have its
+    ///   `InFlightCounter::new()` increment land *after* `wait_for_drain`
+    ///   already observed `0` and `registry.clear()` ran — a logical
+    ///   use-after-drain that hands out a [`ResourceGuard`] for a drained
+    ///   resource. Re-running `shutdown_guard` here — once this acquire is
+    ///   reflected in the manager-wide `drain_tracker`
+    ///   [`graceful_shutdown`](Self::graceful_shutdown) drains — closes it
+    ///   exactly as the taint re-check closes the revoke path.
+    ///
+    /// See the [`manager`](crate::manager) module docs for the canonical
+    /// invariant. Taint maps to `Revoked` → `ErrorCategory::Unavailable`
+    /// (unchanged from the gate); shutdown maps to `Cancelled` (unchanged
+    /// from `lookup`'s Defense A), so neither caller-facing category moves.
+    fn reject_if_tainted_or_shutting_down_post_count<R: Resource>(
+        &self,
         managed: &Arc<ManagedResource<R>>,
     ) -> Result<(), Error> {
         if managed.is_tainted() {
             return Err(Self::tainted_error::<R>());
         }
+        // Symmetric with the taint re-check above: the increment is now
+        // visible to `wait_for_drain`, so observing `shutting_down`/`cancel`
+        // here means either this acquire is rejected, or its increment was
+        // seen by the drain and the drain waited for the resulting guard.
+        self.shutdown_guard()?;
         Ok(())
     }
 
@@ -1984,12 +2020,17 @@ impl Manager {
         // invariant: see the `manager` module documentation.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — closes the revoke-vs-acquire TOCTOU now
-        // that this acquire is reflected in the per-resource counter
-        // `revoke_slot` drains. Same `Revoked` (→ `Unavailable`)
-        // classification as the taint gate. Rationale: see the `manager`
-        // module documentation.
-        Self::reject_if_tainted_post_count::<R>(&managed)?;
+        // Post-count re-check — now that this acquire is reflected in the
+        // per-resource counter `revoke_slot` drains *and* the manager-wide
+        // `drain_tracker` `graceful_shutdown` drains, re-observe both revoke
+        // taint (closes the revoke-vs-acquire TOCTOU) and `shutting_down`
+        // (closes the symmetric shutdown-vs-acquire use-after-drain: an
+        // acquire that passed `lookup`'s Defense A before shutdown, whose
+        // increment landed after the drain saw `0` + the registry cleared,
+        // is rejected here instead of handing out a guard for a drained
+        // resource). Same `Revoked`/`Cancelled` classifications as the
+        // pre-checks. Rationale: see the `manager` module documentation.
+        self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -2289,22 +2330,26 @@ impl Manager {
             TopologyRuntime::Pool(rt) => {
                 // `warmup` runs `R::create` against the resolved credential
                 // to materialize fresh pool instances — it is acquire-like
-                // and must observe the SAME revoke-vs-acquire TOCTOU close
-                // the `run_*_acquire` pipelines use (#679 / slot + isolation model).
-                // The `lookup_for_acquire` taint gate above ran *before*
-                // this in-flight increment, leaving a window where a
-                // concurrent `revoke_slot` could taint after the gate yet
-                // before warmup creates entries. Pre-count this work in the
+                // and must observe the SAME post-count re-check the
+                // `run_*_acquire` pipelines use (#679 / slot + isolation model).
+                // `lookup_for_acquire`'s taint gate *and* `shutdown_guard`
+                // both ran *before* this in-flight increment, leaving the
+                // two symmetric windows: a concurrent `revoke_slot` could
+                // taint, or `graceful_shutdown` could drain-see-`0` +
+                // clear the registry, after the gate yet before warmup
+                // creates entries. Pre-count this work in both the
                 // resource's own in-flight counter (the exact counter
-                // `revoke_slot` drains), then re-check the taint: either we
-                // observe the taint here and reject, or our increment is
-                // visible to the revoke's drain — so no fresh pool entry is
-                // ever created on a just-revoked credential. The counter is
-                // held for the whole `warmup` await (RAII drop on every
-                // exit path).
+                // `revoke_slot` drains) and the manager-wide `drain_tracker`
+                // (`graceful_shutdown`), then re-check both: either we
+                // observe taint / `shutting_down` here and reject, or our
+                // increment is visible to the respective drain — so no
+                // fresh pool entry is ever created on a just-revoked
+                // credential or after a completed shutdown drain. The
+                // counter is held for the whole `warmup` await (RAII drop
+                // on every exit path).
                 let _in_flight =
                     InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-                Self::reject_if_tainted_post_count::<R>(&managed)?;
+                self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
                 let count = rt.warmup(&managed.resource, &config, ctx).await;
                 Ok(count)
             },
@@ -2655,5 +2700,255 @@ impl Drop for InFlightCounter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_post_count_race_tests {
+    //! Finding #2 — `graceful_shutdown`-vs-acquire use-after-drain.
+    //!
+    //! `lookup()` runs `shutdown_guard()` (Defense A) *before* the
+    //! `InFlightCounter::new()` increment. An acquire that passes `lookup()`
+    //! while `shutting_down == false`, then has its increment land *after*
+    //! `wait_for_drain` already observed `0` and `registry.clear()` ran, is
+    //! a logical use-after-drain: the post-`InFlightCounter::new()` re-check
+    //! (`reject_if_tainted_post_count`) only observed taint, never
+    //! `shutting_down`, so the acquire completed and a `ResourceGuard` was
+    //! handed out for a resource the manager had already drained and cleared.
+    //!
+    //! This is structurally identical to the revoke path, which *is* closed
+    //! by a symmetric taint pre-check + post-count re-check. The shutdown
+    //! path had the pre-check (`lookup`'s `shutdown_guard`) but no symmetric
+    //! post-count re-check.
+    //!
+    //! The race window (`lookup` → `InFlightCounter::new`) has no `.await`,
+    //! so this test reproduces the interleave deterministically by splitting
+    //! it at exactly that seam: resolve the managed row via the same private
+    //! lookup `acquire_resident` uses (while `shutting_down == false`), then
+    //! run `graceful_shutdown`'s Phase 1–3 (signal + drain-sees-`0` because
+    //! the counter increment has not happened yet + `registry.clear()`),
+    //! then drive the private post-lookup tail (`run_acquire`) with that
+    //! resolved row. Pre-fix the tail succeeds and hands out a guard for a
+    //! cleared registry; post-fix it must reject with `Cancelled`.
+
+    use std::{sync::Arc, time::Duration};
+
+    use nebula_core::{ExecutionId, ResourceKey, resource_key, scope::Scope};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::{
+        TopologyTag,
+        context::ResourceContext,
+        error::ErrorKind,
+        options::AcquireOptions,
+        resource::{ResourceConfig, ResourceMetadata},
+        runtime::{TopologyRuntime, resident::ResidentRuntime},
+        topology::resident::{Resident, config::Config as ResidentConfig},
+    };
+
+    #[derive(Debug)]
+    struct RaceErr(&'static str);
+
+    impl std::fmt::Display for RaceErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for RaceErr {}
+
+    impl From<RaceErr> for Error {
+        fn from(e: RaceErr) -> Self {
+            Error::permanent(e.0)
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RaceCfg;
+
+    nebula_schema::impl_empty_has_schema!(RaceCfg);
+
+    impl ResourceConfig for RaceCfg {}
+
+    #[derive(Clone)]
+    struct ShutdownRaceResident;
+
+    impl Resource for ShutdownRaceResident {
+        type Config = RaceCfg;
+        type Runtime = ();
+        type Lease = ();
+        type Error = RaceErr;
+
+        fn key() -> ResourceKey {
+            resource_key!("test.shutdown_post_count_race.resident")
+        }
+
+        async fn create(&self, _config: &RaceCfg, _ctx: &ResourceContext) -> Result<(), RaceErr> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Resident for ShutdownRaceResident {
+        fn is_alive_sync(&self, _runtime: &()) -> bool {
+            true
+        }
+    }
+
+    fn ctx() -> ResourceContext {
+        let scope = Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
+    }
+
+    /// Deterministic reproduction of the use-after-drain. The acquire
+    /// resolves its row *before* shutdown (Defense A passes), shutdown then
+    /// drains (sees `0` because the acquire has not yet hit
+    /// `InFlightCounter::new()`) and clears the registry, and only *then*
+    /// does the post-lookup acquire tail run. The tail must reject — the
+    /// caller must NOT receive a `ResourceGuard` for a drained-and-cleared
+    /// resource.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_acquire_rejects_when_drain_completed_after_lookup_passed() {
+        let manager = Manager::new();
+        let resident_rt = ResidentRuntime::<ShutdownRaceResident>::new(ResidentConfig::default());
+        manager
+            .register(RegistrationSpec {
+                resource: ShutdownRaceResident,
+                config: RaceCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: crate::dedup::SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(resident_rt),
+                acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
+                resilience: None,
+                recovery_gate: None,
+            })
+            .expect("register succeeds");
+
+        let acquire_ctx = ctx();
+
+        // Step 1: the acquire passes `lookup()` (Defense A) while
+        // `shutting_down == false`. This is the same private resolution
+        // `acquire_resident` performs before `run_acquire`.
+        let managed = manager
+            .lookup_for_acquire_scope::<ShutdownRaceResident>(&acquire_ctx)
+            .expect("lookup must succeed before shutdown starts");
+
+        // Step 2: `graceful_shutdown` Phase 1–3 run *now*, while the
+        // resolved-but-not-yet-counted acquire is parked between `lookup()`
+        // and `InFlightCounter::new()`. The drain observes `0` (the
+        // increment has not happened) and the registry is cleared.
+        manager.shutting_down.store(true, AtomicOrdering::Release);
+        manager.cancel.cancel();
+        manager
+            .wait_for_drain(Duration::from_secs(5))
+            .await
+            .expect("drain sees 0 — the racing acquire has not incremented yet");
+        manager.registry.clear();
+
+        // Step 3: only now does the post-lookup acquire tail run. Its
+        // `InFlightCounter::new()` increment lands *after* the drain saw
+        // `0` and the registry was cleared. The post-count re-check is the
+        // last line of defense; it must reject.
+        let result = manager
+            .run_acquire(Arc::clone(&managed), || {
+                let managed = Arc::clone(&managed);
+                let ctx = &acquire_ctx;
+                async move {
+                    match &managed.topology {
+                        TopologyRuntime::Resident(rt) => {
+                            rt.acquire(
+                                &managed.resource,
+                                &managed.config(),
+                                ctx,
+                                &AcquireOptions::default(),
+                            )
+                            .await
+                        },
+                        other => Err(Manager::unexpected_topology::<ShutdownRaceResident>(other)),
+                    }
+                }
+            })
+            .await;
+
+        match result {
+            Err(e) if matches!(e.kind(), ErrorKind::Cancelled) => {
+                // Correct: the acquire whose counter landed after the drain
+                // completed is rejected — no guard for a cleared registry.
+            },
+            Ok(guard) => panic!(
+                "use-after-drain: run_acquire handed out a {:?} guard for a \
+                 resource whose drain completed and registry was cleared \
+                 before the in-flight increment landed",
+                guard.topology_tag()
+            ),
+            Err(other) => {
+                panic!("expected Cancelled (post-count shutdown re-check), got {other:?}")
+            },
+        }
+
+        // The drained guard must not leave a leaked in-flight count behind.
+        assert_eq!(
+            manager.drain_tracker.0.load(AtomicOrdering::Acquire),
+            0,
+            "rejected acquire must not leak a manager-wide in-flight count"
+        );
+    }
+
+    /// Sanity twin: when shutdown has *not* started, the identical
+    /// post-lookup tail succeeds and hands out a real resident guard. This
+    /// pins that the fix rejects *only* the drained-after-lookup race, not
+    /// every acquire (no false-positive regression of the happy path).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_acquire_still_succeeds_when_not_shutting_down() {
+        let manager = Manager::new();
+        let resident_rt = ResidentRuntime::<ShutdownRaceResident>::new(ResidentConfig::default());
+        manager
+            .register(RegistrationSpec {
+                resource: ShutdownRaceResident,
+                config: RaceCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: crate::dedup::SlotIdentity::Unbound,
+                topology: TopologyRuntime::Resident(resident_rt),
+                acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
+                resilience: None,
+                recovery_gate: None,
+            })
+            .expect("register succeeds");
+
+        let acquire_ctx = ctx();
+        let managed = manager
+            .lookup_for_acquire_scope::<ShutdownRaceResident>(&acquire_ctx)
+            .expect("lookup succeeds");
+
+        let result = manager
+            .run_acquire(Arc::clone(&managed), || {
+                let managed = Arc::clone(&managed);
+                let ctx = &acquire_ctx;
+                async move {
+                    match &managed.topology {
+                        TopologyRuntime::Resident(rt) => {
+                            rt.acquire(
+                                &managed.resource,
+                                &managed.config(),
+                                ctx,
+                                &AcquireOptions::default(),
+                            )
+                            .await
+                        },
+                        other => Err(Manager::unexpected_topology::<ShutdownRaceResident>(other)),
+                    }
+                }
+            })
+            .await;
+
+        let guard = result.expect("acquire must succeed when not shutting down");
+        assert_eq!(guard.topology_tag(), TopologyTag::Resident);
     }
 }
