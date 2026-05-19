@@ -212,6 +212,38 @@ impl ResourceFanoutIndex {
         });
     }
 
+    /// Removes exactly one `(cid, bind)` tuple — the precise per-entry
+    /// inverse of a single [`bind`](Self::bind) call.
+    ///
+    /// Unlike [`unbind_resource_identity`](Self::unbind_resource_identity)
+    /// (which drops *every* credential's binding for a
+    /// `(resource_key, scope, slot_identity)` row), this removes only the
+    /// one entry under `cid` that structurally equals `bind`, leaving any
+    /// other credential's binding for the same resolved row — and any
+    /// pre-existing identical binding under a different cid — untouched.
+    ///
+    /// It is the compensation primitive for the *stage-bind-before-
+    /// register-then-roll-back-on-failure* ordering in
+    /// [`ResourceRegistrarRegistry::register_and_bind`]: only the entries
+    /// that call actually inserted (not ones a prior successful
+    /// registration of an identical resolved row legitimately created) may
+    /// be removed when `register` fails, so the rollback cannot corrupt a
+    /// live row's fan-out. At most one match exists because `bind`
+    /// de-duplicates, so this removes a single entry.
+    pub(crate) fn unbind_staged_entry(&self, cid: &CredentialId, bind: &Bind) {
+        // `remove_if_mut` holds the shard lock across the whole closure:
+        // the matching entry is retained-out and the credential bucket is
+        // dropped iff it became empty — atomically, with no TOCTOU between
+        // "is it empty" and "remove it" (mirrors the `retain(!is_empty())`
+        // discipline of the bulk unbinds). `bind` de-dups, so there is at
+        // most one structurally-equal entry; `retain` removes precisely it
+        // and keeps any other credential's binding for the same row.
+        self.by_credential.remove_if_mut(cid, |_, rows| {
+            rows.retain(|b| b != bind);
+            rows.is_empty()
+        });
+    }
+
     /// Fans a completed credential refresh out to every resource registry
     /// row that resolved `cid`, calling
     /// [`Manager::refresh_slot_for_identity`](nebula_resource::Manager::refresh_slot_for_identity)
@@ -673,6 +705,56 @@ mod tests {
                 SlotIdentity::from_bindings([("k", "cred-0xbbbb")])
             )],
             "sibling sharing (key, scope) but a different identity must survive"
+        );
+    }
+
+    #[test]
+    fn unbind_staged_entry_removes_only_that_tuple() {
+        // Precise per-entry inverse of one `bind`: it must drop exactly
+        // the staged `(cid, bind)` tuple, keep another credential's
+        // binding for the *same* resolved row, drop the bucket when it
+        // empties, and be a no-op for an absent credential.
+        let idx = ResourceFanoutIndex::new();
+        let key = rk("pg");
+        let scope = wf_scope();
+        let c1 = cred();
+        let c2 = cred();
+        let id = SlotIdentity::from_bindings([("k", "cred-0xaaaa")]);
+        idx.bind(c1, key.clone(), scope.clone(), "db", id.clone());
+        idx.bind(c2, key.clone(), scope.clone(), "db", id.clone());
+
+        // No-op for an absent credential.
+        idx.unbind_staged_entry(&cred(), &bound(&key, &scope, "db", id.clone()));
+        assert_eq!(idx.affected(&c1).len(), 1);
+        assert_eq!(idx.affected(&c2).len(), 1);
+
+        // Removes exactly c1's entry; c2's binding for the same resolved
+        // row survives untouched.
+        idx.unbind_staged_entry(&c1, &bound(&key, &scope, "db", id.clone()));
+        assert!(
+            idx.affected(&c1).is_empty(),
+            "the staged tuple must be gone and its now-empty bucket dropped"
+        );
+        assert_eq!(
+            idx.affected(&c2),
+            vec![bound(&key, &scope, "db", id.clone())],
+            "another credential's binding for the same row must be untouched"
+        );
+
+        // A non-matching bind under a present credential is left alone.
+        idx.unbind_staged_entry(
+            &c2,
+            &bound(
+                &key,
+                &scope,
+                "db",
+                SlotIdentity::from_bindings([("k", "cred-0xbbbb")]),
+            ),
+        );
+        assert_eq!(
+            idx.affected(&c2),
+            vec![bound(&key, &scope, "db", id)],
+            "a structurally-different bind must not be removed"
         );
     }
 

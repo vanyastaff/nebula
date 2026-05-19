@@ -89,7 +89,7 @@ pub(super) enum RevokeOutcome {
 /// Inputs assembled by [`LeaseLifecycle::spawn`](super::LeaseLifecycle::spawn).
 pub(super) struct SchedulerInputs {
     pub(super) config: LeaseLifecycleConfig,
-    pub(super) commands: mpsc::UnboundedReceiver<Command>,
+    pub(super) commands: mpsc::Receiver<Command>,
     pub(super) lease_bus: Option<Arc<EventBus<LeaseEvent>>>,
     pub(super) metrics: Option<Arc<dyn MetricsEmitter>>,
     pub(super) shutdown: CancellationToken,
