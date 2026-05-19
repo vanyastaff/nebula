@@ -26,7 +26,8 @@ type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send + S
 /// A drain tracker: an in-flight `(active_count, waiters)` pair. One is the
 /// manager-wide `graceful_shutdown` tracker; another is each
 /// `ManagedResource`'s own counter that `Manager::revoke_slot` drains in
-/// isolation (per-resource revoke deferral).
+/// isolation. See the [`manager`](crate::manager) module docs for the
+/// canonical two-phase-revoke / drain invariant.
 pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
 
 /// The `(manager_wide, per_resource)` pair an acquire pre-increments and
@@ -57,11 +58,12 @@ pub struct ResourceGuard<R: Resource> {
     ///
     /// The first element is `Manager::drain_tracker` (`graceful_shutdown`
     /// drain); the second is the originating `ManagedResource`'s own
-    /// in-flight tracker, which `Manager::revoke_slot` drains in isolation
-    /// (per-resource revoke deferral). Both are pre-incremented by `InFlightCounter`
-    /// and handed off here, so a guard handed out for a row reflects in that
-    /// row's revoke drain — closing the revoke-vs-acquire TOCTOU
-    /// (slot + isolation model).
+    /// in-flight tracker, which `Manager::revoke_slot` drains in isolation.
+    /// Both are pre-incremented by `InFlightCounter` and handed off here, so
+    /// a guard handed out for a row stays reflected in that row's revoke
+    /// drain until it drops — part of the revoke-vs-acquire TOCTOU close.
+    /// See the [`manager`](crate::manager) module docs for the canonical
+    /// invariant.
     drain_counters: Option<DrainTrackers>,
 }
 
@@ -173,15 +175,10 @@ impl<R: Resource> ResourceGuard<R> {
     /// hand the *already-counted slots* off here. The guard then owns both
     /// and decrements + notifies each on Drop.
     ///
-    /// This caller-owned ordering closes two races. (1) The
-    /// `graceful_shutdown` race: an acquire that passed `lookup()` before
-    /// `cancel.cancel()` could otherwise complete *after* `wait_for_drain()`
-    /// observed `0` and the registry was cleared. (2) The revoke-vs-acquire
-    /// TOCTOU (slot + isolation model): because the per-resource counter is
-    /// incremented before the post-taint re-check and decremented only when
-    /// this guard drops, `revoke_slot`'s per-resource drain (resource runtime status
-    /// §Deferred) cannot complete while a guard handed out for that row is
-    /// still live.
+    /// This caller-owned ordering is what makes the pre-count span the whole
+    /// guard lifetime, closing both the `graceful_shutdown` race and the
+    /// revoke-vs-acquire TOCTOU. See the [`manager`](crate::manager) module
+    /// docs for the canonical invariant.
     pub(crate) fn with_drain_tracker(mut self, trackers: DrainTrackers) -> Self {
         self.drain_counters = Some(trackers);
         self
@@ -337,8 +334,9 @@ impl<R: Resource> Drop for ResourceGuard<R> {
         // Drain tracking: decrement BOTH the manager-wide and per-resource
         // active counts, waking each owning `Notify` on its 1 → 0 edge. The
         // manager-wide tracker unblocks `graceful_shutdown`; the per-resource
-        // tracker unblocks `revoke_slot`'s isolated per-resource drain
-        // (per-resource revoke deferral).
+        // tracker unblocks `revoke_slot`'s isolated per-resource drain.
+        // Two-phase-revoke / drain invariant: see the `manager` module
+        // documentation.
         if let Some((ref manager, ref per_resource)) = self.drain_counters {
             for tracker in [manager, per_resource] {
                 if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {

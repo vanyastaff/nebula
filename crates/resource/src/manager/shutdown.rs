@@ -31,10 +31,11 @@ use crate::{
 /// `Manager::drain_tracker` for `graceful_shutdown`) and the per-resource
 /// drain in `Manager::revoke_resolved` (drains a single
 /// [`ManagedResource`](crate::runtime::managed::ManagedResource)'s own
-/// in-flight tracker). Both must reject a revoked / shutting-down credential
-/// *before* the drained phase, so the subtle lost-wakeup ordering is written
-/// **once** here rather than duplicated per call site (a structural
-/// guarantee, not a discipline one).
+/// in-flight tracker). This helper is the single source of the subtle
+/// lost-wakeup ordering — it is written **once** here rather than
+/// duplicated per call site (a structural guarantee, not a discipline one);
+/// the [`manager`](crate::manager) module docs delegate the ordering recipe
+/// to this function.
 ///
 /// The loop uses a `register-then-check` ordering to avoid the classic
 /// `Notify::notify_waiters` lost-wakeup:

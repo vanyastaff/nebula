@@ -65,14 +65,12 @@ pub struct ManagedResource<R: Resource> {
     /// Every `acquire_*` against *this* row pre-counts here (alongside the
     /// manager-wide `Manager::drain_tracker`) and the resulting
     /// [`ResourceGuard`](crate::guard::ResourceGuard) decrements + notifies
-    /// it on drop. `Manager::revoke_slot` drains **only this** counter
-    /// (per-resource revoke deferral): a revoke on resource A must not block on
-    /// in-flight traffic to an unrelated resource B, and the
-    /// taint→increment→post-taint-recheck ordering against this same counter
-    /// is what closes the revoke-vs-acquire TOCTOU that slot model/credential isolation
-    /// "no authenticated traffic on a revoked credential post-revoke"
-    /// requires. The manager-wide tracker stays the `graceful_shutdown`
-    /// drain primitive and is untouched here.
+    /// it on drop. `Manager::revoke_slot` drains **only this** counter, so a
+    /// revoke on resource A never blocks on in-flight traffic to an unrelated
+    /// resource B, and the `AcqRel` taint→increment→post-taint-recheck
+    /// ordering against this same counter is what closes the
+    /// revoke-vs-acquire TOCTOU. Two-phase-revoke / drain invariant: see the
+    /// [`manager`](crate::manager) module documentation.
     pub(crate) in_flight: Arc<(AtomicU64, Notify)>,
 }
 
@@ -127,10 +125,11 @@ impl<R: Resource> ManagedResource<R> {
 
     /// Marks the resource tainted so the manager rejects new acquires.
     ///
-    /// Reuses the same "stop new leases" semantics as the per-handle
-    /// `ResourceGuard::taint` and the manager-wide `shutting_down` flag —
-    /// `Manager::revoke_slot` taints *before* draining so no caller can
-    /// acquire a lease on the credential being revoked.
+    /// Phase 1 of the two-phase revoke: `Manager::revoke_slot` calls this
+    /// synchronously, before draining, reusing the same "stop new leases"
+    /// mechanism as the per-handle `ResourceGuard::taint` and the
+    /// manager-wide `shutting_down` flag. See the [`manager`](crate::manager)
+    /// module docs for the canonical invariant.
     pub(crate) fn taint(&self) {
         self.tainted.store(true, Ordering::Release);
     }
@@ -144,19 +143,16 @@ impl<R: Resource> ManagedResource<R> {
     /// every pool return-to-idle path destroys (never recycles or admits)
     /// an instance authenticated with the now-revoked credential.
     ///
-    /// Called synchronously by `Manager::revoke_slot` *before* the revoke
-    /// hook is dispatched — the same pre-`.await` discipline as
-    /// [`taint`](Self::taint) — so by the time the hook walks the idle
-    /// queue, an instance whose creation straddled the revoke, or that sat
-    /// idle through it, already has a stale snapshot and is fenced wherever
-    /// it would otherwise re-enter idle.
-    ///
-    /// Only the [`Pool`](TopologyRuntime::Pool) topology has an idle queue
-    /// and the recycle / in-flight-create / warmup / maintenance
-    /// return-to-idle paths this counter guards. The single-runtime
-    /// topologies hold one shared `Arc<R::Runtime>` and dispatch the revoke
-    /// hook directly against it under no idle-queue race, so there is no
-    /// return-to-idle site to fence and this is a no-op for them.
+    /// Called synchronously by `Manager::revoke_slot` in phase 1, before the
+    /// revoke hook is dispatched — the same pre-`.await` discipline as
+    /// [`taint`](Self::taint). Only the [`Pool`](TopologyRuntime::Pool)
+    /// topology has an idle queue and the recycle / in-flight-create /
+    /// warmup / maintenance return-to-idle paths this counter guards; the
+    /// single-runtime topologies hold one shared `Arc<R::Runtime>` and
+    /// dispatch the revoke hook directly against it under no idle-queue race,
+    /// so there is no return-to-idle site to fence and this is a no-op for
+    /// them. See the [`manager`](crate::manager) module docs for the
+    /// canonical revoke-epoch-fence rationale.
     pub(crate) fn bump_revoke_epoch(&self) {
         if let TopologyRuntime::Pool(rt) = &self.topology {
             rt.bump_revoke_epoch();
@@ -166,9 +162,8 @@ impl<R: Resource> ManagedResource<R> {
     /// Returns a clone of this resource's per-resource in-flight tracker so
     /// an acquire pipeline can pre-count against it (and hand it to the
     /// resulting guard). Distinct from the manager-wide `drain_tracker`:
-    /// `Manager::revoke_slot` drains *this* counter only (resource runtime status
-    /// §Deferred), so a revoke never blocks on a sibling resource's
-    /// in-flight work.
+    /// `Manager::revoke_slot` drains *this* counter only. See the
+    /// [`manager`](crate::manager) module docs for the canonical invariant.
     pub(crate) fn in_flight_tracker(&self) -> Arc<(AtomicU64, Notify)> {
         Arc::clone(&self.in_flight)
     }
@@ -176,14 +171,13 @@ impl<R: Resource> ManagedResource<R> {
     /// Drains *this* resource's in-flight acquires (bounded by `timeout`).
     ///
     /// The per-resource analogue of `Manager::wait_for_drain`: it waits on
-    /// this row's own counter, not the manager-wide one, so a revoke on this
-    /// resource is isolated from in-flight traffic to unrelated resources
-    /// (per-resource revoke deferral). Reuses the exact lost-wakeup-safe ordering of
-    /// the shared shutdown drain helper. Returns `Ok(())` once drained, or
-    /// `Err(outstanding)` with the counter snapshot at the moment the timer
-    /// fired (the caller — `revoke_resolved` — keeps the taint and proceeds
-    /// to the revoke hook regardless; the timeout is best-effort because the
-    /// taint already stops *new* leases).
+    /// this row's own counter, not the manager-wide one, and reuses the exact
+    /// lost-wakeup-safe ordering of the shared shutdown drain helper. Returns
+    /// `Ok(())` once drained, or `Err(outstanding)` with the counter snapshot
+    /// at the moment the timer fired (the caller — `revoke_resolved` — keeps
+    /// the taint and proceeds to the revoke hook regardless; the timeout is
+    /// best-effort because the taint already stops *new* leases). See the
+    /// [`manager`](crate::manager) module docs for the canonical invariant.
     pub(crate) async fn wait_for_in_flight_drain(&self, timeout: Duration) -> Result<(), u64> {
         crate::manager::shutdown::wait_for_tracker_drain(&self.in_flight, timeout).await
     }
