@@ -140,6 +140,29 @@ impl<R: Resource> ManagedResource<R> {
         self.tainted.load(Ordering::Acquire)
     }
 
+    /// Advances the credential-revoke counter for a pooled topology so
+    /// every pool return-to-idle path destroys (never recycles or admits)
+    /// an instance authenticated with the now-revoked credential.
+    ///
+    /// Called synchronously by `Manager::revoke_slot` *before* the revoke
+    /// hook is dispatched — the same pre-`.await` discipline as
+    /// [`taint`](Self::taint) — so by the time the hook walks the idle
+    /// queue, an instance whose creation straddled the revoke, or that sat
+    /// idle through it, already has a stale snapshot and is fenced wherever
+    /// it would otherwise re-enter idle.
+    ///
+    /// Only the [`Pool`](TopologyRuntime::Pool) topology has an idle queue
+    /// and the recycle / in-flight-create / warmup / maintenance
+    /// return-to-idle paths this counter guards. The single-runtime
+    /// topologies hold one shared `Arc<R::Runtime>` and dispatch the revoke
+    /// hook directly against it under no idle-queue race, so there is no
+    /// return-to-idle site to fence and this is a no-op for them.
+    pub(crate) fn bump_revoke_epoch(&self) {
+        if let TopologyRuntime::Pool(rt) = &self.topology {
+            rt.bump_revoke_epoch();
+        }
+    }
+
     /// Returns a clone of this resource's per-resource in-flight tracker so
     /// an acquire pipeline can pre-count against it (and hand it to the
     /// resulting guard). Distinct from the manager-wide `drain_tracker`:

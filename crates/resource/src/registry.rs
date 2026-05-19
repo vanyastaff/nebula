@@ -126,6 +126,18 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// which sets the same flag the typed `acquire_*` funnel checks.
     fn taint_erased(&self);
 
+    /// Type-erased credential-revoke epoch bump.
+    ///
+    /// `Manager::revoke_slot` takes a `ResourceKey`, not a generic `R`, so
+    /// it bumps the counter through the erased registry view, symmetric to
+    /// [`Self::taint_erased`] and applied in the same synchronous
+    /// pre-`.await` step. Forwards to `ManagedResource::bump_revoke_epoch`,
+    /// which advances the pooled topology's revoke counter so every pool
+    /// return-to-idle path fences an instance authenticated with the
+    /// revoked credential (a no-op for single-runtime topologies, which
+    /// have no idle queue).
+    fn bump_revoke_epoch_erased(&self);
+
     /// Type-erased per-slot refresh dispatch.
     ///
     /// Boxed future because `dyn AnyManagedResource` cannot carry an
@@ -198,6 +210,10 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 
     fn taint_erased(&self) {
         self.taint();
+    }
+
+    fn bump_revoke_epoch_erased(&self) {
+        self.bump_revoke_epoch();
     }
 
     fn dispatch_on_refresh_erased<'a>(
@@ -873,6 +889,7 @@ mod tests {
             TopologyTag::Resident
         }
         fn taint_erased(&self) {}
+        fn bump_revoke_epoch_erased(&self) {}
         fn dispatch_on_refresh_erased<'a>(
             &'a self,
             _slot: &'a str,
@@ -912,6 +929,7 @@ mod tests {
             TopologyTag::Resident
         }
         fn taint_erased(&self) {}
+        fn bump_revoke_epoch_erased(&self) {}
         fn dispatch_on_refresh_erased<'a>(
             &'a self,
             _slot: &'a str,

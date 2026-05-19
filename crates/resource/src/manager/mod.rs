@@ -1661,6 +1661,18 @@ impl Manager {
         // subsequently-dropped timeout future on the drain tail cannot
         // un-apply it.
         managed.taint_erased();
+        // Bump the per-row revoke counter in the *same* synchronous,
+        // pre-`.await` step as the taint. The taint stops *new* leases; the
+        // counter fences any instance authenticated with the now-revoked
+        // credential that would otherwise re-enter a pooled idle queue
+        // (recycle, an in-flight create completing after the drain, a
+        // concurrent warmup, or a maintenance re-deposit). Doing it here —
+        // before `drain_and_revoke` is even constructed — guarantees that
+        // by the time the revoke hook walks the idle queue every still-live
+        // instance created against the revoked credential already carries a
+        // snapshot strictly behind this counter, so a dropped drain-tail
+        // timeout future can no more un-bump this than it can un-taint.
+        managed.bump_revoke_epoch_erased();
         TaintedSlot {
             key: key.clone(),
             slot: slot.to_owned(),
