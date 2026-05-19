@@ -248,7 +248,6 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 ///
 /// The **slot-identity-pinned** lookups
 /// ([`get_for`](Registry::get_for) /
-/// [`get_typed_for`](Registry::get_typed_for) /
 /// `get_typed_for_acquire`)
 /// return [`PinnedLookup`] instead — a 2-variant type with **no
 /// `Ambiguous`** arm, because a resolved [`SlotIdentity`] addresses exactly
@@ -722,28 +721,6 @@ impl Registry {
         self.get_inner(&key, scope, Some(type_id))
     }
 
-    /// Typed lookup pinned to a resolved slot identity.
-    ///
-    /// Returns [`PinnedLookup`] — a pinned identity addresses exactly one
-    /// row, so ambiguity is unrepresentable. Constrained to the concrete
-    /// `ManagedResource<R>`: `type_index` only maps `R`'s `TypeId` to a
-    /// [`ResourceKey`], and distinct types can share one key, so a
-    /// `(scope, slot_identity)` row of a *sibling* type under that key is
-    /// skipped (the lookup keeps walking) rather than returned and then
-    /// failing the caller's `downcast` — without the filter that would
-    /// surface as a spurious `NotFound` masking a correctly-typed row.
-    pub fn get_typed_for<R: Resource>(
-        &self,
-        scope: &ScopeLevel,
-        slot_identity: &SlotIdentity,
-    ) -> PinnedLookup {
-        let type_id = TypeId::of::<ManagedResource<R>>();
-        let Some(key) = self.type_index.get(&type_id) else {
-            return PinnedLookup::NotFound;
-        };
-        self.get_for_inner(&key, scope, slot_identity, Some(type_id))
-    }
-
     /// Removes all entries for the given key.
     ///
     /// Returns `true` if the key existed and was removed, `false` otherwise.
@@ -892,8 +869,7 @@ impl Registry {
     /// `ManagedResource<R>`. Distinct concrete types can share one
     /// [`ResourceKey`], so a `(scope, slot_identity)` row found under the
     /// resolved key may be a sibling type. Every typed lookup — pinned
-    /// ([`get_typed_for`](Self::get_typed_for) /
-    /// [`get_typed_for_acquire`](Self::get_typed_for_acquire)) **and**
+    /// ([`get_typed_for_acquire`](Self::get_typed_for_acquire)) **and**
     /// identity-agnostic ([`get_typed`](Self::get_typed) /
     /// [`get_typed_for_acquire_scope`](Self::get_typed_for_acquire_scope)) —
     /// passes `Some(TypeId::of::<ManagedResource<R>>())` so a sibling-typed
@@ -956,8 +932,7 @@ impl Registry {
     /// row exists at that scope.
     ///
     /// This keeps direct pinned lookup
-    /// ([`get_for`](Self::get_for) /
-    /// [`get_typed_for`](Self::get_typed_for)) in agreement with the
+    /// ([`get_for`](Self::get_for)) in agreement with the
     /// acquire-routing walk
     /// ([`get_typed_for_acquire`](Self::get_typed_for_acquire) /
     /// [`get_acquire_for`](Self::get_acquire_for)), which walks
@@ -1259,9 +1234,9 @@ mod tests {
     fn pinned_lookup_resolves_exactly_one_row_or_not_found() {
         // The pinned lookup is 2-variant: exactly the resolved row, or
         // NotFound — never an alias to a sibling tenant's row, and no
-        // `Ambiguous` variant exists to mishandle. (The generic
-        // `get_typed_for::<R>` shares this pinned resolution; the
-        // `dedup_slot_identity` integration test covers it on a real
+        // `Ambiguous` variant exists to mishandle. (The typed acquire
+        // walk `get_typed_for_acquire::<R>` shares this pinned resolution;
+        // the `dedup_slot_identity` integration test covers it on a real
         // `Resource` end to end.)
         let reg = Registry::new();
         let key = ResourceKey::new("fake").unwrap();
