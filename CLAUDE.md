@@ -166,6 +166,7 @@ between siblings at the same layer.
 | Removed doc trees      | `docs/ARCHIVE.md`             | superpowers / audits / brainstorms moved out of repo |
 | Agent rules + map      | `CLAUDE.md`                   | **Canonical** — this file — branch / commit / PR rules + project map + enforced discipline |
 | Product strategy       | `STRATEGY.md`                 | Direction, 2026 standard bar, flagship, tracks (complements canon) |
+| 1.0 roadmap            | `docs/ROADMAP.md`             | Production-ready 1.0 milestone checklist (M0–M14), capability/dependency-ordered |
 | Product overview       | `README.md`                   | What Nebula is, design principles, architecture |
 | Cross-tool pointer     | `AGENTS.md`                   | Thin pointer naming `CLAUDE.md` canonical |
 | Product canon          | `docs/PRODUCT_CANON.md`       | Binding invariants (durability, credentials, operational honesty) |

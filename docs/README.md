@@ -8,6 +8,7 @@
 |------|------|
 | [`CLAUDE.md`](../CLAUDE.md) | Repo rules, layout, commands, guard hooks |
 | [`STRATEGY.md`](../STRATEGY.md) | Product direction and 2026 standard bar |
+| [`docs/ROADMAP.md`](./ROADMAP.md) | 1.0 milestone checklist (M0–M14) — status, **non-normative** |
 | [`README.md`](../README.md) | Product overview |
 | [`docs/pitfalls.md`](./pitfalls.md) | Traps before touching hot paths |
 | [`docs/MATURITY.md`](./MATURITY.md) | L0–L4 maturity |
