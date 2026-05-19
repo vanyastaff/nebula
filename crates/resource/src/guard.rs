@@ -539,6 +539,63 @@ mod tests {
         assert_eq!(lease, None);
     }
 
+    #[tokio::test]
+    async fn detach_guarded_returns_permit_to_semaphore() {
+        use std::sync::Arc as StdArc;
+
+        use tokio::sync::Semaphore;
+
+        // Single-slot semaphore: detach drops `GuardInner::Guarded`
+        // implicitly after extracting the lease, so the held
+        // `OwnedSemaphorePermit` must be reclaimed without going through
+        // the Drop-impl's explicit `permit.take()` branch. If a future
+        // refactor leaks the permit, the post-detach acquire below fails.
+        let sem = StdArc::new(Semaphore::new(1));
+        assert_eq!(sem.available_permits(), 1);
+
+        let permit = StdArc::clone(&sem)
+            .try_acquire_owned()
+            .expect("first permit is available");
+
+        let handle = ResourceGuard::<DummyResource>::guarded_with_permit(
+            21,
+            test_key(),
+            TopologyTag::Pool,
+            1,
+            |_lease, _tainted| {},
+            Some(permit),
+        );
+
+        // While the guard holds the permit the bounded capacity is
+        // exhausted: a second acquire must fail.
+        assert_eq!(sem.available_permits(), 0);
+        assert!(
+            sem.try_acquire().is_err(),
+            "semaphore must be exhausted while the guard holds the only permit"
+        );
+
+        // detach extracts the lease and discards the Guarded variant,
+        // dropping the permit indirectly.
+        let lease = handle.detach();
+        assert_eq!(
+            lease,
+            Some(21),
+            "detach must still return the guarded lease"
+        );
+
+        // The bounded/exclusive slot must be reclaimed: detach must not
+        // leak capacity even though it bypasses the Drop permit branch.
+        assert_eq!(
+            sem.available_permits(),
+            1,
+            "detach must return the permit to the semaphore"
+        );
+        let reacquired = sem
+            .try_acquire()
+            .expect("permit must be reclaimable after detach");
+        drop(reacquired);
+    }
+
     #[test]
     fn hold_duration_is_zero_for_owned() {
         let handle = ResourceGuard::<DummyResource>::owned(1, test_key(), TopologyTag::Pool);
