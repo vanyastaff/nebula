@@ -9,6 +9,39 @@ chk() { # chk "name" expected actual
   else printf 'FAIL - %s (expected[%s] got[%s])\n' "$1" "$2" "$3"; fail=1; fi
 }
 
+# Shared fixture for the rebase/squash-merge regression. Simulates
+# `git rebase --onto <newbase> <old-turn-base> <branch>` after an unrelated PR
+# (crates/up) was squash-merged into the new base, while THIS turn really only
+# touched crates/mine. Echoes "<dir>|<old_turn_base_sha>". root/b1 are empty so
+# only the non-empty `mine` commit is replayed (no rebase empty-commit ambiguity).
+# `-b base` keeps the initial branch distinct from the later `main` branch even
+# when the user's init.defaultBranch is "main".
+# $1=#lines crates/up/src/u.rs (rebased-in, NOT this turn)
+# $2=#lines crates/mine/src/m.rs (this turn's real change)
+mk_rebase_repo() {
+  local d up_n="$1" mine_n="$2" root b1 i
+  d="$(mktemp -d)"
+  git -C "$d" init -q -b base 2>/dev/null || git -C "$d" init -q
+  git -C "$d" symbolic-ref HEAD refs/heads/base 2>/dev/null || true
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm root --allow-empty
+  root="$(git -C "$d" rev-parse HEAD)"
+  git -C "$d" checkout -q -b feature
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm b1 --allow-empty
+  b1="$(git -C "$d" rev-parse HEAD)"
+  mkdir -p "$d/crates/mine/src"
+  for i in $(seq 1 "$mine_n"); do echo "// mine $i"; done > "$d/crates/mine/src/m.rs"
+  git -C "$d" add -A
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm mine
+  git -C "$d" checkout -q -b main "$root"
+  mkdir -p "$d/crates/up/src"
+  for i in $(seq 1 "$up_n"); do echo "// up $i"; done > "$d/crates/up/src/u.rs"
+  git -C "$d" add -A
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm squash-unrelated
+  git -C "$d" checkout -q feature
+  git -C "$d" -c commit.gpgsign=false -c user.email=t@t -c user.name=t rebase --onto main "$b1" feature -q >/dev/null 2>&1
+  printf '%s|%s' "$d" "$b1"
+}
+
 # --- _lib unit checks ---
 LS_T="$(mktemp)"; printf '{"impl_files_edited":"oops"}' >"$LS_T"
 chk "load_state normalizes bad shape" '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' "$(load_state "$LS_T")"; rm -f "$LS_T"
@@ -18,6 +51,27 @@ chk "crate_of none" "" "$(crate_of 'README.md')"
 is_lib_rust 'crates/engine/src/state.rs'        && chk "is_lib_rust src" 0 0 || chk "is_lib_rust src" 0 1
 is_lib_rust 'crates/engine/tests/retry.rs'      && chk "is_lib_rust tests" 1 0 || chk "is_lib_rust tests" 1 1
 is_lib_rust 'crates\\engine\\src\\state.rs'     && chk "is_lib_rust win" 0 0 || chk "is_lib_rust win" 0 1
+# effective_turn_base: ancestor passthrough / empty / repin-on-history-rewrite
+ETB_D="$(mktemp -d)"
+git -C "$ETB_D" init -q -b base 2>/dev/null || git -C "$ETB_D" init -q
+git -C "$ETB_D" symbolic-ref HEAD refs/heads/base 2>/dev/null || true
+git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm root --allow-empty
+ETB_ROOT="$(git -C "$ETB_D" rev-parse HEAD)"
+git -C "$ETB_D" checkout -q -b feature
+git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm b1 --allow-empty
+ETB_B1="$(git -C "$ETB_D" rev-parse HEAD)"
+echo x > "$ETB_D/f.txt"; git -C "$ETB_D" add -A
+git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm work
+chk "eff-base ancestor passthrough" "$ETB_B1" "$(effective_turn_base "$ETB_D" "$ETB_B1")"
+chk "eff-base empty stays empty"    ""         "$(effective_turn_base "$ETB_D" "")"
+git -C "$ETB_D" checkout -q -b main "$ETB_ROOT"
+echo y > "$ETB_D/g.txt"; git -C "$ETB_D" add -A
+git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t commit -qm upstream
+git -C "$ETB_D" checkout -q feature
+git -C "$ETB_D" -c commit.gpgsign=false -c user.email=t@t -c user.name=t rebase --onto main "$ETB_B1" feature -q >/dev/null 2>&1
+ETB_MB="$(git -C "$ETB_D" merge-base HEAD main)"
+chk "eff-base repins stale base"    "$ETB_MB"   "$(effective_turn_base "$ETB_D" "$ETB_B1")"
+rm -rf "$ETB_D"
 
 # A0 turn-reset
 TS_SID="t-a0"; TS_P="$(turn_state_path "$TS_SID" "$PWD")"
@@ -146,6 +200,19 @@ printf '{"session_id":"%s","cwd":"%s"}' "$UB_SID" "$UB_DIR" | bash "$HERE/turn-r
 chk "A0 unborn branch => empty turn_base (§4.C)" '""' "$(jq -c '.turn_base' "$UB_P")"
 rm -rf "$UB_DIR"
 rm -rf "$CG_DIR"
+# Rebase robustness: after `git rebase --onto` reparents the branch onto a base
+# that squash-merged an unrelated PR (crates/up), the stale turn_base must NOT
+# make C flag crates only changed by that already-merged work. crates/mine is
+# this turn's real change.
+RB="$(mk_rebase_repo 1 1)"; RB_DIR="${RB%%|*}"; RB_B1="${RB##*|}"
+RB_SID="c-rebase"; RB_P="$(turn_state_path "$RB_SID" "$RB_DIR")"; mkdir -p "$(dirname "$RB_P")"
+printf '{"impl_files_edited":[],"gate_green":["mine"],"turn_base":"%s"}' "$RB_B1" >"$RB_P"
+chk "C ignores rebased-in crate" 0 "$(cstop '{"session_id":"'"$RB_SID"'","cwd":"'"$RB_DIR"'","stop_hook_active":false}')"
+# Genuine no-cheat protection survives the fix: the crate this turn DID change,
+# with no recorded green gate, is still blocked (repin must not over-relax).
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s"}' "$RB_B1" >"$RB_P"
+chk "C still blocks real post-rebase crate" 2 "$(cstop '{"session_id":"'"$RB_SID"'","cwd":"'"$RB_DIR"'","stop_hook_active":false}')"
+rm -rf "$RB_DIR"
 # D fmt (must always exit 0, never block)
 dfmt() { printf '%s' "$1" | bash "$HERE/fmt.sh" >/dev/null 2>&1; echo $?; }
 chk "D exits 0 non-rust"  0 "$(dfmt '{"tool_name":"Write","tool_input":{"file_path":"README.md"},"cwd":"'"$PWD"'"}')"
@@ -261,6 +328,14 @@ EC_SID="e-cap"; EC_P="$(turn_state_path "$EC_SID" "$EC_DIR")"; mkdir -p "$(dirna
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EC_P"
 chk "E exactly-5 files allowed" 0 "$(egate '{"session_id":"'"$EC_SID"'","cwd":"'"$EC_DIR"'","stop_hook_active":false}')"
 rm -rf "$EC_DIR"
+# E rebase robustness: a stale turn_base after `git rebase --onto` must not make
+# intent-gate count the squash-merged upstream delta (crates/up = 450 LoC)
+# against this turn's tiny real change (crates/mine = 1 LoC).
+ERB="$(mk_rebase_repo 450 1)"; ERB_DIR="${ERB%%|*}"; ERB_B1="${ERB##*|}"
+ERB_SID="e-rebase"; ERB_P="$(turn_state_path "$ERB_SID" "$ERB_DIR")"; mkdir -p "$(dirname "$ERB_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s","intent_attempts":0}' "$ERB_B1" >"$ERB_P"
+chk "E ignores rebased-in net-LoC" 0 "$(egate '{"session_id":"'"$ERB_SID"'","cwd":"'"$ERB_DIR"'","stop_hook_active":false}')"
+rm -rf "$ERB_DIR"
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"

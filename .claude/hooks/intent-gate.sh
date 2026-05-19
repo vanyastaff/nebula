@@ -50,8 +50,11 @@ fi
 # Turn diff scope: committed-this-turn (turn_base..HEAD) + working tree +
 # staged + UNTRACKED. Agents typically leave new files unstaged, so a diff-
 # only view misses them; stop-gate.sh (C) uses the same `git status -u`
-# ground truth. Code files only.
+# ground truth. Code files only. effective_turn_base repins a turn_base that a
+# rebase/squash-merge orphaned (else net-LoC / new-file / blob / dup all count
+# the whole rebased-in upstream delta, not just this turn).
 tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
+tb="$(effective_turn_base "$cwd" "$tb")"
 CODE_RE='\.(rs|toml|sh|md)$'
 
 # Unified added-content stream: a `+++ <path>` header per file then each added
