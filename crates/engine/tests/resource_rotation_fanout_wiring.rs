@@ -36,8 +36,10 @@ use nebula_engine::{
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
+    AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+    error::Error as ResourceError,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
@@ -165,16 +167,18 @@ async fn wire(behaviour: Behaviour) -> Wired {
     // A stable non-zero slot identity for the single resolved row.
     let slot_identity: u64 = 0xC0FF_EE01;
 
-    mgr.register_resident_with(
+    mgr.register_with_identity(
         Recording {
             behaviour,
             rec: rec.clone(),
         },
         NoCfg,
-        ResidentConfig::default(),
-        RegisterOptions::default()
-            .with_scope(scope.clone())
-            .with_slot_identity(slot_identity),
+        scope.clone(),
+        slot_identity,
+        TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(ResidentConfig::default())),
+        Manager::erased_acquire_resident::<Recording>(slot_identity),
+        None,
+        None,
     )
     .expect("register resolved-credential row");
 
@@ -592,16 +596,18 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
     let cid = CredentialId::new();
     let slot_identity: u64 = 0xD1D1_D1D1;
 
-    mgr.register_resident_with(
+    mgr.register_with_identity(
         Recording {
             behaviour: Behaviour::Ok,
             rec: rec.clone(),
         },
         NoCfg,
-        ResidentConfig::default(),
-        RegisterOptions::default()
-            .with_scope(scope.clone())
-            .with_slot_identity(slot_identity),
+        scope.clone(),
+        slot_identity,
+        TopologyRuntime::Resident(ResidentRuntime::<Recording>::new(ResidentConfig::default())),
+        Manager::erased_acquire_resident::<Recording>(slot_identity),
+        None,
+        None,
     )
     .expect("register resolved-credential row");
 

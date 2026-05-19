@@ -25,8 +25,12 @@ use std::sync::{
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, error::Error, resource::ResourceMetadata, topology::resident::Resident,
+    AcquireOptions, Manager, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
+    ResourceConfig, ResourceContext,
+    error::Error,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -125,6 +129,34 @@ fn ctx_for_org(org: OrgId) -> ResourceContext {
     ResourceContext::minimal(scope, CancellationToken::new())
 }
 
+/// Register a `CountingResource` as a resident row, deriving the scope and
+/// the resolved-credential identity from a [`RegisterOptions`] exactly the
+/// way the (now-deleted) `register_resident_with` shorthand did:
+/// `opts.scope` keys the scope and `opts.effective_slot_identity()`
+/// supplies the structural anti-bleed identity. Centralised so every
+/// strong-net case below threads the identity through one verified path.
+fn register_counting(
+    manager: &Manager,
+    resource: CountingResource,
+    opts: RegisterOptions,
+) -> Result<(), Error> {
+    let slot_identity = opts.effective_slot_identity();
+    manager.register(RegistrationSpec {
+        resource,
+        config: CountingConfig,
+        scope: opts.scope,
+        slot_identity,
+        topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
+            ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident::<CountingResource>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: opts.resilience,
+        recovery_gate: opts.recovery_gate,
+    })
+}
+
 /// Two registrations of the SAME resident resource type at the SAME
 /// `ScopeLevel`, with the DEFAULT `fingerprint()` (== 0) but DIFFERENT
 /// resolved per-slot credential identities, must NOT collapse to one shared
@@ -141,29 +173,25 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
     let counter = Arc::new(AtomicU64::new(0));
 
     // Tenant A: resolved credential identity #1.
-    manager
-        .register_resident_with(
-            CountingResource::new(Arc::clone(&counter)),
-            CountingConfig,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(0xAAAA_AAAA_AAAA_AAAA),
-        )
-        .expect("register tenant A must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_identity(0xAAAA_AAAA_AAAA_AAAA),
+    )
+    .expect("register tenant A must succeed");
 
     // Tenant B: SAME key + SAME scope + SAME (default-0) fingerprint, but a
     // DIFFERENT resolved credential identity.
-    manager
-        .register_resident_with(
-            CountingResource::new(Arc::clone(&counter)),
-            CountingConfig,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(0xBBBB_BBBB_BBBB_BBBB),
-        )
-        .expect("register tenant B must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_identity(0xBBBB_BBBB_BBBB_BBBB),
+    )
+    .expect("register tenant B must succeed");
 
     // Acquire from tenant A's binding and tenant B's binding. Each must route
     // to its OWN runtime (distinct `create`), never a shared one.
@@ -222,28 +250,24 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
 
     let same_identity = 0x1234_5678_9ABC_DEF0;
 
-    manager
-        .register_resident_with(
-            CountingResource::new(Arc::clone(&counter)),
-            CountingConfig,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(same_identity),
-        )
-        .expect("first register must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_identity(same_identity),
+    )
+    .expect("first register must succeed");
     // Re-register with the SAME resolved identity — last-write-wins replace of
     // the SAME row (not a second distinct row).
-    manager
-        .register_resident_with(
-            CountingResource::new(Arc::clone(&counter)),
-            CountingConfig,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(same_identity),
-        )
-        .expect("re-register must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_identity(same_identity),
+    )
+    .expect("re-register must succeed");
 
     let ctx = ctx_for_org(org);
     let l1 = manager
@@ -314,26 +338,22 @@ async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
     let counter_a = Arc::new(AtomicU64::new(1_000));
     let counter_b = Arc::new(AtomicU64::new(2_000));
 
-    manager
-        .register_resident_with(
-            CountingResource::new(Arc::clone(&counter_a)),
-            CountingConfig,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_bindings(&bindings_a),
-        )
-        .expect("register tenant A must succeed");
-    manager
-        .register_resident_with(
-            CountingResource::new(Arc::clone(&counter_b)),
-            CountingConfig,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_bindings(&bindings_b),
-        )
-        .expect("register tenant B must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter_a)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_bindings(&bindings_a),
+    )
+    .expect("register tenant A must succeed");
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter_b)),
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_bindings(&bindings_b),
+    )
+    .expect("register tenant B must succeed");
 
     let ctx = ctx_for_org(org);
     let id_a = SlotIdentity::from_bindings(bindings_a.iter().copied());

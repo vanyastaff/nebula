@@ -633,8 +633,10 @@ mod tests {
 
         use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
         use nebula_resource::{
-            Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig, ResourceContext,
-            error::Error as ResourceError, resource::ResourceMetadata,
+            Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+            error::Error as ResourceError,
+            resource::ResourceMetadata,
+            runtime::{TopologyRuntime, resident::ResidentRuntime},
             topology::resident::Resident,
         };
         use tokio_util::sync::CancellationToken;
@@ -806,16 +808,20 @@ mod tests {
             let cid = CredentialId::new();
 
             for &id in identities {
-                mgr.register_resident_with(
+                mgr.register_with_identity(
                     CtlResource {
                         identity: id,
                         ledger: ledger.clone(),
                     },
                     Cfg,
-                    ResidentConfig::default(),
-                    RegisterOptions::default()
-                        .with_scope(scope.clone())
-                        .with_slot_identity(id),
+                    scope.clone(),
+                    id,
+                    TopologyRuntime::Resident(ResidentRuntime::<CtlResource>::new(
+                        ResidentConfig::default(),
+                    )),
+                    Manager::erased_acquire_resident::<CtlResource>(id),
+                    None,
+                    None,
                 )
                 .expect("register tenant");
 

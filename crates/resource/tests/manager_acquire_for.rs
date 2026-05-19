@@ -24,9 +24,11 @@ use std::sync::{
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, Resource, ResourceConfig, ResourceContext,
+    AcquireOptions, Manager, RegisterOptions, RegistrationSpec, Resource, ResourceConfig,
+    ResourceContext,
     error::Error,
     resource::ResourceMetadata,
+    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, Pooled, RecycleDecision},
         resident::Resident,
@@ -121,6 +123,50 @@ fn pool_cfg() -> nebula_resource::topology::pooled::config::Config {
     }
 }
 
+/// Register a `PoolRes` row, deriving scope + resolved-credential identity
+/// from a [`RegisterOptions`] exactly the way the (now-deleted)
+/// `register_pooled[_with]` shorthands did. Centralised so every
+/// slot-identity strong-net below threads the identity through one path.
+fn register_pool_res(
+    manager: &Manager,
+    resource: PoolRes,
+    opts: RegisterOptions,
+) -> Result<(), Error> {
+    let fingerprint = CountingConfig.fingerprint();
+    let slot_identity = opts.effective_slot_identity();
+    manager.register(RegistrationSpec {
+        resource,
+        config: CountingConfig,
+        scope: opts.scope,
+        slot_identity,
+        topology: TopologyRuntime::Pool(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
+        acquire: Manager::erased_acquire_pooled::<PoolRes>(nebula_resource::SLOT_IDENTITY_UNBOUND),
+        resilience: opts.resilience,
+        recovery_gate: opts.recovery_gate,
+    })
+}
+
+/// Resident counterpart of [`register_pool_res`].
+fn register_res_res(
+    manager: &Manager,
+    resource: ResRes,
+    opts: RegisterOptions,
+) -> Result<(), Error> {
+    let slot_identity = opts.effective_slot_identity();
+    manager.register(RegistrationSpec {
+        resource,
+        config: CountingConfig,
+        scope: opts.scope,
+        slot_identity,
+        topology: TopologyRuntime::Resident(ResidentRuntime::<ResRes>::new(
+            nebula_resource::ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident::<ResRes>(nebula_resource::SLOT_IDENTITY_UNBOUND),
+        resilience: opts.resilience,
+        recovery_gate: opts.recovery_gate,
+    })
+}
+
 fn ctx_for_org(org: OrgId) -> ResourceContext {
     let scope = Scope {
         org_id: Some(org),
@@ -139,18 +185,16 @@ fn two_tenant(org: OrgId, a: u64, b: u64) -> (Manager, Arc<AtomicU64>) {
     let manager = Manager::new();
 
     for id in [a, b] {
-        manager
-            .register_pooled_with(
-                PoolRes {
-                    create_counter: Arc::clone(&create_counter),
-                },
-                CountingConfig,
-                pool_cfg(),
-                RegisterOptions::default()
-                    .with_scope(scope.clone())
-                    .with_slot_identity(id),
-            )
-            .expect("register tenant must succeed");
+        register_pool_res(
+            &manager,
+            PoolRes {
+                create_counter: Arc::clone(&create_counter),
+            },
+            RegisterOptions::default()
+                .with_scope(scope.clone())
+                .with_slot_identity(id),
+        )
+        .expect("register tenant must succeed");
     }
 
     (manager, create_counter)
@@ -241,22 +285,20 @@ async fn two_tenant_resident(
     let manager = Manager::new();
 
     for id in [a, b] {
-        manager
-            .register_resident_with(
-                ResRes {
-                    create_counter: Arc::clone(&create_counter),
-                    refresh_saw: Arc::clone(&refresh_saw),
-                    revoke_saw: Arc::clone(&revoke_saw),
-                    refresh_total: Arc::clone(&refresh_total),
-                    id_tag: id,
-                },
-                CountingConfig,
-                nebula_resource::ResidentConfig::default(),
-                RegisterOptions::default()
-                    .with_scope(scope.clone())
-                    .with_slot_identity(id),
-            )
-            .expect("register resident tenant");
+        register_res_res(
+            &manager,
+            ResRes {
+                create_counter: Arc::clone(&create_counter),
+                refresh_saw: Arc::clone(&refresh_saw),
+                revoke_saw: Arc::clone(&revoke_saw),
+                refresh_total: Arc::clone(&refresh_total),
+                id_tag: id,
+            },
+            RegisterOptions::default()
+                .with_scope(scope.clone())
+                .with_slot_identity(id),
+        )
+        .expect("register resident tenant");
 
         // Resident materializes its shared runtime lazily on first acquire
         // and keeps it in `rt.current()` — touch each tenant's pinned row
@@ -340,18 +382,16 @@ async fn acquire_pooled_identity_agnostic_single_tenant_ok() {
     let org = OrgId::new();
     let scope = ScopeLevel::Organization(org);
     let manager = Manager::new();
-    manager
-        .register_pooled_with(
-            PoolRes {
-                create_counter: Arc::new(AtomicU64::new(0)),
-            },
-            CountingConfig,
-            pool_cfg(),
-            RegisterOptions::default()
-                .with_scope(scope)
-                .with_slot_identity(0x9999),
-        )
-        .expect("register single tenant");
+    register_pool_res(
+        &manager,
+        PoolRes {
+            create_counter: Arc::new(AtomicU64::new(0)),
+        },
+        RegisterOptions::default()
+            .with_scope(scope)
+            .with_slot_identity(0x9999),
+    )
+    .expect("register single tenant");
 
     let ctx = ctx_for_org(org);
     let _guard = manager
@@ -516,15 +556,14 @@ async fn warmup_pool_rejected_after_revoke_taint_creates_no_entries() {
 
     let create_counter = Arc::new(AtomicU64::new(0));
     let manager = Manager::new();
-    manager
-        .register_pooled(
-            PoolRes {
-                create_counter: Arc::clone(&create_counter),
-            },
-            CountingConfig,
-            pool_cfg(),
-        )
-        .expect("register pooled (Global) must succeed");
+    register_pool_res(
+        &manager,
+        PoolRes {
+            create_counter: Arc::clone(&create_counter),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register pooled (Global) must succeed");
 
     // Phase-1 synchronous taint — the exact state a racing `revoke_slot`
     // leaves the row in before `warmup_pool` could call `rt.warmup`.
@@ -567,18 +606,16 @@ async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
     let scope = ScopeLevel::Organization(org);
     let create_counter = Arc::new(AtomicU64::new(0));
     let manager = Manager::new();
-    manager
-        .register_pooled_with(
-            PoolRes {
-                create_counter: Arc::clone(&create_counter),
-            },
-            CountingConfig,
-            pool_cfg(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(slot_id),
-        )
-        .expect("register single pinned tenant");
+    register_pool_res(
+        &manager,
+        PoolRes {
+            create_counter: Arc::clone(&create_counter),
+        },
+        RegisterOptions::default()
+            .with_scope(scope.clone())
+            .with_slot_identity(slot_id),
+    )
+    .expect("register single pinned tenant");
 
     // Synchronous taint == the state a racing `revoke_slot` leaves the row
     // in before the acquire's in-flight increment + post-count re-check.

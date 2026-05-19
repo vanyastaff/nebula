@@ -151,6 +151,22 @@ async fn register_from_value_resolves_template_and_registers() {
         manager.contains(&Postgres::key()),
         "resource must be registered after register_from_value"
     );
+
+    // The rendered config must be *observable*, not merely "registered":
+    // assert the `{{ "example.com" }}` template was actually resolved into
+    // the stored `PgConfig` (not passed through verbatim or dropped). This
+    // pins that `register_from_value` threads the resolved config all the
+    // way into the installed registry row through the collapsed
+    // `RegistrationSpec` funnel.
+    let managed = manager
+        .lookup::<Postgres>(&ScopeLevel::Global)
+        .expect("registered resident row must be resolvable");
+    let stored = managed.config();
+    assert_eq!(
+        stored.host, "db-example.com",
+        "the `{{{{ \"example.com\" }}}}` template must have rendered into the stored host"
+    );
+    assert_eq!(stored.port, 5432, "non-templated field must round-trip");
 }
 
 #[tokio::test]

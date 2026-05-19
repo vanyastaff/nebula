@@ -69,7 +69,7 @@ pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
 pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
-    DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions,
+    DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
 };
 pub use metrics::{OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot};

@@ -11,10 +11,11 @@ use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, ResidentConfig, Resource, ResourceConfig, ResourceContext,
-    ScopeLevel, ShutdownConfig,
+    AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, Resource,
+    ResourceConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     resource_key,
+    runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
         pooled::{BrokenCheck, Pooled},
         resident::Resident,
@@ -134,14 +135,26 @@ impl Pooled for HttpResource {
 async fn use_case_1_pooled_http_client() {
     let manager = Manager::new();
 
+    let config = HttpConfig {
+        base_url: "https://api.example.com".into(),
+    };
+    let fingerprint = config.fingerprint();
     manager
-        .register_pooled(
-            HttpResource,
-            HttpConfig {
-                base_url: "https://api.example.com".into(),
-            },
-            PoolConfig::default(),
-        )
+        .register(RegistrationSpec {
+            resource: HttpResource,
+            config,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
+                PoolConfig::default(),
+                fingerprint,
+            )),
+            acquire: Manager::erased_acquire_pooled::<HttpResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // [FRICTION #5] README shows: BasicCtx::new(ScopeLevel::Global)
@@ -173,28 +186,36 @@ async fn use_case_1_pooled_http_client() {
 
 #[tokio::test]
 async fn use_case_1_invalid_config_is_rejected() {
-    // [FRICTION #7] register_pooled doesn't call config.validate() internally
-    // before storing — I guessed it would since the doc says "Returns an error
-    // if config validation fails." Let me verify...
-    // Actually, looking at the manager source, it does NOT call validate() in
-    // register_pooled — it only calls fingerprint(). So bad configs slip through
-    // at registration time. They'd only be caught at create() time.
-    //
-    // UPDATE: Actually I see it doesn't. The validate() call is only in
-    // reload_config(). This is a MAJOR issue: the docs promise validation at
-    // registration but it doesn't happen. Empty base_url gets registered fine
-    // and only fails when create() is called.
+    // The single `register` funnel calls `config.validate()` before the row
+    // is installed, so an invalid config is rejected at registration time
+    // exactly as the docs promise — there is no longer a per-topology
+    // shorthand that skipped validation and let a bad config slip through
+    // to `create()`. Empty `base_url` fails `HttpConfig::validate`.
     let manager = Manager::new();
-    let result = manager.register_pooled(
-        HttpResource,
-        HttpConfig {
-            base_url: String::new(),
-        }, // should fail validation
-        PoolConfig::default(),
+    let config = HttpConfig {
+        base_url: String::new(),
+    };
+    let fingerprint = config.fingerprint();
+    let result = manager.register(RegistrationSpec {
+        resource: HttpResource,
+        config,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
+            PoolConfig::default(),
+            fingerprint,
+        )),
+        acquire: Manager::erased_acquire_pooled::<HttpResource>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: None,
+        recovery_gate: None,
+    });
+    let err = result.expect_err("empty base_url must fail validation at register time");
+    assert!(
+        err.to_string().contains("base_url must not be empty"),
+        "expected the ResourceConfig::validate message, got: {err}"
     );
-    // This will be Ok(()) even though base_url is empty — a silent bug.
-    // I'm documenting what I found, not what the docs claim.
-    let _ = result; // don't assert — it passes when it shouldn't
 }
 
 // ---------------------------------------------------------------------------
@@ -262,13 +283,22 @@ async fn use_case_2_resident_config_store() {
     // the defaults are sensible (recreate_on_failure: false, create_timeout: 30s).
     // At least it has Default, which is good.
     manager
-        .register_resident(
-            ConfigStoreResource,
-            ConfigStoreConfig {
+        .register(RegistrationSpec {
+            resource: ConfigStoreResource,
+            config: ConfigStoreConfig {
                 env: "production".into(),
             },
-            ResidentConfig::default(),
-        )
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ConfigStoreResource>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident::<ConfigStoreResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = ResourceContext::minimal(
@@ -373,22 +403,11 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
 
     let manager = Arc::new(Manager::new());
 
-    // [FRICTION #10] Using resilience requires the full register() API, not
-    // the convenience register_pooled(). The convenience methods don't accept
-    // resilience or recovery gate. So for production use (which almost always
-    // wants resilience), you're forced into the 7-argument register() call.
-    //
-    // Expected: register_pooled_with_resilience() or a builder.
-    // Found: manual TopologyRuntime construction required.
-    //
-    // The README Feature Matrix says "Pass AcquireResilience to register" but
-    // doesn't show HOW — and "register" is the 7-arg low-level method.
-    // That's a significant gap between the Feature Matrix and the Quick Start.
-
-    use nebula_resource::{
-        ResourceConfig as _,
-        runtime::{TopologyRuntime, pool::PoolRuntime},
-    };
+    // Resilience and the recovery gate are just two `Option` fields on the
+    // single `RegistrationSpec` — the same one struct every registration
+    // uses. There is no separate "convenience vs full" split anymore: one
+    // funnel, optional policies defaulted to `None`.
+    use nebula_resource::ResourceConfig as _;
 
     let config = DbConfig {
         dsn: "postgres://localhost/test".into(),
@@ -398,15 +417,21 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
     let pool_config = PoolConfig::default();
 
     manager
-        .register(
-            DbResource::new(),
+        .register(RegistrationSpec {
+            resource: DbResource::new(),
             config,
-            ScopeLevel::Global, // scope
-            TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(pool_config, fingerprint)),
-            Manager::erased_acquire_pooled::<DbResource>(nebula_resource::SLOT_IDENTITY_UNBOUND),
-            Some(AcquireResilience::standard()), // resilience
-            None,
-        )
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<DbResource>::new(
+                pool_config,
+                fingerprint,
+            )),
+            acquire: Manager::erased_acquire_pooled::<DbResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: Some(AcquireResilience::standard()),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire in multiple tasks
@@ -490,14 +515,26 @@ async fn error_not_found_on_missing_resource() {
 #[tokio::test]
 async fn error_cancelled_after_shutdown() {
     let manager = Manager::new();
+    let config = HttpConfig {
+        base_url: "https://example.com".into(),
+    };
+    let fingerprint = config.fingerprint();
     manager
-        .register_pooled(
-            HttpResource,
-            HttpConfig {
-                base_url: "https://example.com".into(),
-            },
-            PoolConfig::default(),
-        )
+        .register(RegistrationSpec {
+            resource: HttpResource,
+            config,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<HttpResource>::new(
+                PoolConfig::default(),
+                fingerprint,
+            )),
+            acquire: Manager::erased_acquire_pooled::<HttpResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     manager.shutdown();

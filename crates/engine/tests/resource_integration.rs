@@ -390,10 +390,11 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
     let org = OrgId::new();
 
     manager
-        .register(
+        .register_with_identity(
             IntegrationProbeResource,
             IntegrationProbeConfig,
             ScopeLevel::Organization(org),
+            SLOT_IDENTITY_UNBOUND,
             TopologyRuntime::Resident(ResidentRuntime::<IntegrationProbeResource>::new(
                 ResidentConfig::default(),
             )),
@@ -758,10 +759,11 @@ mod shared_resource {
         let org = OrgId::new();
 
         manager
-            .register(
+            .register_with_identity(
                 bot,
                 test_config(),
                 ScopeLevel::Organization(org),
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(resident_rt),
                 Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
@@ -833,10 +835,11 @@ mod shared_resource {
         let scope = ScopeLevel::Organization(org);
 
         manager
-            .register(
+            .register_with_identity(
                 bot_a,
                 test_config(),
                 scope.clone(),
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
@@ -846,10 +849,11 @@ mod shared_resource {
             )
             .expect("register A should succeed");
         manager
-            .register(
+            .register_with_identity(
                 bot_b,
                 test_config(),
                 scope,
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(ResidentRuntime::<AlternateBot>::new(
                     ResidentConfig::default(),
                 )),
@@ -909,10 +913,11 @@ mod shared_resource {
         let org_b = OrgId::new();
 
         manager
-            .register(
+            .register_with_identity(
                 bot_org_a,
                 test_config(),
                 ScopeLevel::Organization(org_a),
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
@@ -922,10 +927,11 @@ mod shared_resource {
             )
             .expect("register org_a should succeed");
         manager
-            .register(
+            .register_with_identity(
                 bot_org_b,
                 test_config(),
                 ScopeLevel::Organization(org_b),
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(ResidentRuntime::<TelegramBot>::new(
                     ResidentConfig::default(),
                 )),
@@ -985,10 +991,11 @@ mod shared_resource {
         let scope = ScopeLevel::Organization(org);
 
         manager
-            .register(
+            .register_with_identity(
                 bot,
                 test_config(),
                 scope.clone(),
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(resident_rt),
                 Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,
@@ -1063,10 +1070,11 @@ mod shared_resource {
         let resident_rt = ResidentRuntime::<TelegramBot>::new(ResidentConfig::default());
 
         manager
-            .register(
+            .register_with_identity(
                 bot,
                 test_config(),
                 ScopeLevel::Global,
+                SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(resident_rt),
                 Manager::erased_acquire_resident::<TelegramBot>(SLOT_IDENTITY_UNBOUND),
                 None,

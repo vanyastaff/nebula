@@ -32,8 +32,12 @@ use nebula_credential::{
     CredentialMetadata, ResolveResult, SecretString, SecretToken,
 };
 use nebula_resource::{
-    AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell,
-    error::Error, resource::ResourceMetadata, topology::resident::Resident,
+    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity,
+    error::Error,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::resident::Resident,
 };
 use nebula_schema::FieldValues;
 use tokio_util::sync::CancellationToken;
@@ -291,8 +295,21 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
     );
 
     let mgr = Manager::new();
-    mgr.register_resident(resource.clone(), RaceCfg, ResidentConfig::default())
-        .expect("register_resident must succeed");
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: RaceCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Resident(ResidentRuntime::<TwoSlotResident>::new(
+            ResidentConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_resident::<TwoSlotResident>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: None,
+        recovery_gate: None,
+    })
+    .expect("resident registration must succeed");
 
     // Warm the runtime (records the build epoch against the current
     // slot generations).

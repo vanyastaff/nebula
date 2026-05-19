@@ -10,11 +10,14 @@ use std::{
 
 use nebula_core::{ExecutionId, OrgId, ResourceKey, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, ResourceContext, ScopeLevel,
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     dedup::SLOT_IDENTITY_UNBOUND,
     error::Error,
     resource::{Resource, ResourceConfig, ResourceMetadata},
-    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    runtime::{
+        TopologyRuntime, exclusive::ExclusiveRuntime, pool::PoolRuntime, resident::ResidentRuntime,
+        service::ServiceRuntime, transport::TransportRuntime,
+    },
     topology::resident::{self, Resident},
 };
 use tokio_util::sync::CancellationToken;
@@ -96,17 +99,18 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
     let create_count = Arc::clone(&resource.create_count);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ProbeConfig,
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+            config: ProbeConfig,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -135,17 +139,18 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
     let resource = ProbeResource::new();
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ProbeConfig,
-            ScopeLevel::Organization(org),
-            TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+            config: ProbeConfig,
+            scope: ScopeLevel::Organization(org),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register at org scope");
 
     let key = ProbeResource::key();
@@ -194,31 +199,33 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
     let org_count = Arc::clone(&org_resource.create_count);
 
     manager
-        .register(
-            global_resource,
-            ProbeConfig,
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+        .register(RegistrationSpec {
+            resource: global_resource,
+            config: ProbeConfig,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register global row");
 
     manager
-        .register(
-            org_resource,
-            ProbeConfig,
-            ScopeLevel::Organization(org),
-            TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
+        .register(RegistrationSpec {
+            resource: org_resource,
+            config: ProbeConfig,
+            scope: ScopeLevel::Organization(org),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ProbeResource>::new(
                 resident::config::Config::default(),
             )),
-            Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
-            None,
-            None,
-        )
+            acquire: Manager::erased_acquire_resident::<ProbeResource>(SLOT_IDENTITY_UNBOUND),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register org row");
 
     let scope = Scope {
@@ -380,16 +387,24 @@ mod pool_parity {
         let create_count = Arc::new(AtomicU64::new(0));
         let manager = Arc::new(Manager::new());
         manager
-            .register_pooled(
-                PoolParity {
+            .register(RegistrationSpec {
+                resource: PoolParity {
                     create_count: Arc::clone(&create_count),
                 },
-                PoolParityCfg,
-                nebula_resource::topology::pooled::config::Config {
-                    max_size: 4,
-                    ..Default::default()
-                },
-            )
+                config: PoolParityCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Pool(PoolRuntime::<PoolParity>::new(
+                    nebula_resource::topology::pooled::config::Config {
+                        max_size: 4,
+                        ..Default::default()
+                    },
+                    PoolParityCfg.fingerprint(),
+                )),
+                acquire: Manager::erased_acquire_pooled::<PoolParity>(SLOT_IDENTITY_UNBOUND),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register pooled Global");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -499,14 +514,21 @@ mod service_parity {
         let shared_runtime = Arc::new(AtomicU64::new(0xA5A5));
         let manager = Arc::new(Manager::new());
         manager
-            .register_service(
-                SvcParity {
+            .register(RegistrationSpec {
+                resource: SvcParity {
                     create_count: Arc::clone(&create_count),
                 },
-                SvcParityCfg,
-                Arc::clone(&shared_runtime),
-                service::config::Config::default(),
-            )
+                config: SvcParityCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Service(ServiceRuntime::<SvcParity>::new(
+                    Arc::clone(&shared_runtime),
+                    service::config::Config::default(),
+                )),
+                acquire: Manager::erased_acquire_service::<SvcParity>(SLOT_IDENTITY_UNBOUND),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register service Global");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -606,14 +628,21 @@ mod transport_parity {
         let shared_runtime = Arc::new(AtomicU64::new(0x7E7E));
         let manager = Arc::new(Manager::new());
         manager
-            .register_transport(
-                TportParity {
+            .register(RegistrationSpec {
+                resource: TportParity {
                     create_count: Arc::clone(&create_count),
                 },
-                TportParityCfg,
-                Arc::clone(&shared_runtime),
-                transport::config::Config::default(),
-            )
+                config: TportParityCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Transport(TransportRuntime::<TportParity>::new(
+                    Arc::clone(&shared_runtime),
+                    transport::config::Config::default(),
+                )),
+                acquire: Manager::erased_acquire_transport::<TportParity>(SLOT_IDENTITY_UNBOUND),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register transport Global");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -708,14 +737,21 @@ mod exclusive_parity {
         let create_count = Arc::new(AtomicU64::new(0));
         let manager = Arc::new(Manager::new());
         manager
-            .register_exclusive(
-                ExclParity {
+            .register(RegistrationSpec {
+                resource: ExclParity {
                     create_count: Arc::clone(&create_count),
                 },
-                ExclParityCfg,
-                0xE0E0u64,
-                exclusive::config::Config::default(),
-            )
+                config: ExclParityCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: TopologyRuntime::Exclusive(ExclusiveRuntime::<ExclParity>::new(
+                    0xE0E0u64,
+                    exclusive::config::Config::default(),
+                )),
+                acquire: Manager::erased_acquire_exclusive::<ExclParity>(SLOT_IDENTITY_UNBOUND),
+                resilience: None,
+                recovery_gate: None,
+            })
             .expect("register exclusive Global");
 
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());

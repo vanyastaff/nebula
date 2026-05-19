@@ -26,8 +26,8 @@ use std::{
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, AcquireResilience, Manager, PoolConfig, ResidentConfig, ResourceContext,
-    ResourceGuard, ScopeLevel, ShutdownConfig,
+    AcquireOptions, AcquireResilience, Manager, PoolConfig, RegistrationSpec, ResidentConfig,
+    ResourceContext, ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
@@ -208,30 +208,29 @@ async fn use_case_1_http_client_pool() {
 
     let manager = Manager::new();
 
-    // FRICTION NOTE [register() PARAMETER COUNT]: register() takes 7 parameters.
-    // The typical call for a basic pool is:
-    //   register(resource, config, auth, scope, topology, resilience, recovery_gate)
-    // The last two are almost always None for basic usage.
-    // This is called out in a comment (`// Reason: register is a constructor ...`)
-    // but it's still painful. A builder or at least a `register_simple()` helper
-    // would eliminate 2 None arguments for the 90% case.
-    // SEVERITY: Major
+    // `register` now takes a single `RegistrationSpec` with named public
+    // fields. The two genuinely-optional policies (`resilience`,
+    // `recovery_gate`) are `Option` fields defaulted to `None`, and
+    // `slot_identity` is `SlotIdentity::Unbound` for the common
+    // single-row-per-`(key, scope)` case — no positional-argument ordering
+    // to memorise and no per-topology shorthand split.
 
     manager
-        .register(
-            resource.clone(),
-            HttpClientConfig {
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: HttpClientConfig {
                 base_url: "https://api.example.com".into(),
                 pool_size: 4,
             },
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<HttpClientResource>(
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<HttpClientResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None, // resilience
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -353,19 +352,20 @@ async fn use_case_2_resident_config_store() {
     // SEVERITY: Nit
 
     manager
-        .register(
-            ConfigStoreResource,
-            ConfigStoreConfig {
+        .register(RegistrationSpec {
+            resource: ConfigStoreResource,
+            config: ConfigStoreConfig {
                 path: "/etc/app/config.json".into(),
             },
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ConfigStoreResource>(
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ConfigStoreResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("resident registration should succeed");
 
     let ctx = test_ctx();
@@ -496,17 +496,20 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
     let resilience = AcquireResilience::fast(); // 10s timeout, max_attempts = 2
 
     manager
-        .register(
-            db.clone(),
-            DbConfig {
+        .register(RegistrationSpec {
+            resource: db.clone(),
+            config: DbConfig {
                 host: "localhost:5432".into(),
             },
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<DbResource>(nebula_resource::SLOT_IDENTITY_UNBOUND),
-            Some(resilience),
-            None,
-        )
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<DbResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("db registration should succeed");
 
     // Acquire handles from multiple tasks concurrently

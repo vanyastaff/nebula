@@ -21,8 +21,10 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::CredentialId;
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, error::Error as ResourceError, resource::ResourceMetadata,
+    AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+    error::Error as ResourceError,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
@@ -133,17 +135,19 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
     behaviour.lock().unwrap().insert(c, Behaviour::Ok);
 
     for &id in &[a, b, c] {
-        mgr.register_resident_with(
+        mgr.register_with_identity(
             Ctl {
                 identity: id,
                 behaviour: Arc::clone(&behaviour),
                 refresh_entered: Arc::clone(&refresh_entered),
             },
             Cfg,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(id),
+            scope.clone(),
+            id,
+            TopologyRuntime::Resident(ResidentRuntime::<Ctl>::new(ResidentConfig::default())),
+            Manager::erased_acquire_resident::<Ctl>(id),
+            None,
+            None,
         )
         .expect("register resolved-credential row");
 

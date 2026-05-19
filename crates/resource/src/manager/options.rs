@@ -1,7 +1,9 @@
 //! Configuration types for the [`Manager`](super::Manager).
 //!
 //! - [`ManagerConfig`] — manager construction parameters
-//! - [`RegisterOptions`] — extended options for `register_*_with` shorthands
+//! - [`RegistrationSpec`] — the single parameter aggregate consumed by
+//!   [`Manager::register`](super::Manager::register)
+//! - [`RegisterOptions`] — scope / resilience / recovery / slot-identity knobs
 //! - [`ShutdownConfig`] — graceful shutdown tuning
 //! - [`DrainTimeoutPolicy`] — what to do on drain timeout (#302)
 
@@ -9,7 +11,10 @@ use std::{sync::Arc, time::Duration};
 
 use nebula_core::ScopeLevel;
 
-use crate::{integration::AcquireResilience, recovery::gate::RecoveryGate};
+use crate::{
+    integration::AcquireResilience, recovery::gate::RecoveryGate, registry::ErasedAcquireFn,
+    resource::Resource, runtime::TopologyRuntime,
+};
 
 /// Policy that controls what `graceful_shutdown` does when the
 /// drain phase expires with handles still outstanding (#302).
@@ -162,8 +167,12 @@ impl RegisterOptions {
     /// The effective resolved-credential identity for this registration:
     /// the structural identity when set, else the legacy `u64` bridged
     /// onto [`SlotIdentity`](crate::dedup::SlotIdentity).
+    ///
+    /// Bridges a [`RegisterOptions`] onto the [`RegistrationSpec`]
+    /// `slot_identity` field for callers that still express the resolved
+    /// credential identity through the legacy options struct.
     #[must_use]
-    pub(crate) fn effective_slot_identity(&self) -> crate::dedup::SlotIdentity {
+    pub fn effective_slot_identity(&self) -> crate::dedup::SlotIdentity {
         self.slot_identity_structural
             .clone()
             .unwrap_or_else(|| crate::dedup::SlotIdentity::from_opaque(self.slot_identity))
@@ -242,4 +251,49 @@ impl RegisterOptions {
         ));
         self
     }
+}
+
+/// The single parameter aggregate consumed by
+/// [`Manager::register`](super::Manager::register).
+///
+/// Collapses what used to be a 3-deep `register` → `register_with_identity`
+/// → `register_with_slot_identity` delegation chain plus ~17 per-topology
+/// `register_<topo>[_with]` shorthands into one struct fed to one funnel.
+/// It is a plain struct with **public fields and no builder**: every field
+/// is required to name a registry row exactly, the two genuinely-optional
+/// policies are `Option`, and `slot_identity` defaults via
+/// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) at the construction
+/// site (no `Default` impl is possible — `R` / `R::Config` are generic and
+/// not `Default`).
+///
+/// Per slot model the `resource: R` value is expected to have **all
+/// `#[credential]` slot fields already resolved and populated** before it
+/// reaches here; `Manager::register` does not resolve credential bindings.
+///
+/// `slot_identity` is the structural anti-bleed seam: two registrations of
+/// the same resource type at the same `scope` whose resolved
+/// `(slot, credential)` bindings differ occupy **distinct** registry rows
+/// with **distinct** topology runtimes.
+/// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) preserves the
+/// historical single-row-per-`(key, scope)` dedup contract. It carries no
+/// secret bytes — only a stable identity over the resolved binding *names*.
+pub struct RegistrationSpec<R: Resource> {
+    /// The fully-constructed resource value, all credential slots resolved.
+    pub resource: R,
+    /// The validated-on-`register` resource config.
+    pub config: R::Config,
+    /// Scope level the row is keyed under.
+    pub scope: ScopeLevel,
+    /// Collision-free structural resolved-credential identity. Use
+    /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) for the
+    /// historical single-row-per-`(key, scope)` behaviour.
+    pub slot_identity: crate::dedup::SlotIdentity,
+    /// The topology runtime backing this row.
+    pub topology: TopologyRuntime<R>,
+    /// Type-erased acquire hook captured at registration time.
+    pub acquire: ErasedAcquireFn,
+    /// Optional acquire resilience (timeout + retry + circuit breaker).
+    pub resilience: Option<AcquireResilience>,
+    /// Optional recovery gate for thundering-herd prevention.
+    pub recovery_gate: Option<Arc<RecoveryGate>>,
 }

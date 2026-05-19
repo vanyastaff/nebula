@@ -249,10 +249,11 @@ mod tests {
     async fn acquire_any_returns_guard_for_registered_resource() {
         let manager = Arc::new(Manager::new());
         manager
-            .register(
+            .register_with_identity(
                 AccResource,
                 AccConfig,
                 ScopeLevel::Global,
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
                 TopologyRuntime::Resident(ResidentRuntime::<AccResource>::new(
                     ResidentConfig::default(),
                 )),

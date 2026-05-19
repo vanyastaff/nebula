@@ -67,9 +67,11 @@ pub(crate) mod options;
 pub(crate) mod shutdown;
 
 pub use crate::registry::ErasedAcquireFn;
-use execute::{execute_with_resilience, validate_pool_config};
+use execute::execute_with_resilience;
 use gate::{admit_through_gate, settle_gate_admission};
-pub use options::{DrainTimeoutPolicy, ManagerConfig, RegisterOptions, ShutdownConfig};
+pub use options::{
+    DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
+};
 pub use shutdown::{ShutdownError, ShutdownReport};
 
 /// Snapshot of a resource's health and operational state.
@@ -374,140 +376,45 @@ impl Manager {
         acquire_dispatch::erased_acquire_exclusive::<R>()
     }
 
-    /// Registers a resource with its config, scope, topology, and optional
-    /// resilience / recovery gate configuration.
+    /// Registers a resource from a fully-specified [`RegistrationSpec`].
     ///
-    /// Per slot model the `resource: R` value passed in is expected to have
-    /// **all `#[credential]` slot fields already resolved and populated**.
+    /// This is the **single registration funnel**: the former 3-deep
+    /// `register` → `register_with_identity` → `register_with_slot_identity`
+    /// → internal-row-builder chain and the ~17 per-topology
+    /// `register_<topo>[_with]` shorthands all collapse onto this one
+    /// method fed by one struct. Callers that only need the historical
+    /// single-row-per-`(key, scope)` behaviour pass
+    /// [`RegistrationSpec::slot_identity`] =
+    /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity).
+    ///
+    /// Per slot model the `spec.resource` value is expected to have **all
+    /// `#[credential]` slot fields already resolved and populated**.
     /// `Manager::register` does not itself resolve credential bindings —
     /// that is the responsibility of the caller (typically the engine
     /// dispatch layer that assembles `R` via the `FromConfig` trait emitted
     /// by `#[derive(Resource)]`).
     ///
-    /// The resource is wrapped in a [`ManagedResource`] and stored in the
-    /// registry under `R::key()`. If a resource with the same key and scope
-    /// is already registered, it is silently replaced.
+    /// `spec.slot_identity` is the structural anti-bleed seam: two
+    /// registrations of the same resource type at the same `spec.scope`
+    /// whose resolved `(slot, credential)` bindings differ occupy
+    /// **distinct** registry rows with **distinct** topology runtimes, so
+    /// one tenant's runtime can never serve another tenant's resolved
+    /// credential. Equality is exact and structural (no digest), so two
+    /// distinct resolved binding sets can never alias.
     ///
+    /// The resource is wrapped in a [`ManagedResource`] and stored in the
+    /// registry under `R::key()`. If a resource with the same key, scope,
+    /// and slot identity is already registered, it is silently replaced.
     /// The manager's internal [`ReleaseQueue`] is automatically shared with
     /// the managed resource — callers never need to create or manage it.
     ///
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors register_with_identity minus slot_identity; arity grows when acquire hook is required at registration"
-    )]
-    pub fn register<R: Resource>(
-        &self,
-        resource: R,
-        config: R::Config,
-        scope: ScopeLevel,
-        topology: TopologyRuntime<R>,
-        acquire: ErasedAcquireFn,
-        resilience: Option<AcquireResilience>,
-        recovery_gate: Option<Arc<RecoveryGate>>,
-    ) -> Result<(), Error> {
-        self.register_with_identity(
-            resource,
-            config,
-            scope,
-            crate::dedup::SLOT_IDENTITY_UNBOUND,
-            topology,
-            acquire,
-            resilience,
-            recovery_gate,
-        )
-    }
-
-    /// [`register`](Self::register) plus a resolved per-slot credential
-    /// identity that pins the registry row.
-    ///
-    /// This is the structural anti-bleed seam: two registrations of the
-    /// same resource type at the same `scope` whose `slot_identity` differs
-    /// occupy **distinct** registry rows with **distinct** topology
-    /// runtimes, so one tenant's runtime can never serve another tenant's
-    /// resolved credential. Passing
-    /// [`SLOT_IDENTITY_UNBOUND`](crate::dedup::SLOT_IDENTITY_UNBOUND)
-    /// (what plain [`register`](Self::register) and the `register_*`
-    /// shorthands do) preserves the historical single-row-per-`(key,
-    /// scope)` dedup contract (one `Resource::create` for N acquires of the
-    /// same credential).
-    ///
-    /// This `u64` is the *collidable* legacy identity (it is bridged onto
-    /// the collision-free structural
-    /// [`SlotIdentity`](crate::dedup::SlotIdentity) internally). Prefer
-    /// [`register_with_slot_identity`](Self::register_with_slot_identity),
-    /// which takes the structural identity directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails on the provided config.
-    // guard-justified: mirrors register<R>'s arity plus the identity pin (pre-existing allow, retained); the RegistrationSpec param-struct collapse is a separate unit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors register<R>'s arity plus the slot-identity pin; collapsing into a struct would force the register_*_with shorthands and the engine resolution path through a builder for one extra u64"
-    )]
-    pub fn register_with_identity<R: Resource>(
-        &self,
-        resource: R,
-        config: R::Config,
-        scope: ScopeLevel,
-        slot_identity: u64,
-        topology: TopologyRuntime<R>,
-        acquire: ErasedAcquireFn,
-        resilience: Option<AcquireResilience>,
-        recovery_gate: Option<Arc<RecoveryGate>>,
-    ) -> Result<(), Error> {
-        self.register_with_slot_identity(
-            resource,
-            config,
-            scope,
-            crate::dedup::SlotIdentity::from_opaque(slot_identity),
-            topology,
-            acquire,
-            resilience,
-            recovery_gate,
-        )
-    }
-
-    /// [`register_with_identity`](Self::register_with_identity) keyed by the
-    /// **collision-free structural** resolved-credential identity.
-    ///
-    /// Two registrations of the same resource type at the same `scope`
-    /// whose resolved `(slot, credential)` bindings differ occupy
-    /// **distinct** registry rows with **distinct** topology runtimes —
-    /// the structural anti-bleed seam. Equality is exact and structural
-    /// (no digest), so two distinct resolved binding sets can never alias.
-    /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity::Unbound)
-    /// preserves the historical single-row-per-`(key, scope)` dedup
-    /// contract.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails on the provided config.
-    // guard-justified: structural sibling of register_with_identity; same arity (the structural identity replaces the u64) — RegistrationSpec collapse is a separate unit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "structural sibling of register_with_identity; same arity with the structural identity in place of the u64"
-    )]
-    pub fn register_with_slot_identity<R: Resource>(
-        &self,
-        resource: R,
-        config: R::Config,
-        scope: ScopeLevel,
-        slot_identity: crate::dedup::SlotIdentity,
-        topology: TopologyRuntime<R>,
-        acquire: ErasedAcquireFn,
-        resilience: Option<AcquireResilience>,
-        recovery_gate: Option<Arc<RecoveryGate>>,
-    ) -> Result<(), Error> {
+    pub fn register<R: Resource>(&self, spec: RegistrationSpec<R>) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
-        config.validate()?;
 
-        let key = R::key();
-        self.register_row_with_acquire(
-            key,
+        let RegistrationSpec {
             resource,
             config,
             scope,
@@ -516,26 +423,20 @@ impl Manager {
             acquire,
             resilience,
             recovery_gate,
-        )
-    }
+        } = spec;
 
-    // guard-justified: internal row builder mirrors the public register arity (pre-existing allow, retained); the RegistrationSpec param-struct collapse is a separate unit, not this one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal row builder shared by register_with_identity; same arity as the public register path"
-    )]
-    fn register_row_with_acquire<R: Resource>(
-        &self,
-        key: ResourceKey,
-        resource: R,
-        config: R::Config,
-        scope: ScopeLevel,
-        slot_identity: crate::dedup::SlotIdentity,
-        topology: TopologyRuntime<R>,
-        acquire: ErasedAcquireFn,
-        resilience: Option<AcquireResilience>,
-        recovery_gate: Option<Arc<RecoveryGate>>,
-    ) -> Result<(), Error> {
+        config.validate()?;
+
+        // #390 (pool min/max sanity) is enforced structurally by
+        // `PoolRuntime::new`, which the caller has already invoked to build
+        // the `TopologyRuntime::Pool` handed in here — an invalid
+        // `(min_size, max_size)` cannot reach this funnel because the
+        // `PoolRuntime` could not have been constructed. No separate
+        // register-time pool-config check is needed (the deleted
+        // `register_pooled[_with]` shorthands re-validated the raw config
+        // only because they took it *before* building the runtime).
+
+        let key = R::key();
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -559,7 +460,7 @@ impl Manager {
             acquire,
         );
 
-        // #387: everything below `register()` is a single funnel — the
+        // #387: everything below this point is a single funnel — the
         // resource is installed, so advance its phase from `Initializing`
         // to `Ready`. Failures are surfaced by `config.validate()` above,
         // which aborts before we reach this line.
@@ -576,365 +477,50 @@ impl Manager {
         Ok(())
     }
 
-    /// Registers a pooled resource with sensible defaults.
+    /// [`register`](Self::register) addressed by a *collidable* legacy
+    /// `u64` resolved-credential identity.
     ///
-    /// Shorthand for [`register`](Self::register) with
-    /// `scope = Global`, no resilience, no recovery gate.
-    ///
-    /// The pool fingerprint is initialized from the provided config.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_pooled<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        pool_config: crate::topology::pooled::config::Config,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-    {
-        use crate::resource::ResourceConfig as _;
-
-        validate_pool_config(&pool_config)?;
-
-        let fingerprint = config.fingerprint();
-        self.register(
-            resource,
-            config,
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
-                pool_config,
-                fingerprint,
-            )),
-            acquire_dispatch::erased_acquire_pooled::<R>(),
-            None,
-            None,
-        )
-    }
-
-    /// Registers a resident resource with sensible defaults.
-    ///
-    /// Shorthand for [`register`](Self::register) with
-    /// `scope = Global`, no resilience, no recovery gate.
+    /// Thin adapter retained for the engine dispatch / resource-accessor
+    /// path that still threads the legacy `u64` slot identity: it bridges
+    /// the `u64` onto the collision-free structural
+    /// [`SlotIdentity`](crate::dedup::SlotIdentity) and forwards into the
+    /// single [`register`](Self::register) funnel. Passing
+    /// [`SLOT_IDENTITY_UNBOUND`](crate::dedup::SLOT_IDENTITY_UNBOUND)
+    /// preserves the historical single-row-per-`(key, scope)` dedup
+    /// contract (one `Resource::create` for N acquires of the same
+    /// credential). New code that knows the resolved bindings should build
+    /// a [`RegistrationSpec`] with a structural
+    /// [`SlotIdentity`](crate::dedup::SlotIdentity) directly.
     ///
     /// # Errors
     ///
-    /// Returns an error if config validation fails.
-    pub fn register_resident<R>(
+    /// Returns an error if config validation fails on the provided config.
+    // guard-justified: engine-facing stable adapter; the 8 params mirror the engine resource-accessor call shape and bridge u64 -> structural identity into the single register() funnel — the engine migration onto the spec-native form is a later expand-contract unit.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "engine-facing stable adapter bridging the legacy u64 slot identity into the single RegistrationSpec funnel; collapsing it would break the unmigrated engine resource-accessor / registrar call sites this unit must keep green"
+    )]
+    pub fn register_with_identity<R: Resource>(
         &self,
         resource: R,
         config: R::Config,
-        resident_config: crate::topology::resident::config::Config,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
-    {
-        self.register(
+        scope: ScopeLevel,
+        slot_identity: u64,
+        topology: TopologyRuntime<R>,
+        acquire: ErasedAcquireFn,
+        resilience: Option<AcquireResilience>,
+        recovery_gate: Option<Arc<RecoveryGate>>,
+    ) -> Result<(), Error> {
+        self.register(RegistrationSpec {
             resource,
             config,
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
-                resident_config,
-            )),
-            acquire_dispatch::erased_acquire_resident::<R>(),
-            None,
-            None,
-        )
-    }
-
-    /// Registers a service resource with sensible defaults.
-    ///
-    /// Shorthand for [`register`](Self::register) with
-    /// `scope = Global`, no resilience, no recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_service<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        runtime: R::Runtime,
-        service_config: crate::topology::service::config::Config,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::service::Service + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.register(
-            resource,
-            config,
-            ScopeLevel::Global,
-            TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
-                runtime,
-                service_config,
-            )),
-            acquire_dispatch::erased_acquire_service::<R>(),
-            None,
-            None,
-        )
-    }
-
-    /// Registers an exclusive resource with sensible defaults.
-    ///
-    /// Shorthand for [`register`](Self::register) with
-    /// `scope = Global`, no resilience, no recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_exclusive<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        runtime: R::Runtime,
-        exclusive_config: crate::topology::exclusive::config::Config,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::exclusive::Exclusive + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.register(
-            resource,
-            config,
-            ScopeLevel::Global,
-            TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
-                runtime,
-                exclusive_config,
-            )),
-            acquire_dispatch::erased_acquire_exclusive::<R>(),
-            None,
-            None,
-        )
-    }
-
-    /// Registers a transport resource with sensible defaults.
-    ///
-    /// Shorthand for [`register`](Self::register) with
-    /// `scope = Global`, no resilience, no recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_transport<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        runtime: R::Runtime,
-        transport_config: crate::topology::transport::config::Config,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::transport::Transport + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        self.register(
-            resource,
-            config,
-            ScopeLevel::Global,
-            TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
-                runtime,
-                transport_config,
-            )),
-            acquire_dispatch::erased_acquire_transport::<R>(),
-            None,
-            None,
-        )
-    }
-
-    /// Registers a pooled resource with extended options.
-    ///
-    /// Like [`register_pooled`](Self::register_pooled) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_pooled_with<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        pool_config: crate::topology::pooled::config::Config,
-        options: RegisterOptions,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::pooled::Pooled + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Into<R::Runtime> + Send + 'static,
-    {
-        use crate::resource::ResourceConfig as _;
-
-        validate_pool_config(&pool_config)?;
-
-        let fingerprint = config.fingerprint();
-        let slot_identity = options.effective_slot_identity();
-        self.register_with_slot_identity(
-            resource,
-            config,
-            options.scope,
-            slot_identity,
-            TopologyRuntime::Pool(crate::runtime::pool::PoolRuntime::<R>::new(
-                pool_config,
-                fingerprint,
-            )),
-            acquire_dispatch::erased_acquire_pooled::<R>(),
-            options.resilience,
-            options.recovery_gate,
-        )
-    }
-
-    /// Registers a resident resource with extended options.
-    ///
-    /// Like [`register_resident`](Self::register_resident) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_resident_with<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        resident_config: crate::topology::resident::config::Config,
-        options: RegisterOptions,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::resident::Resident + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Clone + Send + 'static,
-    {
-        let slot_identity = options.effective_slot_identity();
-        self.register_with_slot_identity(
-            resource,
-            config,
-            options.scope,
-            slot_identity,
-            TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
-                resident_config,
-            )),
-            acquire_dispatch::erased_acquire_resident::<R>(),
-            options.resilience,
-            options.recovery_gate,
-        )
-    }
-
-    /// Registers a service resource with extended options.
-    ///
-    /// Like [`register_service`](Self::register_service) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_service_with<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        runtime: R::Runtime,
-        service_config: crate::topology::service::config::Config,
-        options: RegisterOptions,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::service::Service + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        let slot_identity = options.effective_slot_identity();
-        self.register_with_slot_identity(
-            resource,
-            config,
-            options.scope,
-            slot_identity,
-            TopologyRuntime::Service(crate::runtime::service::ServiceRuntime::<R>::new(
-                runtime,
-                service_config,
-            )),
-            acquire_dispatch::erased_acquire_service::<R>(),
-            options.resilience,
-            options.recovery_gate,
-        )
-    }
-
-    /// Registers a transport resource with extended options.
-    ///
-    /// Like [`register_transport`](Self::register_transport) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_transport_with<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        runtime: R::Runtime,
-        transport_config: crate::topology::transport::config::Config,
-        options: RegisterOptions,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::transport::Transport + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        let slot_identity = options.effective_slot_identity();
-        self.register_with_slot_identity(
-            resource,
-            config,
-            options.scope,
-            slot_identity,
-            TopologyRuntime::Transport(crate::runtime::transport::TransportRuntime::<R>::new(
-                runtime,
-                transport_config,
-            )),
-            acquire_dispatch::erased_acquire_transport::<R>(),
-            options.resilience,
-            options.recovery_gate,
-        )
-    }
-
-    /// Registers an exclusive resource with extended options.
-    ///
-    /// Like [`register_exclusive`](Self::register_exclusive) but accepts
-    /// [`RegisterOptions`] for scope, resilience, recovery gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if config validation fails.
-    pub fn register_exclusive_with<R>(
-        &self,
-        resource: R,
-        config: R::Config,
-        runtime: R::Runtime,
-        exclusive_config: crate::topology::exclusive::config::Config,
-        options: RegisterOptions,
-    ) -> Result<(), Error>
-    where
-        R: crate::topology::exclusive::Exclusive + Clone + Resource + Send + Sync + 'static,
-        R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-        R::Lease: Send + 'static,
-    {
-        let slot_identity = options.effective_slot_identity();
-        self.register_with_slot_identity(
-            resource,
-            config,
-            options.scope,
-            slot_identity,
-            TopologyRuntime::Exclusive(crate::runtime::exclusive::ExclusiveRuntime::<R>::new(
-                runtime,
-                exclusive_config,
-            )),
-            acquire_dispatch::erased_acquire_exclusive::<R>(),
-            options.resilience,
-            options.recovery_gate,
-        )
+            scope,
+            slot_identity: crate::dedup::SlotIdentity::from_opaque(slot_identity),
+            topology,
+            acquire,
+            resilience,
+            recovery_gate,
+        })
     }
 
     /// Schema-validate an **already-resolved** config JSON tree against
@@ -1087,9 +673,10 @@ impl Manager {
             slot_count = slot_bindings.len(),
         )
     )]
+    // guard-justified: production engine `registrar.rs` calls this positionally as the erased kind->typed bridge; its 9-param shape is the engine ABI and cannot collapse until the engine is migrated onto the spec-native form (later expand-contract unit) — the body already threads a single RegistrationSpec into the one register() funnel.
     #[allow(
         clippy::too_many_arguments,
-        reason = "JSON-driven registration must thread (config_json, expr_engine, slot_bindings, resource, scope, topology, resilience, recovery_gate); collapsing into an options struct would force callers through a builder when the typed register<R> path next door already takes 6 args"
+        reason = "engine-ABI-pinned JSON-driven entry: the production engine registrar calls register_from_value positionally; the signature is frozen for this expand-contract phase and the old shape is deleted once the engine is migrated. The body itself builds one RegistrationSpec and delegates to the single register() funnel."
     )]
     pub async fn register_from_value<R>(
         &self,
@@ -1156,23 +743,29 @@ impl Manager {
             crate::dedup::slot_identity(pairs.iter().map(|(s, c)| (s.as_str(), c.as_str())))
         };
 
-        // 5. Dispatch into the typed register. ResourceConfig::validate() runs inside register, so
-        //    domain-level rules (e.g. PoolConfig sanity, host non-empty) are still enforced.
+        // 5. Dispatch into the single typed register funnel via a
+        //    `RegistrationSpec`. ResourceConfig::validate() runs inside
+        //    `register`, so domain-level rules (e.g. PoolConfig sanity,
+        //    host non-empty) are still enforced. The legacy `u64`
+        //    `slot_id` derived above is bridged onto the structural
+        //    [`SlotIdentity`](crate::dedup::SlotIdentity) the registry
+        //    keys on — the JSON path's resolved-binding identity is the
+        //    same value it has always been, now expressed structurally.
         tracing::debug!(
             target: "nebula_resource::register_from_value",
             slot_identity = slot_id,
             "all pre-register checks passed; dispatching into typed register"
         );
-        self.register_with_identity(
+        self.register(RegistrationSpec {
             resource,
             config,
             scope,
-            slot_id,
+            slot_identity: crate::dedup::SlotIdentity::from_opaque(slot_id),
             topology,
-            acquire_for_slot(slot_id),
+            acquire: acquire_for_slot(slot_id),
             resilience,
             recovery_gate,
-        )
+        })
     }
 
     /// Looks up a registered `ManagedResource<R>` by type and scope.

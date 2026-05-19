@@ -345,12 +345,13 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
     // attaching a manager does not regress the resolver pipeline.
     let resource = WitnessResource::new();
     manager
-        .register(
+        .register_with_identity(
             resource,
             WitnessResourceConfig {
                 label: "test-witness".into(),
             },
             ScopeLevel::Global,
+            SLOT_IDENTITY_UNBOUND,
             TopologyRuntime::Resident(ResidentRuntime::<WitnessResource>::new(
                 ResidentConfig::default(),
             )),

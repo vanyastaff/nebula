@@ -34,8 +34,10 @@ use nebula_credential::{CredentialEvent, CredentialGuard, CredentialId, LeaseEve
 use nebula_engine::credential::rotation::{ResourceFanoutDriver, ResourceFanoutIndex};
 use nebula_eventbus::EventBus;
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, SlotCell, error::Error as ResourceError, resource::ResourceMetadata,
+    AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell,
+    error::Error as ResourceError,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
     topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
@@ -215,16 +217,18 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         SECRET.to_owned(),
     ))));
 
-    mgr.register_resident_with(
+    mgr.register_with_identity(
         SecretRes {
             db: Arc::new(slot),
             hook_entered: Arc::clone(&hook_entered),
         },
         Cfg,
-        ResidentConfig::default(),
-        RegisterOptions::default()
-            .with_scope(scope.clone())
-            .with_slot_identity(slot_identity),
+        scope.clone(),
+        slot_identity,
+        TopologyRuntime::Resident(ResidentRuntime::<SecretRes>::new(ResidentConfig::default())),
+        Manager::erased_acquire_resident::<SecretRes>(slot_identity),
+        None,
+        None,
     )
     .expect("register resolved-credential row");
 

@@ -25,10 +25,11 @@ use std::{
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 use nebula_resource::{
     AcquireOptions, AcquireResilience, AcquireRetryConfig, Manager, RegisterOptions,
-    ResourceContext, ScopeLevel, ShutdownConfig,
+    RegistrationSpec, ResourceContext, SLOT_IDENTITY_UNBOUND, ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
     recovery::{RecoveryGate, RecoveryGateConfig},
     resource::{Resource, ResourceConfig, ResourceMetadata},
+    runtime::{TopologyRuntime, transport::TransportRuntime},
     topology::transport::{Transport, config::Config as TransportConfig},
     topology_tag::TopologyTag,
 };
@@ -213,6 +214,36 @@ fn ctx() -> ResourceContext {
     ResourceContext::minimal(scope, CancellationToken::new())
 }
 
+/// Register a transport-topology row, deriving scope + resolved-credential
+/// identity / resilience / recovery from a [`RegisterOptions`] exactly the
+/// way the (now-deleted) `register_transport[_with]` shorthands did
+/// (`RegisterOptions::default()` reproduces the plain `register_transport`
+/// path: `Global` scope, `Unbound` identity, no resilience / gate).
+fn register_transport_spec<R>(
+    manager: &Manager,
+    resource: R,
+    inner: R::Runtime,
+    transport_config: TransportConfig,
+    opts: RegisterOptions,
+) -> Result<(), Error>
+where
+    R: Transport + Clone + Resource<Config = MockConfig> + Send + Sync + 'static,
+    R::Runtime: Send + Sync + 'static,
+    R::Lease: Send + 'static,
+{
+    let slot_identity = opts.effective_slot_identity();
+    manager.register(RegistrationSpec {
+        resource,
+        config: MockConfig,
+        scope: opts.scope,
+        slot_identity,
+        topology: TopologyRuntime::Transport(TransportRuntime::<R>::new(inner, transport_config)),
+        acquire: Manager::erased_acquire_transport::<R>(SLOT_IDENTITY_UNBOUND),
+        resilience: opts.resilience,
+        recovery_gate: opts.recovery_gate,
+    })
+}
+
 /// Wait briefly for `ReleaseQueue`-driven `close_session` calls to land.
 ///
 /// `close_session` runs on a background worker — the test must yield to
@@ -241,18 +272,18 @@ async fn register_transport_then_acquire_via_manager() {
     let resource = TransportA::new();
     let transport_inner = Arc::new(MockTransportInner { name: "a" });
 
-    manager
-        .register_transport(
-            resource.clone(),
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 4,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-        )
-        .expect("register_transport should succeed");
+    register_transport_spec(
+        &manager,
+        resource.clone(),
+        transport_inner,
+        TransportConfig {
+            max_sessions: 4,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("transport registration should succeed");
 
     assert!(manager.contains(&TransportA::key()));
     assert!(manager.keys().contains(&TransportA::key()));
@@ -285,18 +316,18 @@ async fn multiple_sessions_share_one_transport() {
     let resource = TransportA::new();
     let transport_inner = Arc::new(MockTransportInner { name: "multiplex" });
 
-    manager
-        .register_transport(
-            resource.clone(),
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 8,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-        )
-        .expect("register");
+    register_transport_spec(
+        &manager,
+        resource.clone(),
+        transport_inner,
+        TransportConfig {
+            max_sessions: 8,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register");
 
     // Acquire 5 sessions in parallel — `join_all` issues all five
     // `acquire_transport` futures concurrently, exercising the
@@ -336,18 +367,18 @@ async fn session_limit_returns_backpressure_when_exhausted() {
     let resource = TransportA::new();
     let transport_inner = Arc::new(MockTransportInner { name: "limit" });
 
-    manager
-        .register_transport(
-            resource.clone(),
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 2,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_millis(50),
-            },
-        )
-        .expect("register");
+    register_transport_spec(
+        &manager,
+        resource.clone(),
+        transport_inner,
+        TransportConfig {
+            max_sessions: 2,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_millis(50),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register");
 
     let h1 = manager
         .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
@@ -394,19 +425,18 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
     let transport_inner = Arc::new(MockTransportInner { name: "gated" });
     let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
 
-    manager
-        .register_transport_with(
-            resource.clone(),
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 4,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-            RegisterOptions::default().with_recovery_gate(gate.clone()),
-        )
-        .expect("register_transport_with");
+    register_transport_spec(
+        &manager,
+        resource.clone(),
+        transport_inner,
+        TransportConfig {
+            max_sessions: 4,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default().with_recovery_gate(gate.clone()),
+    )
+    .expect("transport registration with recovery gate");
 
     // Gate is `Idle` by default — acquires pass through unimpeded.
     let handle = manager
@@ -440,19 +470,18 @@ async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
         }),
     };
 
-    manager
-        .register_transport_with(
-            resource.clone(),
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 4,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-            RegisterOptions::default().with_resilience(resilience),
-        )
-        .expect("register_transport_with");
+    register_transport_spec(
+        &manager,
+        resource.clone(),
+        transport_inner,
+        TransportConfig {
+            max_sessions: 4,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default().with_resilience(resilience),
+    )
+    .expect("transport registration with resilience");
 
     let handle = manager
         .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
@@ -478,30 +507,30 @@ async fn manager_isolates_transports_by_key() {
     let inner_a = Arc::new(MockTransportInner { name: "a" });
     let inner_b = Arc::new(MockTransportInner { name: "b" });
 
-    manager
-        .register_transport(
-            res_a.clone(),
-            MockConfig,
-            inner_a,
-            TransportConfig {
-                max_sessions: 2,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-        )
-        .expect("register A");
-    manager
-        .register_transport(
-            res_b.clone(),
-            MockConfig,
-            inner_b,
-            TransportConfig {
-                max_sessions: 2,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-        )
-        .expect("register B");
+    register_transport_spec(
+        &manager,
+        res_a.clone(),
+        inner_a,
+        TransportConfig {
+            max_sessions: 2,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register A");
+    register_transport_spec(
+        &manager,
+        res_b.clone(),
+        inner_b,
+        TransportConfig {
+            max_sessions: 2,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register B");
 
     assert!(manager.contains(&TransportA::key()));
     assert!(manager.contains(&TransportB::key()));
@@ -537,18 +566,18 @@ async fn remove_drops_transport_registration() {
     let resource = TransportA::new();
     let transport_inner = Arc::new(MockTransportInner { name: "removable" });
 
-    manager
-        .register_transport(
-            resource,
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 2,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-        )
-        .expect("register");
+    register_transport_spec(
+        &manager,
+        resource,
+        transport_inner,
+        TransportConfig {
+            max_sessions: 2,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register");
 
     assert!(manager.contains(&TransportA::key()));
 
@@ -577,18 +606,18 @@ async fn graceful_shutdown_drains_held_sessions() {
     let resource = TransportA::new();
     let transport_inner = Arc::new(MockTransportInner { name: "shutdown" });
 
-    manager
-        .register_transport(
-            resource.clone(),
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 4,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-        )
-        .expect("register");
+    register_transport_spec(
+        &manager,
+        resource.clone(),
+        transport_inner,
+        TransportConfig {
+            max_sessions: 4,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default(),
+    )
+    .expect("register");
 
     let handle = manager
         .acquire_transport::<TransportA>(&ctx(), &AcquireOptions::default())
@@ -637,19 +666,18 @@ async fn register_transport_with_custom_scope() {
     let transport_inner = Arc::new(MockTransportInner { name: "scoped" });
     let workflow_id = WorkflowId::new();
 
-    manager
-        .register_transport_with(
-            resource,
-            MockConfig,
-            transport_inner,
-            TransportConfig {
-                max_sessions: 4,
-                keepalive_interval: None,
-                acquire_timeout: Duration::from_secs(1),
-            },
-            RegisterOptions::default().with_scope(ScopeLevel::Workflow(workflow_id)),
-        )
-        .expect("register_transport_with");
+    register_transport_spec(
+        &manager,
+        resource,
+        transport_inner,
+        TransportConfig {
+            max_sessions: 4,
+            keepalive_interval: None,
+            acquire_timeout: Duration::from_secs(1),
+        },
+        RegisterOptions::default().with_scope(ScopeLevel::Workflow(workflow_id)),
+    )
+    .expect("transport registration with custom scope");
 
     assert!(manager.contains(&TransportA::key()));
 

@@ -42,23 +42,9 @@ where
         })
 }
 
-/// Validates pool config invariants at registration time.
-///
-/// Catches obviously broken configs (`max_size == 0`, `min_size > max_size`)
-/// before they reach [`PoolRuntime`](crate::runtime::pool::PoolRuntime), so
-/// warmup never inflates beyond `max_size` and callers cannot deadlock on an
-/// empty semaphore (#390).
-pub(super) fn validate_pool_config(
-    cfg: &crate::topology::pooled::config::Config,
-) -> Result<(), Error> {
-    if cfg.max_size == 0 {
-        return Err(Error::permanent("pool max_size must be > 0"));
-    }
-    if cfg.min_size > cfg.max_size {
-        return Err(Error::permanent(format!(
-            "pool min_size ({}) must be <= max_size ({})",
-            cfg.min_size, cfg.max_size,
-        )));
-    }
-    Ok(())
-}
+// Pool `(min_size, max_size)` sanity (#390) is enforced structurally by
+// `PoolRuntime::new`'s construction-time asserts, which every caller must
+// invoke to build a `TopologyRuntime::Pool`. The former register-time
+// soft-`Err` re-check (used only by the deleted `register_pooled[_with]`
+// shorthands, which took the raw config *before* building the runtime) is
+// gone — the invariant is now unrepresentable rather than re-validated.

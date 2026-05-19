@@ -39,9 +39,11 @@ use std::time::Duration;
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, PoolConfig, Resource, ResourceConfig, ResourceContext,
+    AcquireOptions, Manager, PoolConfig, RegistrationSpec, Resource, ResourceConfig,
+    ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
     resource::ResourceMetadata,
+    runtime::{TopologyRuntime, pool::PoolRuntime},
     topology::pooled::{Pooled, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
@@ -224,8 +226,22 @@ async fn settle_release(mgr: &Manager, resource: &PoolResource) {
 async fn revoked_credential_not_reserved_via_idle_recycle() {
     let resource = PoolResource::new();
     let mgr = Arc::new(Manager::new());
-    mgr.register_pooled(resource.clone(), PoolCfg, pool_config())
-        .expect("register_pooled must succeed");
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: PoolCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+            pool_config(),
+            PoolCfg.fingerprint(),
+        )),
+        acquire: Manager::erased_acquire_pooled::<PoolResource>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: None,
+        recovery_gate: None,
+    })
+    .expect("pooled registration must succeed");
 
     // 1. Acquire an instance and capture its creation id.
     let g = mgr
@@ -302,8 +318,22 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
 async fn in_flight_create_completing_after_revoke_is_destroyed() {
     let resource = PoolResource::new();
     let mgr = Arc::new(Manager::new());
-    mgr.register_pooled(resource.clone(), PoolCfg, pool_config())
-        .expect("register_pooled must succeed");
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: PoolCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+            pool_config(),
+            PoolCfg.fingerprint(),
+        )),
+        acquire: Manager::erased_acquire_pooled::<PoolResource>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: None,
+        recovery_gate: None,
+    })
+    .expect("pooled registration must succeed");
 
     // 1. Start an acquire whose `create` will park (idle empty → it creates).
     resource.gate.park_in_create.store(true, Ordering::SeqCst);
@@ -376,8 +406,22 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
 async fn revoked_pre_existing_idle_instance_not_reserved() {
     let resource = PoolResource::new();
     let mgr = Arc::new(Manager::new());
-    mgr.register_pooled(resource.clone(), PoolCfg, pool_config())
-        .expect("register_pooled must succeed");
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: PoolCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+            pool_config(),
+            PoolCfg.fingerprint(),
+        )),
+        acquire: Manager::erased_acquire_pooled::<PoolResource>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: None,
+        recovery_gate: None,
+    })
+    .expect("pooled registration must succeed");
 
     // 1. Warm one idle instance (pre-revoke), capture its id. Acquire then
     //    drop so a fully-recycled instance sits in idle (recycle is NOT
@@ -476,8 +520,22 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
         warmup: WarmupStrategy::Sequential,
         ..pool_config()
     };
-    mgr.register_pooled(resource.clone(), PoolCfg, cfg)
-        .expect("register_pooled must succeed");
+    mgr.register(RegistrationSpec {
+        resource: resource.clone(),
+        config: PoolCfg,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(PoolRuntime::<PoolResource>::new(
+            cfg,
+            PoolCfg.fingerprint(),
+        )),
+        acquire: Manager::erased_acquire_pooled::<PoolResource>(
+            nebula_resource::SLOT_IDENTITY_UNBOUND,
+        ),
+        resilience: None,
+        recovery_gate: None,
+    })
+    .expect("pooled registration must succeed");
 
     // 1. Kick off a warmup whose first `create` parks (in flight). The
     //    warmup passes its own taint gate before entering `rt.warmup()`;

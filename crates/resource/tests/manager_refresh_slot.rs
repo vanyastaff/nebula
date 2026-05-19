@@ -18,8 +18,12 @@ use std::sync::{
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_credential::CredentialGuard;
 use nebula_resource::{
-    Manager, ManagerConfig, ResidentConfig, Resource, ResourceConfig, ResourceContext, SlotCell,
-    error::Error, resource::ResourceMetadata, topology::resident::Resident,
+    Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
+    ResourceConfig, ResourceContext, SLOT_IDENTITY_UNBOUND, SlotCell,
+    error::Error,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::resident::Resident,
 };
 use zeroize::Zeroize;
 
@@ -168,6 +172,31 @@ mod counting {
         }
     }
 
+    /// Register a `CountingResource` resident row, deriving scope +
+    /// resolved-credential identity from a [`RegisterOptions`] exactly the
+    /// way the (now-deleted) `register_resident[_with]` shorthands did.
+    /// Centralised so the two-tenant isolation strong-net threads the
+    /// identity through one verified path.
+    pub fn register_counting(
+        mgr: &Manager,
+        resource: CountingResource,
+        opts: RegisterOptions,
+    ) -> Result<(), Error> {
+        let slot_identity = opts.effective_slot_identity();
+        mgr.register(RegistrationSpec {
+            resource,
+            config: CountingConfig,
+            scope: opts.scope,
+            slot_identity,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<CountingResource>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident::<CountingResource>(SLOT_IDENTITY_UNBOUND),
+            resilience: opts.resilience,
+            recovery_gate: opts.recovery_gate,
+        })
+    }
+
     /// Builds a manager with a `CountingResource` registered as Resident,
     /// its `db` slot pre-populated, and the resident runtime warmed so the
     /// dispatch has a live `&Runtime` to borrow.
@@ -181,8 +210,8 @@ mod counting {
         };
 
         let mgr = Manager::new();
-        mgr.register_resident(resource, CountingConfig, ResidentConfig::default())
-            .expect("register_resident must succeed");
+        register_counting(&mgr, resource, RegisterOptions::default())
+            .expect("resident registration must succeed");
 
         (mgr, CountingResource::key(), ledger)
     }
@@ -209,8 +238,8 @@ mod counting {
             metrics_registry: Some(Arc::clone(&registry)),
             ..ManagerConfig::default()
         });
-        mgr.register_resident(resource, CountingConfig, ResidentConfig::default())
-            .expect("register_resident must succeed");
+        register_counting(&mgr, resource, RegisterOptions::default())
+            .expect("resident registration must succeed");
 
         (mgr, CountingResource::key(), ledger, registry)
     }
@@ -237,26 +266,24 @@ mod counting {
         slot_b.store(Arc::new(CredentialGuard::new(FakeCred(2))));
 
         let mgr = Manager::new();
-        mgr.register_resident_with(
+        register_counting(
+            &mgr,
             CountingResource {
                 ledger: ledger_a.clone(),
                 db: Arc::new(slot_a),
             },
-            CountingConfig,
-            ResidentConfig::default(),
             RegisterOptions::default().with_slot_identity(SLOT_A),
         )
-        .expect("register_resident_with (A) must succeed");
-        mgr.register_resident_with(
+        .expect("resident registration (A) must succeed");
+        register_counting(
+            &mgr,
             CountingResource {
                 ledger: ledger_b.clone(),
                 db: Arc::new(slot_b),
             },
-            CountingConfig,
-            ResidentConfig::default(),
             RegisterOptions::default().with_slot_identity(SLOT_B),
         )
-        .expect("register_resident_with (B) must succeed");
+        .expect("resident registration (B) must succeed");
 
         (Arc::new(mgr), CountingResource::key(), ledger_a, ledger_b)
     }
@@ -1093,8 +1120,12 @@ mod u9_gate {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_credential::CredentialGuard;
     use nebula_resource::{
-        AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
-        SlotCell, error::Error, resource::ResourceMetadata, topology::resident::Resident,
+        AcquireOptions, Manager, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
+        ResourceContext, SlotCell, SlotIdentity,
+        error::Error,
+        resource::ResourceMetadata,
+        runtime::{TopologyRuntime, resident::ResidentRuntime},
+        topology::resident::Resident,
     };
     use tokio_util::sync::CancellationToken;
     use zeroize::Zeroize;
@@ -1221,8 +1252,21 @@ mod u9_gate {
         };
 
         let mgr = Manager::new();
-        mgr.register_resident(resource.clone(), GateConfig, ResidentConfig::default())
-            .expect("register_resident must succeed");
+        mgr.register(RegistrationSpec {
+            resource: resource.clone(),
+            config: GateConfig,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<GateResource>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident::<GateResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("resident registration must succeed");
 
         // Warm the resident: runtime built; built_epoch == slot generation (1).
         let _g = mgr
@@ -1295,10 +1339,14 @@ mod u9_gate {
 mod reload_deferral {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key};
     use nebula_resource::{
-        ExclusiveConfig, Manager, PoolConfig, ReloadOutcome, ResidentConfig, Resource,
-        ResourceConfig, ResourceContext, ServiceConfig, TransportConfig,
+        ExclusiveConfig, Manager, PoolConfig, RegistrationSpec, ReloadOutcome, ResidentConfig,
+        Resource, ResourceConfig, ResourceContext, ServiceConfig, SlotIdentity, TransportConfig,
         error::Error,
         resource::ResourceMetadata,
+        runtime::{
+            TopologyRuntime, exclusive::ExclusiveRuntime, pool::PoolRuntime,
+            resident::ResidentRuntime, service::ServiceRuntime, transport::TransportRuntime,
+        },
         topology::{
             exclusive::Exclusive, pooled::Pooled, resident::Resident, service::Service,
             transport::Transport,
@@ -1407,8 +1455,21 @@ mod reload_deferral {
     #[tokio::test]
     async fn reload_with_unchanged_fingerprint_is_nochange() {
         let mgr = Manager::new();
-        mgr.register_resident(ResidentReload, v(1), ResidentConfig::default())
-            .expect("register");
+        mgr.register(RegistrationSpec {
+            resource: ResidentReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident::<ResidentReload>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register");
         let outcome = mgr
             .reload_config::<ResidentReload>(v(1), &ScopeLevel::Global)
             .expect("reload must not error");
@@ -1423,8 +1484,22 @@ mod reload_deferral {
     #[tokio::test]
     async fn reload_service_changed_is_pending_drain() {
         let mgr = Manager::new();
-        mgr.register_service(ServiceReload, v(1), 1u32, ServiceConfig::default())
-            .expect("register");
+        mgr.register(RegistrationSpec {
+            resource: ServiceReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Service(ServiceRuntime::<ServiceReload>::new(
+                1u32,
+                ServiceConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_service::<ServiceReload>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register");
         let outcome = mgr
             .reload_config::<ServiceReload>(v(2), &ScopeLevel::Global)
             .expect("reload must not error");
@@ -1441,8 +1516,22 @@ mod reload_deferral {
     async fn reload_non_service_changed_is_swapped_immediately() {
         let mgr = Manager::new();
 
-        mgr.register_pooled(PoolReload, v(1), PoolConfig::default())
-            .expect("register pool");
+        mgr.register(RegistrationSpec {
+            resource: PoolReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<PoolReload>::new(
+                PoolConfig::default(),
+                v(1).fingerprint(),
+            )),
+            acquire: Manager::erased_acquire_pooled::<PoolReload>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register pool");
         assert_eq!(
             mgr.reload_config::<PoolReload>(v(2), &ScopeLevel::Global)
                 .expect("pool reload"),
@@ -1450,8 +1539,21 @@ mod reload_deferral {
             "Pool reload (changed) must be SwappedImmediately"
         );
 
-        mgr.register_resident(ResidentReload, v(1), ResidentConfig::default())
-            .expect("register resident");
+        mgr.register(RegistrationSpec {
+            resource: ResidentReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<ResidentReload>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident::<ResidentReload>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register resident");
         assert_eq!(
             mgr.reload_config::<ResidentReload>(v(2), &ScopeLevel::Global)
                 .expect("resident reload"),
@@ -1459,8 +1561,22 @@ mod reload_deferral {
             "Resident reload (changed) must be SwappedImmediately"
         );
 
-        mgr.register_exclusive(ExclusiveReload, v(1), 1u32, ExclusiveConfig::default())
-            .expect("register exclusive");
+        mgr.register(RegistrationSpec {
+            resource: ExclusiveReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Exclusive(ExclusiveRuntime::<ExclusiveReload>::new(
+                1u32,
+                ExclusiveConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_exclusive::<ExclusiveReload>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register exclusive");
         assert_eq!(
             mgr.reload_config::<ExclusiveReload>(v(2), &ScopeLevel::Global)
                 .expect("exclusive reload"),
@@ -1469,16 +1585,25 @@ mod reload_deferral {
              PendingDrain — only Service defers today)"
         );
 
-        mgr.register_transport(
-            TransportReload,
-            v(1),
-            1u32,
-            TransportConfig {
-                max_sessions: 2,
-                keepalive_interval: None,
-                acquire_timeout: std::time::Duration::from_secs(1),
-            },
-        )
+        mgr.register(RegistrationSpec {
+            resource: TransportReload,
+            config: v(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Transport(TransportRuntime::<TransportReload>::new(
+                1u32,
+                TransportConfig {
+                    max_sessions: 2,
+                    keepalive_interval: None,
+                    acquire_timeout: std::time::Duration::from_secs(1),
+                },
+            )),
+            acquire: Manager::erased_acquire_transport::<TransportReload>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register transport");
         assert_eq!(
             mgr.reload_config::<TransportReload>(v(2), &ScopeLevel::Global)

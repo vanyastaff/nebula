@@ -11,7 +11,8 @@ use std::sync::{
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, Manager, ResourceContext, ScopeLevel, ShutdownConfig,
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
+    SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
@@ -515,17 +516,18 @@ async fn manager_register_and_acquire_pooled() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     assert!(manager.contains(&resource_key!("test-pool")));
@@ -557,17 +559,18 @@ async fn manager_register_and_acquire_resident() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -591,17 +594,18 @@ async fn manager_shutdown_rejects_acquire() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     manager.shutdown();
@@ -621,40 +625,64 @@ async fn manager_shutdown_rejects_acquire() {
 // #390 — pool config validation + max_concurrent_creates enforcement
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn register_pooled_rejects_min_greater_than_max() {
-    let manager = Manager::new();
-    let resource = PoolTestResource::new();
+// #390 is now enforced *structurally* at `PoolRuntime` construction
+// rather than re-validated at register time: a `TopologyRuntime::Pool`
+// holding an invalid `(min_size, max_size)` is unrepresentable because
+// `PoolRuntime::new` panics before such a runtime can be built (the
+// deleted `register_pooled[_with]` shorthands surfaced a soft `Err` only
+// because they took the raw config *before* constructing the runtime).
+// These tests pin that the invariant still rejects a broken config — the
+// signal moved from a registration `Error` to a construction panic, but
+// "an invalid pool config cannot deadlock the pool" is preserved.
+
+#[test]
+fn pool_runtime_rejects_min_greater_than_max() {
     let pool_config = nebula_resource::topology::pooled::config::Config {
         min_size: 5,
         max_size: 2,
         ..Default::default()
     };
-
-    let err = manager
-        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
-        .expect_err("min > max must be rejected");
-    let msg = err.to_string();
+    let result = std::panic::catch_unwind(|| {
+        PoolRuntime::<PoolTestResource>::new(pool_config, test_config().fingerprint())
+    });
+    let panic = match result {
+        Ok(_) => panic!("min > max must be rejected at PoolRuntime construction"),
+        Err(p) => p,
+    };
+    let msg = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
     assert!(
         msg.contains("min_size") && msg.contains("max_size"),
-        "error message must mention min_size and max_size, got: {msg}",
+        "panic message must mention min_size and max_size, got: {msg}",
     );
 }
 
-#[tokio::test]
-async fn register_pooled_rejects_max_size_zero() {
-    let manager = Manager::new();
-    let resource = PoolTestResource::new();
+#[test]
+fn pool_runtime_rejects_max_size_zero() {
     let pool_config = nebula_resource::topology::pooled::config::Config {
         min_size: 0,
         max_size: 0,
         ..Default::default()
     };
-
-    let err = manager
-        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
-        .expect_err("max_size == 0 must be rejected");
-    assert!(err.to_string().contains("max_size"));
+    let result = std::panic::catch_unwind(|| {
+        PoolRuntime::<PoolTestResource>::new(pool_config, test_config().fingerprint())
+    });
+    let panic = match result {
+        Ok(_) => panic!("max_size == 0 must be rejected at PoolRuntime construction"),
+        Err(p) => p,
+    };
+    let msg = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("max_size"),
+        "panic message must mention max_size, got: {msg}",
+    );
 }
 
 #[derive(Clone)]
@@ -731,7 +759,21 @@ async fn pool_create_path_respects_max_concurrent_creates() {
         ..Default::default()
     };
     manager
-        .register_pooled::<SlowCreatePoolResource>(resource, test_config(), pool_config)
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(PoolRuntime::<SlowCreatePoolResource>::new(
+                pool_config,
+                test_config().fingerprint(),
+            )),
+            acquire: Manager::erased_acquire_pooled::<SlowCreatePoolResource>(
+                nebula_resource::SLOT_IDENTITY_UNBOUND,
+            ),
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     // Fire 10 concurrent acquires so they all hit the create path.
@@ -774,17 +816,18 @@ async fn register_transitions_phase_to_ready() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let snap = manager
@@ -802,17 +845,18 @@ async fn reload_config_bumps_status_generation() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let updated_config = TestConfig {
@@ -842,17 +886,18 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register");
 
     let report = manager
@@ -1004,17 +1049,18 @@ async fn register_emits_registered_event() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let event = rx.try_recv().expect("should have received an event");
@@ -1032,17 +1078,18 @@ async fn remove_emits_removed_event() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let mut rx = manager.subscribe_events();
@@ -1064,17 +1111,18 @@ async fn acquire_emits_success_event() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let mut rx = manager.subscribe_events();
@@ -1214,17 +1262,18 @@ async fn manager_scope_exact_match() {
     let org_id = nebula_core::OrgId::new();
     let scope = ScopeLevel::Organization(org_id);
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            scope.clone(),
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: scope.clone(),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire with the same org scope.
@@ -1255,17 +1304,18 @@ async fn manager_scope_fallback_to_global() {
 
     // Register at Global scope.
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire with Organization scope — should fall back to Global.
@@ -1298,17 +1348,18 @@ async fn manager_scope_mismatch_not_found() {
     // Register at Organization(org_id) — no Global fallback.
     let org_id = nebula_core::OrgId::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Organization(org_id),
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Organization(org_id),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // Acquire with a different org scope — no match, no Global fallback.
@@ -1349,17 +1400,18 @@ async fn metrics_track_acquire_release_create_destroy() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     // register calls record_create
@@ -1404,17 +1456,18 @@ async fn manager_multiple_resources_coexist() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
-            pool_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+        .register(RegistrationSpec {
+            resource: pool_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("pool registration should succeed");
 
     // Register a resident resource.
@@ -1423,17 +1476,18 @@ async fn manager_multiple_resources_coexist() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resident_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resident_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("resident registration should succeed");
 
     assert!(manager.contains(&resource_key!("test-pool")));
@@ -1867,17 +1921,18 @@ async fn service_acquire_via_manager() {
         ServiceRuntime::<ServiceTestResource>::new(runtime, service::config::Config::default());
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Service(svc_rt),
-            Manager::erased_acquire_service::<ServiceTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Service(svc_rt),
+            acquire: Manager::erased_acquire_service::<ServiceTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     assert!(manager.contains(&resource_key!("test-service")));
@@ -2415,17 +2470,18 @@ async fn registry_backed_metrics_record_operations() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
-            pool_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+        .register(RegistrationSpec {
+            resource: pool_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("pool registration should succeed");
 
     let resident_resource = ResidentTestResource::new();
@@ -2433,17 +2489,18 @@ async fn registry_backed_metrics_record_operations() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resident_resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resident_resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("resident registration should succeed");
 
     // Acquire the pooled resource once.
@@ -2510,17 +2567,18 @@ async fn graceful_shutdown_stops_new_acquires() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     manager
@@ -2554,17 +2612,18 @@ async fn graceful_shutdown_clears_registry() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     // Graceful shutdown now clears the registry to allow release queue
@@ -2744,17 +2803,18 @@ async fn acquire_retries_on_transient_failure() {
     };
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            Some(resilience),
-            None,
-        )
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2788,17 +2848,18 @@ async fn acquire_no_retry_on_permanent_failure() {
     };
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            Some(resilience),
-            None,
-        )
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2823,17 +2884,18 @@ async fn acquire_succeeds_without_resilience() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2866,17 +2928,18 @@ async fn acquire_timeout_fires() {
     };
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            Some(resilience),
-            None,
-        )
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -2902,17 +2965,18 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let short_drain =
@@ -2954,17 +3018,18 @@ async fn topology_mismatch_returns_permanent_error() {
     let pool_rt = PoolRuntime::<PoolTestResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -3008,17 +3073,18 @@ async fn retry_exhaustion_returns_last_transient_error() {
     };
 
     manager
-        .register(
-            resource.clone(),
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            Some(resilience),
-            None,
-        )
+            resilience: Some(resilience),
+            recovery_gate: None,
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -3061,17 +3127,18 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            Some(gate.clone()),
-        )
+            resilience: None,
+            recovery_gate: Some(gate.clone()),
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -3568,17 +3635,18 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3606,17 +3674,18 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3642,17 +3711,18 @@ async fn recovery_gate_allows_acquire_when_idle() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3679,17 +3749,18 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            Some(Arc::new(gate)),
-        )
+            resilience: None,
+            recovery_gate: Some(Arc::new(gate)),
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3709,17 +3780,18 @@ async fn recovery_gate_none_does_not_affect_acquire() {
 
     let manager = Manager::new();
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
@@ -3831,17 +3903,18 @@ async fn reload_config_swaps_config_and_bumps_generation() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     // Check initial generation.
@@ -3871,17 +3944,18 @@ async fn reload_config_rejects_invalid_config() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     // Reload with invalid config — should fail.
@@ -3918,17 +3992,18 @@ async fn reload_config_emits_event() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     // Drain the Registered event.
@@ -3956,17 +4031,18 @@ async fn reload_config_evicts_stale_pool_instances() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
-            resource.clone(),
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     let ctx = test_ctx();
@@ -4044,17 +4120,18 @@ async fn reload_config_rejected_when_shutdown() {
     let pool_rt = PoolRuntime::<ReloadPoolResource>::new(pool_config, 1);
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            ReloadConfig::new(1),
-            ScopeLevel::Global,
-            TopologyRuntime::Pool(pool_rt),
-            Manager::erased_acquire_pooled::<PoolTestResource>(
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Pool(pool_rt),
+            acquire: Manager::erased_acquire_pooled::<PoolTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .expect("register should succeed");
 
     manager.shutdown();
@@ -4082,17 +4159,18 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     // Hold a handle across the shutdown so drain cannot complete.
@@ -4145,17 +4223,18 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     // Subscribe BEFORE the shutdown so we can capture the
@@ -4233,17 +4312,18 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let ctx = test_ctx();
@@ -4282,17 +4362,18 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            None,
-        )
+            resilience: None,
+            recovery_gate: None,
+        })
         .unwrap();
 
     let report = manager
@@ -4337,17 +4418,18 @@ async fn probe_boundary_serializes_callers_under_herd() {
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
 
     manager
-        .register(
+        .register(RegistrationSpec {
             resource,
-            test_config(),
-            ScopeLevel::Global,
-            TopologyRuntime::Resident(resident_rt),
-            Manager::erased_acquire_resident::<ResidentTestResource>(
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(resident_rt),
+            acquire: Manager::erased_acquire_resident::<ResidentTestResource>(
                 nebula_resource::SLOT_IDENTITY_UNBOUND,
             ),
-            None,
-            Some(gate.clone()),
-        )
+            resilience: None,
+            recovery_gate: Some(gate.clone()),
+        })
         .unwrap();
 
     // First acquire becomes the probe and fails — gate transitions to Failed.

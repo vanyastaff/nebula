@@ -59,9 +59,13 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialGuard, CredentialId};
 use nebula_engine::credential::rotation::{ResourceFanoutIndex, RotationOutcome};
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, RegisterOptions, ResidentConfig, Resource,
-    ResourceConfig, ResourceContext, SlotCell, error::Error as ResourceError,
-    events::ResourceEvent, resource::ResourceMetadata, topology::resident::Resident,
+    AcquireOptions, Manager, ManagerConfig, ResidentConfig, Resource, ResourceConfig,
+    ResourceContext, SlotCell,
+    error::Error as ResourceError,
+    events::ResourceEvent,
+    resource::ResourceMetadata,
+    runtime::{TopologyRuntime, resident::ResidentRuntime},
+    topology::resident::Resident,
 };
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
@@ -364,17 +368,21 @@ async fn setup(
             SECRET.to_owned(),
         ))));
 
-        mgr.register_resident_with(
+        mgr.register_with_identity(
             SecretBearingResource {
                 behaviour,
                 db: Arc::new(slot),
                 hook_entered: Arc::clone(&hook_entered),
             },
             Cfg,
-            ResidentConfig::default(),
-            RegisterOptions::default()
-                .with_scope(scope.clone())
-                .with_slot_identity(id),
+            scope.clone(),
+            id,
+            TopologyRuntime::Resident(ResidentRuntime::<SecretBearingResource>::new(
+                ResidentConfig::default(),
+            )),
+            Manager::erased_acquire_resident::<SecretBearingResource>(id),
+            None,
+            None,
         )
         .expect("register resolved-credential row");
 
