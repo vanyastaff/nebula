@@ -78,10 +78,8 @@ pub trait CapMarker: sealed::Sealed + Send + Sync + 'static {
 
 /// Unbounded cap — no concurrency limit, no release hook.
 ///
-/// Folds the former `Service` topology in
-/// [`TokenMode::Cloned`](crate::topology::service::TokenMode::Cloned): the
-/// runtime hands out a cheap owned token and never runs a release
-/// callback.
+/// Folds the former `Service` topology's *cloned* token mode: the runtime
+/// hands out a cheap owned token and never runs a release callback.
 #[derive(Debug, Clone, Copy)]
 pub struct Unbounded;
 
@@ -93,10 +91,10 @@ impl CapMarker for Unbounded {
 
 /// Capped cap — at most `N` concurrent leases, release hook required.
 ///
-/// Folds the former `Service` topology in `TokenMode::Tracked` and the
+/// Folds the former `Service` topology's *tracked* token mode and the
 /// former `Transport` topology: the runtime gates concurrency with a
 /// `Semaphore(N)` and runs `release_one` (token return / session close)
-/// on lease drop. For Transport, `N` is `max_sessions`.
+/// on lease drop. For the transport shape, `N` is `max_sessions`.
 #[derive(Debug, Clone, Copy)]
 pub struct Capped<const N: usize>;
 
@@ -129,8 +127,8 @@ impl CapMarker for Exclusive {
 ///
 /// # Acquire bounds
 ///
-/// The `BoundedRuntime` acquire path requires (= the former
-/// `ExclusiveRuntime` bound, the widest of the three folded runtimes):
+/// The `BoundedRuntime` acquire path requires (the widest of the three
+/// folded runtimes' bounds — the former exclusive runtime's):
 /// - `R: Bounded + Clone + Send + Sync + 'static`
 /// - `R::Runtime: Clone + Send + Sync + 'static`
 /// - `R::Lease: Send + 'static`

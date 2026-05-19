@@ -2,13 +2,12 @@
 //! `reset` / `close_session` / `release_token` failures, now fixed on the
 //! unified `BoundedRuntime` path (R17 / S4).
 //!
-//! Before the fold every topology release helper discarded the hook result
-//! with `let _ = resource.<hook>(...).await;` (see the legacy
-//! `runtime/exclusive.rs`, `runtime/service.rs`, `runtime/transport.rs`). A
-//! failed `reset` therefore silently handed the lock to the next caller as
-//! if the previous lease was cleanly reset — a half-reset instance could be
-//! served to the next acquirer, and a failed token-return / session-close
-//! vanished without a trace.
+//! Before the fold every per-topology release helper discarded the hook
+//! result with `let _ = resource.<hook>(...).await;`. A failed `reset`
+//! therefore silently handed the lock to the next caller as if the previous
+//! lease was cleanly reset — a half-reset instance could be served to the
+//! next acquirer, and a failed token-return / session-close vanished
+//! without a trace.
 //!
 //! The contract the unified `BoundedRuntime` release path enforces (S4):
 //! - On `reset` `Err`, the permit IS still returned (withholding it would
@@ -26,10 +25,10 @@
 //!   instance instead of silently handing it onward. The fix lives on
 //!   `BoundedRuntime` with `Cap = Exclusive`, so the probe is expressed
 //!   against a directly-constructed `BoundedRuntime`.
-//! - **GREEN preserve (legacy + bounded):** a failed `reset` must still
-//!   return the permit so the next acquire does not deadlock. S4 explicitly
-//!   preserves this; it does not regress when the destroy-on-failure
-//!   behavior is added.
+//! - **GREEN preserve:** a failed `reset` must still return the permit so
+//!   the next acquire does not deadlock — including with an explicitly
+//!   configured `acquire_timeout`. S4 explicitly preserves this; it does
+//!   not regress when the destroy-on-failure behavior is added.
 //! - **Observed, not swallowed:** a failing `release_one` for a
 //!   release-bearing cap increments the release-error metric (the
 //!   `release_token` / `close_session` analogue).
@@ -46,8 +45,7 @@ use nebula_core::{ExecutionId, scope::Scope};
 use nebula_core::{ResourceKey, resource_key};
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
-    AcquireOptions, BoundedConfig, BoundedRuntime, ExclusiveConfig, ExclusiveRuntime, Resource,
-    ResourceConfig, ResourceContext,
+    AcquireOptions, BoundedConfig, BoundedRuntime, Resource, ResourceConfig, ResourceContext,
     error::Error,
     metrics::ResourceOpsMetrics,
     release_queue::ReleaseQueue,
@@ -105,74 +103,32 @@ async fn poll_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool 
 }
 
 // ---------------------------------------------------------------------------
-// Legacy ExclusiveRuntime — GREEN preserve net (unchanged behavior)
+// BoundedRuntime, Cap = Exclusive — R17 fix + S4 preserve net
 // ---------------------------------------------------------------------------
 
-/// An exclusive resource whose `reset` always fails and which counts every
-/// `reset` attempt and every `destroy` invocation.
-#[derive(Clone)]
-struct FailingResetExclusive {
-    reset_attempts: Arc<AtomicUsize>,
-    destroy_calls: Arc<AtomicUsize>,
-}
-
-impl FailingResetExclusive {
-    fn new() -> Self {
-        Self {
-            reset_attempts: Arc::new(AtomicUsize::new(0)),
-            destroy_calls: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-}
-
-impl Resource for FailingResetExclusive {
-    type Config = R17Config;
-    type Runtime = u32;
-    type Lease = u32;
-    type Error = R17Error;
-
-    fn key() -> ResourceKey {
-        resource_key!("r17-failing-reset")
-    }
-
-    async fn create(&self, _config: &R17Config, _ctx: &ResourceContext) -> Result<u32, R17Error> {
-        Ok(1)
-    }
-
-    async fn destroy(&self, _runtime: u32) -> Result<(), R17Error> {
-        self.destroy_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
-    }
-}
-
-impl nebula_resource::topology::exclusive::Exclusive for FailingResetExclusive {
-    async fn reset(&self, _runtime: &u32) -> Result<(), R17Error> {
-        self.reset_attempts.fetch_add(1, Ordering::SeqCst);
-        Err(R17Error("reset failed".to_owned()))
-    }
-}
-
-/// GREEN preserve. The legacy `ExclusiveRuntime` keeps the "permit is still
-/// returned on a failed reset" behavior so the semaphore cannot deadlock.
-/// This is true today (the permit lives in the handle, not the callback)
-/// and the U3 fold does not touch the legacy runtime — it must stay true.
+/// S4 preserve on the `Bounded` `Exclusive`-cap path with an **explicit
+/// non-default `acquire_timeout`** (the config facet the folded exclusive
+/// topology carried): a failed `reset` must still return the permit so the
+/// next acquire does not deadlock. Distinct
+/// from `bounded_exclusive_failed_reset_still_returns_permit_no_deadlock`
+/// (default config) — this pins the permit-return invariant when the
+/// Exclusive cap's `acquire_timeout` is explicitly configured. The permit
+/// lives in the handle, outside the release callback, exactly so a failed
+/// reset cannot wedge the semaphore.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn legacy_exclusive_failed_reset_still_returns_permit_no_deadlock() {
-    let resource = FailingResetExclusive::new();
-    let config = ExclusiveConfig {
+async fn bounded_exclusive_failed_reset_returns_permit_with_explicit_acquire_timeout() {
+    let resource = BoundedFailingReset::new();
+    let config = nebula_resource::topology::bounded::config::Config {
         acquire_timeout: Duration::from_secs(5),
+        ..Default::default()
     };
-    let runtime: Arc<ExclusiveRuntime<FailingResetExclusive>> =
-        Arc::new(ExclusiveRuntime::new(1u32, config));
+    let runtime: Arc<BoundedRuntime<BoundedFailingReset>> =
+        Arc::new(BoundedRuntime::new(&resource, 1u32, config));
     let (rq, rq_handle) = ReleaseQueue::new(1);
     let rq = Arc::new(rq);
 
     let h1 = runtime
-        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire must succeed");
     drop(h1);
@@ -180,6 +136,7 @@ async fn legacy_exclusive_failed_reset_still_returns_permit_no_deadlock() {
     let h2 = runtime
         .acquire(
             &resource,
+            &ctx(),
             &rq,
             0,
             &AcquireOptions::default()
@@ -190,7 +147,7 @@ async fn legacy_exclusive_failed_reset_still_returns_permit_no_deadlock() {
     assert!(
         h2.is_ok(),
         "a failed reset must still return the permit so the next acquire \
-         does not deadlock (S4 preserve): {:?}",
+         does not deadlock (S4 preserve, explicit acquire_timeout): {:?}",
         h2.err()
     );
 

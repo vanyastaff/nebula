@@ -97,7 +97,7 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// operator must register the kind or fix the row.
 ///
 /// `Register` wraps the inner [`nebula_resource::Error`] from the typed
-/// `register_from_value` and classifies by delegation, so a deserialize/
+/// `register_resolved` and classifies by delegation, so a deserialize/
 /// schema/validation failure keeps its original category instead of
 /// being flattened.
 #[derive(Debug, thiserror::Error)]
@@ -114,7 +114,7 @@ pub enum RegistrarError {
     )]
     UnknownKind(String),
 
-    /// The typed `Manager::register_from_value` call failed.
+    /// The typed `Manager::register_resolved` call failed.
     ///
     /// Carries the underlying resource error (deserialize / schema /
     /// validation / slot-binding mismatch); classification delegates to
@@ -141,7 +141,7 @@ impl nebula_error::Classify for RegistrarError {
             // "caller asked for something the resolver cannot satisfy".
             Self::UnknownKind(_) => nebula_error::ErrorCategory::Conflict,
             // Preserve the inner resource error's category instead of
-            // flattening it. (Today every register_from_value failure is
+            // flattening it. (Today every register_resolved failure is
             // Error::permanent => Internal — deserialize, schema, and
             // slot-binding mismatch all land there; delegation keeps this
             // honest if the resource crate later differentiates those.)
@@ -217,7 +217,7 @@ pub struct RegisterRequest<'a> {
     /// reverse index.
     ///
     /// `slot_bindings` carries the `CredentialKey` (the credential
-    /// *name*, what `Manager::register_from_value` hashes into the
+    /// *name*, what `Manager::register_resolved` folds into the
     /// structural `slot_identity`); the rotation fan-out index and the
     /// rotation/lease-revoke events are keyed by `CredentialId` (the
     /// resolved credential *record* — `CredentialEvent` /
@@ -248,9 +248,9 @@ pub struct RegisterRequest<'a> {
 ///
 /// One implementor exists per concrete resource type; it already knows
 /// its `R` and dispatches into the typed
-/// [`Manager::register_from_value::<R>`]. The returned future is boxed so
-/// the trait stays object-safe without `#[async_trait]` (matching
-/// `EngineResourceAccessor`'s erasure shape).
+/// [`Manager::register_resolved::<R>`](nebula_resource::Manager::register_resolved).
+/// The returned future is boxed so the trait stays object-safe without
+/// `#[async_trait]` (matching `EngineResourceAccessor`'s erasure shape).
 pub trait ErasedResourceRegistrar: Send + Sync {
     /// Registers this kind's resource against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
@@ -285,7 +285,7 @@ pub trait ErasedResourceRegistrar: Send + Sync {
     /// keys a bound row by `(ResourceKey, ScopeLevel, slot_identity)`.
     /// Without `R` the registry cannot name the row it just registered,
     /// so the erased registrar exposes the key explicitly (the same
-    /// `R::key()` `register_from_value` registers the row under). Cheap,
+    /// `R::key()` `register_resolved` registers the row under). Cheap,
     /// pure, and type-stable — it is a `const`-ish accessor, not I/O.
     fn resource_key(&self) -> nebula_core::ResourceKey;
 
@@ -487,7 +487,7 @@ impl ResourceRegistrarRegistry {
     ///   client conflict. The lookup happens **before** any typed call,
     ///   so an unknown kind can never touch a resource type.
     /// - [`RegistrarError::Register`] if the typed
-    ///   `Manager::register_from_value` fails (deserialize / schema /
+    ///   `Manager::register_resolved` fails (deserialize / schema /
     ///   validation / slot-binding mismatch); classification delegates to
     ///   the inner error.
     pub async fn register(
@@ -553,7 +553,7 @@ impl ResourceRegistrarRegistry {
     /// `register(...).await` makes the `Manager` row **discoverable**
     /// before this method records the reverse-index bind. Those two
     /// steps are deliberately **not** atomic (atomicity would require a
-    /// transactional `Manager::register_from_value` "register-then-
+    /// transactional `Manager::register_resolved` "register-then-
     /// publish" surface — a heavy Manager API change with no production
     /// consumer yet). There is therefore a window in which the Manager
     /// row exists but the reverse-index row does not: a credential
@@ -727,7 +727,7 @@ mod tests {
     impl ResourceConfig for TestConfig {
         fn validate(&self) -> Result<(), ResourceError> {
             // Exercises the deserialized field: confirms the JSON config
-            // threaded through `register_from_value` was actually parsed
+            // threaded through `register_resolved` was actually parsed
             // into `TestConfig` (mirrors the `name`-non-empty check used
             // by the resource crate's own integration mocks).
             if self.name.is_empty() {

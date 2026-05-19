@@ -214,7 +214,7 @@ impl ResourceFanoutIndex {
 
     /// Fans a completed credential refresh out to every resource registry
     /// row that resolved `cid`, calling
-    /// [`Manager::refresh_slot_for`](nebula_resource::Manager::refresh_slot_for)
+    /// [`Manager::refresh_slot_for_identity`](nebula_resource::Manager::refresh_slot_for_identity)
     /// per row.
     ///
     /// The engine (exec layer, ) owns rotation orchestration: it has
@@ -224,7 +224,7 @@ impl ResourceFanoutIndex {
     /// layer never reaches back.
     ///
     /// **Per-resource timeout isolation .** Each row's
-    /// `refresh_slot_for` is independently wrapped in
+    /// `refresh_slot_for_identity` is independently wrapped in
     /// `tokio::time::timeout(per_resource_timeout, …)` and all are driven
     /// concurrently via [`futures::future::join_all`]. One slow, failed, or
     /// timed-out row therefore **never aborts or fails a sibling** — every
@@ -234,15 +234,15 @@ impl ResourceFanoutIndex {
     /// Identity routing: a multi-tenant `(key, scope)` has more than one
     /// resolved row, so `Manager::refresh_slot` (identity-agnostic) would
     /// fail closed with `Ambiguous`. This drives the slot-identity-pinned
-    /// `refresh_slot_for` with the `slot_identity` recorded at
+    /// `refresh_slot_for_identity` with the `slot_identity` recorded at
     /// [`bind`](Self::bind) time so the rotation reaches exactly the
     /// resolved row.
     ///
     /// Redaction: only the aggregate counts and per-row key / slot / scope /
-    /// `slot_identity` (a `u64`) / duration reach spans — never credential
-    /// or secret material. The returned aggregate is a metrics/dashboard
-    /// signal, **not** an audit record ; the caller still owns
-    /// any audit write.
+    /// `slot_identity` (the resolved structural identity) / duration reach
+    /// spans — never credential or secret material. The returned aggregate
+    /// is a metrics/dashboard signal, **not** an audit record ; the caller
+    /// still owns any audit write.
     ///
     /// An empty `affected(cid)` returns
     /// [`RotationOutcome::default()`](RotationOutcome) (a no-op fan-out).
@@ -264,13 +264,14 @@ impl ResourceFanoutIndex {
 
     /// Fans a credential revoke (e.g. an lease revoke) out to every
     /// resource registry row that resolved `cid`, calling
-    /// [`Manager::revoke_slot_for`](nebula_resource::Manager::revoke_slot_for)
+    /// [`Manager::revoke_slot_for_identity`](nebula_resource::Manager::revoke_slot_for_identity)
     /// per row.
     ///
     /// Same per-resource timeout isolation, identity routing, redaction, and
     /// "aggregate is not an audit record" contract as
     /// [`dispatch_refresh`](Self::dispatch_refresh) — only the per-row port
-    /// differs (`revoke_slot_for` taints → drains → runs the revoke hook).
+    /// differs (`revoke_slot_for_identity` taints → drains → runs the revoke
+    /// hook).
     #[tracing::instrument(
         level = "debug",
         name = "nebula.credential.rotation.fanout_revoke",
@@ -300,13 +301,13 @@ impl ResourceFanoutIndex {
     /// fail a sibling — every row's outcome is recorded independently.
     ///
     /// **Revoke is two-phase and cancellation-safe .**
-    /// `Manager::revoke_slot_for` is *not* called inside the timeout: a Rust
-    /// `async fn` body is lazy, so a timeout future dropped before its first
-    /// poll would skip the synchronous taint and leave new acquires accepted
-    /// on a credential whose revoke "timed out". Instead the synchronous
-    /// `Manager::taint_slot_for` runs **first, outside and before** the
-    /// `tokio::time::timeout` (the taint is fully applied the instant it
-    /// returns), and **only** the cancellation-safe
+    /// `Manager::revoke_slot_for_identity` is *not* called inside the
+    /// timeout: a Rust `async fn` body is lazy, so a timeout future dropped
+    /// before its first poll would skip the synchronous taint and leave new
+    /// acquires accepted on a credential whose revoke "timed out". Instead
+    /// the synchronous `Manager::taint_slot_for_identity` runs **first,
+    /// outside and before** the `tokio::time::timeout` (the taint is fully
+    /// applied the instant it returns), and **only** the cancellation-safe
     /// `Manager::drain_and_revoke` tail is wrapped in the per-resource
     /// timeout. A timed-out (or otherwise dropped) drain tail therefore
     /// leaves the row tainted — recorded `timed_out`, never silently
@@ -314,7 +315,7 @@ impl ResourceFanoutIndex {
     /// row's terminal outcome (`failed`); the drain tail is then not entered.
     /// Refresh has no pre-`await` state mutation (the engine already stored
     /// the fresh material before this is called), so it stays a single
-    /// timeout-wrapped `refresh_slot_for` call.
+    /// timeout-wrapped `refresh_slot_for_identity` call.
     ///
     /// Each row's `Bind` is moved into its own dispatch future (the snapshot
     /// from [`affected`](Self::affected) is already an owned `Vec`, so no
@@ -479,12 +480,12 @@ impl ResourceFanoutIndex {
 /// Which typed `Manager` slot port the fan-out drives per row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FanoutOp {
-    /// `Manager::refresh_slot_for` — credential rotated, fresh material
-    /// already resolved and stored by the engine.
+    /// `Manager::refresh_slot_for_identity` — credential rotated, fresh
+    /// material already resolved and stored by the engine.
     Refresh,
     /// Credential revoked (e.g. lease revoke). Driven as the
-    /// two-phase port: synchronous `Manager::taint_slot_for` outside the
-    /// timeout, then the timeout-wrapped cancellation-safe
+    /// two-phase port: synchronous `Manager::taint_slot_for_identity`
+    /// outside the timeout, then the timeout-wrapped cancellation-safe
     /// `Manager::drain_and_revoke` tail.
     Revoke,
 }

@@ -6,8 +6,8 @@
 //!
 //! - missing `config = ...` argument,
 //! - missing `topology = "..."` argument,
-//! - invalid `topology = "..."` value (not in {pool, resident, bounded,
-//!   service, transport, exclusive}),
+//! - invalid `topology = "..."` value (not in {pool, resident,
+//!   bounded}),
 //! - unknown keys inside `#[resource(...)]`,
 //! - tuple struct rejection.
 //!
@@ -32,12 +32,12 @@ fn derive_resource_compile_pass_positive() {
     t.pass("tests/probes/derive_positive_unit_resource.rs");
 }
 
-/// `topology = "bounded"` is accepted (the folded topology) and the
-/// legacy `service` / `transport` / `exclusive` strings still parse while
-/// consumers migrate onto `bounded`. Each maps to its `TopologyTag` via
-/// the emitted informational const.
+/// `topology = "bounded"` is accepted (the folded topology that replaced
+/// the legacy `service` / `transport` / `exclusive` strings), alongside
+/// `pool` / `resident`. Each maps to its `TopologyTag` via the emitted
+/// informational const — the collapsed 3-tag set.
 #[test]
-fn derive_resource_accepts_bounded_and_legacy_topology() {
+fn derive_resource_accepts_collapsed_topologies() {
     let t = trybuild::TestCases::new();
     t.pass("tests/probes/derive_bounded_topology.rs");
 }

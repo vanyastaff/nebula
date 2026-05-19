@@ -122,12 +122,13 @@ impl Default for ManagerConfig {
 /// Per slot model, credential bindings are no longer threaded through
 /// registration: the `resource: R` value handed to `Manager::register*`
 /// already carries resolved credentials in its slot fields. The
-/// [`slot_identity`](Self::slot_identity) here is a *stable hash over those
-/// resolved bindings* (per credential isolation / slot model) — it does **not** carry
-/// secrets; it only lets the registry keep two resolved-credential
-/// registrations on **separate rows** so they cannot share one runtime
-/// (cross-tenant bleed). Compute it with
-/// [`slot_identity`](crate::dedup::slot_identity).
+/// [`slot_identity`](Self::slot_identity) here is the **collision-free
+/// structural identity** over those resolved bindings (per credential
+/// isolation / slot model) — it does **not** carry secrets; it only lets
+/// the registry keep two resolved-credential registrations on **separate
+/// rows** so they cannot share one runtime (cross-tenant bleed). Set it
+/// from the resolved `(slot, credential)` pairs via
+/// [`with_slot_bindings`](Self::with_slot_bindings).
 ///
 /// `#[non_exhaustive]`: like the sibling [`ShutdownConfig`] /
 /// [`DrainTimeoutPolicy`], new tuning fields must be additive without a
@@ -142,40 +143,25 @@ pub struct RegisterOptions {
     pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
-    /// Legacy `u64` slot-identity over this registration's resolved
-    /// per-slot credential bindings. Defaults to
-    /// [`SLOT_IDENTITY_UNBOUND`](crate::dedup::SLOT_IDENTITY_UNBOUND) — a
-    /// registration with no resolved slots keeps the historical
-    /// single-row-per-`(key, scope)` dedup behaviour. Set this (via
-    /// [`with_slot_identity`](Self::with_slot_identity)) so two different
+    /// Collision-free structural slot identity over this registration's
+    /// resolved per-slot credential bindings. Defaults to
+    /// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) — a
+    /// registration with no resolved slots keeps the
+    /// single-row-per-`(key, scope)` dedup behaviour. Set it (via
+    /// [`with_slot_bindings`](Self::with_slot_bindings)) so two different
     /// resolved credentials at the same key+scope get distinct runtimes.
-    ///
-    /// This is the collidable `u64` surface; prefer
-    /// [`with_slot_bindings`](Self::with_slot_bindings), which keys the row
-    /// by the **collision-free structural identity**. When structural
-    /// bindings are set they take precedence over this value.
-    pub slot_identity: u64,
-    /// Collision-free structural slot identity, when the resolved
-    /// `(slot, credential)` pairs are known. `Some(..)` takes precedence
-    /// over [`slot_identity`](Self::slot_identity); `None` falls back to
-    /// the legacy `u64` bridge. Set via
-    /// [`with_slot_bindings`](Self::with_slot_bindings).
-    pub slot_identity_structural: Option<crate::dedup::SlotIdentity>,
+    /// Equality is exact and structural (no digest), so two distinct
+    /// resolved binding sets can never alias onto one row.
+    pub slot_identity: crate::dedup::SlotIdentity,
 }
 
 impl RegisterOptions {
-    /// The effective resolved-credential identity for this registration:
-    /// the structural identity when set, else the legacy `u64` bridged
-    /// onto [`SlotIdentity`](crate::dedup::SlotIdentity).
-    ///
-    /// Bridges a [`RegisterOptions`] onto the [`RegistrationSpec`]
-    /// `slot_identity` field for callers that still express the resolved
-    /// credential identity through the legacy options struct.
+    /// The resolved-credential structural identity for this registration,
+    /// for callers that express it through the options struct rather than
+    /// building a [`RegistrationSpec`] directly.
     #[must_use]
     pub fn effective_slot_identity(&self) -> crate::dedup::SlotIdentity {
-        self.slot_identity_structural
-            .clone()
-            .unwrap_or_else(|| crate::dedup::SlotIdentity::from_opaque(self.slot_identity))
+        self.slot_identity.clone()
     }
 }
 
@@ -185,8 +171,7 @@ impl Default for RegisterOptions {
             scope: ScopeLevel::Global,
             resilience: None,
             recovery_gate: None,
-            slot_identity: crate::dedup::SLOT_IDENTITY_UNBOUND,
-            slot_identity_structural: None,
+            slot_identity: crate::dedup::SlotIdentity::Unbound,
         }
     }
 }
@@ -213,25 +198,6 @@ impl RegisterOptions {
         self
     }
 
-    /// Pin this registration to a resolved per-slot credential identity
-    /// (legacy `u64` form).
-    ///
-    /// Two registrations of the same resource type at the same scope with
-    /// **different** `slot_identity` occupy distinct registry rows with
-    /// distinct runtimes — the structural barrier against cross-tenant
-    /// runtime bleed.
-    ///
-    /// This `u64` is a *collidable* digest: two distinct resolved binding
-    /// sets whose digests collide would merge onto one row. Prefer
-    /// [`with_slot_bindings`](Self::with_slot_bindings), which keys the row
-    /// by the **collision-free structural identity**. Structural bindings,
-    /// when set, take precedence over this value.
-    #[must_use]
-    pub fn with_slot_identity(mut self, slot_identity: u64) -> Self {
-        self.slot_identity = slot_identity;
-        self
-    }
-
     /// Pin this registration to the **collision-free structural identity**
     /// of its resolved `(slot, credential)` bindings.
     ///
@@ -241,14 +207,11 @@ impl RegisterOptions {
     /// *exact and structural* (no digest), so two distinct resolved binding
     /// sets can never alias onto one row — the cross-tenant-bleed failure
     /// mode a collidable digest exposes is eliminated by construction. An
-    /// empty binding set keeps the historical single-row-per-`(key, scope)`
-    /// behaviour. Takes precedence over
-    /// [`with_slot_identity`](Self::with_slot_identity).
+    /// empty binding set keeps the single-row-per-`(key, scope)` behaviour.
     #[must_use]
     pub fn with_slot_bindings(mut self, bindings: &[(&str, &str)]) -> Self {
-        self.slot_identity_structural = Some(crate::dedup::SlotIdentity::from_bindings(
-            bindings.iter().map(|(s, c)| (*s, *c)),
-        ));
+        self.slot_identity =
+            crate::dedup::SlotIdentity::from_bindings(bindings.iter().map(|(s, c)| (*s, *c)));
         self
     }
 }

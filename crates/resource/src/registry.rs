@@ -1179,14 +1179,15 @@ mod tests {
         assert!(matches!(reg.get(&key, &scope), LookupOutcome::Found(_)));
     }
 
+    // The legacy `Opaque(u64)` / `slot_identity` digest assertions were
+    // removed with the deleted primitives (R15); structural identity is the
+    // sole row key.
     #[test]
-    fn structurally_distinct_bindings_never_collide_even_if_digests_would() {
+    fn structurally_distinct_bindings_never_collide() {
         // The R15 guarantee at the registry level: two registrations with
         // structurally distinct bindings occupy distinct rows regardless
-        // of what any hash of those bindings is. We additionally pin that
-        // the structural identity is in a disjoint space from the legacy
-        // `Opaque(u64)` bridge, so a forced u64 collision (the U1
-        // adversarial input) cannot merge two structural rows.
+        // of what any hash of those bindings is — collision is impossible
+        // by construction (exact string equality, no digest space).
         let reg = Registry::new();
         let key = ResourceKey::new("fake").unwrap();
         let scope = ScopeLevel::Global;
@@ -1194,12 +1195,6 @@ mod tests {
         let id_a = ident("db", "tenant-a-cred");
         let id_b = ident("db", "tenant-b-cred");
         assert_ne!(id_a, id_b, "distinct bindings are exact-unequal");
-
-        // Even an Opaque value built from the (collidable) digest of a's
-        // bindings is a different identity space than a's structural row.
-        #[allow(deprecated)]
-        let digest_a = crate::dedup::slot_identity([("db", "tenant-a-cred")]);
-        assert_ne!(id_a, SlotIdentity::Opaque(digest_a));
 
         reg.register(
             key.clone(),
@@ -1227,10 +1222,9 @@ mod tests {
             reg.get_for(&key, &scope, &id_b),
             PinnedLookup::Found(_)
         ));
-        // The Opaque digest of a's bindings must NOT resolve a's
-        // structural row (disjoint spaces — no cross-bleed via a digest).
+        // A structurally-distinct identity never resolves another row.
         assert!(matches!(
-            reg.get_for(&key, &scope, &SlotIdentity::Opaque(digest_a)),
+            reg.get_for(&key, &scope, &ident("db", "tenant-c-cred")),
             PinnedLookup::NotFound
         ));
     }

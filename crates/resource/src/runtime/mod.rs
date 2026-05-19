@@ -5,24 +5,20 @@
 //! dispatch enum ([`TopologyRuntime`]) that erases the topology at the
 //! registration level.
 //!
-//! [`Bounded`] folds the former `Service` / `Transport` / `Exclusive`
-//! topologies behind a cap typestate; the [`ServiceRuntime`](service::ServiceRuntime)
-//! / [`TransportRuntime`](transport::TransportRuntime) /
-//! [`ExclusiveRuntime`](exclusive::ExclusiveRuntime) structs and their
-//! [`TopologyRuntime`] variants still exist while the consumers are
-//! migrated onto [`BoundedRuntime`](bounded::BoundedRuntime).
+//! [`Bounded`] is the single parameterized runtime for capped short-lived
+//! leases: its [`Cap`](crate::topology::bounded::Bounded::Cap) typestate
+//! (`Unbounded` / `Capped<N>` / `Exclusive`) selects the semaphore arity and
+//! release shape, so one runtime covers the long-lived-runtime /
+//! multiplexed-session / one-caller-at-a-time access patterns.
 //!
 //! [`Pooled`]: crate::topology::pooled::Pooled
 //! [`Resident`]: crate::topology::resident::Resident
 //! [`Bounded`]: crate::topology::bounded::Bounded
 
 pub mod bounded;
-pub mod exclusive;
 pub mod managed;
 pub mod pool;
 pub mod resident;
-pub mod service;
-pub mod transport;
 
 use crate::{resource::Resource, topology_tag::TopologyTag};
 
@@ -36,19 +32,13 @@ pub enum TopologyRuntime<R: Resource> {
     Pool(pool::PoolRuntime<R>),
     /// Single shared instance, clone on acquire.
     Resident(resident::ResidentRuntime<R>),
-    /// Long-lived runtime with short-lived tokens.
-    Service(service::ServiceRuntime<R>),
-    /// Shared connection with multiplexed sessions.
-    Transport(transport::TransportRuntime<R>),
-    /// One caller at a time via semaphore(1).
-    Exclusive(exclusive::ExclusiveRuntime<R>),
     /// One long-lived runtime handing out capped short-lived leases.
     ///
-    /// Folds the `Service` / `Transport` / `Exclusive` behaviors behind
-    /// the [`Cap`](crate::topology::bounded::Bounded::Cap) typestate. The
-    /// `Service` / `Transport` / `Exclusive` variants above remain while
-    /// their construction sites and acquire paths are migrated onto this
-    /// one.
+    /// The [`Cap`](crate::topology::bounded::Bounded::Cap) typestate
+    /// (`Unbounded` / `Capped<N>` / `Exclusive`) selects the semaphore
+    /// arity and release shape, so this one variant covers the
+    /// long-lived-runtime, multiplexed-session, and one-caller-at-a-time
+    /// access patterns.
     Bounded(bounded::BoundedRuntime<R>),
 }
 
@@ -58,9 +48,6 @@ impl<R: Resource> TopologyRuntime<R> {
         match self {
             Self::Pool(_) => TopologyTag::Pool,
             Self::Resident(_) => TopologyTag::Resident,
-            Self::Service(_) => TopologyTag::Service,
-            Self::Transport(_) => TopologyTag::Transport,
-            Self::Exclusive(_) => TopologyTag::Exclusive,
             Self::Bounded(_) => TopologyTag::Bounded,
         }
     }

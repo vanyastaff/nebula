@@ -244,12 +244,22 @@ mod counting {
         (mgr, CountingResource::key(), ledger, registry)
     }
 
-    /// Slot identities for the two-tenant isolation fixture. Two distinct
-    /// resolved-credential identities at the same `(key, Global)` occupy two
-    /// distinct registry rows — each its own `ManagedResource` with its own
-    /// per-resource in-flight counter (per-resource revoke deferral).
-    pub const SLOT_A: u64 = 0xA;
-    pub const SLOT_B: u64 = 0xB;
+    /// Resolved `(slot, credential)` bindings for the two-tenant isolation
+    /// fixture. Two distinct resolved-credential identities at the same
+    /// `(key, Global)` occupy two distinct registry rows — each its own
+    /// `ManagedResource` with its own per-resource in-flight counter
+    /// (per-resource revoke deferral).
+    pub const SLOT_A: &[(&str, &str)] = &[("db", "cred-tenant-a")];
+    pub const SLOT_B: &[(&str, &str)] = &[("db", "cred-tenant-b")];
+
+    /// Structural [`SlotIdentity`] for [`SLOT_A`] / [`SLOT_B`] — the
+    /// collision-free row key the acquire / revoke ports pin on.
+    pub fn slot_a_id() -> nebula_resource::SlotIdentity {
+        nebula_resource::SlotIdentity::from_bindings(SLOT_A.iter().copied())
+    }
+    pub fn slot_b_id() -> nebula_resource::SlotIdentity {
+        nebula_resource::SlotIdentity::from_bindings(SLOT_B.iter().copied())
+    }
 
     /// Registers `CountingResource` twice as Resident at `SLOT_A` / `SLOT_B`
     /// so a revoke on one row can be proven isolated from in-flight traffic
@@ -272,7 +282,7 @@ mod counting {
                 ledger: ledger_a.clone(),
                 db: Arc::new(slot_a),
             },
-            RegisterOptions::default().with_slot_identity(SLOT_A),
+            RegisterOptions::default().with_slot_bindings(SLOT_A),
         )
         .expect("resident registration (A) must succeed");
         register_counting(
@@ -281,7 +291,7 @@ mod counting {
                 ledger: ledger_b.clone(),
                 db: Arc::new(slot_b),
             },
-            RegisterOptions::default().with_slot_identity(SLOT_B),
+            RegisterOptions::default().with_slot_bindings(SLOT_B),
         )
         .expect("resident registration (B) must succeed");
 
@@ -849,10 +859,10 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
     // the manager-wide tracker, this would wedge A's revoke for the full 30 s.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let b_guard = mgr
-        .acquire_resident_for::<counting::CountingResource>(
+        .acquire_resident_for_identity::<counting::CountingResource>(
             &ctx,
             &AcquireOptions::default(),
-            counting::SLOT_B,
+            &counting::slot_b_id(),
         )
         .await
         .expect("acquire on tenant B must succeed");
@@ -862,11 +872,11 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
     let started = Instant::now();
     tokio::time::timeout(
         Duration::from_secs(5),
-        mgr.revoke_slot_for(&key, ScopeLevel::Global, "db", counting::SLOT_A),
+        mgr.revoke_slot_for_identity(&key, ScopeLevel::Global, "db", &counting::slot_a_id()),
     )
     .await
-    .expect("revoke_slot_for(A) must NOT block on tenant B's held lease (would hit 30s)")
-    .expect("revoke_slot_for(A) must succeed");
+    .expect("revoke_slot_for_identity(A) must NOT block on tenant B's held lease (would hit 30s)")
+    .expect("revoke_slot_for_identity(A) must succeed");
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(2),
@@ -878,10 +888,10 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
     drop(b_guard);
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let _b_again = mgr
-        .acquire_resident_for::<counting::CountingResource>(
+        .acquire_resident_for_identity::<counting::CountingResource>(
             &ctx,
             &AcquireOptions::default(),
-            counting::SLOT_B,
+            &counting::slot_b_id(),
         )
         .await
         .expect("tenant B must stay acquirable after an unrelated revoke on A");

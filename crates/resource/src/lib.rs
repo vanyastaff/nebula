@@ -67,7 +67,7 @@ pub mod topology_tag;
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
-pub use dedup::{DedupKey, SLOT_IDENTITY_UNBOUND, SlotIdentity, slot_identity};
+pub use dedup::{DedupKey, SlotIdentity};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
@@ -113,12 +113,9 @@ pub use slot::SlotCell;
 pub use runtime::TopologyRuntime;
 pub use runtime::{
     bounded::BoundedRuntime,
-    exclusive::ExclusiveRuntime,
     managed::ManagedResource,
     pool::{PoolRuntime, PoolStats},
     resident::ResidentRuntime,
-    service::ServiceRuntime,
-    transport::TransportRuntime,
 };
 pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
@@ -127,10 +124,7 @@ pub use topology::{
         Bounded, BoundedRelease, CapMarker, Capped, Exclusive as ExclusiveCap, Unbounded,
         config::Config as BoundedConfig,
     },
-    exclusive::{Exclusive, config::Config as ExclusiveConfig},
     pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
     resident::{Resident, config::Config as ResidentConfig},
-    service::{Service, TokenMode, config::Config as ServiceConfig},
-    transport::{Transport, config::Config as TransportConfig},
 };
 pub use topology_tag::TopologyTag;

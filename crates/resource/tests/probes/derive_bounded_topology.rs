@@ -1,8 +1,9 @@
 //! Compile-pass probe: `#[derive(Resource)]` accepts `topology =
-//! "bounded"` (the folded topology) and still accepts the legacy
-//! `service` / `transport` / `exclusive` strings while consumers migrate
-//! onto `bounded`. The emitted `RESOURCE_TOPOLOGY` const resolves to the
-//! matching `TopologyTag` for each.
+//! "bounded"` (the folded topology that replaced the legacy
+//! `service` / `transport` / `exclusive` strings). The emitted
+//! `RESOURCE_TOPOLOGY` const resolves to the matching `TopologyTag`, and
+//! the tag enum is exactly the collapsed `Pool` / `Resident` / `Bounded`
+//! set.
 
 use nebula_resource::{Resource, TopologyTag};
 
@@ -12,27 +13,24 @@ nebula_schema::impl_empty_has_schema!(MyConfig);
 impl nebula_resource::resource::ResourceConfig for MyConfig {}
 
 #[derive(Resource)]
+#[resource(key = "accepted.pool", topology = "pool", config = MyConfig)]
+struct PoolRes;
+
+#[derive(Resource)]
+#[resource(key = "accepted.resident", topology = "resident", config = MyConfig)]
+struct ResidentRes;
+
+#[derive(Resource)]
 #[resource(key = "accepted.bounded", topology = "bounded", config = MyConfig)]
 struct BoundedRes;
 
-#[derive(Resource)]
-#[resource(key = "accepted.service", topology = "service", config = MyConfig)]
-struct ServiceRes;
-
-#[derive(Resource)]
-#[resource(key = "accepted.transport", topology = "transport", config = MyConfig)]
-struct TransportRes;
-
-#[derive(Resource)]
-#[resource(key = "accepted.exclusive", topology = "exclusive", config = MyConfig)]
-struct ExclusiveRes;
-
 fn main() {
     // Each accepted string maps to its `TopologyTag` via the emitted
-    // informational const.
+    // informational const — the collapsed 3-tag set, no legacy
+    // service/transport/exclusive aliases.
+    assert_eq!(PoolRes::RESOURCE_TOPOLOGY, TopologyTag::Pool);
+    assert_eq!(ResidentRes::RESOURCE_TOPOLOGY, TopologyTag::Resident);
     assert_eq!(BoundedRes::RESOURCE_TOPOLOGY, TopologyTag::Bounded);
-    assert_eq!(ServiceRes::RESOURCE_TOPOLOGY, TopologyTag::Service);
-    assert_eq!(TransportRes::RESOURCE_TOPOLOGY, TopologyTag::Transport);
-    assert_eq!(ExclusiveRes::RESOURCE_TOPOLOGY, TopologyTag::Exclusive);
+    assert_eq!(BoundedRes::RESOURCE_TOPOLOGY.as_str(), "bounded");
     let _ = <BoundedRes as Resource>::key();
 }

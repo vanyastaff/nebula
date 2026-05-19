@@ -17,8 +17,10 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Engine-side implementation of [`ResourceAccessor`].
 ///
 /// Wraps an [`Arc<nebula_resource::Manager>`] and dispatches `acquire_any` /
-/// `try_acquire_any` through [`Manager::acquire_erased`] using the execution
-/// scope and optional per-key slot identities recorded at activation.
+/// `try_acquire_any` through
+/// [`Manager::acquire_erased_for`](nebula_resource::Manager::acquire_erased_for)
+/// using the execution scope and optional per-key slot identities recorded
+/// at activation.
 pub struct EngineResourceAccessor {
     manager: Arc<Manager>,
     scope: Scope,

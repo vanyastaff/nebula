@@ -135,7 +135,7 @@ pub struct WorkflowEngine {
     /// activation.
     ///
     /// A persisted resource row carries only a `kind` string plus opaque
-    /// JSON; turning it into a typed `Manager::register_from_value::<R>`
+    /// JSON; turning it into a typed `Manager::register_resolved::<R>`
     /// call needs a per-concrete-`R` registrar that already knows its
     /// resource and `TopologyRuntime<R>` (see [`ResourceRegistrarRegistry`]
     /// / [`crate::TypedResourceRegistrar`]). The map is **closed**: a kind
@@ -472,7 +472,7 @@ impl WorkflowEngine {
     /// The closed `kind → typed registrar` allowlist.
     ///
     /// This is the only path from a stored resource row (a `kind` string
-    /// plus opaque JSON) to a typed `Manager::register_from_value::<R>`
+    /// plus opaque JSON) to a typed `Manager::register_resolved::<R>`
     /// call. A kind is registrable only if a registrar was explicitly
     /// wired in (via [`with_resource_registrars`](Self::with_resource_registrars));
     /// an unknown kind is a wiring fault surfaced at activation, never a
@@ -492,7 +492,7 @@ impl WorkflowEngine {
     /// This is the [`bind`](crate::credential::rotation::ResourceFanoutIndex::bind)
     /// producer for the §M11.5 fan-out: the resource-activation path
     /// (`ResourceRegistrarRegistry::register` →
-    /// `Manager::register_from_value`, which resolves a credential into a
+    /// `Manager::register_resolved`, which resolves a credential into a
     /// `#[credential]` slot) records a row here so a later rotation /
     /// revoke fans to exactly that resolved row. It is also the index the
     /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout)
@@ -735,7 +735,7 @@ impl WorkflowEngine {
     /// `DeclaresDependencies` impl, and an informational topology *tag*
     /// const — it emits no per-`R` value factory and no
     /// `TopologyRuntime<R>` factory. The typed
-    /// `Manager::register_from_value::<R>` consumes a `resource: R` and a
+    /// `Manager::register_resolved::<R>` consumes a `resource: R` and a
     /// `TopologyRuntime<R>` by value, monomorphized, so neither is
     /// recoverable from `dyn AnyResource`.
     ///

@@ -9,9 +9,9 @@ use syn::{Ident, Result, Type};
 pub(crate) struct ResourceAttrs {
     /// Unique resource key (e.g. `"postgres"`).
     pub key: String,
-    /// Topology — `pool` / `resident` / `bounded` (with `service` /
-    /// `transport` / `exclusive` still accepted while consumers migrate
-    /// onto `bounded`).
+    /// Topology — `pool` / `resident` / `bounded`. The former
+    /// `service` / `transport` / `exclusive` topologies are folded into
+    /// `bounded` (selected by the resource's `Bounded::Cap` typestate).
     pub topology: String,
     /// Required `Self::Config` type.
     pub config: Type,
@@ -46,24 +46,22 @@ impl ResourceAttrs {
         }
 
         let key = attr_args.require_string("key", struct_name)?;
-        let topology = attr_args
-            .get_string("topology")
-            .ok_or_else(|| {
-                diag::error_spanned(
-                    struct_name,
-                    "missing required attribute `topology = \"pool|resident|bounded|service|transport|exclusive\"`",
-                )
-            })?;
-        // Validate topology value. `service` / `transport` / `exclusive`
-        // are still accepted while consumers migrate onto `bounded`.
+        let topology = attr_args.get_string("topology").ok_or_else(|| {
+            diag::error_spanned(
+                struct_name,
+                "missing required attribute `topology = \"pool|resident|bounded\"`",
+            )
+        })?;
+        // Validate topology value. The former `service` / `transport` /
+        // `exclusive` topologies are folded into `bounded`.
         match topology.as_str() {
-            "pool" | "resident" | "bounded" | "service" | "transport" | "exclusive" => {},
+            "pool" | "resident" | "bounded" => {},
             other => {
                 return Err(syn::Error::new_spanned(
                     struct_name,
                     format!(
                         "invalid `topology = \"{other}\"` — \
-                         must be one of: pool, resident, bounded, service, transport, exclusive"
+                         must be one of: pool, resident, bounded"
                     ),
                 ));
             },
@@ -103,10 +101,7 @@ impl ResourceAttrs {
             "pool" => "Pool",
             "resident" => "Resident",
             "bounded" => "Bounded",
-            "service" => "Service",
-            "transport" => "Transport",
-            "exclusive" => "Exclusive",
-            // guard-justified: every reachable value is one of the six
+            // guard-justified: every reachable value is one of the three
             // strings validated by `parse()` above; this arm is
             // unreachable by construction.
             _ => unreachable!("topology validated in parse()"),

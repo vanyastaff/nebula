@@ -113,9 +113,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     // Topology marker — the `topology = "..."` attribute is informational (used
     // by catalog / UI); the actual topology implementation comes from
-    // separately impl'ing `Pooled` / `Resident` / `Bounded` (or, while
-    // consumers migrate, `Service` / `Transport` / `Exclusive`) for the
-    // type. Emit a const that exposes the chosen topology tag for runtime
+    // separately impl'ing `Pooled` / `Resident` / `Bounded` for the type.
+    // Emit a const that exposes the chosen topology tag for runtime
     // introspection.
     let topology_const = quote! {
         impl #impl_generics #struct_name #ty_generics #where_clause {

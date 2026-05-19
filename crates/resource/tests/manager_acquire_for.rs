@@ -1,21 +1,22 @@
-//! Slot-identity-pinned acquire (`acquire_*_for`) + slot-rotation
-//! (`refresh_slot_for` / `revoke_slot_for`) must resolve the *specific*
-//! resolved registry row under a multi-tenant `(key, scope)`.
+//! Slot-identity-pinned acquire (`acquire_*_for_identity`) + slot-rotation
+//! (`refresh_slot_for_identity` / `revoke_slot_for_identity`) must resolve
+//! the *specific* resolved registry row under a multi-tenant `(key,
+//! scope)`.
 //!
 //! Companion to `dedup_slot_identity.rs` (which proves
-//! `acquire_resident_for`) and `manager_refresh_slot.rs` (identity-agnostic
-//! rotation). Here two registrations of the same resource type at the same
-//! `ScopeLevel` differ only in resolved per-slot credential identity. The
-//! identity-pinned `_for` paths must each route to their own row (no
-//! cross-tenant runtime bleed); the identity-agnostic path stays fail-closed
-//! (`Ambiguous`).
+//! `acquire_resident_for_identity`) and `manager_refresh_slot.rs`
+//! (identity-agnostic rotation). Here two registrations of the same
+//! resource type at the same `ScopeLevel` differ only in resolved per-slot
+//! credential identity. The identity-pinned `_for_identity` paths must each
+//! route to their own row (no cross-tenant runtime bleed); the
+//! identity-agnostic path stays fail-closed (`Ambiguous`).
 //!
-//! Pooled is covered end-to-end (the most common topology); the
-//! `service`/`transport`/`exclusive` `_for` methods are line-identical
-//! refactors of the resident pattern proven in `dedup_slot_identity.rs`
-//! (same `lookup_for_acquire_with` → shared `run_*_acquire`), so they are
-//! not re-mocked here. `refresh_slot_for` / `revoke_slot_for` (the ports the
-//! engine rotation fan-out drives) are covered directly.
+//! Pooled is covered end-to-end (the most common topology); the folded
+//! `Bounded` `_for_identity` methods are line-identical refactors of the
+//! resident pattern proven in `dedup_slot_identity.rs` (same
+//! `lookup_for_acquire_with` → shared `run_acquire`), so they are not
+//! re-mocked here. `refresh_slot_for_identity` / `revoke_slot_for_identity`
+//! (the ports the engine rotation fan-out drives) are covered directly.
 
 use std::sync::{
     Arc,
@@ -25,7 +26,7 @@ use std::sync::{
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, RegisterOptions, RegistrationSpec, Resource, ResourceConfig,
-    ResourceContext,
+    ResourceContext, SlotIdentity,
     error::Error,
     resource::ResourceMetadata,
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
@@ -69,7 +70,8 @@ impl ResourceConfig for CountingConfig {
 
 /// Each `create` mints a unique runtime id from a shared counter so a
 /// distinct `Resource::create` yields a distinguishable runtime — the
-/// witness that `acquire_pooled_for` resolved a *distinct* row per tenant.
+/// witness that `acquire_pooled_for_identity` resolved a *distinct* row per
+/// tenant.
 #[derive(Clone)]
 struct PoolRes {
     create_counter: Arc<AtomicU64>,
@@ -175,16 +177,32 @@ fn ctx_for_org(org: OrgId) -> ResourceContext {
     ResourceContext::minimal(scope, CancellationToken::new())
 }
 
+/// Resolved `(slot, credential)` bindings for the two pooled tenants. Two
+/// distinct resolved-credential identities at the same `(key, scope)`
+/// occupy two distinct registry rows — each its own `ManagedResource` with
+/// its own pooled runtime (the structural cross-tenant barrier).
+const POOL_A: &[(&str, &str)] = &[("db", "cred-pool-tenant-a")];
+const POOL_B: &[(&str, &str)] = &[("db", "cred-pool-tenant-b")];
+
+/// Structural [`SlotIdentity`] for [`POOL_A`] / [`POOL_B`] — the
+/// collision-free row key the acquire / taint ports pin on.
+fn pool_a_id() -> SlotIdentity {
+    SlotIdentity::from_bindings(POOL_A.iter().copied())
+}
+fn pool_b_id() -> SlotIdentity {
+    SlotIdentity::from_bindings(POOL_B.iter().copied())
+}
+
 /// Register two pooled tenants (distinct resolved slot identity) under ONE
 /// `(key, scope)`. The shared `create_counter` proves each row drove its
 /// own independent `Resource::create` (distinct runtime ids), not one
 /// shared runtime aliased to two tenants.
-fn two_tenant(org: OrgId, a: u64, b: u64) -> (Manager, Arc<AtomicU64>) {
+fn two_tenant(org: OrgId, a: &[(&str, &str)], b: &[(&str, &str)]) -> (Manager, Arc<AtomicU64>) {
     let scope = ScopeLevel::Organization(org);
     let create_counter = Arc::new(AtomicU64::new(0));
     let manager = Manager::new();
 
-    for id in [a, b] {
+    for bindings in [a, b] {
         register_pool_res(
             &manager,
             PoolRes {
@@ -192,7 +210,7 @@ fn two_tenant(org: OrgId, a: u64, b: u64) -> (Manager, Arc<AtomicU64>) {
             },
             RegisterOptions::default()
                 .with_scope(scope.clone())
-                .with_slot_identity(id),
+                .with_slot_bindings(bindings),
         )
         .expect("register tenant must succeed");
     }
@@ -203,12 +221,12 @@ fn two_tenant(org: OrgId, a: u64, b: u64) -> (Manager, Arc<AtomicU64>) {
 // ───────────────────────────────────────────────────────────────────────
 // Resident resource for the slot-rotation routing proofs.
 //
-// `refresh_slot_for` / `revoke_slot_for` only add row *resolution*
-// (`registry.get_for`) over the verified `refresh_slot` / `revoke_slot`
-// dispatch (`manager_refresh_slot.rs`). A resident resource keeps its
-// runtime in `rt.current()` after one acquire (no idle-queue release race,
-// unlike Pool), so the routing assertion is deterministic — the same shape
-// `manager_refresh_slot.rs` uses.
+// `refresh_slot_for_identity` / `revoke_slot_for_identity` only add row
+// *resolution* (`registry.get_for`) over the verified `refresh_slot` /
+// `revoke_slot` dispatch (`manager_refresh_slot.rs`). A resident resource
+// keeps its runtime in `rt.current()` after one acquire (no idle-queue
+// release race, unlike Pool), so the routing assertion is deterministic —
+// the same shape `manager_refresh_slot.rs` uses.
 // ───────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -268,14 +286,28 @@ impl Resident for ResRes {
     }
 }
 
+/// Resolved `(slot, credential)` bindings for the two resident tenants —
+/// the resident analogue of [`POOL_A`] / [`POOL_B`].
+const RES_A: &[(&str, &str)] = &[("db", "cred-res-tenant-a")];
+const RES_B: &[(&str, &str)] = &[("db", "cred-res-tenant-b")];
+
+fn res_a_id() -> SlotIdentity {
+    SlotIdentity::from_bindings(RES_A.iter().copied())
+}
+fn res_b_id() -> SlotIdentity {
+    SlotIdentity::from_bindings(RES_B.iter().copied())
+}
+
 /// Register two resident tenants (distinct resolved slot identity) under
 /// ONE `(key, scope)` and warm each runtime (resident persists it in
-/// `rt.current()`), so the rotation hook has a live `&Runtime`. Returns
-/// `(manager, refresh_saw, revoke_saw, refresh_total)`.
+/// `rt.current()`), so the rotation hook has a live `&Runtime`. `id_tag`
+/// (a stable per-tenant witness number) lets a hook prove which resolved
+/// row it ran on. Returns `(manager, refresh_saw, revoke_saw,
+/// refresh_total)`.
 async fn two_tenant_resident(
     org: OrgId,
-    a: u64,
-    b: u64,
+    a: (&[(&str, &str)], u64),
+    b: (&[(&str, &str)], u64),
 ) -> (Manager, Arc<AtomicU64>, Arc<AtomicU64>, Arc<AtomicUsize>) {
     let scope = ScopeLevel::Organization(org);
     let create_counter = Arc::new(AtomicU64::new(0));
@@ -284,7 +316,7 @@ async fn two_tenant_resident(
     let refresh_total = Arc::new(AtomicUsize::new(0));
     let manager = Manager::new();
 
-    for id in [a, b] {
+    for (bindings, id_tag) in [a, b] {
         register_res_res(
             &manager,
             ResRes {
@@ -292,11 +324,11 @@ async fn two_tenant_resident(
                 refresh_saw: Arc::clone(&refresh_saw),
                 revoke_saw: Arc::clone(&revoke_saw),
                 refresh_total: Arc::clone(&refresh_total),
-                id_tag: id,
+                id_tag,
             },
             RegisterOptions::default()
                 .with_scope(scope.clone())
-                .with_slot_identity(id),
+                .with_slot_bindings(bindings),
         )
         .expect("register resident tenant");
 
@@ -304,8 +336,9 @@ async fn two_tenant_resident(
         // and keeps it in `rt.current()` — touch each tenant's pinned row
         // so the rotation hook has a live `&Runtime`.
         let ctx = ctx_for_org(org);
+        let id = SlotIdentity::from_bindings(bindings.iter().copied());
         let _g = manager
-            .acquire_resident_for::<ResRes>(&ctx, &AcquireOptions::default(), id)
+            .acquire_resident_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &id)
             .await
             .expect("warm resident tenant runtime");
     }
@@ -313,21 +346,23 @@ async fn two_tenant_resident(
     (manager, refresh_saw, revoke_saw, refresh_total)
 }
 
-/// `acquire_pooled_for` must resolve the row pinned by the resolved slot
-/// identity — tenant A's binding never aliases tenant B's runtime.
+/// `acquire_pooled_for_identity` must resolve the row pinned by the
+/// resolved slot identity — tenant A's binding never aliases tenant B's
+/// runtime.
 #[tokio::test]
 async fn acquire_pooled_for_resolves_the_pinned_row() {
     let org = OrgId::new();
-    let (a, b) = (0xAAAA_AAAA_AAAA_AAAA, 0xBBBB_BBBB_BBBB_BBBB);
-    let (manager, _create_counter) = two_tenant(org, a, b);
+    let (manager, _create_counter) = two_tenant(org, POOL_A, POOL_B);
     let ctx = ctx_for_org(org);
+    let a = pool_a_id();
+    let b = pool_b_id();
 
     let la = manager
-        .acquire_pooled_for::<PoolRes>(&ctx, &AcquireOptions::default(), a)
+        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &a)
         .await
         .expect("acquire tenant A");
     let lb = manager
-        .acquire_pooled_for::<PoolRes>(&ctx, &AcquireOptions::default(), b)
+        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &b)
         .await
         .expect("acquire tenant B");
 
@@ -340,7 +375,7 @@ async fn acquire_pooled_for_resolves_the_pinned_row() {
     // Re-acquiring A returns A's pool, never B's (binding is stable).
     drop(la);
     let la2 = manager
-        .acquire_pooled_for::<PoolRes>(&ctx, &AcquireOptions::default(), a)
+        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &a)
         .await
         .expect("re-acquire tenant A");
     let lb_id = *lb;
@@ -357,7 +392,7 @@ async fn acquire_pooled_identity_agnostic_fails_closed_when_multi_tenant() {
     use nebula_error::{Classify, ErrorCategory};
 
     let org = OrgId::new();
-    let (manager, _create_counter) = two_tenant(org, 0x1111, 0x2222);
+    let (manager, _create_counter) = two_tenant(org, POOL_A, POOL_B);
     let ctx = ctx_for_org(org);
 
     let err = manager
@@ -389,7 +424,7 @@ async fn acquire_pooled_identity_agnostic_single_tenant_ok() {
         },
         RegisterOptions::default()
             .with_scope(scope)
-            .with_slot_identity(0x9999),
+            .with_slot_bindings(&[("db", "cred-only-tenant")]),
     )
     .expect("register single tenant");
 
@@ -400,16 +435,17 @@ async fn acquire_pooled_identity_agnostic_single_tenant_ok() {
         .expect("single-tenant identity-agnostic acquire must still succeed");
 }
 
-/// `refresh_slot_for` must drive the rotation hook of the *specific*
-/// resolved row, not an arbitrary tenant's — and the identity-agnostic
-/// `refresh_slot` must fail closed under multi-tenant.
+/// `refresh_slot_for_identity` must drive the rotation hook of the
+/// *specific* resolved row, not an arbitrary tenant's — and the
+/// identity-agnostic `refresh_slot` must fail closed under multi-tenant.
 #[tokio::test]
 async fn refresh_slot_for_routes_to_the_resolved_row() {
     use nebula_error::{Classify, ErrorCategory};
 
     let org = OrgId::new();
-    let (a, b) = (0xA1, 0xB2);
-    let (manager, refresh_saw, _vs, refresh_total) = two_tenant_resident(org, a, b).await;
+    let (a_tag, b_tag) = (0xA1, 0xB2);
+    let (manager, refresh_saw, _vs, refresh_total) =
+        two_tenant_resident(org, (RES_A, a_tag), (RES_B, b_tag)).await;
     let key = ResRes::key();
     let scope = ScopeLevel::Organization(org);
 
@@ -427,13 +463,13 @@ async fn refresh_slot_for_routes_to_the_resolved_row() {
 
     // Slot-identity-pinned refresh routes to tenant B's row only.
     manager
-        .refresh_slot_for(&key, scope.clone(), "db", b)
+        .refresh_slot_for_identity(&key, scope.clone(), "db", &res_b_id())
         .await
         .expect("pinned refresh of tenant B must succeed");
     assert_eq!(
         refresh_saw.load(Ordering::SeqCst),
-        b,
-        "refresh_slot_for must have driven tenant B's resolved row"
+        b_tag,
+        "refresh_slot_for_identity must have driven tenant B's resolved row"
     );
     assert_eq!(
         refresh_total.load(Ordering::SeqCst),
@@ -443,13 +479,13 @@ async fn refresh_slot_for_routes_to_the_resolved_row() {
 
     // And tenant A's row, pinned by A's identity.
     manager
-        .refresh_slot_for(&key, scope, "db", a)
+        .refresh_slot_for_identity(&key, scope, "db", &res_a_id())
         .await
         .expect("pinned refresh of tenant A must succeed");
     assert_eq!(
         refresh_saw.load(Ordering::SeqCst),
-        a,
-        "refresh_slot_for must have driven tenant A's resolved row"
+        a_tag,
+        "refresh_slot_for_identity must have driven tenant A's resolved row"
     );
     assert_eq!(
         refresh_total.load(Ordering::SeqCst),
@@ -458,19 +494,22 @@ async fn refresh_slot_for_routes_to_the_resolved_row() {
     );
 }
 
-/// `refresh_slot_for` with an identity that was never registered is a typed
-/// `NotFound` — never an accidental alias to another tenant's row.
+/// `refresh_slot_for_identity` with an identity that was never registered
+/// is a typed `NotFound` — never an accidental alias to another tenant's
+/// row.
 #[tokio::test]
 async fn refresh_slot_for_unknown_identity_is_not_found() {
     use nebula_error::{Classify, ErrorCategory};
 
     let org = OrgId::new();
-    let (manager, refresh_saw, _vs, refresh_total) = two_tenant_resident(org, 0xA1, 0xB2).await;
+    let (manager, refresh_saw, _vs, refresh_total) =
+        two_tenant_resident(org, (RES_A, 0xA1), (RES_B, 0xB2)).await;
     let key = ResRes::key();
     let scope = ScopeLevel::Organization(org);
 
+    let unknown = SlotIdentity::from_bindings([("db", "cred-never-registered")]);
     let err = manager
-        .refresh_slot_for(&key, scope, "db", 0xDEAD_BEEF)
+        .refresh_slot_for_identity(&key, scope, "db", &unknown)
         .await
         .expect_err("unknown slot identity must error, never alias a tenant");
     assert_eq!(
@@ -490,26 +529,27 @@ async fn refresh_slot_for_unknown_identity_is_not_found() {
     );
 }
 
-/// `revoke_slot_for` must taint + run the revoke hook of the pinned row
-/// only, leaving the multi-tenant sibling acquirable.
+/// `revoke_slot_for_identity` must taint + run the revoke hook of the
+/// pinned row only, leaving the multi-tenant sibling acquirable.
 #[tokio::test]
 async fn revoke_slot_for_revokes_only_the_pinned_row() {
     let org = OrgId::new();
-    let (a, b) = (0xCAFE, 0xF00D);
-    let (manager, _rs, revoke_saw, _rt) = two_tenant_resident(org, a, b).await;
+    let (a_tag, b_tag) = (0xCAFE, 0xF00D);
+    let (manager, _rs, revoke_saw, _rt) =
+        two_tenant_resident(org, (RES_A, a_tag), (RES_B, b_tag)).await;
     let key = ResRes::key();
     let scope = ScopeLevel::Organization(org);
     let ctx = ctx_for_org(org);
 
     // Revoke only tenant A's resolved row.
     manager
-        .revoke_slot_for(&key, scope.clone(), "db", a)
+        .revoke_slot_for_identity(&key, scope.clone(), "db", &res_a_id())
         .await
         .expect("pinned revoke of tenant A must succeed");
     assert_eq!(
         revoke_saw.load(Ordering::SeqCst),
-        a,
-        "revoke_slot_for must have driven tenant A's resolved row"
+        a_tag,
+        "revoke_slot_for_identity must have driven tenant A's resolved row"
     );
 
     // Tenant A's pinned row is now tainted by the revoke: a subsequent
@@ -520,7 +560,7 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
     // (mirrors `manager_refresh_slot.rs`'s post-revoke assertion).
     use nebula_error::{Classify, ErrorCategory};
     let a_after = manager
-        .acquire_resident_for::<ResRes>(&ctx, &AcquireOptions::default(), a)
+        .acquire_resident_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &res_a_id())
         .await
         .expect_err("tenant A must NOT be acquirable after its pinned row is revoked");
     assert_eq!(
@@ -532,7 +572,7 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
     // Tenant B's row is a distinct registry row (distinct slot_identity):
     // A's revoke taints A's row only, so B remains acquirable.
     let _guard = manager
-        .acquire_resident_for::<ResRes>(&ctx, &AcquireOptions::default(), b)
+        .acquire_resident_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &res_b_id())
         .await
         .expect("tenant B must remain acquirable after tenant A's revoke");
 }
@@ -541,8 +581,8 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
 /// fresh pool entries on a credential a concurrent revoke tainted after
 /// the pre-lookup gate. `warmup` runs `R::create` against the resolved
 /// credential, so it is acquire-like and must enforce the same
-/// revoke-vs-acquire post-taint re-check the `run_*_acquire` pipelines
-/// got in #679.
+/// revoke-vs-acquire post-taint re-check the `run_acquire` pipeline got in
+/// #679.
 ///
 /// Deterministic model of the race: `taint_slot` applies the taint
 /// **synchronously** (phase 1) — exactly the state a concurrent
@@ -592,17 +632,19 @@ async fn warmup_pool_rejected_after_revoke_taint_creates_no_entries() {
 /// Collapsing the five `run_*_acquire` into one generic `run_acquire` must
 /// not perturb the `InFlightCounter::new` → `reject_if_tainted_post_count`
 /// ordering that closes the revoke-vs-acquire TOCTOU. A synchronous
-/// `taint_slot` models the state a concurrent `revoke_slot` establishes by
-/// the time the acquire would proceed; the slot-identity-pinned acquire
-/// must reject (`Revoked` → `Unavailable`) and never hand out a guard on
-/// the tainted row. Behavior-preservation pin for the collapse — the
-/// post-count re-check now lives once in `run_acquire`, not five times.
+/// `taint_slot_for_identity` models the state a concurrent `revoke_slot`
+/// establishes by the time the acquire would proceed; the
+/// slot-identity-pinned acquire must reject (`Revoked` → `Unavailable`)
+/// and never hand out a guard on the tainted row. Behavior-preservation
+/// pin for the collapse — the post-count re-check now lives once in
+/// `run_acquire`, not five times.
 #[tokio::test]
 async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
     use nebula_error::{Classify, ErrorCategory};
 
     let org = OrgId::new();
-    let slot_id = 0x5151_5151_5151_5151;
+    let bindings: &[(&str, &str)] = &[("db", "cred-pinned-tenant")];
+    let slot_id = SlotIdentity::from_bindings(bindings.iter().copied());
     let scope = ScopeLevel::Organization(org);
     let create_counter = Arc::new(AtomicU64::new(0));
     let manager = Manager::new();
@@ -613,19 +655,19 @@ async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
         },
         RegisterOptions::default()
             .with_scope(scope.clone())
-            .with_slot_identity(slot_id),
+            .with_slot_bindings(bindings),
     )
     .expect("register single pinned tenant");
 
     // Synchronous taint == the state a racing `revoke_slot` leaves the row
     // in before the acquire's in-flight increment + post-count re-check.
     let _tainted = manager
-        .taint_slot_for(&PoolRes::key(), scope, "db", slot_id)
-        .expect("taint_slot_for must resolve the pinned pooled row");
+        .taint_slot_for_identity(&PoolRes::key(), scope, "db", &slot_id)
+        .expect("taint_slot_for_identity must resolve the pinned pooled row");
 
     let ctx = ctx_for_org(org);
     let err = manager
-        .acquire_pooled_for::<PoolRes>(&ctx, &AcquireOptions::default(), slot_id)
+        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &slot_id)
         .await
         .expect_err("acquire on a revoke-tainted pinned row must be rejected");
     assert_eq!(

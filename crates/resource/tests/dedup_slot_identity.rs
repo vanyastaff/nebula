@@ -26,7 +26,7 @@ use std::sync::{
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Manager, RegisterOptions, RegistrationSpec, ResidentConfig, Resource,
-    ResourceConfig, ResourceContext,
+    ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
     resource::ResourceMetadata,
     runtime::{TopologyRuntime, resident::ResidentRuntime},
@@ -171,12 +171,14 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
     let counter = Arc::new(AtomicU64::new(0));
 
     // Tenant A: resolved credential identity #1.
+    let id_a = SlotIdentity::from_bindings([("db", "cred-tenant-a")]);
+    let id_b = SlotIdentity::from_bindings([("db", "cred-tenant-b")]);
     register_counting(
         &manager,
         CountingResource::new(Arc::clone(&counter)),
         RegisterOptions::default()
             .with_scope(scope.clone())
-            .with_slot_identity(0xAAAA_AAAA_AAAA_AAAA),
+            .with_slot_bindings(&[("db", "cred-tenant-a")]),
     )
     .expect("register tenant A must succeed");
 
@@ -187,7 +189,7 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
         CountingResource::new(Arc::clone(&counter)),
         RegisterOptions::default()
             .with_scope(scope.clone())
-            .with_slot_identity(0xBBBB_BBBB_BBBB_BBBB),
+            .with_slot_bindings(&[("db", "cred-tenant-b")]),
     )
     .expect("register tenant B must succeed");
 
@@ -195,19 +197,11 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
     // to its OWN runtime (distinct `create`), never a shared one.
     let ctx = ctx_for_org(org);
     let lease_a = manager
-        .acquire_resident_for::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            0xAAAA_AAAA_AAAA_AAAA,
-        )
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("acquire tenant A must succeed");
     let lease_b = manager
-        .acquire_resident_for::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            0xBBBB_BBBB_BBBB_BBBB,
-        )
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect("acquire tenant B must succeed");
 
@@ -222,11 +216,7 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
     // Each binding is stable: re-acquiring tenant A returns A's runtime, never
     // B's (no cross-aliasing on repeat acquire).
     let lease_a2 = manager
-        .acquire_resident_for::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            0xAAAA_AAAA_AAAA_AAAA,
-        )
+        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("re-acquire tenant A must succeed");
     assert_eq!(
@@ -246,14 +236,15 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
     let scope = ScopeLevel::Organization(org);
     let counter = Arc::new(AtomicU64::new(0));
 
-    let same_identity = 0x1234_5678_9ABC_DEF0;
+    let same_bindings: &[(&str, &str)] = &[("db", "cred-shared")];
+    let same_identity = SlotIdentity::from_bindings(same_bindings.iter().copied());
 
     register_counting(
         &manager,
         CountingResource::new(Arc::clone(&counter)),
         RegisterOptions::default()
             .with_scope(scope.clone())
-            .with_slot_identity(same_identity),
+            .with_slot_bindings(same_bindings),
     )
     .expect("first register must succeed");
     // Re-register with the SAME resolved identity — last-write-wins replace of
@@ -263,17 +254,25 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
         CountingResource::new(Arc::clone(&counter)),
         RegisterOptions::default()
             .with_scope(scope.clone())
-            .with_slot_identity(same_identity),
+            .with_slot_bindings(same_bindings),
     )
     .expect("re-register must succeed");
 
     let ctx = ctx_for_org(org);
     let l1 = manager
-        .acquire_resident_for::<CountingResource>(&ctx, &AcquireOptions::default(), same_identity)
+        .acquire_resident_for_identity::<CountingResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            &same_identity,
+        )
         .await
         .expect("acquire #1");
     let l2 = manager
-        .acquire_resident_for::<CountingResource>(&ctx, &AcquireOptions::default(), same_identity)
+        .acquire_resident_for_identity::<CountingResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            &same_identity,
+        )
         .await
         .expect("acquire #2");
 
@@ -321,8 +320,6 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
 /// digest collision has no structural row to merge.
 #[tokio::test]
 async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
-    use nebula_resource::SlotIdentity;
-
     let manager = Manager::new();
     let org = OrgId::new();
     let scope = ScopeLevel::Organization(org);
@@ -385,36 +382,33 @@ async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
         "tenant A keeps its own structural row across acquires"
     );
 
-    // The legacy collidable digest of A's bindings is in a disjoint
-    // identity space from A's structural row: a forced u64 collision has
-    // no structural row to merge into.
-    #[allow(deprecated)]
-    let legacy_digest_a = nebula_resource::slot_identity(bindings_a.iter().copied());
+    // The barrier is exact structural equality, so a forced collision is
+    // unrepresentable by construction: A's and B's resolved bindings yield
+    // structurally distinct identities — there is no digest space in which
+    // they could alias into one row.
     assert_ne!(
-        id_a,
-        SlotIdentity::Opaque(legacy_digest_a),
-        "structural identity must never equal the legacy digest of the \
-         same bindings (disjoint spaces — a digest cannot alias a \
-         structural row)"
+        id_a, id_b,
+        "two distinct resolved binding sets must be distinct structural \
+         identities — collision is unrepresentable, so a forced digest \
+         collision has no structural row to merge into"
     );
 }
 
-/// Pins the `h == SLOT_IDENTITY_UNBOUND ⇒ 1` nudge branch of the current
-/// `slot_identity()` primitive: a non-empty resolved binding set must never
-/// produce the reserved `SLOT_IDENTITY_UNBOUND` value (which means "no
-/// resolved slots"). This documents the exact weak-primitive contract being
-/// replaced; it must hold for any non-empty binding, including the reserved
-/// edge.
+/// The structural identity reserves [`SlotIdentity::Unbound`] for the
+/// no-resolved-slots row: only the empty binding set yields `Unbound`, and
+/// every non-empty resolved binding is a `Structural` identity distinct
+/// from `Unbound` — a real resolved credential can never be mistaken for
+/// "no resolved slots". (Collision-free by construction: exact structural
+/// equality, so the reserved row is reachable only from the empty set.)
 #[test]
-fn slot_identity_nudge_keeps_non_empty_off_the_unbound_sentinel() {
-    use nebula_resource::{SLOT_IDENTITY_UNBOUND, slot_identity};
-
-    // Empty bindings are the ONLY input that may yield the sentinel.
+fn non_empty_bindings_are_never_the_unbound_identity() {
+    // Empty bindings are the ONLY input that yields the reserved row.
     let empty: Vec<(&str, &str)> = Vec::new();
-    assert_eq!(slot_identity(empty), SLOT_IDENTITY_UNBOUND);
+    assert_eq!(SlotIdentity::from_bindings(empty), SlotIdentity::Unbound);
 
-    // Every non-empty binding must be nudged off the sentinel: a real
-    // resolved credential must never be mistaken for "unbound".
+    // Every non-empty binding is a distinct `Structural` identity, never
+    // the reserved `Unbound` row — including the degenerate empty-string
+    // edges that the old digest had to nudge by hand.
     for (slot, cred) in [
         ("db", "cred-a"),
         ("cache", "cred-b"),
@@ -423,10 +417,10 @@ fn slot_identity_nudge_keeps_non_empty_off_the_unbound_sentinel() {
         ("queue", "tenant-7-credential"),
     ] {
         assert_ne!(
-            slot_identity([(slot, cred)]),
-            SLOT_IDENTITY_UNBOUND,
-            "non-empty binding ({slot:?}, {cred:?}) must be nudged off the \
-             reserved unbound sentinel"
+            SlotIdentity::from_bindings([(slot, cred)]),
+            SlotIdentity::Unbound,
+            "non-empty binding ({slot:?}, {cred:?}) must be a Structural \
+             identity, never the reserved Unbound row"
         );
     }
 }

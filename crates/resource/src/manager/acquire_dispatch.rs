@@ -1,6 +1,6 @@
 //! Type-erased acquire dispatch stored at registration time.
 //!
-//! [`Manager::register_with_identity`] captures a topology-specific
+//! [`Manager::register`] captures a topology-specific
 //! `acquire_*_at_scope` closure so callers that only know a [`ResourceKey`]
 //! (engine / action accessor) can still run the full lease pipeline.
 //!
@@ -62,54 +62,6 @@ where
     })
 }
 
-fn arc_acquire_service<R>() -> ErasedAcquireFn
-where
-    R: crate::topology::service::Service + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    Arc::new(move |mgr, ctx, opts, resolved| {
-        Box::pin(async move {
-            let guard = mgr
-                .acquire_service_at_scope::<R>(&ctx, &opts, resolved)
-                .await?;
-            Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-        })
-    })
-}
-
-fn arc_acquire_transport<R>() -> ErasedAcquireFn
-where
-    R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    Arc::new(move |mgr, ctx, opts, resolved| {
-        Box::pin(async move {
-            let guard = mgr
-                .acquire_transport_at_scope::<R>(&ctx, &opts, resolved)
-                .await?;
-            Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-        })
-    })
-}
-
-fn arc_acquire_exclusive<R>() -> ErasedAcquireFn
-where
-    R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    Arc::new(move |mgr, ctx, opts, resolved| {
-        Box::pin(async move {
-            let guard = mgr
-                .acquire_exclusive_at_scope::<R>(&ctx, &opts, resolved)
-                .await?;
-            Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
-        })
-    })
-}
-
 fn arc_acquire_bounded<R>() -> ErasedAcquireFn
 where
     R: crate::topology::bounded::BoundedRelease + Clone + Send + Sync + 'static,
@@ -152,45 +104,6 @@ where
     R::Lease: Into<R::Runtime> + Send + 'static,
 {
     arc_acquire_pooled::<R>()
-}
-
-/// Erased acquire hook for a service topology row.
-///
-/// See [`erased_acquire_resident`] — downcasts the single-walk-resolved
-/// row, no second registry walk.
-pub(crate) fn erased_acquire_service<R>() -> ErasedAcquireFn
-where
-    R: crate::topology::service::Service + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    arc_acquire_service::<R>()
-}
-
-/// Erased acquire hook for a transport topology row.
-///
-/// See [`erased_acquire_resident`] — downcasts the single-walk-resolved
-/// row, no second registry walk.
-pub(crate) fn erased_acquire_transport<R>() -> ErasedAcquireFn
-where
-    R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
-    R::Runtime: Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    arc_acquire_transport::<R>()
-}
-
-/// Erased acquire hook for an exclusive topology row.
-///
-/// See [`erased_acquire_resident`] — downcasts the single-walk-resolved
-/// row, no second registry walk.
-pub(crate) fn erased_acquire_exclusive<R>() -> ErasedAcquireFn
-where
-    R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
-    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
-    R::Lease: Send + 'static,
-{
-    arc_acquire_exclusive::<R>()
 }
 
 /// Erased acquire hook for a [`Bounded`](crate::topology::bounded::Bounded)
