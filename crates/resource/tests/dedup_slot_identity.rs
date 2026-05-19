@@ -424,3 +424,125 @@ fn non_empty_bindings_are_never_the_unbound_identity() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sibling concrete type sharing one ResourceKey (end-to-end concrete-type
+// filter guard)
+// ---------------------------------------------------------------------------
+
+/// A SECOND, distinct resident resource type whose `key()` string is
+/// IDENTICAL to [`CountingResource`]'s. Two distinct concrete types thus map
+/// to one [`ResourceKey`]: `type_index` holds both `TypeId`s pointing at the
+/// same key, and the registry's per-key entry list can hold a sibling-typed
+/// row. This is the shape the registry's concrete-type filter exists for.
+#[derive(Clone)]
+struct SiblingResidentResource;
+
+impl Resource for SiblingResidentResource {
+    type Config = CountingConfig;
+    type Runtime = CountingRuntime;
+    type Lease = CountingRuntime;
+    type Error = CountingError;
+
+    fn key() -> ResourceKey {
+        // SAME string as `CountingResource::key()` on purpose.
+        resource_key!("dedup-slot-ident")
+    }
+
+    async fn create(
+        &self,
+        _config: &CountingConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<CountingRuntime, CountingError> {
+        // A distinguishable runtime id space; never observed on the
+        // success path of the test below (the sibling row must be skipped).
+        Ok(CountingRuntime { id: 9_999 })
+    }
+
+    async fn destroy(&self, _runtime: CountingRuntime) -> Result<(), CountingError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Resident for SiblingResidentResource {
+    fn is_alive_sync(&self, _runtime: &CountingRuntime) -> bool {
+        true
+    }
+}
+
+/// End-to-end guard for the concrete-type filter on the **agnostic** typed
+/// acquire path (`Registry::get_typed_for_acquire_scope::<R>`, reached via
+/// `Manager::acquire_resident::<R>` → `lookup_for_acquire_scope`).
+///
+/// `SiblingResidentResource` and `CountingResource` share one `ResourceKey`,
+/// so the registry's per-key entry list holds a sibling-typed row. The
+/// sibling sits at the ORG scope; the correctly-typed `CountingResource`
+/// row sits only at GLOBAL. An agnostic typed acquire of `CountingResource`
+/// from an org-scoped context must SKIP the org-scope sibling row and FALL
+/// THROUGH to the Global `CountingResource` row.
+///
+/// Why this test exists: the `registry.rs` unit tests exercise the private
+/// `find_at_exact_scope` / `find_in_entries` helpers directly. They stay
+/// green even if `get_typed_for_acquire_scope` (or `get_typed`) drops the
+/// `Some(TypeId::of::<ManagedResource<R>>())` argument and reverts to the
+/// unfiltered selection. THIS test is the one that fails on that regression:
+/// without the filter the org-scope sibling row is the single row at that
+/// scope, is returned, and `resolve_typed::<CountingResource>` then fails the
+/// downcast — the acquire errors instead of resolving the Global row.
+#[tokio::test]
+async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global() {
+    let manager = Manager::new();
+    let org = OrgId::new();
+    let counter = Arc::new(AtomicU64::new(0));
+
+    // Sibling-typed row at the ORG scope. With the concrete-type filter
+    // absent this row would mask `CountingResource` at the org scope.
+    manager
+        .register(RegistrationSpec {
+            resource: SiblingResidentResource,
+            config: CountingConfig,
+            scope: ScopeLevel::Organization(org),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register sibling type at org scope must succeed");
+
+    // Correctly-typed `CountingResource` row at GLOBAL only (Unbound:
+    // default `RegisterOptions` with no slot bindings).
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default().with_scope(ScopeLevel::Global),
+    )
+    .expect("register CountingResource at Global must succeed");
+
+    // Agnostic typed acquire (no resolved identity) of `CountingResource`
+    // from an org-scoped context: the scope walk visits the org scope
+    // (sibling-only) before Global. The concrete-type filter must skip the
+    // sibling and resolve the Global `CountingResource` row.
+    let ctx = ctx_for_org(org);
+    let lease = manager
+        .acquire_resident::<CountingResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect(
+            "agnostic typed acquire must skip the org-scope sibling-typed \
+             row and fall through to the Global CountingResource row; a \
+             downcast/NotFound error here means the concrete-type filter on \
+             get_typed_for_acquire_scope regressed",
+        );
+
+    assert_eq!(
+        lease.id, 0,
+        "the resolved runtime must be CountingResource's OWN first create \
+         (id 0 on its shared counter), never the sibling's 9999 runtime"
+    );
+}
