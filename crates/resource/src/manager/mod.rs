@@ -106,7 +106,7 @@
 //! *not* sufficient here: an acquire whose `InFlightCounter::new()`
 //! increment lands *after* `wait_for_drain` already read `0` is invisible to
 //! that drain, so without a re-check it would still hand out a
-//! [`ResourceGuard`] for a drained-and-cleared resource (a logical
+//! `ResourceGuard` for a drained-and-cleared resource (a logical
 //! use-after-drain). `shutdown_guard` is therefore re-run *on the same
 //! post-`InFlightCounter::new()` line* as the taint re-check: once the
 //! increment is visible to `graceful_shutdown`'s drain, either the acquire
