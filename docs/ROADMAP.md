@@ -287,45 +287,72 @@ authoritative contract; trace context flows API → engine → action →
 resource; production-grade `AuthBackend` ships; no `/execute` path bypasses
 validation.
 
-### M4 — Sandbox capability discovery enforcement
+### M4 — Plugin capability discovery enforcement
+
+> Crate boundary (per [`CLAUDE.md`](../CLAUDE.md) layer map +
+> `crates/sandbox/src/lib.rs` module docs): **discovery, `plugin.toml`
+> parsing, the registry adapters, and the `SandboxError → ActionError`
+> mapping live in `nebula-plugin`** (`crates/plugin/src/discovery.rs`,
+> `plugin_toml.rs`, `discovered_plugin.rs`). `nebula-sandbox` is a leaf
+> transport crate with **no per-plugin capability/scope model** — it only
+> spawns the child and round-trips envelopes. The capability gate is a
+> registration-time check in `nebula-plugin`, before `ProcessSandbox`
+> spawns anything.
 
 Closure criteria (on top of the global DoD):
 
-- The §4.5 "false capability" disclaimer at `crates/sandbox/src/lib.rs` is
-  removed because the gap is closed, not deprioritized.
-- Capability mismatches reject registration before any sandbox spawn.
+- The capability-enforcement gap is closed in the `nebula-plugin`
+  discovery path, not deprioritized; the canon §4.5 honesty notes in
+  `crates/sandbox/src/lib.rs` + the sandbox/plugin READMEs are updated to
+  describe the now-real gate (sandbox stays honestly transport-only).
+- Capability mismatches reject registration **before** any
+  `ProcessSandbox` spawn.
 - Sandbox README Appendix TODO closed; canon §12.6 honesty preserved
   (in-process is correctness-only; child-process is the isolation boundary).
-- OS-sandbox primitives document what is / is not enforced per platform.
+- OS-hardening primitives document what is / is not enforced per platform
+  (the actual `os_sandbox` surface, not an aspirational matrix).
 
-#### M4.1 Discovery validation
+#### M4.1 Discovery validation (in `nebula-plugin`)
 
-- [ ] Parse `plugin.toml` `[capabilities]` at registration in
-      `crates/sandbox/src/discovery.rs` (today discovery exists but
-      capability comparison does not run).
-- [ ] Compare manifest declarations vs runtime `PluginCapabilities`.
-- [ ] Typed `SandboxError::CapabilityMismatch { declared, runtime }` +
-      WARN-level `tracing` event with both sets.
-- [ ] Mismatch rejects registration **before** any spawn.
+- [ ] Parse `plugin.toml` `[capabilities]` at registration in the
+      `nebula-plugin` discovery path (`crates/plugin/src/discovery.rs` +
+      `plugin_toml.rs` — parsing exists; the capability comparison does
+      not run).
+- [ ] Compare manifest declarations vs the runtime `PluginCapabilities`
+      announced by the loaded binary.
+- [ ] Typed capability-mismatch variant on the plugin-discovery error
+      (`{ declared, runtime }`) + WARN-level `tracing` event with both
+      sets; mapped through the existing `SandboxError → ActionError` seam
+      that already lives in `nebula-plugin`.
+- [ ] Mismatch rejects registration **before** any `ProcessSandbox`
+      spawn; `discovered_plugin::DiscoveredPlugin` surfaces the error.
 - [ ] Integration tests: malformed `plugin.toml` → reject; runtime claims
-      capability missing from manifest → reject; runtime declares a subset
-      → allow.
-- [ ] Sandbox README Appendix rewritten; "false capability" disclaimer
-      removed; §4.5 grep returns 0 hits in sandbox scope.
+      a capability missing from the manifest → reject; runtime declares a
+      subset of the manifest → allow.
+- [ ] `nebula-plugin` README discovery section documents the gate;
+      `nebula-sandbox` lib.rs + README "no capability model here" note
+      updated to point at the plugin-side enforcement; §4.5 grep over
+      **both** `crates/sandbox` and `crates/plugin` returns 0 stale
+      "false capability" hits.
 
-#### M4.2 OS-sandbox primitives parity (1.0 honesty)
+#### M4.2 OS-hardening honesty (1.0 honesty)
 
-- [ ] Audit `crates/sandbox/src/os_sandbox/` per platform (Linux
-      seccomp/namespace; macOS sandbox-exec; Windows job objects) —
-      document shipping vs "best-effort, partial".
+- [ ] Audit the actual `crates/sandbox/src/os_sandbox.rs` surface (today:
+      Linux Landlock + rlimit child hardening, fixed system paths, **no
+      per-plugin grant**) — document what is enforced vs best-effort, and
+      mark non-Linux platforms as unsupported / no-op rather than implying
+      a seccomp / macOS / Windows matrix that does not exist.
 - [ ] Each primitive: typed enable/disable switch + tracing observation +
-      per-platform integration test (or explicit "not supported" marker).
-- [ ] Release-notes section: "what sandbox isolation guarantees on each
-      platform".
+      Linux integration test (or an explicit "not supported on this
+      platform" marker).
+- [ ] Release-notes section: "what sandbox isolation actually guarantees
+      (Linux Landlock + rlimit; non-Linux = transport isolation only)".
 
-**Exit:** registration-time enforcement loop closed; OS-sandbox honesty at
-1.0 grade; Appendix TODO closed; §4.5 sandbox grep clean; integration
-tests cover the four reject/allow paths.
+**Exit:** registration-time capability gate closed in `nebula-plugin`
+before any `ProcessSandbox` spawn; OS-hardening honesty at 1.0 grade;
+sandbox README Appendix TODO closed; §4.5 grep over `crates/sandbox` +
+`crates/plugin` clean; integration tests cover the three reject/allow
+paths.
 
 ### M5 — Plugin ABI + Engine-Plugin contract
 
@@ -1037,7 +1064,8 @@ Not all parallelizable. Suggested ordering (M0–M2, M6, M11 closed
    OTLP open, M3.6 open).
 3. **M1, M2 (engine correctness + retry)** after M0 — same `engine.rs`
    paths. ✅ DONE.
-4. **M4, M5 (sandbox + plugin contract)** in parallel with M3.
+4. **M4, M5 (plugin capability gate + plugin ABI contract)** in parallel
+   with M3.
 5. **M6 (resource finalization)** independent. ✅ DONE (bind-population
    residual → M12.4).
 6. **M7 (storage ops), M8 (loom)** — late, after engine work settles;
