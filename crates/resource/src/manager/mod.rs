@@ -296,7 +296,7 @@ impl Manager {
     ///
     /// `slot_identity` is accepted for API stability but no longer drives
     /// resolution: the erased acquire path resolves the row in a single
-    /// [`Registry::get_acquire_for`](crate::registry::Registry::get_acquire_for)
+    /// `Registry::get_acquire_for`
     /// scope walk (pinned by the *caller's* runtime slot identity) and
     /// the hook downcasts that already-resolved row. The registration-time
     /// identity that previously re-pinned a second walk is therefore

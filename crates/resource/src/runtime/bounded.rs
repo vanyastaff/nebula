@@ -32,7 +32,8 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
-/// Runtime state for a [`Bounded`] resource.
+/// Runtime state for a [`Bounded`](crate::topology::bounded::Bounded)
+/// resource.
 ///
 /// Holds the long-lived runtime, an optional concurrency semaphore sized
 /// by the cap typestate, and (when configured) a background keepalive
@@ -47,7 +48,7 @@ pub struct BoundedRuntime<R: Resource> {
     config: Config,
     /// Background keepalive driver, aborted on drop. Present only when
     /// `config.keepalive_interval` is `Some` and the resource overrides
-    /// [`Bounded::keepalive`](crate::topology::bounded::Bounded::keepalive).
+    /// [`BoundedRelease::keepalive`](crate::topology::bounded::BoundedRelease::keepalive).
     keepalive: Option<JoinHandle<()>>,
 }
 
@@ -82,7 +83,7 @@ where
     /// The semaphore is sized from the cap typestate
     /// ([`CapMarker::PERMITS`]): `None` → unbounded, `Some(n)` →
     /// `Semaphore(n)`. When `config.keepalive_interval` is `Some`, a
-    /// background task drives [`Bounded::keepalive`] on that interval
+    /// background task drives [`BoundedRelease::keepalive`] on that interval
     /// (folds the previously-unwired `Transport::keepalive`).
     pub fn new(resource: &R, runtime: R::Runtime, config: Config) -> Self {
         let runtime = Arc::new(runtime);
@@ -120,7 +121,7 @@ where
     ///
     /// 1. If the cap has a permit count, acquires a permit (bounded by
     ///    `config.acquire_timeout` or the caller's remaining deadline).
-    /// 2. Calls [`Bounded::acquire_one`].
+    /// 2. Calls [`Bounded::acquire_one`](crate::topology::bounded::Bounded::acquire_one).
     /// 3. If the cap does not require release
     ///    ([`Unbounded`](crate::topology::bounded::Unbounded)) — returns
     ///    an owned handle (no callback). Otherwise returns a guarded

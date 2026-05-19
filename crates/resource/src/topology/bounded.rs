@@ -17,7 +17,7 @@
 //! | [`Exclusive`] | `Exclusive` | `1` | required (the reset) |
 //!
 //! The three folded behaviors map onto one [`Bounded::acquire_one`] /
-//! [`Bounded::release_one`] pair:
+//! [`BoundedRelease::release_one`] pair:
 //!
 //! - **Service `Cloned`** → `Cap = Unbounded`: `acquire_one` mints a cheap
 //!   token, the handle is owned, `release_one` is never invoked.
@@ -25,7 +25,7 @@
 //!   tracked token, the handle is guarded, `release_one` returns it.
 //! - **Transport** → `Cap = Capped<N>`: `acquire_one` opens a session
 //!   (gated by `N = max_sessions`), `release_one` closes it; the optional
-//!   [`Bounded::keepalive`] is driven on an interval by the runtime.
+//!   [`BoundedRelease::keepalive`] is driven on an interval by the runtime.
 //! - **Exclusive** → `Cap = Exclusive`: `acquire_one` clones the runtime
 //!   into a lease behind a `Semaphore(1)`, `release_one` resets it; the
 //!   permit is held until `release_one` resolves (#384), and a failed
@@ -57,7 +57,7 @@ mod sealed {
 /// `==`: a `Bounded` impl declares its cap as an associated type, so a
 /// tracked-lease resource that forgets `release_one`, or an exclusive
 /// resource that forgets `reset`, fails to type-check (see
-/// [`CapAcquire`] / the compile-fail probes) instead of silently
+/// [`CapMarker`] / the compile-fail probes) instead of silently
 /// no-op-ing at run time.
 pub trait CapMarker: sealed::Sealed + Send + Sync + 'static {
     /// Semaphore permit count for this cap.
@@ -67,7 +67,7 @@ pub trait CapMarker: sealed::Sealed + Send + Sync + 'static {
     /// `Capped<N>` yields `Some(N)`, `Exclusive` yields `Some(1)`.
     const PERMITS: Option<usize>;
 
-    /// Whether [`Bounded::release_one`] participates in the lease
+    /// Whether [`BoundedRelease::release_one`] participates in the lease
     /// lifecycle.
     ///
     /// `false` for [`Unbounded`] (owned handle, no callback). `true` for
@@ -78,7 +78,8 @@ pub trait CapMarker: sealed::Sealed + Send + Sync + 'static {
 
 /// Unbounded cap — no concurrency limit, no release hook.
 ///
-/// Folds the former `Service` topology in [`TokenMode::Cloned`]: the
+/// Folds the former `Service` topology in
+/// [`TokenMode::Cloned`](crate::topology::service::TokenMode::Cloned): the
 /// runtime hands out a cheap owned token and never runs a release
 /// callback.
 #[derive(Debug, Clone, Copy)]
@@ -268,11 +269,11 @@ where
 /// Configuration types for the bounded topology.
 ///
 /// One `Config` folds the three former per-topology configs:
-/// - `Service` `drain_timeout` → [`Config::drain_timeout`],
+/// - `Service` `drain_timeout` → [`Config::drain_timeout`](config::Config::drain_timeout),
 /// - `Transport` `max_sessions` is the cap const generic `N`;
-///   `keepalive_interval` → [`Config::keepalive_interval`];
-///   `acquire_timeout` → [`Config::acquire_timeout`],
-/// - `Exclusive` `acquire_timeout` → [`Config::acquire_timeout`].
+///   `keepalive_interval` → [`Config::keepalive_interval`](config::Config::keepalive_interval);
+///   `acquire_timeout` → [`Config::acquire_timeout`](config::Config::acquire_timeout),
+/// - `Exclusive` `acquire_timeout` → [`Config::acquire_timeout`](config::Config::acquire_timeout).
 pub mod config {
     use std::time::Duration;
 

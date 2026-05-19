@@ -26,8 +26,8 @@ use crate::{
 /// Erased acquire hook installed on each registry row at registration.
 ///
 /// The `Arc<dyn AnyManagedResource>` is the row already resolved by the
-/// single [`get_acquire_for`](Registry::get_acquire_for) scope walk
-/// (carried out via [`AcquireLookupOutcome::Found`]). The hook downcasts
+/// single `Registry::get_acquire_for` scope walk
+/// (carried out via `AcquireLookupOutcome::Found`). The hook downcasts
 /// it to the concrete `ManagedResource<R>` rather than performing a
 /// second `DashMap` walk at the matched scope — one registry resolution
 /// per erased acquire, not two.
@@ -249,7 +249,7 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 /// The **slot-identity-pinned** lookups
 /// ([`get_for`](Registry::get_for) /
 /// [`get_typed_for`](Registry::get_typed_for) /
-/// [`get_typed_for_acquire`](Registry::get_typed_for_acquire))
+/// `get_typed_for_acquire`)
 /// return [`PinnedLookup`] instead — a 2-variant type with **no
 /// `Ambiguous`** arm, because a resolved [`SlotIdentity`] addresses exactly
 /// one row by construction, so ambiguity is unrepresentable there rather
