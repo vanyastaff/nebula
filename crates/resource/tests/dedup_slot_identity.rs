@@ -546,3 +546,79 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
          (id 0 on its shared counter), never the sibling's 9999 runtime"
     );
 }
+
+/// End-to-end guard for the concrete-type filter on the **public typed
+/// lookup** path (`Registry::get_typed::<R>`, reached via
+/// `Manager::lookup::<R>`).
+///
+/// `Manager::lookup` is the public typed delegator distinct from the
+/// agnostic acquire path: it calls `registry.get_typed::<R>(scope)` →
+/// `get_inner(&key, scope, Some(TypeId::of::<ManagedResource<R>>()))`.
+/// (`Manager::get_any` is a *different*, type-erased entrypoint —
+/// `registry.get(key, scope)` with no `TypeId` — so it does not exercise
+/// this filter; `lookup` is the one that does.)
+///
+/// Same shape as the acquire-path guard above: a sibling-typed row sharing
+/// `CountingResource`'s `ResourceKey` sits at the ORG scope, the
+/// correctly-typed `CountingResource` row only at GLOBAL. A typed
+/// `lookup::<CountingResource>` from an org-scoped level must SKIP the
+/// org-scope sibling and resolve the Global `CountingResource` row.
+///
+/// Why this test exists: the `registry.rs` unit tests and the acquire-path
+/// E2E both stay green if `get_typed` (specifically) drops its
+/// `Some(TypeId::of::<ManagedResource<R>>())` argument and reverts to the
+/// unfiltered `self.get(&key, scope)`. THIS test is the one that fails on
+/// that regression: without the filter the org-scope sibling row is the
+/// single row at that level, is returned, and `resolve_typed::<CountingResource>`
+/// fails the downcast — `lookup` errors instead of resolving the Global row.
+#[tokio::test]
+async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
+    let manager = Manager::new();
+    let org = OrgId::new();
+    let counter = Arc::new(AtomicU64::new(0));
+
+    // Sibling-typed row at the ORG scope. Without the concrete-type filter
+    // on `get_typed` this row masks `CountingResource` at the org level.
+    manager
+        .register(RegistrationSpec {
+            resource: SiblingResidentResource,
+            config: CountingConfig,
+            scope: ScopeLevel::Organization(org),
+            slot_identity: SlotIdentity::Unbound,
+            topology: TopologyRuntime::Resident(ResidentRuntime::<SiblingResidentResource>::new(
+                ResidentConfig::default(),
+            )),
+            acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
+            resilience: None,
+            recovery_gate: None,
+        })
+        .expect("register sibling type at org scope must succeed");
+
+    // Correctly-typed `CountingResource` row at GLOBAL only.
+    register_counting(
+        &manager,
+        CountingResource::new(Arc::clone(&counter)),
+        RegisterOptions::default().with_scope(ScopeLevel::Global),
+    )
+    .expect("register CountingResource at Global must succeed");
+
+    // Typed lookup of `CountingResource` from the org level: the scope walk
+    // visits the org level (sibling-only) before Global. The concrete-type
+    // filter on `get_typed` must skip the sibling and resolve the Global
+    // `CountingResource` row; the downcast in `resolve_typed` succeeding is
+    // itself the proof the resolved row is `CountingResource`, not the
+    // sibling.
+    manager
+        .lookup::<CountingResource>(&ScopeLevel::Organization(org))
+        .expect(
+            "typed lookup must skip the org-scope sibling-typed row and fall \
+             through to the Global CountingResource row; a downcast/NotFound \
+             error here means the concrete-type filter on get_typed regressed",
+        );
+
+    // Positive control: the sibling type still resolves to its OWN org row,
+    // proving the filter is type-directed, not a blanket org-scope skip.
+    manager
+        .lookup::<SiblingResidentResource>(&ScopeLevel::Organization(org))
+        .expect("sibling type must still resolve its own org-scope row");
+}
