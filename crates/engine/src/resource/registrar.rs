@@ -626,10 +626,16 @@ impl ResourceRegistrarRegistry {
         );
 
         // Stage the reverse-index binds BEFORE the typed register makes
-        // the `Manager` row discoverable. Track which entries this call
-        // actually inserted (not ones a prior successful registration of
-        // an identical resolved row legitimately created) so the failure
-        // rollback removes exactly those — never a live row's binding.
+        // the `Manager` row discoverable. Each staging takes a reference
+        // on the (refcounted) reverse-index entry; the failure rollback
+        // releases exactly this call's reference and the entry is removed
+        // only when its last referent is gone. There is therefore no
+        // "did I insert this?" decision to make — the previous
+        // `affected(cid).contains(&bind)` read before `bind` was a
+        // check-then-act race (two concurrent stagings of the identical
+        // resolved row could both observe "absent", and the failing one's
+        // rollback would then delete the surviving one's live row). The
+        // refcount makes the rollback correct without that read.
         let mut staged: Vec<(nebula_credential::CredentialId, _)> = Vec::new();
         if let Some(idx) = fanout_index {
             for (slot_name, cred_id) in &request.credential_ids {
@@ -646,11 +652,6 @@ impl ResourceRegistrarRegistry {
                     slot_name: slot_name.clone(),
                     slot_identity: staged_slot_identity.clone(),
                 };
-                // `bind` de-dups: if a prior successful registration of
-                // the identical resolved row already recorded this exact
-                // entry, our insert is a no-op and that pre-existing
-                // binding must NOT be rolled back on our failure.
-                let pre_existing = idx.affected(cred_id).contains(&bind);
                 idx.bind(
                     *cred_id,
                     resource_key.clone(),
@@ -658,9 +659,7 @@ impl ResourceRegistrarRegistry {
                     slot_name.clone(),
                     staged_slot_identity.clone(),
                 );
-                if !pre_existing {
-                    staged.push((*cred_id, bind));
-                }
+                staged.push((*cred_id, bind));
             }
         }
 
