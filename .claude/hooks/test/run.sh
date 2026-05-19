@@ -161,5 +161,106 @@ printf '{"impl_files_edited":[],"gate_green":[]}' >"$S_P"
 printf '{"tool_name":"Write","tool_input":{"file_path":"crates/engine/src/ok.rs","content":"pub fn add(a: i32, b: i32) -> i32 { a + b }"},"cwd":"%s","session_id":"%s"}' "$PWD" "$S_SID" | bash "$HERE/edit-guard.sh" >/dev/null 2>&1; chk "SMOKE clean allowed" 0 "$?"
 # Per-hook cases are appended by later tasks below this line. # HOOKMARK
 
+# E intent-gate (ADR-0083 deterministic structural-budget tier)
+egate() { printf '%s' "$1" | bash "$HERE/intent-gate.sh" >/dev/null 2>&1; echo $?; }
+E_SID="e-skel"; E_P="$(turn_state_path "$E_SID" "$PWD")"; mkdir -p "$(dirname "$E_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$E_P"
+chk "E loop-guard allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":true}')"
+chk "E default allows"      0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+printf '{"impl_files_edited":["crates/engine/src/x.rs"],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$E_P"
+chk "E defers to C broken"  0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":2}' >"$E_P"
+chk "E loop-bound allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+
+# E net-LoC budget (starting cap 400; // budget-justified: escapes)
+EB_DIR="$(mktemp -d)"
+( cd "$EB_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/eb/src && { for i in $(seq 1 450); do echo "// line $i"; done; } > crates/eb/src/big.rs )
+EB_SID="e-bud"; EB_P="$(turn_state_path "$EB_SID" "$EB_DIR")"; mkdir -p "$(dirname "$EB_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EB_P"
+chk "E blocks >400 net-LoC" 2 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB_DIR"'","stop_hook_active":false}')"
+( cd "$EB_DIR" && printf '// budget-justified: generated table\n' >> crates/eb/src/big.rs )
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EB_P"
+chk "E budget-justified escapes" 0 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB_DIR"'","stop_hook_active":false}')"
+rm -rf "$EB_DIR"
+# Regression: an untracked code file whose lines start with `+` must still be
+# counted (the `+ ` space sentinel in ig_added_lines). Without it sed makes
+# `++…` which the `^\+([^+]|$)` count rejects → silent undercount → escapes.
+EBP_DIR="$(mktemp -d)"
+( cd "$EBP_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && { for i in $(seq 1 450); do echo "+marker $i"; done; } > plus.sh )
+EBP_SID="e-bud-plus"; EBP_P="$(turn_state_path "$EBP_SID" "$EBP_DIR")"; mkdir -p "$(dirname "$EBP_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBP_P"
+chk "E counts +-prefixed untracked" 2 "$(egate '{"session_id":"'"$EBP_SID"'","cwd":"'"$EBP_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBP_DIR"
+# Regression (tracked): staged code whose lines start with `+` must also count.
+# git diff emits such a line as `++…`; the old `^\+([^+]|$)` grep rejected it
+# (only the untracked `+ ` sentinel was protected). The awk count fixes both.
+EBT_DIR="$(mktemp -d)"
+( cd "$EBT_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ebt/src && { for i in $(seq 1 450); do echo "+marker $i"; done; } > crates/ebt/src/plus.rs \
+  && git add -A )
+EBT_SID="e-bud-trk"; EBT_P="$(turn_state_path "$EBT_SID" "$EBT_DIR")"; mkdir -p "$(dirname "$EBT_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBT_P"
+chk "E counts +-prefixed tracked" 2 "$(egate '{"session_id":"'"$EBT_SID"'","cwd":"'"$EBT_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBT_DIR"
+
+# E new-file budget (cap 5)
+EF_DIR="$(mktemp -d)"
+( cd "$EF_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ef/src && for i in 1 2 3 4 5 6; do echo "fn f${i}(){}" > "crates/ef/src/m${i}.rs"; done )
+EF_SID="e-nf"; EF_P="$(turn_state_path "$EF_SID" "$EF_DIR")"; mkdir -p "$(dirname "$EF_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EF_P"
+chk "E blocks >5 new files" 2 "$(egate '{"session_id":"'"$EF_SID"'","cwd":"'"$EF_DIR"'","stop_hook_active":false}')"
+rm -rf "$EF_DIR"
+
+# E large-blob proxy (single added run > 100 lines in one code file)
+EL_DIR="$(mktemp -d)"
+( cd "$EL_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/el/src && { echo 'fn big(){'; for i in $(seq 1 130); do echo "  let v$i=$i;"; done; echo '}'; } > crates/el/src/f.rs )
+EL_SID="e-blob"; EL_P="$(turn_state_path "$EL_SID" "$EL_DIR")"; mkdir -p "$(dirname "$EL_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EL_P"
+chk "E blocks >100-line blob" 2 "$(egate '{"session_id":"'"$EL_SID"'","cwd":"'"$EL_DIR"'","stop_hook_active":false}')"
+rm -rf "$EL_DIR"
+
+# E duplicate public symbol (new `pub fn NAME` colliding with existing one)
+ED_DIR="$(mktemp -d)"
+( cd "$ED_DIR" && git init -q && mkdir -p crates/a/src crates/b/src \
+  && echo 'pub fn parse_token() {}' > crates/a/src/lib.rs \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base \
+  && echo 'pub fn parse_token() {}' > crates/b/src/lib.rs && git add -A )
+ED_SID="e-dup"; ED_P="$(turn_state_path "$ED_SID" "$ED_DIR")"; mkdir -p "$(dirname "$ED_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$ED_P"
+chk "E blocks dup pub symbol" 2 "$(egate '{"session_id":"'"$ED_SID"'","cwd":"'"$ED_DIR"'","stop_hook_active":false}')"
+rm -rf "$ED_DIR"
+# E skiplisted idiomatic name (pub fn new) must NOT block even when duplicated
+EDN_DIR="$(mktemp -d)"
+( cd "$EDN_DIR" && git init -q && mkdir -p crates/x/src crates/y/src \
+  && echo 'pub fn new() {}' > crates/x/src/lib.rs \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base \
+  && echo 'pub fn new() {}' > crates/y/src/lib.rs && git add -A )
+EDN_SID="e-dup-new"; EDN_P="$(turn_state_path "$EDN_SID" "$EDN_DIR")"; mkdir -p "$(dirname "$EDN_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EDN_P"
+chk "E skiplist allows dup new" 0 "$(egate '{"session_id":"'"$EDN_SID"'","cwd":"'"$EDN_DIR"'","stop_hook_active":false}')"
+rm -rf "$EDN_DIR"
+
+# E abstention-as-success: empty diff + nothing edited => allow (not a block)
+EA_DIR="$(mktemp -d)"; ( cd "$EA_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty )
+EA_SID="e-abs"; EA_P="$(turn_state_path "$EA_SID" "$EA_DIR")"; mkdir -p "$(dirname "$EA_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EA_P"
+chk "E abstention allowed" 0 "$(egate '{"session_id":"'"$EA_SID"'","cwd":"'"$EA_DIR"'","stop_hook_active":false}')"
+# E small clean turn (<400 net, <=5 files, no blob, no dup) => allow
+( cd "$EA_DIR" && mkdir -p crates/ok/src && printf 'pub fn small(){}\n' > crates/ok/src/lib.rs )
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EA_P"
+chk "E small clean allowed" 0 "$(egate '{"session_id":"'"$EA_SID"'","cwd":"'"$EA_DIR"'","stop_hook_active":false}')"
+rm -rf "$EA_DIR"
+# E boundary: exactly NF_CAP (5) new files is ALLOWED (guard is -gt, not -ge)
+EC_DIR="$(mktemp -d)"; ( cd "$EC_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ec/src && for i in 1 2 3 4 5; do echo "fn f${i}(){}" > "crates/ec/src/m${i}.rs"; done )
+EC_SID="e-cap"; EC_P="$(turn_state_path "$EC_SID" "$EC_DIR")"; mkdir -p "$(dirname "$EC_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EC_P"
+chk "E exactly-5 files allowed" 0 "$(egate '{"session_id":"'"$EC_SID"'","cwd":"'"$EC_DIR"'","stop_hook_active":false}')"
+rm -rf "$EC_DIR"
+
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"

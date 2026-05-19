@@ -76,3 +76,11 @@ Output:
 - Include: `docs_recommended: yes/no`, `commit_recommended: yes/no` so the coordinator can decide.
 - Include: `next_task: <task name or "plan complete">` so the coordinator knows whether to continue.
 - Include: list of files modified (for conflict detection during merge).
+
+## Integrity (ADR-0083)
+
+If a task is hard, implement it correctly — do not make the gate pass by
+fitting code to the tests or adding unrequested scaffolding. Surfacing that
+this is tempting is acceptable; doing it is not. Concluding that no change is
+needed (issue already fixed, request already satisfied) is a fully successful
+outcome — say so explicitly with the reason; it is not a failure.

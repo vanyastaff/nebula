@@ -265,6 +265,9 @@ not advisory. `task hooks:test` proves each guard. **The no-cheat guarantee is
 structural (D10): B (edit-guard) + A2 (clean-gate recorder) + C (Stop-gate) +
 lefthook/CI.** Hook A is a **fail-open advisory tripwire**, not a security
 boundary — it nudges on blatant literals only.
+`intent-gate.sh` (Layer-2, ADR-0083) is a deterministic structural-budget
+**addition above** D10 — it does not alter the D10 core; `stop-gate.sh` still
+runs first and remains the guarantee.
 
 | Rule | Guard |
 |------|-------|
@@ -275,6 +278,7 @@ boundary — it nudges on blatant literals only.
 | No TODO/FIXME/HACK/plan-id in committed code | `edit-guard.sh` |
 | No test-weakening while impl changed same turn | `edit-guard.sh` |
 | Cannot end a turn with impl changed but no green clippy+nextest | `stop-gate.sh` |
+| Layer-2: turn diff over structural budget (net-LoC / new-files / blob / dup symbol) | `intent-gate.sh` (deterministic, ADR-0083; `// budget-justified:` escape) |
 
 Escape hatch for discretionary edit rules: a `// guard-justified: <reason>` line
 directly above the construct. No escape for lefthook-bypass, lint-suppression,
