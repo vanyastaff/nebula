@@ -103,7 +103,7 @@ body:
       label: Related Issues, ADRs, or Canon Sections
       description: Link to anything that provides relevant prior context.
       placeholder: |
-        ADR: docs/adr/0012-execution-context-design.md
+        ADR: docs/adr/0081-m6-resource-credential-integration.md (or docs/adr/HISTORICAL.md for pre-0042 decisions)
         Related: #234 (original `ExecutionContext` PR), #456 (Core-layer test pain)
 
   - type: checkboxes
