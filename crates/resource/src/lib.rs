@@ -95,10 +95,7 @@ pub use nebula_resource_macros::Resource;
 // `nebula-schema` in extern_prelude either.
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
-pub use recovery::{
-    GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
-    RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
-};
+pub use recovery::{GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter};
 pub use registry::{AnyManagedResource, LookupOutcome, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;

@@ -49,10 +49,7 @@ use crate::{
     integration::AcquireResilience,
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
     options::AcquireOptions,
-    recovery::{
-        gate::{GateState, RecoveryGate},
-        group::RecoveryGroupRegistry,
-    },
+    recovery::gate::{GateState, RecoveryGate},
     registry::Registry,
     release_queue::{ReleaseQueue, ReleaseQueueHandle},
     reload::ReloadOutcome,
@@ -213,7 +210,6 @@ impl RevokeTail {
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
-    pub(super) recovery_groups: RecoveryGroupRegistry,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
     pub(super) event_tx: broadcast::Sender<ResourceEvent>,
@@ -254,7 +250,6 @@ impl Manager {
                 });
         Self {
             registry: Registry::new(),
-            recovery_groups: RecoveryGroupRegistry::new(),
             cancel,
             metrics,
             event_tx,
@@ -2634,11 +2629,6 @@ impl Manager {
     /// Returns all registered resource keys.
     pub fn keys(&self) -> Vec<ResourceKey> {
         self.registry.keys()
-    }
-
-    /// Returns a reference to the recovery group registry.
-    pub fn recovery_groups(&self) -> &RecoveryGroupRegistry {
-        &self.recovery_groups
     }
 
     /// Returns a reference to the aggregate metrics counters, if a

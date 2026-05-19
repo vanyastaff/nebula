@@ -174,6 +174,42 @@ pub struct RecoveryWaiter {
 impl RecoveryWaiter {
     /// Waits for the gate to leave [`GateState::InProgress`], then returns
     /// the new state.
+    ///
+    /// # Why this is lost-wakeup free without `enable()`
+    ///
+    /// The `Notified` future is constructed **before** the `state` snapshot
+    /// is loaded, and every gate notifier wakes waiters with
+    /// [`Notify::notify_waiters`] — never `notify_one` — paired with the
+    /// `ArcSwap` state store at the same site (see [`RecoveryTicket::resolve`]
+    /// / [`fail_transient`](RecoveryTicket::fail_transient) /
+    /// [`fail_permanent`](RecoveryTicket::fail_permanent), the ticket `Drop`,
+    /// [`RecoveryGate::reset`], and the max-attempts transition).
+    ///
+    /// Tokio's documented `notify_waiters` contract: `Notify::notified()`
+    /// captures the current `notify_waiters` invocation count at the moment
+    /// the future is *created*. A `notify_waiters()` call that lands after
+    /// the future is created but before its first poll therefore advances
+    /// that count and is delivered on the first poll — no prior poll and no
+    /// `Notified::enable()` is required. So in the loop body, if a notifier
+    /// fires in the window between `notified()` construction and the `.await`,
+    /// either the freshly stored non-`InProgress` state is observed by the
+    /// `load()` below (and we return immediately) or the captured-by-count
+    /// notification satisfies the `.await` on first poll. No wakeup is lost
+    /// and no spin is needed.
+    ///
+    /// This is distinct from the drain wait in `manager::shutdown`
+    /// (`wait_for_tracker_drain`), which *does* need
+    /// `Notified::enable()`: that loop re-reads an **external `AtomicU64`**
+    /// the `Notify` does not gate, between waiter registration and the
+    /// `.await`. `enable()` registers the waiter synchronously *before* that
+    /// external re-check so a `notify_waiters()` firing in that gap is not
+    /// missed. Here there is no separate post-registration value to re-read —
+    /// the state transition and its `notify_waiters()` are captured by the
+    /// creation-time count on the very `Notify` this future listens on — so
+    /// the synchronous pre-registration `enable()` provides is unnecessary.
+    /// Switching any notifier to `notify_one`, or loading the state before
+    /// constructing the `Notified` future, would reintroduce a lost-wakeup
+    /// window; the `#[cfg(test)]` correctness-pin below guards that ordering.
     pub async fn wait(&self) -> GateState {
         loop {
             // Register notification BEFORE checking state to avoid missing
