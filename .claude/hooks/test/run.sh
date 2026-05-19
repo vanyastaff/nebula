@@ -204,6 +204,25 @@ EBT_SID="e-bud-trk"; EBT_P="$(turn_state_path "$EBT_SID" "$EBT_DIR")"; mkdir -p 
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBT_P"
 chk "E counts +-prefixed tracked" 2 "$(egate '{"session_id":"'"$EBT_SID"'","cwd":"'"$EBT_DIR"'","stop_hook_active":false}')"
 rm -rf "$EBT_DIR"
+# Regression: a `// budget-justified:` token that appears EARLY in a LARGE
+# ig_added_lines stream must still suppress an over-budget deny. The pre-fix
+# `budget_justified() { ig_added_lines | grep -qE ...; }` short-circuited on
+# the first match, SIGPIPE'd the still-producing ig_added_lines, and
+# `set -o pipefail` adopted 141 as the pipeline status => a PRESENT,
+# regex-matching token was misread as ABSENT => the deny fired anyway. Two
+# untracked files: the sorted-first one carries the token on its first line
+# (stream position ~2); the second is large enough that grep -q exits long
+# before the producer drains. The existing "budget-justified escapes" case
+# can't catch this — its token is the LAST stream line, so grep -q reads to
+# EOF and the producer finishes naturally (no SIGPIPE).
+EBJ_DIR="$(mktemp -d)"
+( cd "$EBJ_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && { echo '<!-- // budget-justified: regression -->'; for i in $(seq 1 200); do echo "filler $i"; done; } > a_just.md \
+  && { for i in $(seq 1 450); do echo "filler $i"; done; } > z_big.md )
+EBJ_SID="e-bud-sigpipe"; EBJ_P="$(turn_state_path "$EBJ_SID" "$EBJ_DIR")"; mkdir -p "$(dirname "$EBJ_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBJ_P"
+chk "E budget-justified suppresses over large stream (SIGPIPE regr)" 0 "$(egate '{"session_id":"'"$EBJ_SID"'","cwd":"'"$EBJ_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBJ_DIR"
 
 # E new-file budget (cap 5)
 EF_DIR="$(mktemp -d)"

@@ -73,9 +73,22 @@ ig_added_lines() {
             | grep -E "$CODE_RE" || true)
 }
 
+# Materialize the added-content stream ONCE. Every consumer below reads it via
+# a here-string (`<<<"$IG_ADDED"`), never `ig_added_lines | …`. Two reasons:
+# (1) Correctness. A short-circuiting reader (`grep -q` in budget_justified)
+#     closes the pipe on its first match while ig_added_lines is still
+#     producing; the producer takes SIGPIPE (exit 141) and `set -o pipefail`
+#     adopts 141 as the pipeline status. A PRESENT, regex-matching
+#     `// budget-justified:` token would then read as ABSENT and the deny
+#     fires anyway. A here-string has no upstream process, so the pipeline's
+#     only exit status is the reader's own.
+# (2) Speed. The git+sed pipeline previously re-ran 4× (net / budget / dup /
+#     blob); it now runs exactly once.
+IG_ADDED="$(ig_added_lines)"
+
 # net = added − deleted. added = stream added lines minus `+++ ` headers;
 # deleted = numstat deletions on tracked changes (untracked delete nothing).
-added="$(ig_added_lines | awk '/^\+\+\+ /{next} /^\+/{c++} END{print c+0}')"
+added="$(awk '/^\+\+\+ /{next} /^\+/{c++} END{print c+0}' <<<"$IG_ADDED")"
 deleted=0
 while read -r _a d _; do
   [[ "$d" =~ ^[0-9]+$ ]] && deleted=$((deleted + d))
@@ -88,8 +101,11 @@ net=$((added - deleted))
 # Net-negative (cleanup / deletion) is always allowed — positive constraint.
 if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 
-# Escape token: `// budget-justified:` on any added line this turn.
-budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'; }
+# Escape token: `// budget-justified:` on any added line this turn. Reads the
+# pre-captured stream via here-string — never `ig_added_lines | grep -q`,
+# whose grep short-circuits on first match and SIGPIPEs the producer (=> 141
+# under pipefail => a present token silently misread as absent).
+budget_justified() { grep -qE '//[[:space:]]*budget-justified:' <<<"$IG_ADDED"; }
 
 # Duplicate public-symbol heuristic: a NEW `pub fn|struct|trait NAME` whose
 # NAME already exists (same kind) elsewhere in crates/*/src — the "47 date
@@ -102,7 +118,7 @@ budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'
 # the false-positive surface this skiplist exists to contain.
 dup_symbol() {
   local added kind name hit
-  added="$(ig_added_lines | grep -E '^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' || true)"
+  added="$(grep -E '^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' <<<"$IG_ADDED" || true)"
   [ -n "$added" ] || return 1
   while IFS= read -r line; do
     kind="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait).*/\1/')"
@@ -129,11 +145,11 @@ fi
 # header reset — uniform with the net-LoC / dup-symbol consumers).
 BLOB_CAP=100
 longest_added_run() {
-  ig_added_lines | awk '
+  awk '
       /^\+\+\+ /      { run=0; next }
       /^\+/           { run++; if (run>max) max=run; next }
       { run=0 }
-      END             { print max+0 }'
+      END             { print max+0 }' <<<"$IG_ADDED"
 }
 blob="$(longest_added_run)"
 if [ "${blob:-0}" -gt "$BLOB_CAP" ] && ! budget_justified; then
