@@ -85,7 +85,7 @@ T7 drift-detection + 3.1 validation tests (6 tests in
 `openapi_spec`), T8 docs + ROADMAP closure. 241 nextest tests pass.
 
 **Evidence:**
-- `docs/adr/0047-openapi-31-generator.md` (ADR with cross-layer
+- `docs/adr/0082-api-webhooks-idempotency.md` (ADR-0047, consolidated; cross-layer
   rule + Stub Endpoint Policy)
 - `crates/api/src/models/{me,org,resource,system,pagination}.rs`
   (new DTO modules with `ToSchema`)

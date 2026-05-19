@@ -110,12 +110,12 @@ token is not.
 
 ## See also
 
-- [`docs/adr/0051-external-provider-redesign.md`][adr0051] — design rationale and the
-  trait surface.
+- [`docs/adr/0081-m6-resource-credential-integration.md`][adr0051] — design rationale and the
+  trait surface (external provider redesign, consolidated into the M6 contract).
 - [`crates/credential/src/provider/`][credential-provider] — the trait definitions.
 - [`crates/storage/src/credential/provider_cache.rs`][cache] — the cache layer this
   backend composes with.
 
-[adr0051]: ../../docs/adr/0051-external-provider-redesign.md
+[adr0051]: ../../docs/adr/0081-m6-resource-credential-integration.md
 [credential-provider]: ../credential/src/provider/
 [cache]: ../storage/src/credential/provider_cache.rs

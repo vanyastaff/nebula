@@ -88,7 +88,7 @@ See `docs/MATURITY.md` row for `nebula-validator`.
 - Canon: `docs/PRODUCT_CANON.md` §3.5, §4.5.
 - Glossary: `docs/GLOSSARY.md` §5 (`Rule`, `ValidValues`, `ResolvedValues`).
 - Siblings: `nebula-schema` (consumes `Rule`), `nebula-error` (error taxonomy).
-- ADR: `docs/adr/0052-schema-validator-condition-seam.md` — condition evaluation seam.
+- ADR: `docs/adr/0080-schema-validation-platform.md` — condition evaluation seam (ADR-0052, consolidated into the schema/validation contract).
 
 ## Appendix
 

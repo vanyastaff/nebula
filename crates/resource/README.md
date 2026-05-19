@@ -173,7 +173,7 @@ See `docs/MATURITY.md` row for `nebula-resource`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §11.4 (resource lifecycle contract — acquire/health/release; orphan drain), §13.3 (lifecycle visibility in journal/trace).
-- ADRs: `docs/adr/0044-supersede-0036-resource-credential-singular.md` (supersedes ADR-0036), `docs/adr/0042-node-binding-mechanism.md`, `docs/adr/0043-dependency-declaration-dx.md`.
+- ADRs: `docs/adr/0081-m6-resource-credential-integration.md` (M6 binding/credential cascade — supersedes ADR-0036; consolidates ADR-0042/0043/0044).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-resource`.
 - Siblings: `nebula-core` (`ResourceKey`, `ExecutionId`, `Dependencies`), `nebula-credential` (`CredentialGuard` populated by framework), `nebula-action` (`ResourceAction` trait, `ResourceProduces<R>` marker), `nebula-resilience` (acquire-path and outbound-call retry).
 

@@ -230,7 +230,7 @@ See `docs/MATURITY.md` row for `nebula-action`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (action trait family; adding a trait = canon revision), §11.2 (retry surface lives in `nebula-resilience`, not the engine), §11.3 (idempotency), §12.6 (WASM non-goal), §13.4 (trigger delivery), §13.5 (non-idempotent side effects).
-- ADRs: `docs/adr/0042-node-binding-mechanism.md`, `docs/adr/0043-dependency-declaration-dx.md`, `docs/adr/0044-supersede-0036-resource-credential-singular.md`, `docs/adr/0045-eventtrigger-scope-deferral.md`.
+- ADRs: `docs/adr/0081-m6-resource-credential-integration.md` (M6 binding cascade — consolidates ADR-0042/0043/0044/0045).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (including `CheckpointPolicy` status note).
 - Sandbox: `crates/sandbox/README.md` — `ProcessSandbox`, capability allowlists, OS-level hardening.
 - Siblings: `nebula-schema` (`ValidSchema` + `#[derive(Schema)]` for `Self::Input`), `nebula-credential` (`CredentialGuard` slot fields), `nebula-resource` (`ResourceGuard` slot fields, `ResourceAction`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).

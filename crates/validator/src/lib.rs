@@ -9,8 +9,8 @@
 //! **Maturity:** `frontier` — the programmatic validator API (`Validate`, `ValidateExt`,
 //! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
 //! (`Value` / `Predicate` / `Logic` / `Deferred` / `Described`) with a new externally-tagged
-//! wire format. See the spec at
-//! `docs/adr/0052-schema-validator-condition-seam.md`.
+//! wire format. See the contract ADR
+//! `docs/adr/0080-schema-validation-platform.md` (ADR-0052, consolidated).
 //!
 //! ## Core Types
 //!

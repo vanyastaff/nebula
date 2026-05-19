@@ -391,7 +391,7 @@ governs header semantics. Highlights:
 | `API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES` | `1048576` | Responses beyond this are returned uncached. |
 | `API_IDEMPOTENCY_SWEEP_INTERVAL_SECS` | `300` | PG-only: cadence for the `evict_expired` background sweep. `0` disables. `< 60` triggers a startup `WARN`. |
 
-**Store-backend tradeoffs** (see `docs/adr/0048-idempotency-store-backend.md`):
+**Store-backend tradeoffs** (see `docs/adr/0082-api-webhooks-idempotency.md`, ADR-0048 consolidated):
 
 | Backend | When | Restart-survival | Multi-replica share |
 |---|---|---|---|

@@ -367,7 +367,7 @@ programmatic `(uuid, nonce)` and operator-configured
       ADR-0048 — hybrid backend: `InMemoryIdempotencyStore` for dev/tests,
       `StorageBackedIdempotencyStore<PgIdempotencyStore>` for production.
       Selection via `ApiConfig.idempotency.backend` (`API_IDEMPOTENCY_BACKEND`).
-      `docs/adr/0048-idempotency-store-backend.md`.
+      `docs/adr/0082-api-webhooks-idempotency.md` (ADR-0048, consolidated).
 - [x] **PG-backed: migration + repo trait + concurrency tests.** Trait
       `IdempotencyStoreRepo` in `crates/storage/src/repos/idempotency.rs`;
       impl `PgIdempotencyStore` in `crates/storage/src/pg/idempotency.rs`;
@@ -892,7 +892,7 @@ in CI; `cargo doc` is green with broken-intra-doc-links forbidden.
       Evidence: `crates/action/src/action.rs`,
       `crates/action/src/stateless.rs`.
 - [x] **M11.3** ~~Supersede ADR-0036~~ — **DONE** via
-      [`docs/adr/0044-supersede-0036-resource-credential-singular.md`](../docs/adr/0044-supersede-0036-resource-credential-singular.md).
+      [`docs/adr/0081-m6-resource-credential-integration.md`](../docs/adr/0081-m6-resource-credential-integration.md) (ADR-0044, consolidated).
       `Resource::Credential` associated type removed; resources declare
       credentials via `#[credential]` slot fields; per-slot rotation
       hook `Resource::on_credential_refresh(&mut self, slot_name)`
@@ -1044,8 +1044,8 @@ candidate. Verification gate: `cargo deny + clippy + test + doc + build
 
 - [ ] Land ADR-0027 (`ResolvedPlugin`, namespace invariant, registry
       accessors) — file location pre-announced as
-      `docs/adr/0027-plugin-load-path-stable.md`
-      (`crates/plugin/README.md:66`).
+      ADR-0027 (historical — `docs/adr/HISTORICAL.md`)
+      (`crates/plugin/README.md`).
 - [ ] Replace legacy API with the slice-B replacement
       (`PluginManifest` canonical home in `nebula-metadata`,
       re-exported from `nebula-plugin` for source compat); remove

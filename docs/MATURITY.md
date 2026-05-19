@@ -140,7 +140,7 @@ Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` adds an **industry reference**
 subsection (n8n credential taxonomy vs Nebula Plane B axes: acquisition /
 `AuthScheme` / `AuthPattern` / persistence). Illustrative bucket counts from a public codebase;
 not a Nebula API surface.
-Prior: 2026-04-21 — [ADR-0033](adr/0033-integration-credentials-plane-b.md)
+Prior: 2026-04-21 — [ADR-0033](adr/HISTORICAL.md) (historical)
 names **Plane B (integration credentials)** vs future Plane A / `nebula-auth`, and
 documents acquisition vs `AuthScheme` / `AuthPattern` vs persistence. Cross-links in
 `docs/INTEGRATION_MODEL.md` and `crates/credential/README.md`.

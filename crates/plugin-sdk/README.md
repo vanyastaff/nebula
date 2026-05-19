@@ -89,7 +89,7 @@ See `docs/MATURITY.md` row for `nebula-plugin-sdk`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §7.1, §12.6.
-- ADR: `docs/adr/0006-sandbox-phase1-broker.md` — duplex JSON-RPC over UDS / Named Pipe;
+- ADR: ADR-0006 (historical — `docs/adr/HISTORICAL.md`) — duplex JSON-RPC over UDS / Named Pipe;
   slices 1a/1b/1c landed, slice 1d proposed.
 - Plugin model: `docs/INTEGRATION_MODEL.md` §7.
 - Upgrade compatibility: `docs/UPGRADE_COMPAT.md`.

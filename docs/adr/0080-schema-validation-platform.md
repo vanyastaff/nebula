@@ -97,11 +97,11 @@ express slot roles (contrast with single-schema integration tools).
 
 | Source ADR | Role |
 |------------|------|
-| [0052-schema-validator-condition-seam](./0052-schema-validator-condition-seam.md) | Stub → 0080 |
-| [0058-schema-field-vocabulary](./0058-schema-field-vocabulary.md) | Stub → 0080 |
-| [0059-cross-foundation-dependency-graph](./0059-cross-foundation-dependency-graph.md) | Stub → 0080 |
-| [0060-symmetric-foundation-api](./0060-symmetric-foundation-api.md) | Stub → 0080 |
-| [0061-nebula-schema-core-ratification](./0061-nebula-schema-core-ratification.md) | Stub → 0080 |
-| [0062-nebula-schema-stdlib-newtype-zoo](./0062-nebula-schema-stdlib-newtype-zoo.md) | Stub → 0080 |
-| [0063-json-schema-2020-12-interop](./0063-json-schema-2020-12-interop.md) | Stub → 0080 |
-| [0064-ui-form-composition](./0064-ui-form-composition.md) | Stub → 0080 |
+| ADR-0052 — schema-validator-condition-seam | absorbed (git history) |
+| ADR-0058 — schema-field-vocabulary | absorbed (git history) |
+| ADR-0059 — cross-foundation-dependency-graph | absorbed (git history) |
+| ADR-0060 — symmetric-foundation-api | absorbed (git history) |
+| ADR-0061 — nebula-schema-core-ratification | absorbed (git history) |
+| ADR-0062 — nebula-schema-stdlib-newtype-zoo | absorbed (git history) |
+| ADR-0063 — json-schema-2020-12-interop | absorbed (git history) |
+| ADR-0064 — ui-form-composition | absorbed (git history) |

@@ -21,8 +21,8 @@
 | [`docs/INTEGRATION_MODEL.md`](./INTEGRATION_MODEL.md) | Integration mechanics (Resource, Credential, Action, Schema, Plugin) |
 | [`docs/VISION.md`](./VISION.md) | Human charter draft — **agents skip** (use STRATEGY + canon) |
 | [`docs/OBSERVABILITY.md`](./OBSERVABILITY.md) | Metrics / tracing boundaries |
-| [`docs/adr/README.md`](./adr/README.md) | **Active ADRs (0042+)** — implement from these |
-| [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md) | Index only for 0001–0041 — open one file if cited |
+| [`docs/adr/README.md`](./adr/README.md) | **Live ADRs (0046+ standalone + contract 0080–0082)** — implement from these |
+| [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md) | Index for 0001–0041 (title/status only; full text git-history-only) |
 
 **Conflict rule:** `PRODUCT_CANON.md` (invariants) → `INTEGRATION_MODEL.md` (mechanics) →
 **accepted ADR** for a specific decision → `STRATEGY.md` (direction) → crate README.
@@ -41,10 +41,10 @@ for traceability but are **non-normative** (see conflict rule above).
 
 ## ADR layout
 
-- **0042+** — current cascade (`docs/adr/0042-*.md` and later; see [`adr/README.md`](./adr/README.md) for the live index through **0072**).
-- **0001–0041** — on disk for deep links from code; **excluded from Cursor
-  index** (`.cursorignore`). Use [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md)
-  to pick the right file.
+- **Live** — standalone 0046–0072 + contract ADRs 0080–0082; see [`adr/README.md`](./adr/README.md) for the thematic index.
+- **0001–0041** — evicted from the tree 2026-05-18; title/status index in
+  [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md), full decision text via
+  `git show <rev>:docs/adr/<file>` (`git log -- <file>` for the rev).
 
 ## Integration author path
 
