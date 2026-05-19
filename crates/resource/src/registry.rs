@@ -24,12 +24,19 @@ use crate::{
 };
 
 /// Erased acquire hook installed on each registry row at registration.
+///
+/// The `Arc<dyn AnyManagedResource>` is the row already resolved by the
+/// single [`get_acquire_for`](Registry::get_acquire_for) scope walk
+/// (carried out via [`AcquireLookupOutcome::Found`]). The hook downcasts
+/// it to the concrete `ManagedResource<R>` rather than performing a
+/// second `DashMap` walk at the matched scope — one registry resolution
+/// per erased acquire, not two.
 pub type ErasedAcquireFn = Arc<
     dyn Fn(
             Arc<crate::Manager>,
             ResourceContext,
             AcquireOptions,
-            ScopeLevel,
+            Arc<dyn AnyManagedResource>,
         )
             -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, Error>> + Send>>
         + Send
@@ -226,8 +233,7 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 /// The **slot-identity-pinned** lookups
 /// ([`get_for`](Registry::get_for) /
 /// [`get_typed_for`](Registry::get_typed_for) /
-/// [`get_typed_for_acquire`](Registry::get_typed_for_acquire) /
-/// [`get_typed_at_acquire_scope`](Registry::get_typed_at_acquire_scope))
+/// [`get_typed_for_acquire`](Registry::get_typed_for_acquire))
 /// return [`PinnedLookup`] instead — a 2-variant type with **no
 /// `Ambiguous`** arm, because a resolved [`SlotIdentity`] addresses exactly
 /// one row by construction, so ambiguity is unrepresentable there rather
@@ -268,12 +274,20 @@ pub enum PinnedLookup {
 
 /// Outcome of a registry acquire-hook lookup (same semantics as [`LookupOutcome`]).
 pub(crate) enum AcquireLookupOutcome {
-    /// Exactly one row matched — hook plus the scope level that won the walk.
+    /// Exactly one row matched — hook plus the already-resolved row.
     Found {
         /// Erased topology dispatch for this row.
         acquire: ErasedAcquireFn,
-        /// Scope level selected by the acquire scope walk (avoids a second walk).
-        matched_scope: ScopeLevel,
+        /// The managed-resource row resolved by this single scope walk.
+        ///
+        /// `acquire` and `managed` are read from the **same**
+        /// [`RegistryEntry`] in one walk, so the erased-acquire path
+        /// downcasts this `Arc` directly instead of re-walking the
+        /// `DashMap` at the matched scope: one resolution, not two. The
+        /// downcast (in `Manager`) resolves the identical row the second
+        /// walk would have — same `(scope, slot_identity)` row from the
+        /// same `entries` Vec.
+        managed: Arc<dyn AnyManagedResource>,
     },
     /// No row matched the key/scope/identity.
     NotFound,
@@ -477,11 +491,12 @@ impl Registry {
         };
         for level in scope_levels_for_acquire(scope) {
             match Self::find_at_exact_scope(&entries, &level, Some(slot_identity)) {
-                ScopeFind::Hit { acquire, .. } => {
-                    return AcquireLookupOutcome::Found {
-                        acquire,
-                        matched_scope: level,
-                    };
+                ScopeFind::Hit { managed, acquire } => {
+                    // `managed` and `acquire` came from the same
+                    // `RegistryEntry` in this one walk. Carry the row out
+                    // so the erased-acquire path downcasts it directly
+                    // instead of re-walking the `DashMap` at `level`.
+                    return AcquireLookupOutcome::Found { acquire, managed };
                 },
                 ScopeFind::Ambiguous { rows } => {
                     return AcquireLookupOutcome::Ambiguous { rows };
@@ -534,30 +549,6 @@ impl Registry {
             }
         }
         PinnedLookup::NotFound
-    }
-
-    /// Typed lookup at an exact scope level (no ancestor walk), pinned to a
-    /// resolved slot identity.
-    ///
-    /// Used by the erased acquire path after [`get_acquire_for`](Self::get_acquire_for)
-    /// has already selected the winning scope level. Returns
-    /// [`PinnedLookup`] — unambiguous by construction.
-    pub(crate) fn get_typed_at_acquire_scope<R: Resource>(
-        &self,
-        level: ScopeLevel,
-        slot_identity: &SlotIdentity,
-    ) -> PinnedLookup {
-        let type_id = TypeId::of::<ManagedResource<R>>();
-        let Some(key) = self.type_index.get(&type_id) else {
-            return PinnedLookup::NotFound;
-        };
-        let Some(entries) = self.entries.get(&*key) else {
-            return PinnedLookup::NotFound;
-        };
-        match Self::find_pinned_at_exact_scope(&entries, &level, slot_identity) {
-            PinnedFind::Hit { managed, .. } => PinnedLookup::Found(managed),
-            PinnedFind::NotFound => PinnedLookup::NotFound,
-        }
     }
 
     /// [`get_typed_for_acquire`](Self::get_typed_for_acquire) without a

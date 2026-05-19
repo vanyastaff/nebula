@@ -549,3 +549,58 @@ async fn warmup_pool_rejected_after_revoke_taint_creates_no_entries() {
          credential (post-taint re-check, #679 pattern applied to warmup)"
     );
 }
+
+/// Collapsing the five `run_*_acquire` into one generic `run_acquire` must
+/// not perturb the `InFlightCounter::new` → `reject_if_tainted_post_count`
+/// ordering that closes the revoke-vs-acquire TOCTOU. A synchronous
+/// `taint_slot` models the state a concurrent `revoke_slot` establishes by
+/// the time the acquire would proceed; the slot-identity-pinned acquire
+/// must reject (`Revoked` → `Unavailable`) and never hand out a guard on
+/// the tainted row. Behavior-preservation pin for the collapse — the
+/// post-count re-check now lives once in `run_acquire`, not five times.
+#[tokio::test]
+async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
+    use nebula_error::{Classify, ErrorCategory};
+
+    let org = OrgId::new();
+    let slot_id = 0x5151_5151_5151_5151;
+    let scope = ScopeLevel::Organization(org);
+    let create_counter = Arc::new(AtomicU64::new(0));
+    let manager = Manager::new();
+    manager
+        .register_pooled_with(
+            PoolRes {
+                create_counter: Arc::clone(&create_counter),
+            },
+            CountingConfig,
+            pool_cfg(),
+            RegisterOptions::default()
+                .with_scope(scope.clone())
+                .with_slot_identity(slot_id),
+        )
+        .expect("register single pinned tenant");
+
+    // Synchronous taint == the state a racing `revoke_slot` leaves the row
+    // in before the acquire's in-flight increment + post-count re-check.
+    let _tainted = manager
+        .taint_slot_for(&PoolRes::key(), scope, "db", slot_id)
+        .expect("taint_slot_for must resolve the pinned pooled row");
+
+    let ctx = ctx_for_org(org);
+    let err = manager
+        .acquire_pooled_for::<PoolRes>(&ctx, &AcquireOptions::default(), slot_id)
+        .await
+        .expect_err("acquire on a revoke-tainted pinned row must be rejected");
+    assert_eq!(
+        err.category(),
+        ErrorCategory::Unavailable,
+        "post-count taint re-check (preserved verbatim in the single \
+         run_acquire) must reject with Revoked/Unavailable, got: {err}"
+    );
+    assert_eq!(
+        create_counter.load(Ordering::SeqCst),
+        0,
+        "a tainted acquire must never reach Resource::create through the \
+         collapsed pipeline"
+    );
+}

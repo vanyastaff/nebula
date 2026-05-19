@@ -30,6 +30,7 @@
 //! - `shutdown` — `graceful_shutdown` + drain helpers + `set_phase_all*`
 
 use std::{
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
@@ -290,6 +291,14 @@ impl Manager {
     }
 
     /// Erased acquire hook for [`register`](Self::register) on a pooled resource.
+    ///
+    /// `slot_identity` is accepted for API stability but no longer drives
+    /// resolution: the erased acquire path resolves the row in a single
+    /// [`Registry::get_acquire_for`](crate::registry::Registry::get_acquire_for)
+    /// scope walk (pinned by the *caller's* runtime slot identity) and
+    /// the hook downcasts that already-resolved row. The registration-time
+    /// identity that previously re-pinned a second walk is therefore
+    /// unused — walk-1 already selected exactly that row.
     #[must_use]
     pub fn erased_acquire_pooled<R>(slot_identity: u64) -> ErasedAcquireFn
     where
@@ -297,10 +306,15 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        acquire_dispatch::erased_acquire_pooled::<R>(slot_identity)
+        let _ = slot_identity;
+        acquire_dispatch::erased_acquire_pooled::<R>()
     }
 
     /// Erased acquire hook for [`register`](Self::register) on a resident resource.
+    ///
+    /// See [`erased_acquire_pooled`](Self::erased_acquire_pooled) — the
+    /// `slot_identity` argument is API-stable but unused (single-walk
+    /// resolution + downcast).
     #[must_use]
     pub fn erased_acquire_resident<R>(slot_identity: u64) -> ErasedAcquireFn
     where
@@ -308,10 +322,15 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        acquire_dispatch::erased_acquire_resident::<R>(slot_identity)
+        let _ = slot_identity;
+        acquire_dispatch::erased_acquire_resident::<R>()
     }
 
     /// Erased acquire hook for [`register`](Self::register) on a service resource.
+    ///
+    /// See [`erased_acquire_pooled`](Self::erased_acquire_pooled) — the
+    /// `slot_identity` argument is API-stable but unused (single-walk
+    /// resolution + downcast).
     #[must_use]
     pub fn erased_acquire_service<R>(slot_identity: u64) -> ErasedAcquireFn
     where
@@ -319,10 +338,15 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        acquire_dispatch::erased_acquire_service::<R>(slot_identity)
+        let _ = slot_identity;
+        acquire_dispatch::erased_acquire_service::<R>()
     }
 
     /// Erased acquire hook for [`register`](Self::register) on a transport resource.
+    ///
+    /// See [`erased_acquire_pooled`](Self::erased_acquire_pooled) — the
+    /// `slot_identity` argument is API-stable but unused (single-walk
+    /// resolution + downcast).
     #[must_use]
     pub fn erased_acquire_transport<R>(slot_identity: u64) -> ErasedAcquireFn
     where
@@ -330,10 +354,15 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        acquire_dispatch::erased_acquire_transport::<R>(slot_identity)
+        let _ = slot_identity;
+        acquire_dispatch::erased_acquire_transport::<R>()
     }
 
     /// Erased acquire hook for [`register`](Self::register) on an exclusive resource.
+    ///
+    /// See [`erased_acquire_pooled`](Self::erased_acquire_pooled) — the
+    /// `slot_identity` argument is API-stable but unused (single-walk
+    /// resolution + downcast).
     #[must_use]
     pub fn erased_acquire_exclusive<R>(slot_identity: u64) -> ErasedAcquireFn
     where
@@ -341,7 +370,8 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        acquire_dispatch::erased_acquire_exclusive::<R>(slot_identity)
+        let _ = slot_identity;
+        acquire_dispatch::erased_acquire_exclusive::<R>()
     }
 
     /// Registers a resource with its config, scope, topology, and optional
@@ -572,7 +602,6 @@ impl Manager {
         validate_pool_config(&pool_config)?;
 
         let fingerprint = config.fingerprint();
-        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -581,7 +610,7 @@ impl Manager {
                 pool_config,
                 fingerprint,
             )),
-            acquire_dispatch::erased_acquire_pooled::<R>(slot_identity),
+            acquire_dispatch::erased_acquire_pooled::<R>(),
             None,
             None,
         )
@@ -606,7 +635,6 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -614,7 +642,7 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
-            acquire_dispatch::erased_acquire_resident::<R>(slot_identity),
+            acquire_dispatch::erased_acquire_resident::<R>(),
             None,
             None,
         )
@@ -640,7 +668,6 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -649,7 +676,7 @@ impl Manager {
                 runtime,
                 service_config,
             )),
-            acquire_dispatch::erased_acquire_service::<R>(slot_identity),
+            acquire_dispatch::erased_acquire_service::<R>(),
             None,
             None,
         )
@@ -675,7 +702,6 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -684,7 +710,7 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
-            acquire_dispatch::erased_acquire_exclusive::<R>(slot_identity),
+            acquire_dispatch::erased_acquire_exclusive::<R>(),
             None,
             None,
         )
@@ -710,7 +736,6 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let slot_identity = crate::dedup::SLOT_IDENTITY_UNBOUND;
         self.register(
             resource,
             config,
@@ -719,7 +744,7 @@ impl Manager {
                 runtime,
                 transport_config,
             )),
-            acquire_dispatch::erased_acquire_transport::<R>(slot_identity),
+            acquire_dispatch::erased_acquire_transport::<R>(),
             None,
             None,
         )
@@ -760,7 +785,7 @@ impl Manager {
                 pool_config,
                 fingerprint,
             )),
-            acquire_dispatch::erased_acquire_pooled::<R>(options.slot_identity),
+            acquire_dispatch::erased_acquire_pooled::<R>(),
             options.resilience,
             options.recovery_gate,
         )
@@ -795,7 +820,7 @@ impl Manager {
             TopologyRuntime::Resident(crate::runtime::resident::ResidentRuntime::<R>::new(
                 resident_config,
             )),
-            acquire_dispatch::erased_acquire_resident::<R>(options.slot_identity),
+            acquire_dispatch::erased_acquire_resident::<R>(),
             options.resilience,
             options.recovery_gate,
         )
@@ -832,7 +857,7 @@ impl Manager {
                 runtime,
                 service_config,
             )),
-            acquire_dispatch::erased_acquire_service::<R>(options.slot_identity),
+            acquire_dispatch::erased_acquire_service::<R>(),
             options.resilience,
             options.recovery_gate,
         )
@@ -869,7 +894,7 @@ impl Manager {
                 runtime,
                 transport_config,
             )),
-            acquire_dispatch::erased_acquire_transport::<R>(options.slot_identity),
+            acquire_dispatch::erased_acquire_transport::<R>(),
             options.resilience,
             options.recovery_gate,
         )
@@ -906,7 +931,7 @@ impl Manager {
                 runtime,
                 exclusive_config,
             )),
-            acquire_dispatch::erased_acquire_exclusive::<R>(options.slot_identity),
+            acquire_dispatch::erased_acquire_exclusive::<R>(),
             options.resilience,
             options.recovery_gate,
         )
@@ -1322,18 +1347,28 @@ impl Manager {
         Self::taint_gate::<R>(managed)
     }
 
-    /// Typed acquire lookup at a scope level already chosen by [`Registry::get_acquire_for`].
-    fn lookup_typed_at_acquire_scope<R: Resource>(
+    /// Downcasts the row already resolved by
+    /// [`Registry::get_acquire_for`](crate::registry::Registry::get_acquire_for)'s
+    /// single scope walk, then applies the shared shutdown + taint tail.
+    ///
+    /// The erased-acquire path threads the resolved
+    /// `Arc<dyn AnyManagedResource>` out of that one walk (via
+    /// [`AcquireLookupOutcome::Found`](crate::registry::AcquireLookupOutcome::Found)),
+    /// so the typed handle is recovered by a **downcast of that exact
+    /// row** — not a second `DashMap` walk at the matched scope. The
+    /// resolved row is, by construction, the `ManagedResource<R>` the
+    /// `erased_acquire_*::<R>` hook was registered alongside, so the
+    /// downcast yields the identical handle the prior pinned re-walk
+    /// would have. Failure mapping (`NotFound` on a type mismatch) and
+    /// the [`taint_gate`](Self::taint_gate) tail are byte-identical to
+    /// the replaced pinned-lookup path.
+    fn downcast_resolved_row<R: Resource>(
         &self,
-        matched_scope: ScopeLevel,
-        slot_identity: u64,
+        managed: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
+        use crate::registry::PinnedLookup;
         self.shutdown_guard()?;
-        let managed =
-            Self::resolve_typed_pinned::<R>(self.registry.get_typed_at_acquire_scope::<R>(
-                matched_scope,
-                &crate::dedup::SlotIdentity::from_opaque(slot_identity),
-            ))?;
+        let managed = Self::resolve_typed_pinned::<R>(PinnedLookup::Found(managed))?;
         Self::taint_gate::<R>(managed)
     }
 
@@ -1925,17 +1960,12 @@ impl Manager {
             ctx.scope(),
             &crate::dedup::SlotIdentity::from_opaque(slot_identity),
         ) {
-            AcquireLookupOutcome::Found {
-                acquire,
-                matched_scope,
-            } => {
-                acquire(
-                    manager,
-                    ctx.clone_for_acquire(),
-                    options.clone(),
-                    matched_scope,
-                )
-                .await
+            AcquireLookupOutcome::Found { acquire, managed } => {
+                // `managed` is the row this single scope walk already
+                // resolved; the hook downcasts it to the concrete
+                // `ManagedResource<R>` instead of re-walking the registry
+                // at the matched scope.
+                acquire(manager, ctx.clone_for_acquire(), options.clone(), managed).await
             },
             AcquireLookupOutcome::NotFound => {
                 tracing::debug!(target: "nebula.resource", %key, "acquire_erased: not found");
@@ -2063,7 +2093,7 @@ impl Manager {
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_pooled_acquire(managed, ctx, options).await
+        self.pooled_pipeline(managed, ctx, options).await
     }
 
     /// [`acquire_pooled`](Self::acquire_pooled) pinned to a resolved per-slot
@@ -2095,32 +2125,33 @@ impl Manager {
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
-        self.run_pooled_acquire(managed, ctx, options).await
+        self.pooled_pipeline(managed, ctx, options).await
     }
 
-    /// [`acquire_pooled_for`](Self::acquire_pooled_for) with a pre-resolved scope level.
+    /// [`acquire_pooled_for`](Self::acquire_pooled_for) for a row already
+    /// resolved by the erased-acquire scope walk (downcast, no re-walk).
     pub(crate) async fn acquire_pooled_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        slot_identity: u64,
-        matched_scope: ScopeLevel,
+        resolved: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
-        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
-        self.run_pooled_acquire(managed, ctx, options).await
+        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        self.pooled_pipeline(managed, ctx, options).await
     }
 
-    /// Shared pooled acquire pipeline (resilience + gate + drain
-    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
-    /// public pooled-acquire entry points differ only in how they resolve
-    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
-    /// dispatch itself is identical.
-    async fn run_pooled_acquire<R>(
+    /// Pool topology dispatch into the shared [`run_acquire`](Self::run_acquire)
+    /// pipeline. Holds only the one-arm `TopologyRuntime::Pool` match (the
+    /// irreducible per-topology surface: the topology traits are siblings,
+    /// not a hierarchy, so the shared generic pipeline cannot prove the
+    /// variant statically). `config`/`generation` are recomputed inside the
+    /// dispatch closure so they are re-read on every resilience retry.
+    async fn pooled_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
@@ -2130,6 +2161,73 @@ impl Manager {
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
+    {
+        self.run_acquire(Arc::clone(&managed), || {
+            let generation = managed.generation();
+            let config = managed.config();
+            let managed = Arc::clone(&managed);
+            async move {
+                match &managed.topology {
+                    TopologyRuntime::Pool(rt) => {
+                        rt.acquire(
+                            &managed.resource,
+                            &config,
+                            ctx,
+                            &managed.release_queue,
+                            generation,
+                            options,
+                            self.metrics.clone(),
+                        )
+                        .await
+                    },
+                    other => Err(Self::unexpected_topology::<R>(other)),
+                }
+            }
+        })
+        .await
+    }
+
+    /// The single typed error every topology dispatch returns when the
+    /// resolved row's [`TopologyRuntime`] variant does not match the
+    /// statically-bound acquire path.
+    ///
+    /// Registration binds the row's topology to its trait (`R: Pooled`
+    /// registers `TopologyRuntime::Pool`, etc.), so a mismatch here is a
+    /// registration/lookup invariant breach, not a caller error — but the
+    /// per-topology dispatch closures are bound to *one* sibling topology
+    /// trait each (the traits are siblings, not a hierarchy), so a single
+    /// generic pipeline cannot statically prove the variant. This collapses
+    /// the five byte-identical `"{key}: expected X topology, registered as
+    /// {tag}"` arms into one shared classifier instead of duplicating the
+    /// `format!` once per topology dispatcher.
+    fn unexpected_topology<R: Resource>(topology: &TopologyRuntime<R>) -> Error {
+        Error::permanent(format!(
+            "{}: resolved row topology {} does not match the acquired topology",
+            R::key(),
+            topology.tag()
+        ))
+    }
+
+    /// Single generic acquire pipeline (resilience + gate + drain
+    /// bookkeeping) over an already-resolved [`ManagedResource`], replacing
+    /// the five byte-identical per-topology acquire wrappers. The only thing
+    /// that differed between them was the one-arm topology dispatch, which
+    /// each caller now supplies as `dispatch` (recomputed per resilience
+    /// retry, exactly as the inline closures did). Every public `acquire_*` /
+    /// `acquire_*_for` / `acquire_*_at_scope` entry point differs only in
+    /// how it resolves the row (identity-agnostic vs. slot-identity-pinned
+    /// vs. scope-pinned) and which topology runtime its closure calls; the
+    /// pipeline — including the `InFlightCounter` → post-taint re-check
+    /// ordering this method owns — is identical.
+    async fn run_acquire<R, F, Fut>(
+        &self,
+        managed: Arc<ManagedResource<R>>,
+        dispatch: F,
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
+    where
+        R: Resource,
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<crate::guard::ResourceGuard<R>, Error>> + Send,
     {
         let started = Instant::now();
         // Defense B against the `graceful_shutdown` race: pre-count this
@@ -2154,33 +2252,7 @@ impl Manager {
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
-        let result = execute_with_resilience(&resilience, || {
-            let generation = managed.generation();
-            let config = managed.config();
-            let managed = Arc::clone(&managed);
-            async move {
-                match &managed.topology {
-                    TopologyRuntime::Pool(rt) => {
-                        rt.acquire(
-                            &managed.resource,
-                            &config,
-                            ctx,
-                            &managed.release_queue,
-                            generation,
-                            options,
-                            self.metrics.clone(),
-                        )
-                        .await
-                    },
-                    _ => Err(Error::permanent(format!(
-                        "{}: expected Pool topology, registered as {}",
-                        R::key(),
-                        managed.topology.tag()
-                    ))),
-                }
-            }
-        })
-        .await;
+        let result = execute_with_resilience(&resilience, dispatch).await;
 
         // Settle the gate ticket based on the acquire result. #322: this
         // makes the ticket ownership end-to-end — on success we `resolve`,
@@ -2215,7 +2287,7 @@ impl Manager {
         R::Lease: Clone + Send + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_resident_acquire(managed, ctx, options).await
+        self.resident_pipeline(managed, ctx, options).await
     }
 
     /// [`acquire_resident`](Self::acquire_resident) pinned to a resolved
@@ -2247,7 +2319,7 @@ impl Manager {
         R::Lease: Clone + Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
-        self.run_resident_acquire(managed, ctx, options).await
+        self.resident_pipeline(managed, ctx, options).await
     }
 
     /// [`acquire_resident_for`](Self::acquire_resident_for) keyed by the
@@ -2278,32 +2350,33 @@ impl Manager {
         R::Lease: Clone + Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.run_resident_acquire(managed, ctx, options).await
+        self.resident_pipeline(managed, ctx, options).await
     }
 
-    /// [`acquire_resident_for`](Self::acquire_resident_for) with a pre-resolved scope level.
+    /// [`acquire_resident_for`](Self::acquire_resident_for) for a row already
+    /// resolved by the erased-acquire scope walk (downcast, no re-walk).
     pub(crate) async fn acquire_resident_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        slot_identity: u64,
-        matched_scope: ScopeLevel,
+        resolved: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::resident::Resident + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
-        self.run_resident_acquire(managed, ctx, options).await
+        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        self.resident_pipeline(managed, ctx, options).await
     }
 
-    /// Shared resident acquire pipeline (resilience + gate + drain
-    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
-    /// public resident-acquire entry points differ only in how they resolve
-    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
-    /// dispatch itself is identical.
-    async fn run_resident_acquire<R>(
+    /// Resident topology dispatch into the shared
+    /// [`run_acquire`](Self::run_acquire) pipeline. Holds only the one-arm
+    /// `TopologyRuntime::Resident` match (resident `acquire` takes neither
+    /// `release_queue`/`generation` nor `metrics`). `config` is recomputed
+    /// inside the dispatch closure so it is re-read on every resilience
+    /// retry.
+    async fn resident_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
@@ -2314,19 +2387,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
-        let started = Instant::now();
-        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight =
-            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
-        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
-        // this acquire is reflected in the per-resource counter `revoke_slot`
-        // drains.
-        Self::reject_if_tainted_post_count::<R>(&managed)?;
-        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-        let resilience = managed.resilience.clone();
-
-        let result = execute_with_resilience(&resilience, || {
+        self.run_acquire(Arc::clone(&managed), || {
             let config = managed.config();
             let managed = Arc::clone(&managed);
             async move {
@@ -2334,22 +2395,11 @@ impl Manager {
                     TopologyRuntime::Resident(rt) => {
                         rt.acquire(&managed.resource, &config, ctx, options).await
                     },
-                    _ => Err(Error::permanent(format!(
-                        "{}: expected Resident topology, registered as {}",
-                        R::key(),
-                        managed.topology.tag()
-                    ))),
+                    other => Err(Self::unexpected_topology::<R>(other)),
                 }
             }
         })
-        .await;
-
-        settle_gate_admission(gate_admission, &result);
-        self.record_acquire_result(&result, started);
-        match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
-            Err(e) => Err(e),
-        }
+        .await
     }
 
     /// Acquires a handle to a service resource.
@@ -2379,7 +2429,7 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_service_acquire(managed, ctx, options).await
+        self.service_pipeline(managed, ctx, options).await
     }
 
     /// [`acquire_service`](Self::acquire_service) pinned to a resolved
@@ -2411,32 +2461,33 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
-        self.run_service_acquire(managed, ctx, options).await
+        self.service_pipeline(managed, ctx, options).await
     }
 
-    /// [`acquire_service_for`](Self::acquire_service_for) with a pre-resolved scope level.
+    /// [`acquire_service_for`](Self::acquire_service_for) for a row already
+    /// resolved by the erased-acquire scope walk (downcast, no re-walk).
     pub(crate) async fn acquire_service_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        slot_identity: u64,
-        matched_scope: ScopeLevel,
+        resolved: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::service::Service + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
-        self.run_service_acquire(managed, ctx, options).await
+        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        self.service_pipeline(managed, ctx, options).await
     }
 
-    /// Shared service acquire pipeline (resilience + gate + drain
-    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
-    /// public service-acquire entry points differ only in how they resolve
-    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
-    /// dispatch itself is identical.
-    async fn run_service_acquire<R>(
+    /// Service topology dispatch into the shared
+    /// [`run_acquire`](Self::run_acquire) pipeline. Holds only the one-arm
+    /// `TopologyRuntime::Service` match (no `config`; threads
+    /// `release_queue`/`generation`/`metrics`). `generation` is recomputed
+    /// inside the dispatch closure so it is re-read on every resilience
+    /// retry.
+    async fn service_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
@@ -2447,19 +2498,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let started = Instant::now();
-        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight =
-            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
-        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
-        // this acquire is reflected in the per-resource counter `revoke_slot`
-        // drains.
-        Self::reject_if_tainted_post_count::<R>(&managed)?;
-        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-        let resilience = managed.resilience.clone();
-
-        let result = execute_with_resilience(&resilience, || {
+        self.run_acquire(Arc::clone(&managed), || {
             let generation = managed.generation();
             let managed = Arc::clone(&managed);
             async move {
@@ -2475,22 +2514,11 @@ impl Manager {
                         )
                         .await
                     },
-                    _ => Err(Error::permanent(format!(
-                        "{}: expected Service topology, registered as {}",
-                        R::key(),
-                        managed.topology.tag()
-                    ))),
+                    other => Err(Self::unexpected_topology::<R>(other)),
                 }
             }
         })
-        .await;
-
-        settle_gate_admission(gate_admission, &result);
-        self.record_acquire_result(&result, started);
-        match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
-            Err(e) => Err(e),
-        }
+        .await
     }
 
     /// Acquires a handle to a transport resource.
@@ -2520,7 +2548,7 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_transport_acquire(managed, ctx, options).await
+        self.transport_pipeline(managed, ctx, options).await
     }
 
     /// [`acquire_transport`](Self::acquire_transport) pinned to a resolved
@@ -2552,32 +2580,34 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
-        self.run_transport_acquire(managed, ctx, options).await
+        self.transport_pipeline(managed, ctx, options).await
     }
 
-    /// [`acquire_transport_for`](Self::acquire_transport_for) with a pre-resolved scope level.
+    /// [`acquire_transport_for`](Self::acquire_transport_for) for a row
+    /// already resolved by the erased-acquire scope walk (downcast, no
+    /// re-walk).
     pub(crate) async fn acquire_transport_at_scope<R>(
         &self,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        slot_identity: u64,
-        matched_scope: ScopeLevel,
+        resolved: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
-        self.run_transport_acquire(managed, ctx, options).await
+        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        self.transport_pipeline(managed, ctx, options).await
     }
 
-    /// Shared transport acquire pipeline (resilience + gate + drain
-    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
-    /// public transport-acquire entry points differ only in how they resolve
-    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
-    /// dispatch itself is identical.
-    async fn run_transport_acquire<R>(
+    /// Transport topology dispatch into the shared
+    /// [`run_acquire`](Self::run_acquire) pipeline. Holds only the one-arm
+    /// `TopologyRuntime::Transport` match (same shape as service:
+    /// `release_queue`/`generation`/`metrics`, no `config`). `generation` is
+    /// recomputed inside the dispatch closure so it is re-read on every
+    /// resilience retry.
+    async fn transport_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
@@ -2588,19 +2618,7 @@ impl Manager {
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let started = Instant::now();
-        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight =
-            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
-        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
-        // this acquire is reflected in the per-resource counter `revoke_slot`
-        // drains.
-        Self::reject_if_tainted_post_count::<R>(&managed)?;
-        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-        let resilience = managed.resilience.clone();
-
-        let result = execute_with_resilience(&resilience, || {
+        self.run_acquire(Arc::clone(&managed), || {
             let generation = managed.generation();
             let managed = Arc::clone(&managed);
             async move {
@@ -2616,22 +2634,11 @@ impl Manager {
                         )
                         .await
                     },
-                    _ => Err(Error::permanent(format!(
-                        "{}: expected Transport topology, registered as {}",
-                        R::key(),
-                        managed.topology.tag()
-                    ))),
+                    other => Err(Self::unexpected_topology::<R>(other)),
                 }
             }
         })
-        .await;
-
-        settle_gate_admission(gate_admission, &result);
-        self.record_acquire_result(&result, started);
-        match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
-            Err(e) => Err(e),
-        }
+        .await
     }
 
     /// Acquires a handle to an exclusive resource.
@@ -2661,7 +2668,7 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_exclusive_acquire(managed, options).await
+        self.exclusive_pipeline(managed, options).await
     }
 
     /// [`acquire_exclusive`](Self::acquire_exclusive) pinned to a resolved
@@ -2693,37 +2700,38 @@ impl Manager {
         R::Lease: Send + 'static,
     {
         let managed = self.lookup_for_acquire_with_scope::<R>(ctx, slot_identity)?;
-        self.run_exclusive_acquire(managed, options).await
+        self.exclusive_pipeline(managed, options).await
     }
 
-    /// [`acquire_exclusive_for`](Self::acquire_exclusive_for) with a pre-resolved scope level.
+    /// [`acquire_exclusive_for`](Self::acquire_exclusive_for) for a row
+    /// already resolved by the erased-acquire scope walk (downcast, no
+    /// re-walk).
     pub(crate) async fn acquire_exclusive_at_scope<R>(
         &self,
         _ctx: &ResourceContext,
         options: &AcquireOptions,
-        slot_identity: u64,
-        matched_scope: ScopeLevel,
+        resolved: Arc<dyn crate::registry::AnyManagedResource>,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let managed = self.lookup_typed_at_acquire_scope::<R>(matched_scope, slot_identity)?;
-        self.run_exclusive_acquire(managed, options).await
+        let managed = self.downcast_resolved_row::<R>(resolved)?;
+        self.exclusive_pipeline(managed, options).await
     }
 
-    /// Shared exclusive acquire pipeline (resilience + gate + drain
-    /// bookkeeping) over an already-resolved [`ManagedResource`]. The two
-    /// public exclusive-acquire entry points differ only in how they resolve
-    /// the row (identity-agnostic vs. slot-identity-pinned); the topology
-    /// dispatch itself is identical.
+    /// Exclusive topology dispatch into the shared
+    /// [`run_acquire`](Self::run_acquire) pipeline. Holds only the one-arm
+    /// `TopologyRuntime::Exclusive` match.
     ///
-    /// Unlike the other topologies' shared pipelines this takes no
-    /// `ResourceContext`: exclusive `rt.acquire` is context-free, and the
-    /// only `ctx` use (scope resolution) already happened in the two public
-    /// entry points before the row was resolved.
-    async fn run_exclusive_acquire<R>(
+    /// Unlike the other topology dispatchers this takes no
+    /// [`ResourceContext`]: exclusive `rt.acquire` is context-free, and the
+    /// only `ctx` use (scope resolution) already happened in the public
+    /// entry points before the row was resolved. `generation` is recomputed
+    /// inside the dispatch closure so it is re-read on every resilience
+    /// retry.
+    async fn exclusive_pipeline<R>(
         &self,
         managed: Arc<ManagedResource<R>>,
         options: &AcquireOptions,
@@ -2733,19 +2741,7 @@ impl Manager {
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
-        let started = Instant::now();
-        // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
-        let in_flight =
-            InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
-        // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
-        // this acquire is reflected in the per-resource counter `revoke_slot`
-        // drains.
-        Self::reject_if_tainted_post_count::<R>(&managed)?;
-        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-        let resilience = managed.resilience.clone();
-
-        let result = execute_with_resilience(&resilience, || {
+        self.run_acquire(Arc::clone(&managed), || {
             let generation = managed.generation();
             let managed = Arc::clone(&managed);
             async move {
@@ -2760,22 +2756,11 @@ impl Manager {
                         )
                         .await
                     },
-                    _ => Err(Error::permanent(format!(
-                        "{}: expected Exclusive topology, registered as {}",
-                        R::key(),
-                        managed.topology.tag()
-                    ))),
+                    other => Err(Self::unexpected_topology::<R>(other)),
                 }
             }
         })
-        .await;
-
-        settle_gate_admission(gate_admission, &result);
-        self.record_acquire_result(&result, started);
-        match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
-            Err(e) => Err(e),
-        }
+        .await
     }
 
     /// Attempts a non-blocking acquire of a pooled resource.
@@ -2816,7 +2801,7 @@ impl Manager {
         // Defense B against the `graceful_shutdown` race — see `acquire_pooled`.
         let in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-        // Post-count taint re-check — see `run_pooled_acquire` (slot + isolation model
+        // Post-count taint re-check — see `run_acquire` (slot + isolation model
         // / per-resource revoke deferral): closes the revoke-vs-acquire TOCTOU now that
         // this acquire is reflected in the per-resource counter `revoke_slot`
         // drains.
