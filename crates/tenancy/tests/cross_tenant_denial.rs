@@ -766,6 +766,35 @@ async fn cross_tenant_resource_update_and_delete_miss() {
         row.display_name, "res_z",
         "victim resource must be untouched"
     );
+
+    // In-tenant update carrying a FORGED denormalized workspace_id must be
+    // rebound to the bound tenant before it is persisted — proving
+    // `ScopedResourceStore::update` calls `rebind`, not just `create`. (If
+    // `update` ever drops `rebind`, a row could claim tenant B while
+    // living in tenant A's partition.)
+    let mut forged = resource_row("res_z", "ws_FORGED");
+    forged.display_name = "renamed-in-tenant".into();
+    tenant_a
+        .update(&scope_a(), forged, 0)
+        .await
+        .expect("A in-tenant update succeeds");
+    let persisted = mock
+        .rows
+        .lock()
+        .expect("mock lock")
+        .get(&ident_key(&scope_a(), "res_z"))
+        .cloned()
+        .expect("row present in A's own partition after update");
+    assert_eq!(
+        persisted.workspace_id,
+        scope_a().workspace_id,
+        "update must rebind the denormalized workspace_id to the bound \
+         tenant, not persist the forged value"
+    );
+    assert_eq!(
+        persisted.display_name, "renamed-in-tenant",
+        "the in-tenant update payload must otherwise be applied"
+    );
 }
 
 #[tokio::test]
@@ -830,5 +859,33 @@ async fn cross_tenant_trigger_is_fully_isolated() {
     assert!(
         tenant_b.soft_delete(&scope_a(), "trg_x").await.is_err(),
         "cross-tenant trigger soft_delete must miss"
+    );
+
+    // In-tenant update with a FORGED denormalized workspace_id must be
+    // rebound to the bound tenant — proving `ScopedTriggerStore::update`
+    // calls `rebind`, not just `create` (trg_x is still A's, untouched by
+    // the cross-tenant update above).
+    let mut forged = trigger_row("trg_x", "ws_FORGED");
+    forged.display_name = "renamed-in-tenant".into();
+    tenant_a
+        .update(&scope_a(), forged, 0)
+        .await
+        .expect("A in-tenant trigger update succeeds");
+    let persisted = mock
+        .rows
+        .lock()
+        .expect("mock lock")
+        .get(&ident_key(&scope_a(), "trg_x"))
+        .cloned()
+        .expect("trigger present in A's own partition after update");
+    assert_eq!(
+        persisted.workspace_id,
+        scope_a().workspace_id,
+        "trigger update must rebind the denormalized workspace_id to the \
+         bound tenant, not persist the forged value"
+    );
+    assert_eq!(
+        persisted.display_name, "renamed-in-tenant",
+        "the in-tenant trigger update payload must otherwise be applied"
     );
 }

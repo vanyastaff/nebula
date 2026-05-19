@@ -36,9 +36,13 @@ use nebula_tenancy::{
 };
 
 /// Compile-time proof that `D` is a scope-substituting decorator for the
-/// object-safe port trait `P`: it implements `P`, it is `Send + Sync`
-/// (usable as `Arc<dyn P>` behind the firewall), and it is constructible
-/// from `(Arc<dyn P>, Scope)` — i.e. it binds a tenant `Scope`.
+/// object-safe port trait `P`: it is `Send + Sync` (usable as
+/// `Arc<dyn P>` behind the firewall) and constructible from
+/// `(Arc<dyn P>, Scope)` — i.e. it binds a tenant `Scope`. That `D`
+/// actually *implements* `P` (not merely wraps it) is proven separately
+/// and per-port by the `Arc<D> -> Arc<dyn P>` coercion `const` the
+/// `scope_decorator!` macro emits; `ScopeDecorator` alone is only a
+/// constructor shim and cannot establish the port impl.
 ///
 /// If a `&Scope`-keyed port trait is added without a matching decorator,
 /// the corresponding `assert_scoped` call below fails to compile with an
@@ -64,6 +68,16 @@ macro_rules! scope_decorator {
                 <$decorator>::new(inner, scope)
             }
         }
+
+        // Compile-time proof that the decorator *is* the port trait, not
+        // merely constructible from one. The unsized coercion
+        // `Arc<$decorator>` -> `Arc<dyn $port>` only type-checks when
+        // `$decorator: $port` (and `dyn $port` is object-safe), so if a
+        // `Scoped*` keeps its constructor but drops its
+        // `impl $port for $decorator`, this fails to compile — closing the
+        // gap where `ScopeDecorator` alone (a `new` shim) could not prove
+        // the firewall actually substitutes the scope on the port surface.
+        const _: fn(::std::sync::Arc<$decorator>) -> ::std::sync::Arc<dyn $port> = |d| d;
     };
 }
 

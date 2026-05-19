@@ -544,20 +544,22 @@ impl ResourceRegistrarRegistry {
     /// `fanout_index = None` (or an empty `credential_ids`) skips the
     /// bind entirely — registration is unchanged.
     ///
-    /// # Ordering guarantee — structural, no observable window
+    /// # Ordering — structural guarantees and the residual window
     ///
     /// The reverse-index bind is recorded **before** the typed
     /// `register` call makes the `Manager` row discoverable, and a
     /// failed `register` removes the staged bind via RAII compensation.
-    /// The ordering is therefore *structural*, not a caller-discipline
-    /// contract:
+    /// This gives two *structural* guarantees (not caller-discipline
+    /// contracts):
     ///
-    /// * **No silent-miss window.** The fan-out driver can never observe
-    ///   a discoverable `Manager` row whose reverse-index row is absent:
-    ///   the bind exists no later than the row. (The previous
-    ///   register-then-bind ordering had a window in which a
+    /// * **No silent miss on a live row.** The fan-out driver can never
+    ///   observe a discoverable `Manager` row whose reverse-index row is
+    ///   absent: the bind exists no later than the row. The previous
+    ///   register-then-bind ordering had the inverse window — a
     ///   rotation/lease-revoke processed between `register` returning and
-    ///   the bind being recorded fanned to zero rows on a live row.)
+    ///   the bind being recorded fanned to zero rows on a row that was
+    ///   already *live and serving*, which is the worse failure (a
+    ///   running resource silently keeps a rotated/revoked credential).
     /// * **No orphan reverse-index row.** If `register` returns `Err`
     ///   (schema / deserialize / slot validation), it created no registry
     ///   row; a `scopeguard` removes the staged bind on that path so no
@@ -583,6 +585,28 @@ impl ResourceRegistrarRegistry {
     /// function of `slot_bindings` (which is *not* template-resolved) via
     /// the canonical constructor — so the exact row key is knowable
     /// before `register` runs.
+    ///
+    /// ## Residual pre-publish window (not closed by either ordering)
+    ///
+    /// The inversion eliminates the *live-row* silent miss but does not
+    /// make registration atomic: there is still a symmetric window where
+    /// the staged reverse-index row exists but `register` has not yet
+    /// published the `Manager` row. A rotation/lease-revoke for a bound
+    /// credential that the fan-out driver processes inside that window
+    /// dispatches against a not-yet-discoverable `Manager` row, is counted
+    /// as a miss, and is **not** replayed when `register` completes — so
+    /// the row can come up bound to a pre-rotation (stale/revoked)
+    /// credential. This is strictly less severe than the inverse window
+    /// it replaced (the row is not serving yet), but it is real. No pure
+    /// bind/register ordering closes both; the only full closure is an
+    /// atomic register-then-publish `Manager` surface (a heavy API change,
+    /// deferred with the bind-population producer) **or** quiescing the
+    /// rotation fan-out for the bound credentials across activation.
+    /// Therefore: a caller that runs the rotation fan-out driver
+    /// concurrently with `register_and_bind` MUST quiesce it for the
+    /// credentials being bound until this returns. Reverting to
+    /// register-then-bind does not help — it reintroduces the worse
+    /// live-row window.
     ///
     /// # Errors
     ///
