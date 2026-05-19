@@ -61,8 +61,10 @@ burn-down workstream (ADR-0083 § Follow-up) reconciles the
 ## Diff-scoped structural budget (ADR-0083)
 
 The `cognitive_complexity` / `too_many_lines` workspace `allow` stays — flipping
-them on 36 crates is thousands of legacy warnings. New code is instead held to
-the `clippy.toml` thresholds **diff-scoped** by `.claude/hooks/intent-gate.sh`
-(net-LoC, new-file, large-blob proxy, duplicate-symbol), with a
+them on 36 crates is thousands of legacy warnings. `.claude/hooks/intent-gate.sh`
+holds new code to a diff-scoped budget instead: the **large-blob proxy** is
+derived from the `clippy.toml` `too-many-lines = 100` threshold; the **net-LoC
+(400)**, **new-file (5)** and **duplicate-symbol** caps are the gate's own
+independent budgets (not `clippy.toml` thresholds). All carry a
 `// budget-justified:` escape. Legacy is grandfathered; the separate legacy
-burn-down workstream reconciles it crate-by-crate.
+burn-down workstream reconciles the inert clippy thresholds crate-by-crate.

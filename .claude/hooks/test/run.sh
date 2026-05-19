@@ -193,6 +193,17 @@ EBP_SID="e-bud-plus"; EBP_P="$(turn_state_path "$EBP_SID" "$EBP_DIR")"; mkdir -p
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBP_P"
 chk "E counts +-prefixed untracked" 2 "$(egate '{"session_id":"'"$EBP_SID"'","cwd":"'"$EBP_DIR"'","stop_hook_active":false}')"
 rm -rf "$EBP_DIR"
+# Regression (tracked): staged code whose lines start with `+` must also count.
+# git diff emits such a line as `++…`; the old `^\+([^+]|$)` grep rejected it
+# (only the untracked `+ ` sentinel was protected). The awk count fixes both.
+EBT_DIR="$(mktemp -d)"
+( cd "$EBT_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ebt/src && { for i in $(seq 1 450); do echo "+marker $i"; done; } > crates/ebt/src/plus.rs \
+  && git add -A )
+EBT_SID="e-bud-trk"; EBT_P="$(turn_state_path "$EBT_SID" "$EBT_DIR")"; mkdir -p "$(dirname "$EBT_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBT_P"
+chk "E counts +-prefixed tracked" 2 "$(egate '{"session_id":"'"$EBT_SID"'","cwd":"'"$EBT_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBT_DIR"
 
 # E new-file budget (cap 5)
 EF_DIR="$(mktemp -d)"

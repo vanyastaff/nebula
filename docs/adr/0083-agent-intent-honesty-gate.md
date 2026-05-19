@@ -102,12 +102,16 @@ agent-prompt baseline (inoculation + abstention-as-success).
 
 ### Mechanism
 
-Deterministic command pre-filter (`intent-gate.sh`) → structural-budget
-checks (same hook, pure bash + git, no model) → native **`prompt`** Stop-hook
-(Haiku) → native **`agent`** Stop-hook whose command no-ops unless the prompt
-tier wrote an escalation marker (conditional escalation on native hook types
-without a nested `claude -p` — same "no hand-rolled boundary process"
-reasoning that removed `resolve_cmd` from `_lib.sh`).
+**Shipped now (this PR):** a deterministic `command` Stop / SubagentStop hook
+(`intent-gate.sh`) — pre-filter then structural-budget checks, pure bash + git,
+no model.
+
+**Deferred (the semantic tier, a sequenced follow-up plan — NOT in this PR):**
+a native **`prompt`** Stop-hook (Haiku) → native **`agent`** Stop-hook whose
+command no-ops unless the prompt tier wrote an escalation marker (conditional
+escalation on native hook types without a nested `claude -p` — same "no
+hand-rolled boundary process" reasoning that removed `resolve_cmd` from
+`_lib.sh`). Wiring for that tier lands with its own plan, not here.
 
 ## Design
 

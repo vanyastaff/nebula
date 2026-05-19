@@ -72,11 +72,15 @@ ig_bump() {
     && printf '%s' "$t" >"$TS_PATH" 2>/dev/null || true
 }
 
-# Pre-filter: C (stop-gate) owns broken code. If the turn touched lib crates
-# but recorded no green gate, C will block — do not double-judge.
+# Pre-filter: on the MAIN-thread Stop, stop-gate.sh (C) runs before us and
+# owns broken-code turns — defer to it to avoid a duplicate deny. On
+# SubagentStop (implement-worker) C is NOT wired, so we must enforce the
+# budget here instead of deferring. `agent_id` is present only inside a
+# subagent call (Claude Code hook input contract).
+aid="$(jqg '.agent_id')"
 impl_n="$(printf '%s' "$st" | jq -r '.impl_files_edited | length' 2>/dev/null || echo 0)"
 green_n="$(printf '%s' "$st" | jq -r '.gate_green | length' 2>/dev/null || echo 0)"
-if [ "${impl_n:-0}" -gt 0 ] && [ "${green_n:-0}" -eq 0 ]; then
+if [ -z "$aid" ] && [ "${impl_n:-0}" -gt 0 ] && [ "${green_n:-0}" -eq 0 ]; then
   ig_log allow "c-owns-broken"; allow
 fi
 
@@ -117,8 +121,7 @@ Expected: output includes `ok   - E loop-guard allows`, `ok   - E default allows
 
 ```bash
 git add .claude/hooks/intent-gate.sh .claude/hooks/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): add intent-gate.sh skeleton (ADR-0083 deterministic tier)"
+git commit -m "feat(ci): add intent-gate.sh skeleton (ADR-0083 deterministic tier)"
 ```
 
 ---
@@ -155,6 +158,17 @@ EBP_SID="e-bud-plus"; EBP_P="$(turn_state_path "$EBP_SID" "$EBP_DIR")"; mkdir -p
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBP_P"
 chk "E counts +-prefixed untracked" 2 "$(egate '{"session_id":"'"$EBP_SID"'","cwd":"'"$EBP_DIR"'","stop_hook_active":false}')"
 rm -rf "$EBP_DIR"
+# Regression (tracked): staged code whose lines start with `+` must also count.
+# git diff emits such a line as `++…`; the old `^\+([^+]|$)` grep rejected it
+# (only the untracked `+ ` sentinel was protected). The awk count fixes both.
+EBT_DIR="$(mktemp -d)"
+( cd "$EBT_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ebt/src && { for i in $(seq 1 450); do echo "+marker $i"; done; } > crates/ebt/src/plus.rs \
+  && git add -A )
+EBT_SID="e-bud-trk"; EBT_P="$(turn_state_path "$EBT_SID" "$EBT_DIR")"; mkdir -p "$(dirname "$EBT_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBT_P"
+chk "E counts +-prefixed tracked" 2 "$(egate '{"session_id":"'"$EBT_SID"'","cwd":"'"$EBT_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBT_DIR"
 ```
 
 - [ ] **Step 2: Run to verify the new cases FAIL**
@@ -175,18 +189,23 @@ tb="$(printf '%s' "$st" | jq -r '.turn_base // empty' 2>/dev/null)"
 CODE_RE='\.(rs|toml|sh|md)$'
 
 # Unified added-content stream: a `+++ <path>` header per file then each added
-# line prefixed `+`. Tracked deltas from `git diff --unified=0`; every
-# untracked code file is wholly added. blob / dup / budget all consume this.
+# line prefixed `+`. Tracked deltas from `git diff --unified=0` restricted to
+# code pathspecs (so the count is consistent with the CODE_RE-filtered
+# `deleted`); every untracked code file is wholly added. blob / dup / budget
+# all consume this.
+CODE_PS=(-- '*.rs' '*.toml' '*.sh' '*.md')   # pathspec mirror of CODE_RE
 ig_added_lines() {
-  { [ -n "$tb" ] && git -C "$cwd" diff --unified=0 "$tb"..HEAD 2>/dev/null; \
-    git -C "$cwd" diff --unified=0 2>/dev/null; \
-    git -C "$cwd" diff --unified=0 --cached 2>/dev/null; } \
+  { [ -n "$tb" ] && git -C "$cwd" diff --unified=0 "$tb"..HEAD "${CODE_PS[@]}" 2>/dev/null; \
+    git -C "$cwd" diff --unified=0 "${CODE_PS[@]}" 2>/dev/null; \
+    git -C "$cwd" diff --unified=0 --cached "${CODE_PS[@]}" 2>/dev/null; } \
   | grep -E '^(\+\+\+ |\+)'
   while IFS= read -r uf; do
     [ -n "$uf" ] || continue
     printf '+++ %s\n' "$uf"
-    # `+ ` (space sentinel) not `+`: a source line that itself starts with `+`
-    # would become `++…` and be miscounted as a header by `^\+([^+]|$)`.
+    # `+ ` (space sentinel): a source line that itself starts with `+` would
+    # become `++…`; harmless for the awk count (any `^\+` that is not a
+    # `^\+\+\+ ` header counts) but kept so the dup/grep consumers see a clean
+    # `+ <content>`.
     sed 's/^/+ /' "$cwd/$uf" 2>/dev/null
   done < <(git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null \
             | grep -E "$CODE_RE" || true)
@@ -194,13 +213,13 @@ ig_added_lines() {
 
 # net = added − deleted. added = stream added lines minus `+++ ` headers;
 # deleted = numstat deletions on tracked changes (untracked delete nothing).
-added="$(ig_added_lines | grep -cE '^\+([^+]|$)')"
+added="$(ig_added_lines | awk '/^\+\+\+ /{next} /^\+/{c++} END{print c+0}')"
 deleted=0
 while read -r _a d _; do
   [[ "$d" =~ ^[0-9]+$ ]] && deleted=$((deleted + d))
-done < <( { [ -n "$tb" ] && git -C "$cwd" diff --numstat "$tb"..HEAD 2>/dev/null; \
-            git -C "$cwd" diff --numstat 2>/dev/null; \
-            git -C "$cwd" diff --numstat --cached 2>/dev/null; } \
+done < <( { [ -n "$tb" ] && git -C "$cwd" diff --numstat "$tb"..HEAD "${CODE_PS[@]}" 2>/dev/null; \
+            git -C "$cwd" diff --numstat "${CODE_PS[@]}" 2>/dev/null; \
+            git -C "$cwd" diff --numstat --cached "${CODE_PS[@]}" 2>/dev/null; } \
           | grep -E "$CODE_RE" || true )
 net=$((added - deleted))
 
@@ -230,8 +249,7 @@ Expected: `ok   - E blocks >400 net-LoC`, `ok   - E budget-justified escapes`, a
 
 ```bash
 git add .claude/hooks/intent-gate.sh .claude/hooks/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): intent-gate net-LoC budget with budget-justified escape"
+git commit -m "feat(ci): intent-gate net-LoC budget with budget-justified escape"
 ```
 
 ---
@@ -294,8 +312,7 @@ Expected: `ok   - E blocks >5 new files`; all prior `E` cases still `ok`; `ALL G
 
 ```bash
 git add .claude/hooks/intent-gate.sh .claude/hooks/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): intent-gate new-file budget"
+git commit -m "feat(ci): intent-gate new-file budget"
 ```
 
 ---
@@ -362,8 +379,7 @@ Expected: `ok   - E blocks >100-line blob`; all prior `E` cases still `ok`; `ALL
 
 ```bash
 git add .claude/hooks/intent-gate.sh .claude/hooks/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): intent-gate large-blob complexity proxy"
+git commit -m "feat(ci): intent-gate large-blob complexity proxy"
 ```
 
 ---
@@ -453,8 +469,7 @@ Expected: `ok   - E blocks dup pub symbol`; all prior `E` cases still `ok`; `ALL
 
 ```bash
 git add .claude/hooks/intent-gate.sh .claude/hooks/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): intent-gate duplicate public-symbol heuristic"
+git commit -m "feat(ci): intent-gate duplicate public-symbol heuristic"
 ```
 
 ---
@@ -499,8 +514,7 @@ Expected: `ok   - E abstention allowed`, `ok   - E small clean allowed`, `ok   -
 
 ```bash
 git add .claude/hooks/test/run.sh
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "test(ci): intent-gate abstention + clean-turn proofs"
+git commit -m "test(ci): intent-gate abstention + clean-turn proofs"
 ```
 
 ---
@@ -546,8 +560,7 @@ Expected: final line `ALL GUARD TESTS PASSED`.
 
 ```bash
 git add .claude/settings.json
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): wire intent-gate into Stop + implement-worker SubagentStop"
+git commit -m "feat(ci): wire intent-gate into Stop + implement-worker SubagentStop"
 ```
 
 ---
@@ -586,8 +599,7 @@ Expected: shows the `## Integrity (ADR-0083)` heading and paragraph.
 
 ```bash
 git add .claude/agents/implement-worker.md .claude/agents/loop-producer.md
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "feat(ci): inoculation + abstention lines in worker/producer agents"
+git commit -m "feat(ci): inoculation + abstention lines in worker/producer agents"
 ```
 
 ---
@@ -628,11 +640,13 @@ At the end of `docs/QUALITY_GATES.md`, append:
 ## Diff-scoped structural budget (ADR-0083)
 
 The `cognitive_complexity` / `too_many_lines` workspace `allow` stays — flipping
-them on 36 crates is thousands of legacy warnings. New code is instead held to
-the `clippy.toml` thresholds **diff-scoped** by `.claude/hooks/intent-gate.sh`
-(net-LoC, new-file, large-blob proxy, duplicate-symbol), with a
+them on 36 crates is thousands of legacy warnings. `.claude/hooks/intent-gate.sh`
+holds new code to a diff-scoped budget instead: the **large-blob proxy** is
+derived from the `clippy.toml` `too-many-lines = 100` threshold; the **net-LoC
+(400)**, **new-file (5)** and **duplicate-symbol** caps are the gate's own
+independent budgets (not `clippy.toml` thresholds). All carry a
 `// budget-justified:` escape. Legacy is grandfathered; the separate legacy
-burn-down workstream reconciles it crate-by-crate.
+burn-down workstream reconciles the inert clippy thresholds crate-by-crate.
 ```
 
 - [ ] **Step 4: Add the ADR thematic-index row**
@@ -652,8 +666,7 @@ Expected: a match line from each of the three files.
 
 ```bash
 git add CLAUDE.md docs/QUALITY_GATES.md docs/adr/README.md
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "docs: record Layer-2 intent-gate in CLAUDE.md/QUALITY_GATES/ADR-index"
+git commit -m "docs: record Layer-2 intent-gate in CLAUDE.md/QUALITY_GATES/ADR-index"
 ```
 
 ---
@@ -692,8 +705,7 @@ Expected: substantially fewer lines than before — the heavy `## Design` body i
 
 ```bash
 git add docs/adr/0083-agent-intent-honesty-gate.md
-git -c user.name="vanyastaff" -c user.email="ivan.kondrashkin@gmail.com" \
-  commit -m "docs(adr): slim 0083 to the lean decision (detail -> plan)"
+git commit -m "docs(adr): slim 0083 to the lean decision (detail -> plan)"
 ```
 
 ---
