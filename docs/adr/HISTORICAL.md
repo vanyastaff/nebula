@@ -4,7 +4,8 @@
 evicted from the tree 2026-05-18. For new work, prefer the live ADRs
 (see [`README.md`](./README.md)).
 
-Full decision text is **git-history-only**: `git log -- docs/adr/<file>` (or
+Full decision text is **git-history-only**: `git log -- docs/adr/<file>` to
+find the revision, then `git show <rev>:docs/adr/<file>` for the text (or
 the external archive named in [`../ARCHIVE.md`](../ARCHIVE.md)). Alternate
 numbering `0042-tool-provider` is archive-only.
 

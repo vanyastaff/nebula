@@ -240,7 +240,7 @@ deny = [
     # `nebula_credential_builtin::register_builtins` to populate the
     # CredentialRegistry/CredentialDispatch (docs/adr/0081-m6-resource-credential-integration.md).
     "nebula-credential-runtime",
-  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066)" },
+  ], reason = "Built-in credential types are first-party; the credential-runtime composition root wires them via register_builtins (ADR-0066, consolidated into ADR-0081)" },
 
   # nebula-credential-vault is the first concrete LeasedProvider impl per
   # ADR-0051 Phase C — Business-tier backend wrapping the HashiCorp Vault
@@ -261,7 +261,7 @@ deny = [
     "nebula-credential-runtime",
     "nebula-api",
     "nebula-cli",
-  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0066)" },
+  ], reason = "Credential management runtime is Exec-tier; only the API and CLI composition roots may depend on it (ADR-0066, consolidated into ADR-0081)" },
 ]
 skip = [
   "bitflags",

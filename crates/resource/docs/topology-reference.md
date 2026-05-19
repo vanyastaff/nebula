@@ -259,5 +259,4 @@ Before sending the PR, verify:
 - [`adapters.md`](adapters.md) — accessor adapters (`HasResources`, `ScopedResourceAccessor`)
 - [`api-reference.md`](api-reference.md) — full surface API listing
 - [`crates/resource/plans/02-topology.md`](../plans/02-topology.md) — historical design rationale for the topology split
-- [`docs/adr/0081-m6-resource-credential-integration.md`](../../../docs/adr/0081-m6-resource-credential-integration.md) — M6 contract (ADR-0044): supersession of `Resource::Credential` in favor of `#[credential]` slots
-- [`docs/adr/0081-m6-resource-credential-integration.md`](../../../docs/adr/0081-m6-resource-credential-integration.md) — M6 contract (ADR-0045): why EventSource-direct is the canonical pattern until `EventTrigger` ships
+- [`docs/adr/0081-m6-resource-credential-integration.md`](../../../docs/adr/0081-m6-resource-credential-integration.md) — M6 contract: `Resource::Credential` superseded by `#[credential]` slots (ADR-0044); EventSource-direct canonical until `EventTrigger` ships (ADR-0045)

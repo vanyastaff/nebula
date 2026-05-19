@@ -27,7 +27,7 @@ cascade and later work. Numbering starts at **0042** in this directory.
 
 Index only: [`HISTORICAL.md`](./HISTORICAL.md) (title + status per id). Full
 decision text is **git-history-only** — recover with
-`git log -- docs/adr/<file>` or the external archive named in
+`git log -- docs/adr/<file>` then `git show <rev>:docs/adr/<file>`, or the external archive named in
 [`../ARCHIVE.md`](../ARCHIVE.md). The per-file bodies are no longer in the
 working tree (evicted 2026-05-18). Do not expect `docs/adr/00NN-*.md` to exist.
 

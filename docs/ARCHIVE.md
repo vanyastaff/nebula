@@ -23,7 +23,7 @@ for the archive export — do not assume a fixed absolute path.
 |------|-----|
 | Agent doc routing | [`docs/README.md`](./README.md) |
 | ADR 0001–0041 index | [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md) |
-| ADR full text (0001–0041) | git history only — `git log -- docs/adr/<file>` (evicted from tree 2026-05-18) |
+| ADR full text (0001–0041) | git history only — `git show <rev>:docs/adr/<file>` (`git log -- <file>` for the rev; evicted 2026-05-18) |
 | Product direction | [`STRATEGY.md`](../STRATEGY.md) |
 
-Recover deleted paths from git history, e.g. `git log -- docs/superpowers` or `git log -- docs/adr/0001-schema-consolidation.md`.
+Recover deleted paths from git history: `git log -- docs/superpowers` lists the revisions; `git show <rev>:docs/adr/0001-schema-consolidation.md` prints a file's prior content.

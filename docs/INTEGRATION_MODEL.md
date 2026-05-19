@@ -79,9 +79,9 @@ flowchart TB
   WF -.->|"handoff: SecretWire → credential/storage"| ENC
 ```
 
-**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see [ADR-0028](adr/0028-cross-crate-credential-invariants.md) / [ADR-0029](adr/0029-storage-owns-credential-persistence.md)).
+**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see [ADR-0028](adr/HISTORICAL.md) / [ADR-0029](adr/HISTORICAL.md) (historical)).
 
-**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see [ADR-0029](adr/0029-storage-owns-credential-persistence.md)).
+**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see [ADR-0029](adr/HISTORICAL.md) (historical)).
 
 **Where `S` lives:** today the **shape** of `ValidSchema` comes from **author-time Rust** in integration/plugin crates (and registry wiring), not from the snapshot store. Persisted artifacts are **config values and history** (`SNAP`), not the Rust type graph. If product ever versions **schema definitions as data**, the diagram can gain an optional `SNAP -.-> S` edge; until then, keeping `S` only under **author** avoids visual clutter.
 
@@ -356,35 +356,22 @@ Pointers only — full text stays in each ADR file. Superseded historical ADRs:
 
 | ADR | Topic | Where it shows up here |
 |-----|-------|-------------------------|
-| [0080](adr/0080-schema-validation-platform.md) | Schema & validation platform (**contract**) | § Schema / validator |
-| [0081](adr/0081-m6-resource-credential-integration.md) | M6 resource & credential integration (**contract**) | § Resource / credential |
-| [0082](adr/0082-api-webhooks-idempotency.md) | API edge contracts (**contract**) | API / webhooks |
-| [0042](adr/0042-node-binding-mechanism.md) | Node → ResourceId / CredentialId binding (stub → 0081) | Activation / slot wiring |
-| [0043](adr/0043-dependency-declaration-dx.md) | `#[credential]` / `#[resource]` slot DX | § Action / Resource deps |
-| [0044](adr/0044-supersede-0036-resource-credential-singular.md) | Slot credentials on resources (not singular associated type) | § Resource, § Credential |
-| [0045](adr/0045-eventtrigger-scope-deferral.md) | EventTrigger wrapper deferred | § Action / triggers |
+| [0080](adr/0080-schema-validation-platform.md) | Schema & validation platform (**contract** — absorbs ADR-0052, 0058–0064) | § Schema / validator |
+| [0081](adr/0081-m6-resource-credential-integration.md) | M6 resource & credential integration (**contract** — absorbs ADR-0042–0045, 0051, 0066–0067) | § Resource / credential |
+| [0082](adr/0082-api-webhooks-idempotency.md) | API edge contracts (**contract** — absorbs ADR-0047–0049) | API / webhooks |
 | [0046](adr/0046-metrics-telemetry-boundary.md) | Metrics + telemetry merge | → `docs/OBSERVABILITY.md` |
-| [0047](adr/0047-openapi-31-generator.md) | OpenAPI 3.1 via utoipa | API surface (pointer) |
-| [0048](adr/0048-idempotency-store-backend.md) | Hybrid idempotency store | API (pointer) |
-| [0049](adr/0049-webhook-handler-convergence.md) | Webhook handler convergence | § Action webhook |
 | [0050](adr/0050-m3-5-w3c-trace-context-propagation.md) | W3C trace context | → `docs/OBSERVABILITY.md` |
-| [0051](adr/0051-external-provider-redesign.md) | External provider redesign | § Credential |
-| [0052](adr/0052-schema-validator-condition-seam.md) | Validator condition seam | § Schema |
-| [0069](adr/0069-action-surface-hybrid.md) | Action surface hybrid | §3.8 `nebula-action` |
 | [0053](adr/0053-two-struct-dx-consolidation.md) | Two-struct DX | §3.8 |
 | [0054](adr/0054-typed-capability-system.md) | Typed capabilities | § Credential caps |
 | [0055](adr/0055-nebula-sdk-facade.md) | `nebula-sdk` façade | § Plugin / SDK |
 | [0056](adr/0056-type-safe-dag.md) | Type-safe DAG | Workflow (pointer) |
 | [0057](adr/0057-ai-agent-sdk.md) | AI agent SDK (**proposed**) | Deferred — see `STRATEGY.md` |
-| [0058](adr/0058-schema-field-vocabulary.md) | Schema field vocabulary | § Schema |
-| [0059](adr/0059-cross-foundation-dependency-graph.md) | Cross-foundation deps | Crate graph (pointer) |
-| [0060](adr/0060-symmetric-foundation-api.md) | Symmetric foundation API | Schema/validator (pointer) |
-| [0061](adr/0061-nebula-schema-core-ratification.md) | Schema core ratification | § Schema |
-| [0062](adr/0062-nebula-schema-stdlib-newtype-zoo.md) | Schema stdlib newtypes | § Schema |
-| [0063](adr/0063-json-schema-2020-12-interop.md) | JSON Schema 2020-12 interop | § Schema |
-| [0064](adr/0064-ui-form-composition.md) | UI form composition | Schema / UI (pointer) |
 | [0065](adr/0065-visual-rendering-modes.md) | Visual rendering modes | Canvas supply edges |
-| [0066](adr/0066-credential-runtime-crate.md) | Credential runtime crate | Engine / credential plane |
-| [0067](adr/0067-engine-owned-rotation-fanout-self-refresh-hook.md) | Rotation fan-out + `&self` refresh hook | § Credential rotation |
 | [0068](adr/0068-layered-retry.md) | Layered retry (resilience vs node policy) | § Action retry — see `nebula-resilience` |
+| [0069](adr/0069-action-surface-hybrid.md) | Action surface hybrid | §3.8 `nebula-action` |
 | [0072](adr/0072-nebula-storage-spec16-port-adapter-tenancy.md) | Spec-16 storage port / adapter / tenancy | Storage plane (pointer) |
+
+Absorbed feature-era ADRs (0042–0067 stubs) are enumerated in each contract
+ADR's supersession table and `docs/adr/README.md`; their full text is
+git-history-only (`git show <rev>:docs/adr/<file>`). Pre-0042 historical ADRs:
+`docs/adr/HISTORICAL.md`.

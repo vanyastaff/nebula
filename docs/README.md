@@ -44,7 +44,7 @@ for traceability but are **non-normative** (see conflict rule above).
 - **Live** — standalone 0046–0072 + contract ADRs 0080–0082; see [`adr/README.md`](./adr/README.md) for the thematic index.
 - **0001–0041** — evicted from the tree 2026-05-18; title/status index in
   [`docs/adr/HISTORICAL.md`](./adr/HISTORICAL.md), full decision text via
-  `git log -- docs/adr/<file>`.
+  `git show <rev>:docs/adr/<file>` (`git log -- <file>` for the rev).
 
 ## Integration author path
 

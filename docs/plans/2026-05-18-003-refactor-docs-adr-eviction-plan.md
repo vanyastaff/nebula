@@ -186,7 +186,7 @@ code dependency.
 - Modify: `docs/README.md` (HISTORICAL row + "ADR layout" 0001–0041 wording)
 - Modify: `.claudeignore`, `.cursorignore` (drop the dead `docs/adr/000*`…`0041-*` glob block)
 
-**Approach:** Edit each statement to read git-history-only. The ignore-glob block is pure noise once files are gone — remove the whole `Pre-0042 ADRs` section in both ignore files.
+**Approach:** Edit each statement to read git-history-only. The ignore-glob block is pure noise once files are gone — `.claudeignore` drops the `Pre-0042 ADRs` block entirely; `.cursorignore` replaces the globs with a one-line eviction-date comment pointing at `HISTORICAL.md`.
 
 **Test expectation:** none — documentation/config only.
 
