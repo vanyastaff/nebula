@@ -1071,3 +1071,421 @@ async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
 
     drop(in_flight);
 }
+
+// ===========================================================================
+// U9 gate — `built_epoch` advances only on a successful reconcile, distinct
+// from `SlotCell::generation()` which bumps on every transition (including a
+// no-op `take()` on an already-empty slot).
+//
+// A later unit may only fold `built_epoch` into `SlotCell::generation()` if
+// this stays green after the fold: a no-op `take()` must not leave a
+// correctly-bound resident runtime perpetually re-classified as stale (which
+// would force redundant revoke-hook re-delivery — a credential-isolation
+// behavior change R11 forbids).
+// ===========================================================================
+
+mod u9_gate {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
+    use nebula_credential::CredentialGuard;
+    use nebula_resource::{
+        AcquireOptions, Manager, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+        SlotCell, error::Error, resource::ResourceMetadata, topology::resident::Resident,
+    };
+    use tokio_util::sync::CancellationToken;
+    use zeroize::Zeroize;
+
+    #[derive(Default)]
+    struct Cred(u32);
+
+    impl Zeroize for Cred {
+        fn zeroize(&mut self) {
+            self.0 = 0;
+        }
+    }
+
+    #[derive(Debug)]
+    struct GateErr(String);
+
+    impl std::fmt::Display for GateErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for GateErr {}
+
+    impl From<GateErr> for Error {
+        fn from(e: GateErr) -> Self {
+            Error::transient(e.0)
+        }
+    }
+
+    #[derive(Clone)]
+    struct GateConfig;
+
+    nebula_resource::impl_empty_has_schema!(GateConfig);
+
+    impl ResourceConfig for GateConfig {
+        fn validate(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct GateRuntime;
+
+    /// Resident whose `credential_slot_epoch()` tracks a real `SlotCell`
+    /// generation (the realistic shape — exactly what `#[derive(Resource)]`
+    /// emits and what `resident_rotation_race.rs` mirrors). `create` reads
+    /// the slot so the runtime is bound to the resolved credential.
+    #[derive(Clone)]
+    struct GateResource {
+        db: Arc<SlotCell<CredentialGuard<Cred>>>,
+        refresh_calls: Arc<AtomicUsize>,
+    }
+
+    impl Resource for GateResource {
+        type Config = GateConfig;
+        type Runtime = GateRuntime;
+        type Lease = GateRuntime;
+        type Error = GateErr;
+
+        fn key() -> ResourceKey {
+            resource_key!("u9-gate-resident")
+        }
+
+        async fn create(
+            &self,
+            _config: &GateConfig,
+            _ctx: &ResourceContext,
+        ) -> Result<GateRuntime, GateErr> {
+            // Bind to whatever the slot holds now (realistic resident).
+            let _ = self.db.load();
+            Ok(GateRuntime)
+        }
+
+        async fn destroy(&self, _runtime: GateRuntime) -> Result<(), GateErr> {
+            Ok(())
+        }
+
+        async fn on_credential_refresh(
+            &self,
+            _slot: &str,
+            _runtime: &GateRuntime,
+        ) -> Result<(), GateErr> {
+            self.refresh_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        // The create-vs-rotate reconcile counter (derive emits exactly this).
+        fn credential_slot_epoch(&self) -> u64 {
+            self.db.generation()
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Resident for GateResource {
+        fn is_alive_sync(&self, _runtime: &GateRuntime) -> bool {
+            true
+        }
+    }
+
+    fn ctx() -> ResourceContext {
+        ResourceContext::minimal(Scope::default(), CancellationToken::new())
+    }
+
+    /// A no-op `take()` on an already-empty slot bumps
+    /// `SlotCell::generation()` but represents NO real credential
+    /// transition. After one legitimate reconcile catches `built_epoch` up
+    /// to the slot epoch, a refresh dispatch following *only* such no-op
+    /// `take()`s must NOT keep re-classifying the runtime as stale and
+    /// re-delivering the hook. This pins the `built_epoch`-advances-only-on-
+    /// successful-reconcile semantics; the fold is allowed only if this
+    /// stays green.
+    #[tokio::test]
+    async fn noop_take_does_not_perpetually_restale_a_reconciled_resident() {
+        let slot: SlotCell<CredentialGuard<Cred>> = SlotCell::empty();
+        slot.store(Arc::new(CredentialGuard::new(Cred(7)))); // generation 1
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let resource = GateResource {
+            db: Arc::new(slot),
+            refresh_calls: Arc::clone(&refresh_calls),
+        };
+
+        let mgr = Manager::new();
+        mgr.register_resident(resource.clone(), GateConfig, ResidentConfig::default())
+            .expect("register_resident must succeed");
+
+        // Warm the resident: runtime built; built_epoch == slot generation (1).
+        let _g = mgr
+            .acquire_resident::<GateResource>(&ctx(), &AcquireOptions::default())
+            .await
+            .expect("warm acquire must succeed");
+
+        // A real revoke transition: clear the bound credential (generation
+        // → 2). The runtime is now genuinely stale (built 1 < slot 2).
+        let _ = resource.db.take();
+
+        // First refresh: reconciles the genuinely-stale runtime exactly once
+        // (delivers the hook, advances built_epoch to the observed slot
+        // epoch).
+        mgr.refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
+            .await
+            .expect("refresh after a real transition must succeed");
+        assert_eq!(
+            refresh_calls.load(Ordering::SeqCst),
+            1,
+            "the genuinely-stale runtime reconciles exactly once"
+        );
+
+        // Now perform ONLY no-op `take()`s on the already-empty slot. Each
+        // bumps `SlotCell::generation()` with NO real credential change.
+        for _ in 0..3 {
+            assert!(
+                resource.db.take().is_none(),
+                "slot is already empty — these are no-op clears"
+            );
+        }
+
+        // A refresh dispatch after only no-op clears must STILL deliver the
+        // hook exactly once per dispatch (idempotent, the documented
+        // contract) — i.e. exactly one MORE call, not one-per-bumped-
+        // generation. The decisive property: the runtime is not stuck in a
+        // perpetual stale-reconcile loop because `built_epoch` advanced to
+        // the slot epoch on the prior success. Folding `built_epoch` into a
+        // counter that the resident cannot "catch up" by storing into would
+        // break this.
+        mgr.refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
+            .await
+            .expect("refresh after no-op takes must succeed");
+        assert_eq!(
+            refresh_calls.load(Ordering::SeqCst),
+            2,
+            "exactly one further reconcile — a no-op take() must not \
+             multiply hook deliveries (built_epoch caught up on the prior \
+             success; it is NOT SlotCell::generation, which bumped 3x for \
+             the no-op takes)"
+        );
+    }
+}
+
+// ===========================================================================
+// Reload-deferral net — pins the CURRENT per-topology `reload_config`
+// outcome BEFORE the topology match arm is rewritten, so the deferred
+// reload no-op is preserved verbatim, not silently changed by the fold.
+//
+// Current contract (manager/mod.rs `reload_config`):
+//   - fingerprint unchanged                  ⇒ `NoChange` (early return)
+//   - Service topology, fingerprint changed  ⇒ `PendingDrain { old_generation }`
+//   - Pool / Resident / Exclusive / Transport, fingerprint changed
+//                                            ⇒ `SwappedImmediately`
+// (Note: only `Service` yields `PendingDrain` today — Transport/Exclusive
+//  currently return `SwappedImmediately`. The fold must preserve exactly
+//  this mapping.)
+// ===========================================================================
+
+mod reload_deferral {
+    use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+    use nebula_resource::{
+        ExclusiveConfig, Manager, PoolConfig, ReloadOutcome, ResidentConfig, Resource,
+        ResourceConfig, ResourceContext, ServiceConfig, TransportConfig,
+        error::Error,
+        resource::ResourceMetadata,
+        topology::{
+            exclusive::Exclusive, pooled::Pooled, resident::Resident, service::Service,
+            transport::Transport,
+        },
+    };
+
+    #[derive(Debug)]
+    struct RErr(String);
+
+    impl std::fmt::Display for RErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for RErr {}
+
+    impl From<RErr> for Error {
+        fn from(e: RErr) -> Self {
+            Error::transient(e.0)
+        }
+    }
+
+    /// A config whose `fingerprint()` is its `version` field, so a reload
+    /// with a different version is actually detected as a change (the `0`
+    /// default would always early-return `NoChange`).
+    #[derive(Clone)]
+    struct VersionedConfig {
+        version: u64,
+    }
+
+    nebula_resource::impl_empty_has_schema!(VersionedConfig);
+
+    impl ResourceConfig for VersionedConfig {
+        fn validate(&self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn fingerprint(&self) -> u64 {
+            self.version
+        }
+    }
+
+    macro_rules! reload_fixture {
+        ($name:ident, $key:literal) => {
+            #[derive(Clone)]
+            struct $name;
+
+            impl Resource for $name {
+                type Config = VersionedConfig;
+                type Runtime = u32;
+                type Lease = u32;
+                type Error = RErr;
+
+                fn key() -> ResourceKey {
+                    resource_key!($key)
+                }
+
+                async fn create(
+                    &self,
+                    _config: &VersionedConfig,
+                    _ctx: &ResourceContext,
+                ) -> Result<u32, RErr> {
+                    Ok(1)
+                }
+
+                async fn destroy(&self, _runtime: u32) -> Result<(), RErr> {
+                    Ok(())
+                }
+
+                fn metadata() -> ResourceMetadata {
+                    ResourceMetadata::from_key(&Self::key())
+                }
+            }
+        };
+    }
+
+    reload_fixture!(PoolReload, "reload-pool");
+    reload_fixture!(ResidentReload, "reload-resident");
+    reload_fixture!(ServiceReload, "reload-service");
+    reload_fixture!(ExclusiveReload, "reload-exclusive");
+    reload_fixture!(TransportReload, "reload-transport");
+
+    impl Pooled for PoolReload {}
+    impl Resident for ResidentReload {
+        fn is_alive_sync(&self, _r: &u32) -> bool {
+            true
+        }
+    }
+    impl Service for ServiceReload {
+        async fn acquire_token(&self, _runtime: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
+            Ok(1)
+        }
+    }
+    impl Exclusive for ExclusiveReload {}
+    impl Transport for TransportReload {
+        async fn open_session(&self, _t: &u32, _ctx: &ResourceContext) -> Result<u32, RErr> {
+            Ok(1)
+        }
+    }
+
+    fn v(version: u64) -> VersionedConfig {
+        VersionedConfig { version }
+    }
+
+    /// Fingerprint unchanged ⇒ `NoChange`, regardless of topology.
+    #[tokio::test]
+    async fn reload_with_unchanged_fingerprint_is_nochange() {
+        let mgr = Manager::new();
+        mgr.register_resident(ResidentReload, v(1), ResidentConfig::default())
+            .expect("register");
+        let outcome = mgr
+            .reload_config::<ResidentReload>(v(1), &ScopeLevel::Global)
+            .expect("reload must not error");
+        assert_eq!(
+            outcome,
+            ReloadOutcome::NoChange,
+            "an unchanged fingerprint must early-return NoChange"
+        );
+    }
+
+    /// Service topology, fingerprint changed ⇒ `PendingDrain`.
+    #[tokio::test]
+    async fn reload_service_changed_is_pending_drain() {
+        let mgr = Manager::new();
+        mgr.register_service(ServiceReload, v(1), 1u32, ServiceConfig::default())
+            .expect("register");
+        let outcome = mgr
+            .reload_config::<ServiceReload>(v(2), &ScopeLevel::Global)
+            .expect("reload must not error");
+        assert!(
+            matches!(outcome, ReloadOutcome::PendingDrain { .. }),
+            "Service topology must yield PendingDrain on a changed \
+             fingerprint, got {outcome:?}"
+        );
+    }
+
+    /// Pool / Resident / Exclusive / Transport, fingerprint changed ⇒
+    /// `SwappedImmediately` (only Service yields `PendingDrain` today).
+    #[tokio::test]
+    async fn reload_non_service_changed_is_swapped_immediately() {
+        let mgr = Manager::new();
+
+        mgr.register_pooled(PoolReload, v(1), PoolConfig::default())
+            .expect("register pool");
+        assert_eq!(
+            mgr.reload_config::<PoolReload>(v(2), &ScopeLevel::Global)
+                .expect("pool reload"),
+            ReloadOutcome::SwappedImmediately,
+            "Pool reload (changed) must be SwappedImmediately"
+        );
+
+        mgr.register_resident(ResidentReload, v(1), ResidentConfig::default())
+            .expect("register resident");
+        assert_eq!(
+            mgr.reload_config::<ResidentReload>(v(2), &ScopeLevel::Global)
+                .expect("resident reload"),
+            ReloadOutcome::SwappedImmediately,
+            "Resident reload (changed) must be SwappedImmediately"
+        );
+
+        mgr.register_exclusive(ExclusiveReload, v(1), 1u32, ExclusiveConfig::default())
+            .expect("register exclusive");
+        assert_eq!(
+            mgr.reload_config::<ExclusiveReload>(v(2), &ScopeLevel::Global)
+                .expect("exclusive reload"),
+            ReloadOutcome::SwappedImmediately,
+            "Exclusive reload (changed) must be SwappedImmediately (NOT \
+             PendingDrain — only Service defers today)"
+        );
+
+        mgr.register_transport(
+            TransportReload,
+            v(1),
+            1u32,
+            TransportConfig {
+                max_sessions: 2,
+                keepalive_interval: None,
+                acquire_timeout: std::time::Duration::from_secs(1),
+            },
+        )
+        .expect("register transport");
+        assert_eq!(
+            mgr.reload_config::<TransportReload>(v(2), &ScopeLevel::Global)
+                .expect("transport reload"),
+            ReloadOutcome::SwappedImmediately,
+            "Transport reload (changed) must be SwappedImmediately (NOT \
+             PendingDrain — only Service defers today)"
+        );
+    }
+}

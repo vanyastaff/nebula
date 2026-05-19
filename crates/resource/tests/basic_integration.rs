@@ -90,6 +90,13 @@ impl ResourceConfig for TestConfig {
 struct PoolTestResource {
     create_counter: Arc<AtomicU64>,
     break_flag: Arc<AtomicBool>,
+    /// Incremented by `destroy`. The deterministic completion signal for a
+    /// release that ends in destruction (tainted / broken / stale) — a
+    /// release runs on the [`ReleaseQueue`] worker, so a test that asserts
+    /// "the instance was NOT recycled" must wait for this rather than guess
+    /// a wall-clock delay (idle stays `0` the whole time, so polling idle is
+    /// not a usable settle signal for that case).
+    destroy_counter: Arc<AtomicU64>,
 }
 
 impl PoolTestResource {
@@ -97,6 +104,7 @@ impl PoolTestResource {
         Self {
             create_counter: Arc::new(AtomicU64::new(0)),
             break_flag: Arc::new(AtomicBool::new(false)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -124,6 +132,7 @@ impl Resource for PoolTestResource {
     }
 
     async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -230,6 +239,70 @@ fn test_config() -> TestConfig {
     }
 }
 
+/// Polls `cond` until it returns `true` or the deadline elapses, then
+/// returns the final value of `cond`.
+///
+/// Replaces fixed `sleep(50ms)` "settle" points: release/recycle work runs
+/// on the [`ReleaseQueue`] background worker, so the test must wait for the
+/// *observable effect* (an idle count, a counter) rather than guess a
+/// wall-clock delay. A short poll interval keeps fast cases fast; the
+/// bounded deadline turns a real regression into a prompt failure instead of
+/// a hang.
+async fn poll_until(deadline: std::time::Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    cond()
+}
+
+/// Waits until a pool's idle count equals `expected` (bounded), failing the
+/// test with the observed count if it never does. The deterministic
+/// replacement for `drop(handle); sleep(50ms); assert_eq!(idle_count, n)`.
+async fn wait_idle_count<R>(pool: &PoolRuntime<R>, expected: usize)
+where
+    R: Pooled + Clone + Send + Sync + 'static,
+    R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
+    R::Lease: Into<R::Runtime> + Send + 'static,
+{
+    let deadline = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        let idle = pool.idle_count().await;
+        if idle == expected {
+            return;
+        }
+        assert!(
+            start.elapsed() < deadline,
+            "pool idle count never reached {expected}; last observed {idle}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// Waits until `counter` reaches at least `expected` (bounded). Used as the
+/// release-completion signal for the destroyed-not-recycled case, where the
+/// idle count stays `0` throughout and is therefore not a usable settle
+/// signal.
+async fn wait_count_at_least(counter: &Arc<AtomicU64>, expected: u64) {
+    let deadline = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+    loop {
+        let observed = counter.load(Ordering::Relaxed);
+        if observed >= expected {
+            return;
+        }
+        assert!(
+            start.elapsed() < deadline,
+            "counter never reached {expected}; last observed {observed}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pool tests
 // ---------------------------------------------------------------------------
@@ -268,7 +341,9 @@ async fn pool_acquire_use_release_reacquire() {
 
     // Release by dropping.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Deterministic settle: wait for the release worker to recycle the
+    // instance back into idle instead of guessing a wall-clock delay.
+    wait_idle_count(&pool, 1).await;
 
     // Pool should have one idle instance now.
     assert_eq!(pool.idle_count().await, 1);
@@ -293,8 +368,8 @@ async fn pool_acquire_use_release_reacquire() {
         "should reuse, not create"
     );
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks, so no
+    // wall-clock settle is needed before tearing the queue down.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -325,7 +400,7 @@ async fn pool_broken_instance_gets_replaced() {
         .await
         .unwrap();
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_idle_count(&pool, 1).await;
     assert_eq!(pool.idle_count().await, 1);
 
     // Mark as broken.
@@ -352,9 +427,9 @@ async fn pool_broken_instance_gets_replaced() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // Broken flag still set, so the released instance was destroyed.
+    // Broken flag still set, so the released instance must be destroyed —
+    // wait for the release worker to settle on idle == 0.
+    wait_idle_count(&pool, 0).await;
     assert_eq!(pool.idle_count().await, 0);
 
     drop(rq);
@@ -903,7 +978,10 @@ async fn tainted_handle_not_recycled() {
 
     handle.taint();
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // A tainted handle is destroyed, not recycled — wait for the release
+    // worker to run `destroy` (idle stays 0 throughout, so the destroy
+    // counter is the deterministic completion signal here).
+    wait_count_at_least(&resource.destroy_counter, 1).await;
 
     // Tainted handle should NOT be recycled.
     assert_eq!(pool.idle_count().await, 0);
@@ -1069,8 +1147,8 @@ async fn pool_concurrent_acquire_respects_max_size() {
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
 
     drop(handles);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1116,8 +1194,8 @@ async fn pool_backpressure_when_full() {
     assert_eq!(*err.kind(), ErrorKind::Backpressure);
 
     drop(_held);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1449,8 +1527,8 @@ async fn pool_acquire_with_deadline() {
     );
 
     drop(_held);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1488,8 +1566,11 @@ async fn pool_detach_removes_from_pool() {
     let lease = handle.detach();
     assert!(lease.is_some(), "guarded handle detach should return Some");
 
-    // Give time for any potential (but should-not-happen) release processing.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // `detach` disarms the release callback synchronously, so nothing can
+    // ever be submitted to the queue. A single scheduler yield lets any
+    // (erroneously) spawned release task run before we assert — a
+    // deterministic turn, not a wall-clock guess.
+    tokio::task::yield_now().await;
 
     // Pool should NOT get the instance back — idle_count stays 0.
     assert_eq!(
@@ -1841,9 +1922,13 @@ async fn transport_acquire_opens_session() {
     );
     assert_eq!(resource.session_counter.load(Ordering::Relaxed), 1);
 
-    // Drop triggers close_session via release queue.
+    // Drop triggers close_session via the release queue — wait for it to
+    // run rather than guess a delay.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.close_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     assert_eq!(resource.close_counter.load(Ordering::Relaxed), 1);
 
@@ -1902,9 +1987,14 @@ async fn transport_session_bounded_by_semaphore() {
 
     assert!(result.is_err(), "third acquire should have timed out");
 
-    // Release one session — frees a semaphore permit.
+    // Release one session — `close_session` (release queue) frees a
+    // semaphore permit. Wait for the close to complete so the permit is
+    // genuinely available before the next acquire.
     drop(h1);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.close_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     // Now third acquire should succeed.
     let h3 = rt
@@ -1916,8 +2006,8 @@ async fn transport_session_bounded_by_semaphore() {
 
     drop(h2);
     drop(h3);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -1973,8 +2063,8 @@ async fn transport_acquire_timeout_when_sessions_exhausted() {
     );
 
     drop(_held);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2016,9 +2106,10 @@ async fn exclusive_acquire_one_at_a_time() {
 
     assert!(result.is_err(), "second acquire should have timed out");
 
-    // Release the first handle.
+    // Release the first handle. The next acquire (no deadline) blocks on
+    // the semaphore until `reset` completes and the permit is dropped —
+    // that is itself the deterministic wait, no fixed sleep needed.
     drop(h1);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Now second acquire should succeed.
     let h2 = rt
@@ -2029,8 +2120,8 @@ async fn exclusive_acquire_one_at_a_time() {
     assert_eq!(h2.topology_tag(), nebula_resource::TopologyTag::Exclusive);
 
     drop(h2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2053,9 +2144,12 @@ async fn exclusive_reset_called_on_release() {
 
     assert_eq!(resource.reset_counter.load(Ordering::Relaxed), 0);
 
-    // Drop triggers reset via release queue.
+    // Drop triggers reset via the release queue — wait for it to run.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.reset_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     assert_eq!(
         resource.reset_counter.load(Ordering::Relaxed),
@@ -2070,7 +2164,10 @@ async fn exclusive_reset_called_on_release() {
         .expect("second acquire");
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.reset_counter.load(Ordering::Relaxed) >= 2
+    })
+    .await;
 
     assert_eq!(
         resource.reset_counter.load(Ordering::Relaxed),
@@ -2128,8 +2225,8 @@ async fn exclusive_acquire_timeout_when_locked() {
     );
 
     drop(_h1);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2291,8 +2388,8 @@ async fn pool_permit_not_leaked_after_release() {
         .await
         .expect("second acquire must not block — permit should be available");
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -2356,7 +2453,16 @@ async fn registry_backed_metrics_record_operations() {
         .await
         .expect("pool acquire should succeed");
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // `acquire_total` / `create_total` are recorded synchronously during
+    // the acquire (not by the release worker). Poll the precondition the
+    // asserts depend on rather than guess a wall-clock delay.
+    poll_until(std::time::Duration::from_secs(2), || {
+        manager
+            .metrics()
+            .map(nebula_resource::ResourceOpsMetrics::snapshot)
+            .is_some_and(|s| s.acquire_total >= 1 && s.create_total >= 2)
+    })
+    .await;
 
     // Aggregate metrics via snapshot.
     let snap = manager
@@ -3071,7 +3177,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_idle_count(&pool, 1).await;
     assert_eq!(pool.idle_count().await, 1);
 
     // Change fingerprint — makes the idle entry stale.
@@ -3098,8 +3204,8 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -3137,10 +3243,11 @@ async fn pool_max_lifetime_evicts_expired_entry() {
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_idle_count(&pool, 1).await;
     assert_eq!(pool.idle_count().await, 1);
 
-    // Sleep past max_lifetime.
+    // Sleep past max_lifetime — a deliberate clock advance (the entry must
+    // actually age beyond its lifetime), not a release-settle guess.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Next acquire should destroy expired entry and create fresh.
@@ -3164,8 +3271,8 @@ async fn pool_max_lifetime_evicts_expired_entry() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -3178,12 +3285,17 @@ async fn pool_max_lifetime_evicts_expired_entry() {
 #[derive(Clone)]
 struct DropOnRecycleResource {
     create_counter: Arc<AtomicU64>,
+    /// Release-completion signal: the idle count stays `0` for this resource
+    /// (every release ends in `destroy`), so the destroy counter — not the
+    /// idle count — is the deterministic "release ran" signal.
+    destroy_counter: Arc<AtomicU64>,
 }
 
 impl DropOnRecycleResource {
     fn new() -> Self {
         Self {
             create_counter: Arc::new(AtomicU64::new(0)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -3211,6 +3323,7 @@ impl Resource for DropOnRecycleResource {
     }
 
     async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -3257,7 +3370,12 @@ async fn pool_recycle_drop_destroys_entry() {
         .expect("acquire should succeed");
 
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // recycle=Drop destroys the instance — wait for `destroy` to run (idle
+    // stays 0 throughout, so the destroy counter is the settle signal).
+    poll_until(std::time::Duration::from_secs(2), || {
+        resource.destroy_counter.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     assert_eq!(
         pool.idle_count().await,
@@ -3402,9 +3520,11 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
         .await
         .expect("first acquire should succeed");
 
-    // Drop the handle — this triggers reset() which fails.
+    // Drop the handle — this triggers reset() which fails. The next acquire
+    // (bounded by its own deadline) blocks on the semaphore until the permit
+    // is dropped after `reset` resolves — that wait is the deterministic
+    // synchronization, no fixed sleep needed.
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Second acquire should still succeed — the permit was returned despite
     // the reset failure.
@@ -3425,8 +3545,8 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
     );
 
     drop(handle2);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
+    // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
+    // settle is needed before teardown.
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -3858,7 +3978,27 @@ async fn reload_config_evicts_stale_pool_instances() {
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for the release worker to recycle the instance back into idle so
+    // there is a stale entry for the reload to evict (deterministic settle
+    // via the observable idle count, not a wall-clock guess).
+    {
+        let deadline = std::time::Duration::from_secs(2);
+        let start = std::time::Instant::now();
+        loop {
+            let idle = manager
+                .pool_stats::<ReloadPoolResource>(&ScopeLevel::Global)
+                .await
+                .map_or(0, |s| s.idle);
+            if idle >= 1 {
+                break;
+            }
+            assert!(
+                start.elapsed() < deadline,
+                "released instance never recycled back into idle (idle={idle})"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
 
     // Reload with new fingerprint — stale instances should be evicted.
     manager

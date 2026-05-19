@@ -267,3 +267,124 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
          Resource::create invocation"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R15 — the cross-tenant barrier must be collision-free
+//
+// The current barrier is `slot_identity()`: a fixed-seed `DefaultHasher`
+// folded to `u64`, then equality-compared as the registry-row discriminator.
+// Equality on a 64-bit digest is collidable: two registrations whose
+// resolved credentials differ but whose digests collide silently merge into
+// one registry row (last-write-wins), so one tenant's topology runtime
+// serves another tenant's credential — bypassing the fail-closed
+// `Ambiguous` deny. The fix replaces the digest with a structural
+// `(SlotKey, CredentialKey)` identity whose `Eq` is exact, making collision
+// impossible by construction.
+// ---------------------------------------------------------------------------
+
+/// RED — proves R15. Two registrations of the same resource type at the same
+/// scope that resolve **different** credentials (each its own
+/// `Resource::create` counter) but are *forced onto the same 64-bit
+/// `slot_identity`* (the adversarial digest-collision input) must NOT share
+/// a runtime: each tenant must reach its own `create`, never the other's.
+///
+/// Today the colliding identity collapses both to a single registry row
+/// (last-write-wins), so only one runtime exists and one tenant is served
+/// the other's credential — exactly the cross-tenant bleed. This is
+/// `#[ignore]`d until the structural-identity replacement lands; that unit
+/// re-expresses the scenario through distinct structural bindings (a u64
+/// collision is then unrepresentable) and this assertion passes.
+#[tokio::test]
+#[ignore = "RED until U2 — proves R15 (a slot_identity digest collision must not merge two tenants' rows)"]
+async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
+    let manager = Manager::new();
+    let org = OrgId::new();
+    let scope = ScopeLevel::Organization(org);
+
+    // The adversarial input: two *different* resolved credentials whose
+    // `slot_identity` digests collide to the SAME u64. Each tenant has its
+    // OWN create counter so a distinct row drives a distinct `create`; a
+    // merged row would show only one `create` total and a shared runtime.
+    let colliding_identity = 0x0BAD_F00D_DEAD_BEEF;
+    let counter_a = Arc::new(AtomicU64::new(1_000));
+    let counter_b = Arc::new(AtomicU64::new(2_000));
+
+    manager
+        .register_resident_with(
+            CountingResource::new(Arc::clone(&counter_a)),
+            CountingConfig,
+            ResidentConfig::default(),
+            RegisterOptions::default()
+                .with_scope(scope.clone())
+                .with_slot_identity(colliding_identity),
+        )
+        .expect("register tenant A must succeed");
+    manager
+        .register_resident_with(
+            CountingResource::new(Arc::clone(&counter_b)),
+            CountingConfig,
+            ResidentConfig::default(),
+            RegisterOptions::default()
+                .with_scope(scope.clone())
+                .with_slot_identity(colliding_identity),
+        )
+        .expect("register tenant B must succeed");
+
+    let ctx = ctx_for_org(org);
+    let lease_a = manager
+        .acquire_resident_for::<CountingResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            colliding_identity,
+        )
+        .await
+        .expect("tenant A acquire must succeed");
+    let lease_b = manager
+        .acquire_resident_for::<CountingResource>(
+            &ctx,
+            &AcquireOptions::default(),
+            colliding_identity,
+        )
+        .await
+        .expect("tenant B acquire must succeed");
+
+    assert_ne!(
+        lease_a.id, lease_b.id,
+        "two registrations resolving DIFFERENT credentials must never share \
+         a runtime even when their slot_identity digests collide — a digest \
+         collision must not merge tenant rows (cross-tenant bleed). The \
+         structural identity makes this collision unrepresentable."
+    );
+}
+
+/// Pins the `h == SLOT_IDENTITY_UNBOUND ⇒ 1` nudge branch of the current
+/// `slot_identity()` primitive: a non-empty resolved binding set must never
+/// produce the reserved `SLOT_IDENTITY_UNBOUND` value (which means "no
+/// resolved slots"). This documents the exact weak-primitive contract being
+/// replaced; it must hold for any non-empty binding, including the reserved
+/// edge.
+#[test]
+fn slot_identity_nudge_keeps_non_empty_off_the_unbound_sentinel() {
+    use nebula_resource::{SLOT_IDENTITY_UNBOUND, slot_identity};
+
+    // Empty bindings are the ONLY input that may yield the sentinel.
+    let empty: Vec<(&str, &str)> = Vec::new();
+    assert_eq!(slot_identity(empty), SLOT_IDENTITY_UNBOUND);
+
+    // Every non-empty binding must be nudged off the sentinel: a real
+    // resolved credential must never be mistaken for "unbound".
+    for (slot, cred) in [
+        ("db", "cred-a"),
+        ("cache", "cred-b"),
+        ("db", ""),
+        ("", "x"),
+        ("queue", "tenant-7-credential"),
+    ] {
+        assert_ne!(
+            slot_identity([(slot, cred)]),
+            SLOT_IDENTITY_UNBOUND,
+            "non-empty binding ({slot:?}, {cred:?}) must be nudged off the \
+             reserved unbound sentinel"
+        );
+    }
+}

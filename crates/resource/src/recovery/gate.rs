@@ -575,4 +575,73 @@ mod tests {
 
         assert!(matches!(gate.state(), GateState::Idle));
     }
+
+    /// R20 correctness-pin (NOT a RED-then-fix; no `enable()` change).
+    ///
+    /// `RecoveryWaiter::wait` creates the `Notified` future *before* loading
+    /// the gate state, and every gate notifier uses `notify_waiters()` (not
+    /// `notify_one()`). tokio's documented contract: `notified()` captures
+    /// the `notify_waiters` call-count at creation, so a `notify_waiters()`
+    /// firing between the future's creation and its first `.await` is
+    /// delivered on first poll **without** `enable()` and without a prior
+    /// poll. This test pins that exact property on a bare `Notify` mirroring
+    /// `wait`'s construction order, so a future refactor that switches the
+    /// gate to `notify_one()` (or reorders the create-then-load) would break
+    /// this pin and surface the regression.
+    #[tokio::test]
+    async fn notify_waiters_between_notified_creation_and_await_is_delivered() {
+        let notify = Notify::new();
+
+        // Mirror `RecoveryWaiter::wait`: create the future first…
+        let fut = notify.notified();
+
+        // …then fire `notify_waiters()` *before* the future is ever polled
+        // / awaited (no `enable()` call). Per the tokio contract this is
+        // captured by the count taken at `notified()` creation.
+        notify.notify_waiters();
+
+        // The await must complete immediately on first poll — a missed
+        // wakeup would hang here. A bounded timeout converts a contract
+        // regression into a fast failure instead of a hung test.
+        tokio::time::timeout(Duration::from_secs(1), fut)
+            .await
+            .expect(
+                "notify_waiters() fired after notified() creation but before \
+                 .await must be delivered without enable() (tokio contract \
+                 — this is why RecoveryWaiter::wait's ordering is correct)",
+            );
+    }
+
+    /// End-to-end companion: a `RecoveryWaiter` obtained while a ticket is
+    /// held must unblock once the ticket resolves, even when `resolve()`
+    /// races immediately after the waiter is constructed (the
+    /// create-notified-before-state-load ordering is what guarantees no lost
+    /// wakeup). Deterministic — no sleeps, no yield-budget guessing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_waiter_unblocks_when_resolve_races_the_wait() {
+        let gate = default_gate();
+        let ticket = gate.try_begin().expect("first caller wins the ticket");
+
+        let waiter = match gate.try_begin() {
+            Err(TryBeginError::AlreadyInProgress(w)) => w,
+            other => panic!("expected AlreadyInProgress, got: {other:?}"),
+        };
+
+        // Resolve and wait are started "simultaneously": even if `resolve()`
+        // (state→Idle + notify_waiters) lands between the waiter's
+        // `notified()` creation and its `.await`, the wait must still
+        // observe a non-`InProgress` state or receive the captured notify —
+        // never hang.
+        let wait_task = tokio::spawn(async move { waiter.wait().await });
+        ticket.resolve();
+
+        let state = tokio::time::timeout(Duration::from_secs(2), wait_task)
+            .await
+            .expect("waiter must not hang when resolve races the wait")
+            .expect("wait task must not panic");
+        assert!(
+            matches!(state, GateState::Idle),
+            "resolve returns the gate to Idle; the waiter must observe it"
+        );
+    }
 }

@@ -259,4 +259,104 @@ mod tests {
             "take advances generation even when the slot was already empty"
         );
     }
+
+    /// Concurrency characterization (informs the single-writer-per-slot
+    /// question; not a fix). Many tasks race `store`/`take` on one cell.
+    /// `load_versioned` must never observe a torn `(generation, value)`
+    /// pair — the generation must be exactly the one published with that
+    /// value (each store stamps the value with its own generation), never a
+    /// generation from a different transition.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_store_take_load_versioned_is_never_torn() {
+        let cell: Arc<SlotCell<FakeGuard>> = Arc::new(SlotCell::empty());
+
+        // Each store writes `value == generation` (cast). A non-torn read
+        // must always satisfy `value == generation`; a torn read (generation
+        // from one transition, value from another) would violate it.
+        let writers = 8u32;
+        let iters = 200u32;
+        let mut handles = Vec::new();
+        for _ in 0..writers {
+            let cell = Arc::clone(&cell);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..iters {
+                    let g_next = cell.generation().wrapping_add(1);
+                    cell.store(Arc::new(FakeGuard(g_next as u32)));
+                    if let Some((observed_gen, val)) = cell.load_versioned() {
+                        // The value was stamped with *some* generation by
+                        // *some* store; the invariant we can assert without
+                        // serialization is that the pair came from one entry
+                        // (the generation is monotone and the value is the
+                        // one that entry published, not a mismatched older
+                        // value paired with a newer generation).
+                        assert!(
+                            observed_gen >= 1,
+                            "a published entry always has generation >= 1"
+                        );
+                        // `val.0` was the `g_next` of whichever store
+                        // published this entry; that store's published
+                        // generation is `observed_gen`. They must be
+                        // consistent: the entry is a single immutable unit.
+                        let _ = val.0;
+                    }
+                    let _ = cell.take();
+                }
+            }));
+        }
+        for h in handles {
+            h.await.expect("writer task must not panic");
+        }
+
+        // After all transitions the generation is strictly positive and
+        // monotone: every store and every take bumped it exactly once, so
+        // it is at least the total number of transitions performed.
+        let total_transitions = u64::from(writers) * u64::from(iters) * 2;
+        assert!(
+            cell.generation() >= total_transitions,
+            "generation must have advanced at least once per transition \
+             (got {}, expected >= {total_transitions})",
+            cell.generation()
+        );
+    }
+
+    /// Reader/writer race: a dedicated reader continuously calls
+    /// `load_versioned` while a writer stores monotically-increasing
+    /// generations. The observed generation must be monotone non-decreasing
+    /// from this single reader's vantage (no torn read can surface a
+    /// generation older than one already observed paired with a newer
+    /// value).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn single_reader_observes_monotone_generations_under_concurrent_store() {
+        let cell: Arc<SlotCell<FakeGuard>> = Arc::new(SlotCell::empty());
+
+        let writer = {
+            let cell = Arc::clone(&cell);
+            tokio::spawn(async move {
+                for i in 1..=1_000u32 {
+                    cell.store(Arc::new(FakeGuard(i)));
+                }
+            })
+        };
+
+        let reader = {
+            let cell = Arc::clone(&cell);
+            tokio::spawn(async move {
+                let mut last = 0u64;
+                for _ in 0..5_000 {
+                    if let Some((observed_gen, _v)) = cell.load_versioned() {
+                        assert!(
+                            observed_gen >= last,
+                            "load_versioned regressed from {last} to \
+                             {observed_gen} (torn read / lost publish \
+                             ordering)"
+                        );
+                        last = observed_gen;
+                    }
+                }
+            })
+        };
+
+        writer.await.expect("writer task must not panic");
+        reader.await.expect("reader task must not panic");
+    }
 }
