@@ -13,7 +13,7 @@
 //! | Cap | Folds | Permits | `release_one` |
 //! |-----|-------|---------|---------------|
 //! | [`Unbounded`] | `Service` (`Cloned`) | none | not called (owned handle) |
-//! | [`Capped<N>`] | `Service` (`Tracked`), `Transport` | `N` | required |
+//! | [`Capped<N>`] (N>=1) | `Service` (`Tracked`), `Transport` | `N` | required |
 //! | [`Exclusive`] | `Exclusive` | `1` | required (the reset) |
 //!
 //! The three folded behaviors map onto one [`Bounded::acquire_one`] /
@@ -121,11 +121,24 @@ impl CapMarker for Unbounded {
 /// former `Transport` topology: the runtime gates concurrency with a
 /// `Semaphore(N)` and runs `release_one` (token return / session close)
 /// on lease drop. For the transport shape, `N` is `max_sessions`.
+///
+/// `N` must be `>= 1`: a `Capped<0>` would size the runtime semaphore at
+/// zero permits, so every acquire would stall until `acquire_timeout` and
+/// fail — a permanently unavailable resource. `Capped<0>` is therefore
+/// rejected by construction: `BoundedRuntime::new` (the only way to build a
+/// bounded runtime) contains an inline `const { assert!(...) }` that is
+/// const-evaluated per monomorphization, so a runtime whose
+/// [`Cap`](Bounded::Cap) is `Capped<0>` is a hard compile error rather than
+/// a runtime dead end. `Capped<1>` and above compile unchanged.
 #[derive(Debug, Clone, Copy)]
 pub struct Capped<const N: usize>;
 
 impl<const N: usize> sealed::Sealed for Capped<N> {}
 impl<const N: usize> CapMarker for Capped<N> {
+    // `Capped<0>` would yield `Some(0)` and size a zero-permit semaphore;
+    // it is rejected at `BoundedRuntime::new` by an inline `const` assert
+    // (associated-const definitions are evaluated lazily, so the guard lives
+    // in the constructor's monomorphized body, not here).
     const PERMITS: Option<usize> = Some(N);
     const RELEASE_REQUIRED: bool = true;
     // The shared runtime is a multiplexer; `release_one` returns a token /

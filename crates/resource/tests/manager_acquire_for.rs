@@ -25,12 +25,13 @@ use std::sync::{
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegisterOptions, RegistrationSpec, Resource, ResourceConfig,
-    ResourceContext, SlotIdentity,
+    AcquireOptions, BoundedConfig as BoundedRtConfig, BoundedRuntime, Manager, RegisterOptions,
+    RegistrationSpec, Resource, ResourceConfig, ResourceContext, SlotIdentity,
     error::Error,
     resource::ResourceMetadata,
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
     topology::{
+        bounded::{Bounded, BoundedRelease, Capped},
         pooled::{BrokenCheck, Pooled, RecycleDecision},
         resident::Resident,
     },
@@ -681,5 +682,265 @@ async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
         0,
         "a tainted acquire must never reach Resource::create through the \
          collapsed pipeline"
+    );
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Bounded two-tenant identity regression.
+//
+// The U3 fold made `Bounded` own the former Service / Transport /
+// Exclusive acquire wiring. The pooled/resident nets above already prove
+// `_for_identity` row resolution, but a Bounded-specific routing
+// regression (e.g. the `Capped` cap path resolving the wrong row) would
+// slip through them while the shared `run_acquire` nets stay green. One
+// bounded two-tenant case pins it: same `(key, scope)`, two distinct
+// resolved slot identities, each `acquire_bounded_for_identity` reaching
+// its own runtime, and `revoke_slot_for_identity` tainting only the
+// pinned row. Same assertion shape / structural identity as
+// `revoke_slot_for_revokes_only_the_pinned_row`, no flaky sleeps.
+// ───────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct BndError(String);
+
+impl std::fmt::Display for BndError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BndError {}
+
+impl From<BndError> for Error {
+    fn from(e: BndError) -> Self {
+        Error::transient(e.0)
+    }
+}
+
+#[derive(Clone)]
+struct BndConfig;
+
+nebula_schema::impl_empty_has_schema!(BndConfig);
+
+impl ResourceConfig for BndConfig {
+    fn validate(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Bounded counterpart of [`PoolRes`] / [`ResRes`]. Unlike Pool/Resident
+/// (which mint the runtime lazily via `Resource::create` per row),
+/// `BoundedRuntime::new` takes the runtime instance eagerly at
+/// construction, so the per-tenant witness is the distinct inner runtime
+/// id each row is **registered** with (tenant A ⇒ `1`, tenant B ⇒ `2`).
+/// `acquire_one` echoes that pinned runtime, so a routing regression that
+/// aliased tenant A's identity to tenant B's row would surface B's id for
+/// A's pinned acquire. `Capped<2>` keeps the fixture on the guarded-handle
+/// / `release_one` cap path the fold owns (a non-`Unbounded` `Cap`, so the
+/// release wiring is in scope — exactly the former Transport/Exclusive
+/// acquire wiring `Bounded` now owns).
+#[derive(Clone)]
+struct BndRes;
+
+impl Resource for BndRes {
+    type Config = BndConfig;
+    type Runtime = u64;
+    type Lease = u64;
+    type Error = BndError;
+
+    fn key() -> ResourceKey {
+        resource_key!("acquire-for-bounded")
+    }
+
+    async fn create(&self, _config: &BndConfig, _ctx: &ResourceContext) -> Result<u64, BndError> {
+        // Unused: `BoundedRuntime` is seeded with the per-tenant runtime at
+        // registration, not via this lazy `create`. Present only to satisfy
+        // the `Resource` contract.
+        Ok(0)
+    }
+
+    async fn destroy(&self, _runtime: u64) -> Result<(), BndError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Bounded for BndRes {
+    type Cap = Capped<2>;
+
+    async fn acquire_one(&self, runtime: &u64, _ctx: &ResourceContext) -> Result<u64, BndError> {
+        Ok(*runtime)
+    }
+}
+
+impl BoundedRelease for BndRes {
+    async fn release_one(
+        &self,
+        _runtime: &u64,
+        _lease: u64,
+        _healthy: bool,
+    ) -> Result<(), BndError> {
+        Ok(())
+    }
+}
+
+/// Bounded counterpart of [`register_pool_res`] / [`register_res_res`] —
+/// threads the resolved slot identity through the one `RegistrationSpec`
+/// funnel. `runtime_id` is the per-tenant inner-runtime witness seeded into
+/// `BoundedRuntime` (Bounded takes it eagerly at construction); the
+/// concurrency bound is `BndRes::Cap` (`Capped<2>`), not a config field.
+fn register_bnd_res(
+    manager: &Manager,
+    runtime_id: u64,
+    opts: RegisterOptions,
+) -> Result<(), Error> {
+    let slot_identity = opts.effective_slot_identity();
+    manager.register(RegistrationSpec {
+        resource: BndRes,
+        config: BndConfig,
+        scope: opts.scope,
+        slot_identity,
+        topology: TopologyRuntime::Bounded(BoundedRuntime::<BndRes>::new(
+            &BndRes,
+            runtime_id,
+            BoundedRtConfig::default(),
+        )),
+        acquire: Manager::erased_acquire_bounded_for::<BndRes>(),
+        resilience: opts.resilience,
+        recovery_gate: opts.recovery_gate,
+    })
+}
+
+/// Resolved `(slot, credential)` bindings for the two bounded tenants —
+/// the bounded analogue of [`POOL_A`] / [`POOL_B`].
+const BND_A: &[(&str, &str)] = &[("db", "cred-bnd-tenant-a")];
+const BND_B: &[(&str, &str)] = &[("db", "cred-bnd-tenant-b")];
+
+fn bnd_a_id() -> SlotIdentity {
+    SlotIdentity::from_bindings(BND_A.iter().copied())
+}
+fn bnd_b_id() -> SlotIdentity {
+    SlotIdentity::from_bindings(BND_B.iter().copied())
+}
+
+/// Per-tenant inner-runtime witnesses (the value `BoundedRuntime` is
+/// constructed with). Distinct ids ⇒ a pinned acquire that resolved the
+/// wrong row would echo the sibling's id.
+const BND_A_RT: u64 = 0xA;
+const BND_B_RT: u64 = 0xB;
+
+/// Register two bounded tenants (distinct resolved slot identity) under
+/// ONE `(key, scope)`, each seeded with its own inner runtime id. Distinct
+/// pinned runtimes prove each `_for_identity` acquire resolved its own row,
+/// not one runtime aliased to two tenants.
+fn two_tenant_bounded(org: OrgId) -> Manager {
+    let scope = ScopeLevel::Organization(org);
+    let manager = Manager::new();
+
+    for (bindings, runtime_id) in [(BND_A, BND_A_RT), (BND_B, BND_B_RT)] {
+        register_bnd_res(
+            &manager,
+            runtime_id,
+            RegisterOptions::default()
+                .with_scope(scope.clone())
+                .with_slot_bindings(bindings),
+        )
+        .expect("register bounded tenant must succeed");
+    }
+
+    manager
+}
+
+/// `acquire_bounded_for_identity` must resolve the row pinned by the
+/// resolved slot identity — tenant A's binding never aliases tenant B's
+/// runtime — and `revoke_slot_for_identity` must taint only the pinned
+/// row, leaving the multi-tenant sibling acquirable. Bounded analogue of
+/// the pooled `acquire_pooled_for_resolves_the_pinned_row` +
+/// resident `revoke_slot_for_revokes_only_the_pinned_row` nets, so a
+/// bounded-specific routing regression in the fold cannot slip past the
+/// shared `run_acquire` nets.
+#[tokio::test]
+async fn acquire_bounded_for_resolves_and_revokes_only_the_pinned_row() {
+    use nebula_error::{Classify, ErrorCategory};
+
+    let org = OrgId::new();
+    let manager = two_tenant_bounded(org);
+    let ctx = ctx_for_org(org);
+    let a = bnd_a_id();
+    let b = bnd_b_id();
+
+    // Each pinned acquire must resolve its own row → echo the inner runtime
+    // that row was seeded with. A's identity yields A's runtime, B's yields
+    // B's: distinct ids ⇒ no cross-tenant runtime bleed, and an exact-value
+    // (not just `!=`) check would catch a swap that still produced two
+    // distinct ids.
+    let la = manager
+        .acquire_bounded_for_identity::<BndRes>(&ctx, &AcquireOptions::default(), &a)
+        .await
+        .expect("acquire tenant A");
+    let lb = manager
+        .acquire_bounded_for_identity::<BndRes>(&ctx, &AcquireOptions::default(), &b)
+        .await
+        .expect("acquire tenant B");
+    assert_eq!(
+        *la, BND_A_RT,
+        "tenant A's pinned identity must resolve A's own row (its seeded \
+         runtime), never tenant B's"
+    );
+    assert_eq!(
+        *lb, BND_B_RT,
+        "tenant B's pinned identity must resolve B's own row (its seeded \
+         runtime), never tenant A's"
+    );
+    drop(la);
+    drop(lb);
+
+    // The identity-agnostic path stays fail-closed under multi-tenant.
+    let amb = manager
+        .acquire_bounded::<BndRes>(&ctx, &AcquireOptions::default())
+        .await
+        .expect_err("identity-agnostic bounded acquire under multi-tenant must fail closed");
+    assert_eq!(
+        amb.category(),
+        ErrorCategory::Conflict,
+        "ambiguous multi-tenant bounded acquire must be a non-retryable client conflict, got: {amb}"
+    );
+
+    // Revoke only tenant A's resolved row.
+    let key = BndRes::key();
+    let scope = ScopeLevel::Organization(org);
+    manager
+        .revoke_slot_for_identity(&key, scope, "db", &a)
+        .await
+        .expect("pinned revoke of tenant A must succeed");
+
+    // Tenant A's pinned row is now tainted: a subsequent identity-pinned
+    // acquire for A must be rejected (`Unavailable`), proving the revoke
+    // actually tainted A's row — without it, "B still acquirable" alone
+    // would also pass if the revoke were a no-op.
+    let a_after = manager
+        .acquire_bounded_for_identity::<BndRes>(&ctx, &AcquireOptions::default(), &a)
+        .await
+        .expect_err("tenant A must NOT be acquirable after its pinned row is revoked");
+    assert_eq!(
+        a_after.category(),
+        ErrorCategory::Unavailable,
+        "a revoked/tainted pinned bounded row must reject acquires with Unavailable, got: {a_after}"
+    );
+
+    // Tenant B is a distinct registry row (distinct slot_identity): A's
+    // revoke taints A's row only, so B remains acquirable and still serves
+    // its own runtime.
+    let lb2 = manager
+        .acquire_bounded_for_identity::<BndRes>(&ctx, &AcquireOptions::default(), &b)
+        .await
+        .expect("tenant B must remain acquirable after tenant A's revoke");
+    assert_eq!(
+        *lb2, BND_B_RT,
+        "tenant B's pinned row must keep serving its own seeded runtime, \
+         never tenant A's, after A's revoke"
     );
 }

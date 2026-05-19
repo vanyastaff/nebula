@@ -42,9 +42,15 @@ where
         })
 }
 
-// Pool `(min_size, max_size)` sanity (#390) is enforced structurally by
-// `PoolRuntime::new`'s construction-time asserts, which every caller must
-// invoke to build a `TopologyRuntime::Pool`. The former register-time
-// soft-`Err` re-check (used only by the deleted `register_pooled[_with]`
-// shorthands, which took the raw config *before* building the runtime) is
-// gone — the invariant is now unrepresentable rather than re-validated.
+// Pool `(min_size, max_size)` sanity (#390) is enforced at
+// `PoolRuntime` construction, not as a separate register-time re-check:
+// a `TopologyRuntime::Pool` can only be built by going through a
+// `PoolRuntime` constructor. The registration path (operator-/JSON-
+// derived config) must use the fallible `PoolRuntime::try_new`, which
+// returns a typed `Error::permanent` so an invalid topology fails the
+// registration safely instead of aborting the process;
+// `PoolRuntime::new` keeps an equivalent assert for compile-time-known
+// callers only (doctests, const fixtures). The former register-time
+// soft-`Err` re-check on the deleted `register_pooled[_with]`
+// shorthands is gone — the same check now lives in the constructor
+// seam every caller already funnels through.

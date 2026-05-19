@@ -518,8 +518,11 @@ impl Registry {
                     return AcquireLookupOutcome::Ambiguous { rows };
                 },
                 ScopeFind::NotFound => {
+                    // Identity-agnostic erased path: keyed only by
+                    // `ResourceKey` (no concrete `R`), so no concrete-type
+                    // constraint — `None` keeps the prior semantics.
                     if slot_identity.is_unbound()
-                        && Self::scope_has_cred_bound_rows_without_unbound(&entries, &level)
+                        && Self::scope_has_cred_bound_rows_without_unbound(&entries, &level, None)
                     {
                         return AcquireLookupOutcome::NotFound;
                     }
@@ -539,6 +542,13 @@ impl Registry {
     /// typed row cannot diverge when Global and ancestor-scoped rows
     /// coexist. Returns [`PinnedLookup`] (no `Ambiguous`): a resolved
     /// identity pins exactly one row.
+    ///
+    /// Constrained to the concrete `ManagedResource<R>`: `type_index` only
+    /// proves the resolved [`ResourceKey`], and distinct types can share
+    /// one key, so a `(scope, slot_identity)` row of a *sibling* type is
+    /// skipped (the scope walk continues) instead of returned and then
+    /// failing the caller's `downcast` — which would otherwise short-circuit
+    /// to `NotFound` and hide a correctly-typed row at an ancestor scope.
     pub(crate) fn get_typed_for_acquire<R: Resource>(
         &self,
         scope: &Scope,
@@ -552,11 +562,15 @@ impl Registry {
             return PinnedLookup::NotFound;
         };
         for level in scope_levels_for_acquire(scope) {
-            match Self::find_pinned_at_exact_scope(&entries, &level, slot_identity) {
+            match Self::find_pinned_at_exact_scope(&entries, &level, slot_identity, Some(type_id)) {
                 PinnedFind::Hit { managed, .. } => return PinnedLookup::Found(managed),
                 PinnedFind::NotFound => {
                     if slot_identity.is_unbound()
-                        && Self::scope_has_cred_bound_rows_without_unbound(&entries, &level)
+                        && Self::scope_has_cred_bound_rows_without_unbound(
+                            &entries,
+                            &level,
+                            Some(type_id),
+                        )
                     {
                         return PinnedLookup::NotFound;
                     }
@@ -592,13 +606,23 @@ impl Registry {
 
     /// At `level`, cred-bound rows exist but the caller asked for the
     /// [`SlotIdentity::Unbound`] (no-resolved-slots) row.
+    ///
+    /// When `concrete_type` is `Some`, only rows of that concrete type
+    /// count: a cred-bound row of a *sibling* type sharing the resolved
+    /// [`ResourceKey`] must not block the `Unbound` lookup of the requested
+    /// type from falling through to an ancestor/Global row (it is not a
+    /// competing row for *this* type). `None` keeps the
+    /// identity-agnostic-key semantics for untyped callers.
     fn scope_has_cred_bound_rows_without_unbound(
         entries: &[RegistryEntry],
         level: &ScopeLevel,
+        concrete_type: Option<TypeId>,
     ) -> bool {
-        entries
-            .iter()
-            .any(|e| e.scope == *level && !e.slot_identity.is_unbound())
+        entries.iter().any(|e| {
+            e.scope == *level
+                && !e.slot_identity.is_unbound()
+                && Self::entry_type_matches(e, concrete_type)
+        })
     }
 
     /// Looks up a managed resource by key, scope, and a resolved slot
@@ -615,10 +639,30 @@ impl Registry {
         scope: &ScopeLevel,
         slot_identity: &SlotIdentity,
     ) -> PinnedLookup {
+        // Untyped: the caller hands back the erased `Arc` without
+        // downcasting, so no concrete type is implied (`None`).
+        self.get_for_inner(key, scope, slot_identity, None)
+    }
+
+    /// Shared pinned-by-`(scope, slot_identity)` lookup core.
+    ///
+    /// `concrete_type` carries the optional concrete-type constraint:
+    /// `Some(TypeId::of::<ManagedResource<R>>())` for the typed entry
+    /// points (so a sibling-typed row sharing the resolved [`ResourceKey`]
+    /// is skipped instead of returned-then-`downcast`-failed), `None` for
+    /// the untyped [`get_for`](Self::get_for) callers that return the
+    /// erased `Arc` directly.
+    fn get_for_inner(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+        concrete_type: Option<TypeId>,
+    ) -> PinnedLookup {
         let Some(entries) = self.entries.get(key) else {
             return PinnedLookup::NotFound;
         };
-        match Self::find_pinned_in_entries(&entries, scope, slot_identity) {
+        match Self::find_pinned_in_entries(&entries, scope, slot_identity, concrete_type) {
             PinnedFind::Hit { managed, .. } => PinnedLookup::Found(managed),
             PinnedFind::NotFound => PinnedLookup::NotFound,
         }
@@ -639,7 +683,13 @@ impl Registry {
     /// Typed lookup pinned to a resolved slot identity.
     ///
     /// Returns [`PinnedLookup`] — a pinned identity addresses exactly one
-    /// row, so ambiguity is unrepresentable.
+    /// row, so ambiguity is unrepresentable. Constrained to the concrete
+    /// `ManagedResource<R>`: `type_index` only maps `R`'s `TypeId` to a
+    /// [`ResourceKey`], and distinct types can share one key, so a
+    /// `(scope, slot_identity)` row of a *sibling* type under that key is
+    /// skipped (the lookup keeps walking) rather than returned and then
+    /// failing the caller's `downcast` — without the filter that would
+    /// surface as a spurious `NotFound` masking a correctly-typed row.
     pub fn get_typed_for<R: Resource>(
         &self,
         scope: &ScopeLevel,
@@ -649,7 +699,7 @@ impl Registry {
         let Some(key) = self.type_index.get(&type_id) else {
             return PinnedLookup::NotFound;
         };
-        self.get_for(&key, scope, slot_identity)
+        self.get_for_inner(&key, scope, slot_identity, Some(type_id))
     }
 
     /// Removes all entries for the given key.
@@ -768,25 +818,53 @@ impl Registry {
         Self::find_at_exact_scope(entries, &effective_scope, want_identity)
     }
 
+    /// `true` if `entry` satisfies the optional concrete-type constraint.
+    ///
+    /// `type_index` only narrows a typed lookup to a [`ResourceKey`]; it
+    /// does **not** prove every row under that key is the requested
+    /// `ManagedResource<R>`. Distinct concrete types can share one
+    /// [`ResourceKey`], so a `(scope, slot_identity)` row found under the
+    /// resolved key may be a sibling type. The typed pinned lookups pass
+    /// `Some(TypeId::of::<ManagedResource<R>>())` so a sibling-typed row is
+    /// **skipped** (the walk continues) rather than returned and then
+    /// failing the caller's `downcast` — the difference between a correct
+    /// `NotFound`/ancestor-row and a spurious `NotFound` masking a
+    /// correctly-typed row at a later scope. Untyped callers
+    /// ([`get_for`](Self::get_for)) pass `None`: they hand back the erased
+    /// `Arc` without downcasting, so no concrete type is implied.
+    fn entry_type_matches(entry: &RegistryEntry, concrete_type: Option<TypeId>) -> bool {
+        match concrete_type {
+            Some(tid) => entry.managed.managed_type_id() == tid,
+            None => true,
+        }
+    }
+
     /// Pinned lookup at an exact [`ScopeLevel`] (no ancestor/Global
     /// fallback).
     ///
     /// Returns the single row at that scope whose `slot_identity` equals
-    /// the resolved `want_identity`. The result type ([`PinnedFind`]) has
-    /// **no `Ambiguous`** variant: a resolved [`SlotIdentity`] addresses
-    /// exactly one `(scope, slot_identity)` row by construction, so
-    /// ambiguity is unrepresentable on the pinned path rather than a
-    /// runtime branch a caller could mishandle (the cross-tenant-bleed
-    /// failure mode the agnostic path guards against cannot occur here).
+    /// the resolved `want_identity` **and** (when `concrete_type` is
+    /// `Some`) whose stored `ManagedResource` is exactly that type. Rows of
+    /// a sibling concrete type sharing the resolved [`ResourceKey`] are
+    /// skipped (see [`entry_type_matches`](Self::entry_type_matches)), so a
+    /// typed caller never gets a wrong-typed row that would only fail later
+    /// on `downcast`. The result type ([`PinnedFind`]) has **no
+    /// `Ambiguous`** variant: a resolved [`SlotIdentity`] addresses exactly
+    /// one `(scope, slot_identity)` row by construction, so ambiguity is
+    /// unrepresentable on the pinned path rather than a runtime branch a
+    /// caller could mishandle (the cross-tenant-bleed failure mode the
+    /// agnostic path guards against cannot occur here).
     fn find_pinned_at_exact_scope(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,
         want_identity: &SlotIdentity,
+        concrete_type: Option<TypeId>,
     ) -> PinnedFind {
-        match entries
-            .iter()
-            .find(|e| e.scope == *scope && &e.slot_identity == want_identity)
-        {
+        match entries.iter().find(|e| {
+            e.scope == *scope
+                && &e.slot_identity == want_identity
+                && Self::entry_type_matches(e, concrete_type)
+        }) {
             Some(entry) => PinnedFind::Hit {
                 managed: Arc::clone(&entry.managed),
             },
@@ -796,27 +874,48 @@ impl Registry {
 
     /// Scope-aware **pinned** lookup within a list of entries.
     ///
-    /// Resolves the effective scope first (exact match, else
-    /// [`ScopeLevel::Global`] fallback) so scope precedence is decided
-    /// before slot identity, then returns the row at that scope whose
-    /// `slot_identity` equals `want_identity`. Unambiguous by construction
+    /// Tries the requested `scope` with `want_identity` (and, when
+    /// `concrete_type` is `Some`, the concrete type) first; on `NotFound`
+    /// and a non-`Global` scope it retries at [`ScopeLevel::Global`].
+    /// Scope selection is therefore **identity-aware**: the Global fallback
+    /// is consulted whenever the requested scope holds no row matching
+    /// `want_identity`, not skipped merely because *some* (different-tenant)
+    /// row exists at that scope.
+    ///
+    /// This keeps direct pinned lookup
+    /// ([`get_for`](Self::get_for) /
+    /// [`get_typed_for`](Self::get_typed_for)) in agreement with the
+    /// acquire-routing walk
+    /// ([`get_typed_for_acquire`](Self::get_typed_for_acquire) /
+    /// [`get_acquire_for`](Self::get_acquire_for)), which walks
+    /// ancestor scopes down to Global with the identity pin at each level:
+    /// the prior "pick the effective scope by *any* entry existing there,
+    /// before consulting `want_identity`" returned `NotFound` for an
+    /// exact-scope row of tenant B even though the caller's tenant-A row
+    /// lived at Global and acquire would have found it.
+    ///
+    /// Still **fail-closed**: the only fallback is a Global row that
+    /// matches `want_identity` (and the concrete type) exactly — a
+    /// different tenant's row is never aliased. Unambiguous by construction
     /// (see [`PinnedFind`] / [`find_pinned_at_exact_scope`]).
     fn find_pinned_in_entries(
         entries: &[RegistryEntry],
         scope: &ScopeLevel,
         want_identity: &SlotIdentity,
+        concrete_type: Option<TypeId>,
     ) -> PinnedFind {
-        let effective_scope = if entries.iter().any(|e| e.scope == *scope) {
-            scope.clone()
-        } else if *scope != ScopeLevel::Global
-            && entries.iter().any(|e| e.scope == ScopeLevel::Global)
-        {
-            ScopeLevel::Global
-        } else {
-            return PinnedFind::NotFound;
-        };
-
-        Self::find_pinned_at_exact_scope(entries, &effective_scope, want_identity)
+        match Self::find_pinned_at_exact_scope(entries, scope, want_identity, concrete_type) {
+            PinnedFind::Hit { managed } => PinnedFind::Hit { managed },
+            PinnedFind::NotFound if *scope != ScopeLevel::Global => {
+                Self::find_pinned_at_exact_scope(
+                    entries,
+                    &ScopeLevel::Global,
+                    want_identity,
+                    concrete_type,
+                )
+            },
+            PinnedFind::NotFound => PinnedFind::NotFound,
+        }
     }
 }
 
@@ -1177,6 +1276,153 @@ mod tests {
         );
 
         assert!(matches!(reg.get(&key, &scope), LookupOutcome::Found(_)));
+    }
+
+    #[test]
+    fn pinned_finder_skips_sibling_typed_row_under_shared_key() {
+        // Cross-type correctness gap (PR #723 review): distinct concrete
+        // types can share one `ResourceKey`. `type_index` only narrows a
+        // typed lookup to the key — it does NOT prove a `(scope,
+        // slot_identity)` row under that key is the requested type. A typed
+        // pinned lookup must SKIP a sibling-typed row (continue), not
+        // return it and let the caller's `downcast` fail (which would
+        // surface as a spurious `NotFound`).
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let scope = ScopeLevel::Global;
+        let id = ident("db", "cred-shared");
+
+        // One row under `key` at `(Global, id)` holding a `FakeB`.
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeB>(),
+            scope.clone(),
+            id.clone(),
+            Arc::new(FakeB),
+            test_acquire(),
+        );
+
+        let entries = reg.entries.get(&key).unwrap();
+
+        // Untyped (`None`): the row is returned — the untyped caller hands
+        // back the erased `Arc` and implies no concrete type.
+        assert!(matches!(
+            Registry::find_pinned_in_entries(&entries, &scope, &id, None),
+            PinnedFind::Hit { .. }
+        ));
+
+        // Typed as `FakeB`: matches.
+        assert!(matches!(
+            Registry::find_pinned_in_entries(&entries, &scope, &id, Some(TypeId::of::<FakeB>())),
+            PinnedFind::Hit { .. }
+        ));
+
+        // Typed as `FakeA`: the only row at `(Global, id)` is a `FakeB`, so
+        // the sibling-typed row is skipped → `NotFound` (NOT a `FakeB`
+        // handed to a `FakeA` caller that would fail to `downcast`).
+        assert!(matches!(
+            Registry::find_pinned_in_entries(&entries, &scope, &id, Some(TypeId::of::<FakeA>())),
+            PinnedFind::NotFound
+        ));
+    }
+
+    #[test]
+    fn pinned_finder_falls_back_to_global_when_exact_scope_has_only_other_tenant() {
+        // Global-fallback gap (PR #723 review): direct pinned lookup must
+        // agree with acquire routing. If tenant B has an exact-scope row
+        // and tenant A only has a Global row, the prior "pick effective
+        // scope by *any* entry at that scope" decided the scope BEFORE
+        // consulting `want_identity` and returned `NotFound` for tenant A —
+        // even though acquire (which walks ancestor scopes down to Global
+        // with the identity pin) would still find tenant A's Global row.
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let workspace = ScopeLevel::Workspace(WorkspaceId::new());
+
+        let id_a = ident("db", "cred-tenant-a");
+        let id_b = ident("db", "cred-tenant-b");
+
+        // Tenant B: exact-scope row at `workspace`.
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            workspace.clone(),
+            id_b.clone(),
+            Arc::new(FakeA),
+            test_acquire(),
+        );
+        // Tenant A: only a Global row.
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            ScopeLevel::Global,
+            id_a.clone(),
+            Arc::new(FakeA),
+            test_acquire(),
+        );
+
+        // Tenant A asks at `workspace`: an entry exists at that scope (B's)
+        // but none matches A → must fall back to A's Global row, NOT
+        // `NotFound`. This is what acquire routing already does.
+        assert!(matches!(
+            reg.get_for(&key, &workspace, &id_a),
+            PinnedLookup::Found(_)
+        ));
+
+        // Tenant B still resolves to its exact-scope row.
+        assert!(matches!(
+            reg.get_for(&key, &workspace, &id_b),
+            PinnedLookup::Found(_)
+        ));
+
+        // Fail-closed preserved: an identity bound to neither row never
+        // aliases a different tenant — Global fallback only matches the
+        // requested identity exactly.
+        assert!(matches!(
+            reg.get_for(&key, &workspace, &ident("db", "cred-tenant-c")),
+            PinnedLookup::NotFound
+        ));
+    }
+
+    #[test]
+    fn pinned_global_fallback_is_identity_and_type_aware() {
+        // Global fallback must match BOTH `want_identity` and (for typed
+        // callers) the concrete type — a Global row of the right identity
+        // but a sibling type must not be aliased back to a typed caller.
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let workspace = ScopeLevel::Workspace(WorkspaceId::new());
+        let id = ident("db", "cred-shared");
+
+        // Only a Global row, holding a `FakeB`.
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeB>(),
+            ScopeLevel::Global,
+            id.clone(),
+            Arc::new(FakeB),
+            test_acquire(),
+        );
+
+        let entries = reg.entries.get(&key).unwrap();
+
+        // Untyped: workspace has no row → falls back to the Global row.
+        assert!(matches!(
+            Registry::find_pinned_in_entries(&entries, &workspace, &id, None),
+            PinnedFind::Hit { .. }
+        ));
+
+        // Typed as `FakeA`: the Global row is a `FakeB` → fallback skips it
+        // → `NotFound` (no wrong-typed alias via the Global fallback).
+        assert!(matches!(
+            Registry::find_pinned_in_entries(
+                &entries,
+                &workspace,
+                &id,
+                Some(TypeId::of::<FakeA>())
+            ),
+            PinnedFind::NotFound
+        ));
     }
 
     // The legacy `Opaque(u64)` / `slot_identity` digest assertions were

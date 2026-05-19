@@ -690,7 +690,11 @@ mod bounded_path {
 
     /// The Bounded fold wires `keepalive` (the previously-unwired
     /// `Transport::keepalive`): with a non-`None` interval the runtime
-    /// drives it on a background ticker.
+    /// drives it on a background ticker. The task is started **lazily on
+    /// the first `acquire`** (spawning it from the synchronous `new` would
+    /// `panic!` with no ambient runtime — a library panic), so this test
+    /// performs an acquire before expecting keepalive to fire, then proves
+    /// `Drop` still aborts the task.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bounded_keepalive_fires_on_interval() {
         let resource = KeepaliveFixture {
@@ -702,6 +706,22 @@ mod bounded_path {
         };
         let runtime: BoundedRuntime<KeepaliveFixture> =
             BoundedRuntime::new(&resource, "conn", config);
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        // Keepalive is lazily started by the first acquire (an ambient
+        // runtime is guaranteed here). Before any acquire it must NOT have
+        // fired (the spawn is deferred).
+        assert_eq!(
+            resource.keepalive_calls.load(Ordering::SeqCst),
+            0,
+            "keepalive must not fire before the first acquire (lazy start)"
+        );
+        let h = runtime
+            .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
+            .await
+            .expect("acquire must succeed");
+        drop(h);
 
         let fired = poll_until(Duration::from_secs(2), || {
             resource.keepalive_calls.load(Ordering::SeqCst) >= 2
@@ -709,12 +729,50 @@ mod bounded_path {
         .await;
         assert!(
             fired,
-            "keepalive must fire repeatedly on the configured interval; \
-             observed {}",
+            "keepalive must fire repeatedly on the configured interval once \
+             started by the first acquire; observed {}",
             resource.keepalive_calls.load(Ordering::SeqCst)
         );
 
-        // Dropping the runtime aborts the keepalive task.
+        // Dropping the runtime aborts the lazily-spawned keepalive task.
+        drop(runtime);
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    /// Thread-2 regression: `BoundedRuntime::new` with
+    /// `keepalive_interval: Some(_)` constructed **outside any Tokio
+    /// runtime** must NOT panic. Pre-fix the constructor called
+    /// `tokio::spawn` directly, which panics ("there is no reactor
+    /// running") when invoked off-runtime — a library panic forbidden by
+    /// the no-`panic!`-in-lib rule. The spawn is now deferred to the first
+    /// async `acquire`, so a plain synchronous `new` is panic-free even
+    /// with a keepalive configured.
+    ///
+    /// Deliberately a plain `#[test]` (no `#[tokio::test]`): there is no
+    /// ambient runtime on this thread, which is exactly the panic
+    /// condition the reviewer flagged.
+    #[test]
+    fn bounded_new_with_keepalive_does_not_panic_outside_tokio_runtime() {
+        let resource = KeepaliveFixture {
+            keepalive_calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let config = BoundedConfig {
+            keepalive_interval: Some(Duration::from_millis(20)),
+            ..BoundedConfig::default()
+        };
+        // The construction itself is the assertion: pre-fix this line
+        // panicked off-runtime. Building it proves the deferred-spawn fix.
+        let runtime: BoundedRuntime<KeepaliveFixture> =
+            BoundedRuntime::new(&resource, "conn", config);
+
+        // No acquire happened, so the keepalive task was never spawned.
+        assert_eq!(
+            resource.keepalive_calls.load(Ordering::SeqCst),
+            0,
+            "no keepalive may fire before the first acquire (lazy start)"
+        );
+        // Dropping a never-started runtime is also panic-free.
         drop(runtime);
     }
 }

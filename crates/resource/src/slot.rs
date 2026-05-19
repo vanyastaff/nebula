@@ -152,6 +152,30 @@ impl<S> SlotCell<S> {
     }
 }
 
+#[cfg(test)]
+impl<S> SlotCell<S> {
+    /// Publish an entry whose value is *derived from the same generation it
+    /// is stamped with*, using the production publish sequence.
+    ///
+    /// The public [`store`](Self::store) takes the value *before*
+    /// [`bump_generation`](Self::bump_generation) assigns the entry's
+    /// generation, so under concurrent writers a caller cannot make the
+    /// stored value equal the published generation — which is exactly the
+    /// coupling a torn-read characterization test needs. This test-only
+    /// helper bumps the generation first, then builds the value from it via
+    /// `mk`, and publishes both inside the *same* single `ArcSwapOption`
+    /// store as production. A reader that observes a torn `(generation,
+    /// value)` pair (value from one transition, generation from another)
+    /// will see `value != mk(generation)`.
+    fn store_stamped(&self, mk: impl FnOnce(u64) -> Arc<S>) -> u64 {
+        let generation = self.bump_generation();
+        let value = mk(generation);
+        self.inner
+            .store(Some(Arc::new(SlotEntry { generation, value })));
+        generation
+    }
+}
+
 impl<S> Default for SlotCell<S> {
     fn default() -> Self {
         Self::empty()
@@ -266,38 +290,57 @@ mod tests {
     /// pair — the generation must be exactly the one published with that
     /// value (each store stamps the value with its own generation), never a
     /// generation from a different transition.
+    ///
+    /// The coupling is what makes a torn read *detectable*: every entry is
+    /// published via `store_stamped` so its value is exactly its own
+    /// generation (`value == generation`). A single immutable `SlotEntry`
+    /// observed through one `ArcSwapOption` load must therefore always
+    /// satisfy `u64::from(value) == generation`. A torn read — the value of
+    /// one transition paired with the generation of another — would break
+    /// that equality and fail the assertion below.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_store_take_load_versioned_is_never_torn() {
         let cell: Arc<SlotCell<FakeGuard>> = Arc::new(SlotCell::empty());
 
-        // Each store writes `value == generation` (cast). A non-torn read
-        // must always satisfy `value == generation`; a torn read (generation
-        // from one transition, value from another) would violate it.
         let writers = 8u32;
         let iters = 200u32;
+        // Total transitions = stores + takes. The largest generation any
+        // store stamps is bounded by this, so it fits in the `u32` payload
+        // of `FakeGuard` and the `value == generation` round-trip is exact.
+        let total_transitions = u64::from(writers) * u64::from(iters) * 2;
+        assert!(
+            u32::try_from(total_transitions).is_ok(),
+            "test sizing must keep generations within FakeGuard's u32 payload"
+        );
+
         let mut handles = Vec::new();
         for _ in 0..writers {
             let cell = Arc::clone(&cell);
             handles.push(tokio::spawn(async move {
                 for _ in 0..iters {
-                    let g_next = cell.generation().wrapping_add(1);
-                    cell.store(Arc::new(FakeGuard(g_next as u32)));
+                    // Stamp the value with the *exact* generation this entry
+                    // is published at, inside the production single-store
+                    // publish. `g as u32` is lossless: `g <=
+                    // total_transitions <= u32::MAX` (asserted above).
+                    cell.store_stamped(|g| Arc::new(FakeGuard(g as u32)));
                     if let Some((observed_gen, val)) = cell.load_versioned() {
-                        // The value was stamped with *some* generation by
-                        // *some* store; the invariant we can assert without
-                        // serialization is that the pair came from one entry
-                        // (the generation is monotone and the value is the
-                        // one that entry published, not a mismatched older
-                        // value paired with a newer generation).
                         assert!(
                             observed_gen >= 1,
                             "a published entry always has generation >= 1"
                         );
-                        // `val.0` was the `g_next` of whichever store
-                        // published this entry; that store's published
-                        // generation is `observed_gen`. They must be
-                        // consistent: the entry is a single immutable unit.
-                        let _ = val.0;
+                        // The load-bearing torn-read check: value and
+                        // generation came from one immutable entry, so the
+                        // value must be the generation that entry stamped.
+                        // A torn `(generation, value)` pair (value from a
+                        // different transition than `observed_gen`) breaks
+                        // this equality.
+                        assert_eq!(
+                            u64::from(val.0),
+                            observed_gen,
+                            "torn read: value {} was not stamped with its \
+                             published generation {observed_gen}",
+                            val.0
+                        );
                     }
                     let _ = cell.take();
                 }

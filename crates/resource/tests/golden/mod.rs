@@ -121,16 +121,26 @@ fn fixture_path(name: &str) -> PathBuf {
     p
 }
 
-/// Minimal JSON string escaping for the fixture format.
+/// JSON string escaping for the fixture format.
+///
+/// Covers every character JSON forbids raw inside a string: the standard
+/// short escapes plus all remaining C0 control bytes (`0x00..=0x1F`) as
+/// `\u00XX`. Without the control-byte arm, edge-case event content could
+/// emit an invalid-JSON fixture.
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            c if (c as u32) <= 0x1F => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            },
             other => out.push(other),
         }
     }

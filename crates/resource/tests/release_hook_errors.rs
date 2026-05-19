@@ -12,19 +12,25 @@
 //! The contract the unified `BoundedRuntime` release path enforces (S4):
 //! - On `reset` `Err`, the permit IS still returned (withholding it would
 //!   deadlock the semaphore — it lives in the handle, outside the callback,
-//!   for exactly this reason) BUT the instance is **destroyed**, never
-//!   recycled or handed onward; the next acquirer gets a freshly built
-//!   instance, not the failed-reset one.
+//!   for exactly this reason) BUT the runtime is **poisoned**: every
+//!   subsequent `acquire` fails closed instead of being handed the
+//!   half-reset instance. (Destroying a throwaway `(*runtime).clone()`
+//!   would not isolate the next caller — for the Exclusive cap the lease
+//!   *is* a clone of the shared interior-mutable runtime that `acquire_one`
+//!   hands out next; the poison latch is what enforces isolation. The
+//!   clone is still `destroy`d best-effort to release its resources.)
 //! - Every `release_one` `Err` (token return / session close / reset) is
 //!   **observed**: a `tracing::warn!` plus a bump of the release-error
 //!   metric (`ResourceOpsMetrics::record_release_error`), never
 //!   `let _ =`-swallowed.
 //!
 //! What is asserted here:
-//! - **R17 (GREEN on the `Bounded` path):** a failed `reset` destroys the
-//!   instance instead of silently handing it onward. The fix lives on
-//!   `BoundedRuntime` with `Cap = Exclusive`, so the probe is expressed
-//!   against a directly-constructed `BoundedRuntime`.
+//! - **R17 (GREEN on the `Bounded` path):** a failed `reset` poisons the
+//!   runtime so the next acquire fails closed (and best-effort destroys
+//!   the matching instance) instead of silently handing the half-reset
+//!   instance onward. The fix lives on `BoundedRuntime` with
+//!   `Cap = Exclusive`, so the probe is expressed against a
+//!   directly-constructed `BoundedRuntime`.
 //! - **GREEN preserve:** a failed `reset` must still return the permit so
 //!   the next acquire does not deadlock — including with an explicitly
 //!   configured `acquire_timeout`. S4 explicitly preserves this; it does
@@ -46,7 +52,7 @@ use nebula_core::{ResourceKey, resource_key};
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::{
     AcquireOptions, BoundedConfig, BoundedRuntime, Resource, ResourceConfig, ResourceContext,
-    error::Error,
+    error::{Error, ErrorKind},
     metrics::ResourceOpsMetrics,
     release_queue::ReleaseQueue,
     resource::ResourceMetadata,
@@ -109,12 +115,16 @@ async fn poll_until(deadline: Duration, mut cond: impl FnMut() -> bool) -> bool 
 /// S4 preserve on the `Bounded` `Exclusive`-cap path with an **explicit
 /// non-default `acquire_timeout`** (the config facet the folded exclusive
 /// topology carried): a failed `reset` must still return the permit so the
-/// next acquire does not deadlock. Distinct
-/// from `bounded_exclusive_failed_reset_still_returns_permit_no_deadlock`
-/// (default config) — this pins the permit-return invariant when the
-/// Exclusive cap's `acquire_timeout` is explicitly configured. The permit
-/// lives in the handle, outside the release callback, exactly so a failed
-/// reset cannot wedge the semaphore.
+/// next acquire is not wedged on the semaphore. With the poison latch the
+/// next acquire fails *closed* (a `permanent` error) rather than being
+/// served the half-reset instance — but it must fail **promptly**, not by
+/// blocking on a permit that was never returned. Distinct from
+/// `bounded_exclusive_failed_reset_poisons_runtime_next_acquire_fails_closed`
+/// (default config) — this pins the permit-return invariant (prompt
+/// `Permanent`, observed well within the deadline) when the Exclusive
+/// cap's `acquire_timeout` is explicitly configured. The permit lives in
+/// the handle, outside the release callback, exactly so a failed reset
+/// cannot wedge the semaphore.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bounded_exclusive_failed_reset_returns_permit_with_explicit_acquire_timeout() {
     let resource = BoundedFailingReset::new();
@@ -133,6 +143,15 @@ async fn bounded_exclusive_failed_reset_returns_permit_with_explicit_acquire_tim
         .expect("first acquire must succeed");
     drop(h1);
 
+    // The failed reset must have run and poisoned the runtime before the
+    // next acquire is evaluated.
+    let poisoned = poll_until(Duration::from_secs(2), || {
+        resource.release_attempts.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(poisoned, "the failing reset must have run");
+
+    let started = std::time::Instant::now();
     let h2 = runtime
         .acquire(
             &resource,
@@ -144,14 +163,26 @@ async fn bounded_exclusive_failed_reset_returns_permit_with_explicit_acquire_tim
             None,
         )
         .await;
+    let err = h2.expect_err(
+        "S4: after a failed reset the Exclusive runtime is poisoned, so the \
+         next acquire must fail closed (not be served the half-reset \
+         instance)",
+    );
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Permanent,
+        "a poisoned-runtime acquire must be a prompt `Permanent` error — \
+         NOT a backpressure/timeout, which would mean the permit was not \
+         returned and the semaphore is wedged (S4 preserve, explicit \
+         acquire_timeout): {err:?}"
+    );
     assert!(
-        h2.is_ok(),
-        "a failed reset must still return the permit so the next acquire \
-         does not deadlock (S4 preserve, explicit acquire_timeout): {:?}",
-        h2.err()
+        started.elapsed() < Duration::from_secs(1),
+        "the fail-closed rejection must be prompt (permit was returned, no \
+         deadlock); took {:?}",
+        started.elapsed()
     );
 
-    drop(h2);
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }
@@ -270,16 +301,101 @@ async fn bounded_exclusive_failed_reset_destroys_instance_not_handed_onward() {
     ReleaseQueue::shutdown(rq_handle).await;
 }
 
-/// GREEN preserve on the `Bounded` path. S4 keeps the "permit is still
-/// returned on a failed reset" behavior so the semaphore cannot deadlock —
-/// even though the instance is destroyed, the permit is released after the
-/// reset (and any destroy) resolves, so the next acquire still succeeds.
+/// An `Arc`-backed-runtime Exclusive resource whose `release_one` (the
+/// reset) always fails. `Runtime = Arc<AtomicUsize>` deliberately models
+/// the reviewer's case: a `Runtime` whose `Clone` is **shallow** (the
+/// clone shares the same `AtomicUsize` cell as the live shared runtime).
+/// `acquire_one` increments `acquire_one_calls` so the test can prove that
+/// after a failed reset the runtime is poisoned **before** `acquire_one`
+/// is reached — the half-reset instance is never minted into a lease.
+#[derive(Clone)]
+struct ArcBackedFailingReset {
+    acquire_one_calls: Arc<AtomicUsize>,
+    /// Incremented by the best-effort `destroy` the release path runs
+    /// **after** latching the poison flag — so `destroy_calls >= 1` is a
+    /// deterministic "the failed reset ran and the runtime is now
+    /// poisoned" signal the test can poll on (no sleeps, no nested
+    /// blocking).
+    destroy_calls: Arc<AtomicUsize>,
+}
+
+impl Resource for ArcBackedFailingReset {
+    type Config = R17Config;
+    type Runtime = Arc<AtomicUsize>;
+    type Lease = Arc<AtomicUsize>;
+    type Error = R17Error;
+
+    fn key() -> ResourceKey {
+        resource_key!("r17-arc-backed-failing-reset")
+    }
+
+    async fn create(
+        &self,
+        _config: &R17Config,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicUsize>, R17Error> {
+        Ok(Arc::new(AtomicUsize::new(0)))
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicUsize>) -> Result<(), R17Error> {
+        self.destroy_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Bounded for ArcBackedFailingReset {
+    type Cap = ExclusiveCap;
+
+    async fn acquire_one(
+        &self,
+        runtime: &Arc<AtomicUsize>,
+        _ctx: &ResourceContext,
+    ) -> Result<Arc<AtomicUsize>, R17Error> {
+        self.acquire_one_calls.fetch_add(1, Ordering::SeqCst);
+        // A shallow clone — shares the same cell as the shared runtime,
+        // exactly the `Arc`-backed shape the reviewer flagged.
+        Ok(Arc::clone(runtime))
+    }
+}
+
+impl BoundedRelease for ArcBackedFailingReset {
+    async fn release_one(
+        &self,
+        _runtime: &Arc<AtomicUsize>,
+        _lease: Arc<AtomicUsize>,
+        _healthy: bool,
+    ) -> Result<(), R17Error> {
+        Err(R17Error("reset failed".to_owned()))
+    }
+}
+
+/// S4 isolation guarantee (the Thread-1 fix). After a failed `reset` the
+/// Exclusive runtime is **poisoned**: the next `acquire` fails *closed*
+/// rather than being handed the half-reset, shallow-`Arc`-clone instance.
+/// Two things are asserted:
+///
+/// 1. **Isolation:** the post-failed-reset acquire returns an `Err`
+///    (`Permanent`), and `acquire_one` is **never reached** for it — the
+///    poisoned instance is never minted into a lease (`acquire_one_calls`
+///    stays at `1`, the one successful first acquire).
+/// 2. **S4 preserve (no deadlock):** the rejection is *prompt*, not a
+///    timeout — proving the permit was still returned (it lives in the
+///    handle, outside the release callback) so the semaphore is not
+///    wedged. A pre-fix `h2.is_ok()` here was the bug: it encoded the
+///    half-reset instance being handed onward.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bounded_exclusive_failed_reset_still_returns_permit_no_deadlock() {
-    let resource = BoundedFailingReset::new();
-    let runtime: Arc<BoundedRuntime<BoundedFailingReset>> = Arc::new(BoundedRuntime::new(
+async fn bounded_exclusive_failed_reset_poisons_runtime_next_acquire_fails_closed() {
+    let resource = ArcBackedFailingReset {
+        acquire_one_calls: Arc::new(AtomicUsize::new(0)),
+        destroy_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let runtime: Arc<BoundedRuntime<ArcBackedFailingReset>> = Arc::new(BoundedRuntime::new(
         &resource,
-        1u32,
+        Arc::new(AtomicUsize::new(0)),
         BoundedConfig::default(),
     ));
     let (rq, rq_handle) = ReleaseQueue::new(1);
@@ -289,8 +405,33 @@ async fn bounded_exclusive_failed_reset_still_returns_permit_no_deadlock() {
         .acquire(&resource, &ctx(), &rq, 0, &AcquireOptions::default(), None)
         .await
         .expect("first acquire must succeed");
+    assert_eq!(
+        resource.acquire_one_calls.load(Ordering::SeqCst),
+        1,
+        "the first acquire mints exactly one lease"
+    );
     drop(h1);
 
+    // Deterministic poison signal: the release path latches `poisoned`
+    // *before* the best-effort `destroy`, so `destroy_calls >= 1` proves
+    // the failed reset ran and the runtime is now poisoned — no sleeps.
+    let poisoned = poll_until(Duration::from_secs(2), || {
+        resource.destroy_calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(
+        poisoned,
+        "the failing reset must have run and poisoned the runtime \
+         (destroy_calls={})",
+        resource.destroy_calls.load(Ordering::SeqCst)
+    );
+
+    // The next acquire must fail closed — and promptly, proving the permit
+    // was returned (it lives in the handle, outside the release callback)
+    // so the semaphore is not wedged. A 2s deadline that is NOT consumed
+    // is the no-deadlock proof (S4 preserve); a pre-fix `is_ok()` here was
+    // the Thread-1 bug (half-reset instance handed onward).
+    let started = std::time::Instant::now();
     let h2 = runtime
         .acquire(
             &resource,
@@ -302,14 +443,32 @@ async fn bounded_exclusive_failed_reset_still_returns_permit_no_deadlock() {
             None,
         )
         .await;
+    let err = h2.expect_err(
+        "S4: after a failed reset the Exclusive runtime is poisoned, so the \
+         next acquire must fail closed — it must NOT be served the \
+         half-reset (shallow-Arc-clone) instance",
+    );
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Permanent,
+        "the poisoned-runtime rejection must be a `Permanent` error, NOT a \
+         backpressure/timeout (which would mean the permit was not returned \
+         and the semaphore wedged — S4 preserve): {err:?}"
+    );
     assert!(
-        h2.is_ok(),
-        "a failed reset must still return the permit so the next acquire \
-         does not deadlock (S4 preserve): {:?}",
-        h2.err()
+        started.elapsed() < Duration::from_secs(1),
+        "the fail-closed rejection must be prompt (permit returned, no \
+         deadlock — well under the 2s deadline); took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        resource.acquire_one_calls.load(Ordering::SeqCst),
+        1,
+        "S4 isolation: `acquire_one` must NOT be reached for the \
+         post-failed-reset acquire — the poisoned instance is never minted \
+         into a lease (still exactly the 1 first-acquire call)"
     );
 
-    drop(h2);
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;
 }

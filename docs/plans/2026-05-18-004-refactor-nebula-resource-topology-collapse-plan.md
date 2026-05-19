@@ -121,7 +121,7 @@ Tracked, NOT silently inherited. **Each MUST be filed as a tracked issue (per th
 
 > *Illustrates the intended approach; directional guidance for review, not implementation specification. The implementing agent treats it as context, not code to reproduce.*
 
-```
+```text
 TopologyRuntime<R>           Author traits                Identity
   Pool(PoolRuntime)            Pooled (unchanged)           DedupKey {
   Resident(ResidentRuntime)    Resident (unchanged)           resource_key, scope,
@@ -529,8 +529,8 @@ Commit at per-touched-crate-green boundaries (lefthook pre-commit is per-staged-
 - **Security-fix landing strategy — RESOLVED (option a adopted; user-confirmed "auto-resolve, best judgment").** R15/R16 are *latent* today (frontier, no production credential→slot resolver — ADR-0067 §M12.4), so seam-coupled remediation is economically defensible — but a CRITICAL-class fix entangled in a 13-unit squash with a U12 atomic delete has no clean partial-revert. **Decision:** the security units (U1 + U2 + U14) land as a **separable, independently-revertable security commit/PR ahead of the topology fold** — enforced by the Phase 0.5 gate in Phased Delivery (not advisory). The user may still override to the bundled option (b) by saying so before `ce-work`; absent that, (a) is the plan of record.
 
 ### Deferred to Implementation
-- [Affects U1][Needs codebase research — NOT external; narrowed] Is concurrent same-slot `SlotCell::store` reachable? Closed by research: (a) arc-swap plain `store`/`swap` has no inter-writer ordering (confirmed) — so non-monotonicity is real *only* under concurrent same-slot store; (b) the engine rotation fan-out (`resource_fanout.rs`) dispatches per-resource-**concurrently** for ONE rotation event via `join_all` — distinct resources = distinct `SlotCell`s, **no same-slot contention at the fan-out layer**. Residual (the only remaining unknown): are two rotation *events* for the **same credential** serialized upstream (rotation driver/ledger)? If yes → single-writer-per-slot holds, document the invariant (expected). If no → real non-monotonicity. Guarded by the U1 concurrency test; resolve the upstream-serialization trace at U1, not here (different crate's driver internals).
-- [Affects U4][Technical] Keep `service/transport/exclusive` as accepted `topology=` catalog aliases or collapse to one string (cosmetic — macro emits only the informational const).
+- (Affects U1)(Needs codebase research — NOT external; narrowed) Is concurrent same-slot `SlotCell::store` reachable? Closed by research: (a) arc-swap plain `store`/`swap` has no inter-writer ordering (confirmed) — so non-monotonicity is real *only* under concurrent same-slot store; (b) the engine rotation fan-out (`resource_fanout.rs`) dispatches per-resource-**concurrently** for ONE rotation event via `join_all` — distinct resources = distinct `SlotCell`s, **no same-slot contention at the fan-out layer**. Residual (the only remaining unknown): are two rotation *events* for the **same credential** serialized upstream (rotation driver/ledger)? If yes → single-writer-per-slot holds, document the invariant (expected). If no → real non-monotonicity. Guarded by the U1 concurrency test; resolve the upstream-serialization trace at U1, not here (different crate's driver internals).
+- (Affects U4)(Technical) Keep `service/transport/exclusive` as accepted `topology=` catalog aliases or collapse to one string (cosmetic — macro emits only the informational const).
 
 ---
 

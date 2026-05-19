@@ -669,14 +669,17 @@ impl Manager {
 
         config.validate()?;
 
-        // #390 (pool min/max sanity) is enforced structurally by
-        // `PoolRuntime::new`, which the caller has already invoked to build
-        // the `TopologyRuntime::Pool` handed in here — an invalid
-        // `(min_size, max_size)` cannot reach this funnel because the
-        // `PoolRuntime` could not have been constructed. No separate
-        // register-time pool-config check is needed (the deleted
-        // `register_pooled[_with]` shorthands re-validated the raw config
-        // only because they took it *before* building the runtime).
+        // #390 (pool min/max sanity) is enforced at `PoolRuntime`
+        // construction, which the caller has already invoked to build the
+        // `TopologyRuntime::Pool` handed in here. No separate
+        // register-time pool-config check is needed: an invalid
+        // `(min_size, max_size)` from operator/JSON config is rejected by
+        // the fallible `PoolRuntime::try_new` (typed `Error::permanent`)
+        // that the engine registrar uses to construct the runtime, so the
+        // failure surfaces *before* this funnel as a registration error
+        // rather than an abort. (The deleted `register_pooled[_with]`
+        // shorthands re-validated the raw config only because they took
+        // it *before* building the runtime.)
 
         let key = R::key();
         let managed = Arc::new(ManagedResource {

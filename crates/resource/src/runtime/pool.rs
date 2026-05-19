@@ -124,7 +124,67 @@ pub struct PoolRuntime<R: Resource> {
 }
 
 impl<R: Resource> PoolRuntime<R> {
-    /// Creates a new pool runtime with the given config and initial fingerprint.
+    /// Fallibly creates a new pool runtime, returning a typed
+    /// [`Error::permanent`] instead of aborting on an invalid
+    /// `(min_size, max_size)` topology.
+    ///
+    /// This is the constructor the **registration path must use**. A
+    /// `TopologyRuntime::Pool` built from operator-/JSON-supplied config
+    /// (the engine activation registrar feeding
+    /// [`Manager::register`](crate::Manager::register) /
+    /// [`register_resolved`](crate::Manager::register_resolved)) flows
+    /// untrusted input here, so the #390 `(min_size, max_size)` sanity
+    /// check has to fail safely as a registration `Error` rather than
+    /// abort the process — an abort on library input is a CLAUDE.md
+    /// violation. [`new`](Self::new) is the infallible wrapper retained
+    /// only for compile-time-known callers (doctests, const-shaped
+    /// fixtures), where an invalid topology is a programmer error.
+    ///
+    /// The `fingerprint` is a config-change detection token; see
+    /// [`new`](Self::new) for its semantics.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::permanent`] when `max_size == 0` (would otherwise
+    ///   deadlock the checkout semaphore on first acquire).
+    /// - [`Error::permanent`] when `min_size > max_size`.
+    pub fn try_new(config: Config, fingerprint: u64) -> Result<Self, Error> {
+        // #390: reject an unworkable pool topology at construction rather
+        // than deadlock on first acquire. On the registration path the
+        // config is operator/JSON-derived, so this is a typed
+        // `Error::permanent` (aborting on library input is a CLAUDE.md
+        // violation); invariants that must hold for the pool to function
+        // at all are rejected here, never silently clamped.
+        if config.max_size == 0 {
+            return Err(Error::permanent(
+                "PoolRuntime: config.max_size must be > 0 (got 0 — would \
+                 deadlock the checkout semaphore on first acquire)",
+            ));
+        }
+        if config.min_size > config.max_size {
+            return Err(Error::permanent(format!(
+                "PoolRuntime: config.min_size ({}) must be <= max_size ({})",
+                config.min_size, config.max_size,
+            )));
+        }
+
+        let semaphore = Arc::new(Semaphore::new(config.max_size as usize));
+        // #390: cap concurrent instance creation. `max(1)` protects us
+        // from a pathological `max_concurrent_creates = 0` config that
+        // would otherwise deadlock the pool on first acquire.
+        let create_semaphore = Arc::new(Semaphore::new(
+            (config.max_concurrent_creates as usize).max(1),
+        ));
+        Ok(Self {
+            idle: Arc::new(Mutex::new(VecDeque::new())),
+            semaphore,
+            create_semaphore,
+            config,
+            current_fingerprint: Arc::new(AtomicU64::new(fingerprint)),
+            revoke_epoch: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
     /// Creates a new pool runtime with the given configuration.
     ///
     /// The `fingerprint` is a config-change detection token. When
@@ -134,13 +194,23 @@ impl<R: Resource> PoolRuntime<R> {
     /// automatically on reload. Implement
     /// [`ResourceConfig::fingerprint()`](crate::ResourceConfig::fingerprint)
     /// on your config type to enable change detection.
+    ///
+    /// # Panics
+    ///
+    /// Aborts if `max_size == 0` or `min_size > max_size`. This is the
+    /// infallible constructor for **compile-time-known** configs only
+    /// (doctests, const-shaped fixtures), where an invalid topology is a
+    /// programmer error caught at the first test run. Any path that builds
+    /// a pool from runtime/operator/JSON config (registration) **must**
+    /// use [`try_new`](Self::try_new), which returns a typed
+    /// [`Error::permanent`] instead of aborting the process.
     pub fn new(config: Config, fingerprint: u64) -> Self {
         // #390: fail loudly at construction rather than deadlock on first
-        // acquire. `Manager::register_pooled*` surfaces the same check as
-        // a typed `Error::permanent`, but this guard also protects direct
-        // callers of the public `PoolRuntime::new` (e.g. the README and
-        // doctests). Invariants that must hold for the pool to function
-        // at all are asserted here rather than silently clamped.
+        // acquire. `try_new` surfaces the same check as a typed
+        // `Error::permanent` for the registration path; this assert form
+        // is kept only for direct compile-time-known callers (the README
+        // and doctests). Invariants that must hold for the pool to
+        // function at all are asserted here rather than silently clamped.
         assert!(
             config.max_size > 0,
             "PoolRuntime: config.max_size must be > 0 (got 0 — would deadlock \
@@ -1583,6 +1653,84 @@ mod tests {
         };
         assert_eq!(*err.kind(), crate::error::ErrorKind::Backpressure);
 
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+    }
+
+    // -- `try_new` registration-path topology validation (#390) --
+    //
+    // Ports the behaviour the U6-deleted `register_pooled_rejects_*`
+    // tests covered onto the surviving fallible constructor: an invalid
+    // `(min_size, max_size)` from operator/JSON config must fail the
+    // registration path as a typed `Error::permanent`, never abort the
+    // process. `PoolRuntime::new`'s assert is the compile-time-known
+    // counterpart and is exercised by the const-shaped `new(...)` calls
+    // throughout the rest of this module.
+
+    #[test]
+    fn try_new_rejects_max_size_zero_with_permanent_error() {
+        let config = Config {
+            min_size: 0,
+            max_size: 0,
+            ..Config::default()
+        };
+        let err = match PoolRuntime::<MockPool>::try_new(config, 1) {
+            Err(e) => e,
+            Ok(_) => panic!("max_size == 0 must be a typed registration error, not a pool"),
+        };
+        assert_eq!(*err.kind(), crate::error::ErrorKind::Permanent);
+        assert!(
+            err.to_string().contains("max_size"),
+            "error message must name max_size, got: {err}",
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_min_greater_than_max_with_permanent_error() {
+        let config = Config {
+            min_size: 5,
+            max_size: 2,
+            ..Config::default()
+        };
+        let err = match PoolRuntime::<MockPool>::try_new(config, 1) {
+            Err(e) => e,
+            Ok(_) => panic!("min > max must be a typed registration error, not a pool"),
+        };
+        assert_eq!(*err.kind(), crate::error::ErrorKind::Permanent);
+        assert!(
+            err.to_string().contains("min_size") && err.to_string().contains("max_size"),
+            "error message must name min_size and max_size, got: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn try_new_accepts_valid_config_and_pool_is_usable() {
+        let resource = MockPool::new();
+        let config = Config {
+            min_size: 0,
+            max_size: 2,
+            ..Config::default()
+        };
+        let pool = PoolRuntime::<MockPool>::try_new(config, 1)
+            .expect("valid (min_size, max_size) must construct");
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+        let ctx = test_ctx();
+
+        let handle = pool
+            .acquire(
+                &resource,
+                &PoolTestConfig,
+                &ctx,
+                &rq,
+                0,
+                &AcquireOptions::default(),
+                None,
+            )
+            .await;
+        assert!(handle.is_ok(), "valid pool from try_new must acquire");
+
+        drop(handle);
         drop(rq);
         ReleaseQueue::shutdown(rq_handle).await;
     }

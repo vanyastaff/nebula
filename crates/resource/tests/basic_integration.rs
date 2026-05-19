@@ -2889,7 +2889,7 @@ async fn acquire_retries_on_transient_failure() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
             resilience: Some(resilience),
             recovery_gate: None,
         })
@@ -2932,7 +2932,7 @@ async fn acquire_no_retry_on_permanent_failure() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            acquire: Manager::erased_acquire_resident_for::<PermanentFailResource>(),
             resilience: Some(resilience),
             recovery_gate: None,
         })
@@ -3008,7 +3008,7 @@ async fn acquire_timeout_fires() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
             resilience: Some(resilience),
             recovery_gate: None,
         })
@@ -3147,7 +3147,7 @@ async fn retry_exhaustion_returns_last_transient_error() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
             resilience: Some(resilience),
             recovery_gate: None,
         })
@@ -3199,7 +3199,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
             resilience: None,
             recovery_gate: Some(gate.clone()),
         })
@@ -3503,10 +3503,13 @@ async fn pool_recycle_drop_destroys_entry() {
     drop(handle);
     // recycle=Drop destroys the instance — wait for `destroy` to run (idle
     // stays 0 throughout, so the destroy counter is the settle signal).
-    poll_until(std::time::Duration::from_secs(2), || {
-        resource.destroy_counter.load(Ordering::Relaxed) >= 1
-    })
-    .await;
+    assert!(
+        poll_until(std::time::Duration::from_secs(2), || {
+            resource.destroy_counter.load(Ordering::Relaxed) >= 1
+        })
+        .await,
+        "destroy never ran for recycle=Drop"
+    );
 
     assert_eq!(
         pool.idle_count().await,
@@ -3642,9 +3645,11 @@ impl Resource for FailingResetExclusive {
 }
 
 // Folds the former `Exclusive`: `release_one` IS the (failing) reset.
-// The `Exclusive` cap's observed release (R17/S4) destroys the instance
-// on a failed reset but STILL returns the permit, so the next acquire is
-// not deadlocked — exactly the invariant this test asserts.
+// The `Exclusive` cap's observed release (R17/S4) poisons the runtime on
+// a failed reset but STILL returns the permit, so the next acquire is not
+// deadlocked — it fails *closed* (a prompt `Permanent` error) rather than
+// being served the half-reset instance. That fail-closed-but-not-wedged
+// pair is exactly the invariant this test asserts.
 impl Bounded for FailingResetExclusive {
     type Cap = ExclusiveCap;
 
@@ -3691,11 +3696,18 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
     // Drop the handle — this triggers reset() which fails. The next acquire
     // (bounded by its own deadline) blocks on the semaphore until the permit
     // is dropped after `reset` resolves — that wait is the deterministic
-    // synchronization, no fixed sleep needed.
+    // synchronization, no fixed sleep needed. The poison latch is set
+    // *before* the permit is dropped, so once the second acquire clears the
+    // permit it deterministically observes the poisoned runtime.
     drop(handle);
 
-    // Second acquire should still succeed — the permit was returned despite
-    // the reset failure.
+    // Second acquire must fail *closed* (S4): the failed reset poisoned the
+    // runtime, so it is NOT served the half-reset instance. But the permit
+    // was returned, so the rejection is a prompt `Permanent` error within
+    // the deadline — NOT a backpressure/timeout (which would mean the
+    // semaphore wedged). A pre-fix `is_ok()` here encoded the Thread-1 bug
+    // (half-reset instance handed onward).
+    let started = std::time::Instant::now();
     let handle2 = exclusive_rt
         .acquire(
             &resource,
@@ -3707,13 +3719,23 @@ async fn exclusive_reset_failure_does_not_block_next_acquire() {
             None,
         )
         .await;
-    assert!(
-        handle2.is_ok(),
-        "second acquire should succeed despite reset failure: {:?}",
-        handle2.err()
+    let err = handle2.expect_err(
+        "second acquire must fail closed after a poisoning failed reset \
+         (S4): the half-reset instance must NOT be handed onward",
     );
-
-    drop(handle2);
+    assert_eq!(
+        *err.kind(),
+        ErrorKind::Permanent,
+        "the poisoned-runtime rejection must be a `Permanent` error, NOT a \
+         backpressure/timeout (the permit was returned — no deadlock; S4 \
+         preserve): {err:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "the fail-closed rejection must be prompt (permit returned, no \
+         deadlock — within the 500ms deadline); took {:?}",
+        started.elapsed()
+    );
     // `ReleaseQueue::shutdown` drains buffered release tasks; no wall-clock
     // settle is needed before teardown.
     drop(rq);
@@ -4001,7 +4023,7 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -4040,7 +4062,7 @@ async fn reload_config_rejects_invalid_config() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -4086,7 +4108,7 @@ async fn reload_config_emits_event() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -4123,7 +4145,7 @@ async fn reload_config_evicts_stale_pool_instances() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -4210,7 +4232,7 @@ async fn reload_config_rejected_when_shutdown() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
-            acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
+            acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
             resilience: None,
             recovery_gate: None,
         })
@@ -4498,7 +4520,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
+            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
             resilience: None,
             recovery_gate: Some(gate.clone()),
         })
