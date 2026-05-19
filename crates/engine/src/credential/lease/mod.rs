@@ -96,7 +96,7 @@ pub(super) const LEASE_COMMAND_CHANNEL_CAPACITY: usize = 256;
 /// Public handle to the lease lifecycle scheduler.
 ///
 /// Cheap to clone — internally an `Arc` over a **bounded** command
-/// channel ([`LEASE_COMMAND_CHANNEL_CAPACITY`]). The scheduler task is
+/// channel (`LEASE_COMMAND_CHANNEL_CAPACITY`). The scheduler task is
 /// spawned at construction time and runs until the supplied
 /// [`CancellationToken`] fires. Backpressure is **fail-fast, not
 /// blocking**: when the queue is full the producing call returns
@@ -294,7 +294,7 @@ pub enum LeaseLifecycleError {
     Shutdown,
 
     /// The bounded lease-lifecycle command queue
-    /// ([`LEASE_COMMAND_CHANNEL_CAPACITY`] in flight) is full because the
+    /// (`LEASE_COMMAND_CHANNEL_CAPACITY` in flight) is full because the
     /// single scheduler consumer is blocked on a slow or wedged provider
     /// `renew` / `revoke`. This is explicit fail-fast backpressure: the
     /// command was **not** enqueued and the lease was **not** tracked /

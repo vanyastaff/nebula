@@ -156,7 +156,7 @@ impl ResourceFanoutIndex {
     /// Re-binding an identical row under the same credential is idempotent
     /// *at the fan-out level* — [`affected`](Self::affected) still returns
     /// one entry and a rotation fans out once — but each call takes a
-    /// reference (see [`BindRef`]). The presence check and the
+    /// reference (see `BindRef`). The presence check and the
     /// increment/insert both run under the `DashMap` shard lock held by
     /// `entry(cid)`, so a concurrent `bind` / `unbind_staged_entry` for the
     /// same `cid` cannot interleave between them. This closes the
