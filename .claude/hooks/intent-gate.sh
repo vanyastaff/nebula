@@ -89,14 +89,24 @@ budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'
 # Duplicate public-symbol heuristic: a NEW `pub fn|struct|trait NAME` whose
 # NAME already exists (same kind) elsewhere in crates/*/src — the "47 date
 # formatters" pattern. Added lines via ig_added_lines (untracked included).
+# Idiomatic, legitimately-repeated names (constructors + trait/accessor
+# boilerplate) are skipped: they saturate any Rust workspace (`pub fn new`
+# is in hundreds of files) and are never the duplicate-utility smell, so
+# flagging them would invert the gate's signal. `pub async fn` is out of
+# scope by design (the smell is plain `pub fn`); widening it would enlarge
+# the false-positive surface this skiplist exists to contain.
 dup_symbol() {
   local added kind name hit
   added="$(ig_added_lines | grep -E '^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' || true)"
   [ -n "$added" ] || return 1
   while IFS= read -r line; do
     kind="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait).*/\1/')"
+    [ -n "$kind" ] || continue
     name="$(printf '%s' "$line" | sed -E 's/^\+[[:space:]]*pub[[:space:]]+(fn|struct|trait)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*).*/\2/')"
     [ -n "$name" ] || continue
+    case "$name" in
+      new|default|len|is_empty|build|builder|from|try_from|into|iter|iter_mut|next|poll|fmt|clone|eq|hash|drop|deref|get|set|id|name|kind|value) continue ;;
+    esac
     hit="$(grep -rEl --include='*.rs' "(^|[^A-Za-z_])pub[[:space:]]+$kind[[:space:]]+$name([^A-Za-z0-9_]|$)" "$cwd"/crates/*/src 2>/dev/null | wc -l | tr -d ' ')"
     [ "${hit:-0}" -ge 2 ] && { printf '%s %s' "$kind" "$name"; return 0; }
   done <<< "$added"

@@ -222,6 +222,16 @@ ED_SID="e-dup"; ED_P="$(turn_state_path "$ED_SID" "$ED_DIR")"; mkdir -p "$(dirna
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$ED_P"
 chk "E blocks dup pub symbol" 2 "$(egate '{"session_id":"'"$ED_SID"'","cwd":"'"$ED_DIR"'","stop_hook_active":false}')"
 rm -rf "$ED_DIR"
+# E skiplisted idiomatic name (pub fn new) must NOT block even when duplicated
+EDN_DIR="$(mktemp -d)"
+( cd "$EDN_DIR" && git init -q && mkdir -p crates/x/src crates/y/src \
+  && echo 'pub fn new() {}' > crates/x/src/lib.rs \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base \
+  && echo 'pub fn new() {}' > crates/y/src/lib.rs && git add -A )
+EDN_SID="e-dup-new"; EDN_P="$(turn_state_path "$EDN_SID" "$EDN_DIR")"; mkdir -p "$(dirname "$EDN_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EDN_P"
+chk "E skiplist allows dup new" 0 "$(egate '{"session_id":"'"$EDN_SID"'","cwd":"'"$EDN_DIR"'","stop_hook_active":false}')"
+rm -rf "$EDN_DIR"
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
