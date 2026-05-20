@@ -293,8 +293,9 @@
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last
 //!   one is the irreducible engine ABI — the production engine registrar
-//!   dispatches into `register_resolved` positionally with a 9-param
-//!   JSON-driven shape, and collapsing it into a struct would re-introduce
+//!   dispatches into `register_resolved` positionally with an 8-param
+//!   JSON-driven shape (down from 9 after `AcquireResilience` was dropped
+//!   manager-side; see commit `cf93e45b`), and collapsing it into a struct would re-introduce
 //!   the navigation hop the single register funnel removed for the one
 //!   erased call site. It is a candidate for the cross-crate-dedup
 //!   follow-up ([#718]), not a defect. (The three `too_many_arguments`

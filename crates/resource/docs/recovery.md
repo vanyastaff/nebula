@@ -100,25 +100,33 @@ When registering a resource, pass an optional `RecoveryGate`:
 ```rust,ignore
 use std::sync::Arc;
 use nebula_resource::{
-    PoolConfig, RecoveryGate, RecoveryGateConfig, RegisterOptions,
+    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, TopologyRuntime,
+    dedup::SlotIdentity,
+    recovery::{RecoveryGate, RecoveryGateConfig},
+    topology::pooled::config::Config as PoolConfig,
 };
 
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-
-manager.register_pooled_with(
-    PostgresResource,
-    pg_config,
+let pool_rt = PoolRuntime::<PostgresResource>::try_new(
     PoolConfig::default(),
-    RegisterOptions {
-        recovery_gate: Some(gate.clone()),
-        ..RegisterOptions::default()
-    },
+    pg_config.fingerprint(),
 )?;
+
+manager.register(RegistrationSpec {
+    resource: PostgresResource,
+    config: pg_config,
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: TopologyRuntime::Pool(pool_rt),
+    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
+    recovery_gate: Some(gate.clone()),
+})?;
 ```
 
-For credential-bound resources, also pass `credential_id: Some(...)` in
-`RegisterOptions`. Use `Manager::register` (positional) for full control
-over scope and topology.
+For credential-bound resources, declare `#[credential(key = "...")]`
+fields on the resource struct — the framework resolves them before
+`Resource::create` runs. Per-tenant routing uses
+`SlotIdentity::from_bindings(...)` plus `acquire_pooled_for_identity`.
 
 The Manager automatically:
 1. **Checks the gate** before each acquire (admission helper in

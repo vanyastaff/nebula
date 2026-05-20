@@ -106,8 +106,9 @@ pub struct PoolConfig {
 `max_size`/`max_lifetime` against your backend's connection-budget and TTL.
 
 `PoolConfig::validate()` enforces `min_size <= max_size` and non-zero
-`max_size`. `Manager::register_pooled` / `register_pooled_with` call this
-implicitly.
+`max_size`. `PoolRuntime::try_new` calls it implicitly, so an invalid
+config surfaces as a typed error at runtime construction — before
+`Manager::register` ever sees the `TopologyRuntime::Pool(...)` value.
 
 ---
 
@@ -309,29 +310,43 @@ PoolConfig {
 
 ## Integration with Resilience
 
-Per-acquire timeout, retry policy, and recovery-gate admission belong on
-`AcquireResilience` / `RecoveryGate`, not on `PoolConfig`. Wire them in
-via `RegisterOptions`:
+Per-acquire timeout / retry composes one layer up (action handler /
+engine activity / caller-supplied `nebula-resilience` pipeline) — the
+manager-side `AcquireResilience` wrapper was removed in commit
+`cf93e45b` (peer Rust pools — sqlx, deadpool, bb8 — all ship
+acquire-timeout only). Acquire-timeout itself lives on the topology
+config (`create_timeout` field on the pool config).
+
+`RecoveryGate` is the remaining manager-level resilience seam: a
+CAS-based single-probe admission that prevents thundering-herd against
+a flapping backend. Wire it through `RegistrationSpec::recovery_gate`:
 
 ```rust,ignore
 use std::sync::Arc;
 use nebula_resource::{
-    AcquireResilience, RecoveryGate, RecoveryGateConfig, RegisterOptions,
+    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, TopologyRuntime,
+    dedup::SlotIdentity,
+    recovery::{RecoveryGate, RecoveryGateConfig},
+    topology::pooled::config::Config as PoolConfig,
 };
 
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-
-manager.register_pooled_with(
-    PostgresResource,
-    pg_config,
+let pool_rt = PoolRuntime::<PostgresResource>::try_new(
     PoolConfig::default(),
-    RegisterOptions {
-        resilience:    Some(AcquireResilience::standard()),
-        recovery_gate: Some(gate),
-        ..RegisterOptions::default()
-    },
+    pg_config.fingerprint(),
 )?;
+
+manager.register(RegistrationSpec {
+    resource: PostgresResource,
+    config: pg_config,
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: TopologyRuntime::Pool(pool_rt),
+    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
+    recovery_gate: Some(gate),
+})?;
 ```
 
-See [`api-reference.md`](api-reference.md) for `RegisterOptions` field
-semantics and [`recovery.md`](recovery.md) for `RecoveryGate` behavior.
+See [`api-reference.md`](api-reference.md) for the `RegistrationSpec`
+public fields and [`recovery.md`](recovery.md) for `RecoveryGate`
+behaviour (state machine + thundering-herd admission semantics).

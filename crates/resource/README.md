@@ -102,7 +102,6 @@ manager.register(RegistrationSpec {
     slot_identity: SlotIdentity::Unbound,      // structural anti-bleed identity (see below)
     topology: TopologyRuntime::Resident(resident_runtime),
     acquire: Manager::erased_acquire_resident_for::<R>(),
-    resilience: None,                          // Option<AcquireResilience>
     recovery_gate: None,                       // Option<Arc<RecoveryGate>>
 })?;
 ```
@@ -129,10 +128,9 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 - `ResourceContext` — execution context with cancellation and capability traits (`HasResources`, `HasCredentials`).
 - `ScopeLevel` — re-exported from `nebula_core::ScopeLevel`.
 - `ResourcePhase`, `ResourceStatus` — lifecycle phase tracking for observability.
-- `ResourceEvent` — lifecycle events (`Acquired`, `Released`, `HealthCheck`, `Recycled`, `ConfigReloaded`, …).
+- `ResourceEvent` — lifecycle events (`Registered`, `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`).
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
 - `RecoveryGate`, `RecoveryGateConfig`, `RecoveryTicket`, `RecoveryWaiter`, `GateState` — thundering-herd recovery gate.
-- `AcquireResilience`, `AcquireRetryConfig` — resilience configuration for acquire paths.
 - `TopologyRuntime` — enum dispatching to the 3 topology runtime variants (`Pool` / `Resident` / `Bounded`).
 - Topology traits: `Pooled`, `Resident`, `Bounded` (+ `BoundedRelease`, the `CapMarker` typestates `Unbounded` / `Capped<N>` / `Exclusive`).
 - Topology runtimes: `PoolRuntime`, `ResidentRuntime`, `BoundedRuntime`.
@@ -173,7 +171,7 @@ The headline patterns and topology selection guidance are distilled into `crates
 ## Non-goals
 
 - Not a connection driver — resource implementations supply the actual client (sqlx pool, reqwest client, etc.); this crate owns the lifecycle wrapper.
-- Not a retry pipeline — retry around outbound calls inside `create`/`check` uses `nebula-resilience` directly. The `AcquireResilience` type configures the acquire-path retry only.
+- Not a retry pipeline — retry composes one layer up (action handler / engine activity / caller-supplied `nebula-resilience` pipeline). The manager-side `AcquireResilience` wrapper was removed in commit `cf93e45b`; peer Rust pools (sqlx, deadpool, bb8) ship acquire-timeout only, retry above. Retry around outbound calls inside `create`/`check` uses `nebula-resilience` directly at the resource impl.
 - Not a secret holder — credentials are populated into slot fields by the framework; secret material is managed by `nebula-credential`.
 - Not an expression evaluator — resource `Config` comes from `nebula-schema`-validated parameters; expression resolution is `nebula-expression`'s job. The engine-facing `Manager::register_resolved` orchestrates the resolve→validate→register pipeline but the evaluator itself stays out.
 

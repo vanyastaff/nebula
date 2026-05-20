@@ -164,29 +164,41 @@ async fn main() -> Result<(), nebula_resource::Error> {
 }
 ```
 
-### 4. Register with resilience
+### 4. Register with a recovery gate
 
-For production use, add timeout + retry + recovery gate via `RegisterOptions`:
+For production use, attach a recovery gate via `RegistrationSpec` to
+prevent thundering-herd when a backend goes down. The manager-side
+`AcquireResilience` (timeout + retry wrapper around `acquire`) was
+removed in commit `cf93e45b`: retry composes one layer up at the
+action / engine activity boundary, and per-topology config carries
+its own `create_timeout` (resident / pool). The recovery gate is the
+remaining manager-level resilience seam.
 
 ```rust,ignore
 use nebula_resource::{
-    Manager, PoolConfig, RegisterOptions, AcquireResilience, RecoveryGate, RecoveryGateConfig,
+    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, SlotIdentity,
+    TopologyRuntime, dedup::SlotIdentity as _,
+    recovery::{RecoveryGate, RecoveryGateConfig},
+    topology::pooled::config::Config as PoolConfig,
 };
 use std::sync::Arc;
 
 let manager = Manager::new();
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-
-manager.register_pooled_with(
-    DbResource,
-    db_config,
+let pool_rt = PoolRuntime::<DbResource>::try_new(
     PoolConfig { max_size: 20, ..Default::default() },
-    RegisterOptions {
-        resilience: Some(AcquireResilience::standard()),
-        recovery_gate: Some(gate),
-        ..Default::default()
-    },
+    db_config.fingerprint(),
 )?;
+
+manager.register(RegistrationSpec {
+    resource: DbResource,
+    config: db_config,
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: TopologyRuntime::Pool(pool_rt),
+    acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
+    recovery_gate: Some(gate),
+})?;
 ```
 
 ---
@@ -267,27 +279,29 @@ crates/resource/
 │   ├── dedup.rs           slot_identity + SLOT_IDENTITY_UNBOUND (anti-bleed key)
 │   ├── manager/           Manager directory:
 │   │   ├── mod.rs              Manager type + register/acquire + refresh_slot/revoke_slot
-│   │   ├── options.rs          ManagerConfig, RegisterOptions, ShutdownConfig, DrainTimeoutPolicy
-│   │   ├── gate.rs             Recovery-gate admission helpers
-│   │   ├── execute.rs          Resilience pipeline + register-time pool config validation
+│   │   ├── options.rs          ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig, DrainTimeoutPolicy
+│   │   ├── gate.rs             Recovery-gate admission helpers (GateAdmission, admit_through_gate, settle_gate_admission)
+│   │   ├── acquire_dispatch.rs Type-erased acquire factories (erased_acquire_{pooled,resident,bounded})
 │   │   └── shutdown.rs         graceful_shutdown + drain helpers + set_phase_all*
 │   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
 │   ├── guard.rs           ResourceGuard — RAII acquire lease (Owned / Guarded / Shared)
 │   ├── context.rs         ResourceContext — execution context with capabilities
+│   ├── dedup.rs           SlotIdentity (Unbound / Structural), DedupKey
 │   ├── error.rs           Error, ErrorKind, ErrorScope
-│   ├── events.rs          ResourceEvent — 14 lifecycle event variants
+│   ├── events.rs          ResourceEvent — 14 lifecycle event variants (all emitted)
 │   ├── options.rs         AcquireOptions (deadline-only since R-051)
 │   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot, OutcomeCountersSnapshot
 │   ├── state.rs           ResourcePhase, ResourceStatus
-│   ├── cell.rs            Cell — ArcSwap-based lock-free cell for Resident topology
+│   ├── cell.rs            Cell — crate-internal ArcSwap-based lock-free cell for Resident topology
+│   ├── slot.rs            SlotCell — public generation-stamped credential slot holder
 │   ├── release_queue.rs   ReleaseQueue — background async cleanup workers
-│   ├── reload.rs          ReloadOutcome
-│   ├── topology_tag.rs    TopologyTag — 5-variant discriminant (post-ADR-0037)
-│   ├── integration.rs     AcquireResilience, AcquireRetryConfig
-│   ├── ext.rs             HasResourcesExt
-│   ├── recovery/          RecoveryGate, RecoveryGroupRegistry, WatchdogHandle
-│   ├── runtime/           Per-topology runtime wrappers (5 topologies)
-│   └── topology/          Per-topology trait definitions (Pooled / Resident / Service / Transport / Exclusive)
+│   ├── reload.rs          ReloadOutcome (NoChange / SwappedImmediately)
+│   ├── resource_ref.rs    ResourceRef — lazy reference type for action contexts
+│   ├── topology_tag.rs    TopologyTag — 3-variant discriminant (Pool / Resident / Bounded)
+│   ├── ext.rs             HasResourcesExt (sealed)
+│   ├── recovery/          RecoveryGate, RecoveryTicket, RecoveryWaiter, GateState
+│   ├── runtime/           Per-topology runtime wrappers (Pool / Resident / Bounded + ManagedResource)
+│   └── topology/          Per-topology trait definitions (Pooled / Resident / Bounded + Cap typestate)
 └── docs/
     ├── README.md          ← this file
     ├── api-reference.md   Full public API with signatures
