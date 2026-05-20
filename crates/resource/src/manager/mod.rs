@@ -345,7 +345,6 @@ use crate::{
     context::ResourceContext,
     error::Error,
     events::ResourceEvent,
-    integration::AcquireResilience,
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
     options::AcquireOptions,
     recovery::gate::{GateState, RecoveryGate},
@@ -357,13 +356,11 @@ use crate::{
 };
 
 pub(crate) mod acquire_dispatch;
-mod execute;
 mod gate;
 pub(crate) mod options;
 pub(crate) mod shutdown;
 
 pub use crate::registry::ErasedAcquireFn;
-use execute::execute_with_resilience;
 use gate::{admit_through_gate, settle_gate_admission};
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
@@ -674,7 +671,6 @@ impl Manager {
             slot_identity,
             topology,
             acquire,
-            resilience,
             recovery_gate,
         } = spec;
 
@@ -693,6 +689,18 @@ impl Manager {
         // it *before* building the runtime.)
 
         let key = R::key();
+
+        // Wire the manager's broadcast sink into the optional recovery
+        // gate so its state transitions emit
+        // `ResourceEvent::RecoveryGateChanged`. Idempotent at the
+        // `RecoveryGate` end: a gate handed to a second manager (test
+        // composition, scoped registry) keeps its first sink and
+        // ignores this call. Cheap and lock-free — `OnceLock::set`
+        // is one CAS.
+        if let Some(gate) = recovery_gate.as_deref() {
+            gate.set_event_sink(self.event_tx.clone(), key.clone());
+        }
+
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -700,7 +708,6 @@ impl Manager {
             release_queue: Arc::clone(&self.release_queue),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
-            resilience,
             recovery_gate,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
@@ -887,10 +894,10 @@ impl Manager {
             slot_count = slot_bindings.len(),
         )
     )]
-    // guard-justified: the production engine registrar dispatches into this positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + the two optional policies), so the 9-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
+    // guard-justified: the production engine registrar dispatches into this positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + recovery_gate), so the 8-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
     #[allow(
         clippy::too_many_arguments,
-        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; collapsing the 9-param shape into a struct would re-introduce a navigation hop for the one erased call site, and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
+        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; collapsing the 8-param shape into a struct would re-introduce a navigation hop for the one erased call site, and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
     )]
     pub async fn register_resolved<R>(
         &self,
@@ -901,7 +908,6 @@ impl Manager {
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
         acquire: ErasedAcquireFn,
-        resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
@@ -970,7 +976,6 @@ impl Manager {
             slot_identity: slot_identity.clone(),
             topology,
             acquire,
-            resilience,
             recovery_gate,
         })?;
         Ok(slot_identity)
@@ -2003,7 +2008,7 @@ impl Manager {
     async fn run_acquire<R, F, Fut>(
         &self,
         managed: Arc<ManagedResource<R>>,
-        dispatch: F,
+        mut dispatch: F,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: Resource,
@@ -2032,9 +2037,35 @@ impl Manager {
         // pre-checks. Rationale: see the `manager` module documentation.
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-        let resilience = managed.resilience.clone();
 
-        let result = execute_with_resilience(&resilience, dispatch).await;
+        // Publish a `RetryAttempt` event when this acquire is the recovery
+        // probe (the CAS-claimed single-probe slot that follows a
+        // transient backend failure). The `backoff_on_fail` field carries
+        // the delay the gate would impose *if this probe fails again* —
+        // the next caller's wait, not a wait this acquire incurs. The
+        // event is emitted **before** `dispatch()` so observers see the
+        // attempt go out rather than only the result. The error field is
+        // populated with the prior failure message from the
+        // soon-to-be-retired `Failed` state, snapshotted in
+        // `admit_through_gate` before the CAS rotated the gate.
+        if let gate::GateAdmission::Probe {
+            attempt,
+            backoff_on_fail,
+            last_failure,
+            ..
+        } = &gate_admission
+        {
+            self.event_tx
+                .send(ResourceEvent::RetryAttempt {
+                    key: R::key(),
+                    attempt: *attempt,
+                    backoff: *backoff_on_fail,
+                    error: last_failure.clone().unwrap_or_default(),
+                })
+                .ok();
+        }
+
+        let result = dispatch().await;
 
         // Settle the gate ticket based on the acquire result. #322: this
         // makes the ticket ownership end-to-end — on success we `resolve`,
@@ -2044,7 +2075,13 @@ impl Manager {
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            // Attach the manager's broadcast sender so the guard's `Drop`
+            // emits `ResourceEvent::Released`. Done here, on the success
+            // path only, because failed acquires never minted a guard
+            // to begin with — there is nothing to release.
+            Ok(h) => Ok(h
+                .with_drain_tracker(in_flight.release_to_guard())
+                .with_event_tx(self.event_tx.clone())),
             Err(e) => Err(e),
         }
     }
@@ -2554,10 +2591,24 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_acquire_error();
                 }
-                let _ = self.event_tx.send(ResourceEvent::AcquireFailed {
-                    key: R::key(),
-                    error: e.to_string(),
-                });
+                // `BackpressureDetected` is a topology-pressure signal
+                // (semaphore full, max sessions reached). It is a strict
+                // subset of `AcquireFailed` — we emit both so subscribers
+                // that filter on pressure get a typed event without having
+                // to parse error strings, while the unified
+                // `AcquireFailed` stream remains the canonical "acquire
+                // didn't succeed" feed.
+                if matches!(e.kind(), crate::error::ErrorKind::Backpressure) {
+                    self.event_tx
+                        .send(ResourceEvent::BackpressureDetected { key: R::key() })
+                        .ok();
+                }
+                self.event_tx
+                    .send(ResourceEvent::AcquireFailed {
+                        key: R::key(),
+                        error: e.to_string(),
+                    })
+                    .ok();
             },
         }
     }
@@ -2826,7 +2877,6 @@ mod shutdown_post_count_race_tests {
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register succeeds");
@@ -2917,7 +2967,6 @@ mod shutdown_post_count_race_tests {
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register succeeds");

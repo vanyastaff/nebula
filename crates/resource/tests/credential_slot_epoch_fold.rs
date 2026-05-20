@@ -304,7 +304,6 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
             ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<TwoSlotResident>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

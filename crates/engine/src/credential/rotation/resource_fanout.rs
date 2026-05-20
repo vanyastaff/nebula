@@ -1080,7 +1080,6 @@ mod tests {
                         ResidentConfig::default(),
                     )),
                     acquire: Manager::erased_acquire_resident_for::<CtlResource>(),
-                    resilience: None,
                     recovery_gate: None,
                 })
                 .expect("register tenant");

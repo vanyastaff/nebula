@@ -234,7 +234,6 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
             ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<SecretRes>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

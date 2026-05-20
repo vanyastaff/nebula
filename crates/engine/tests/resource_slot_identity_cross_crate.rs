@@ -201,7 +201,6 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         slot_bindings,
         credential_ids: HashMap::new(),
         scope: ScopeLevel::Global,
-        resilience: None,
         recovery_gate: None,
     }
 }

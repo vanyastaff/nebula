@@ -236,7 +236,6 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
             PoolCfg.fingerprint(),
         )),
         acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -326,7 +325,6 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
             PoolCfg.fingerprint(),
         )),
         acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -412,7 +410,6 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
             PoolCfg.fingerprint(),
         )),
         acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");
@@ -524,7 +521,6 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
             PoolCfg.fingerprint(),
         )),
         acquire: Manager::erased_acquire_pooled_for::<PoolResource>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("pooled registration must succeed");

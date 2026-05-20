@@ -355,7 +355,6 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<WitnessResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register witness resource");

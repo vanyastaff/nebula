@@ -42,7 +42,6 @@ pub mod error;
 pub mod events;
 pub mod ext;
 pub mod guard;
-pub mod integration;
 pub mod manager;
 pub mod metrics;
 pub mod options;
@@ -72,7 +71,6 @@ pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
-pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
     DrainTimeoutPolicy, ErasedAcquireFn, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
     ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,

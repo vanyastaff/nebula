@@ -138,7 +138,6 @@ async fn register_from_value_resolves_template_and_registers() {
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             Manager::erased_acquire_resident_for::<Postgres>(),
             None,
-            None,
         )
         .await
         .expect("register_from_value must succeed");
@@ -188,7 +187,6 @@ async fn register_from_value_validates_schema_failure() {
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             Manager::erased_acquire_resident_for::<Postgres>(),
             None,
-            None,
         )
         .await
         .expect_err("must reject ill-typed config");
@@ -220,7 +218,6 @@ async fn register_from_value_resourceconfig_validate_fires() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             Manager::erased_acquire_resident_for::<Postgres>(),
-            None,
             None,
         )
         .await
@@ -254,7 +251,6 @@ async fn register_from_value_unknown_slot_binding_rejected() {
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             Manager::erased_acquire_resident_for::<Postgres>(),
             None,
-            None,
         )
         .await
         .expect_err("unknown slot must be rejected");
@@ -286,7 +282,6 @@ async fn register_from_value_passthrough_no_templates() {
             ScopeLevel::Global,
             TopologyRuntime::Resident(ResidentRuntime::<Postgres>::new(ResidentConfig::default())),
             Manager::erased_acquire_resident_for::<Postgres>(),
-            None,
             None,
         )
         .await
