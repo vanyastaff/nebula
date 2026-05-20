@@ -14,6 +14,7 @@ pub mod registry;
 pub mod resolver;
 #[cfg(feature = "rotation")]
 pub mod rotation;
+pub mod scoped_accessor;
 
 pub use dispatchers::{dispatch_release, dispatch_revoke, dispatch_test};
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
@@ -27,3 +28,4 @@ pub use nebula_credential::resolve::TestResult;
 pub use refresh::{RefreshAttempt, RefreshCoordinator};
 pub use registry::{StateProjectionError, StateProjectionRegistry};
 pub use resolver::{CredentialResolver, ResolveError};
+pub use scoped_accessor::ScopedCredentialAccessor;

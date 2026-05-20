@@ -77,7 +77,10 @@ pub mod secrets;
 
 // ── Flattened modules (previously nested under accessor/ and metadata/) ───
 
-/// Credential accessor implementations — NoopCredentialAccessor, ScopedCredentialAccessor.
+/// Credential accessor stub — NoopCredentialAccessor + default_credential_accessor.
+///
+/// The engine-runtime allowlist-enforcing accessor lives in
+/// `nebula_engine::credential::ScopedCredentialAccessor`.
 mod accessor;
 /// Credential operation context — CredentialContext, CredentialContextBuilder.
 mod context;
@@ -131,7 +134,7 @@ pub mod store_memory;
 
 // Consumer-facing accessor surface — trait (re-exported from core), impls, handle, context,
 // access error
-pub use accessor::{NoopCredentialAccessor, ScopedCredentialAccessor, default_credential_accessor};
+pub use accessor::{NoopCredentialAccessor, default_credential_accessor};
 pub use context::{CredentialContext, CredentialContextBuilder};
 pub use contract::resolve;
 // Credential contract — Credential trait + associated types
