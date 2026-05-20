@@ -94,7 +94,18 @@ net=$((added - deleted))
 if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 
 # Escape token: `// budget-justified:` on any added line this turn.
-budget_justified() { ig_added_lines | grep -qE '//[[:space:]]*budget-justified:'; }
+#
+# Drain-safe: `grep -q` exits on first match, triggering SIGPIPE on the
+# `ig_added_lines` writer side (the `while-read | sed` loop and the
+# three-way diff). Under `set -uo pipefail` that propagates rc=141 from
+# the producer so `budget_justified` returns non-zero even when the marker
+# WAS found — the escape silently fails. Use `grep -c` so the consumer
+# drains the entire stream and producers exit cleanly. (ADR-0083.)
+budget_justified() {
+  local n
+  n="$(ig_added_lines | grep -cE '//[[:space:]]*budget-justified:' | awk '{print $1+0}')"
+  [ "${n:-0}" -gt 0 ]
+}
 
 # Duplicate public-symbol heuristic: a NEW `pub fn|struct|trait NAME` whose
 # NAME already exists (same kind) elsewhere in crates/*/src — the "47 date
