@@ -55,8 +55,8 @@ Nebula's main trust boundaries:
   inside the sandbox is hostile by default.
 - **Credential boundary** — `nebula-credential` and
   `nebula-credential-runtime` own credential material. Other crates receive
-  `CredentialGuard<C>` (which is `!Clone`, `ZeroizeOnDrop`) and read through
-  it, never around it.
+  `CredentialGuard<C>` (which is `!Clone` and zeroizes on drop via a manual
+  `Drop` impl) and read through it, never around it.
 - **API boundary** — `nebula-api` is the external HTTP surface.
   Authentication / authorisation lives there; lower layers assume their
   inputs were checked.

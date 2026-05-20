@@ -160,11 +160,10 @@ let gate = groups.get_or_create(
 ## Background health probes
 
 `nebula-resource` does **not** ship a built-in background health-probe
-type. If you need one, drive `Resource::check()` from a `tokio::spawn`
-loop in your application code or compose
-[`nebula-resilience`](../../resilience/README.md)'s health-probe layer.
-The manager publishes `ResourceEvent::HealthChanged` whenever it
-observes a transition, so consumers can react without polling.
+type. If you need one, drive `Resource::check()` from an
+application-owned `tokio::spawn` loop. The manager publishes
+`ResourceEvent::HealthChanged` whenever it observes a transition, so
+consumers can react without polling.
 
 ---
 

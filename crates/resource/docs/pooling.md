@@ -35,7 +35,8 @@ PoolRuntime<R>
 **Acquire** (`Manager::acquire_pooled`, or `acquire_pooled_for_identity` for credential-bound routes):
 
 1. Atomically increment waiter count (RAII counter).
-2. Acquire one semaphore permit (waits up to the resilience-supplied timeout).
+2. Acquire one semaphore permit (waits up to `AcquireOptions::remaining()`
+   if a deadline is set, otherwise `PoolConfig::create_timeout`).
 3. Pop from `idle_queue` (`Lifo`: back / `Fifo`: front, per
    `PoolConfig::strategy`).
 4. If `test_on_checkout` is true, call `Resource::check`. Discard on `Err`.
