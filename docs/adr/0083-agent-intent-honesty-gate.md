@@ -146,6 +146,80 @@ reviewer) is a sequenced follow-up plan in `docs/plans/`. This ADR records the
   follow-ups are plans, not ADRs; 0083 is slimmed post-plan so agent context
   is not eaten by this program's documentation.
 
+## Escape hatch hardening
+
+The structural-budget tier's `// budget-justified: <reason>` escape is the
+agent-facing pressure valve. Field operation revealed two failure modes that
+this ADR now closes (PR-series referenced inline in the implementation):
+
+1. **SIGPIPE on `grep -q`.** The original `budget_justified` consumer used
+   `grep -q`, which exits on the first match and triggered `SIGPIPE` on the
+   `ig_added_lines` producer (the three-way diff and the untracked
+   `while-read | sed` loop). Under `set -uo pipefail` the producer-side rc=141
+   propagated through the pipeline and `budget_justified` returned non-zero
+   — the marker silently failed to escape. The fix is a drain-safe `grep -c`
+   pattern that lets producers exit cleanly. No semantic change to the
+   escape; this is a correctness fix that was hiding a latent
+   marker-doesn't-actually-work bug.
+
+2. **Gameable marker.** A bare `// budget-justified: <anything>` line was
+   sufficient to unlock the entire turn. The escape is now hardened on three
+   axes, each independent:
+
+   - **Path-based auto-exempt.** `*/benches/*.rs` and `*/tests/golden/*` +
+     `*/tests/snapshots/*` + `*/snapshots/*` no longer need a marker — the
+     path encodes the semantics (criterion tables, golden snapshots). Bench
+     files still respect a per-file blob cap of 300 (so a single function
+     cannot balloon). Golden/snapshot data are effectively unbounded.
+     Agents cannot game the path because it is checked literally and a
+     reviewer catches misplacement. (`*/migrations/*.sql` is intentionally
+     NOT listed — `CODE_RE` does not include `.sql`, so SQL files never
+     enter the gate's input stream; an exemption against a stream they
+     cannot reach would only mislead readers.) Files whose first lines
+     carry an `@generated` marker AND a real authority marker (`DO NOT
+     EDIT` or Meta's `SignedSource<<…>>`) are similarly auto-exempt — the
+     bare `@generated` substring on its own is trivially spoofable and is
+     not enough.
+   - **Per-turn marker budget.** `MARKER_BUDGET=2`. Spamming markers across
+     files defeats the point; a 3-marker turn fails with
+     `marker-budget-exhausted` regardless of what else is justified. The cap
+     runs BEFORE the blob / NF / net-LoC checks so markers cannot authorize
+     themselves.
+   - **Minimum-justification quality (blob only).** The text after
+     `budget-justified:` must be at least 30 chars and mention one of
+     `table | generated | criterion | migration | fixture | schema |
+     snapshot | golden | test data` as a **whole word** (non-word-character
+     anchors around each keyword), so substrings like `unstable` no longer
+     satisfy `table`. A lazy `// budget-justified: ok` authorizes nothing
+     for the blob check. NF / net-LoC / dup still treat any marker as
+     present — the quality bar is concentrated on the most decay-correlated
+     dimension (per-fn complexity).
+   - **Comment-style portability.** The marker regex accepts both
+     `// budget-justified:` (Rust / JS / TS / C) and
+     `# budget-justified:` (Bash / TOML / Python) so hook scripts and
+     config files carry the same convention as Rust source. Anchors use
+     POSIX `[[:space:]]` rather than `[ \t]`, which in an ERE bracket
+     expression matches literal `\` and `t` instead of a tab.
+   - **Marker-dedup across partial staging.** The diff stream that feeds
+     the marker count is a single `git diff <base>` (working tree vs
+     turn-base) rather than the previous union of `tb..HEAD` + working +
+     `--cached`. With the triple-diff form, a marker line that was staged
+     and then re-edited in the working tree was emitted twice (once by
+     `--cached` and once by the working diff), so one logical marker
+     counted as two and could spuriously exhaust `MARKER_BUDGET=2`. The
+     single-diff form sees each line at most once.
+
+   Net effect: the marker is no longer sufficient on its own. Path matters.
+   Quantity matters. Justification quality matters. The deterministic core
+   (D10) is unchanged; this is pure addition to Layer-2.
+
+Verification ships as new positive and negative cases in the `task hooks:test`
+harness (bench-path exempt, snapshot-path exempt, `@generated` auto-exempt,
+3-marker turn denies, low-quality marker fails blob escape, quality marker
+escapes blob, 200-line src blob without marker still denies — the default
+path stays at the 100-line per-fn cap that mirrors `clippy.toml` `too-many-
+lines`).
+
 ## Follow-up workstream (sequenced, not part of this ADR)
 
 The diff-scoped / legacy-grandfathered choice is deliberate **ordering**, not a

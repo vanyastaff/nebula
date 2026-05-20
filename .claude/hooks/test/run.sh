@@ -297,14 +297,22 @@ printf '{"tool_name":"Write","tool_input":{"file_path":"crates/engine/src/ok.rs"
 
 # E intent-gate (ADR-0083 deterministic structural-budget tier)
 egate() { printf '%s' "$1" | bash "$HERE/intent-gate.sh" >/dev/null 2>&1; echo $?; }
-E_SID="e-skel"; E_P="$(turn_state_path "$E_SID" "$PWD")"; mkdir -p "$(dirname "$E_P")"
+# Pre-filter / default-allow scaffolding. Uses an isolated empty repo so the
+# "default allows" case is decided by the gate's structural-budget pass on a
+# zero-diff tree, not by whatever happens to be staged in $PWD. The other
+# three short-circuit BEFORE the budget pass (stop_hook_active, defer-to-C,
+# loop-bound) and would pass against $PWD too — kept on the same fixture for
+# uniformity.
+ESKL_DIR="$(mktemp -d)"; ( cd "$ESKL_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty )
+E_SID="e-skel"; E_P="$(turn_state_path "$E_SID" "$ESKL_DIR")"; mkdir -p "$(dirname "$E_P")"
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$E_P"
-chk "E loop-guard allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":true}')"
-chk "E default allows"      0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+chk "E loop-guard allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$ESKL_DIR"'","stop_hook_active":true}')"
+chk "E default allows"      0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$ESKL_DIR"'","stop_hook_active":false}')"
 printf '{"impl_files_edited":["crates/engine/src/x.rs"],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$E_P"
-chk "E defers to C broken"  0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+chk "E defers to C broken"  0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$ESKL_DIR"'","stop_hook_active":false}')"
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":2}' >"$E_P"
-chk "E loop-bound allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$PWD"'","stop_hook_active":false}')"
+chk "E loop-bound allows"   0 "$(egate '{"session_id":"'"$E_SID"'","cwd":"'"$ESKL_DIR"'","stop_hook_active":false}')"
+rm -rf "$ESKL_DIR"
 
 # E net-LoC budget (starting cap 400; // budget-justified: escapes)
 EB_DIR="$(mktemp -d)"
@@ -313,7 +321,7 @@ EB_DIR="$(mktemp -d)"
 EB_SID="e-bud"; EB_P="$(turn_state_path "$EB_SID" "$EB_DIR")"; mkdir -p "$(dirname "$EB_P")"
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EB_P"
 chk "E blocks >400 net-LoC" 2 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB_DIR"'","stop_hook_active":false}')"
-( cd "$EB_DIR" && printf '// budget-justified: generated table\n' >> crates/eb/src/big.rs )
+( cd "$EB_DIR" && printf '// budget-justified: criterion benchmark table fixture generated data block\n' >> crates/eb/src/big.rs )
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":""}' >"$EB_P"
 chk "E budget-justified escapes" 0 "$(egate '{"session_id":"'"$EB_SID"'","cwd":"'"$EB_DIR"'","stop_hook_active":false}')"
 rm -rf "$EB_DIR"
@@ -415,6 +423,175 @@ ERBP_SID="e-rebase-pre"; ERBP_P="$(turn_state_path "$ERBP_SID" "$ERBP_DIR")"; mk
 printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"%s","turn_base_patch_ids":["%s"],"intent_attempts":0}' "$ERBP_PRE" "$ERBP_PID" >"$ERBP_P"
 chk "E ignores pre-turn branch LoC (P1)" 0 "$(egate '{"session_id":"'"$ERBP_SID"'","cwd":"'"$ERBP_DIR"'","stop_hook_active":false}')"
 rm -rf "$ERBP_DIR"
+
+# E SIGPIPE regression: when a `// budget-justified:` marker is present, the
+# escape must hold regardless of producer-side SIGPIPE. The pre-fix code used
+# `grep -q` which short-circuits and triggered rc=141 via pipefail on the
+# ig_added_lines writer side; drain-safe `grep -c` fixes it. Many small
+# untracked files keep the producer chatty so SIGPIPE has surface to fire on.
+ESP_DIR="$(mktemp -d)"
+( cd "$ESP_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/esp/src \
+  && { for i in $(seq 1 450); do echo "// line $i"; done; \
+       echo '// budget-justified: criterion benchmark table fixture generated long'; } > crates/esp/src/big.rs \
+  && for i in 1 2 3 4 5 6 7 8 9; do echo "// noise" > "crates/esp/src/noise${i}.rs"; done )
+ESP_SID="e-sigpipe"; ESP_P="$(turn_state_path "$ESP_SID" "$ESP_DIR")"; mkdir -p "$(dirname "$ESP_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$ESP_P"
+chk "E marker escapes under SIGPIPE pressure" 0 "$(egate '{"session_id":"'"$ESP_SID"'","cwd":"'"$ESP_DIR"'","stop_hook_active":false}')"
+rm -rf "$ESP_DIR"
+
+# E bench-path cap (300, not 100). A 150-line block under `crates/*/benches/`
+# is intrinsically table-driven (criterion); path encodes the semantics, no
+# marker required.
+EBN_DIR="$(mktemp -d)"
+( cd "$EBN_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ebn/benches \
+  && { echo 'fn main() {'; for i in $(seq 1 150); do echo "  let v$i = $i;"; done; echo '}'; } > crates/ebn/benches/bar.rs )
+EBN_SID="e-bench"; EBN_P="$(turn_state_path "$EBN_SID" "$EBN_DIR")"; mkdir -p "$(dirname "$EBN_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBN_P"
+chk "E bench path exempts >100-line blob" 0 "$(egate '{"session_id":"'"$EBN_SID"'","cwd":"'"$EBN_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBN_DIR"
+
+# E bench-path still capped at 300 — a runaway 350-line bench must still deny.
+EBNX_DIR="$(mktemp -d)"
+( cd "$EBNX_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ebnx/benches \
+  && { echo 'fn main() {'; for i in $(seq 1 350); do echo "  let v$i = $i;"; done; echo '}'; } > crates/ebnx/benches/bar.rs )
+EBNX_SID="e-bench-over"; EBNX_P="$(turn_state_path "$EBNX_SID" "$EBNX_DIR")"; mkdir -p "$(dirname "$EBNX_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EBNX_P"
+chk "E bench path still capped at 300" 2 "$(egate '{"session_id":"'"$EBNX_SID"'","cwd":"'"$EBNX_DIR"'","stop_hook_active":false}')"
+rm -rf "$EBNX_DIR"
+
+# E snapshot/golden path effectively unlimited — fixtures are inherently large.
+EGN_DIR="$(mktemp -d)"
+( cd "$EGN_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/egn/tests/snapshots \
+  && { for i in $(seq 1 500); do echo "// snap $i"; done; } > crates/egn/tests/snapshots/data.rs )
+EGN_SID="e-snap"; EGN_P="$(turn_state_path "$EGN_SID" "$EGN_DIR")"; mkdir -p "$(dirname "$EGN_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EGN_P"
+chk "E snapshot path exempt" 0 "$(egate '{"session_id":"'"$EGN_SID"'","cwd":"'"$EGN_DIR"'","stop_hook_active":false}')"
+rm -rf "$EGN_DIR"
+
+# E @generated header on the first non-blank line auto-exempts the blob check
+# without needing a marker. Standard generator-output convention.
+EGEN_DIR="$(mktemp -d)"
+( cd "$EGEN_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/egen/src \
+  && { echo '// @generated by codegen-tool — DO NOT EDIT'; echo 'fn big() {'; \
+       for i in $(seq 1 200); do echo "  let v$i = $i;"; done; echo '}'; } > crates/egen/src/x.rs )
+EGEN_SID="e-gen"; EGEN_P="$(turn_state_path "$EGEN_SID" "$EGEN_DIR")"; mkdir -p "$(dirname "$EGEN_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EGEN_P"
+chk "E @generated header auto-exempts blob" 0 "$(egate '{"session_id":"'"$EGEN_SID"'","cwd":"'"$EGEN_DIR"'","stop_hook_active":false}')"
+rm -rf "$EGEN_DIR"
+
+# E marker-budget cap: 3 markers in one turn => marker-budget-exhausted deny.
+# This check runs BEFORE blob/NF/net-LoC so markers can't authorize themselves.
+EM3_DIR="$(mktemp -d)"
+( cd "$EM3_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/em3/src \
+  && printf '// budget-justified: criterion benchmark table fixture generated long one\nfn a(){}\n' > crates/em3/src/a.rs \
+  && printf '// budget-justified: criterion benchmark table fixture generated long two\nfn b(){}\n' > crates/em3/src/b.rs \
+  && printf '// budget-justified: criterion benchmark table fixture generated long three\nfn c(){}\n' > crates/em3/src/c.rs )
+EM3_SID="e-mk3"; EM3_P="$(turn_state_path "$EM3_SID" "$EM3_DIR")"; mkdir -p "$(dirname "$EM3_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EM3_P"
+chk "E 3 markers deny on marker-budget" 2 "$(egate '{"session_id":"'"$EM3_SID"'","cwd":"'"$EM3_DIR"'","stop_hook_active":false}')"
+rm -rf "$EM3_DIR"
+
+# E marker quality: low-quality marker (`// budget-justified: ok`) must NOT
+# escape the blob check — too short / no keyword match. Other gates (NF /
+# net-LoC) still treat any marker as present, but the blob check is stricter.
+EQL_DIR="$(mktemp -d)"
+( cd "$EQL_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/eql/src \
+  && { echo '// budget-justified: ok'; echo 'fn big() {'; \
+       for i in $(seq 1 200); do echo "  let v$i = $i;"; done; echo '}'; } > crates/eql/src/x.rs )
+EQL_SID="e-qual-low"; EQL_P="$(turn_state_path "$EQL_SID" "$EQL_DIR")"; mkdir -p "$(dirname "$EQL_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EQL_P"
+chk "E low-quality marker fails blob escape" 2 "$(egate '{"session_id":"'"$EQL_SID"'","cwd":"'"$EQL_DIR"'","stop_hook_active":false}')"
+rm -rf "$EQL_DIR"
+
+# E quality marker (≥30 chars + keyword) escapes the blob check on a default-
+# cap path.
+EQH_DIR="$(mktemp -d)"
+( cd "$EQH_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/eqh/src \
+  && { echo '// budget-justified: criterion benchmark table fixture generated long'; \
+       echo 'fn big() {'; for i in $(seq 1 150); do echo "  let v$i = $i;"; done; echo '}'; } > crates/eqh/src/x.rs )
+EQH_SID="e-qual-hi"; EQH_P="$(turn_state_path "$EQH_SID" "$EQH_DIR")"; mkdir -p "$(dirname "$EQH_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EQH_P"
+chk "E quality marker escapes blob" 0 "$(egate '{"session_id":"'"$EQH_SID"'","cwd":"'"$EQH_DIR"'","stop_hook_active":false}')"
+rm -rf "$EQH_DIR"
+
+# E #-style marker: the budget-justified escape accepts `# budget-justified:`
+# for Bash / TOML / Python comment files alongside the `// budget-justified:`
+# form for Rust / JS / TS source. The blob-check quality bar is identical.
+EH_DIR="$(mktemp -d)"
+( cd "$EH_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p scripts \
+  && { echo '#!/usr/bin/env bash'; \
+       echo '# budget-justified: criterion benchmark table fixture generated long marker'; \
+       for i in $(seq 1 150); do echo "echo $i"; done; } > scripts/long.sh )
+EH_SID="e-hash-mark"; EH_P="$(turn_state_path "$EH_SID" "$EH_DIR")"; mkdir -p "$(dirname "$EH_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EH_P"
+chk "E #-style marker escapes blob" 0 "$(egate '{"session_id":"'"$EH_SID"'","cwd":"'"$EH_DIR"'","stop_hook_active":false}')"
+rm -rf "$EH_DIR"
+
+# E negative regression: a 200-line contiguous block in `crates/*/src/` with no
+# marker still denies. Default-path cap unchanged at 100.
+ERS_DIR="$(mktemp -d)"
+( cd "$ERS_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ers/src \
+  && { echo 'fn big() {'; for i in $(seq 1 200); do echo "  let v$i = $i;"; done; echo '}'; } > crates/ers/src/bar.rs )
+ERS_SID="e-regress-src"; ERS_P="$(turn_state_path "$ERS_SID" "$ERS_DIR")"; mkdir -p "$(dirname "$ERS_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$ERS_P"
+chk "E src 200-line blob no marker still denies" 2 "$(egate '{"session_id":"'"$ERS_SID"'","cwd":"'"$ERS_DIR"'","stop_hook_active":false}')"
+rm -rf "$ERS_DIR"
+
+# E quality-keyword word boundaries: a substring like `unstable` (contains
+# `table`) must NOT satisfy the `table` keyword — only whole-word matches do.
+# Regression for Copilot review #3270814282.
+EWB_DIR="$(mktemp -d)"
+( cd "$EWB_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ewb/src \
+  && { echo '// budget-justified: handles unstable feature flag interactions across runtime layers'; \
+       echo 'fn big() {'; for i in $(seq 1 150); do echo "  let v$i = $i;"; done; echo '}'; } > crates/ewb/src/x.rs )
+EWB_SID="e-word-bound"; EWB_P="$(turn_state_path "$EWB_SID" "$EWB_DIR")"; mkdir -p "$(dirname "$EWB_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EWB_P"
+chk "E unstable doesn't satisfy table keyword" 2 "$(egate '{"session_id":"'"$EWB_SID"'","cwd":"'"$EWB_DIR"'","stop_hook_active":false}')"
+rm -rf "$EWB_DIR"
+
+# E @generated spoof: a bare `// @generated` token without an authority
+# marker (`DO NOT EDIT` or `SignedSource<<…>>`) must NOT auto-exempt — the
+# tightened predicate denies the spoof. Regression for Copilot review
+# #3270814243.
+EGS_DIR="$(mktemp -d)"
+( cd "$EGS_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/egs/src \
+  && { echo '// @generated'; echo 'fn big() {'; \
+       for i in $(seq 1 200); do echo "  let v$i = $i;"; done; echo '}'; } > crates/egs/src/x.rs )
+EGS_SID="e-gen-spoof"; EGS_P="$(turn_state_path "$EGS_SID" "$EGS_DIR")"; mkdir -p "$(dirname "$EGS_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EGS_P"
+chk "E bare @generated doesn't auto-exempt" 2 "$(egate '{"session_id":"'"$EGS_SID"'","cwd":"'"$EGS_DIR"'","stop_hook_active":false}')"
+rm -rf "$EGS_DIR"
+
+# E marker dedup across partial staging: a marker line that's BOTH staged
+# (one text) AND modified in the working tree (different text) must count as
+# ONE logical marker, not two. Pre-fix triple-diff (`$tb..HEAD` + working +
+# `--cached`) emitted both `+staged` and `+working` lines, doubling the
+# marker count and tripping `MARKER_BUDGET=2` with only 2 real markers in
+# the turn. Single `git diff $base` against working tree counts each marker
+# once. Regression for Codex review #3270814797.
+EDD_DIR="$(mktemp -d)"
+( cd "$EDD_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/edd/src \
+  && printf '// budget-justified: criterion benchmark table fixture generated long block one\nfn a(){}\n' > crates/edd/src/a.rs \
+  && git add crates/edd/src/a.rs \
+  && printf '// budget-justified: criterion benchmark table fixture generated long block one V2\nfn a(){}\n' > crates/edd/src/a.rs \
+  && printf '// budget-justified: criterion benchmark table fixture generated long block two\nfn b(){}\n' > crates/edd/src/b.rs )
+EDD_SID="e-dedup"; EDD_P="$(turn_state_path "$EDD_SID" "$EDD_DIR")"; mkdir -p "$(dirname "$EDD_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EDD_P"
+chk "E marker dedup across partial staging" 0 "$(egate '{"session_id":"'"$EDD_SID"'","cwd":"'"$EDD_DIR"'","stop_hook_active":false}')"
+rm -rf "$EDD_DIR"
 
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"
