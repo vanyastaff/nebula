@@ -14,6 +14,7 @@
 //! [`CredentialServiceError`] taxonomy.
 #![forbid(unsafe_code)]
 
+pub mod binding;
 pub mod builder;
 pub mod dispatch;
 pub mod error;
@@ -29,6 +30,7 @@ pub mod state_source;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_fixtures;
 
+pub use binding::{TenantFingerprint, ValidatedCredentialBinding, ValidatedCredentialBindingError};
 pub use builder::CredentialServiceBuilder;
 pub use dispatch::{CredentialDispatch, DispatchError};
 pub use error::CredentialServiceError;

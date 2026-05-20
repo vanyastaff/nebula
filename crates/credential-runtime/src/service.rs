@@ -906,6 +906,91 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         })
     }
 
+    // ── Binding validation ───────────────────────────────────────────
+
+    /// Validate a workflow `slot_bindings` reference against the caller's
+    /// tenant scope, returning a typed
+    /// [`ValidatedCredentialBinding`](crate::ValidatedCredentialBinding) that
+    /// engine execution consumes.
+    ///
+    /// This is the **only construction path** for
+    /// `ValidatedCredentialBinding`. Its `pub(crate)` constructor is
+    /// unreachable from outside `nebula-credential-runtime`, so engine code
+    /// that consumes the handle has a structural proof that the scope-check
+    /// already ran.
+    ///
+    /// # Cross-tenant behaviour
+    ///
+    /// Unlike every other read operation in this service (which maps
+    /// cross-tenant ids to [`CredentialServiceError::NotFound`] to prevent
+    /// existence leaks), `validate_credential_binding` intentionally reads
+    /// the foreign row's `owner_id` so it can emit a structured
+    /// [`ScopeMismatch`](crate::ValidatedCredentialBindingError::ScopeMismatch)
+    /// error rather than a misleading `NotFound`. Workflow authors debugging
+    /// a misconfigured binding need to know the mismatch occurred; they are
+    /// not adversarial tenants probing for existence.
+    ///
+    /// The raw read path (`store_load_raw`) bypasses the `owner_id`
+    /// existence-hiding gate used by `load_owned`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ValidatedCredentialBindingError::NotFound`] — id absent from the store.
+    /// - [`ValidatedCredentialBindingError::ScopeMismatch`] — id exists but
+    ///   belongs to a different tenant.
+    /// - [`ValidatedCredentialBindingError::Io`] — underlying store error.
+    pub async fn validate_credential_binding(
+        &self,
+        scope: &TenantScope,
+        id: &str,
+    ) -> Result<crate::ValidatedCredentialBinding, crate::ValidatedCredentialBindingError> {
+        let stored = self
+            .store_load_raw(id)
+            .await
+            .map_err(crate::ValidatedCredentialBindingError::Io)?
+            .ok_or_else(|| crate::ValidatedCredentialBindingError::NotFound {
+                id: id.to_owned(),
+            })?;
+
+        let owner = stored
+            .metadata
+            .get(OWNER_ID_KEY)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if owner != scope.owner_id() {
+            return Err(crate::ValidatedCredentialBindingError::ScopeMismatch {
+                id: id.to_owned(),
+                requested: scope.owner_id().to_owned(),
+                actual: owner.to_owned(),
+            });
+        }
+
+        Ok(crate::ValidatedCredentialBinding::new(
+            id.to_owned(),
+            crate::binding::TenantFingerprint::from_scope(scope),
+        ))
+    }
+
+    /// Load the raw stored credential row **without** applying the
+    /// `owner_id` existence-hiding gate that `load_owned` enforces.
+    ///
+    /// `pub(crate)` — callers outside this crate cannot bypass the tenant
+    /// isolation enforced by the public operations. The only in-crate
+    /// caller today is `validate_credential_binding`, which needs to read
+    /// the foreign `owner_id` to emit a structured `ScopeMismatch` rather
+    /// than a misleading `NotFound`.
+    pub(crate) async fn store_load_raw(
+        &self,
+        id: &str,
+    ) -> Result<Option<StoredCredential>, CredentialServiceError> {
+        match self.store.get(id).await {
+            Ok(stored) => Ok(Some(stored)),
+            Err(StoreError::NotFound { .. }) => Ok(None),
+            Err(e) => Err(Self::map_store_err(e)),
+        }
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────
 
     /// Load a row and assert it belongs to `scope`, mapping both "absent"
