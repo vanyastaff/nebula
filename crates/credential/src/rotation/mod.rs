@@ -19,6 +19,23 @@
 //! -
 //! -
 //! - `crates/credential/README.md` — crate role vs `nebula-engine::credential`
+//!
+//! ## Module scope (audited 2026-05-20)
+//!
+//! Domain types only: rotation events, errors, state-machine enum, IDs,
+//! policy. No orchestration: no `tokio::spawn`, no `tokio::select!`, no
+//! `tokio::time::{sleep, interval, tick}`, no `JoinHandle` ownership.
+//! Background tick loops, blue-green transactions, fan-out drivers,
+//! schedulers, grace-period reapers — all live in
+//! `nebula_engine::credential::rotation::*` instead.
+//!
+//! Note: `error.rs` imports `tokio::time::timeout` solely to enforce the
+//! per-test deadline declared by `TestableCredential::test_timeout()`. This
+//! is a one-shot future combinator, not background orchestration — no tasks
+//! are spawned and no loops are started.
+//!
+//! If you find yourself wanting to `tokio::spawn` here, you are wrong:
+//! move the work to engine and emit a typed event from this module.
 
 // Contract type modules — these stay in nebula-credential
 pub mod error;
