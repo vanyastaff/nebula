@@ -187,9 +187,10 @@ pub use scheme::{
 // from public surface. See `secrets/mod.rs` rationale comment above the
 // `pub use crypto::{...}` block.
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SchemeFactory, SchemeGuard,
-    SecretString, decrypt, decrypt_with_aad, encrypt_with_aad, encrypt_with_key_id,
-    generate_code_challenge, generate_pkce_verifier, generate_random_state,
+    CredentialGuard, EncryptedData, EncryptionKey, ExposeSecret, ExposeSecretMut, RedactedSecret,
+    SchemeFactory, SchemeGuard, SecretBox, SecretString, decrypt, decrypt_with_aad,
+    encrypt_with_aad, encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier,
+    generate_random_state, secret_from_string,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
