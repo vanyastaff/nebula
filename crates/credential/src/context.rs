@@ -12,6 +12,7 @@ use nebula_core::{
     obs::TraceId,
     scope::{Principal, Scope},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::accessor::default_credential_accessor;
 
@@ -120,6 +121,14 @@ pub struct CredentialContext {
     /// Otherwise, `owner_id()` derives a string from
     /// [`self.principal()`](Context::principal).
     owner_id_override: Option<String>,
+
+    /// Per-operation cancellation token.
+    ///
+    /// Callers derive child tokens with `.child_token()` and check
+    /// status with `.is_cancelled()` directly on the borrowed token —
+    /// no proxy methods on the context (avoids duplicating tokio-util's
+    /// surface; ADR-0083 budget).
+    cancel: CancellationToken,
 }
 
 impl fmt::Debug for CredentialContext {
@@ -132,6 +141,7 @@ impl fmt::Debug for CredentialContext {
             .field("app_url", &self.app_url)
             .field("session_id", &self.session_id)
             .field("owner_id_override", &self.owner_id_override)
+            .field("cancel", &self.cancel)
             .finish()
     }
 }
@@ -147,7 +157,7 @@ impl Context for CredentialContext {
         self.base.principal()
     }
 
-    fn cancellation(&self) -> &tokio_util::sync::CancellationToken {
+    fn cancellation(&self) -> &CancellationToken {
         self.base.cancellation()
     }
 
@@ -177,6 +187,17 @@ impl HasResources for CredentialContext {
 // ── Domain-specific accessors ─────────────────────────────────────────────
 
 impl CredentialContext {
+    /// Borrow the context's cancellation token.
+    ///
+    /// Callers derive child tokens with `.child_token()` and check
+    /// status with `.is_cancelled()` directly on the borrowed token —
+    /// no proxy methods on the context itself (avoids duplicating
+    /// tokio-util's surface; ADR-0083 budget).
+    #[must_use]
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
     /// Returns the callback URL for OAuth2/SAML redirects.
     pub fn callback_url(&self) -> Option<&str> {
         self.callback_url.as_deref()
@@ -221,6 +242,7 @@ impl CredentialContext {
             app_url: None,
             session_id: None,
             owner_id_override: Some(owner_id.into()),
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -260,6 +282,7 @@ pub struct CredentialContextBuilder {
     app_url: Option<String>,
     session_id: Option<String>,
     owner_id: Option<String>,
+    cancel: Option<CancellationToken>,
 }
 
 impl CredentialContextBuilder {
@@ -277,6 +300,7 @@ impl CredentialContextBuilder {
             app_url: None,
             session_id: None,
             owner_id: None,
+            cancel: None,
         }
     }
 
@@ -311,6 +335,16 @@ impl CredentialContextBuilder {
         self
     }
 
+    /// Attach a parent cancellation token.
+    ///
+    /// If omitted, the context's cancel token defaults to a fresh
+    /// `CancellationToken::new()` (uncancelled, no parent).
+    #[must_use]
+    pub fn with_cancel(mut self, token: CancellationToken) -> Self {
+        self.cancel = Some(token);
+        self
+    }
+
     /// Build the [`CredentialContext`].
     pub fn build(self) -> CredentialContext {
         CredentialContext {
@@ -321,6 +355,7 @@ impl CredentialContextBuilder {
             app_url: self.app_url,
             session_id: self.session_id,
             owner_id_override: self.owner_id,
+            cancel: self.cancel.unwrap_or_default(),
         }
     }
 }
