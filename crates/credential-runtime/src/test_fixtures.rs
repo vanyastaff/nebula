@@ -16,6 +16,7 @@
 //! ones [`crate::service::test_support`] uses) and `unwrap`/`expect` is
 //! acceptable here — this is test-support code, not a release path.
 
+// guard-justified: test-fixture-only module gated `cfg(any(test, feature = "test-util"))`. unwrap/expect inside builder fixtures are acceptable here — never reachable from a release build (see crate doc above).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
@@ -105,9 +106,22 @@ pub fn set_refresh_rendezvous(barrier: Option<Arc<tokio::sync::Barrier>>) {
     *REFRESH_RENDEZVOUS.lock().unwrap() = barrier;
 }
 
-/// Scripted failure for the next refresh call. Consumed once per call.
-/// Used by the fallback-on-interrupt probe to inject transient vs
-/// terminal refresh outcomes deterministically.
+/// Scripted failure for refresh calls. Fires on **every** invocation
+/// until the test explicitly clears it with `set_refresh_failure(None)`
+/// (NOT one-shot — see rationale below). Used by the
+/// fallback-on-interrupt probe to inject transient vs terminal refresh
+/// outcomes deterministically.
+///
+/// # Why not one-shot?
+///
+/// `CredentialService::refresh` retries transient failures up to 3
+/// times via `nebula_resilience::retry::retry_with`. A one-shot
+/// `take()`-on-read script would fire once, then the retry budget
+/// would consume the remaining attempts and the second call would
+/// succeed normally — masking the failure the test is trying to
+/// observe. Persistent firing is what lets the fallback probe assert
+/// the outer fallback branch (return cached snapshot) was actually
+/// taken.
 #[derive(Debug, Clone, Copy)]
 pub enum RefreshFailureScript {
     /// Emit a transient refresh error (`TransientNetwork`).
@@ -119,9 +133,10 @@ pub enum RefreshFailureScript {
 static FAIL_NEXT_REFRESH: std::sync::Mutex<Option<RefreshFailureScript>> =
     std::sync::Mutex::new(None);
 
-/// Install (or clear with `None`) a scripted failure for the next call
-/// to [`RefreshableFixtureCredential::refresh`]. The script is consumed
-/// (set back to `None`) by the next refresh invocation.
+/// Install (or clear with `None`) a scripted failure for subsequent
+/// calls to [`RefreshableFixtureCredential::refresh`]. The script
+/// persists across calls until the test clears it explicitly — see
+/// [`RefreshFailureScript`] docs for why this isn't one-shot.
 pub fn set_refresh_failure(script: Option<RefreshFailureScript>) {
     let mut guard = match FAIL_NEXT_REFRESH.lock() {
         Ok(g) => g,

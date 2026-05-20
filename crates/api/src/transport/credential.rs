@@ -169,8 +169,17 @@ impl<'a> CredentialStoreHandle<'a> {
         }
     }
 
-    /// `put` — on `CreateOnly`, stamps `owner_id` into metadata for the
-    /// layered path (the scoped path has the layer do it automatically).
+    /// `put` — stamps `owner_id` into metadata on **every** PutMode for
+    /// the layered path (the scoped path has the layer do it
+    /// automatically).
+    ///
+    /// The previous code only stamped on `CreateOnly`, which dropped the
+    /// owner marker on update writes (the CRUD update handler rebuilds
+    /// metadata from `CredentialMeta` which has no `owner_id` field),
+    /// orphaning the row to its rightful tenant on next read. We also
+    /// validate any caller-supplied `owner_id` matches the scope —
+    /// anything else is a confused-deputy attempt and fails-closed with
+    /// `NotFound` (no cross-tenant existence leak).
     pub(crate) async fn put(
         &self,
         mut cred: StoredCredential,
@@ -178,12 +187,17 @@ impl<'a> CredentialStoreHandle<'a> {
     ) -> Result<StoredCredential, StoreError> {
         match self {
             Self::Layered(store, owner_id) => {
-                if matches!(mode, PutMode::CreateOnly) {
-                    cred.metadata.insert(
-                        "owner_id".to_owned(),
-                        serde_json::Value::String(owner_id.to_string()),
-                    );
+                if let Some(existing) = cred.metadata.get("owner_id").and_then(|v| v.as_str())
+                    && existing != *owner_id
+                {
+                    return Err(StoreError::NotFound {
+                        id: cred.id.clone(),
+                    });
                 }
+                cred.metadata.insert(
+                    "owner_id".to_owned(),
+                    serde_json::Value::String((*owner_id).to_owned()),
+                );
                 store.put(cred, mode).await
             },
             Self::Scoped(store) => store.put(cred, mode).await,

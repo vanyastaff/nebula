@@ -65,6 +65,8 @@ impl Credential for ThirdPartyLiar {
     where
         Self: Sized,
     {
+        // guard-justified: compile-fail probe fixture; this body is never executed —
+        // the file is expected to fail to compile at the `impl Refreshable` line below.
         unimplemented!("fixture")
     }
 
@@ -82,7 +84,11 @@ impl Credential for ThirdPartyLiar {
     where
         Self: Sized,
     {
-        async { unimplemented!("fixture") }
+        async {
+            // guard-justified: compile-fail probe fixture; this body is never executed —
+            // the file is expected to fail to compile at the `impl Refreshable` line below.
+            unimplemented!("fixture")
+        }
     }
 }
 

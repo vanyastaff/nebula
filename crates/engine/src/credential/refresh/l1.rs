@@ -92,11 +92,10 @@
 //! but the structural co-location of CB + semaphore + coalescer makes
 //! extraction more complexity than it saves.
 //!
-//! No code change in this task — if a future pass disagrees (e.g. the
-//! semaphore and CB are extracted to the coordinator layer), a SWAP to
-//! `DashMap<String, OnceCell<()>>` could land in a separate follow-up PR
-//! alongside a test exercising behaviour parity. (Task 16 of the
-//! stabilize sweep.)
+//! No behaviour change in the audit — if a future pass disagrees (e.g.
+//! the semaphore and CB are extracted to the coordinator layer), a
+//! SWAP to `DashMap<String, OnceCell<()>>` could land in a separate
+//! follow-up PR alongside a test exercising behaviour parity.
 
 use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 

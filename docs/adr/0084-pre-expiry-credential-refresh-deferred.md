@@ -20,7 +20,7 @@ ROADMAP §M12.4 listed "pre-expiry credential refresh (proactive)" as a
 
 The n8n #13088-class multi-replica race ("replica A rotates the refresh
 token; replica B uses the old token; replica B's call fails because the
-old token has been revoked") was closed by L2 in П2 (2026-04-26). Chaos
+old token has been revoked") was closed by L2 in P2 (2026-04-26). Chaos
 test (3 replicas × 100 credentials × 10 minutes) is green nightly.
 
 Pre-expiry refresh would add a per-instance background scheduler that
@@ -82,4 +82,4 @@ Neither requires a new engine-side scheduler.
 
 - [ROADMAP M12.4](../ROADMAP.md)
 - ADR-0041 — durable refresh-claim coordinator
-- П2 chaos test (archived in `docs/ARCHIVE.md`)
+- P2 chaos test (archived in `docs/ARCHIVE.md`)

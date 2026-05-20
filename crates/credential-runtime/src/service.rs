@@ -1112,7 +1112,22 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
                     .resolver
                     .resolve::<C>(credential_id)
                     .await
-                    .map_err(|e| CredentialServiceError::Internal(e.to_string()))?;
+                    .map_err(|e| {
+                        // Preserve the documented `NotFound` contract for
+                        // resolver lookup misses. The resolver wraps store
+                        // errors in `ResolveError::Store(StoreError::NotFound)`
+                        // — surface that as `CredentialServiceError::NotFound`
+                        // so callers can branch on it. Other resolver errors
+                        // collapse to `Internal` with the underlying message.
+                        use nebula_credential::store::StoreError;
+                        use nebula_engine::credential::ResolveError;
+                        match e {
+                            ResolveError::Store(StoreError::NotFound { id }) => {
+                                CredentialServiceError::NotFound { id }
+                            },
+                            other => CredentialServiceError::Internal(other.to_string()),
+                        }
+                    })?;
 
                 // Extract the owned scheme from the Arc returned by
                 // `snapshot()`. `CredentialResolver::resolve` constructs a

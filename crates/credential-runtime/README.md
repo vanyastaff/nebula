@@ -25,7 +25,7 @@ This crate is the production implementation of the ADR-0066 facade contract. It 
 
 ## Role in the dependency graph
 
-`nebula-credential-runtime` sits at the **Business** layer (see CLAUDE.md Layered Dependency Map). It depends on:
+`nebula-credential-runtime` sits at the **Exec** layer (see CLAUDE.md Layered Dependency Map — Exec covers `engine`, `storage`, runtime facades, sandbox). It depends on:
 
 - `nebula-credential` (Core contract types)
 - `nebula-tenancy` (tenant scope enforcement)

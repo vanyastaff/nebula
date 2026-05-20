@@ -91,9 +91,9 @@ impl<Ctx: HasCredentials + ?Sized> HasCredentialsExt for Ctx {
 
         let scheme = snapshot.into_project::<C::Scheme>().map_err(|e| match e {
             crate::snapshot::SnapshotError::SchemeMismatch { expected, actual } => {
-                CredentialError::InvalidInput(format!(
-                    "scheme mismatch: expected {expected}, got {actual}"
-                ))
+                CredentialError::SchemeMismatch(Box::new(crate::error::SchemeMismatch::by_name(
+                    expected, actual,
+                )))
             },
         })?;
 
@@ -109,7 +109,7 @@ impl<Ctx: HasCredentials + ?Sized> HasCredentialsExt for Ctx {
     {
         match self.credential::<C>().await {
             Ok(guard) => Ok(Some(guard)),
-            Err(CredentialError::Resolution { .. }) => Ok(None),
+            Err(CredentialError::Resolution(_)) => Ok(None),
             Err(e) => Err(e),
         }
     }

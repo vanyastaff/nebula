@@ -51,9 +51,13 @@ impl SecretFreeMessage {
     /// tokens / base64 blobs / long hex.
     pub fn new(s: impl Into<CompactString>) -> Self {
         let v = s.into();
+        // Avoid interpolating `v` into the assertion message — if the
+        // candidate IS a secret, this would echo it into panic output /
+        // test logs. Length is the only safe metadatum to surface.
         debug_assert!(
             !looks_like_secret(&v),
-            "SecretFreeMessage given likely secret content: '{v}'"
+            "SecretFreeMessage given likely secret content (len={})",
+            v.len()
         );
         Self(v)
     }
@@ -119,28 +123,65 @@ impl std::fmt::Display for SchemeKind {
     }
 }
 
+/// Identity of an auth scheme on either side of a [`SchemeMismatch`].
+///
+/// First-party schemes are referred to by their typed [`SchemeKind`]
+/// variant; plugin / third-party schemes are carried by their pattern
+/// name string (the snapshot layer only knows them by name, not by
+/// enum variant — see [`SchemeMismatch::by_name`]).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum SchemeIdentity {
+    /// A first-party scheme (compile-time-known variant).
+    Typed(SchemeKind),
+    /// A scheme identified by its pattern name (typically a plugin scheme
+    /// whose [`SchemeKind`] is not in the first-party enum).
+    Named(CompactString),
+}
+
+impl std::fmt::Display for SchemeIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Typed(k) => std::fmt::Display::fmt(k, f),
+            Self::Named(n) => f.write_str(n.as_str()),
+        }
+    }
+}
+
 /// Scheme mismatch between what a consumer expects and what is present.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct SchemeMismatch {
-    expected: SchemeKind,
-    actual: SchemeKind,
+    expected: SchemeIdentity,
+    actual: SchemeIdentity,
 }
 
 impl SchemeMismatch {
-    /// Construct a new `SchemeMismatch`.
+    /// Construct from typed [`SchemeKind`] sides (first-party schemes).
     pub fn new(expected: SchemeKind, actual: SchemeKind) -> Self {
-        Self { expected, actual }
+        Self {
+            expected: SchemeIdentity::Typed(expected),
+            actual: SchemeIdentity::Typed(actual),
+        }
+    }
+
+    /// Construct from pattern-name strings (used by the snapshot layer
+    /// which only knows plugin schemes by name).
+    pub fn by_name(expected: impl Into<CompactString>, actual: impl Into<CompactString>) -> Self {
+        Self {
+            expected: SchemeIdentity::Named(expected.into()),
+            actual: SchemeIdentity::Named(actual.into()),
+        }
     }
 
     /// The scheme the consumer expected.
-    pub fn expected(&self) -> SchemeKind {
-        self.expected
+    pub fn expected(&self) -> &SchemeIdentity {
+        &self.expected
     }
 
     /// The scheme that was actually present.
-    pub fn actual(&self) -> SchemeKind {
-        self.actual
+    pub fn actual(&self) -> &SchemeIdentity {
+        &self.actual
     }
 }
 
@@ -454,9 +495,12 @@ pub enum CredentialError {
     #[error("credential does not support interactive flows")]
     NotInteractive,
 
-    /// Scheme type mismatch between credential and resource.
+    /// Scheme type mismatch between credential and resource. Boxed
+    /// because the inner `SchemeMismatch` now carries `SchemeIdentity`
+    /// variants that may hold a [`CompactString`] (plugin scheme name)
+    /// — keeping it inline would push the enum past the 32-byte cap.
     #[error("scheme mismatch: {0}")]
-    SchemeMismatch(SchemeMismatch),
+    SchemeMismatch(Box<SchemeMismatch>),
 
     /// Invalid input from user (parameter values).
     #[error("invalid input: {0}")]
@@ -636,6 +680,8 @@ pub type Result<T> = std::result::Result<T, CredentialError>;
 //
 // Largest payload is `InvalidInput(String)` = 24B; with discriminant ≤ 32B.
 // The assert is the enforcement — if it fires, box the fat variant.
+// `size_of` is in the Rust 2024 prelude (RFC 3458, stable since 1.80) so
+// qualifying it triggers `-W unused-qualifications`. Keep unqualified.
 static_assertions::const_assert!(size_of::<CredentialError>() <= 32);
 
 #[cfg(test)]
@@ -706,10 +752,10 @@ mod tests {
 
     #[test]
     fn scheme_mismatch_error() {
-        let err = CredentialError::SchemeMismatch(SchemeMismatch::new(
+        let err = CredentialError::SchemeMismatch(Box::new(SchemeMismatch::new(
             SchemeKind::SecretToken,
             SchemeKind::ConnectionUri,
-        ));
+        )));
         assert!(err.to_string().contains("SecretToken"));
         assert!(err.to_string().contains("ConnectionUri"));
     }

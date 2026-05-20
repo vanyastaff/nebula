@@ -26,6 +26,11 @@ use nebula_schema::{FieldValues, Schema};
     note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
 )]
 pub use crate::scheme::oauth2::AuthStyle;
+// guard-justified: re-export block intentionally bridges deprecated
+// `oauth2_config` paths for downstream API consumers still importing
+// from this submodule; the inner items themselves are NOT deprecated,
+// only the legacy `AuthStyle` constant on `oauth2_config` is, and the
+// deprecation surfaces at the caller's import site, not here.
 #[allow(deprecated)]
 pub use oauth2_config::{
     AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,

@@ -207,8 +207,8 @@ pub use crate::{
     error::{
         CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
         ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,
-        RevokeErrorKind, RevokeFailedContext, SchemeKind, SchemeMismatch, SecretFreeMessage,
-        ValidationError,
+        RevokeErrorKind, RevokeFailedContext, SchemeIdentity, SchemeKind, SchemeMismatch,
+        SecretFreeMessage, ValidationError,
     },
     event::CredentialEvent,
     ext::HasCredentialsExt,
