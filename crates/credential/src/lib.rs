@@ -173,8 +173,9 @@ pub use provider::{
 // Pruned 2026-04-24: FederatedAssertion (Plane A), OtpSeed + ChallengeSecret
 // (integration-internal, не projected auth material).
 pub use scheme::{
-    AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
-    KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
+    AuthPattern, AuthScheme, AuthStyle, Certificate, ConnectionUri, IdentityPassword,
+    InstanceBinding, KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey,
+    SigningKey,
 };
 // credential secrecy secret-handling primitives — crypto, guard, zeroizing wrappers,
 // scheme-guard refresh surface (§15.7). The refresh-notification hook

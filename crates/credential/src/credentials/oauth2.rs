@@ -12,11 +12,24 @@ use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
 use nebula_schema::{FieldValues, Schema};
-// Re-exports for backward compatibility with `credentials::oauth2::` paths
-// used by external crates (nebula-api, nebula-storage).
+// Re-exports for backward compatibility with `credentials::oauth2::` paths.
+// `AuthStyle` now lives in `scheme::oauth2`; re-exported here under the
+// deprecated shim so the old import path still resolves during migration.
+// Other config types remain in `oauth2_config`.
+// guard-justified: suppress deprecated warning on the deprecated re-export within the same crate's migration shim
+/// OAuth2 client authentication style.
+///
+/// Moved to [`crate::scheme::oauth2::AuthStyle`]. This re-export keeps the
+/// `credentials::oauth2::AuthStyle` path alive during migration (deprecated).
+#[deprecated(
+    since = "0.1.0",
+    note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
+)]
+pub use crate::scheme::oauth2::AuthStyle;
+#[allow(deprecated)]
 pub use oauth2_config::{
-    AuthCodeBuilder, AuthStyle, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType,
-    OAuth2Config, PkceMethod,
+    AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
+    PkceMethod,
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;

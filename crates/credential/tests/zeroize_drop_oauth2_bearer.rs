@@ -13,10 +13,7 @@
 //!
 //! See `credential invariants doc (credential invariants credential invariants)` §4.
 
-use nebula_credential::{
-    SecretString,
-    credentials::{OAuth2State, oauth2::AuthStyle},
-};
+use nebula_credential::{AuthStyle, SecretString, credentials::OAuth2State};
 
 #[test]
 fn secret_string_zeroize_runs() {
