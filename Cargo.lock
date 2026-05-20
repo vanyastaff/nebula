@@ -1400,6 +1400,7 @@ dependencies = [
  "cfg-if",
  "itoa",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 
