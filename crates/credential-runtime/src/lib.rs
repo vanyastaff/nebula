@@ -20,6 +20,7 @@ pub mod dispatch;
 pub mod error;
 pub mod observer;
 pub mod ops;
+pub mod registration;
 pub mod scope;
 pub mod service;
 pub mod state_source;
@@ -39,6 +40,7 @@ pub use ops::{
     DispatchOps, register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
     register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
+pub use registration::{RegistrationError, register_credential_complete};
 pub use scope::{FixedScopeResolver, TenantScope};
 pub use service::{
     Acquisition, CredentialService, CredentialTypeInfo, LayeredStore, TestReport, TypeCapabilities,
