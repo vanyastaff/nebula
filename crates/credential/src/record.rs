@@ -12,9 +12,6 @@
 //! `nebula_storage::rows::CredentialRow` is the **persisted row** representation.
 //! They are intentionally distinct types owned by different crates (domain
 //! vs persistence) and may diverge as storage schemas evolve.
-//!
-//! See spec 2026-04-17-rename-credential-metadata-description.md and
-//! follow-up task "Evaluate CredentialRecord placement".
 
 use std::collections::HashMap;
 

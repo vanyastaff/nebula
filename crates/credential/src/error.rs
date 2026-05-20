@@ -134,18 +134,6 @@ pub enum CredentialError {
         source: Box<dyn std::error::Error + Send + 'static>,
     },
 
-    /// Credential composition not available (no resolver in context).
-    #[error("credential composition not available")]
-    CompositionNotAvailable,
-
-    /// Composed credential resolution failed.
-    #[error("composition failed: {source}")]
-    CompositionFailed {
-        /// Underlying cause.
-        #[source]
-        source: Box<dyn std::error::Error + Send + 'static>,
-    },
-
     /// Scheme type mismatch between credential and resource.
     #[error("scheme mismatch: expected {expected}, got {actual}")]
     SchemeMismatch {
@@ -308,8 +296,6 @@ impl nebula_error::Classify for CredentialError {
             Self::InvalidInput(_) => nebula_error::ErrorCategory::Validation,
             Self::RefreshFailed { .. } => nebula_error::ErrorCategory::External,
             Self::RevokeFailed { .. } => nebula_error::ErrorCategory::External,
-            Self::CompositionNotAvailable => nebula_error::ErrorCategory::Internal,
-            Self::CompositionFailed { .. } => nebula_error::ErrorCategory::External,
             Self::SchemeMismatch { .. } => nebula_error::ErrorCategory::Validation,
             Self::Resolution { source } => nebula_error::Classify::category(source),
         }
@@ -324,12 +310,6 @@ impl nebula_error::Classify for CredentialError {
             Self::InvalidInput(_) => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
             Self::RefreshFailed { .. } => nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED"),
             Self::RevokeFailed { .. } => nebula_error::ErrorCode::new("CREDENTIAL:REVOKE_FAILED"),
-            Self::CompositionNotAvailable => {
-                nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_UNAVAILABLE")
-            },
-            Self::CompositionFailed { .. } => {
-                nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_FAILED")
-            },
             Self::SchemeMismatch { .. } => {
                 nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH")
             },
@@ -347,8 +327,6 @@ impl nebula_error::Classify for CredentialError {
             ),
             Self::InvalidInput(_)
             | Self::RevokeFailed { .. }
-            | Self::CompositionNotAvailable
-            | Self::CompositionFailed { .. }
             | Self::SchemeMismatch { .. }
             | Self::Resolution { .. } => false,
         }

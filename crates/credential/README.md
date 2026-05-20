@@ -197,7 +197,6 @@ See `docs/MATURITY.md` row for `nebula-credential`.
 
 - API stability: `frontier` — Phase 5 / M6 trait shape lands `type Properties` (replacing `type Input`) and shifts schema ownership to typed companion structs (2026-04-29). П1 trait scaffolding (capability sub-trait split, sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` / `SchemeFactory` refresh hook, capability-from-type) preserved. 9 scheme types, store contract, and secret primitives implemented. Runtime resolver/registry/executor in `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving.
 - `#![forbid(unsafe_code)]` enforced.
-- Known gap: `CredentialRecord` placement is tracked for potential movement (see comment in `src/record.rs`); no canon revision required.
 
 ## Related
 
