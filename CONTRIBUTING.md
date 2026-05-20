@@ -1,3 +1,7 @@
+<!--
+# budget-justified: human contributor onboarding doc with table-driven reference sections (toolchain matrix, command matrix, schema-style standards lists) intentionally exceeds the structural-block cap
+-->
+
 # Contributing to Nebula
 
 Thanks for considering a contribution. Nebula is a Rust workflow automation
