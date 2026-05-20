@@ -343,9 +343,9 @@ impl RecoveryGate {
 
     /// Returns the backoff that would be imposed if the attempt with the
     /// given 1-based index were to fail transiently. Mirrors the internal
-    /// [`compute_backoff`] formula so callers can publish a truthful
-    /// expected delay in [`ResourceEvent::RetryAttempt`] without
-    /// reimplementing the math.
+    /// `compute_backoff` formula (`base * 2^(attempt - 1)`, capped at 5
+    /// minutes) so callers can publish a truthful expected delay in
+    /// [`ResourceEvent::RetryAttempt`] without reimplementing the math.
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
         compute_backoff(self.inner.base_backoff, attempt)
     }
