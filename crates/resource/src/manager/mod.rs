@@ -199,41 +199,39 @@
 //! The topology collapse + cross-tenant-barrier + latent-bug closure that
 //! produced this module deliberately did **not** fix every issue it
 //! surfaced. This ledger is the durable record of what was consciously left
-//! for separate work, so nothing is silently inherited once the originating
-//! plan is gone. Every item is also filed as a tracked issue (linked); this
-//! ledger is the in-tree index, not the sole record. Severity is the item's
-//! own risk, independent of when it is scheduled.
+//! for separate work, so nothing is silently inherited. Severity is the
+//! item's own risk, independent of when it is scheduled.
 //!
 //! ## Latent bugs surfaced but out of scope
 //!
-//! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH**
-//!   ([#712]). `reload_config` swaps the config `ArcSwap` (and the Pool
+//! - **`reload_config` never drains/rebuilds the live runtime — MED-HIGH.**
+//!   `reload_config` swaps the config `ArcSwap` (and the Pool
 //!   fingerprint) but never drains in-flight work or rebuilds the
 //!   caller-supplied live `Arc<R::Runtime>` for any topology, so a reload
 //!   that should rotate the running runtime is silently not applied to it.
 //!   Deferred because the reload redesign (drain-then-rebuild + a truthful
 //!   outcome contract) is a separate concern; see the **accepted relabel**
 //!   note below for why this is a preserved no-op, not a regression.
-//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED** ([#713]).
+//! - **Pool `CreateGuard` cancel-drop leaks the runtime — MED.**
 //!   A *cancelled* acquire whose in-flight `create` already built a runtime
 //!   drops it synchronously without the async `destroy()`, leaking the
 //!   server-side handle. (The *other* `CreateGuard` race — an in-flight
 //!   create completing *after a revoke* — is the same isolation defect as
 //!   the revoke→recycle TOCTOU and **was fixed** by the pooled revoke-epoch
 //!   fence; only the cancelled-acquire leak remains.)
-//! - **Resident recreate `take()`+destroy-under-lock vs dispatch — MED**
-//!   ([#714]). The resident recreate clears the slot then destroys under the
+//! - **Resident recreate `take()`+destroy-under-lock vs dispatch — MED.**
+//!   The resident recreate clears the slot then destroys under the
 //!   lock; a concurrent revoke/refresh dispatch in that window can run
 //!   against the absent/old runtime, losing the revoke for that window.
 //!   Resident internals, out of the collapse seam.
 //! - **`graceful_shutdown` phase-4 detached workers can outlive
-//!   `release_queue_timeout` — LOW** ([#715]). The timeout bounds the wait,
+//!   `release_queue_timeout` — LOW.** The timeout bounds the wait,
 //!   not the detached release work; it eventually drains. shutdown.rs was
 //!   not opened by the collapse.
-//! - **`RecoveryTicket` Drop counts a panicked probe as an attempt — LOW**
-//!   ([#716]). A defensible-but-untested default; recovery internals.
+//! - **`RecoveryTicket` Drop counts a panicked probe as an attempt — LOW.**
+//!   A defensible-but-untested default; recovery internals.
 //!
-//! ## Separable acquire-path perf micro-folds — LOW ([#717])
+//! ## Separable acquire-path perf micro-folds — LOW
 //!
 //! The collapse took only the perf wins **inseparable** from it (one
 //! generic acquire pipeline instead of five byte-identical ones; a single
@@ -246,19 +244,18 @@
 //! regardless; any ordering tuning is a separate reviewed change with a
 //! re-stated memory-model proof.
 //!
-//! ## Cross-crate dedup / layer placement — LOW ([#718])
+//! ## Cross-crate dedup / layer placement — LOW
 //!
-//! Cross-layer type relocation was explicitly out of scope (no ADR in this
-//! work). Deferred: `ErrorKind` ≈ `nebula_error::ErrorCategory`
-//! reconciliation; hardcoded acquire backoff vs
-//! `nebula_resilience::BackoffConfig`; relocating the live `RecoveryGate` +
-//! `ReleaseQueue` to `nebula-resilience`; `events.rs` raw `broadcast` →
-//! `nebula_eventbus::EventBus`; unifying `CreateGuard`/`SessionGuard` into
-//! one `DefuseGuard<T>`; revisiting the `register_resolved` JSON/`{{ }}`
-//! expression coupling and its engine-ABI positional shape (see the
-//! accepted-exception note below).
+//! Cross-layer type relocation was explicitly out of scope. Deferred:
+//! `ErrorKind` ≈ `nebula_error::ErrorCategory` reconciliation; hardcoded
+//! acquire backoff vs `nebula_resilience::BackoffConfig`; relocating the
+//! live `RecoveryGate` + `ReleaseQueue` to `nebula-resilience`;
+//! `events.rs` raw `broadcast` → `nebula_eventbus::EventBus`; unifying
+//! `CreateGuard`/`SessionGuard` into one `DefuseGuard<T>`; revisiting the
+//! `register_resolved` JSON/`{{ }}` expression coupling and its engine-ABI
+//! positional shape (see the accepted-exception note below).
 //!
-//! ## Further `Manager` code-line reduction — LOW ([#719])
+//! ## Further `Manager` code-line reduction — LOW
 //!
 //! `crates/resource/src/manager/mod.rs` is 2552 lines: ~1224 comment/doc,
 //! ~117 blank, ~1211 code. The structural de-spaghettification root-cause
@@ -284,50 +281,30 @@
 //!   `ReloadOutcome::SwappedImmediately` for every variant. This is **only
 //!   an enum label change**: `reload_config` never drained or rebuilt the
 //!   live runtime for that topology under either label (that missing
-//!   behavior is exactly [#712]). A characterization net pins the
-//!   per-topology `reload_config` outcome so the relabel is auditable as a
-//!   preserved no-op, not a silent behavior change. The now-unreachable
-//!   draining variant was removed from `ReloadOutcome` once that net
-//!   landed.
+//!   behavior is the deferred `reload_config` redesign listed above). A
+//!   characterization net pins the per-topology `reload_config` outcome
+//!   so the relabel is auditable as a preserved no-op, not a silent
+//!   behavior change. The now-unreachable draining variant was removed
+//!   from `ReloadOutcome` once that net landed.
 //! - **`register_resolved` carries one `// guard-justified:`
 //!   `#[allow(clippy::too_many_arguments)]`.** The four register-chain
 //!   `too_many_arguments` allows the collapse targeted are gone; this last
 //!   one is the irreducible engine ABI — the production engine registrar
 //!   dispatches into `register_resolved` positionally with an 8-param
-//!   JSON-driven shape (down from 9 after `AcquireResilience` was dropped
-//!   manager-side; see commit `cf93e45b`), and collapsing it into a struct would re-introduce
-//!   the navigation hop the single register funnel removed for the one
-//!   erased call site. It is a candidate for the cross-crate-dedup
-//!   follow-up ([#718]), not a defect. (The three `too_many_arguments`
-//!   allows in `runtime/pool.rs` are pre-existing pool internals untouched
-//!   by this work.)
-//! - **R15/R16 cross-tenant fixes were latent, not live.** The original
-//!   64-bit `DefaultHasher` barrier defect ([#684], **closed** —
-//!   structurally fixed here via the collision-free `SlotIdentity`
-//!   structural set) and the pooled revoke→recycle TOCTOU were not
-//!   reachable in production (this crate is `frontier`; there is no
-//!   production credential→slot resolver), which is why seam-coupled
-//!   remediation was acceptable over a standalone hotfix.
-//!
-//! ## Consumer-migration history (honest record)
-//!
-//! The expand-contract migration of in-tree consumers initially named, but
-//! did **not** migrate, the three `m6_*` example binaries
-//! (`m6_postgres_pool`, `m6_resident_http`, `m6_telegram_multi_workflow`);
-//! they were migrated to `RegistrationSpec` / the structural `SlotIdentity`
-//! in a later, separately-committed step before the old surface was
-//! deleted. Recorded so the migration history is not misread as
-//! single-step.
-//!
-//! [#684]: https://github.com/vanyastaff/nebula/issues/684
-//! [#712]: https://github.com/vanyastaff/nebula/issues/712
-//! [#713]: https://github.com/vanyastaff/nebula/issues/713
-//! [#714]: https://github.com/vanyastaff/nebula/issues/714
-//! [#715]: https://github.com/vanyastaff/nebula/issues/715
-//! [#716]: https://github.com/vanyastaff/nebula/issues/716
-//! [#717]: https://github.com/vanyastaff/nebula/issues/717
-//! [#718]: https://github.com/vanyastaff/nebula/issues/718
-//! [#719]: https://github.com/vanyastaff/nebula/issues/719
+//!   JSON-driven shape (down from 9 after the `AcquireResilience` wrapper
+//!   was dropped manager-side), and collapsing it into a struct would
+//!   re-introduce the navigation hop the single register funnel removed
+//!   for the one erased call site. It is a candidate for the
+//!   cross-crate-dedup follow-up, not a defect. (The three
+//!   `too_many_arguments` allows in `runtime/pool.rs` are pre-existing
+//!   pool internals untouched by this work.)
+//! - **Cross-tenant fixes were latent, not live.** The original 64-bit
+//!   `DefaultHasher` barrier defect (structurally fixed here via the
+//!   collision-free `SlotIdentity` structural set) and the pooled
+//!   revoke→recycle TOCTOU were not reachable in production (this crate is
+//!   `frontier`; there is no production credential→slot resolver), which
+//!   is why seam-coupled remediation was acceptable over a standalone
+//!   hotfix.
 
 use std::{
     future::Future,
@@ -661,7 +638,14 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// Returns an error if config validation fails on the provided config.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if
+    ///   [`ResourceConfig::validate`](crate::ResourceConfig::validate)
+    ///   returns an error on the provided config.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if
+    ///   the supplied [`TopologyRuntime`] variant does not match the
+    ///   resource's topology trait (e.g., `TopologyRuntime::Pool` for a
+    ///   `Resource` that does not implement
+    ///   [`Pooled`](crate::topology::pooled::Pooled)).
     pub fn register<R: Resource>(&self, spec: RegistrationSpec<R>) -> Result<(), Error> {
         use crate::resource::ResourceConfig as _;
 
@@ -677,17 +661,15 @@ impl Manager {
 
         config.validate()?;
 
-        // #390 (pool min/max sanity) is enforced at `PoolRuntime`
-        // construction, which the caller has already invoked to build the
+        // Pool min/max sanity is enforced at `PoolRuntime` construction,
+        // which the caller has already invoked to build the
         // `TopologyRuntime::Pool` handed in here. No separate
         // register-time pool-config check is needed: an invalid
         // `(min_size, max_size)` from operator/JSON config is rejected by
         // the fallible `PoolRuntime::try_new` (typed `Error::permanent`)
         // that the engine registrar uses to construct the runtime, so the
         // failure surfaces *before* this funnel as a registration error
-        // rather than an abort. (The deleted `register_pooled[_with]`
-        // shorthands re-validated the raw config only because they took
-        // it *before* building the runtime.)
+        // rather than an abort.
 
         let key = R::key();
 
@@ -870,7 +852,7 @@ impl Manager {
     ///
     /// `nebula-resource → nebula-expression` is allowed under deny.toml's
     /// `[[bans]]` `nebula-resource` wrapper allowlist (Business → Core layer
-    /// edge per typed ref fields / Phase 9, R-040 R8).
+    /// edge per typed ref fields).
     ///
     /// # Errors
     ///
@@ -1866,7 +1848,18 @@ impl Manager {
     ///   [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)
     ///   when the resolved slot identity is known; this identity-agnostic
     ///   path stays fail-closed for the no-identity caller.
-    /// - Propagates pool-specific acquire errors.
+    /// - Propagates pool-specific acquire errors
+    ///   ([`Backpressure`](crate::error::ErrorKind::Backpressure) on
+    ///   semaphore exhaustion, [`Transient`](crate::error::ErrorKind::Transient)
+    ///   on `Resource::create` failure, etc.).
+    ///
+    /// # Cancellation
+    ///
+    /// Cancel-safe: a cancelled acquire (`ctx.cancel_token()` fired, or
+    /// the manager-wide cancel token cancelled) decrements both the
+    /// manager-wide drain tracker and the per-resource in-flight counter
+    /// via `InFlightCounter`'s `Drop` impl before returning, so no
+    /// in-flight runtime is leaked.
     pub async fn acquire_pooled<R>(
         &self,
         ctx: &ResourceContext,
@@ -2093,9 +2086,19 @@ impl Manager {
     ///
     /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
     ///   registered.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
     /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
     ///   resident topology.
-    /// - Propagates resident-specific acquire errors.
+    /// - Propagates resident-specific acquire errors (notably
+    ///   [`Transient`](crate::error::ErrorKind::Transient) on first-acquire
+    ///   `Resource::create` failure).
+    ///
+    /// # Cancellation
+    ///
+    /// Cancel-safe in the same way as
+    /// [`acquire_pooled`](Self::acquire_pooled): both drain trackers are
+    /// decremented via RAII before returning, no runtime leaks.
     pub async fn acquire_resident<R>(
         &self,
         ctx: &ResourceContext,
@@ -2215,7 +2218,16 @@ impl Manager {
     ///   bounded topology.
     /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) if more
     ///   than one resolved-credential registration exists for `(R, scope)`.
-    /// - Propagates the cap's acquire errors (permit timeout / closed).
+    /// - Propagates the cap's acquire errors
+    ///   ([`Backpressure`](crate::error::ErrorKind::Backpressure) on
+    ///   permit timeout, [`Cancelled`](crate::error::ErrorKind::Cancelled)
+    ///   on closed semaphore).
+    ///
+    /// # Cancellation
+    ///
+    /// Cancel-safe in the same way as
+    /// [`acquire_pooled`](Self::acquire_pooled): both drain trackers are
+    /// decremented via RAII before returning.
     pub async fn acquire_bounded<R>(
         &self,
         ctx: &ResourceContext,
@@ -2464,7 +2476,7 @@ impl Manager {
         // the honest outcome is `SwappedImmediately` for every variant: the
         // config is swapped, the live runtime is not rebuilt. The genuine
         // "drain + rebuild the live runtime on reload" behavior is the
-        // separately-tracked deferred `reload_config` redesign ([#712]).
+        // separately-tracked deferred `reload_config` redesign.
         let outcome = ReloadOutcome::SwappedImmediately;
 
         tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");

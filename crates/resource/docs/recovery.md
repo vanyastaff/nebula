@@ -157,52 +157,20 @@ let gate = groups.get_or_create(
 
 ---
 
-## WatchdogHandle
+## Background health probes
 
-Opt-in background health probe. Spawns a Tokio task that runs a
-user-supplied async `check_fn` on a fixed interval. After
-`failure_threshold` consecutive failures it calls
-`on_health_change(false)`; after `recovery_threshold` consecutive
-successes it calls `on_health_change(true)`.
-
-```rust,ignore
-use std::time::Duration;
-use nebula_resource::{WatchdogConfig, WatchdogHandle};
-use tokio_util::sync::CancellationToken;
-
-let parent_cancel = CancellationToken::new();
-
-let handle = WatchdogHandle::start(
-    WatchdogConfig {
-        interval: Duration::from_secs(30),
-        probe_timeout: Duration::from_secs(5),
-        failure_threshold: 3,    // 3 consecutive failures → unhealthy
-        recovery_threshold: 1,   // 1 success → healthy again
-    },
-    || async {
-        // Your async probe — return Result<(), nebula_resource::Error>.
-        Ok(())
-    },
-    |healthy| {
-        tracing::info!(healthy, "watchdog health transition");
-    },
-    parent_cancel,
-);
-
-// Graceful stop (awaits the background task):
-handle.stop().await;
-// Or cancel-on-drop (does NOT await):
-drop(handle);
-```
-
-The `parent_cancel` token lets the watchdog participate in tree-style
-shutdown — the task exits as soon as the parent is cancelled.
+`nebula-resource` does **not** ship a built-in background health-probe
+type. If you need one, drive `Resource::check()` from a `tokio::spawn`
+loop in your application code or compose
+[`nebula-resilience`](../../resilience/README.md)'s health-probe layer.
+The manager publishes `ResourceEvent::HealthChanged` whenever it
+observes a transition, so consumers can react without polling.
 
 ---
 
 ## Differences from v1
 
-- **No `HealthChecker`** — use `Resource::check()` directly or `WatchdogHandle`
-- **No `QuarantineManager`** — replaced by `RecoveryGate` (simpler, CAS-based)
-- **No `HealthState` enum** — health is a `bool` (healthy/unhealthy)
-- **No `HealthPipeline`** — multi-stage checks removed
+- **No `HealthChecker`** — drive `Resource::check()` directly.
+- **No `QuarantineManager`** — replaced by `RecoveryGate` (simpler, CAS-based).
+- **No `HealthState` enum** — health is a `bool` (healthy/unhealthy).
+- **No `HealthPipeline`** — multi-stage checks removed.

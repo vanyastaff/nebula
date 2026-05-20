@@ -161,7 +161,7 @@ The Phase 5 break renames `type Input` → `type Properties` and shifts schema o
 
 ## Runnable examples
 
-- `cargo run -p nebula-examples --example m6_resident_http` — credential refresh hook on a Resident-topology HTTP client (OAuth2-style)
+- `cargo run -p nebula-examples --example resource_resident_http` — credential refresh hook on a Resident-topology HTTP client (OAuth2-style)
 
 ## Contract
 

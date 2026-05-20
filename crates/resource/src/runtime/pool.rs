@@ -657,16 +657,14 @@ where
     /// Creates a new pool entry via `resource.create()`.
     ///
     /// All creation goes through this funnel and is gated on
-    /// `create_semaphore` (#390) so a burst of acquires cannot stampede
+    /// `create_semaphore` so a burst of acquires cannot stampede
     /// a fragile backend with `max_size` parallel connects. The permit
     /// is released as soon as `Resource::create` returns.
     ///
     /// The whole path — permit wait + `resource.create` — shares a
     /// single `create_timeout` budget. Both the create semaphore wait
     /// and the actual create are bounded by the remaining budget so a
-    /// slow-creating backend cannot stall callers forever (also raised
-    /// in PR #399 review: the create-semaphore acquire used to be
-    /// unbounded).
+    /// slow-creating backend cannot stall callers forever.
     ///
     /// When `non_blocking` is `true` (the `try_acquire` path), the
     /// create-semaphore wait is replaced with a `try_acquire_owned`
@@ -920,7 +918,7 @@ where
 
         // No idle instance — create a new one. The `true` flag keeps
         // the non-blocking contract: if the create semaphore is full,
-        // we return Backpressure instead of waiting (PR #399 review).
+        // we return Backpressure instead of waiting.
         let entry = match self
             .create_entry(resource, resource_config, ctx, true)
             .await

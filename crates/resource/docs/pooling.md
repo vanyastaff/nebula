@@ -32,7 +32,7 @@ PoolRuntime<R>
   └── waiters:    AtomicUsize
 ```
 
-**Acquire** (`Manager::acquire_pooled` / `acquire_pooled_default`):
+**Acquire** (`Manager::acquire_pooled`, or `acquire_pooled_for_identity` for credential-bound routes):
 
 1. Atomically increment waiter count (RAII counter).
 2. Acquire one semaphore permit (waits up to the resilience-supplied timeout).
@@ -154,8 +154,9 @@ pub enum WarmupStrategy {
 
 - `None` — first acquire pays the cold-start cost. Cheapest, slowest first
   request.
-- `Sequential` — `min_size` instances created back-to-back during
-  `Manager::register_pooled*`. Predictable startup latency.
+- `Sequential` — `min_size` instances created back-to-back at the first
+  `Manager::acquire_pooled` (or via the warmup hook on the pool runtime).
+  Predictable startup latency.
 - `Parallel` — fastest warmup but spikes connection count; verify the
   backend tolerates it.
 - `Staggered { interval }` — connection rate-limited startup. Use when the
@@ -312,10 +313,10 @@ PoolConfig {
 
 Per-acquire timeout / retry composes one layer up (action handler /
 engine activity / caller-supplied `nebula-resilience` pipeline) — the
-manager-side `AcquireResilience` wrapper was removed in commit
-`cf93e45b` (peer Rust pools — sqlx, deadpool, bb8 — all ship
-acquire-timeout only). Acquire-timeout itself lives on the topology
-config (`create_timeout` field on the pool config).
+manager-side `AcquireResilience` wrapper was removed (peer Rust pools
+— sqlx, deadpool, bb8 — all ship acquire-timeout only). Acquire-timeout
+itself lives on the topology config (`create_timeout` field on the pool
+config).
 
 `RecoveryGate` is the remaining manager-level resilience seam: a
 CAS-based single-probe admission that prevents thundering-herd against

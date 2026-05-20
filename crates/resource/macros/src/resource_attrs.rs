@@ -1,4 +1,4 @@
-//! Parsed `#[resource(...)]` attributes for the Phase 4 / slot model
+//! Parsed `#[resource(...)]` attributes for the slot-model
 //! `#[derive(Resource)]`.
 
 use nebula_macro_support::{attrs, diag};
@@ -87,8 +87,7 @@ impl ResourceAttrs {
         let config = attr_args.get_type("config")?.ok_or_else(|| {
             diag::error_spanned(
                 struct_name,
-                "missing required attribute `config = SomeType` \
-                 — Phase 4 requires Self::Config to be specified",
+                "missing required attribute `config = SomeType`",
             )
         })?;
 

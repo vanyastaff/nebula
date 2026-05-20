@@ -19,11 +19,12 @@ An adapter crate owns three things:
 2. A **resource struct** — implements `Resource` with four associated
    types (`Config`, `Runtime`, `Lease`, `Error`) plus the lifecycle
    methods. The factory.
-3. A **topology impl** — `Pooled`, `Resident`, `Service`, `Transport`,
-   or `Exclusive`. Most database adapters use `Pooled`.
+3. A **topology impl** — [`Pooled`], [`Resident`], or [`Bounded`] (with
+   a sealed `Cap` typestate: `Unbounded` / `Capped<N>` / `Exclusive`).
+   Most database adapters use `Pooled`; HTTP clients use `Resident`;
+   OAuth / gRPC / file-lock patterns use `Bounded` with the matching cap.
 
-**Credential binding (ADR-0044, amended by ADR-0067).** If your resource
-binds to a credential, declare a slot field
+**Credential binding.** If your resource binds to a credential, declare a slot field
 `#[credential(key = "...")] auth: SlotCell<CredentialGuard<C>>` and read the
 resolved guard via the derive-emitted `self.auth_slot()` accessor inside
 `create` (and the rotation hooks). Connection-bound resources override
@@ -317,13 +318,13 @@ fn on_credential_refresh(
 
 ## Step 4: Pick and Implement Topology
 
-| Topology    | Use when                                                                              |
-|-------------|---------------------------------------------------------------------------------------|
-| `Pooled`    | Stateful connections (DBs, gRPC channels). N instances, one-at-a-time checkout.       |
-| `Resident`  | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). Cloned on acquire. |
-| `Service`   | Token-bounded shared clients with `TokenMode` admission. Rate-limited service clients. |
-| `Transport` | Connection-oriented — hands out a frame channel per acquire (e.g., long-lived TCP).    |
-| `Exclusive` | Mutex-style — one acquirer at a time, no internal pooling.                            |
+| Topology               | Use when                                                                                                  |
+|------------------------|-----------------------------------------------------------------------------------------------------------|
+| `Pooled`               | Stateful connections (DBs, gRPC channels). N instances, one-at-a-time checkout.                           |
+| `Resident`             | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). `Arc::clone` on acquire.             |
+| `Bounded<Unbounded>`   | Token-gated services (OAuth, fan-out APIs). Long-lived runtime, no per-acquire release.                   |
+| `Bounded<Capped<N>>`   | Multiplexed sessions over one shared connection (SSH, gRPC channel). Tracked release via `BoundedRelease`. |
+| `Bounded<Exclusive>`   | Mutex-style — one acquirer at a time, reset-on-release ordering.                                          |
 
 ### Pooled implementation
 
@@ -379,10 +380,10 @@ credential.
 Registration goes through **one funnel**:
 `Manager::register::<R>(spec: RegistrationSpec<R>)`. The per-topology
 `register_<topo>[_with]` shorthands and the multi-step delegation chain
-were removed (commit `cf93e45b` dropped the manager-side
-`AcquireResilience` wrapper; the `register_*` shorthand family
-followed). `RegistrationSpec<R>` is a plain struct with public fields
-and no builder.
+were removed (the manager-side `AcquireResilience` wrapper was
+dropped; the `register_*` shorthand family followed).
+`RegistrationSpec<R>` is a plain struct with public fields and no
+builder.
 
 For the multi-tenant case, pin distinct resolved credentials to
 distinct registry rows by building a `SlotIdentity::Structural` (via

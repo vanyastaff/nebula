@@ -1,4 +1,4 @@
-//! `#[derive(Resource)]` macro implementation — Phase 4 / slot model.
+//! `#[derive(Resource)]` macro implementation — slot model.
 //!
 //! Emits:
 //! - `impl Resource for Foo` with `key()` returning the `#[resource(key = ...)]` value, and the

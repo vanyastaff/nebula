@@ -1,7 +1,7 @@
-//! Phase 9 / Task 9.2 — `Manager::register_from_value` JSON-driven registration with `{{ }}`
+//! `Manager::register_from_value` JSON-driven registration with `{{ }}`
 //! template resolution + schema validation.
 //!
-//! Closes the tail deferred from Phase 4. The flow:
+//! The flow:
 //!
 //!   1. Resolve every `{{ }}` template inside the JSON tree via
 //!      `ExpressionEngine::render_template`.

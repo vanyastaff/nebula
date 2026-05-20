@@ -1,5 +1,5 @@
 //! Compile-fail / compile-pass probes for `#[derive(Resource)]`
-//! (Phase 4 / slot model / M6 closure).
+//! (slot model).
 //!
 //! Each compile-fail probe under `tests/probes/derive_*.rs` exercises one
 //! diagnostic contract of the macro:

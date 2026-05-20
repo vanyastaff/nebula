@@ -4338,8 +4338,8 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
     );
 }
 
-/// R-023 / 🔴-4 regression: `DrainTimeoutPolicy::Abort` must transition
-/// every registered resource to `ResourcePhase::Failed`, **not** restore
+/// Regression: `DrainTimeoutPolicy::Abort` must transition every
+/// registered resource to `ResourcePhase::Failed`, **not** restore
 /// `Ready`. Pre-fix the manager would set the phase back to `Ready` to
 /// "keep the resource acquirable", but the cancel token already rejects
 /// new acquires and `health_check` then lied about lifecycle state.
@@ -4392,7 +4392,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
         "expected DrainTimeout, got {err:?}"
     );
 
-    // R-023 assertion: phase is `Failed`, NOT `Ready`. Pre-fix this
+    // Assertion: phase is `Failed`, NOT `Ready`. Pre-fix this
     // would be `Ready` (the bug). We bypass `health_check` here because
     // it goes through `lookup` which short-circuits on the cancel token
     // post-shutdown; `get_any` reads the type-erased registry entry
@@ -4405,10 +4405,10 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
         phase,
         ResourcePhase::Failed,
         "drain-abort must transition phase to Failed, got {phase:?} \
-         (R-023: Ready would be the pre-fix bug)",
+         (Ready would be the pre-fix bug)",
     );
 
-    // R-023 assertion: per-resource HealthChanged{healthy:false} was
+    // Assertion: per-resource HealthChanged{healthy:false} was
     // emitted. Drain through the channel until we find it (other
     // events like `Registered` and `AcquireSuccess` were also emitted
     // earlier).

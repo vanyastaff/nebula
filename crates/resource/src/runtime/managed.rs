@@ -92,7 +92,7 @@ impl<R: Resource> ManagedResource<R> {
     /// Rebuilds a fresh [`ResourceStatus`] from the latest snapshot,
     /// copying the current generation across and preserving `last_error`.
     /// Used by the manager to drive phase transitions on register, reload
-    /// and shutdown (#387).
+    /// and shutdown.
     pub(crate) fn set_phase(&self, phase: ResourcePhase) {
         let prev = self.status.load_full();
         let next = ResourceStatus {
@@ -105,7 +105,7 @@ impl<R: Resource> ManagedResource<R> {
 
     /// Replace the lifecycle status with `Failed` and record a reason.
     ///
-    /// Wired by `Manager::set_phase_all_failed` (R-023): when
+    /// Wired by `Manager::set_phase_all_failed`: when
     /// `DrainTimeoutPolicy::Abort` fires we transition every registered
     /// resource to `Failed` so callers cannot subsequently acquire a
     /// resource the manager has already declared bankrupt. Per-resource

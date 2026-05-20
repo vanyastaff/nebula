@@ -1,6 +1,6 @@
 //! Regression tests for the `graceful_shutdown` race with in-flight acquires.
 //!
-//! Pre-existing race surfaced by CodeRabbit's post-fix review on PR #613:
+//! The race:
 //!
 //! Phase 2 of `graceful_shutdown` watches `drain_tracker`, but if an acquire
 //! passes `lookup()` BEFORE the cancel token fires, the acquire can complete

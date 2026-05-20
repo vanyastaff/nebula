@@ -38,9 +38,47 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 
 /// A guard over a leased resource.
 ///
-/// Dereferences to `R::Lease` for ergonomic access. On drop, guarded and
-/// shared guards notify the pool (or release callback) so the lease can
-/// be recycled or destroyed.
+/// Dereferences to [`R::Lease`](Resource::Lease) for ergonomic access. The
+/// guard holds the in-flight reservation: dropping it returns the lease
+/// to its owning topology (recycle / destroy / Arc decrement, per
+/// topology).
+///
+/// # Drop
+///
+/// Drop is the **release pathway** and runs synchronously to:
+///
+/// 1. Decrement the manager-wide drain tracker (unblocks
+///    `Manager::graceful_shutdown` once it hits zero).
+/// 2. Decrement the per-resource in-flight counter (unblocks
+///    `Manager::revoke_slot` draining this row).
+/// 3. Hand the lease back to its owning topology runtime:
+///    - **Pooled** — `Pooled::recycle` is awaited; on `Keep` the
+///      instance returns to the idle queue, on `Drop` it queues a
+///      destroy on the release queue.
+///    - **Resident** — the `Arc` strong-count is decremented; no
+///      per-acquire release work.
+///    - **Bounded** — the semaphore permit is released; if
+///      `BoundedRelease` is implemented, its reset is queued on the
+///      release queue.
+/// 4. Emit
+///    [`ResourceEvent::Released { held, tainted }`](crate::events::ResourceEvent::Released).
+///
+/// Call [`ResourceGuard::taint`] **before** drop to skip recycle and
+/// force destroy on a misbehaving lease.
+///
+/// # Cancellation
+///
+/// Drop runs in any cancellation context, including a cancelled
+/// `tokio::task`. The drop path itself contains no `.await`; any async
+/// work (destroy, `BoundedRelease::reset`) is pushed onto the release
+/// queue which survives task cancellation. **Async release is
+/// best-effort on crash** — see canon §11.4.
+///
+/// # Panics
+///
+/// Drop does not panic. If a release callback the topology runtime
+/// installed panics, the panic is caught and logged via `tracing`;
+/// drain counters are still decremented so shutdown cannot deadlock.
 #[must_use = "dropping a ResourceGuard immediately releases the resource"]
 pub struct ResourceGuard<R: Resource> {
     /// The live lease state. `Some` for the entire lifetime of a usable

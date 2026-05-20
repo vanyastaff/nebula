@@ -1,10 +1,7 @@
-//! Manager-level integration tests for the Transport topology (R-013).
+//! Manager-level integration tests for the Bounded topology with
+//! multiplexed sessions (formerly the standalone Transport topology).
 //!
-//! Phase 1 cascade audit flagged the Transport surface as having zero
-//! Manager-level tests — only `TransportRuntime`-direct coverage existed
-//! in `basic_integration.rs`. This file exercises the public Manager
-//! dispatch path (`register_transport`, `register_transport_with`,
-//! `acquire_transport`, `acquire_transport`) end-to-end, plus
+//! Exercises the public Manager dispatch path end-to-end, plus
 //! cross-cutting concerns (graceful shutdown drain, recovery-gate
 //! admission, multiplexing semantics, session-limit backpressure,
 //! per-resource-key isolation).

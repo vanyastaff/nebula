@@ -1,7 +1,6 @@
-//! M6.3 Phase 10 — Postgres Pool topology example.
+//! Postgres Pool topology example.
 //!
-//! Demonstrates the headline patterns from the M6 dependency redesign for a
-//! database-style resource:
+//! Demonstrates the headline patterns for a database-style resource:
 //!
 //! - **Pool topology** ([`Resource`] + [`Pooled`]) — N interchangeable instances with `is_broken` /
 //!   `recycle` lifecycle hooks.
@@ -18,7 +17,7 @@
 //! ## Run
 //!
 //! ```shell
-//! cargo run -p nebula-examples --example m6_postgres_pool
+//! cargo run -p nebula-examples --example resource_postgres_pool
 //! ```
 //!
 //! ## What it prints
@@ -350,7 +349,7 @@ fn ctx_for_demo() -> ResourceContext {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
-    println!("=== M6.3 Phase 10 — Postgres Pool example ===\n");
+    println!("=== Postgres Pool example ===\n");
 
     // 1. Manager owns the registry. Register a Pool-topology Postgres at the global scope.
     //    Production code would scope to Organization / Project.

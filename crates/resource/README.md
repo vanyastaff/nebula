@@ -15,11 +15,11 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Three topologies cover the full integration space: `Pooled`, `Resident`, and one parameterized `Bounded` whose concurrency cap and release shape are type-enforced via a sealed `Cap` typestate marker (`Unbounded` / `Capped<N>` / `Exclusive`). The `Resource` trait declares four associated types and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` per ADR-0037 — canon §3.5 reserves "Resource" for pool/SDK clients.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Three topologies cover the full integration space: `Pooled`, `Resident`, and one parameterized `Bounded` whose concurrency cap and release shape are type-enforced via a sealed `Cap` typestate marker (`Unbounded` / `Capped<N>` / `Exclusive`). The `Resource` trait declares four associated types and lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
 
-## Public API (v4 — M6 / dependency redesign, 2026-04-29)
+## Public API (v4 — slot-binding pattern, 2026-04-29)
 
-The v4 surface lands per ADR-0044 (supersedes ADR-0036) — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Resource::on_credential_refresh(&self, slot_name, runtime)` with a companion `Resource::on_credential_revoke(&self, slot_name, runtime)`.
+The v4 surface — singular `type Credential` is dropped in favor of typed credential **slot fields** declared via `#[credential(key = "…")]` field attributes on the resource struct. Each slot field is a lock-free `SlotCell<CredentialGuard<C>>` the framework populates and rotates through `&self`; the derive emits a `<field>_slot()` read accessor. Multi-credential resources are now natural; per-slot rotation lands via `Resource::on_credential_refresh(&self, slot_name, runtime)` with a companion `Resource::on_credential_revoke(&self, slot_name, runtime)`.
 
 ### `Resource` trait — 4 associated types, slot fields on Self
 
@@ -54,7 +54,7 @@ pub trait Resource: Send + Sync + 'static {
 }
 ```
 
-**`type Credential` was dropped** per ADR-0044. There is no longer a singular credential associated type; resources declare credentials as slot fields. The opt-out alias `NoCredential` is no longer required — resources without credentials simply have no `#[credential]` fields.
+**`type Credential` was dropped.** There is no longer a singular credential associated type; resources declare credentials as slot fields. The opt-out alias `NoCredential` is no longer required — resources without credentials simply have no `#[credential]` fields.
 
 ### Slot-binding pattern — `#[derive(Resource)]` + `#[credential]` field attrs
 
@@ -113,7 +113,7 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 ### Other public API
 
 - `ResourceGuard` — RAII lease guard with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
-- `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`. New in Phase 1.
+- `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`.
 - `RegistrationSpec` — the single registration param aggregate (see above).
 - `SlotIdentity` — collision-free structural resolved-credential identity (`Unbound` / `Structural`); the cross-tenant barrier.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
@@ -140,7 +140,7 @@ The framework resolves declared `#[credential]` slots **before** invoking `Resou
 
 ## Migration recipe (pre-v4 → v4)
 
-The Phase 4 / ADR-0044 break is hard. To migrate an existing `Resource` impl:
+The slot-binding break is hard. To migrate an existing `Resource` impl:
 
 1. **Drop `type Credential`.** Move the credential dependency to a `#[credential(key = "…")]` slot field of type `SlotCell<CredentialGuard<C>>` on the struct, constructed with `SlotCell::empty()`. Change `Resource::Credential` references to read through the derive-emitted `self.<field>_slot()` accessor.
 2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C>>>`) and handle the `None` (unbound) case explicitly.
@@ -151,13 +151,13 @@ The Phase 4 / ADR-0044 break is hard. To migrate an existing `Resource` impl:
 7. **If you authored a `Service` / `Transport` / `Exclusive` resource**, re-author it onto `Bounded`: implement `Bounded` with the matching `type Cap` (`Unbounded` for the old Cloned/Service shape, `Capped<N>` for tracked/bounded concurrency, `Exclusive` for one-at-a-time), implement `BoundedRelease` if the cap requires a release, and register with `TopologyRuntime::Bounded(BoundedRuntime::new(…))`. Semaphore / reset-ordering / session semantics are preserved.
 8. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 
-The trait-shape changes ship complete; the engine-side fan-out machinery for delivering slot-name rotation events is tracked in `docs/ROADMAP.md`.
+The trait-shape changes ship complete; the engine-side fan-out machinery for delivering slot-name rotation events lands in a follow-up.
 
 ## Runnable examples
 
-- `cargo run -p nebula-examples --example m6_postgres_pool` — `Pooled` topology + `ResourceAction` for per-execution test schema (configure / cleanup ordering)
-- `cargo run -p nebula-examples --example m6_resident_http` — `Resident` topology + OAuth-style credential refresh hook
-- `cargo run -p nebula-examples --example m6_telegram_multi_workflow` — `Resident` topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Resource::create`)
+- `cargo run -p nebula-examples --example resource_postgres_pool` — `Pooled` topology + `ResourceAction` for per-execution test schema (configure / cleanup ordering)
+- `cargo run -p nebula-examples --example resource_resident_http` — `Resident` topology + OAuth-style credential refresh hook
+- `cargo run -p nebula-examples --example resource_telegram_multi_workflow` — `Resident` topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Resource::create`)
 
 The headline patterns and topology selection guidance are distilled into `crates/resource/docs/topology-reference.md`.
 
@@ -171,7 +171,7 @@ The headline patterns and topology selection guidance are distilled into `crates
 ## Non-goals
 
 - Not a connection driver — resource implementations supply the actual client (sqlx pool, reqwest client, etc.); this crate owns the lifecycle wrapper.
-- Not a retry pipeline — retry composes one layer up (action handler / engine activity / caller-supplied `nebula-resilience` pipeline). The manager-side `AcquireResilience` wrapper was removed in commit `cf93e45b`; peer Rust pools (sqlx, deadpool, bb8) ship acquire-timeout only, retry above. Retry around outbound calls inside `create`/`check` uses `nebula-resilience` directly at the resource impl.
+- Not a retry pipeline — retry composes one layer up (action handler / engine activity / caller-supplied `nebula-resilience` pipeline). The manager-side `AcquireResilience` wrapper was removed; peer Rust pools (sqlx, deadpool, bb8) ship acquire-timeout only, retry above. Retry around outbound calls inside `create`/`check` uses `nebula-resilience` directly at the resource impl.
 - Not a secret holder — credentials are populated into slot fields by the framework; secret material is managed by `nebula-credential`.
 - Not an expression evaluator — resource `Config` comes from `nebula-schema`-validated parameters; expression resolution is `nebula-expression`'s job. The engine-facing `Manager::register_resolved` orchestrates the resolve→validate→register pipeline but the evaluator itself stays out.
 
@@ -179,16 +179,15 @@ The headline patterns and topology selection guidance are distilled into `crates
 
 See `docs/MATURITY.md` row for `nebula-resource`.
 
-- API stability: `frontier` — slot-binding pattern (ADR-0044) shipped; 3 topologies (`Pooled` / `Resident` / `Bounded`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
+- API stability: `frontier` — slot-binding pattern shipped; 3 topologies (`Pooled` / `Resident` / `Bounded`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
 - `#![forbid(unsafe_code)]` enforced, `#![warn(missing_docs)]` active.
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
-- Per-slot rotation fan-out: tracked in `docs/ROADMAP.md`.
+- Per-slot rotation fan-out: lands in a follow-up.
 
 ## Related
 
-- Canon: `docs/PRODUCT_CANON.md` §11.4 (resource lifecycle contract — acquire/health/release; orphan drain), §13.3 (lifecycle visibility in journal/trace).
-- ADRs: `docs/adr/0081-m6-resource-credential-integration.md` (M6 binding/credential cascade — supersedes ADR-0036; consolidates ADR-0042/0043/0044).
-- Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-resource`.
+- Canon: workspace canon doc — resource lifecycle contract (acquire/health/release; orphan drain), lifecycle visibility in journal/trace.
+- Integration model: workspace integration-model doc, `nebula-resource` section.
 - Siblings: `nebula-core` (`ResourceKey`, `ExecutionId`, `Dependencies`), `nebula-credential` (`CredentialGuard` populated by framework), `nebula-action` (`ResourceAction` trait, `ResourceProduces<R>` marker), `nebula-resilience` (acquire-path and outbound-call retry).
 
 ## Appendix
@@ -214,7 +213,7 @@ These types are L4 implementation detail — rename/refactor without canon revis
 
 `Bounded` folds the former `Service` / `Transport` / `Exclusive` topologies into one runtime; the `Cap` typestate (`Unbounded` / `Capped<N>` / `Exclusive`) selects the concurrency arity and whether `BoundedRelease` is mandatory at **compile time**.
 
-Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon` per ADR-0037; this crate retains pool/SDK-client topologies only (canon §3.5).
+Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon`; this crate retains pool/SDK-client topologies only (canon §3.5).
 
 ### Shared resource pattern
 

@@ -189,9 +189,9 @@ The plan archive (`.ai-factory/plans/m6-resource-finalization-integration-audit.
 
 The headline patterns are exercised end-to-end in the workspace `examples/` member:
 
-- `cargo run -p nebula-examples --example m6_postgres_pool` — Pool topology + scoped resource configure/cleanup
-- `cargo run -p nebula-examples --example m6_telegram_multi_workflow` — Resident topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Resource::create` call)
-- `cargo run -p nebula-examples --example m6_resident_http` — Resident topology + OAuth-style credential refresh hook
+- `cargo run -p nebula-examples --example resource_postgres_pool` — Pool topology + scoped resource configure/cleanup
+- `cargo run -p nebula-examples --example resource_telegram_multi_workflow` — Resident topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Resource::create` call)
+- `cargo run -p nebula-examples --example resource_resident_http` — Resident topology + OAuth-style credential refresh hook
 
 The examples deliberately wire slot resolution manually (no `#[derive(Action)]`) because they run outside an engine; the slot-binding **mental model** is illustrated explicitly. For derive-form authoring, see `crates/action/tests/derive_action.rs` and the trybuild probes under `crates/action/tests/probes/`.
 
