@@ -504,9 +504,10 @@ where
         };
 
         // Cancel-safety: if the future is dropped between here and
-        // `build_guarded_handle`, the guard ensures we log the leak
-        // and drop the runtime (triggering its native `Drop`).
-        let mut guard = CreateGuard::new(entry);
+        // `build_guarded_handle`, the guard submits an async destroy
+        // via the ReleaseQueue (#713 — without this, only the runtime's
+        // sync `Drop` ran, leaking the server-side handle).
+        let mut guard = CreateGuard::new(entry, resource.clone(), Arc::clone(release_queue));
 
         // Prepare the new instance.
         if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
@@ -562,9 +563,10 @@ where
             };
 
             // Cancel-safety: guard the popped entry through all async
-            // validation steps. If cancelled mid-check, we log + drop
-            // rather than silently leaking the instance.
-            let mut guard = CreateGuard::new(entry);
+            // validation steps. If cancelled mid-check, the guard submits
+            // an async destroy via the ReleaseQueue (#713) rather than
+            // silently leaking the server-side handle.
+            let mut guard = CreateGuard::new(entry, resource.clone(), Arc::clone(release_queue));
 
             // Stale fingerprint — destroy silently.
             let current_fp = self.current_fingerprint.load(Ordering::Acquire);
@@ -927,7 +929,10 @@ where
             Err(e) => return Err(e),
         };
 
-        let mut guard = CreateGuard::new(entry);
+        // Cancel-safety guard: see analogous `acquire`-path comment
+        // upstream. Submits async destroy via ReleaseQueue if cancelled
+        // (#713).
+        let mut guard = CreateGuard::new(entry, resource.clone(), Arc::clone(release_queue));
         if let Err(e) = resource.prepare(guard.runtime(), ctx).await {
             let entry = guard.defuse();
             let _ = resource.destroy(entry.runtime).await;
@@ -1213,26 +1218,53 @@ async fn release_entry<R>(
 ///
 /// Wraps a [`PoolEntry`] between creation and handle construction. If
 /// the future is cancelled (e.g. via `tokio::select!` or timeout) after
-/// `create()` succeeds but before the handle is built, `Drop` logs the
-/// leak and drops the runtime — triggering its native `Drop` impl
-/// (which closes TCP sockets, file handles, etc.).
+/// `create()` succeeds but before the handle is built, `Drop` submits
+/// the freshly-built runtime to the [`ReleaseQueue`] for an async
+/// `Resource::destroy` — symmetric with the release-path's
+/// `release_entry`. Without this, the runtime's *sync* `Drop` would run
+/// inline (closing the local handle) but the server-side resource — DB
+/// session, broker subscription, OS-level handle — would leak (#713).
 ///
 /// Call [`defuse`](Self::defuse) to take ownership of the entry once
 /// the handle is safely constructed.
-struct CreateGuard<R: Resource> {
+struct CreateGuard<R>
+where
+    R: Pooled + Clone + Send + Sync + 'static,
+    R::Lease: Into<R::Runtime>,
+{
     entry: Option<PoolEntry<R>>,
+    /// Cloned resource handle so the Drop path can call
+    /// `Resource::destroy(entry.runtime)` from the [`ReleaseQueue`]
+    /// without re-entering the originating pool context. Same Clone
+    /// requirement that `release_entry` already imposes on `R`.
+    resource: Option<R>,
+    /// Reference to the pool's `ReleaseQueue` so Drop can submit the
+    /// async destroy without spawning an orphan `tokio::spawn` (which
+    /// would lack the queue's bounded backpressure + shutdown drain).
+    release_queue: Option<Arc<ReleaseQueue>>,
 }
 
-impl<R: Resource> CreateGuard<R> {
+impl<R> CreateGuard<R>
+where
+    R: Pooled + Clone + Send + Sync + 'static,
+    R::Lease: Into<R::Runtime>,
+{
     /// Creates a new guard wrapping the given pool entry.
-    fn new(entry: PoolEntry<R>) -> Self {
-        Self { entry: Some(entry) }
+    fn new(entry: PoolEntry<R>, resource: R, release_queue: Arc<ReleaseQueue>) -> Self {
+        Self {
+            entry: Some(entry),
+            resource: Some(resource),
+            release_queue: Some(release_queue),
+        }
     }
 
     /// Returns a reference to the inner entry for inspection.
     fn entry(&self) -> &PoolEntry<R> {
-        // Invariant: entry() is only called between new() and defuse(),
-        // both are private with single call sites in the same function.
+        // guard-justified: `entry()` is private + only called between
+        // `new` (which inserts `Some(_)`) and `defuse` (which takes it
+        // out exactly once); reaching here with `None` would mean
+        // `entry()` was called *after* `defuse`, which the pool's
+        // single-function call graph structurally prevents.
         self.entry
             .as_ref()
             .unwrap_or_else(|| unreachable!("CreateGuard accessed after defuse"))
@@ -1247,24 +1279,60 @@ impl<R: Resource> CreateGuard<R> {
     ///
     /// After this call, `Drop` is a no-op.
     fn defuse(&mut self) -> PoolEntry<R> {
-        // Invariant: defuse() is called exactly once, right before
-        // constructing the ResourceGuard.
+        // guard-justified: `defuse` is private + called exactly once
+        // per `CreateGuard`, right before `build_guarded_handle`. The
+        // pool's call graph never re-enters `defuse` on the same guard
+        // (it would have to leak a `&mut CreateGuard` across the
+        // build_guarded_handle return, which the borrow checker
+        // forbids).
         self.entry
             .take()
             .unwrap_or_else(|| unreachable!("CreateGuard defused twice"))
     }
 }
 
-impl<R: Resource> Drop for CreateGuard<R> {
+impl<R> Drop for CreateGuard<R>
+where
+    R: Pooled + Clone + Send + Sync + 'static,
+    R::Lease: Into<R::Runtime>,
+{
     fn drop(&mut self) {
-        if let Some(entry) = self.entry.take() {
-            tracing::warn!(
-                resource = %R::key(),
-                "cancel-safety: pool entry dropped without async destroy \
-                 (create succeeded but acquire future was cancelled)"
-            );
-            drop(entry);
-        }
+        let Some(entry) = self.entry.take() else {
+            return; // defused — nothing to clean up
+        };
+        // guard-justified: invariant — `new` populates both `resource`
+        // and `release_queue` as `Some(_)`; `defuse` clears only
+        // `entry`, leaving the other two intact. We only reach this
+        // arm when `entry.take()` above returned `Some`, which means
+        // `defuse` has NOT run, which means `resource` and
+        // `release_queue` are still populated.
+        let resource = self
+            .resource
+            .take()
+            .unwrap_or_else(|| unreachable!("CreateGuard::Drop: resource missing"));
+        // guard-justified: same invariant as above — `release_queue`
+        // is populated whenever `entry` is.
+        let release_queue = self
+            .release_queue
+            .take()
+            .unwrap_or_else(|| unreachable!("CreateGuard::Drop: release_queue missing"));
+        tracing::warn!(
+            resource = %R::key(),
+            "cancel-safety: acquire future cancelled mid-create — \
+             scheduling async destroy via ReleaseQueue (#713)"
+        );
+        release_queue.submit(move || {
+            Box::pin(async move {
+                // `release_entry` would re-check fingerprint / revoke /
+                // recycle, but a freshly-created instance that was
+                // cancelled before reaching the prepare/fence step was
+                // never admitted to the idle queue or handed to a
+                // caller; the *only* correct cleanup is destroy. Mirror
+                // `release_entry`'s tainted arm and discard the error
+                // (recorded via the resource's own destroy path).
+                let _ = resource.destroy(entry.runtime).await;
+            })
+        });
     }
 }
 
@@ -1289,6 +1357,10 @@ mod tests {
         fail_create: Arc<AtomicBool>,
         fail_check: Arc<AtomicBool>,
         break_on_return: Arc<AtomicBool>,
+        /// Counts every `destroy` invocation — used by #713 cancel-drop
+        /// regression to assert the async destroy actually ran via the
+        /// `ReleaseQueue` (vs. just being inline-`Drop`-ed).
+        destroy_count: Arc<AtomicU64>,
     }
 
     impl MockPool {
@@ -1297,6 +1369,7 @@ mod tests {
                 fail_create: Arc::new(AtomicBool::new(false)),
                 fail_check: Arc::new(AtomicBool::new(false)),
                 break_on_return: Arc::new(AtomicBool::new(false)),
+                destroy_count: Arc::new(AtomicU64::new(0)),
             }
         }
     }
@@ -1366,6 +1439,7 @@ mod tests {
         }
 
         async fn destroy(&self, _runtime: u32) -> Result<(), MockError> {
+            self.destroy_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
@@ -1899,5 +1973,106 @@ mod tests {
              them"
         );
         assert_eq!(pool.idle_count().await, 0);
+    }
+
+    /// Regression: #713 — a `CreateGuard` whose entry is still `Some`
+    /// when it drops must schedule `Resource::destroy` via the
+    /// `ReleaseQueue` instead of just letting the runtime's sync `Drop`
+    /// run. Without this, a `tokio::select!` / `timeout` that cancels
+    /// the acquire future *after* `create` succeeded but *before*
+    /// `defuse` ran would leak the server-side handle (DB session,
+    /// broker subscription, etc.) — only the client-side `Drop` would
+    /// fire.
+    ///
+    /// The test constructs a `CreateGuard` by hand around a fabricated
+    /// `PoolEntry`, drops it without calling `defuse`, then drains the
+    /// `ReleaseQueue` and asserts `MockPool::destroy` ran exactly once.
+    #[tokio::test]
+    async fn create_guard_drop_submits_destroy_via_release_queue() {
+        let resource = MockPool::new();
+        let destroy_count = Arc::clone(&resource.destroy_count);
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        // Fabricate a freshly-built entry (mirrors what `create_entry`
+        // returns just before `CreateGuard::new`). The exact field
+        // values do not matter — only that `Drop` consumes the runtime.
+        let entry = PoolEntry::<MockPool> {
+            runtime: 42u32,
+            metrics: InstanceMetrics {
+                error_count: 0,
+                checkout_count: 1,
+                created_at: Instant::now(),
+            },
+            fingerprint: 1,
+            revoke_epoch: 0,
+            returned_at: None,
+        };
+        let guard = CreateGuard::new(entry, resource.clone(), Arc::clone(&rq));
+
+        // Simulate a cancelled acquire: the future is dropped *before*
+        // `defuse` ran. This is the exact shape `tokio::select!` /
+        // `tokio::time::timeout` produces when they win the race.
+        drop(guard);
+
+        // The submit is fire-and-forget on a bounded mpsc — give the
+        // queue a beat to dequeue + run the destroy future.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Then shut down the queue to drain anything still in flight.
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+
+        assert_eq!(
+            destroy_count.load(Ordering::Relaxed),
+            1,
+            "#713: CreateGuard::Drop must submit destroy via ReleaseQueue \
+             when the acquire future is cancelled mid-create — otherwise \
+             the server-side handle leaks while the client-side Drop runs",
+        );
+    }
+
+    /// Companion to #713: a `CreateGuard` that runs through `defuse`
+    /// normally (the success path) MUST NOT trigger a stray
+    /// `Resource::destroy` — that would double-free the runtime that
+    /// is now owned by the resulting `ResourceGuard` and will be
+    /// released via the normal `release_entry` path on drop. The Drop
+    /// destroy-submit is conditional on `entry.take()` returning
+    /// `Some` (i.e. `defuse` did not run); this test pins that
+    /// short-circuit so a future refactor cannot accidentally make
+    /// Drop unconditional.
+    #[tokio::test]
+    async fn create_guard_defuse_skips_destroy() {
+        let resource = MockPool::new();
+        let destroy_count = Arc::clone(&resource.destroy_count);
+        let (rq, rq_handle) = ReleaseQueue::new(1);
+        let rq = Arc::new(rq);
+
+        let entry = PoolEntry::<MockPool> {
+            runtime: 7u32,
+            metrics: InstanceMetrics {
+                error_count: 0,
+                checkout_count: 1,
+                created_at: Instant::now(),
+            },
+            fingerprint: 1,
+            revoke_epoch: 0,
+            returned_at: None,
+        };
+        let mut guard = CreateGuard::new(entry, resource.clone(), Arc::clone(&rq));
+        let _ = guard.defuse(); // success path consumes the entry
+        drop(guard);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(rq);
+        ReleaseQueue::shutdown(rq_handle).await;
+
+        assert_eq!(
+            destroy_count.load(Ordering::Relaxed),
+            0,
+            "defused CreateGuard must NOT submit destroy — the runtime \
+             was transferred to a ResourceGuard and is destroyed by the \
+             normal release_entry path",
+        );
     }
 }
