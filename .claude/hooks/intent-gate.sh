@@ -78,9 +78,57 @@ ig_added_lines() {
             | grep -E "$CODE_RE" || true)
 }
 
-# net = added − deleted. added = stream added lines minus `+++ ` headers;
-# deleted = numstat deletions on tracked changes (untracked delete nothing).
-added="$(ig_added_lines | awk '/^\+\+\+ /{next} /^\+/{c++} END{print c+0}')"
+# Path-based exempts for net-LoC / NF / blob: criterion benches are
+# table-driven, SQL migrations are DDL fixtures, and snapshot / golden test
+# data are inherently bulky — the path encodes the semantics, so a turn
+# scoped to those paths does not consume the structural budget. (Bench
+# files still respect a per-file blob cap (criterion files can be long but
+# a single function should not be); see blob_cap_for_file below.)
+# Agents cannot game the path because it is checked literally and a
+# reviewer catches misplacement. (ADR-0083 escape-hatch hardening.)
+is_exempt_path() {
+  case "$1" in
+    */benches/*.rs)                                       return 0 ;;
+    */migrations/*.sql)                                   return 0 ;;
+    */tests/golden/*|*/tests/snapshots/*|*/snapshots/*)   return 0 ;;
+    *)                                                    return 1 ;;
+  esac
+}
+# @generated convention (prettier, prost-build, tonic, etc.): a tool-emitted
+# marker on the file's first few lines auto-exempts the file from the
+# structural budget. Standard enough that catching it removes a class of
+# false positives without giving agents a new game — the file would have to
+# actually look generated.
+is_generated_file() {
+  local p="$cwd/$1"
+  [ -f "$p" ] || return 1
+  head -n 5 "$p" 2>/dev/null | grep -qE '@generated'
+}
+# Per-file added-line counts, consuming the shared ig_added_lines stream
+# (untracked-aware, per-file via the `+++ ` header reset). Git diff emits
+# `+++ b/<path>` for tracked changes; untracked files have no prefix. Strip
+# the optional `a/` or `b/` so callers see a single canonical relative path
+# (path-glob exemptions still match either form, but `is_generated_file`
+# needs the on-disk path to be openable).
+added_lines_per_file() {
+  ig_added_lines | awk '
+    function flush() { if (file != "") print file "\t" added+0 }
+    /^\+\+\+ /      { flush(); file=$0; sub(/^\+\+\+[ \t]+/, "", file); sub(/^[ab]\//, "", file); added=0; next }
+    /^\+/           { added++; next }
+    END             { flush() }'
+}
+
+# net = added − deleted. `added` counts only NON-exempt, non-@generated
+# files (path exemption applies symmetrically to net-LoC and the blob
+# check below). `deleted` is raw numstat — exempt-file deletions still
+# count, but net-negative is always allowed so that's fine.
+added=0
+while IFS=$'\t' read -r f a; do
+  [ -n "$f" ] || continue
+  is_exempt_path "$f" && continue
+  is_generated_file "$f" && continue
+  added=$((added + a))
+done < <(added_lines_per_file)
 deleted=0
 while read -r _a d _; do
   [[ "$d" =~ ^[0-9]+$ ]] && deleted=$((deleted + d))
@@ -98,14 +146,45 @@ if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 # Drain-safe: `grep -q` exits on first match, triggering SIGPIPE on the
 # `ig_added_lines` writer side (the `while-read | sed` loop and the
 # three-way diff). Under `set -uo pipefail` that propagates rc=141 from
-# the producer so `budget_justified` returns non-zero even when the marker
-# WAS found — the escape silently fails. Use `grep -c` so the consumer
-# drains the entire stream and producers exit cleanly. (ADR-0083.)
-budget_justified() {
-  local n
-  n="$(ig_added_lines | grep -cE '//[[:space:]]*budget-justified:' | awk '{print $1+0}')"
-  [ "${n:-0}" -gt 0 ]
+# the producer and `budget_justified` returns non-zero — the marker
+# silently fails to escape. Use `grep -c` so the consumer drains the
+# entire stream and producers exit cleanly.
+#
+# Anchored to start-of-line (`^\+[ \t]*//[ \t]*budget-justified:`) so that
+# self-references — strings, deny-message bodies, comments-about-the-marker
+# in this very file or the hook-test fixtures — do NOT count as markers.
+# Only a real `// budget-justified: …` comment on an added line counts.
+MARKER_RE='^\+[ \t]*//[ \t]*budget-justified:'
+markers_count() {
+  ig_added_lines | grep -cE "$MARKER_RE" | awk '{print $1+0}'
 }
+# Justification-quality heuristic: the text after `budget-justified:` must
+# be at least 30 chars and mention one of the legitimate-bulk keywords.
+# Catches lazy `// budget-justified: ok` / `// budget-justified: legacy`
+# escapes without blocking genuine generated/table/criterion/migration/
+# fixture/schema/snapshot/golden/test-data additions. Used by the blob
+# check only — NF / net-LoC / dup checks still treat any marker as present.
+markers_quality_count() {
+  ig_added_lines \
+    | grep -oE "$MARKER_RE"'.*' \
+    | sed -E 's|^\+[ \t]*//[ \t]*budget-justified:[ \t]*||' \
+    | awk '{ l = tolower($0); if (length($0) >= 30 && l ~ /table|generated|criterion|migration|fixture|schema|snapshot|golden|test[ \t]+data/) n++ } END { print n+0 }'
+}
+budget_justified()         { local n; n="$(markers_count)";         [ "${n:-0}" -gt 0 ]; }
+budget_justified_quality() { local n; n="$(markers_quality_count)"; [ "${n:-0}" -gt 0 ]; }
+
+# Per-turn marker budget. The `// budget-justified:` escape is for rare,
+# intentional large additions; spamming it across files defeats the point.
+# The cap runs BEFORE any blob/NF/net-LoC check so markers cannot authorize
+# themselves — a 3-marker turn fails this gate regardless of what else is
+# justified. (ADR-0083 escape-hatch hardening.)
+MARKER_BUDGET=2
+n_marks="$(markers_count)"
+if [ "${n_marks:-0}" -gt "$MARKER_BUDGET" ]; then
+  ig_bump
+  ig_log block "marker-budget-exhausted"
+  deny "Turn uses $n_marks \`// budget-justified:\` markers (cap $MARKER_BUDGET/turn). The escape is for rare intentional large additions; spamming it across files defeats the point. Consolidate the change or split into separate turns. (ADR-0083 escape-hatch hardening.)"
+fi
 
 # Duplicate public-symbol heuristic: a NEW `pub fn|struct|trait NAME` whose
 # NAME already exists (same kind) elsewhere in crates/*/src — the "47 date
@@ -140,22 +219,44 @@ if d="$(dup_symbol)" && ! budget_justified; then
 fi
 
 # Large-blob proxy for per-fn complexity (clippy.toml too-many-lines = 100).
-# Longest run of consecutive added lines within one file, consuming the
-# shared ig_added_lines stream (untracked-aware, per-file via the `+++ `
-# header reset — uniform with the net-LoC / dup-symbol consumers).
-BLOB_CAP=100
-longest_added_run() {
-  ig_added_lines | awk '
-      /^\+\+\+ /      { run=0; next }
-      /^\+/           { run++; if (run>max) max=run; next }
-      { run=0 }
-      END             { print max+0 }'
+# Longest run of consecutive added lines per file, consuming the shared
+# ig_added_lines stream (untracked-aware, per-file via the `+++ ` header
+# reset). Path-based caps replace the single BLOB_CAP=100: bench files are
+# intrinsically criterion-table-driven, SQL migrations are DDL blobs, and
+# snapshot / golden test fixtures are inherently bulky — the path encodes
+# the semantics, so no marker is required there. (ADR-0083 escape-hatch
+# hardening.) Random Rust source still capped at 100 — agent can't game
+# the path because it is checked literally and reviewer catches misplacement.
+blob_cap_for_file() {
+  case "$1" in
+    */benches/*.rs)                                       echo 300 ;;
+    */migrations/*.sql)                                   echo 100000 ;;
+    */tests/golden/*|*/tests/snapshots/*|*/snapshots/*)   echo 100000 ;;
+    *)                                                    echo 100 ;;
+  esac
 }
-blob="$(longest_added_run)"
-if [ "${blob:-0}" -gt "$BLOB_CAP" ] && ! budget_justified; then
+longest_added_run_per_file() {
+  ig_added_lines | awk '
+    function flush() { if (file != "") print file "\t" max }
+    /^\+\+\+ /      { flush(); file=$0; sub(/^\+\+\+[ \t]+/, "", file); sub(/^[ab]\//, "", file); run=0; max=0; next }
+    /^\+/           { run++; if (run>max) max=run; next }
+    { run=0 }
+    END             { flush() }'
+}
+blob_path=""; blob_run=0; blob_cap=0
+while IFS=$'\t' read -r bf br; do
+  [ -n "$bf" ] || continue
+  [ "${br:-0}" -gt 0 ] || continue
+  is_generated_file "$bf" && continue
+  bc="$(blob_cap_for_file "$bf")"
+  if [ "$br" -gt "$bc" ]; then
+    blob_path="$bf"; blob_run="$br"; blob_cap="$bc"; break
+  fi
+done < <(longest_added_run_per_file)
+if [ -n "$blob_path" ] && ! budget_justified_quality; then
   ig_bump
   ig_log block "blob-over-cap"
-  deny "Turn adds a $blob-line contiguous block in a single file (cap $BLOB_CAP, the clippy.toml too-many-lines threshold). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line for intentional generated/table code. (ADR-0083 structural-budget tier.)"
+  deny "Turn adds a $blob_run-line contiguous block in \`$blob_path\` (path-specific cap $blob_cap). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line (≥30 chars, mentioning table/generated/criterion/migration/fixture/schema/snapshot/golden/test data) for intentional generated/table code. Bench paths (\`*/benches/*.rs\`), SQL migrations, and snapshot/golden test fixtures are auto-exempt by path; files whose first lines carry \`@generated\` are also exempt. (ADR-0083 structural-budget tier; escape-hatch hardening.)"
 fi
 
 # New-file budget (ToF is the 2nd strongest decay predictor). ls-files
@@ -165,7 +266,12 @@ new_files() {
   { [ -n "$tb" ] && git -C "$cwd" diff --name-only --diff-filter=A "$tb"..HEAD 2>/dev/null; \
     git -C "$cwd" diff --name-only --diff-filter=A --cached 2>/dev/null; \
     git -C "$cwd" ls-files --others --exclude-standard 2>/dev/null; } \
-  | grep -E "$CODE_RE" | sort -u | grep -c . || true
+  | grep -E "$CODE_RE" | sort -u \
+  | while IFS= read -r f; do
+      is_exempt_path "$f" && continue
+      is_generated_file "$f" && continue
+      printf '%s\n' "$f"
+    done | grep -c . || true
 }
 NF_CAP=5
 nf="$(new_files)"
