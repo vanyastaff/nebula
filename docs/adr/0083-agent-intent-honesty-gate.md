@@ -187,6 +187,10 @@ this ADR now closes (PR-series referenced inline in the implementation):
      authorizes nothing for the blob check. NF / net-LoC / dup still treat
      any marker as present — the quality bar is concentrated on the most
      decay-correlated dimension (per-fn complexity).
+   - **Comment-style portability.** The marker regex accepts both
+     `// budget-justified:` (Rust / JS / TS / C) and
+     `# budget-justified:` (Bash / TOML / Python) so hook scripts and
+     config files carry the same convention as Rust source.
 
    Net effect: the marker is no longer sufficient on its own. Path matters.
    Quantity matters. Justification quality matters. The deterministic core

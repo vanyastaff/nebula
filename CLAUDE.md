@@ -280,7 +280,7 @@ runs first and remains the guarantee.
 | No TODO/FIXME/HACK/plan-id in committed code | `edit-guard.sh` |
 | No test-weakening while impl changed same turn | `edit-guard.sh` |
 | Cannot end a turn with impl changed but no green clippy+nextest | `stop-gate.sh` |
-| Layer-2: turn diff over structural budget (net-LoC / new-files / blob / dup symbol) | `intent-gate.sh` (deterministic, ADR-0083; bench / migration / golden-snapshot paths + files with `@generated` are auto-exempt; `// budget-justified: <reason>` escape capped at 2 markers/turn with a ≥30-char + keyword quality bar on the blob check) |
+| Layer-2: turn diff over structural budget (net-LoC / new-files / blob / dup symbol) | `intent-gate.sh` (deterministic, ADR-0083; bench / migration / golden-snapshot paths + files with `@generated` are auto-exempt; `// budget-justified: <reason>` or `# budget-justified: <reason>` escape capped at 2 markers/turn with a ≥30-char + keyword quality bar on the blob check) |
 
 Escape hatch for discretionary edit rules: a `// guard-justified: <reason>` line
 directly above the construct. No escape for lefthook-bypass, lint-suppression,

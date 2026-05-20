@@ -522,6 +522,20 @@ printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts"
 chk "E quality marker escapes blob" 0 "$(egate '{"session_id":"'"$EQH_SID"'","cwd":"'"$EQH_DIR"'","stop_hook_active":false}')"
 rm -rf "$EQH_DIR"
 
+# E #-style marker: the budget-justified escape accepts `# budget-justified:`
+# for Bash / TOML / Python comment files alongside the `// budget-justified:`
+# form for Rust / JS / TS source. The blob-check quality bar is identical.
+EH_DIR="$(mktemp -d)"
+( cd "$EH_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p scripts \
+  && { echo '#!/usr/bin/env bash'; \
+       echo '# budget-justified: criterion benchmark table fixture generated long marker'; \
+       for i in $(seq 1 150); do echo "echo $i"; done; } > scripts/long.sh )
+EH_SID="e-hash-mark"; EH_P="$(turn_state_path "$EH_SID" "$EH_DIR")"; mkdir -p "$(dirname "$EH_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EH_P"
+chk "E #-style marker escapes blob" 0 "$(egate '{"session_id":"'"$EH_SID"'","cwd":"'"$EH_DIR"'","stop_hook_active":false}')"
+rm -rf "$EH_DIR"
+
 # E negative regression: a 200-line contiguous block in `crates/*/src/` with no
 # marker still denies. Default-path cap unchanged at 100.
 ERS_DIR="$(mktemp -d)"

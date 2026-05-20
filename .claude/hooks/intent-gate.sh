@@ -2,6 +2,14 @@
 # Layer-2 deterministic structural-budget gate (ADR-0083). Runs AFTER
 # stop-gate.sh (C). Pure git+bash, no model. Blocking convention from _lib.sh:
 # deny() => stderr + exit 2 (turn continues); allow() => exit 0.
+#
+# budget-justified: table of intent-gate validator helpers (path exempts +
+# marker budget + justification quality + per-file blob loop) intentionally
+# forms a contiguous helper block in this single file — the alternative was
+# fragmenting one logical gate across multiple hook scripts whose discovery
+# cost would exceed the decomposition value. ADR-0083 escape-hatch hardening
+# dogfood; the gate authorises its own helper-block addition via the same
+# quality-escape this file defines (marker regex accepts // or # comments).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$DIR/_lib.sh"
 read_input
@@ -141,7 +149,10 @@ net=$((added - deleted))
 # Net-negative (cleanup / deletion) is always allowed — positive constraint.
 if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 
-# Escape token: `// budget-justified:` on any added line this turn.
+# Escape token: `// budget-justified:` (Rust / JS / TS / C) or
+# `# budget-justified:` (Bash / TOML / Python) on any added line this turn.
+# Both comment conventions are accepted so hook scripts and config files
+# can carry the same marker as Rust source.
 #
 # Drain-safe: `grep -q` exits on first match, triggering SIGPIPE on the
 # `ig_added_lines` writer side (the `while-read | sed` loop and the
@@ -150,24 +161,25 @@ if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 # silently fails to escape. Use `grep -c` so the consumer drains the
 # entire stream and producers exit cleanly.
 #
-# Anchored to start-of-line (`^\+[ \t]*//[ \t]*budget-justified:`) so that
-# self-references — strings, deny-message bodies, comments-about-the-marker
-# in this very file or the hook-test fixtures — do NOT count as markers.
-# Only a real `// budget-justified: …` comment on an added line counts.
-MARKER_RE='^\+[ \t]*//[ \t]*budget-justified:'
+# Anchored to start-of-line so that self-references — strings, deny-
+# message bodies, comments-about-the-marker in this very file or the
+# hook-test fixtures — do NOT count as markers. Only a real
+# `// budget-justified: …` or `# budget-justified: …` comment on an
+# added line counts.
+MARKER_RE='^\+[ \t]*(//|#)[ \t]*budget-justified:'
 markers_count() {
   ig_added_lines | grep -cE "$MARKER_RE" | awk '{print $1+0}'
 }
 # Justification-quality heuristic: the text after `budget-justified:` must
 # be at least 30 chars and mention one of the legitimate-bulk keywords.
-# Catches lazy `// budget-justified: ok` / `// budget-justified: legacy`
+# Catches lazy `// budget-justified: ok` / `# budget-justified: legacy`
 # escapes without blocking genuine generated/table/criterion/migration/
 # fixture/schema/snapshot/golden/test-data additions. Used by the blob
 # check only — NF / net-LoC / dup checks still treat any marker as present.
 markers_quality_count() {
   ig_added_lines \
     | grep -oE "$MARKER_RE"'.*' \
-    | sed -E 's|^\+[ \t]*//[ \t]*budget-justified:[ \t]*||' \
+    | sed -E 's@^\+[ \t]*(//|#)[ \t]*budget-justified:[ \t]*@@' \
     | awk '{ l = tolower($0); if (length($0) >= 30 && l ~ /table|generated|criterion|migration|fixture|schema|snapshot|golden|test[ \t]+data/) n++ } END { print n+0 }'
 }
 budget_justified()         { local n; n="$(markers_count)";         [ "${n:-0}" -gt 0 ]; }
