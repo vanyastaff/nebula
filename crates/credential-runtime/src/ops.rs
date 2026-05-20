@@ -687,6 +687,37 @@ where
     Ok(())
 }
 
+/// Map a `CredentialError` from a `Refreshable::refresh` call to a
+/// `CredentialServiceError`, preserving transience information so the
+/// fallback-on-interrupt path in `CredentialService::refresh` can
+/// pattern-match without re-parsing error strings.
+///
+/// Transient kinds (`RefreshFailed(TransientNetwork | ProviderUnavailable)`
+/// and `Provider(Network | RateLimit | ServerError)`) → `TransientProvider`.
+/// All other failures → `Provider` (terminal / non-retryable).
+fn classify_refresh_error(e: nebula_credential::CredentialError) -> CredentialServiceError {
+    use nebula_credential::error::{ProviderErrorKind, RefreshErrorKind};
+    match &e {
+        nebula_credential::CredentialError::RefreshFailed(ctx) => match ctx.kind() {
+            RefreshErrorKind::TransientNetwork | RefreshErrorKind::ProviderUnavailable => {
+                CredentialServiceError::TransientProvider(format!(
+                    "credential refresh failed transiently: {e}"
+                ))
+            },
+            _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
+        },
+        nebula_credential::CredentialError::Provider(ctx) => match ctx.kind() {
+            ProviderErrorKind::Network
+            | ProviderErrorKind::RateLimit
+            | ProviderErrorKind::ServerError => CredentialServiceError::TransientProvider(format!(
+                "credential refresh failed transiently: {e}"
+            )),
+            _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
+        },
+        _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
+    }
+}
+
 /// Attach the erased `refresh` closure for `C: Refreshable`. The base
 /// [`register_runtime_ops`] must have run first.
 ///
@@ -719,9 +750,7 @@ where
             })?;
             let outcome = <C as Refreshable>::refresh(&mut state, ctx)
                 .await
-                .map_err(|e| {
-                    CredentialServiceError::Provider(format!("credential refresh failed: {e}"))
-                })?;
+                .map_err(classify_refresh_error)?;
             match outcome {
                 nebula_credential::RefreshOutcome::Refreshed => {
                     // Read the expiry off the *refreshed* state — a token

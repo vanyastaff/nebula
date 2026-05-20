@@ -539,14 +539,55 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     /// success (either path) [`CredentialObserver::on_refresh`] fires and
     /// the fresh secret-free snapshot is returned.
     ///
+    /// ## Fallback-on-interrupt
+    ///
+    /// If the provider call fails with a **transient** error
+    /// ([`CredentialServiceError::TransientProvider`]) AND the currently
+    /// cached snapshot is still non-expired, the cached snapshot is
+    /// returned instead of propagating the error. This protects in-flight
+    /// executions from transient provider 5xx / network blips without
+    /// papering over real expiry. Terminal failures (token expired / revoked /
+    /// authentication) always propagate regardless of cached state.
+    ///
+    /// This matches the `aws-credential-types` `fallback_on_interrupt` pattern.
+    ///
     /// # Errors
     ///
     /// - [`CredentialServiceError::NotFound`] — absent or cross-tenant id.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Refreshable`.
-    /// - [`CredentialServiceError::Provider`] — refresh failed after retries.
+    /// - [`CredentialServiceError::Provider`] — refresh failed after retries (terminal).
+    /// - [`CredentialServiceError::TransientProvider`] — transient failure AND cached snapshot
+    ///   is expired (no valid fallback available).
     /// - [`CredentialServiceError::VersionConflict`] — a concurrent write landed first.
     /// - [`CredentialServiceError::Store`] — re-persist failed.
     pub async fn refresh(
+        &self,
+        scope: &TenantScope,
+        id: &str,
+    ) -> Result<CredentialSnapshot, CredentialServiceError> {
+        // Snapshot the cached state before attempting refresh. On a
+        // transient provider failure we fall back to this if it is still
+        // non-expired — avoids propagating blips to the caller.
+        let cached = self.get(scope, id).await?;
+
+        match self.refresh_inner(scope, id).await {
+            Ok(snap) => Ok(snap),
+            Err(ref e) if Self::is_transient_failure(e) && !cached.is_expired() => {
+                tracing::warn!(
+                    credential.id = %id,
+                    error = %e,
+                    "credential refresh failed transiently; returning cached non-expired snapshot"
+                );
+                Ok(cached)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Inner refresh: actual provider call + CAS-persist. The public
+    /// [`refresh`](Self::refresh) wrapper applies the fallback-on-interrupt
+    /// logic around this method.
+    async fn refresh_inner(
         &self,
         scope: &TenantScope,
         id: &str,
@@ -646,6 +687,21 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
         self.observer.on_refresh(&credential_id);
         tracing::info!(credential.id = %id, "credential refreshed");
         self.snapshot_from_store(scope, id).await
+    }
+
+    /// True iff this error is a transient refresh/provider failure that the
+    /// fallback-on-interrupt path can swallow when cached material is still
+    /// non-expired.
+    ///
+    /// Only [`CredentialServiceError::TransientProvider`] qualifies — this
+    /// variant is emitted exclusively by the refresh ops closure for the
+    /// transient `CredentialError` kinds (`RefreshFailed(TransientNetwork |
+    /// ProviderUnavailable)` / `Provider(Network | RateLimit | ServerError)`).
+    /// Terminal failures use [`CredentialServiceError::Provider`] and are
+    /// excluded here so the fallback never swallows real expiry or auth errors.
+    #[inline]
+    fn is_transient_failure(e: &CredentialServiceError) -> bool {
+        matches!(e, CredentialServiceError::TransientProvider(_))
     }
 
     /// Revoke the credential at the provider, release any leases, and

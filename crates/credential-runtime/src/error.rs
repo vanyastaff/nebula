@@ -86,6 +86,20 @@ pub enum CredentialServiceError {
     #[error("external provider error: {0}")]
     Provider(String),
 
+    /// A transient provider failure during refresh — network error, rate-limit,
+    /// or temporary unavailability. Discriminated from [`Provider`] so the
+    /// fallback-on-interrupt path can pattern-match without string-scanning.
+    ///
+    /// The fallback wrapper in [`CredentialService::refresh`] intercepts this
+    /// variant when a non-expired cached snapshot is available and returns the
+    /// cached material instead of propagating the error.
+    ///
+    /// [`Provider`]: Self::Provider
+    /// [`CredentialService::refresh`]: crate::service::CredentialService::refresh
+    #[classify(category = "external", code = "CREDENTIAL_SERVICE:TRANSIENT_PROVIDER")]
+    #[error("transient provider error during refresh: {0}")]
+    TransientProvider(String),
+
     /// The persistence layer failed.
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:STORE")]
     #[error("credential store error: {0}")]
