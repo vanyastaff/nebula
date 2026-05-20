@@ -1,8 +1,8 @@
 ---
 name: nebula-credential
 role: Credential Contract (stored state vs projected auth material; runtime orchestration lives in nebula-engine)
-status: frontier
-last-reviewed: 2026-04-29
+status: stable
+last-reviewed: 2026-05-20
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plugin]
 ---

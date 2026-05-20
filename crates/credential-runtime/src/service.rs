@@ -54,7 +54,7 @@ use crate::state_source::StateSource;
 /// `get`/`list`/`update`/`delete` to enforce tenant isolation.
 const OWNER_ID_KEY: &str = "owner_id";
 
-/// Layered store stack composed once at [`CredentialServiceBuilder::build`]:
+/// Layered store stack composed once at `CredentialServiceBuilder::build`:
 /// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
 /// backend so persisted bytes are always ciphertext (spec §6 #7).
 ///
@@ -1007,10 +1007,10 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
     ///
     /// # Errors
     ///
-    /// - [`ValidatedCredentialBindingError::NotFound`] — id absent from the store.
-    /// - [`ValidatedCredentialBindingError::ScopeMismatch`] — id exists but
+    /// - [`crate::ValidatedCredentialBindingError::NotFound`] — id absent from the store.
+    /// - [`crate::ValidatedCredentialBindingError::ScopeMismatch`] — id exists but
     ///   belongs to a different tenant.
-    /// - [`ValidatedCredentialBindingError::Io`] — underlying store error.
+    /// - [`crate::ValidatedCredentialBindingError::Io`] — underlying store error.
     pub async fn validate_credential_binding(
         &self,
         scope: &TenantScope,

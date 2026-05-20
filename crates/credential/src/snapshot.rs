@@ -243,7 +243,7 @@ impl CredentialSnapshot {
     /// and this returns `false`.
     ///
     /// Used by the fallback-on-interrupt path in
-    /// [`CredentialService::refresh`](crate::CredentialService) to decide
+    /// `CredentialService::refresh` (in `nebula-credential-runtime`) to decide
     /// whether a cached snapshot is still valid.
     #[must_use]
     pub fn is_expired(&self) -> bool {

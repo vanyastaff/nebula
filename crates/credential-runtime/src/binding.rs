@@ -69,7 +69,7 @@ impl TenantFingerprint {
     }
 }
 
-/// Reason a [`CredentialService::validate_credential_binding`] call failed.
+/// Reason a `CredentialService::validate_credential_binding` call failed.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ValidatedCredentialBindingError {

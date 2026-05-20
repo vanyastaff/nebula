@@ -263,8 +263,9 @@ impl CredentialRegistry {
     ///
     /// Used by the registry-sync invariant probe to assert that the three
     /// credential registries (KEY-keyed [`CredentialRegistry`],
-    /// [`StateProjectionRegistry`](nebula_engine), [`CredentialDispatch`])
-    /// hold the same set of types after plugin init.
+    /// `StateProjectionRegistry`, and `CredentialDispatch` in
+    /// `nebula-credential-runtime`) hold the same set of types after plugin
+    /// init.
     pub fn iter_keys(&self) -> impl Iterator<Item = &str> + '_ {
         self.entries.keys().map(AsRef::as_ref)
     }
