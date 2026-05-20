@@ -54,10 +54,15 @@ use crate::state_source::StateSource;
 /// `get`/`list`/`update`/`delete` to enforce tenant isolation.
 const OWNER_ID_KEY: &str = "owner_id";
 
-/// Crate-private layered store stack composed once at `build()`:
+/// Layered store stack composed once at [`CredentialServiceBuilder::build`]:
 /// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
 /// backend so persisted bytes are always ciphertext (spec §6 #7).
-pub(crate) type LayeredStore<B> = AuditLayer<CacheLayer<EncryptionLayer<B>>>;
+///
+/// `pub` so composition roots (the api layer, server binary) can name the
+/// concrete arc type without spelling out all three layer wrappers. The
+/// builder's `build()` is still the only construction path — this is a
+/// type alias, not a constructor.
+pub type LayeredStore<B> = AuditLayer<CacheLayer<EncryptionLayer<B>>>;
 
 /// Outcome of [`CredentialService::test`] — a secret-free health-probe
 /// summary. `message` carries only the provider's failure reason (never
@@ -180,6 +185,19 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             observer,
             source,
         }
+    }
+
+    /// Expose the composed layered store (`Audit(Cache(Encryption(raw)))`) as
+    /// a shared arc for callers that need raw access to the encrypted store
+    /// without going through type dispatch.
+    ///
+    /// The api layer uses this to replace
+    /// `nebula_tenancy::CredentialScopeLayer<InMemoryStore>` with the
+    /// service's encryption + audit + cache stack while still managing
+    /// api-level metadata (`name` / `description` / `tags`) directly in
+    /// [`StoredCredential::metadata`].
+    pub fn credential_store_handle(&self) -> Arc<LayeredStore<B>> {
+        Arc::clone(&self.store)
     }
 
     /// Guard the resolution path against a configured-but-unwired

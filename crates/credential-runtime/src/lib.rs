@@ -41,7 +41,7 @@ pub use ops::{
 };
 pub use scope::{FixedScopeResolver, TenantScope};
 pub use service::{
-    Acquisition, CredentialService, CredentialTypeInfo, TestReport, TypeCapabilities,
+    Acquisition, CredentialService, CredentialTypeInfo, LayeredStore, TestReport, TypeCapabilities,
 };
 pub use state_source::StateSource;
 
