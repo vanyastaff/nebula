@@ -275,7 +275,6 @@ mod tests {
                     ResidentConfig::default(),
                 )),
                 acquire: Manager::erased_acquire_resident_for::<AccResource>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register");
@@ -315,7 +314,6 @@ mod tests {
                     ResidentConfig::default(),
                 )),
                 acquire: Manager::erased_acquire_resident_for::<AccResource>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register cred-bound row");

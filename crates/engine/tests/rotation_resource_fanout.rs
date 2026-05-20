@@ -154,7 +154,6 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<Ctl>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register resolved-credential row");

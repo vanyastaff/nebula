@@ -20,7 +20,6 @@ nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
-nebula-resilience = { path = "../resilience" }
 nebula-metadata = { path = "../metadata" }
 nebula-resource-macros = { path = "macros" }
 nebula-schema = { path = "../schema" }

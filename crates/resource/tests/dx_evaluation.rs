@@ -150,7 +150,6 @@ async fn use_case_1_pooled_http_client() {
                 fingerprint,
             )),
             acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -204,7 +203,6 @@ async fn use_case_1_invalid_config_is_rejected() {
             fingerprint,
         )),
         acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
-        resilience: None,
         recovery_gate: None,
     });
     let err = result.expect_err("empty base_url must fail validation at register time");
@@ -290,7 +288,6 @@ async fn use_case_2_resident_config_store() {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ConfigStoreResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -392,15 +389,12 @@ impl Resource for DbResource {
 impl Pooled for DbResource {}
 
 #[tokio::test]
-async fn use_case_3_db_with_resilience_and_shutdown() {
-    use nebula_resource::AcquireResilience;
-
+async fn use_case_3_db_with_recovery_and_shutdown() {
     let manager = Arc::new(Manager::new());
 
-    // Resilience and the recovery gate are just two `Option` fields on the
-    // single `RegistrationSpec` — the same one struct every registration
-    // uses. There is no separate "convenience vs full" split anymore: one
-    // funnel, optional policies defaulted to `None`.
+    // Recovery gate is one `Option` field on the single `RegistrationSpec`
+    // — the same one struct every registration uses. Mythos v2: manager
+    // owns no acquire-resilience knob; retry composes one layer up.
     use nebula_resource::ResourceConfig as _;
 
     let config = DbConfig {
@@ -421,7 +415,6 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
                 fingerprint,
             )),
             acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
-            resilience: Some(AcquireResilience::standard()),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -522,7 +515,6 @@ async fn error_cancelled_after_shutdown() {
                 fingerprint,
             )),
             acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();

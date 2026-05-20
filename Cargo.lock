@@ -3917,7 +3917,6 @@ dependencies = [
  "nebula-expression",
  "nebula-metadata",
  "nebula-metrics",
- "nebula-resilience",
  "nebula-resource-macros",
  "nebula-schema",
  "pretty_assertions",

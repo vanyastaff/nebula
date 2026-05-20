@@ -105,7 +105,6 @@ async fn acquire_erased_returns_guard_and_runs_create_once() {
                 resident::config::Config::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -145,7 +144,6 @@ async fn acquire_erased_finds_org_scoped_row_from_execution_scope_bag() {
                 resident::config::Config::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register at org scope");
@@ -209,7 +207,6 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
                 resident::config::Config::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register global row");
@@ -224,7 +221,6 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
                 resident::config::Config::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ProbeResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register org row");
@@ -403,7 +399,6 @@ mod pool_parity {
                     PoolParityCfg.fingerprint(),
                 )),
                 acquire: Manager::erased_acquire_pooled_for::<PoolParity>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register pooled Global");
@@ -542,7 +537,6 @@ mod service_parity {
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Bounded(bounded),
                 acquire: Manager::erased_acquire_bounded_for::<SvcParity>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register service Global");
@@ -681,7 +675,6 @@ mod transport_parity {
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Bounded(bounded),
                 acquire: Manager::erased_acquire_bounded_for::<TportParity>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register transport Global");
@@ -819,7 +812,6 @@ mod exclusive_parity {
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Bounded(bounded),
                 acquire: Manager::erased_acquire_bounded_for::<ExclParity>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register exclusive Global");

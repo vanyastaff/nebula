@@ -344,7 +344,6 @@ async fn wired_registrar_performs_typed_registration() {
                 slot_bindings: HashMap::new(),
                 credential_ids: HashMap::new(),
                 scope: ScopeLevel::Global,
-                resilience: None,
                 recovery_gate: None,
             },
         )

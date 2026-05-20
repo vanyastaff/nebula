@@ -40,7 +40,6 @@
 //!     scope:         ScopeLevel,
 //!     topology:      TopologyRuntime<R>,
 //!     acquire:       ErasedAcquireFn,
-//!     resilience:    Option<AcquireResilience>,
 //!     recovery_gate: Option<Arc<RecoveryGate>>,
 //! ) -> Result<SlotIdentity, nebula_resource::Error>
 //! where R: Resource + DeclaresDependencies, R::Config: DeserializeOwned
@@ -64,8 +63,8 @@
 //! runtime slot identity), so it is no longer parameterised by the
 //! registration-time digest.
 //!
-//! `expr_engine`, `scope`, `slot_bindings`, `resilience`, and
-//! `recovery_gate` are type-agnostic and supplied by the *caller* of
+//! `expr_engine`, `scope`, `slot_bindings`, and `recovery_gate` are
+//! type-agnostic and supplied by the *caller* of
 //! [`ErasedResourceRegistrar::register`] (the engine registration loop)
 //! through [`RegisterRequest`]. This keeps the trait surface honest:
 //! the registrar contributes only what is intrinsically per-`R`; the
@@ -74,8 +73,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use nebula_resource::{
-    AcquireResilience, Manager, ScopeLevel, SlotIdentity, TopologyRuntime, recovery::RecoveryGate,
-    resource::Resource,
+    Manager, ScopeLevel, SlotIdentity, TopologyRuntime, recovery::RecoveryGate, resource::Resource,
 };
 
 /// Boxed, `Send` future returned across the erased registrar boundary.
@@ -238,8 +236,6 @@ pub struct RegisterRequest<'a> {
     pub credential_ids: HashMap<String, nebula_credential::CredentialId>,
     /// Registration scope.
     pub scope: ScopeLevel,
-    /// Optional acquire-time resilience policy.
-    pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate shared across a recovery group.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
 }
@@ -395,7 +391,6 @@ where
                     request.scope,
                     topology,
                     acquire,
-                    request.resilience,
                     request.recovery_gate,
                 )
                 .await
@@ -907,7 +902,6 @@ mod tests {
             slot_bindings: HashMap::new(),
             credential_ids: HashMap::new(),
             scope: ScopeLevel::Global,
-            resilience: None,
             recovery_gate: None,
         }
     }
@@ -1251,7 +1245,6 @@ mod tests {
                 slot_bindings,
                 credential_ids,
                 scope: ScopeLevel::Global,
-                resilience: None,
                 recovery_gate: None,
             }
         }

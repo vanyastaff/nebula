@@ -192,7 +192,6 @@ mod counting {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
-            resilience: opts.resilience,
             recovery_gate: opts.recovery_gate,
         })
     }
@@ -1271,7 +1270,6 @@ mod u9_gate {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<GateResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("resident registration must succeed");
@@ -1507,7 +1505,6 @@ mod reload_deferral {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -1553,7 +1550,6 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Bounded(bounded),
             acquire: Manager::erased_acquire_bounded_for::<ServiceReload>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -1587,7 +1583,6 @@ mod reload_deferral {
                 v(1).fingerprint(),
             )),
             acquire: Manager::erased_acquire_pooled_for::<PoolReload>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register pool");
@@ -1607,7 +1602,6 @@ mod reload_deferral {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<ResidentReload>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register resident");
@@ -1627,7 +1621,6 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Bounded(excl_rt),
             acquire: Manager::erased_acquire_bounded_for::<ExclusiveReload>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register exclusive");
@@ -1650,7 +1643,6 @@ mod reload_deferral {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Bounded(tport_rt),
             acquire: Manager::erased_acquire_bounded_for::<TransportReload>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register transport");

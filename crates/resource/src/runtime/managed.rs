@@ -18,7 +18,6 @@ use tokio::sync::Notify;
 use super::TopologyRuntime;
 use crate::{
     error::Error,
-    integration::AcquireResilience,
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
     resource::Resource,
@@ -43,8 +42,6 @@ pub struct ManagedResource<R: Resource> {
     pub(crate) generation: AtomicU64,
     /// Current lifecycle status (phase + last error).
     pub(crate) status: ArcSwap<ResourceStatus>,
-    /// Optional resilience configuration (timeout + retry) for acquire.
-    pub(crate) resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     ///
     /// When set, acquire calls check the gate before proceeding and

@@ -163,7 +163,6 @@ async fn register_from_value_rejects_inline_secret_field() {
             topology(),
             Manager::erased_acquire_resident_for::<Db>(),
             None,
-            None,
         )
         .await
         .expect_err("config carrying an inline secret-shaped field must be rejected");
@@ -216,7 +215,6 @@ async fn register_from_value_accepts_clean_config_same_resource() {
             ScopeLevel::Global,
             topology(),
             Manager::erased_acquire_resident_for::<Db>(),
-            None,
             None,
         )
         .await

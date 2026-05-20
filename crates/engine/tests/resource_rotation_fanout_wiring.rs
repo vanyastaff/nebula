@@ -182,7 +182,6 @@ async fn wire(behaviour: Behaviour) -> Wired {
             ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<Recording>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("register resolved-credential row");
@@ -630,7 +629,6 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
             ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<Recording>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("register resolved-credential row");

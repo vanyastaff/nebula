@@ -3,7 +3,7 @@
 //! - [`ManagerConfig`] — manager construction parameters
 //! - [`RegistrationSpec`] — the single parameter aggregate consumed by
 //!   [`Manager::register`](super::Manager::register)
-//! - [`RegisterOptions`] — scope / resilience / recovery / slot-identity knobs
+//! - [`RegisterOptions`] — scope / recovery / slot-identity knobs
 //! - [`ShutdownConfig`] — graceful shutdown tuning
 //! - [`DrainTimeoutPolicy`] — what to do on drain timeout (#302)
 
@@ -12,8 +12,8 @@ use std::{sync::Arc, time::Duration};
 use nebula_core::ScopeLevel;
 
 use crate::{
-    integration::AcquireResilience, recovery::gate::RecoveryGate, registry::ErasedAcquireFn,
-    resource::Resource, runtime::TopologyRuntime,
+    recovery::gate::RecoveryGate, registry::ErasedAcquireFn, resource::Resource,
+    runtime::TopologyRuntime,
 };
 
 /// Policy that controls what `graceful_shutdown` does when the
@@ -117,7 +117,7 @@ impl Default for ManagerConfig {
 /// Extended options for resource registration.
 ///
 /// Used with the `register_*_with` convenience methods to configure
-/// resilience and recovery beyond the simple `register_*` defaults.
+/// recovery beyond the simple `register_*` defaults.
 ///
 /// Per slot model, credential bindings are no longer threaded through
 /// registration: the `resource: R` value handed to `Manager::register*`
@@ -139,8 +139,6 @@ impl Default for ManagerConfig {
 pub struct RegisterOptions {
     /// Scope level for the resource (default: `Global`).
     pub scope: ScopeLevel,
-    /// Optional acquire resilience (timeout + retry + circuit breaker).
-    pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
     /// Collision-free structural slot identity over this registration's
@@ -169,7 +167,6 @@ impl Default for RegisterOptions {
     fn default() -> Self {
         Self {
             scope: ScopeLevel::Global,
-            resilience: None,
             recovery_gate: None,
             slot_identity: crate::dedup::SlotIdentity::Unbound,
         }
@@ -181,13 +178,6 @@ impl RegisterOptions {
     #[must_use]
     pub fn with_scope(mut self, scope: ScopeLevel) -> Self {
         self.scope = scope;
-        self
-    }
-
-    /// Attach an acquire-resilience policy for this registration.
-    #[must_use]
-    pub fn with_resilience(mut self, resilience: AcquireResilience) -> Self {
-        self.resilience = Some(resilience);
         self
     }
 
@@ -255,8 +245,6 @@ pub struct RegistrationSpec<R: Resource> {
     pub topology: TopologyRuntime<R>,
     /// Type-erased acquire hook captured at registration time.
     pub acquire: ErasedAcquireFn,
-    /// Optional acquire resilience (timeout + retry + circuit breaker).
-    pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
 }

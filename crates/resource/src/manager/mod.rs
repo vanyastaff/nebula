@@ -345,7 +345,6 @@ use crate::{
     context::ResourceContext,
     error::Error,
     events::ResourceEvent,
-    integration::AcquireResilience,
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
     options::AcquireOptions,
     recovery::gate::{GateState, RecoveryGate},
@@ -357,13 +356,11 @@ use crate::{
 };
 
 pub(crate) mod acquire_dispatch;
-mod execute;
 mod gate;
 pub(crate) mod options;
 pub(crate) mod shutdown;
 
 pub use crate::registry::ErasedAcquireFn;
-use execute::execute_with_resilience;
 use gate::{admit_through_gate, settle_gate_admission};
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
@@ -674,7 +671,6 @@ impl Manager {
             slot_identity,
             topology,
             acquire,
-            resilience,
             recovery_gate,
         } = spec;
 
@@ -700,7 +696,6 @@ impl Manager {
             release_queue: Arc::clone(&self.release_queue),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
-            resilience,
             recovery_gate,
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
@@ -887,10 +882,10 @@ impl Manager {
             slot_count = slot_bindings.len(),
         )
     )]
-    // guard-justified: the production engine registrar dispatches into this positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + the two optional policies), so the 9-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
+    // guard-justified: the production engine registrar dispatches into this positionally (config_json + expr_engine + slot_bindings + resource + scope + topology + acquire + recovery_gate), so the 8-param JSON-driven shape is the engine ABI — collapsing it into a struct would re-introduce the navigation hop the single funnel removed and is not warranted for the one erased call site.
     #[allow(
         clippy::too_many_arguments,
-        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; collapsing the 9-param shape into a struct would re-introduce a navigation hop for the one erased call site, and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
+        reason = "engine-facing JSON-driven structural-identity entry: the production engine registrar calls register_resolved positionally; collapsing the 8-param shape into a struct would re-introduce a navigation hop for the one erased call site, and the body itself builds one RegistrationSpec and delegates to the single register() funnel"
     )]
     pub async fn register_resolved<R>(
         &self,
@@ -901,7 +896,6 @@ impl Manager {
         scope: ScopeLevel,
         topology: TopologyRuntime<R>,
         acquire: ErasedAcquireFn,
-        resilience: Option<AcquireResilience>,
         recovery_gate: Option<Arc<RecoveryGate>>,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
@@ -970,7 +964,6 @@ impl Manager {
             slot_identity: slot_identity.clone(),
             topology,
             acquire,
-            resilience,
             recovery_gate,
         })?;
         Ok(slot_identity)
@@ -2003,7 +1996,7 @@ impl Manager {
     async fn run_acquire<R, F, Fut>(
         &self,
         managed: Arc<ManagedResource<R>>,
-        dispatch: F,
+        mut dispatch: F,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: Resource,
@@ -2032,9 +2025,8 @@ impl Manager {
         // pre-checks. Rationale: see the `manager` module documentation.
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-        let resilience = managed.resilience.clone();
 
-        let result = execute_with_resilience(&resilience, dispatch).await;
+        let result = dispatch().await;
 
         // Settle the gate ticket based on the acquire result. #322: this
         // makes the ticket ownership end-to-end — on success we `resolve`,
@@ -2826,7 +2818,6 @@ mod shutdown_post_count_race_tests {
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register succeeds");
@@ -2917,7 +2908,6 @@ mod shutdown_post_count_race_tests {
                 slot_identity: crate::dedup::SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<ShutdownRaceResident>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register succeeds");

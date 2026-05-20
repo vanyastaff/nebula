@@ -150,7 +150,6 @@ fn register_counting(
             ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<CountingResource>(),
-        resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -511,7 +510,6 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");
@@ -589,7 +587,6 @@ async fn typed_lookup_skips_sibling_type_and_falls_through_to_global() {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<SiblingResidentResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register sibling type at org scope must succeed");
