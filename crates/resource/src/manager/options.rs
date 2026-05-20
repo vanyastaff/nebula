@@ -213,11 +213,11 @@ impl RegisterOptions {
 /// → `register_with_slot_identity` delegation chain plus ~17 per-topology
 /// `register_<topo>[_with]` shorthands into one struct fed to one funnel.
 /// It is a plain struct with **public fields and no builder**: every field
-/// is required to name a registry row exactly, the two genuinely-optional
-/// policies are `Option`, and `slot_identity` defaults via
-/// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) at the construction
-/// site (no `Default` impl is possible — `R` / `R::Config` are generic and
-/// not `Default`).
+/// names a registry row exactly, the one genuinely-optional policy
+/// (`recovery_gate`) is `Option<Arc<RecoveryGate>>`, and `slot_identity`
+/// defaults via [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) at
+/// the construction site (no `Default` impl is possible — `R` / `R::Config`
+/// are generic and not `Default`).
 ///
 /// Per slot model the `resource: R` value is expected to have **all
 /// `#[credential]` slot fields already resolved and populated** before it

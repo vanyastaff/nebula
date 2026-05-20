@@ -389,7 +389,15 @@ impl<R: Resource> Drop for ResourceGuard<R> {
         // recycle/destroy effect. Send failures (no subscribers) are
         // expected and silently dropped via `.ok()`, matching every other
         // event sink in the crate.
-        if let Some(tx) = self.event_tx.take() {
+        //
+        // Skip the emit when `inner` is `None` — that state is only
+        // produced by `detach()`, which hands the lease to the caller
+        // without running any release/recycle/destroy. Emitting `Released`
+        // here would be a false lifecycle signal: subscribers would see a
+        // release for a lease that is still live in caller ownership.
+        if self.inner.is_some()
+            && let Some(tx) = self.event_tx.take()
+        {
             tx.send(ResourceEvent::Released {
                 key: self.resource_key.clone(),
                 held,

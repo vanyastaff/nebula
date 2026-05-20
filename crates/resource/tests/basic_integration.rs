@@ -2804,6 +2804,61 @@ impl Resident for FailingResidentResource {
     }
 }
 
+/// Resident resource whose `create` blocks on a [`tokio::sync::Notify`]
+/// until [`Self::unblock`] is woken. Exists to prove "manager imposes no
+/// wall-clock timeout on `create`" — `FailingResidentResource::create`
+/// completes immediately (success or error), so it cannot distinguish
+/// "no manager timeout" from "fast manager timeout".
+#[derive(Clone)]
+struct BlockingResidentResource {
+    unblock: Arc<tokio::sync::Notify>,
+}
+
+impl BlockingResidentResource {
+    fn new() -> Self {
+        Self {
+            unblock: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+impl Resource for BlockingResidentResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+
+    fn key() -> ResourceKey {
+        resource_key!("test-blocking-resident")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _ctx: &ResourceContext,
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let unblock = Arc::clone(&self.unblock);
+        async move {
+            unblock.notified().await;
+            Err(TestError("unblocked but never satisfied".into()))
+        }
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Resident for BlockingResidentResource {
+    fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
+        true
+    }
+}
+
 /// Error that maps to a permanent (non-retryable) resource error.
 #[derive(Debug, Clone)]
 struct PermanentTestError(String);
@@ -2928,7 +2983,14 @@ async fn acquire_does_not_retry_permanent_at_manager_layer() {
         .acquire_resident::<PermanentFailResource>(&ctx, &AcquireOptions::default())
         .await;
 
-    assert!(result.is_err(), "permanent failure surfaces immediately");
+    // Assert both the attempt count AND the typed error kind. The count
+    // alone pins "no manager-layer retry"; pinning `ErrorKind::Permanent`
+    // pins the orthogonal "no error-kind normalization at the manager
+    // layer" invariant — if the manager ever started re-wrapping
+    // permanent into transient (or vice versa), the count assertion
+    // would still pass but classification would be silently broken.
+    let err = result.expect_err("permanent failure surfaces immediately");
+    assert_eq!(*err.kind(), ErrorKind::Permanent);
     assert_eq!(
         resource.create_count.load(Ordering::Relaxed),
         1,
@@ -2965,37 +3027,58 @@ async fn acquire_succeeds_without_resilience() {
     drop(handle);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn acquire_has_no_manager_layer_timeout() {
     // Mythos v2: manager applies no wall-clock timeout. Acquire-timeout
     // belongs to the topology runtime (`create_timeout` on resident /
     // pool config) or to a caller-composed `nebula-resilience` pipeline.
+    //
+    // To prove the manager imposes no wall-clock bound on a slow
+    // `create`, we use a resource whose `create` blocks indefinitely on
+    // a `Notify` and wrap the acquire in a caller-side
+    // `tokio::time::timeout`. The outer timeout MUST be the path that
+    // resolves first — if the manager ever started imposing its own
+    // bound, this test would fail by either succeeding (acquire returns
+    // before the outer timeout) or returning a typed manager-side error
+    // (acquire returns an `Error` before the outer `Elapsed`).
+    //
+    // `start_paused = true` gives us deterministic time control: the
+    // outer 1-second timeout advances via `tokio::time::timeout`'s own
+    // internal clock manipulation without sleeping wall-time.
     let manager = Manager::new();
-    let resource = FailingResidentResource::new(100);
+    let resource = BlockingResidentResource::new();
     let resident_rt =
-        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+        ResidentRuntime::<BlockingResidentResource>::new(resident::config::Config::default());
 
     manager
         .register(RegistrationSpec {
-            resource,
+            resource: resource.clone(),
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
+            acquire: Manager::erased_acquire_resident_for::<BlockingResidentResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result = manager
-        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
-        .await;
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        manager.acquire_resident::<BlockingResidentResource>(&ctx, &AcquireOptions::default()),
+    )
+    .await;
 
     assert!(
-        result.is_err(),
-        "transient acquire failure surfaces (no manager-layer timeout intervenes)"
+        outcome.is_err(),
+        "outer caller-side timeout must fire (manager imposes no wall-clock bound) — outcome: {outcome:?}",
     );
+    // Release the blocked `create` so the spawned future does not leak
+    // beyond the test (`tokio::time::timeout` drops the future, which
+    // should cancel-drop the in-progress create — `notify_one` here is
+    // belt-and-suspenders for any internal create-detach path that may
+    // outlive the caller cancellation in future refactors).
+    resource.unblock.notify_waiters();
 }
 
 // ---------------------------------------------------------------------------

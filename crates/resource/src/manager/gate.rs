@@ -42,9 +42,13 @@ pub(super) enum GateAdmission {
     ///
     /// `attempt` is the 1-based ticket attempt number, `backoff_on_fail` is
     /// the delay the gate would impose if this probe `fail_transient`s, and
-    /// `last_failure` carries the redacted message from the prior `Failed`
-    /// state (`None` when the probe was promoted directly from `Idle`).
-    /// These three fields exist so the manager can emit a truthful
+    /// `last_failure` carries the prior `Failed` state's message. The
+    /// `Idle` branch of [`admit_through_gate`] returns
+    /// [`OpenGated`](Self::OpenGated), not [`Probe`](Self::Probe), so
+    /// `last_failure` is always `Some` here today — the field is kept
+    /// `Option<String>` to leave room for future admission paths that may
+    /// promote without a prior message. These three fields exist so the
+    /// manager can emit a truthful
     /// [`ResourceEvent::RetryAttempt`](crate::events::ResourceEvent::RetryAttempt)
     /// without re-reading state (which would race the ticket).
     Probe {

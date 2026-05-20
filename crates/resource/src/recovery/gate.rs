@@ -142,9 +142,13 @@ impl RecoveryTicket {
     /// [`GateState::Idle`] and waking all waiters.
     pub fn resolve(mut self) {
         self.consumed = true;
-        let next = GateState::Idle;
+        let next = Arc::new(GateState::Idle);
+        // Store BEFORE emit so a subscriber that reacts to the event and
+        // immediately reads `gate.state()` observes the new state, not
+        // the old one. Matches the emit-after-CAS ordering used in
+        // `try_begin` / `try_begin_from_failed` / `cas_to_permanently_failed`.
+        self.gate.state.store(Arc::clone(&next));
         self.gate.emit_state(&next);
-        self.gate.state.store(Arc::new(next));
         self.gate.notify.notify_waiters();
     }
 
@@ -152,24 +156,26 @@ impl RecoveryTicket {
     pub fn fail_transient(mut self, message: impl Into<String>) {
         self.consumed = true;
         let backoff = compute_backoff(self.gate.base_backoff, self.attempt);
-        let next = GateState::Failed {
+        let next = Arc::new(GateState::Failed {
             message: message.into(),
             retry_at: Instant::now() + backoff,
             attempt: self.attempt,
-        };
+        });
+        // Store-then-emit ordering: see `resolve` for the rationale.
+        self.gate.state.store(Arc::clone(&next));
         self.gate.emit_state(&next);
-        self.gate.state.store(Arc::new(next));
         self.gate.notify.notify_waiters();
     }
 
     /// Marks the recovery as permanently failed — no further attempts.
     pub fn fail_permanent(mut self, message: impl Into<String>) {
         self.consumed = true;
-        let next = GateState::PermanentlyFailed {
+        let next = Arc::new(GateState::PermanentlyFailed {
             message: message.into(),
-        };
+        });
+        // Store-then-emit ordering: see `resolve` for the rationale.
+        self.gate.state.store(Arc::clone(&next));
         self.gate.emit_state(&next);
-        self.gate.state.store(Arc::new(next));
         self.gate.notify.notify_waiters();
     }
 
@@ -183,13 +189,16 @@ impl Drop for RecoveryTicket {
     fn drop(&mut self) {
         if !self.consumed {
             let backoff = compute_backoff(self.gate.base_backoff, self.attempt);
-            let next = GateState::Failed {
+            let next = Arc::new(GateState::Failed {
                 message: "recovery ticket dropped without resolution".into(),
                 retry_at: Instant::now() + backoff,
                 attempt: self.attempt,
-            };
+            });
+            // Store-then-emit ordering: see `RecoveryTicket::resolve` for
+            // the rationale (subscribers must observe the new state when
+            // they react to the event).
+            self.gate.state.store(Arc::clone(&next));
             self.gate.emit_state(&next);
-            self.gate.state.store(Arc::new(next));
             self.gate.notify.notify_waiters();
         }
     }
@@ -351,13 +360,24 @@ impl RecoveryGate {
     }
 
     /// Attaches an event sink so subsequent state transitions emit
-    /// [`ResourceEvent::RecoveryGateChanged`]. Idempotent — the first call
-    /// wins; subsequent calls silently no-op so a gate handed to multiple
-    /// registries does not flip subscribers mid-flight.
+    /// [`ResourceEvent::RecoveryGateChanged`]. Wired by
+    /// [`Manager::register`](crate::Manager::register) at registration
+    /// time; not part of the public crate surface — the
+    /// `broadcast::Sender` is an internal transport detail the manager
+    /// owns.
     ///
-    /// The manager wires this once at register time; callers outside the
-    /// manager do not need to call it.
-    pub fn set_event_sink(&self, tx: broadcast::Sender<ResourceEvent>, key: ResourceKey) {
+    /// **Idempotent** — the first call wins; subsequent calls silently
+    /// no-op so a gate handed to multiple registries does not flip
+    /// subscribers mid-flight.
+    ///
+    /// **One gate per resource registration.** A `RecoveryGate` shared
+    /// across multiple `Manager::register` calls (e.g. a recovery group
+    /// reused for both `db` and `cache`) will report every transition
+    /// under the **first** registering resource's key — the second
+    /// `set_event_sink` is a no-op by design. Treat one
+    /// `Arc<RecoveryGate>` as belonging to one resource registration; if
+    /// recovery-group sharing matters, give each resource its own gate.
+    pub(crate) fn set_event_sink(&self, tx: broadcast::Sender<ResourceEvent>, key: ResourceKey) {
         // OnceLock::set returns Err on second call — we treat that as
         // a no-op rather than a programming error, since the manager
         // may re-register a resource that already had a gate wired.
@@ -494,9 +514,11 @@ impl RecoveryGate {
 
     /// Forces the gate back to [`GateState::Idle`] (admin override).
     pub fn reset(&self) {
-        let next = GateState::Idle;
+        let next = Arc::new(GateState::Idle);
+        // Store-then-emit ordering: see `RecoveryTicket::resolve` for the
+        // rationale.
+        self.inner.state.store(Arc::clone(&next));
         self.inner.emit_state(&next);
-        self.inner.state.store(Arc::new(next));
         self.inner.notify.notify_waiters();
     }
 }
