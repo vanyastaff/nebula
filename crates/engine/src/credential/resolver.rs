@@ -10,6 +10,7 @@ use nebula_credential::{
 };
 #[cfg(feature = "rotation")]
 use nebula_credential::{
+    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage,
     credentials::{OAuth2Credential, OAuth2State},
     error::CredentialError,
 };
@@ -438,23 +439,40 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
             let mut oauth_state: OAuth2State =
                 serde_json::from_value(serde_json::to_value(&*state).map_err(|e| {
-                    CredentialError::Provider(format!(
-                        "oauth2 refresh state serialization failed: {e}"
-                    ))
+                    CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                        ProviderErrorKind::Schema,
+                        SecretFreeMessage::new(format!(
+                            "oauth2 refresh state serialization failed: {e}"
+                        )),
+                    )))
                 })?)
                 .map_err(|e| {
-                    CredentialError::Provider(format!("oauth2 refresh state decode failed: {e}"))
+                    CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                        ProviderErrorKind::Schema,
+                        SecretFreeMessage::new(format!("oauth2 refresh state decode failed: {e}")),
+                    )))
                 })?;
 
-            refresh_oauth2_state(&mut oauth_state)
-                .await
-                .map_err(|e| CredentialError::Provider(e.to_string()))?;
+            refresh_oauth2_state(&mut oauth_state).await.map_err(|e| {
+                CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                    ProviderErrorKind::ServerError,
+                    SecretFreeMessage::new(e.to_string()),
+                )))
+            })?;
 
             *state = serde_json::from_value(serde_json::to_value(oauth_state).map_err(|e| {
-                CredentialError::Provider(format!("oauth2 refresh state serialization failed: {e}"))
+                CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                    ProviderErrorKind::Schema,
+                    SecretFreeMessage::new(format!(
+                        "oauth2 refresh state serialization failed: {e}"
+                    )),
+                )))
             })?)
             .map_err(|e| {
-                CredentialError::Provider(format!("oauth2 refresh state encode failed: {e}"))
+                CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                    ProviderErrorKind::Schema,
+                    SecretFreeMessage::new(format!("oauth2 refresh state encode failed: {e}")),
+                )))
             })?;
 
             Ok(Some(RefreshOutcome::Refreshed))

@@ -203,8 +203,10 @@ pub use crate::secrets::serde_secret;
 // Error / event / metadata / snapshot / identifiers
 pub use crate::{
     error::{
-        CredentialAccessError, CredentialError, CryptoError, RefreshErrorKind, ResolutionStage,
-        RetryAdvice, ValidationError,
+        CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
+        ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,
+        RevokeErrorKind, RevokeFailedContext, SchemeKind, SchemeMismatch, SecretFreeMessage,
+        ValidationError,
     },
     event::CredentialEvent,
     ext::HasCredentialsExt,

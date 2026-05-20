@@ -27,7 +27,7 @@ use crate::{
     Credential, CredentialContext, CredentialState, Interactive, PendingState, Refreshable,
     Revocable, SecretString, Testable,
     contract::plugin_capability_report,
-    error::CredentialError,
+    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
     scheme::OAuth2Token,
@@ -448,7 +448,12 @@ impl Credential for OAuth2Credential {
 
         match grant_type {
             GrantType::AuthorizationCode | GrantType::DeviceCode => Err(CredentialError::Provider(
-                "OAuth2 authorization_code / device_code flow must be initiated via OAuth2Credential::initiate_* and the framework PendingStateStore (Tech Spec §15.4)".into(),
+                Box::new(ProviderErrorContext::new(
+                    ProviderErrorKind::Other,
+                    SecretFreeMessage::new(
+                        "OAuth2 auth_code/device_code: use initiate_* + PendingStateStore",
+                    ),
+                )),
             )),
             GrantType::ClientCredentials => Err(oauth2_http_transport_disabled()),
         }
@@ -655,12 +660,12 @@ impl OAuth2Credential {
         // `CredentialError` rather than a runtime panic in library code.
         // PR #582 review (CodeRabbit) — no `unwrap`/`expect` in lib code.
         let redirect_uri = config.redirect_uri.clone().ok_or_else(|| {
-            CredentialError::Provider(
-                "authorization_code config missing redirect_uri (RFC 6749 §4.1.1 requires \
-                 `redirect_uri` to be present at the authorization request site; check \
-                 OAuth2Config builder)"
-                    .into(),
-            )
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new(
+                    "authorization_code config missing redirect_uri (RFC 6749 §4.1.1)",
+                ),
+            )))
         })?;
 
         let pending = OAuth2Pending {
@@ -682,10 +687,10 @@ impl OAuth2Credential {
 // ── Private helpers ────────────────────────────────────────────────────
 
 fn oauth2_http_transport_disabled() -> CredentialError {
-    CredentialError::Provider(
-        "OAuth2 HTTP transport has moved: code exchange to nebula-api, token refresh to nebula-engine (API-owned OAuth flow)"
-            .into(),
-    )
+    CredentialError::Provider(Box::new(ProviderErrorContext::new(
+        ProviderErrorKind::Other,
+        SecretFreeMessage::new("OAuth2 HTTP transport moved: use nebula-api/nebula-engine"),
+    )))
 }
 
 /// Build the authorization URL for the Authorization Code grant.
@@ -701,14 +706,24 @@ fn build_auth_url(
     state: &str,
 ) -> Result<String, CredentialError> {
     let redirect_uri = config.redirect_uri.as_deref().ok_or_else(|| {
-        CredentialError::Provider("authorization_code config missing redirect_uri".into())
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new("authorization_code config missing redirect_uri"),
+        )))
     })?;
     let pkce_method = config.pkce.ok_or_else(|| {
-        CredentialError::Provider("authorization_code config missing pkce method".into())
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new("authorization_code config missing pkce method"),
+        )))
     })?;
 
-    let mut url = url::Url::parse(&config.auth_url)
-        .map_err(|e| CredentialError::Provider(format!("invalid auth_url: {e}")))?;
+    let mut url = url::Url::parse(&config.auth_url).map_err(|e| {
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new(format!("invalid auth_url: {e}")),
+        )))
+    })?;
 
     {
         let mut q = url.query_pairs_mut();

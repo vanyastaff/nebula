@@ -26,7 +26,8 @@ use nebula_credential::contract::resolve::{RefreshOutcome, ResolveResult};
 use nebula_credential::scheme::SecretToken;
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    CredentialState, Refreshable, SecretString,
+    CredentialState, ProviderErrorContext, ProviderErrorKind, Refreshable, SecretFreeMessage,
+    SecretString,
 };
 use nebula_schema::{FieldValues, Schema};
 use serde::{Deserialize, Serialize};
@@ -146,7 +147,10 @@ impl Credential for RefreshableFixtureCredential {
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<RefreshableFixtureState, ()>, CredentialError> {
         let token = values.get_string_by_str("token").ok_or_else(|| {
-            CredentialError::Provider("missing required field 'token'".to_owned())
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'token'"),
+            )))
         })?;
         Ok(ResolveResult::Complete(RefreshableFixtureState {
             token: token.to_owned(),

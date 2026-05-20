@@ -8,8 +8,11 @@ use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
 
 use crate::{
-    Credential, CredentialContext, SecretString, contract::plugin_capability_report,
-    error::CredentialError, metadata::CredentialMetadata, resolve::ResolveResult,
+    Credential, CredentialContext, SecretString,
+    contract::plugin_capability_report,
+    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
+    metadata::CredentialMetadata,
+    resolve::ResolveResult,
     scheme::SecretToken,
 };
 
@@ -86,7 +89,10 @@ impl Credential for ApiKeyCredential {
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
         let token = values.get_string_by_str("api_key").ok_or_else(|| {
-            CredentialError::Provider("missing required field 'api_key'".to_owned())
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'api_key'"),
+            )))
         })?;
         let secret = SecretString::new(token.to_owned());
         Ok(ResolveResult::Complete(SecretToken::new(secret)))

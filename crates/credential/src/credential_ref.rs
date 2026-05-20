@@ -127,7 +127,9 @@ impl<C: Credential> CredentialRef<C> {
 
         let scheme = snapshot.into_project::<C::Scheme>().map_err(|e| match e {
             crate::snapshot::SnapshotError::SchemeMismatch { expected, actual } => {
-                CredentialError::SchemeMismatch { expected, actual }
+                CredentialError::InvalidInput(format!(
+                    "scheme mismatch: expected {expected}, got {actual}"
+                ))
             },
         })?;
 

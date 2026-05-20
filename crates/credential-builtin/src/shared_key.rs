@@ -8,7 +8,8 @@ use nebula_credential::contract::plugin_capability_report;
 use nebula_credential::contract::resolve::ResolveResult;
 use nebula_credential::scheme::SharedKey;
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata, SecretString,
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
+    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
 };
 use nebula_schema::{FieldValues, Schema};
 use serde::Deserialize;
@@ -53,9 +54,12 @@ impl Credential for SharedKeyCredential {
         values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<SharedKey, ()>, CredentialError> {
-        let key = values
-            .get_string_by_str("key")
-            .ok_or_else(|| CredentialError::Provider("missing required field 'key'".to_owned()))?;
+        let key = values.get_string_by_str("key").ok_or_else(|| {
+            CredentialError::Provider(Box::new(ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("missing required field 'key'"),
+            )))
+        })?;
         Ok(ResolveResult::Complete(SharedKey::new(SecretString::new(
             key.to_owned(),
         ))))
