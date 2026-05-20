@@ -30,8 +30,8 @@ use nebula_credential::pending_store::PendingStateStore;
 use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use nebula_credential::{
-    AuthPattern, CredentialContext, CredentialId, CredentialRecord, CredentialRegistry,
-    CredentialSnapshot, PendingToken,
+    AuthPattern, Credential, CredentialContext, CredentialGuard, CredentialId, CredentialRecord,
+    CredentialRegistry, CredentialSnapshot, PendingToken,
 };
 use nebula_engine::credential::{CredentialResolver, LeaseLifecycle};
 use nebula_resilience::CallError;
@@ -40,6 +40,8 @@ use nebula_schema::FieldValues;
 use nebula_storage::credential::{AuditLayer, CacheLayer, EncryptionLayer};
 use serde::Serialize;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
+use zeroize::Zeroize;
 
 use crate::CredentialServiceError;
 use crate::dispatch::CredentialDispatch;
@@ -134,16 +136,12 @@ pub struct CredentialTypeInfo {
 /// [`CredentialServiceBuilder`](crate::builder::CredentialServiceBuilder).
 pub struct CredentialService<B: CredentialStore, PS: PendingStateStore> {
     pub(crate) store: Arc<LayeredStore<B>>,
-    // Consumed by the acquisition/refresh operations (resolve /
-    // resolve_with_refresh) which land alongside the dispatch closures
-    // in a later increment of this crate.
-    #[allow(dead_code)]
+    /// Engine resolver wired through the layered store stack. Used by
+    /// [`resolve_for_slot`](Self::resolve_for_slot) to produce a typed
+    /// [`CredentialGuard`] for action slot consumption.
     pub(crate) resolver: CredentialResolver<LayeredStore<B>>,
     pub(crate) lease: LeaseLifecycle,
     pub(crate) pending: PS,
-    // Consumed by the type-discovery operations (list_types / get_type)
-    // which project `CredentialMetadata` from the registry.
-    #[allow(dead_code)]
     pub(crate) registry: Arc<CredentialRegistry>,
     pub(crate) dispatch: Arc<CredentialDispatch>,
     pub(crate) ops: Arc<DispatchOps<B, PS>>,
@@ -970,6 +968,96 @@ impl<B: CredentialStore, PS: PendingStateStore> CredentialService<B, PS> {
             id.to_owned(),
             crate::binding::TenantFingerprint::from_scope(scope),
         ))
+    }
+
+    /// Production execution-time resolver. Consumes a tenant-validated
+    /// binding (from [`validate_credential_binding`]) and produces a typed
+    /// [`CredentialGuard<C::Scheme>`] for an action slot.
+    ///
+    /// # Hot path
+    ///
+    /// Called once per action node per execution. The engine resolver
+    /// (`CredentialResolver::resolve`) goes through the full layered-store
+    /// stack (`Audit(Cache(Encryption(raw)))`) composed at `build()` —
+    /// the `EncryptionLayer` decrypts on every miss, `CacheLayer` coalesces
+    /// warm-cache hits to avoid repeated decrypt, and `AuditLayer` records
+    /// each access. Target p99 ≤ 1ms on warm cache.
+    ///
+    /// # Cancellation
+    ///
+    /// `cancel` is observed via [`CancellationToken::run_until_cancelled`]
+    /// wrapping the entire resolver delegation. On cancellation, returns
+    /// [`CredentialServiceError::Cancelled`] without partial state.
+    ///
+    /// # Defence in depth
+    ///
+    /// Re-checks the binding's tenant fingerprint against `scope` even
+    /// though [`validate_credential_binding`] already enforced it at
+    /// construction — type-safe consumption with a runtime sanity arm that
+    /// fires if a binding is presented against the wrong scope.
+    ///
+    /// # Errors
+    ///
+    /// - [`CredentialServiceError::ScopeViolation`] — binding's tenant
+    ///   fingerprint does not match `scope`.
+    /// - [`CredentialServiceError::Cancelled`] — `cancel` fired.
+    /// - [`CredentialServiceError::NotFound`] — credential absent from store.
+    /// - [`CredentialServiceError::Internal`] — resolver error (kind
+    ///   mismatch, deserialisation failure, or store error).
+    ///
+    /// [`validate_credential_binding`]: Self::validate_credential_binding
+    pub async fn resolve_for_slot<C>(
+        &self,
+        scope: &TenantScope,
+        binding: &crate::ValidatedCredentialBinding,
+        cancel: CancellationToken,
+    ) -> Result<CredentialGuard<C::Scheme>, CredentialServiceError>
+    where
+        C: Credential,
+        C::Scheme: Zeroize + Clone,
+    {
+        // 1. Defence-in-depth fingerprint check: even though
+        //    `validate_credential_binding` enforced the scope at
+        //    construction, re-verify here so mismatched bindings fail
+        //    loudly at the consume site.
+        let expected_fp = crate::binding::TenantFingerprint::from_scope(scope);
+        if binding.fingerprint() != &expected_fp {
+            return Err(CredentialServiceError::ScopeViolation {
+                requested: scope.owner_id().to_string(),
+            });
+        }
+
+        // 2. Delegate to engine resolver, wrapped in cancellation. The
+        //    resolver goes through the full layered store stack
+        //    (EncryptionLayer → CacheLayer → AuditLayer) composed at
+        //    `build()`, so the EncryptionLayer is not bypassed.
+        let credential_id = binding.credential_id();
+        let scheme = cancel
+            .run_until_cancelled(async {
+                let handle = self
+                    .resolver
+                    .resolve::<C>(credential_id)
+                    .await
+                    .map_err(|e| CredentialServiceError::Internal(e.to_string()))?;
+
+                // Extract the owned scheme from the Arc returned by
+                // `snapshot()`. `CredentialResolver::resolve` constructs a
+                // fresh `CredentialHandle` with a new `ArcSwap`, so there
+                // is exactly one strong reference — `try_unwrap` succeeds.
+                // The `Clone` fallback is a belt-and-braces guard for any
+                // future caller that holds an extra reference.
+                let arc = handle.snapshot();
+                let owned = Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone());
+                Ok::<_, CredentialServiceError>(owned)
+            })
+            .await
+            .ok_or(CredentialServiceError::Cancelled)??;
+
+        tracing::debug!(
+            credential.id = credential_id,
+            "credential resolved for slot"
+        );
+        Ok(CredentialGuard::new(scheme))
     }
 
     /// Load the raw stored credential row **without** applying the

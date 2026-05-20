@@ -112,6 +112,31 @@ pub enum CredentialServiceError {
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:INTERNAL")]
     #[error("internal credential runtime error: {0}")]
     Internal(String),
+
+    /// The caller's cancellation token fired during the operation.
+    ///
+    /// The operation terminated without partial state mutation.
+    #[classify(category = "internal", code = "CREDENTIAL_SERVICE:CANCELLED")]
+    #[error("credential operation cancelled")]
+    Cancelled,
+
+    /// The validated binding's tenant fingerprint did not match the
+    /// caller's scope.
+    ///
+    /// Defence-in-depth check: [`validate_credential_binding`] already
+    /// enforced the scope at construction; this variant fires only when
+    /// the binding is presented against a mismatched scope at
+    /// `resolve_for_slot` time.
+    ///
+    /// [`validate_credential_binding`]: crate::service::CredentialService::validate_credential_binding
+    #[classify(category = "validation", code = "CREDENTIAL_SERVICE:SCOPE_VIOLATION")]
+    #[error(
+        "scope violation: credential binding validated for a different tenant than `{requested}`"
+    )]
+    ScopeViolation {
+        /// `owner_id` of the caller's scope.
+        requested: String,
+    },
 }
 
 #[cfg(test)]
