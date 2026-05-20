@@ -54,9 +54,8 @@ pub enum ErrorKind {
 /// Currently a single-variant `#[non_exhaustive]` enum: only [`Resource`]
 /// (the default) is constructed by any production code path. Older drafts
 /// included a `Target { id: String }` variant for per-target isolation
-/// failures (#391); it was removed at register R-051 resolution since no
-/// consumer ever wired it. New variants land here when an engine surface
-/// genuinely needs them.
+/// failures; it was removed since no consumer ever wired it. New
+/// variants land here when an engine surface genuinely needs them.
 ///
 /// [`Resource`]: ErrorScope::Resource
 #[non_exhaustive]

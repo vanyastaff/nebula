@@ -2,7 +2,7 @@
 //!
 //! [`Resource`] is the central abstraction: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! four associated types and the lifecycle methods (Phase 4 / slot model).
+//! four associated types and the lifecycle methods (slot model).
 //!
 //! Per slot model (supersedes credential isolation) the singular `type Credential`
 //! associated type was deleted in favor of typed credential **slot fields**
@@ -210,7 +210,7 @@ impl ResourceMetadataBuilder {
     }
 }
 
-/// Core resource trait — 4 associated types + lifecycle methods (Phase 4 / slot model).
+/// Core resource trait — 4 associated types + lifecycle methods (slot model).
 ///
 /// Uses return-position `impl Future` (RPITIT) instead of `async_trait`,
 /// which avoids the `Box<dyn Future>` allocation on every call.
@@ -267,6 +267,28 @@ pub trait Resource: Send + Sync + 'static {
     /// through the derive-emitted `self.<field>_slot()` accessor
     /// (`Option<Arc<CredentialGuard<C>>>`) — handling the `None`
     /// (unbound) case explicitly — never off the raw cell field.
+    ///
+    /// # Errors
+    ///
+    /// Map driver errors to [`crate::ErrorKind`] via
+    /// `impl Into<crate::Error> for Self::Error` (or
+    /// `#[derive(ClassifyError)]`) so the manager can decide retry:
+    ///
+    /// - [`Transient`](crate::ErrorKind::Transient) — connect timeout, network blip.
+    /// - [`Permanent`](crate::ErrorKind::Permanent) — auth failure, malformed config.
+    /// - [`Exhausted { retry_after }`](crate::ErrorKind::Exhausted) — backend rate-limit;
+    ///   drives backoff before the next acquire attempt.
+    /// - [`Backpressure`](crate::ErrorKind::Backpressure) — your own quota saturated.
+    /// - [`Cancelled`](crate::ErrorKind::Cancelled) — observed `ctx.cancel_token()` and aborted.
+    ///
+    /// # Cancellation
+    ///
+    /// `create` MUST be cancel-safe: observing
+    /// `ctx.cancel_token().cancelled()` MAY drop the future at any
+    /// `.await` point. Any partially-allocated OS resource (socket, temp
+    /// file, spawned task) MUST be released in the dropped path —
+    /// typically via RAII (`AbortOnDrop` for `JoinHandle`,
+    /// `tempfile::TempPath` for transient files).
     fn create(
         &self,
         config: &Self::Config,
@@ -308,6 +330,23 @@ pub trait Resource: Send + Sync + 'static {
     /// Post-invocation invariant (slot model): the resource emits no further
     /// authenticated traffic on the revoked credential. Default: no-op
     /// (the engine still taints + drains the runtime around this call).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the runtime cannot stop emitting
+    /// authenticated traffic on the revoked credential. The manager
+    /// surfaces the error as
+    /// [`SlotRevokeFailed`](crate::ResourceEvent::SlotRevokeFailed) on
+    /// the event channel and emits an inline
+    /// [`HealthChanged { healthy: false }`](crate::ResourceEvent::HealthChanged)
+    /// so subscribers see the failure even if they filter slot events.
+    ///
+    /// # Security
+    ///
+    /// On `Ok(())` the resource guarantees no subsequent traffic uses
+    /// the revoked credential. On `Err(_)` the manager treats the
+    /// runtime as compromised; the row stays tainted until a fresh
+    /// credential is bound.
     fn on_credential_revoke(
         &self,
         slot_name: &str,
@@ -361,6 +400,15 @@ pub trait Resource: Send + Sync + 'static {
     /// Health-checks an existing runtime.
     ///
     /// The default implementation always succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` classified as
+    /// [`Transient`](crate::ErrorKind::Transient) for a recoverable health
+    /// failure (the manager will tear the runtime down and let the next
+    /// acquire rebuild it) or
+    /// [`Permanent`](crate::ErrorKind::Permanent) for a misconfiguration
+    /// that no retry will fix.
     fn check(
         &self,
         _runtime: &Self::Runtime,
@@ -371,6 +419,14 @@ pub trait Resource: Send + Sync + 'static {
     /// Gracefully winds down a runtime (e.g., drain connections).
     ///
     /// The default implementation is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if graceful shutdown failed and the runtime
+    /// state is now indeterminate. The manager treats any error here as
+    /// non-fatal and proceeds to [`destroy`](Self::destroy), so this
+    /// method MUST be idempotent — multiple calls (or
+    /// shutdown-then-destroy) leave the runtime in the same final state.
     fn shutdown(
         &self,
         _runtime: &Self::Runtime,
@@ -381,6 +437,21 @@ pub trait Resource: Send + Sync + 'static {
     /// Final cleanup — consumes the runtime.
     ///
     /// The default implementation drops the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` only if final cleanup cannot complete (e.g.,
+    /// background workers refused to join). The manager logs the error
+    /// and discards the runtime regardless — `destroy` is the last
+    /// chance to release server-side handles, so prefer side-effects
+    /// over `Err` here.
+    ///
+    /// # Cancellation
+    ///
+    /// `destroy` typically runs through
+    /// [`ReleaseQueue`](crate::ReleaseQueue) so caller-side `Drop` is
+    /// non-blocking. It MUST tolerate running after the manager's cancel
+    /// token has fired; do not abort if you observe cancellation.
     fn destroy(
         &self,
         runtime: Self::Runtime,

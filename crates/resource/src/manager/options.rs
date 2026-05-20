@@ -48,8 +48,8 @@ pub struct ShutdownConfig {
     pub drain_timeout: Duration,
     /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
     pub on_drain_timeout: DrainTimeoutPolicy,
-    /// Upper bound on how long Phase 4 will wait for release-queue
-    /// workers to finish processing outstanding tasks.
+    /// Upper bound on how long the release-queue drain phase will wait
+    /// for release-queue workers to finish processing outstanding tasks.
     pub release_queue_timeout: Duration,
 }
 
@@ -82,7 +82,7 @@ impl ShutdownConfig {
         self
     }
 
-    /// Override the release-queue timeout budget for Phase 4.
+    /// Override the release-queue timeout budget.
     #[must_use]
     pub fn with_release_queue_timeout(mut self, timeout: Duration) -> Self {
         self.release_queue_timeout = timeout;

@@ -1,6 +1,6 @@
 //! # nebula-resource-macros
 //!
-//! Proc-macros for the `nebula-resource` crate (Phase 4 / slot model).
+//! Proc-macros for the `nebula-resource` crate (slot model).
 //!
 //! ## `#[derive(Resource)]`
 //!
@@ -55,7 +55,7 @@ mod field_slots;
 mod resource;
 mod resource_attrs;
 
-/// Derive macro for the `Resource` trait (Phase 4 / slot model).
+/// Derive macro for the `Resource` trait (slot model).
 ///
 /// Emits `impl Resource for Foo` (with `todo!()` `create` body — the
 /// implementor supplies it) and `impl DeclaresDependencies for Foo`

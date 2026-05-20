@@ -2,9 +2,9 @@
 //!
 //! [`AcquireOptions`] lets callers communicate a deadline to the resource
 //! subsystem. Older drafts also carried `intent` and `tags` fields reserved
-//! for engine integration (#391); those were removed at register R-051
-//! resolution since no consumer ever wired them. If #391 lands, the
-//! relevant surface is added back via a new spec.
+//! for engine integration; those were removed since no consumer ever wired
+//! them. If the need returns, the relevant surface is added back via a new
+//! spec.
 
 use std::time::{Duration, Instant};
 

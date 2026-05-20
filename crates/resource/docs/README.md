@@ -5,8 +5,10 @@ Type-safe, topology-aware resource management for the Nebula workflow engine.
 clients — database connections, HTTP clients, message-queue producers, and
 anything else that is costly to create and should be reused across executions.
 It handles the full operational lifecycle: create → health-check → recycle →
-shutdown → destroy, with built-in resilience, recovery gating, and lifecycle
+shutdown → destroy, with credential rotation, recovery gating, and lifecycle
 event streaming.
+
+> **Maturity: `frontier`.** The public API still evolves between minor releases.
 
 ---
 
@@ -14,34 +16,34 @@ event streaming.
 
 | Type | Role |
 |------|------|
-| [`Resource`] | Central trait — 4 associated types, lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + credential-rotation hooks |
-| [`Pooled`] | Topology trait for N interchangeable instances with checkout/recycle semantics |
-| [`Resident`] | Topology trait for one shared instance cloned on each acquire |
-| [`Service`] | Topology trait for a long-lived runtime that issues short-lived tokens |
-| [`Transport`] | Topology trait for a shared connection with multiplexed sessions |
-| [`Exclusive`] | Topology trait for serialized single-caller access via semaphore |
-| [`Manager`] | Central registry — registration, typed acquire dispatch, graceful shutdown |
-| [`ResourceGuard`] | RAII lease guard; releases or recycles on drop, tainting supported |
-| [`ResourceContext`] | Execution context: scope level, cancellation token, capability traits |
+| [`Resource`] | Central trait — 4 associated types + lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + slot-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
+| [`Pooled`] | Topology trait — N interchangeable instances with checkout/recycle |
+| [`Resident`] | Topology trait — one shared instance cloned on each acquire |
+| [`Bounded`] | Topology trait — parameterised on a sealed `Cap` typestate: `Unbounded`, `Capped<N>`, `Exclusive` |
+| [`Manager`] | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire dispatch, slot rotation, graceful shutdown |
+| [`ResourceGuard`] | RAII lease guard; releases on drop, tainting supported |
+| [`ResourceContext`] | Execution context — scope, cancellation, capability traits |
 | [`Error`] / [`ErrorKind`] | Unified error with retryability, scope, and optional retry-after hint |
 
 ---
 
 ## Topology Decision Guide
 
-Choose the topology that matches the resource's concurrency model.
-
 | Topology | Use when | Example |
 |----------|----------|---------|
-| `Pooled` | Multiple interchangeable connections; checkout/recycle needed | PostgreSQL, Redis |
-| `Resident` | One shared object; cheap to clone for each caller | In-memory cache, config store |
-| `Service` | Runtime is long-lived; callers get short-lived tokens from it | OAuth client issuing access tokens |
-| `Transport` | Single connection multiplexed across callers (no per-caller clone) | gRPC channel, AMQP connection |
-| `Exclusive` | Only one caller may use the resource at a time | Rate-limited SMS gateway |
+| `Pooled` | N interchangeable connections; checkout/recycle | PostgreSQL, Redis |
+| `Resident` | One shared object; cheap to `Arc::clone` for each caller | `reqwest::Client`, in-memory cache |
+| `Bounded<Unbounded>` | Long-lived runtime issuing short-lived tokens | OAuth client |
+| `Bounded<Capped<N>>` | Multiplexed sessions over one shared connection | gRPC channel, AMQP |
+| `Bounded<Exclusive>` | One caller at a time, semaphore(1) + reset-on-release | File lock, USB-serial |
+
+The `Bounded` topology folded the former standalone `Service` / `Transport` /
+`Exclusive` traits into one runtime; the `Cap` typestate selects concurrency
+arity at **compile time** — using `BoundedRelease` against `Unbounded`, or
+omitting it for `Capped` / `Exclusive`, is a build error.
 
 > **Background workers and event sources** live in
-> [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`)
-> per [ADR-0037](../../../docs/adr/HISTORICAL.md).
+> [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`).
 > They are not part of the `nebula-resource` topology surface.
 
 ---
@@ -51,18 +53,20 @@ Choose the topology that matches the resource's concurrency model.
 ### 1. Implement `Resource`
 
 ```rust,no_run
-use nebula_resource::{
-    resource_key, ResourceContext, Error, Manager, PoolConfig, Resource,
-    ResourceConfig, ResourceMetadata,
-};
+use std::future::Future;
 use nebula_core::ResourceKey;
+use nebula_resource::{
+    resource_key, Error, Resource, ResourceConfig, ResourceContext, HasSchema, ValidSchema,
+};
 
-// --- Config (no secrets) -----------------------------------------------------
-
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 struct HttpConfig {
     base_url: String,
     timeout_ms: u64,
+}
+
+impl HasSchema for HttpConfig {
+    fn schema() -> ValidSchema { ValidSchema::empty() }
 }
 
 impl ResourceConfig for HttpConfig {
@@ -74,121 +78,110 @@ impl ResourceConfig for HttpConfig {
     }
 }
 
-// --- Runtime (the live client) -----------------------------------------------
-
 #[derive(Clone)]
-struct HttpRuntime {
-    base_url: String,
-}
+struct HttpRuntime { base_url: String }
 
-// --- Resource descriptor -----------------------------------------------------
-
+// No `#[credential]` field — this resource needs no credential. A credential-
+// bound resource instead declares `#[credential(key = "...")] auth: SlotCell<CredentialGuard<C>>`.
 struct HttpResource;
 
-// No `#[credential]` field — this resource needs no credential. (There is
-// no `Credential` associated type or `NoCredential` opt-out; a credential-
-// bound resource instead declares a `#[credential(key = "...")]` slot.)
 impl Resource for HttpResource {
-    type Config     = HttpConfig;
-    type Runtime    = HttpRuntime;
-    type Lease      = HttpRuntime;   // Pooled: Lease == Runtime (cloned on checkout)
-    type Error      = Error;
+    type Config = HttpConfig;
+    type Runtime = HttpRuntime;
+    type Lease = HttpRuntime;   // Pooled / Resident: Lease == Runtime
+    type Error = Error;
 
-    fn key() -> ResourceKey {
-        resource_key!("http.client")
-    }
+    fn key() -> ResourceKey { resource_key!("http.client") }
 
-    async fn create(
-        &self,
-        config: &HttpConfig,
-        _ctx: &ResourceContext,
-    ) -> Result<HttpRuntime, Error> {
-        Ok(HttpRuntime { base_url: config.base_url.clone() })
+    fn create(
+        &self, config: &HttpConfig, _ctx: &ResourceContext,
+    ) -> impl Future<Output = Result<HttpRuntime, Error>> + Send {
+        async move { Ok(HttpRuntime { base_url: config.base_url.clone() }) }
     }
 }
 ```
 
-### 2. Implement the topology trait
+### 2. Implement a topology trait
 
-For pool topology, implement [`Pooled`] to tell the runtime when an instance
-can be recycled and how to detect a broken one.
+For the pool topology, implement [`Pooled`]:
 
 ```rust,ignore
 use nebula_resource::topology::pooled::{Pooled, BrokenCheck, RecycleDecision, InstanceMetrics};
 
 impl Pooled for HttpResource {
     fn is_broken(&self, _runtime: &HttpRuntime) -> BrokenCheck {
-        BrokenCheck::Healthy       // HTTP clients don't break between uses
+        BrokenCheck::Healthy
     }
 
-    fn recycle(
+    async fn recycle(
         &self, _runtime: &HttpRuntime, _metrics: &InstanceMetrics,
-    ) -> impl Future<Output = Result<RecycleDecision, HttpError>> + Send {
-        async { Ok(RecycleDecision::Keep) }  // always reusable
+    ) -> Result<RecycleDecision, Error> {
+        Ok(RecycleDecision::Keep)
     }
 }
 ```
 
-### 3. Register and acquire
+### 3. Register and acquire — the single funnel
+
+Registration goes through **one funnel**:
+`Manager::register::<R>(spec: RegistrationSpec<R>)`. There are no per-topology
+`register_<topo>[_with]` shorthands — they were removed with the manager-side
+`AcquireResilience` wrapper. Retry composes one layer up; per-topology configs
+carry their own `create_timeout`.
 
 ```rust,ignore
-use nebula_resource::{Manager, PoolConfig, ResourceContext, AcquireOptions};
-use nebula_core::scope::Scope;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use nebula_core::{scope::Scope, ScopeLevel};
+use nebula_resource::{
+    AcquireOptions, Manager, PoolRuntime, RegistrationSpec, ResourceContext,
+    SlotIdentity, TopologyRuntime,
+    topology::pooled::config::Config as PoolConfig,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), nebula_resource::Error> {
     let manager = Manager::new();
 
-    // Simple registration — Global scope, no resilience, no recovery gate.
-    manager.register_pooled(
-        HttpResource,
-        HttpConfig { base_url: "https://api.example.com".into(), timeout_ms: 5_000 },
-        PoolConfig::default(),
+    let config = HttpConfig { base_url: "https://api.example.com".into(), timeout_ms: 5_000 };
+    let pool_rt = PoolRuntime::<HttpResource>::try_new(
+        PoolConfig { max_size: 10, ..PoolConfig::default() },
+        config.fingerprint(),
     )?;
 
-    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    manager.register(RegistrationSpec {
+        resource: HttpResource,
+        config,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(pool_rt),
+        acquire: Manager::erased_acquire_pooled_for::<HttpResource>(),
+        recovery_gate: None,
+    })?;
 
-    // acquire_pooled: no scheme arg — credentials live in the resource's
-    // `#[credential]` slot fields, not in an acquire argument.
-    let handle = manager
+    let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
+    let guard = manager
         .acquire_pooled::<HttpResource>(&ctx, &AcquireOptions::default())
         .await?;
 
-    // Use via Deref — handle is held until dropped.
-    let _runtime: &HttpRuntime = &*handle;
-
-    // Instance recycled automatically on drop.
-    // Call handle.taint() before dropping to skip recycle and force destroy.
+    let _runtime: &HttpRuntime = &*guard;
+    // Drop returns the instance to the pool via Pooled::recycle.
+    // Call guard.taint() to skip recycle and force destroy.
     Ok(())
 }
 ```
 
-### 4. Register with a recovery gate
+### 4. Attach a recovery gate (production)
 
-For production use, attach a recovery gate via `RegistrationSpec` to
-prevent thundering-herd when a backend goes down. The manager-side
-`AcquireResilience` (timeout + retry wrapper around `acquire`) was
-removed in commit `cf93e45b`: retry composes one layer up at the
-action / engine activity boundary, and per-topology config carries
-its own `create_timeout` (resident / pool). The recovery gate is the
-remaining manager-level resilience seam.
+For production, attach an `Arc<RecoveryGate>` via
+`RegistrationSpec::recovery_gate` to prevent thundering-herd when a backend
+flaps. The gate is the only manager-level resilience seam today; see
+[`recovery.md`](recovery.md) for the state machine.
 
 ```rust,ignore
-use nebula_resource::{
-    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, SlotIdentity,
-    TopologyRuntime, dedup::SlotIdentity as _,
-    recovery::{RecoveryGate, RecoveryGateConfig},
-    topology::pooled::config::Config as PoolConfig,
-};
-use std::sync::Arc;
+use nebula_resource::recovery::{RecoveryGate, RecoveryGateConfig};
 
-let manager = Manager::new();
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-let pool_rt = PoolRuntime::<DbResource>::try_new(
-    PoolConfig { max_size: 20, ..Default::default() },
-    db_config.fingerprint(),
-)?;
 
 manager.register(RegistrationSpec {
     resource: DbResource,
@@ -205,25 +198,24 @@ manager.register(RegistrationSpec {
 
 ## Error Handling
 
-Every `acquire_*` and `register_*` call returns `Result<_, Error>`. The
+Every `register` / `acquire_*` call returns `Result<_, Error>`. The
 `ErrorKind` enum drives retry decisions:
 
-| Variant | Meaning | Retryable? |
-|---------|---------|-----------|
-| `Transient` | Network blip, timeout | Yes |
-| `Permanent` | Auth failure, bad config | No |
-| `Exhausted { retry_after }` | Rate-limited or quota depleted | Yes (after cooldown) |
-| `Backpressure` | Pool semaphore full | Caller decides |
-| `NotFound` | Key not in registry | No |
-| `Cancelled` | Cancellation token fired | No |
+| Variant                     | Meaning                              | Retryable?           |
+|-----------------------------|--------------------------------------|----------------------|
+| `Transient`                 | Network blip, timeout                | Yes                  |
+| `Permanent`                 | Auth failure, bad config             | No                   |
+| `Exhausted { retry_after }` | Rate-limited or quota depleted       | Yes (after cooldown) |
+| `Backpressure`              | Pool semaphore full                  | Caller decides       |
+| `NotFound`                  | Key not in registry for that scope   | No                   |
+| `Cancelled`                 | Cancellation token fired             | No                   |
+| `Revoked`                   | Slot was revoked; retry after re-bind | Yes (after rotation) |
+| `Ambiguous`                 | Multiple resolved identities; caller must pin | No           |
 
-Use `err.is_retryable()` to branch without matching on variants. Use
+Use `err.is_retryable()` to branch without matching on variants; use
 `err.retry_after()` to respect rate-limit hints.
 
-### ClassifyError derive macro
-
-Use `#[derive(ClassifyError)]` to auto-generate `From<YourError> for Error`
-with the correct `ErrorKind` per variant — no manual `From` impl needed:
+### `#[derive(ClassifyError)]` — auto-`From<YourError>`
 
 ```rust,ignore
 use nebula_resource::ClassifyError;
@@ -242,29 +234,30 @@ pub enum DbError {
 }
 ```
 
-This generates `impl From<DbError> for nebula_resource::Error` with
-correct `ErrorKind::Transient`, `ErrorKind::Permanent`, and
-`ErrorKind::Exhausted { retry_after: Some(Duration::from_secs(30)) }`
-respectively. The `retry_after` value supports `s` / `m` / `h` / `ms`
-suffixes.
+Supported kinds: `transient`, `permanent`, `exhausted` (with optional
+`retry_after = "30s" / "5m" / "1h" / "500ms"`), `backpressure`, `cancelled`.
 
 ---
 
 ## Feature Matrix
 
-| Capability | How to use |
-|------------|-----------|
-| Bounded connection pooling | `register_pooled` + `PoolConfig` |
-| Shared singleton with clone-on-acquire | `register_resident` + `ResidentConfig` |
-| Long-lived runtime, short-lived tokens | `register_service` + `ServiceConfig` |
-| Single-caller serialized access | `register_exclusive` + `ExclusiveConfig` |
-| Multiplexed sessions over shared transport | `register_transport` + `TransportConfig` |
-| Retry + timeout on acquire | `register_*_with` + `RegisterOptions { resilience: Some(...) }` |
-| Fast-fail during backend recovery | `register_*_with` + `RegisterOptions { recovery_gate: Some(...) }` |
-| Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint` |
-| Lifecycle event stream | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
-| Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |
-| Atomic operation counters | `Option<ResourceOpsMetrics>` via `manager.metrics()` (`None` when no registry configured) |
+| Capability                                  | How to enable                                                  |
+|---------------------------------------------|---------------------------------------------------------------|
+| Bounded connection pooling                  | `RegistrationSpec { topology: TopologyRuntime::Pool(_), .. }` |
+| Shared singleton with clone-on-acquire      | `RegistrationSpec { topology: TopologyRuntime::Resident(_), .. }` |
+| Long-lived runtime, short-lived tokens      | `RegistrationSpec { topology: TopologyRuntime::Bounded(_), .. }` with `Cap = Unbounded` |
+| Multiplexed sessions over shared transport  | `Cap = Capped<N>` + `impl BoundedRelease`                     |
+| Single-caller serialized access             | `Cap = Exclusive` + `impl BoundedRelease`                     |
+| Fast-fail during backend recovery           | `RegistrationSpec::recovery_gate: Some(Arc<RecoveryGate>)`    |
+| Config hot-reload (fingerprint-based)       | Implement `ResourceConfig::fingerprint`; call `Manager::reload_config` |
+| Per-tenant credential isolation             | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topo>_for_identity` |
+| Lifecycle event stream                      | `manager.subscribe_events()` → `broadcast::Receiver<ResourceEvent>` |
+| Async background cleanup                    | `ReleaseQueue` (owned by `Manager`, transparent to callers)   |
+| Atomic operation counters                   | `manager.metrics()` → `Option<&ResourceOpsMetrics>`           |
+
+Retry/timeout on the acquire path composes one layer up (action handler /
+engine activity). Per-topology configs carry their own `create_timeout` for
+the create step.
 
 ---
 
@@ -273,52 +266,52 @@ suffixes.
 ```
 crates/resource/
 ├── src/
-│   ├── lib.rs             Re-exports and crate-level docs
-│   ├── resource.rs        Resource trait (4 associated types + lifecycle methods)
-│   ├── slot.rs            SlotCell — lock-free per-slot resolved-credential holder
-│   ├── dedup.rs           slot_identity + SLOT_IDENTITY_UNBOUND (anti-bleed key)
-│   ├── manager/           Manager directory:
-│   │   ├── mod.rs              Manager type + register/acquire + refresh_slot/revoke_slot
-│   │   ├── options.rs          ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig, DrainTimeoutPolicy
-│   │   ├── gate.rs             Recovery-gate admission helpers (GateAdmission, admit_through_gate, settle_gate_admission)
-│   │   ├── acquire_dispatch.rs Type-erased acquire factories (erased_acquire_{pooled,resident,bounded})
-│   │   └── shutdown.rs         graceful_shutdown + drain helpers + set_phase_all*
-│   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
-│   ├── guard.rs           ResourceGuard — RAII acquire lease (Owned / Guarded / Shared)
-│   ├── context.rs         ResourceContext — execution context with capabilities
-│   ├── dedup.rs           SlotIdentity (Unbound / Structural), DedupKey
-│   ├── error.rs           Error, ErrorKind, ErrorScope
-│   ├── events.rs          ResourceEvent — 14 lifecycle event variants (all emitted)
-│   ├── options.rs         AcquireOptions (deadline-only since R-051)
-│   ├── metrics.rs         ResourceOpsMetrics, ResourceOpsSnapshot, OutcomeCountersSnapshot
-│   ├── state.rs           ResourcePhase, ResourceStatus
-│   ├── cell.rs            Cell — crate-internal ArcSwap-based lock-free cell for Resident topology
-│   ├── slot.rs            SlotCell — public generation-stamped credential slot holder
-│   ├── release_queue.rs   ReleaseQueue — background async cleanup workers
-│   ├── reload.rs          ReloadOutcome (NoChange / SwappedImmediately)
-│   ├── resource_ref.rs    ResourceRef — lazy reference type for action contexts
-│   ├── topology_tag.rs    TopologyTag — 3-variant discriminant (Pool / Resident / Bounded)
-│   ├── ext.rs             HasResourcesExt (sealed)
-│   ├── recovery/          RecoveryGate, RecoveryTicket, RecoveryWaiter, GateState
-│   ├── runtime/           Per-topology runtime wrappers (Pool / Resident / Bounded + ManagedResource)
-│   └── topology/          Per-topology trait definitions (Pooled / Resident / Bounded + Cap typestate)
+│   ├── lib.rs              re-exports, crate-level docs
+│   ├── resource.rs         Resource trait (4 associated types + lifecycle + slot-rotation hooks)
+│   ├── slot.rs             SlotCell — public, generation-stamped, lock-free credential-slot holder
+│   ├── cell.rs             internal lock-free cell (Resident runtime; not re-exported)
+│   ├── manager/
+│   │   ├── mod.rs              Manager + register/acquire + refresh_slot/revoke_slot (two-phase revoke)
+│   │   ├── options.rs          ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig
+│   │   ├── gate.rs             Recovery-gate admission helpers
+│   │   ├── acquire_dispatch.rs Type-erased acquire factories
+│   │   └── shutdown.rs         graceful_shutdown + drain helpers
+│   ├── registry.rs         Registry, AnyManagedResource — type-erased storage
+│   ├── guard.rs            ResourceGuard — RAII acquire lease (Owned / Guarded / Shared)
+│   ├── context.rs          ResourceContext — execution context
+│   ├── dedup.rs            SlotIdentity (Unbound / Structural), DedupKey
+│   ├── error.rs            Error, ErrorKind, ErrorScope
+│   ├── events.rs           ResourceEvent — 14 lifecycle event variants (all emitted)
+│   ├── options.rs          AcquireOptions (deadline-only)
+│   ├── metrics.rs          ResourceOpsMetrics, ResourceOpsSnapshot
+│   ├── state.rs            ResourcePhase, ResourceStatus
+│   ├── release_queue.rs    ReleaseQueue — background async cleanup workers
+│   ├── reload.rs           ReloadOutcome (NoChange / SwappedImmediately)
+│   ├── resource_ref.rs     ResourceRef — lazy reference type for action contexts
+│   ├── topology_tag.rs     TopologyTag — Pool / Resident / Bounded discriminant
+│   ├── ext.rs              HasResourcesExt (sealed)
+│   ├── recovery/           RecoveryGate, RecoveryTicket, RecoveryWaiter, GateState
+│   ├── runtime/            per-topology runtime wrappers + ManagedResource
+│   └── topology/           per-topology trait definitions + Cap typestate
 └── docs/
-    ├── README.md          ← this file
-    ├── api-reference.md   Full public API with signatures
-    ├── adapters.md        Implementing Resource for a driver crate
-    ├── pooling.md         PoolConfig, recycle policy, broken-check, max-lifetime
-    ├── events.md          ResourceEvent catalog, subscribe_events usage
-    └── recovery.md        RecoveryGate, WatchdogHandle, gate state transitions
+    ├── README.md           ← this file
+    ├── api-reference.md    pointer to rustdoc + crate README prose surface
+    ├── topology-reference.md  topology selection guide + minimal skeletons
+    ├── adapters.md         writing an adapter crate (`nebula-resource-postgres` walkthrough)
+    ├── pooling.md          PoolConfig deep-dive
+    ├── recovery.md         RecoveryGate state machine
+    └── events.md           ResourceEvent catalog
 ```
 
 ---
 
 ## Documentation
 
-| Document | Contents |
-|----------|----------|
-| [`api-reference.md`](api-reference.md) | Pointer to the generated rustdoc + the prose surface in the crate README (the authoritative API) |
-| [`adapters.md`](adapters.md) | Writing a `Resource` adapter crate (`nebula-resource-postgres`, etc.) |
-| [`pooling.md`](pooling.md) | `PoolConfig`, recycle decisions, broken checks, max-lifetime eviction |
-| [`events.md`](events.md) | `ResourceEvent` catalog, `subscribe_events` patterns |
-| [`recovery.md`](recovery.md) | `RecoveryGate`, `WatchdogHandle`, gate state transitions |
+| Document                                          | Contents                                                                 |
+|---------------------------------------------------|--------------------------------------------------------------------------|
+| [`api-reference.md`](api-reference.md)            | Generated-rustdoc pointer + prose surface anchor                         |
+| [`topology-reference.md`](topology-reference.md)  | Topology selection guide + minimal skeletons (Pool / Resident / Bounded) |
+| [`adapters.md`](adapters.md)                      | Writing a `Resource` adapter crate                                       |
+| [`pooling.md`](pooling.md)                        | `PoolConfig`, recycle, broken-check, max-lifetime                        |
+| [`events.md`](events.md)                          | `ResourceEvent` catalog + `subscribe_events` patterns                    |
+| [`recovery.md`](recovery.md)                      | `RecoveryGate` state machine                                             |

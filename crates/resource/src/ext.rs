@@ -22,7 +22,7 @@
 //!
 //! Both paths route through the same `LayeredResourceAccessor` (in
 //! `nebula-engine::scoped_resources`) injected into the action context, so the `scoped → global`
-//! precedence (Phase 6 / M6.1) applies uniformly.
+//! precedence applies uniformly.
 //!
 //! # Examples
 //!

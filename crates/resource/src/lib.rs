@@ -6,13 +6,15 @@
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
 //! receives a `ResourceGuard` that derefs to the lease type and releases on
-//! drop. Five topology traits cover the full integration space.
+//! drop. Three topology traits cover the integration space: `Pooled`,
+//! `Resident`, and the parameterised `Bounded` (with sealed `Cap` typestate
+//! `Unbounded` / `Capped<N>` / `Exclusive`).
 //!
 //! ## Key types
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | `Resource` | Core trait — 5 associated types, 5 core methods |
+//! | `Resource` | Core trait — 4 associated types + lifecycle + slot-rotation hooks |
 //! | `ResourceGuard` | RAII lease guard with Owned/Guarded/Shared modes |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |

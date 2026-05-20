@@ -88,7 +88,7 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// when an entry is replaced in place (#382).
     fn managed_type_id(&self) -> TypeId;
 
-    /// Type-erased lifecycle phase mutation (#387).
+    /// Type-erased lifecycle phase mutation.
     ///
     /// Lets the manager drive phase transitions on all registered
     /// resources without needing a typed handle, which matters during
@@ -96,7 +96,7 @@ pub trait AnyManagedResource: sealed::Sealed + Send + Sync + 'static {
     /// is available.
     fn set_phase_erased(&self, phase: crate::state::ResourcePhase);
 
-    /// Type-erased terminal failure transition (R-023).
+    /// Type-erased terminal failure transition.
     ///
     /// Transitions the resource to [`ResourcePhase::Failed`] and records
     /// the supplied human-readable reason in `last_error`. Used by
@@ -1103,10 +1103,10 @@ mod tests {
 
     #[test]
     fn register_replace_preserves_type_id_still_used_by_another_scope() {
-        // Regression for a correctness hole raised in PR #399 review:
-        // if scope A and scope B both hold `TypeA`, replacing scope A
-        // with `TypeB` must NOT scrub `TypeA -> key` from `type_index`,
-        // otherwise `get_typed::<TypeA>(B)` would break.
+        // Regression for a correctness hole: if scope A and scope B both
+        // hold `TypeA`, replacing scope A with `TypeB` must NOT scrub
+        // `TypeA -> key` from `type_index`, otherwise `get_typed::<TypeA>(B)`
+        // would break.
         let reg = Registry::new();
         let key = ResourceKey::new("fake").unwrap();
 
@@ -1328,13 +1328,12 @@ mod tests {
 
     #[test]
     fn pinned_finder_skips_sibling_typed_row_under_shared_key() {
-        // Cross-type correctness gap (PR #723 review): distinct concrete
-        // types can share one `ResourceKey`. `type_index` only narrows a
-        // typed lookup to the key — it does NOT prove a `(scope,
-        // slot_identity)` row under that key is the requested type. A typed
-        // pinned lookup must SKIP a sibling-typed row (continue), not
-        // return it and let the caller's `downcast` fail (which would
-        // surface as a spurious `NotFound`).
+        // Cross-type correctness gap: distinct concrete types can share one
+        // `ResourceKey`. `type_index` only narrows a typed lookup to the
+        // key — it does NOT prove a `(scope, slot_identity)` row under that
+        // key is the requested type. A typed pinned lookup must SKIP a
+        // sibling-typed row (continue), not return it and let the caller's
+        // `downcast` fail (which would surface as a spurious `NotFound`).
         let reg = Registry::new();
         let key = ResourceKey::new("fake").unwrap();
         let scope = ScopeLevel::Global;
@@ -1377,14 +1376,13 @@ mod tests {
     #[test]
     fn agnostic_typed_finder_skips_sibling_typed_row_under_shared_key() {
         // Same cross-type gap on the *unpinned* (identity-agnostic) typed
-        // path (PR #723 follow-up review): `get_typed::<R>` /
-        // `get_typed_for_acquire_scope::<R>` resolve `type_index` to a
-        // `ResourceKey`, but a sibling concrete type can share that key. The
-        // concrete-type filter must apply to `find_at_exact_scope` /
-        // `find_in_entries` too, or a sibling row would (a) be handed to a
-        // typed caller whose `downcast` then fails, or (b) anchor the
-        // effective scope and mask a correctly-typed Global row, or (c)
-        // inflate the `Ambiguous` row count.
+        // path: `get_typed::<R>` / `get_typed_for_acquire_scope::<R>` resolve
+        // `type_index` to a `ResourceKey`, but a sibling concrete type can
+        // share that key. The concrete-type filter must apply to
+        // `find_at_exact_scope` / `find_in_entries` too, or a sibling row
+        // would (a) be handed to a typed caller whose `downcast` then fails,
+        // or (b) anchor the effective scope and mask a correctly-typed
+        // Global row, or (c) inflate the `Ambiguous` row count.
         let reg = Registry::new();
         let key = ResourceKey::new("fake").unwrap();
         let workspace = ScopeLevel::Workspace(WorkspaceId::new());
@@ -1497,13 +1495,13 @@ mod tests {
 
     #[test]
     fn pinned_finder_falls_back_to_global_when_exact_scope_has_only_other_tenant() {
-        // Global-fallback gap (PR #723 review): direct pinned lookup must
-        // agree with acquire routing. If tenant B has an exact-scope row
-        // and tenant A only has a Global row, the prior "pick effective
-        // scope by *any* entry at that scope" decided the scope BEFORE
-        // consulting `want_identity` and returned `NotFound` for tenant A —
-        // even though acquire (which walks ancestor scopes down to Global
-        // with the identity pin) would still find tenant A's Global row.
+        // Global-fallback gap: direct pinned lookup must agree with acquire
+        // routing. If tenant B has an exact-scope row and tenant A only has
+        // a Global row, the prior "pick effective scope by *any* entry at
+        // that scope" decided the scope BEFORE consulting `want_identity`
+        // and returned `NotFound` for tenant A — even though acquire (which
+        // walks ancestor scopes down to Global with the identity pin) would
+        // still find tenant A's Global row.
         let reg = Registry::new();
         let key = ResourceKey::new("fake").unwrap();
         let workspace = ScopeLevel::Workspace(WorkspaceId::new());

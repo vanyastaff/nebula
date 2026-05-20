@@ -53,16 +53,16 @@ name = "api_simple_server"
 path = "examples/api_simple_server.rs"
 
 [[example]]
-name = "m6_postgres_pool"
-path = "examples/m6_postgres_pool.rs"
+name = "resource_postgres_pool"
+path = "examples/resource_postgres_pool.rs"
 
 [[example]]
-name = "m6_telegram_multi_workflow"
-path = "examples/m6_telegram_multi_workflow.rs"
+name = "resource_telegram_multi_workflow"
+path = "examples/resource_telegram_multi_workflow.rs"
 
 [[example]]
-name = "m6_resident_http"
-path = "examples/m6_resident_http.rs"
+name = "resource_resident_http"
+path = "examples/resource_resident_http.rs"
 
 [lints]
 workspace = true
