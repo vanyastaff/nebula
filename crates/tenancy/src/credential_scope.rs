@@ -60,7 +60,7 @@ const OWNER_KEY: &str = "owner_id";
 ///
 /// ```rust,ignore
 /// use nebula_tenancy::{CredentialScopeLayer, CredentialScopeResolver};
-/// use nebula_credential::InMemoryStore;
+/// use nebula_credential_testutil::InMemoryStore;
 /// use std::sync::Arc;
 ///
 /// struct TenantScope(String);
@@ -246,7 +246,8 @@ fn verify_owner(
 // it for test builds, so a plain `#[cfg(test)]` gate suffices.
 #[cfg(test)]
 mod tests {
-    use nebula_credential::{InMemoryStore, PutMode};
+    use nebula_credential::PutMode;
+    use nebula_credential_testutil::InMemoryStore;
 
     use super::*;
 

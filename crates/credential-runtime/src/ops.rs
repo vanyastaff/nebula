@@ -880,8 +880,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{DispatchOps, register_runtime_ops};
-    use nebula_credential::{CredentialContext, CredentialRecord, InMemoryPendingStore};
+    use nebula_credential::{CredentialContext, CredentialRecord};
     use nebula_credential_builtin::BearerTokenCredential;
+    use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_schema::FieldValues;
     use nebula_storage::credential::InMemoryStore;
 

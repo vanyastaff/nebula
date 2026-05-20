@@ -104,26 +104,10 @@ pub mod error;
 pub mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
-/// In-memory pending state store — **test shim only**.
-///
-/// The canonical production impl lives in
-/// `nebula_storage::credential::InMemoryPendingStore` per storage credential layers.
-/// This copy exists solely for credential's own `#[cfg(test)]` code
-/// which cannot depend on `nebula-storage` (dep-cycle, storage credential layers §3).
-#[cfg(any(test, feature = "test-util"))]
-pub mod pending_store_memory;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential store trait with layered composition.
 pub mod store;
-/// In-memory `CredentialStore` impl — **test shim only**.
-///
-/// The canonical production impl lives in
-/// `nebula_storage::credential::InMemoryStore` per storage credential layers.
-/// This copy exists solely for credential's own `#[cfg(test)]` code
-/// which cannot depend on `nebula-storage` (dep-cycle, storage credential layers §3).
-#[cfg(any(test, feature = "test-util"))]
-pub mod store_memory;
 
 // ── Backward-compat re-export: `nebula_credential::resolve::*` ──────────
 // The proc-macro and downstream crates reference `nebula_credential::resolve::`.
@@ -172,8 +156,6 @@ pub use nebula_credential_macros::{AuthScheme, Credential};
 pub use no_credential::{NoCredential, NoCredentialState};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
-#[cfg(any(test, feature = "test-util"))]
-pub use pending_store_memory::InMemoryPendingStore;
 // External provider abstraction (redesigned per external provider):
 // - Trait & data types (ExternalProvider, ExternalReference, ProviderError, ProviderKind)
 // - Future newtype (ProviderFuture) for dyn-safe + zero-alloc-ready resolve
@@ -210,10 +192,6 @@ pub use secrets::{
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
 pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
-// In-memory impl — test shim only; production consumers use
-// `nebula_storage::credential::InMemoryStore` (storage credential layers).
-#[cfg(any(test, feature = "test-util"))]
-pub use store_memory::InMemoryStore;
 
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]

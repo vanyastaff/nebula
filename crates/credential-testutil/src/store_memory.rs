@@ -1,17 +1,13 @@
 //! Test-only in-memory credential store.
 //!
 //! This is a **test shim**. The canonical production `InMemoryStore` lives
-//! in `nebula_storage::credential::InMemoryStore` per storage credential layers. A copy
-//! is kept here (and only here) under `#[cfg(any(test, feature = "test-util"))]`
-//! because credential's own internal tests (`resolver.rs`, layer tests, etc.)
-//! must not depend on `nebula-storage` — that would introduce a dep cycle
-//! that storage credential layers §3 explicitly forbids ("`nebula-credential → nebula-storage`
-//! is forbidden. Credential's `Cargo.toml` MUST NOT list `nebula-storage`").
+//! in `nebula_storage::credential::InMemoryStore` per storage credential layers.
+//! This copy lives in `nebula-credential-testutil` (`publish = false`) so the
+//! contract crate (`nebula-credential`) does not export `#[cfg(test)]`-style
+//! code.
 //!
 //! Production consumers (composition roots, examples, docs) should import
-//! `nebula_storage::credential::InMemoryStore`. This module exists purely
-//! to keep credential's internal tests self-contained during the P6 → P8
-//! window and beyond.
+//! `nebula_storage::credential::InMemoryStore`.
 //!
 //! Data is lost when the store is dropped.
 
@@ -19,7 +15,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::RwLock;
 
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_credential::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Test-only in-memory store backed by a `HashMap`. See module docs for why
 /// this lives here in addition to `nebula_storage::credential::InMemoryStore`.
@@ -114,6 +110,12 @@ impl CredentialStore for InMemoryStore {
                 data.insert(credential.id.clone(), credential.clone());
                 Ok(credential)
             },
+            // PutMode is #[non_exhaustive]; reject unknown variants so
+            // callers learn about them at runtime rather than silently
+            // accepting undefined behaviour.
+            _ => Err(StoreError::Backend(Box::new(std::io::Error::other(
+                "unrecognised PutMode variant in InMemoryStore shim",
+            )))),
         }
     }
 

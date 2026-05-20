@@ -1036,12 +1036,11 @@ pub mod test_support {
     use nebula_core::accessor::MetricsEmitter;
     use nebula_credential::provider::LeaseEvent;
     use nebula_credential::store::StoreError;
-    use nebula_credential::{
-        CredentialEvent, CredentialId, CredentialRegistry, EncryptionKey, InMemoryPendingStore,
-    };
+    use nebula_credential::{CredentialEvent, CredentialId, CredentialRegistry, EncryptionKey};
     use nebula_credential_builtin::{
         BearerTokenCredential, SharedKeyCredential, SigningKeyCredential, register_builtins,
     };
+    use nebula_credential_testutil::InMemoryPendingStore;
     use nebula_engine::credential::LeaseLifecycleConfig;
     use nebula_eventbus::EventBus;
     use nebula_storage::credential::{
@@ -1583,7 +1582,7 @@ mod tests {
     #[test]
     fn owner_context_threads_session_when_scope_carries_one() {
         use super::CredentialService;
-        use nebula_credential::InMemoryPendingStore;
+        use nebula_credential_testutil::InMemoryPendingStore;
         use nebula_storage::credential::InMemoryStore;
 
         type Svc = CredentialService<InMemoryStore, InMemoryPendingStore>;

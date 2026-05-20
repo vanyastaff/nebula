@@ -218,12 +218,11 @@ pub trait CredentialStore: Send + Sync {
     fn exists(&self, id: &str) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
-/// Shared test helper for constructing [`StoredCredential`] instances.
+/// Shared test helper for constructing minimal [`StoredCredential`] instances.
 ///
-/// Exposed publicly under `#[cfg(any(test, feature = "test-util"))]` so
-/// sibling crates (e.g. `nebula-storage::credential::memory` tests) can
-/// construct minimal instances without duplicating the builder.
-#[cfg(any(test, feature = "test-util"))]
+/// Unconditionally public so sibling-crate integration tests (e.g.
+/// `nebula-storage/tests/*.rs`) can call it without a feature gate.
+/// Not intended for production code.
 pub mod test_helpers {
     use super::StoredCredential;
 

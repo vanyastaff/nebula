@@ -8,6 +8,7 @@ members = [
   "crates/core",
   "crates/credential",
   "crates/credential-builtin",
+  "crates/credential-testutil",
   "crates/credential-vault",
   "crates/credential-runtime",
   "crates/engine",
