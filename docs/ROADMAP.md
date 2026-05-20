@@ -798,8 +798,8 @@ Closure criteria (on top of the global DoD):
       grade (`ConnectionAware` disconnect detection, `InfraProvider` nested
       lifecycle, `ResourceGroup`, `Authenticate<C>` design) — OR defer in
       Out-of-Scope with rationale.
-- [ ] Pre-expiry credential refresh (proactive) — v1 is reactive via
-      `EventBus<CredentialRotatedEvent>`; decide if proactive ships in 1.0.
+- [x] Pre-expiry credential refresh decision — **deferred to 1.1** per [ADR-0084](adr/0084-pre-expiry-credential-refresh-deferred.md).
+      Reactive path (L1 OnceCell + L2 RefreshClaimRepo) remains the contract for 1.0.
 - [ ] Engine frontier-loop per-branch wiring of `ResourceAction::configure`
       / `cleanup` — needs branch-tree dominator analysis. Either ship or
       defer with an explicit "scoped resources require a manual driver"
