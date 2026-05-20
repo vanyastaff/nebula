@@ -46,3 +46,52 @@ Nebula is under active development. The following policy applies:
 | Latest tagged release| Yes       |
 | Older releases       | No        |
 
+## Security Boundaries
+
+Nebula's main trust boundaries:
+
+- **Plugin / sandbox boundary** — `nebula-sandbox` runs untrusted plugin code
+  out-of-process; its protocol is defined in `nebula-plugin-sdk`. Anything
+  inside the sandbox is hostile by default.
+- **Credential boundary** — `nebula-credential` and
+  `nebula-credential-runtime` own credential material. Other crates receive
+  `CredentialGuard<C>` (which is `!Clone` and zeroizes on drop via a manual
+  `Drop` impl) and read through it, never around it.
+- **API boundary** — `nebula-api` is the external HTTP surface.
+  Authentication / authorisation lives there; lower layers assume their
+  inputs were checked.
+- **Tenancy boundary** — `nebula-tenancy` decorates storage adapters; every
+  read/write substitutes the active tenant scope before it reaches a
+  handler.
+
+## Secret Handling Rules
+
+- **Never `Debug`-print a `CredentialGuard`, `SlotCell<CredentialGuard<_>>`,
+  or a `Runtime` that holds authenticated state.** Derive a redacted
+  `Debug` impl that omits connection strings, tokens, and internal buffers.
+- **Never log raw error messages from a third-party driver that may embed
+  a connection string or token.** Wrap them in your `Resource::Error`
+  enum's variants with descriptive (but secret-free) messages.
+- **`ResourceEvent::AcquireFailed { error }` / `SlotRefreshFailed { error }`
+  are already redacted** by contract — the engine derives the string from
+  the typed `ErrorKind`. Do not bypass `ClassifyError` and substitute the
+  raw driver message.
+
+## Logging and Telemetry Rules
+
+- Use `tracing` spans on the lifecycle hot path (`create`, `recycle`,
+  `destroy`, `refresh_slot`, `revoke_slot`).
+- Span fields MUST NOT contain credential material. Use stable keys like
+  `resource.key`, `scope.level`, `slot.name` — never raw `auth_token` etc.
+- The broadcast `ResourceEvent` channel drops oldest events on overflow.
+  External subscribers MUST handle `RecvError::Lagged` rather than treat
+  it as a fault.
+
+## Unsafe Code Policy
+
+- Library crates carry `#![forbid(unsafe_code)]` at crate root. Adding
+  `unsafe` requires a separately-justified PR + reviewer sign-off.
+- Cross-crate `unsafe` API surfaces require an ADR.
+- `nebula-resource` is currently `#![forbid(unsafe_code)]`. There is no
+  unsafe code in the crate.
+

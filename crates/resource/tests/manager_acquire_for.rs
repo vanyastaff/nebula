@@ -144,7 +144,6 @@ fn register_pool_res(
         slot_identity,
         topology: TopologyRuntime::Pool(PoolRuntime::<PoolRes>::new(pool_cfg(), fingerprint)),
         acquire: Manager::erased_acquire_pooled_for::<PoolRes>(),
-        resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -165,7 +164,6 @@ fn register_res_res(
             nebula_resource::ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<ResRes>(),
-        resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -809,7 +807,6 @@ fn register_bnd_res(
             BoundedRtConfig::default(),
         )),
         acquire: Manager::erased_acquire_bounded_for::<BndRes>(),
-        resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
 }

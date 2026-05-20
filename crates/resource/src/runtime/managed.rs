@@ -18,7 +18,6 @@ use tokio::sync::Notify;
 use super::TopologyRuntime;
 use crate::{
     error::Error,
-    integration::AcquireResilience,
     recovery::RecoveryGate,
     release_queue::ReleaseQueue,
     resource::Resource,
@@ -43,8 +42,6 @@ pub struct ManagedResource<R: Resource> {
     pub(crate) generation: AtomicU64,
     /// Current lifecycle status (phase + last error).
     pub(crate) status: ArcSwap<ResourceStatus>,
-    /// Optional resilience configuration (timeout + retry) for acquire.
-    pub(crate) resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     ///
     /// When set, acquire calls check the gate before proceeding and
@@ -95,7 +92,7 @@ impl<R: Resource> ManagedResource<R> {
     /// Rebuilds a fresh [`ResourceStatus`] from the latest snapshot,
     /// copying the current generation across and preserving `last_error`.
     /// Used by the manager to drive phase transitions on register, reload
-    /// and shutdown (#387).
+    /// and shutdown.
     pub(crate) fn set_phase(&self, phase: ResourcePhase) {
         let prev = self.status.load_full();
         let next = ResourceStatus {
@@ -108,7 +105,7 @@ impl<R: Resource> ManagedResource<R> {
 
     /// Replace the lifecycle status with `Failed` and record a reason.
     ///
-    /// Wired by `Manager::set_phase_all_failed` (R-023): when
+    /// Wired by `Manager::set_phase_all_failed`: when
     /// `DrainTimeoutPolicy::Abort` fires we transition every registered
     /// resource to `Failed` so callers cannot subsequently acquire a
     /// resource the manager has already declared bankrupt. Per-resource

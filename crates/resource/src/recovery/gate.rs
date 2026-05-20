@@ -16,15 +16,42 @@
 //! ```
 
 use std::{
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
-use tokio::sync::Notify;
+use nebula_core::ResourceKey;
+use tokio::sync::{Notify, broadcast};
+
+use crate::events::ResourceEvent;
 
 /// Maximum backoff cap (5 minutes).
 const MAX_BACKOFF: Duration = Duration::from_mins(5);
+
+/// Wiring that lets a gate emit [`ResourceEvent::RecoveryGateChanged`] on
+/// every state transition. Attached once by the manager at registration time
+/// (see [`RecoveryGate::set_event_sink`]).
+#[derive(Debug)]
+struct EventSink {
+    tx: broadcast::Sender<ResourceEvent>,
+    key: ResourceKey,
+}
+
+/// Returns a short, redacted label for a gate state — used as the `state`
+/// field of [`ResourceEvent::RecoveryGateChanged`].
+///
+/// **Redaction contract:** the label intentionally omits the human-readable
+/// failure message (it can echo upstream service text); only the variant
+/// shape + attempt counter cross the event boundary.
+fn gate_state_label(state: &GateState) -> String {
+    match state {
+        GateState::Idle => "idle".to_string(),
+        GateState::InProgress { attempt } => format!("in_progress(attempt={attempt})"),
+        GateState::Failed { attempt, .. } => format!("failed(attempt={attempt})"),
+        GateState::PermanentlyFailed { .. } => "permanently_failed".to_string(),
+    }
+}
 
 /// Current state of a [`RecoveryGate`].
 #[non_exhaustive]
@@ -115,7 +142,13 @@ impl RecoveryTicket {
     /// [`GateState::Idle`] and waking all waiters.
     pub fn resolve(mut self) {
         self.consumed = true;
-        self.gate.state.store(Arc::new(GateState::Idle));
+        let next = Arc::new(GateState::Idle);
+        // Store BEFORE emit so a subscriber that reacts to the event and
+        // immediately reads `gate.state()` observes the new state, not
+        // the old one. Matches the emit-after-CAS ordering used in
+        // `try_begin` / `try_begin_from_failed` / `cas_to_permanently_failed`.
+        self.gate.state.store(Arc::clone(&next));
+        self.gate.emit_state(&next);
         self.gate.notify.notify_waiters();
     }
 
@@ -123,22 +156,26 @@ impl RecoveryTicket {
     pub fn fail_transient(mut self, message: impl Into<String>) {
         self.consumed = true;
         let backoff = compute_backoff(self.gate.base_backoff, self.attempt);
-        let state = GateState::Failed {
+        let next = Arc::new(GateState::Failed {
             message: message.into(),
             retry_at: Instant::now() + backoff,
             attempt: self.attempt,
-        };
-        self.gate.state.store(Arc::new(state));
+        });
+        // Store-then-emit ordering: see `resolve` for the rationale.
+        self.gate.state.store(Arc::clone(&next));
+        self.gate.emit_state(&next);
         self.gate.notify.notify_waiters();
     }
 
     /// Marks the recovery as permanently failed — no further attempts.
     pub fn fail_permanent(mut self, message: impl Into<String>) {
         self.consumed = true;
-        let state = GateState::PermanentlyFailed {
+        let next = Arc::new(GateState::PermanentlyFailed {
             message: message.into(),
-        };
-        self.gate.state.store(Arc::new(state));
+        });
+        // Store-then-emit ordering: see `resolve` for the rationale.
+        self.gate.state.store(Arc::clone(&next));
+        self.gate.emit_state(&next);
         self.gate.notify.notify_waiters();
     }
 
@@ -152,12 +189,16 @@ impl Drop for RecoveryTicket {
     fn drop(&mut self) {
         if !self.consumed {
             let backoff = compute_backoff(self.gate.base_backoff, self.attempt);
-            let state = GateState::Failed {
+            let next = Arc::new(GateState::Failed {
                 message: "recovery ticket dropped without resolution".into(),
                 retry_at: Instant::now() + backoff,
                 attempt: self.attempt,
-            };
-            self.gate.state.store(Arc::new(state));
+            });
+            // Store-then-emit ordering: see `RecoveryTicket::resolve` for
+            // the rationale (subscribers must observe the new state when
+            // they react to the event).
+            self.gate.state.store(Arc::clone(&next));
+            self.gate.emit_state(&next);
             self.gate.notify.notify_waiters();
         }
     }
@@ -230,6 +271,28 @@ struct RecoveryGateInner {
     notify: Notify,
     max_attempts: u32,
     base_backoff: Duration,
+    /// Optional event sink attached once via [`RecoveryGate::set_event_sink`].
+    /// `OnceLock` so the gate can be constructed before its owning manager
+    /// (engine registrar, scoped registries) and wired up later without
+    /// disturbing live waiters.
+    event_sink: OnceLock<EventSink>,
+}
+
+impl RecoveryGateInner {
+    /// Best-effort emit of [`ResourceEvent::RecoveryGateChanged`] for the
+    /// new state. Silently drops the broadcast result when no subscribers
+    /// are attached — same fail-open contract as every other
+    /// `event_tx.send(...)` site in the manager.
+    fn emit_state(&self, new_state: &GateState) {
+        if let Some(sink) = self.event_sink.get() {
+            sink.tx
+                .send(ResourceEvent::RecoveryGateChanged {
+                    key: sink.key.clone(),
+                    state: gate_state_label(new_state),
+                })
+                .ok();
+        }
+    }
 }
 
 impl std::fmt::Debug for RecoveryGateInner {
@@ -238,6 +301,7 @@ impl std::fmt::Debug for RecoveryGateInner {
             .field("state", &*self.state.load())
             .field("max_attempts", &self.max_attempts)
             .field("base_backoff", &self.base_backoff)
+            .field("event_sink_wired", &self.event_sink.get().is_some())
             .finish()
     }
 }
@@ -274,8 +338,50 @@ impl RecoveryGate {
                 notify: Notify::new(),
                 max_attempts: config.max_attempts,
                 base_backoff: config.base_backoff,
+                event_sink: OnceLock::new(),
             }),
         }
+    }
+
+    /// Returns the base backoff this gate uses to compute attempt delays.
+    /// Used by the manager's acquire pipeline to publish the expected
+    /// post-failure backoff in [`ResourceEvent::RetryAttempt`].
+    pub fn base_backoff(&self) -> Duration {
+        self.inner.base_backoff
+    }
+
+    /// Returns the backoff that would be imposed if the attempt with the
+    /// given 1-based index were to fail transiently. Mirrors the internal
+    /// `compute_backoff` formula (`base * 2^(attempt - 1)`, capped at 5
+    /// minutes) so callers can publish a truthful expected delay in
+    /// [`ResourceEvent::RetryAttempt`] without reimplementing the math.
+    pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
+        compute_backoff(self.inner.base_backoff, attempt)
+    }
+
+    /// Attaches an event sink so subsequent state transitions emit
+    /// [`ResourceEvent::RecoveryGateChanged`]. Wired by
+    /// [`Manager::register`](crate::Manager::register) at registration
+    /// time; not part of the public crate surface — the
+    /// `broadcast::Sender` is an internal transport detail the manager
+    /// owns.
+    ///
+    /// **Idempotent** — the first call wins; subsequent calls silently
+    /// no-op so a gate handed to multiple registries does not flip
+    /// subscribers mid-flight.
+    ///
+    /// **One gate per resource registration.** A `RecoveryGate` shared
+    /// across multiple `Manager::register` calls (e.g. a recovery group
+    /// reused for both `db` and `cache`) will report every transition
+    /// under the **first** registering resource's key — the second
+    /// `set_event_sink` is a no-op by design. Treat one
+    /// `Arc<RecoveryGate>` as belonging to one resource registration; if
+    /// recovery-group sharing matters, give each resource its own gate.
+    pub(crate) fn set_event_sink(&self, tx: broadcast::Sender<ResourceEvent>, key: ResourceKey) {
+        // OnceLock::set returns Err on second call — we treat that as
+        // a no-op rather than a programming error, since the manager
+        // may re-register a resource that already had a gate wired.
+        self.inner.event_sink.set(EventSink { tx, key }).ok();
     }
 
     /// Attempts to begin a recovery.
@@ -291,9 +397,18 @@ impl RecoveryGate {
             let current = self.inner.state.load();
             match &**current {
                 GateState::Idle => {
-                    let next = Arc::new(GateState::InProgress { attempt: 1 });
-                    let prev = self.inner.state.compare_and_swap(&current, next);
+                    let next_state = GateState::InProgress { attempt: 1 };
+                    let next = Arc::new(next_state);
+                    let prev = self
+                        .inner
+                        .state
+                        .compare_and_swap(&current, Arc::clone(&next));
                     if Arc::ptr_eq(&prev, &current) {
+                        // CAS succeeded — publish the transition. Emitting
+                        // after the swap matches the manager's ordering
+                        // discipline: observers receive the event only on a
+                        // state that was actually durably stored.
+                        self.inner.emit_state(&next);
                         return Ok(RecoveryTicket {
                             gate: Arc::clone(&self.inner),
                             attempt: 1,
@@ -346,10 +461,16 @@ impl RecoveryGate {
         let next = Arc::new(GateState::InProgress {
             attempt: next_attempt,
         });
-        let prev = self.inner.state.compare_and_swap(current, next);
+        let prev = self
+            .inner
+            .state
+            .compare_and_swap(current, Arc::clone(&next));
         if !Arc::ptr_eq(&prev, current) {
             return None; // CAS failed
         }
+        // CAS succeeded — publish the transition (see `try_begin` for the
+        // emit-after-swap rationale).
+        self.inner.emit_state(&next);
         Some(Ok(RecoveryTicket {
             gate: Arc::clone(&self.inner),
             attempt: next_attempt,
@@ -372,10 +493,16 @@ impl RecoveryGate {
         let next = Arc::new(GateState::PermanentlyFailed {
             message: msg.clone(),
         });
-        let prev = self.inner.state.compare_and_swap(current, next);
+        let prev = self
+            .inner
+            .state
+            .compare_and_swap(current, Arc::clone(&next));
         if !Arc::ptr_eq(&prev, current) {
             return None; // CAS failed
         }
+        // CAS succeeded — publish the transition (emit-after-swap, same
+        // rationale as `try_begin`).
+        self.inner.emit_state(&next);
         self.inner.notify.notify_waiters();
         Some(Err(TryBeginError::PermanentlyFailed { message: msg }))
     }
@@ -387,7 +514,11 @@ impl RecoveryGate {
 
     /// Forces the gate back to [`GateState::Idle`] (admin override).
     pub fn reset(&self) {
-        self.inner.state.store(Arc::new(GateState::Idle));
+        let next = Arc::new(GateState::Idle);
+        // Store-then-emit ordering: see `RecoveryTicket::resolve` for the
+        // rationale.
+        self.inner.state.store(Arc::clone(&next));
+        self.inner.emit_state(&next);
         self.inner.notify.notify_waiters();
     }
 }

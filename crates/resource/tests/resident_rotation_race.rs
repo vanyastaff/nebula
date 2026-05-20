@@ -227,7 +227,6 @@ fn build(park: bool) -> (Arc<Manager>, ResourceKey, RaceResource) {
             ResidentConfig::default(),
         )),
         acquire: Manager::erased_acquire_resident_for::<RaceResource>(),
-        resilience: None,
         recovery_gate: None,
     })
     .expect("resident registration must succeed");

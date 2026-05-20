@@ -553,7 +553,6 @@ async fn manager_register_and_acquire_pooled() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -594,7 +593,6 @@ async fn manager_register_and_acquire_resident() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -627,7 +625,6 @@ async fn manager_shutdown_rejects_acquire() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -793,7 +790,6 @@ async fn pool_create_path_respects_max_concurrent_creates() {
                 test_config().fingerprint(),
             )),
             acquire: Manager::erased_acquire_pooled_for::<SlowCreatePoolResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -845,7 +841,6 @@ async fn register_transitions_phase_to_ready() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -872,7 +867,6 @@ async fn reload_config_bumps_status_generation() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -911,7 +905,6 @@ async fn graceful_shutdown_report_marks_registry_cleared() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register");
@@ -1072,7 +1065,6 @@ async fn register_emits_registered_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1099,7 +1091,6 @@ async fn remove_emits_removed_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -1130,7 +1121,6 @@ async fn acquire_emits_success_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -1279,7 +1269,6 @@ async fn manager_scope_exact_match() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1319,7 +1308,6 @@ async fn manager_scope_fallback_to_global() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1361,7 +1349,6 @@ async fn manager_scope_mismatch_not_found() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1411,7 +1398,6 @@ async fn metrics_track_acquire_release_create_destroy() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -1465,7 +1451,6 @@ async fn manager_multiple_resources_coexist() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("pool registration should succeed");
@@ -1483,7 +1468,6 @@ async fn manager_multiple_resources_coexist() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -1958,7 +1942,6 @@ async fn service_acquire_via_manager() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Bounded(svc_rt),
             acquire: Manager::erased_acquire_bounded_for::<ServiceTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2587,7 +2570,6 @@ async fn registry_backed_metrics_record_operations() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("pool registration should succeed");
@@ -2604,7 +2586,6 @@ async fn registry_backed_metrics_record_operations() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -2680,7 +2661,6 @@ async fn graceful_shutdown_stops_new_acquires() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -2723,7 +2703,6 @@ async fn graceful_shutdown_clears_registry() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -2755,7 +2734,13 @@ async fn graceful_shutdown_default_config() {
 }
 
 // ---------------------------------------------------------------------------
-// AcquireResilience tests
+// No-manager-side-retry invariant (Mythos v2)
+//
+// Manager-side `AcquireResilience` deleted. Retry policy at the resource
+// layer is the caller's concern (peer pattern: sqlx/deadpool/bb8). These
+// tests pin the contract that `Manager::acquire_*` performs exactly one
+// attempt regardless of failure kind — retry composes one layer up
+// (engine activity, or caller-supplied `nebula-resilience` pipeline).
 // ---------------------------------------------------------------------------
 
 /// A resident resource that fails with a transient error for the first N
@@ -2816,6 +2801,61 @@ impl Resource for FailingResidentResource {
 impl Resident for FailingResidentResource {
     fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+}
+
+/// Resident resource whose `create` blocks on a [`tokio::sync::Notify`]
+/// until [`Self::unblock`] is woken. Exists to prove "manager imposes no
+/// wall-clock timeout on `create`" — `FailingResidentResource::create`
+/// completes immediately (success or error), so it cannot distinguish
+/// "no manager timeout" from "fast manager timeout".
+#[derive(Clone)]
+struct BlockingResidentResource {
+    unblock: Arc<tokio::sync::Notify>,
+}
+
+impl BlockingResidentResource {
+    fn new() -> Self {
+        Self {
+            unblock: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+impl Resource for BlockingResidentResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+
+    fn key() -> ResourceKey {
+        resource_key!("test-blocking-resident")
+    }
+
+    fn create(
+        &self,
+        _config: &TestConfig,
+        _ctx: &ResourceContext,
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+        let unblock = Arc::clone(&self.unblock);
+        async move {
+            unblock.notified().await;
+            Err(TestError("unblocked but never satisfied".into()))
+        }
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Resident for BlockingResidentResource {
+    fn is_alive_sync(&self, _runtime: &Arc<AtomicU64>) -> bool {
+        true
     }
 }
 
@@ -2886,23 +2926,13 @@ impl Resident for PermanentFailResource {
 }
 
 #[tokio::test]
-async fn acquire_retries_on_transient_failure() {
-    use nebula_resource::integration::{AcquireResilience, AcquireRetryConfig};
-
+async fn acquire_does_not_retry_transient_at_manager_layer() {
+    // Mythos v2: manager performs exactly one acquire attempt. A transient
+    // failure surfaces immediately to the caller; retry is composed above.
     let manager = Manager::new();
-    // Fails on first create, succeeds on second.
     let resource = FailingResidentResource::new(1);
     let resident_rt =
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
-
-    let resilience = AcquireResilience {
-        timeout: None,
-        retry: Some(AcquireRetryConfig {
-            max_attempts: 3,
-            initial_backoff: std::time::Duration::from_millis(1),
-            max_backoff: std::time::Duration::from_millis(10),
-        }),
-    };
 
     manager
         .register(RegistrationSpec {
@@ -2912,40 +2942,29 @@ async fn acquire_retries_on_transient_failure() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
-            resilience: Some(resilience),
             recovery_gate: None,
         })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceGuard<FailingResidentResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
-        .await
-        .expect("acquire should succeed after retry");
+    let result = manager
+        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
+        .await;
 
-    // The first create failed, the second succeeded (value = 1).
-    assert_eq!(handle.load(Ordering::Relaxed), 1);
-    // Two creates total: one failure + one success.
-    assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
+    assert!(result.is_err(), "transient failure must surface (no retry)");
+    assert_eq!(
+        resource.create_count.load(Ordering::Relaxed),
+        1,
+        "exactly one acquire attempt at manager layer"
+    );
 }
 
 #[tokio::test]
-async fn acquire_no_retry_on_permanent_failure() {
-    use nebula_resource::integration::{AcquireResilience, AcquireRetryConfig};
-
+async fn acquire_does_not_retry_permanent_at_manager_layer() {
     let manager = Manager::new();
     let resource = PermanentFailResource::new();
     let resident_rt =
         ResidentRuntime::<PermanentFailResource>::new(resident::config::Config::default());
-
-    let resilience = AcquireResilience {
-        timeout: None,
-        retry: Some(AcquireRetryConfig {
-            max_attempts: 3,
-            initial_backoff: std::time::Duration::from_millis(1),
-            max_backoff: std::time::Duration::from_millis(10),
-        }),
-    };
 
     manager
         .register(RegistrationSpec {
@@ -2955,7 +2974,6 @@ async fn acquire_no_retry_on_permanent_failure() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<PermanentFailResource>(),
-            resilience: Some(resilience),
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -2965,12 +2983,18 @@ async fn acquire_no_retry_on_permanent_failure() {
         .acquire_resident::<PermanentFailResource>(&ctx, &AcquireOptions::default())
         .await;
 
-    assert!(result.is_err(), "acquire should fail on permanent error");
-    // Permanent error is NOT retryable — only 1 attempt should have been made.
+    // Assert both the attempt count AND the typed error kind. The count
+    // alone pins "no manager-layer retry"; pinning `ErrorKind::Permanent`
+    // pins the orthogonal "no error-kind normalization at the manager
+    // layer" invariant — if the manager ever started re-wrapping
+    // permanent into transient (or vice versa), the count assertion
+    // would still pass but classification would be silently broken.
+    let err = result.expect_err("permanent failure surfaces immediately");
+    assert_eq!(*err.kind(), ErrorKind::Permanent);
     assert_eq!(
         resource.create_count.load(Ordering::Relaxed),
         1,
-        "permanent error should not trigger retries"
+        "exactly one acquire attempt at manager layer"
     );
 }
 
@@ -2989,7 +3013,6 @@ async fn acquire_succeeds_without_resilience() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -3004,45 +3027,58 @@ async fn acquire_succeeds_without_resilience() {
     drop(handle);
 }
 
-#[tokio::test]
-async fn acquire_timeout_fires() {
-    use nebula_resource::integration::AcquireResilience;
-
+#[tokio::test(start_paused = true)]
+async fn acquire_has_no_manager_layer_timeout() {
+    // Mythos v2: manager applies no wall-clock timeout. Acquire-timeout
+    // belongs to the topology runtime (`create_timeout` on resident /
+    // pool config) or to a caller-composed `nebula-resilience` pipeline.
+    //
+    // To prove the manager imposes no wall-clock bound on a slow
+    // `create`, we use a resource whose `create` blocks indefinitely on
+    // a `Notify` and wrap the acquire in a caller-side
+    // `tokio::time::timeout`. The outer timeout MUST be the path that
+    // resolves first — if the manager ever started imposing its own
+    // bound, this test would fail by either succeeding (acquire returns
+    // before the outer timeout) or returning a typed manager-side error
+    // (acquire returns an `Error` before the outer `Elapsed`).
+    //
+    // `start_paused = true` gives us deterministic time control: the
+    // outer 1-second timeout advances via `tokio::time::timeout`'s own
+    // internal clock manipulation without sleeping wall-time.
     let manager = Manager::new();
-    // Resource that always fails (so the resident runtime create will fail),
-    // but we set a very short timeout.
-    let resource = FailingResidentResource::new(100);
-    let resident_rt = ResidentRuntime::<FailingResidentResource>::new(resident::config::Config {
-        // Set create_timeout long so the resilience timeout fires first.
-        create_timeout: std::time::Duration::from_mins(1),
-        ..Default::default()
-    });
-
-    let resilience = AcquireResilience {
-        timeout: Some(std::time::Duration::from_millis(1)),
-        retry: None,
-    };
+    let resource = BlockingResidentResource::new();
+    let resident_rt =
+        ResidentRuntime::<BlockingResidentResource>::new(resident::config::Config::default());
 
     manager
         .register(RegistrationSpec {
-            resource,
+            resource: resource.clone(),
             config: test_config(),
             scope: ScopeLevel::Global,
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
-            acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
-            resilience: Some(resilience),
+            acquire: Manager::erased_acquire_resident_for::<BlockingResidentResource>(),
             recovery_gate: None,
         })
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result = manager
-        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
-        .await;
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        manager.acquire_resident::<BlockingResidentResource>(&ctx, &AcquireOptions::default()),
+    )
+    .await;
 
-    // Should fail — either from timeout or from the transient error.
-    assert!(result.is_err(), "acquire should fail with timeout or error");
+    assert!(
+        outcome.is_err(),
+        "outer caller-side timeout must fire (manager imposes no wall-clock bound) — outcome: {outcome:?}",
+    );
+    // Release the blocked `create` so the spawned future does not leak
+    // beyond the test (`tokio::time::timeout` drops the future, which
+    // should cancel-drop the in-progress create — `notify_one` here is
+    // belt-and-suspenders for any internal create-detach path that may
+    // outlive the caller cancellation in future refactors).
+    resource.unblock.notify_waiters();
 }
 
 // ---------------------------------------------------------------------------
@@ -3066,7 +3102,6 @@ async fn graceful_shutdown_second_call_errors_already_shutting_down() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -3117,7 +3152,6 @@ async fn topology_mismatch_returns_permanent_error() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<PoolTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -3140,27 +3174,18 @@ async fn topology_mismatch_returns_permanent_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Retry exhaustion
+// Error kind preserved across manager (no rewrap)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn retry_exhaustion_returns_last_transient_error() {
-    use nebula_resource::integration::{AcquireResilience, AcquireRetryConfig};
-
+async fn acquire_surfaces_underlying_transient_error_kind() {
+    // Mythos v2: with no retry/timeout wrapping at this layer, the
+    // resource's typed error reaches the caller unchanged — preserving
+    // `Classify` for any upstream pipeline composed by the caller.
     let manager = Manager::new();
-    // Always fails — failures_before_success > max_attempts.
     let resource = FailingResidentResource::new(100);
     let resident_rt =
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
-
-    let resilience = AcquireResilience {
-        timeout: None,
-        retry: Some(AcquireRetryConfig {
-            max_attempts: 3,
-            initial_backoff: std::time::Duration::from_millis(1),
-            max_backoff: std::time::Duration::from_millis(5),
-        }),
-    };
 
     manager
         .register(RegistrationSpec {
@@ -3170,7 +3195,6 @@ async fn retry_exhaustion_returns_last_transient_error() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
-            resilience: Some(resilience),
             recovery_gate: None,
         })
         .unwrap();
@@ -3180,21 +3204,19 @@ async fn retry_exhaustion_returns_last_transient_error() {
         .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
-    // All 3 attempts should have been made.
     assert_eq!(
         resource.create_count.load(Ordering::Relaxed),
-        3,
-        "should exhaust all max_attempts"
+        1,
+        "exactly one acquire attempt"
     );
 
-    // The error should be the transient failure, not a generic message.
     match result {
         Err(e) => assert!(
             matches!(e.kind(), ErrorKind::Transient),
-            "exhausted retries should return last error kind, got {:?}",
+            "transient error kind preserved across manager, got {:?}",
             e.kind()
         ),
-        Ok(_) => panic!("all attempts should fail"),
+        Ok(_) => panic!("acquire must fail when create fails"),
     }
 }
 
@@ -3222,7 +3244,6 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
-            resilience: None,
             recovery_gate: Some(gate.clone()),
         })
         .unwrap();
@@ -3788,7 +3809,6 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3825,7 +3845,6 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3860,7 +3879,6 @@ async fn recovery_gate_allows_acquire_when_idle() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3896,7 +3914,6 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: Some(Arc::new(gate)),
         })
         .expect("registration should succeed");
@@ -3925,7 +3942,6 @@ async fn recovery_gate_none_does_not_affect_acquire() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -4046,7 +4062,6 @@ async fn reload_config_swaps_config_and_bumps_generation() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -4085,7 +4100,6 @@ async fn reload_config_rejects_invalid_config() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -4131,7 +4145,6 @@ async fn reload_config_emits_event() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -4168,7 +4181,6 @@ async fn reload_config_evicts_stale_pool_instances() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -4255,7 +4267,6 @@ async fn reload_config_rejected_when_shutdown() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<ReloadPoolResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register should succeed");
@@ -4292,7 +4303,6 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -4328,8 +4338,8 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
     );
 }
 
-/// R-023 / 🔴-4 regression: `DrainTimeoutPolicy::Abort` must transition
-/// every registered resource to `ResourcePhase::Failed`, **not** restore
+/// Regression: `DrainTimeoutPolicy::Abort` must transition every
+/// registered resource to `ResourcePhase::Failed`, **not** restore
 /// `Ready`. Pre-fix the manager would set the phase back to `Ready` to
 /// "keep the resource acquirable", but the cancel token already rejects
 /// new acquires and `health_check` then lied about lifecycle state.
@@ -4354,7 +4364,6 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -4383,7 +4392,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
         "expected DrainTimeout, got {err:?}"
     );
 
-    // R-023 assertion: phase is `Failed`, NOT `Ready`. Pre-fix this
+    // Assertion: phase is `Failed`, NOT `Ready`. Pre-fix this
     // would be `Ready` (the bug). We bypass `health_check` here because
     // it goes through `lookup` which short-circuits on the cancel token
     // post-shutdown; `get_any` reads the type-erased registry entry
@@ -4396,10 +4405,10 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
         phase,
         ResourcePhase::Failed,
         "drain-abort must transition phase to Failed, got {phase:?} \
-         (R-023: Ready would be the pre-fix bug)",
+         (Ready would be the pre-fix bug)",
     );
 
-    // R-023 assertion: per-resource HealthChanged{healthy:false} was
+    // Assertion: per-resource HealthChanged{healthy:false} was
     // emitted. Drain through the channel until we find it (other
     // events like `Registered` and `AcquireSuccess` were also emitted
     // earlier).
@@ -4441,7 +4450,6 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -4489,7 +4497,6 @@ async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ResidentTestResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .unwrap();
@@ -4543,7 +4550,6 @@ async fn probe_boundary_serializes_callers_under_herd() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<FailingResidentResource>(),
-            resilience: None,
             recovery_gate: Some(gate.clone()),
         })
         .unwrap();

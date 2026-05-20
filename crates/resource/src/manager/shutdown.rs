@@ -130,7 +130,7 @@ pub enum ShutdownError {
     /// registered resource is transitioned to
     /// [`ResourcePhase::Failed`](crate::state::ResourcePhase::Failed) so
     /// subsequent acquires fail fast and `health_check` reflects the
-    /// post-abort reality (R-023).
+    /// post-abort reality.
     #[error(
         "drain timeout expired with {outstanding} handle(s) still active; registry was NOT cleared (policy=Abort)"
     )]
@@ -202,9 +202,9 @@ impl Manager {
         //      (they share this token via `ReleaseQueue::with_cancel`).
         self.cancel.cancel();
 
-        // #387: mark every registered resource as `Draining` so operators
-        // polling `health_check` during the drain window see the correct
-        // lifecycle phase instead of a stale `Ready`.
+        // Mark every registered resource as `Draining` so operators polling
+        // `health_check` during the drain window see the correct lifecycle
+        // phase instead of a stale `Ready`.
         self.set_phase_all(crate::state::ResourcePhase::Draining);
 
         // Phase 2: DRAIN — wait for in-flight handles to be released.
@@ -222,26 +222,25 @@ impl Manager {
                          registry preserved, marking all resources Failed, \
                          returning DrainTimeout"
                     );
-                    // R-023 / 🔴-4: every resource transitions to `Failed`
-                    // (with `HealthChanged{healthy:false}` emitted per key)
-                    // rather than back to `Ready`. The cancel token fired
-                    // in Phase 1 already rejects new acquires; pretending
-                    // the registry is `Ready` while the caller observes a
-                    // `DrainTimeout` is phase corruption — callers polling
-                    // `health_check` would see `Ready` but get
-                    // `Error::cancelled` from `lookup`. Marking `Failed`
-                    // makes the registry tell the truth.
+                    // Every resource transitions to `Failed` (with
+                    // `HealthChanged{healthy:false}` emitted per key) rather
+                    // than back to `Ready`. The cancel token fired in Phase 1
+                    // already rejects new acquires; pretending the registry
+                    // is `Ready` while the caller observes a `DrainTimeout`
+                    // is phase corruption — callers polling `health_check`
+                    // would see `Ready` but get `Error::cancelled` from
+                    // `lookup`. Marking `Failed` makes the registry tell the
+                    // truth.
                     let err = ShutdownError::DrainTimeout { outstanding };
                     self.set_phase_all_failed(&err);
-                    // CodeRabbit 🟠 #4: do NOT reset `shutting_down` here.
-                    // Both shutdown failure modes (`DrainTimeout`,
-                    // `ReleaseQueueTimeout` below) are non-recoverable —
-                    // the cancel token has fired and the registry has
-                    // either been marked Failed or contains live handles
-                    // we cannot safely re-drain. Resetting would only
-                    // permit a doomed retry that races the cancel token
-                    // with no benefit and risks tearing down state mid-
-                    // observation by a concurrent caller.
+                    // Do NOT reset `shutting_down` here. Both shutdown
+                    // failure modes (`DrainTimeout`, `ReleaseQueueTimeout`
+                    // below) are non-recoverable — the cancel token has
+                    // fired and the registry has either been marked Failed
+                    // or contains live handles we cannot safely re-drain.
+                    // Resetting would only permit a doomed retry that races
+                    // the cancel token with no benefit and risks tearing
+                    // down state mid-observation by a concurrent caller.
                     return Err(err);
                 },
                 DrainTimeoutPolicy::Force => {
@@ -255,7 +254,7 @@ impl Manager {
             },
         }
 
-        // #387: drain has completed (or been force-released). Mark every
+        // Drain has completed (or been force-released). Mark every
         // resource as `ShuttingDown` so a health snapshot captured in the
         // narrow window between here and `registry.clear()` reflects the
         // real lifecycle state.
@@ -263,9 +262,8 @@ impl Manager {
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released. The credential reverse-
-        // index (used by credential isolation's singular rotation dispatch) was
-        // removed in Phase 4 / slot model; per-slot rotation will be
-        // wired in a follow-up (.ai-factory/PHASE4_BLOCKED.md).
+        // index (used by the old singular rotation dispatch) was removed
+        // for the slot model; per-slot rotation lands in a follow-up.
         self.registry.clear();
 
         // Phase 4: AWAIT WORKERS — workers are already draining (from
@@ -302,7 +300,7 @@ impl Manager {
     ///
     /// Type-erased bulk update used during graceful shutdown so that
     /// `health_check` returns the correct phase while the drain/cleanup
-    /// is in flight (#387).
+    /// is in flight.
     pub(super) fn set_phase_all(&self, phase: crate::state::ResourcePhase) {
         for managed in self.registry.all_managed() {
             managed.set_phase_erased(phase);
@@ -313,11 +311,11 @@ impl Manager {
     /// shutdown error and emits a per-resource
     /// [`ResourceEvent::HealthChanged`] with `healthy: false`.
     ///
-    /// Used by the [`DrainTimeoutPolicy::Abort`] branch (R-023) so the
-    /// registry's recorded phase agrees with the `Err(DrainTimeout)`
-    /// observed by the caller. Without this, `health_check` would report
-    /// `Ready` while `lookup` rejected acquires via the cancel token —
-    /// the exact "phase corruption" called out in Phase 1 finding 🔴-4.
+    /// Used by the [`DrainTimeoutPolicy::Abort`] branch so the registry's
+    /// recorded phase agrees with the `Err(DrainTimeout)` observed by the
+    /// caller. Without this, `health_check` would report `Ready` while
+    /// `lookup` rejected acquires via the cancel token — the exact "phase
+    /// corruption" failure mode this method closes.
     ///
     /// Broadcast send errors (no live subscribers) are intentionally
     /// ignored, matching the rest of the manager's event-emission policy.

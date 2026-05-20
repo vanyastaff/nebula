@@ -1,10 +1,7 @@
-//! Manager-level integration tests for the Transport topology (R-013).
+//! Manager-level integration tests for the Bounded topology with
+//! multiplexed sessions (formerly the standalone Transport topology).
 //!
-//! Phase 1 cascade audit flagged the Transport surface as having zero
-//! Manager-level tests — only `TransportRuntime`-direct coverage existed
-//! in `basic_integration.rs`. This file exercises the public Manager
-//! dispatch path (`register_transport`, `register_transport_with`,
-//! `acquire_transport`, `acquire_transport`) end-to-end, plus
+//! Exercises the public Manager dispatch path end-to-end, plus
 //! cross-cutting concerns (graceful shutdown drain, recovery-gate
 //! admission, multiplexing semantics, session-limit backpressure,
 //! per-resource-key isolation).
@@ -24,8 +21,8 @@ use std::{
 
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
 use nebula_resource::{
-    AcquireOptions, AcquireResilience, AcquireRetryConfig, BoundedConfig, BoundedRuntime, Manager,
-    RegisterOptions, RegistrationSpec, ResourceContext, ScopeLevel, ShutdownConfig,
+    AcquireOptions, BoundedConfig, BoundedRuntime, Manager, RegisterOptions, RegistrationSpec,
+    ResourceContext, ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
     recovery::{RecoveryGate, RecoveryGateConfig},
     resource::{Resource, ResourceConfig, ResourceMetadata},
@@ -258,7 +255,6 @@ where
             bounded_config,
         )),
         acquire: Manager::erased_acquire_bounded_for::<R>(),
-        resilience: opts.resilience,
         recovery_gate: opts.recovery_gate,
     })
 }
@@ -471,23 +467,17 @@ async fn register_transport_with_recovery_gate_admits_when_idle() {
 }
 
 // ---------------------------------------------------------------------------
-// register_transport_with — resilience profile is plumbed through
+// register_transport_with — default options registration on happy path
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
+async fn register_transport_with_default_options_succeeds_on_happy_path() {
+    // Mythos v2: `with_resilience` deleted. Registration uses
+    // `RegisterOptions::default()`; topology-layer `acquire_timeout` is
+    // the only acquire-bounded knob.
     let manager = Manager::new();
     let resource = TransportA::<4>::new();
     let transport_inner = Arc::new(MockTransportInner { name: "resilient" });
-
-    let resilience = AcquireResilience {
-        timeout: Some(Duration::from_secs(2)),
-        retry: Some(AcquireRetryConfig {
-            max_attempts: 3,
-            initial_backoff: Duration::from_millis(50),
-            max_backoff: Duration::from_millis(200),
-        }),
-    };
 
     register_transport_spec(
         &manager,
@@ -498,14 +488,14 @@ async fn register_transport_with_resilience_profile_succeeds_on_happy_path() {
             keepalive_interval: None,
             drain_timeout: None,
         },
-        RegisterOptions::default().with_resilience(resilience),
+        RegisterOptions::default(),
     )
-    .expect("transport registration with resilience");
+    .expect("transport registration succeeds with default options");
 
     let handle = manager
         .acquire_bounded::<TransportA<4>>(&ctx(), &AcquireOptions::default())
         .await
-        .expect("acquire under happy resilience");
+        .expect("acquire under default options");
 
     assert_eq!(handle.topology_tag(), TopologyTag::Bounded);
     assert_eq!(resource.open_counter().load(Ordering::Relaxed), 1);

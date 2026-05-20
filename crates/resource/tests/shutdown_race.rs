@@ -1,6 +1,6 @@
 //! Regression tests for the `graceful_shutdown` race with in-flight acquires.
 //!
-//! Pre-existing race surfaced by CodeRabbit's post-fix review on PR #613:
+//! The race:
 //!
 //! Phase 2 of `graceful_shutdown` watches `drain_tracker`, but if an acquire
 //! passes `lookup()` BEFORE the cancel token fires, the acquire can complete
@@ -161,7 +161,6 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register succeeds");
@@ -275,7 +274,6 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<SlowCreateResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register succeeds");

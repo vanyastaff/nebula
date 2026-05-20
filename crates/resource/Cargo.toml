@@ -20,7 +20,6 @@ nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-expression = { path = "../expression", default-features = false, features = ["cache"] }
 nebula-metrics = { path = "../metrics" }
-nebula-resilience = { path = "../resilience" }
 nebula-metadata = { path = "../metadata" }
 nebula-resource-macros = { path = "macros" }
 nebula-schema = { path = "../schema" }
@@ -43,11 +42,12 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
-# Resource's tests do not currently call `SchemeFactory::for_test*` or
-# `SchemeGuard::for_test`; if a future test needs them, add
-# `features = ["test-util"]` here (per ADR-0023 the feature stays scoped to
-# dev-dependencies).
-nebula-credential = { path = "../credential" }
+# `test-util` enables `SchemeFactory::for_test*` and `SchemeGuard::for_test`
+# constructors so external integration tests (notably `tests/rotation.rs`) can
+# fabricate the rotation-dispatch inputs that production code only constructs
+# from inside the credential engine. The feature MUST stay scoped
+# to dev-dependencies.
+nebula-credential = { path = "../credential", features = ["test-util"] }
 # `tests/rotation.rs` defines a mock `TestCredential` whose `State` impl
 # requires `Serialize + Deserialize + ZeroizeOnDrop` per the credential
 # contract. Production resources never define their own `Credential`/`State`

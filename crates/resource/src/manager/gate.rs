@@ -5,7 +5,10 @@
 //! into a single CAS-based pre-acquire admission with end-to-end ticket
 //! ownership.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     error::Error,
@@ -36,7 +39,24 @@ pub(super) enum GateAdmission {
     /// or `fail_permanent` based on the acquire result. Dropping it without
     /// resolution auto-fails to `GateState::Failed` via its `Drop` impl —
     /// so even a cancellation or panic in the acquire path is safe.
-    Probe(RecoveryTicket),
+    ///
+    /// `attempt` is the 1-based ticket attempt number, `backoff_on_fail` is
+    /// the delay the gate would impose if this probe `fail_transient`s, and
+    /// `last_failure` carries the prior `Failed` state's message. The
+    /// `Idle` branch of [`admit_through_gate`] returns
+    /// [`OpenGated`](Self::OpenGated), not [`Probe`](Self::Probe), so
+    /// `last_failure` is always `Some` here today — the field is kept
+    /// `Option<String>` to leave room for future admission paths that may
+    /// promote without a prior message. These three fields exist so the
+    /// manager can emit a truthful
+    /// [`ResourceEvent::RetryAttempt`](crate::events::ResourceEvent::RetryAttempt)
+    /// without re-reading state (which would race the ticket).
+    Probe {
+        ticket: RecoveryTicket,
+        attempt: u32,
+        backoff_on_fail: Duration,
+        last_failure: Option<String>,
+    },
 }
 
 /// Admits a caller through the optional recovery gate.
@@ -54,13 +74,32 @@ pub(super) fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<Gat
         GateState::InProgress { .. } => Err(Error::transient(
             "backend recovery in progress, retry later",
         )),
-        GateState::Failed { retry_at, .. } => {
+        // Snapshot the prior failure message **before** `try_begin` rotates
+        // the gate to `InProgress` — the message is part of the
+        // soon-to-be-retired state and would be lost after the CAS lands.
+        // Used to publish a truthful `ResourceEvent::RetryAttempt` once the
+        // probe is granted; the manager applies its own redaction
+        // discipline before this string crosses any external boundary.
+        GateState::Failed {
+            retry_at,
+            message: prior_failure,
+            ..
+        } => {
             if Instant::now() < retry_at {
                 let wait = retry_at.saturating_duration_since(Instant::now());
                 return Err(Error::exhausted("backend recovering", Some(wait)));
             }
             match gate.try_begin() {
-                Ok(ticket) => Ok(GateAdmission::Probe(ticket)),
+                Ok(ticket) => {
+                    let attempt = ticket.attempt();
+                    let backoff_on_fail = gate.backoff_for_attempt(attempt);
+                    Ok(GateAdmission::Probe {
+                        ticket,
+                        attempt,
+                        backoff_on_fail,
+                        last_failure: Some(prior_failure),
+                    })
+                },
                 Err(TryBeginError::AlreadyInProgress(_waiter)) => Err(Error::transient(
                     "backend recovery in progress, retry later",
                 )),
@@ -80,11 +119,11 @@ pub(super) fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<Gat
 /// (no gate attached), so callers can always call this unconditionally.
 pub(super) fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>) {
     match (admission, result) {
-        (GateAdmission::Probe(ticket), Ok(_)) => ticket.resolve(),
-        (GateAdmission::Probe(ticket), Err(e)) if e.is_retryable() => {
+        (GateAdmission::Probe { ticket, .. }, Ok(_)) => ticket.resolve(),
+        (GateAdmission::Probe { ticket, .. }, Err(e)) if e.is_retryable() => {
             ticket.fail_transient(e.to_string());
         },
-        (GateAdmission::Probe(ticket), Err(_e)) => {
+        (GateAdmission::Probe { ticket, .. }, Err(_e)) => {
             // Non-retryable errors are not backend-health signals; keep the
             // gate open to avoid permanently bricking acquires.
             ticket.resolve();
@@ -132,7 +171,7 @@ mod gate_admission_tests {
             barrier.wait().await;
             let some_gate: Option<Arc<RecoveryGate>> = Some(gate);
             match admit_through_gate(&some_gate) {
-                Ok(GateAdmission::Probe(ticket)) => {
+                Ok(GateAdmission::Probe { ticket, .. }) => {
                     // Hold the probe until the test is done counting so
                     // a second caller can't race in after a fast
                     // resolve/fail cycle.

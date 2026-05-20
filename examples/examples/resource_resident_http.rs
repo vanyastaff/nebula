@@ -1,4 +1,4 @@
-//! M6.3 Phase 10 — Resident HTTP client with OAuth-style credential refresh.
+//! Resident HTTP client with OAuth-style credential refresh.
 //!
 //! Models a Google Sheets-style HTTP integration:
 //!
@@ -13,7 +13,7 @@
 //! ## Run
 //!
 //! ```shell
-//! cargo run -p nebula-examples --example m6_resident_http
+//! cargo run -p nebula-examples --example resource_resident_http
 //! ```
 //!
 //! ## Pattern explanation
@@ -350,7 +350,7 @@ fn ctx_for_demo() -> ResourceContext {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("=== M6.3 Phase 10 — Resident HTTP + OAuth refresh ===\n");
+    println!("=== Resident HTTP + OAuth refresh ===\n");
 
     // 1. Configure the credential. Production code reads this from the credential store via the
     //    slot-resolution pipeline; here we construct it inline.
@@ -376,7 +376,6 @@ async fn main() -> anyhow::Result<()> {
         slot_identity: SlotIdentity::Unbound,
         topology: TopologyRuntime::Resident(resident_runtime),
         acquire: Manager::erased_acquire_resident_for::<GoogleSheets>(),
-        resilience: None,
         recovery_gate: None,
     })?;
     println!("[1] GoogleSheets resource registered (Resident topology, Global scope)");

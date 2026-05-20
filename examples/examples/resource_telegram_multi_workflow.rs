@@ -1,9 +1,9 @@
-//! M6.3 Phase 10 — Telegram bot shared across 10 simulated workflows.
+//! Telegram bot shared across 10 simulated workflows.
 //!
-//! Headline cross-workflow scenario from the M6 milestone — proves a single
-//! `Resource::create` invocation deduplicates 10 concurrent acquires of the
-//! same Resident-topology resource at the same scope. Mirrors the
-//! integration test `cross_workflow_resource_sharing` in
+//! Headline cross-workflow scenario — proves a single `Resource::create`
+//! invocation deduplicates 10 concurrent acquires of the same
+//! Resident-topology resource at the same scope. Mirrors the integration
+//! test `cross_workflow_resource_sharing` in
 //! `crates/engine/tests/resource_integration.rs`, but as an end-user
 //! runnable demonstration.
 //!
@@ -14,15 +14,15 @@
 //! - **Cross-workflow dedupe** — 10 spawned tasks all acquire the same resource at
 //!   `ScopeLevel::Organization`; the manager collapses them to a single `Resource::create`.
 //! - **Counter assertion** — the `create_counter` ends at exactly `1`.
-//! - **EventSource direct usage** — per ADR-0045 the `EventTrigger` DX wrapper is deferred. We
-//!   drive the fake update stream by directly broadcasting to a `tokio::sync::broadcast` channel
-//!   and showing how an `EventSource::recv` consumer reads from it. This is the pattern that the
-//!   Phase 10.2 task notes is canonical until §M6.4 ships.
+//! - **EventSource direct usage** — the `EventTrigger` DX wrapper is deferred. We drive the fake
+//!   update stream by directly broadcasting to a `tokio::sync::broadcast` channel and show how an
+//!   `EventSource::recv` consumer reads from it. This is the canonical pattern until the wrapper
+//!   ships.
 //!
 //! ## Run
 //!
 //! ```shell
-//! cargo run -p nebula-examples --example m6_telegram_multi_workflow
+//! cargo run -p nebula-examples --example resource_telegram_multi_workflow
 //! ```
 
 use std::{
@@ -180,7 +180,7 @@ fn ctx_for_org(org: OrgId) -> ResourceContext {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    println!("=== M6.3 Phase 10 — Telegram bot × 10 workflows ===\n");
+    println!("=== Telegram bot × 10 workflows ===\n");
 
     // 1. Register the bot at Organization scope. Every workflow under this org will share the same
     //    physical bot client.
@@ -199,7 +199,6 @@ async fn main() -> anyhow::Result<()> {
         slot_identity: SlotIdentity::Unbound,
         topology: TopologyRuntime::Resident(resident_runtime),
         acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-        resilience: None,
         recovery_gate: None,
     })?;
     println!("[1] TelegramBot registered at Organization scope (org={org:?})");

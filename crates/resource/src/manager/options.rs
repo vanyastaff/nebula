@@ -3,7 +3,7 @@
 //! - [`ManagerConfig`] — manager construction parameters
 //! - [`RegistrationSpec`] — the single parameter aggregate consumed by
 //!   [`Manager::register`](super::Manager::register)
-//! - [`RegisterOptions`] — scope / resilience / recovery / slot-identity knobs
+//! - [`RegisterOptions`] — scope / recovery / slot-identity knobs
 //! - [`ShutdownConfig`] — graceful shutdown tuning
 //! - [`DrainTimeoutPolicy`] — what to do on drain timeout (#302)
 
@@ -12,8 +12,8 @@ use std::{sync::Arc, time::Duration};
 use nebula_core::ScopeLevel;
 
 use crate::{
-    integration::AcquireResilience, recovery::gate::RecoveryGate, registry::ErasedAcquireFn,
-    resource::Resource, runtime::TopologyRuntime,
+    recovery::gate::RecoveryGate, registry::ErasedAcquireFn, resource::Resource,
+    runtime::TopologyRuntime,
 };
 
 /// Policy that controls what `graceful_shutdown` does when the
@@ -48,8 +48,8 @@ pub struct ShutdownConfig {
     pub drain_timeout: Duration,
     /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
     pub on_drain_timeout: DrainTimeoutPolicy,
-    /// Upper bound on how long Phase 4 will wait for release-queue
-    /// workers to finish processing outstanding tasks.
+    /// Upper bound on how long the release-queue drain phase will wait
+    /// for release-queue workers to finish processing outstanding tasks.
     pub release_queue_timeout: Duration,
 }
 
@@ -82,7 +82,7 @@ impl ShutdownConfig {
         self
     }
 
-    /// Override the release-queue timeout budget for Phase 4.
+    /// Override the release-queue timeout budget.
     #[must_use]
     pub fn with_release_queue_timeout(mut self, timeout: Duration) -> Self {
         self.release_queue_timeout = timeout;
@@ -117,7 +117,7 @@ impl Default for ManagerConfig {
 /// Extended options for resource registration.
 ///
 /// Used with the `register_*_with` convenience methods to configure
-/// resilience and recovery beyond the simple `register_*` defaults.
+/// recovery beyond the simple `register_*` defaults.
 ///
 /// Per slot model, credential bindings are no longer threaded through
 /// registration: the `resource: R` value handed to `Manager::register*`
@@ -139,8 +139,6 @@ impl Default for ManagerConfig {
 pub struct RegisterOptions {
     /// Scope level for the resource (default: `Global`).
     pub scope: ScopeLevel,
-    /// Optional acquire resilience (timeout + retry + circuit breaker).
-    pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
     /// Collision-free structural slot identity over this registration's
@@ -169,7 +167,6 @@ impl Default for RegisterOptions {
     fn default() -> Self {
         Self {
             scope: ScopeLevel::Global,
-            resilience: None,
             recovery_gate: None,
             slot_identity: crate::dedup::SlotIdentity::Unbound,
         }
@@ -181,13 +178,6 @@ impl RegisterOptions {
     #[must_use]
     pub fn with_scope(mut self, scope: ScopeLevel) -> Self {
         self.scope = scope;
-        self
-    }
-
-    /// Attach an acquire-resilience policy for this registration.
-    #[must_use]
-    pub fn with_resilience(mut self, resilience: AcquireResilience) -> Self {
-        self.resilience = Some(resilience);
         self
     }
 
@@ -223,11 +213,11 @@ impl RegisterOptions {
 /// → `register_with_slot_identity` delegation chain plus ~17 per-topology
 /// `register_<topo>[_with]` shorthands into one struct fed to one funnel.
 /// It is a plain struct with **public fields and no builder**: every field
-/// is required to name a registry row exactly, the two genuinely-optional
-/// policies are `Option`, and `slot_identity` defaults via
-/// [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) at the construction
-/// site (no `Default` impl is possible — `R` / `R::Config` are generic and
-/// not `Default`).
+/// names a registry row exactly, the one genuinely-optional policy
+/// (`recovery_gate`) is `Option<Arc<RecoveryGate>>`, and `slot_identity`
+/// defaults via [`SlotIdentity::Unbound`](crate::dedup::SlotIdentity) at
+/// the construction site (no `Default` impl is possible — `R` / `R::Config`
+/// are generic and not `Default`).
 ///
 /// Per slot model the `resource: R` value is expected to have **all
 /// `#[credential]` slot fields already resolved and populated** before it
@@ -255,8 +245,6 @@ pub struct RegistrationSpec<R: Resource> {
     pub topology: TopologyRuntime<R>,
     /// Type-erased acquire hook captured at registration time.
     pub acquire: ErasedAcquireFn,
-    /// Optional acquire resilience (timeout + retry + circuit breaker).
-    pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
 }

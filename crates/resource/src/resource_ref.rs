@@ -15,15 +15,14 @@
 //! `key` attribute supplies a default resource id; workflow-JSON
 //! `slot_bindings.<slot_key>.resource_id` overrides it per node.
 //!
-//! ## Phase 1 scope (current)
+//! ## Current scope
 //!
 //! `ResourceRef<R>` carries the resolved resource id and a `PhantomData<R>`
 //! marker. `.resolve(ctx)` delegates to the existing `HasResources::acquire_any`
 //! path (the dyn-erased accessor) and downcasts via the `ResourceGuard<R>`
-//! pattern from `HasResourcesExt`. Phase 6 of
-//! `m6-resource-finalization-integration-audit.md` adds engine-side typed
-//! helpers (`ctx.acquire_resource_by_id::<R>(id)`); this type's `.resolve` will
-//! switch over without API change.
+//! pattern from `HasResourcesExt`. A follow-up adds engine-side typed
+//! helpers (`ctx.acquire_resource_by_id::<R>(id)`); this type's `.resolve`
+//! will switch over without API change.
 //!
 //! ## Composability
 //!
@@ -153,7 +152,7 @@ mod tests {
     use super::*;
 
     // Phantom resource type for tests. The `.resolve()` path is exercised in
-    // integration tests once Phase 6 wires the engine-side helpers; these
+    // integration tests once the engine-side helpers are wired; these
     // unit tests cover construction + accessors + Debug + Clone.
     struct FakeRes;
 

@@ -53,7 +53,7 @@ aggregation, so there is no aggregate `CredentialRefreshed` /
 ### Slot-rotation variants (4)
 
 Emitted per `(resource, slot)` by the engine-owned rotation fan-out through
-the `Manager::{refresh_slot, revoke_slot}` port (ADR-0067 D1), after the
+the `Manager::{refresh_slot, revoke_slot}` port, after the
 engine has swapped the rotated guard into the slot and invoked the
 resource's `on_credential_refresh` / `on_credential_revoke` hook. The
 `error` string is already redacted — it never carries credential material.

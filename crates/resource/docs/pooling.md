@@ -32,10 +32,11 @@ PoolRuntime<R>
   └── waiters:    AtomicUsize
 ```
 
-**Acquire** (`Manager::acquire_pooled` / `acquire_pooled_default`):
+**Acquire** (`Manager::acquire_pooled`, or `acquire_pooled_for_identity` for credential-bound routes):
 
 1. Atomically increment waiter count (RAII counter).
-2. Acquire one semaphore permit (waits up to the resilience-supplied timeout).
+2. Acquire one semaphore permit (waits up to `AcquireOptions::remaining()`
+   if a deadline is set, otherwise `PoolConfig::create_timeout`).
 3. Pop from `idle_queue` (`Lifo`: back / `Fifo`: front, per
    `PoolConfig::strategy`).
 4. If `test_on_checkout` is true, call `Resource::check`. Discard on `Err`.
@@ -106,8 +107,9 @@ pub struct PoolConfig {
 `max_size`/`max_lifetime` against your backend's connection-budget and TTL.
 
 `PoolConfig::validate()` enforces `min_size <= max_size` and non-zero
-`max_size`. `Manager::register_pooled` / `register_pooled_with` call this
-implicitly.
+`max_size`. `PoolRuntime::try_new` calls it implicitly, so an invalid
+config surfaces as a typed error at runtime construction — before
+`Manager::register` ever sees the `TopologyRuntime::Pool(...)` value.
 
 ---
 
@@ -153,8 +155,9 @@ pub enum WarmupStrategy {
 
 - `None` — first acquire pays the cold-start cost. Cheapest, slowest first
   request.
-- `Sequential` — `min_size` instances created back-to-back during
-  `Manager::register_pooled*`. Predictable startup latency.
+- `Sequential` — `min_size` instances created back-to-back at the first
+  `Manager::acquire_pooled` (or via the warmup hook on the pool runtime).
+  Predictable startup latency.
 - `Parallel` — fastest warmup but spikes connection count; verify the
   backend tolerates it.
 - `Staggered { interval }` — connection rate-limited startup. Use when the
@@ -309,29 +312,43 @@ PoolConfig {
 
 ## Integration with Resilience
 
-Per-acquire timeout, retry policy, and recovery-gate admission belong on
-`AcquireResilience` / `RecoveryGate`, not on `PoolConfig`. Wire them in
-via `RegisterOptions`:
+Per-acquire timeout / retry composes one layer up (action handler /
+engine activity / caller-supplied `nebula-resilience` pipeline) — the
+manager-side `AcquireResilience` wrapper was removed (peer Rust pools
+— sqlx, deadpool, bb8 — all ship acquire-timeout only). Acquire-timeout
+itself lives on the topology config (`create_timeout` field on the pool
+config).
+
+`RecoveryGate` is the remaining manager-level resilience seam: a
+CAS-based single-probe admission that prevents thundering-herd against
+a flapping backend. Wire it through `RegistrationSpec::recovery_gate`:
 
 ```rust,ignore
 use std::sync::Arc;
 use nebula_resource::{
-    AcquireResilience, RecoveryGate, RecoveryGateConfig, RegisterOptions,
+    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, TopologyRuntime,
+    dedup::SlotIdentity,
+    recovery::{RecoveryGate, RecoveryGateConfig},
+    topology::pooled::config::Config as PoolConfig,
 };
 
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-
-manager.register_pooled_with(
-    PostgresResource,
-    pg_config,
+let pool_rt = PoolRuntime::<PostgresResource>::try_new(
     PoolConfig::default(),
-    RegisterOptions {
-        resilience:    Some(AcquireResilience::standard()),
-        recovery_gate: Some(gate),
-        ..RegisterOptions::default()
-    },
+    pg_config.fingerprint(),
 )?;
+
+manager.register(RegistrationSpec {
+    resource: PostgresResource,
+    config: pg_config,
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: TopologyRuntime::Pool(pool_rt),
+    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
+    recovery_gate: Some(gate),
+})?;
 ```
 
-See [`api-reference.md`](api-reference.md) for `RegisterOptions` field
-semantics and [`recovery.md`](recovery.md) for `RecoveryGate` behavior.
+See [`api-reference.md`](api-reference.md) for the `RegistrationSpec`
+public fields and [`recovery.md`](recovery.md) for `RecoveryGate`
+behaviour (state machine + thundering-herd admission semantics).

@@ -100,25 +100,33 @@ When registering a resource, pass an optional `RecoveryGate`:
 ```rust,ignore
 use std::sync::Arc;
 use nebula_resource::{
-    PoolConfig, RecoveryGate, RecoveryGateConfig, RegisterOptions,
+    Manager, PoolRuntime, RegistrationSpec, ScopeLevel, TopologyRuntime,
+    dedup::SlotIdentity,
+    recovery::{RecoveryGate, RecoveryGateConfig},
+    topology::pooled::config::Config as PoolConfig,
 };
 
 let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig::default()));
-
-manager.register_pooled_with(
-    PostgresResource,
-    pg_config,
+let pool_rt = PoolRuntime::<PostgresResource>::try_new(
     PoolConfig::default(),
-    RegisterOptions {
-        recovery_gate: Some(gate.clone()),
-        ..RegisterOptions::default()
-    },
+    pg_config.fingerprint(),
 )?;
+
+manager.register(RegistrationSpec {
+    resource: PostgresResource,
+    config: pg_config,
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: TopologyRuntime::Pool(pool_rt),
+    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
+    recovery_gate: Some(gate.clone()),
+})?;
 ```
 
-For credential-bound resources, also pass `credential_id: Some(...)` in
-`RegisterOptions`. Use `Manager::register` (positional) for full control
-over scope and topology.
+For credential-bound resources, declare `#[credential(key = "...")]`
+fields on the resource struct — the framework resolves them before
+`Resource::create` runs. Per-tenant routing uses
+`SlotIdentity::from_bindings(...)` plus `acquire_pooled_for_identity`.
 
 The Manager automatically:
 1. **Checks the gate** before each acquire (admission helper in
@@ -149,52 +157,19 @@ let gate = groups.get_or_create(
 
 ---
 
-## WatchdogHandle
+## Background health probes
 
-Opt-in background health probe. Spawns a Tokio task that runs a
-user-supplied async `check_fn` on a fixed interval. After
-`failure_threshold` consecutive failures it calls
-`on_health_change(false)`; after `recovery_threshold` consecutive
-successes it calls `on_health_change(true)`.
-
-```rust,ignore
-use std::time::Duration;
-use nebula_resource::{WatchdogConfig, WatchdogHandle};
-use tokio_util::sync::CancellationToken;
-
-let parent_cancel = CancellationToken::new();
-
-let handle = WatchdogHandle::start(
-    WatchdogConfig {
-        interval: Duration::from_secs(30),
-        probe_timeout: Duration::from_secs(5),
-        failure_threshold: 3,    // 3 consecutive failures → unhealthy
-        recovery_threshold: 1,   // 1 success → healthy again
-    },
-    || async {
-        // Your async probe — return Result<(), nebula_resource::Error>.
-        Ok(())
-    },
-    |healthy| {
-        tracing::info!(healthy, "watchdog health transition");
-    },
-    parent_cancel,
-);
-
-// Graceful stop (awaits the background task):
-handle.stop().await;
-// Or cancel-on-drop (does NOT await):
-drop(handle);
-```
-
-The `parent_cancel` token lets the watchdog participate in tree-style
-shutdown — the task exits as soon as the parent is cancelled.
+`nebula-resource` does **not** ship a built-in background health-probe
+type. If you need one, drive `Resource::check()` from an
+application-owned `tokio::spawn` loop. The manager publishes
+`ResourceEvent::HealthChanged` whenever it observes a transition, so
+consumers can react without polling.
 
 ---
 
 ## Differences from v1
 
-- **No `HealthChecker`** — use `Resource::check()` directly or `WatchdogHandle`
-- **No `QuarantineManager`** — replaced by `RecoveryGate` (simpler, CAS-based)
-- **No `HealthState` enum** — health is a `bool` (healthy/unhealthy)
-- **No `HealthPipeline`** — multi-stage checks removed
+- **No `HealthChecker`** — drive `Resource::check()` directly.
+- **No `QuarantineManager`** — replaced by `RecoveryGate` (simpler, CAS-based).
+- **No `HealthState` enum** — health is a `bool` (healthy/unhealthy).
+- **No `HealthPipeline`** — multi-stage checks removed.

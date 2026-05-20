@@ -19,11 +19,12 @@ An adapter crate owns three things:
 2. A **resource struct** — implements `Resource` with four associated
    types (`Config`, `Runtime`, `Lease`, `Error`) plus the lifecycle
    methods. The factory.
-3. A **topology impl** — `Pooled`, `Resident`, `Service`, `Transport`,
-   or `Exclusive`. Most database adapters use `Pooled`.
+3. A **topology impl** — [`Pooled`], [`Resident`], or [`Bounded`] (with
+   a sealed `Cap` typestate: `Unbounded` / `Capped<N>` / `Exclusive`).
+   Most database adapters use `Pooled`; HTTP clients use `Resident`;
+   OAuth / gRPC / file-lock patterns use `Bounded` with the matching cap.
 
-**Credential binding (ADR-0044, amended by ADR-0067).** If your resource
-binds to a credential, declare a slot field
+**Credential binding.** If your resource binds to a credential, declare a slot field
 `#[credential(key = "...")] auth: SlotCell<CredentialGuard<C>>` and read the
 resolved guard via the derive-emitted `self.auth_slot()` accessor inside
 `create` (and the rotation hooks). Connection-bound resources override
@@ -317,13 +318,13 @@ fn on_credential_refresh(
 
 ## Step 4: Pick and Implement Topology
 
-| Topology    | Use when                                                                              |
-|-------------|---------------------------------------------------------------------------------------|
-| `Pooled`    | Stateful connections (DBs, gRPC channels). N instances, one-at-a-time checkout.       |
-| `Resident`  | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). Cloned on acquire. |
-| `Service`   | Token-bounded shared clients with `TokenMode` admission. Rate-limited service clients. |
-| `Transport` | Connection-oriented — hands out a frame channel per acquire (e.g., long-lived TCP).    |
-| `Exclusive` | Mutex-style — one acquirer at a time, no internal pooling.                            |
+| Topology               | Use when                                                                                                  |
+|------------------------|-----------------------------------------------------------------------------------------------------------|
+| `Pooled`               | Stateful connections (DBs, gRPC channels). N instances, one-at-a-time checkout.                           |
+| `Resident`             | Stateless or internally-pooled clients (`reqwest::Client`, AWS SDK). `Arc::clone` on acquire.             |
+| `Bounded<Unbounded>`   | Token-gated services (OAuth, fan-out APIs). Long-lived runtime, no per-acquire release.                   |
+| `Bounded<Capped<N>>`   | Multiplexed sessions over one shared connection (SSH, gRPC channel). Tracked release via `BoundedRelease`. |
+| `Bounded<Exclusive>`   | Mutex-style — one acquirer at a time, reset-on-release ordering.                                          |
 
 ### Pooled implementation
 
@@ -376,55 +377,55 @@ argument; a credential-bound resource carries its resolved guard in its
 register/acquire surface is identical whether or not the resource binds a
 credential.
 
-1. **`register_pooled` + `acquire_pooled`** — zero-boilerplate. `Global`
-   scope, no resilience, no recovery gate.
-2. **`register_pooled_with` + `acquire_pooled`** — pass `RegisterOptions`
-   for a non-default `scope`, an `AcquireResilience` profile, or a
-   `RecoveryGate`.
-3. **`Manager::register` + `acquire_pooled`** — full positional path when
-   you need to build the `TopologyRuntime::Pool(PoolRuntime::<R>::new(...))`
-   yourself. For the multi-tenant case, pin distinct resolved credentials to
-   distinct registry rows with `register_with_identity` (or
-   `RegisterOptions::with_slot_identity`) and acquire via
-   `acquire_pooled_for`.
+Registration goes through **one funnel**:
+`Manager::register::<R>(spec: RegistrationSpec<R>)`. The per-topology
+`register_<topo>[_with]` shorthands and the multi-step delegation chain
+were removed (the manager-side `AcquireResilience` wrapper was
+dropped; the `register_*` shorthand family followed).
+`RegistrationSpec<R>` is a plain struct with public fields and no
+builder.
+
+For the multi-tenant case, pin distinct resolved credentials to
+distinct registry rows by building a `SlotIdentity::Structural` (via
+`SlotIdentity::from_bindings`) and acquire through
+`acquire_pooled_for_identity`.
 
 ```rust,ignore
-// path 1: simplest
-use nebula_resource::{Manager, PoolConfig};
+use nebula_resource::{
+    AcquireOptions, Manager, PoolRuntime, RegistrationSpec, ScopeLevel,
+    TopologyRuntime, dedup::SlotIdentity,
+    topology::pooled::config::Config as PoolConfig,
+};
 use nebula_resource_postgres::{PostgresConfig, PostgresResource};
 
 let manager = Manager::new();
-manager.register_pooled(
-    PostgresResource,
-    PostgresConfig { host: "db.example.com".into(), port: 5432,
-                     database: "myapp".into(), connect_timeout_secs: 10 },
-    PoolConfig { max_size: 10, ..PoolConfig::default() },
-)?;
-```
-
-```rust,ignore
-// path 2: with options.
-use nebula_resource::{
-    AcquireResilience, AcquireRetryConfig, PoolConfig, RegisterOptions,
+let pg_config = PostgresConfig {
+    host: "db.example.com".into(),
+    port: 5432,
+    database: "myapp".into(),
+    connect_timeout_secs: 10,
 };
-
-let opts = RegisterOptions::default()  // scope = Global
-    .with_resilience(AcquireResilience {
-        timeout: Some(std::time::Duration::from_secs(5)),
-        retry: Some(AcquireRetryConfig::default()),
-    });
-
-manager.register_pooled_with(
-    PostgresResource, PostgresConfig::default(), PoolConfig::default(), opts,
+let pool_rt = PoolRuntime::<PostgresResource>::try_new(
+    PoolConfig { max_size: 10, ..PoolConfig::default() },
+    pg_config.fingerprint(),
 )?;
+
+manager.register(RegistrationSpec {
+    resource: PostgresResource,
+    config: pg_config,
+    scope: ScopeLevel::Global,
+    slot_identity: SlotIdentity::Unbound,
+    topology: TopologyRuntime::Pool(pool_rt),
+    acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
+    recovery_gate: None,  // attach an Arc<RecoveryGate> for thundering-herd protection
+})?;
 ```
 
 To acquire:
 
 ```rust,ignore
 use nebula_core::scope::Scope;
-use nebula_resource::AcquireOptions;
-use nebula_resource::context::ResourceContext;
+use nebula_resource::{AcquireOptions, context::ResourceContext};
 use tokio_util::sync::CancellationToken;
 
 let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -433,6 +434,12 @@ let handle = manager
     .await?;
 let conn: &PgConnection = &*handle;  // RAII — returns to the pool on drop.
 ```
+
+Retry / timeout composition lives one layer up (action handler / engine
+activity) — peer Rust pools (sqlx, deadpool, bb8) all ship
+acquire-timeout only, and per-topology configs carry their own
+`create_timeout`. Add a `RecoveryGate` only when you need thundering-
+herd protection on a flapping backend.
 
 ---
 
@@ -443,19 +450,32 @@ Tests should not require a real database — use a mock `PgConnection`.
 ```rust,ignore
 // tests/integration.rs
 use nebula_core::scope::Scope;
-use nebula_resource::{AcquireOptions, Manager, PoolConfig, TopologyTag};
-use nebula_resource::context::ResourceContext;
+use nebula_resource::{
+    AcquireOptions, Manager, PoolRuntime, RegistrationSpec, ScopeLevel,
+    TopologyRuntime, TopologyTag, context::ResourceContext, dedup::SlotIdentity,
+    topology::pooled::config::Config as PoolConfig,
+};
 use nebula_resource_postgres::{PostgresConfig, PostgresResource};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn register_and_acquire() {
     let manager = Manager::new();
-    manager.register_pooled(
-        PostgresResource,
-        PostgresConfig::default(),
+    let pg_config = PostgresConfig::default();
+    let pool_rt = PoolRuntime::<PostgresResource>::try_new(
         PoolConfig::default(),
-    ).expect("valid config must register");
+        pg_config.fingerprint(),
+    ).expect("valid pool config");
+
+    manager.register(RegistrationSpec {
+        resource: PostgresResource,
+        config: pg_config,
+        scope: ScopeLevel::Global,
+        slot_identity: SlotIdentity::Unbound,
+        topology: TopologyRuntime::Pool(pool_rt),
+        acquire: Manager::erased_acquire_pooled_for::<PostgresResource>(),
+        recovery_gate: None,
+    }).expect("valid config must register");
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let handle = manager

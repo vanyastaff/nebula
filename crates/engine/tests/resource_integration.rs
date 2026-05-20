@@ -398,7 +398,6 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
                 ResidentConfig::default(),
             )),
             acquire: Manager::erased_acquire_resident_for::<IntegrationProbeResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("register org-scoped resource");
@@ -764,7 +763,6 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -842,7 +840,6 @@ mod shared_resource {
                     ResidentConfig::default(),
                 )),
                 acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register A should succeed");
@@ -856,7 +853,6 @@ mod shared_resource {
                     ResidentConfig::default(),
                 )),
                 acquire: Manager::erased_acquire_resident_for::<AlternateBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register B should succeed");
@@ -920,7 +916,6 @@ mod shared_resource {
                     ResidentConfig::default(),
                 )),
                 acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register org_a should succeed");
@@ -934,7 +929,6 @@ mod shared_resource {
                     ResidentConfig::default(),
                 )),
                 acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register org_b should succeed");
@@ -996,7 +990,6 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register should succeed");
@@ -1075,7 +1068,6 @@ mod shared_resource {
                 slot_identity: SlotIdentity::Unbound,
                 topology: TopologyRuntime::Resident(resident_rt),
                 acquire: Manager::erased_acquire_resident_for::<TelegramBot>(),
-                resilience: None,
                 recovery_gate: None,
             })
             .expect("register should succeed");

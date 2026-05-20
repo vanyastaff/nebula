@@ -26,8 +26,8 @@ use std::{
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, AcquireResilience, Manager, PoolConfig, RegistrationSpec, ResidentConfig,
-    ResourceContext, ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
+    AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
+    ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
@@ -226,7 +226,6 @@ async fn use_case_1_http_client_pool() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<HttpClientResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("registration should succeed");
@@ -359,7 +358,6 @@ async fn use_case_2_resident_config_store() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Resident(resident_rt),
             acquire: Manager::erased_acquire_resident_for::<ConfigStoreResource>(),
-            resilience: None,
             recovery_gate: None,
         })
         .expect("resident registration should succeed");
@@ -486,11 +484,6 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
 
     let manager = Arc::new(Manager::new());
 
-    // FRICTION NOTE [RESILIENCE WIRING]: AcquireResilience presets are easy
-    // to find and use. `AcquireResilience::standard()` is discoverable from
-    // lib.rs re-exports. This part of the API is actually good.
-    let resilience = AcquireResilience::fast(); // 10s timeout, max_attempts = 2
-
     manager
         .register(RegistrationSpec {
             resource: db.clone(),
@@ -501,7 +494,6 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
             slot_identity: SlotIdentity::Unbound,
             topology: TopologyRuntime::Pool(pool_rt),
             acquire: Manager::erased_acquire_pooled_for::<DbResource>(),
-            resilience: Some(resilience),
             recovery_gate: None,
         })
         .expect("db registration should succeed");

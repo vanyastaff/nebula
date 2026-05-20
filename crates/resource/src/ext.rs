@@ -22,7 +22,7 @@
 //!
 //! Both paths route through the same `LayeredResourceAccessor` (in
 //! `nebula-engine::scoped_resources`) injected into the action context, so the `scoped → global`
-//! precedence (Phase 6 / M6.1) applies uniformly.
+//! precedence applies uniformly.
 //!
 //! # Examples
 //!
@@ -68,6 +68,20 @@ use crate::{
     error::{Error, ErrorKind},
 };
 
+/// Sealing module — keeps [`HasResourcesExt`] closed to external impls.
+///
+/// `HasResourcesExt` adds a method *over* every `HasResources` via a
+/// blanket impl. Without sealing, a downstream crate could write its
+/// own `impl HasResourcesExt for SomeOtherType` and collide with the
+/// blanket — a published-library semver hazard (rust-intel §C1). The
+/// sealed supertrait makes external impls a compile error; the blanket
+/// impl below is the sole impl path, and adding methods to
+/// `HasResourcesExt` is therefore non-breaking.
+mod sealed {
+    pub trait Sealed {}
+    impl<C: super::HasResources + ?Sized> Sealed for C {}
+}
+
 /// Typed resource access for any context implementing `HasResources`.
 ///
 /// Ad-hoc form: looks up by `R::key()` only. For per-node slot binding,
@@ -75,6 +89,11 @@ use crate::{
 /// derive-emitted `FromWorkflowNode` factory call
 /// `ActionContextExt::acquire_resource_by_id` instead — slot binding is
 /// the preferred path for production code (see crate-level docs).
+///
+/// **Sealed.** External crates cannot implement this trait; the sole
+/// impl is the crate-internal blanket `impl<C: HasResources + ?Sized>
+/// HasResourcesExt for C`. New methods can be added here without
+/// breaking downstream code.
 ///
 /// # Examples
 ///
@@ -84,7 +103,7 @@ use crate::{
 /// let pool = ctx.resource::<PostgresResource>().await?;
 /// let cache = ctx.try_resource::<RedisResource>().await?;
 /// ```
-pub trait HasResourcesExt: HasResources {
+pub trait HasResourcesExt: HasResources + sealed::Sealed {
     /// Acquire a typed resource guard. Returns error if not found or acquisition fails.
     fn resource<R: Resource>(&self) -> impl Future<Output = Result<ResourceGuard<R>, Error>> + Send
     where
