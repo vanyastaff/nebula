@@ -689,6 +689,18 @@ impl Manager {
         // it *before* building the runtime.)
 
         let key = R::key();
+
+        // Wire the manager's broadcast sink into the optional recovery
+        // gate so its state transitions emit
+        // `ResourceEvent::RecoveryGateChanged`. Idempotent at the
+        // `RecoveryGate` end: a gate handed to a second manager (test
+        // composition, scoped registry) keeps its first sink and
+        // ignores this call. Cheap and lock-free — `OnceLock::set`
+        // is one CAS.
+        if let Some(gate) = recovery_gate.as_deref() {
+            gate.set_event_sink(self.event_tx.clone(), key.clone());
+        }
+
         let managed = Arc::new(ManagedResource {
             resource,
             config: arc_swap::ArcSwap::from_pointee(config),
@@ -2026,6 +2038,33 @@ impl Manager {
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
+        // Publish a `RetryAttempt` event when this acquire is the recovery
+        // probe (the CAS-claimed single-probe slot that follows a
+        // transient backend failure). The `backoff_on_fail` field carries
+        // the delay the gate would impose *if this probe fails again* —
+        // the next caller's wait, not a wait this acquire incurs. The
+        // event is emitted **before** `dispatch()` so observers see the
+        // attempt go out rather than only the result. The error field is
+        // populated with the prior failure message from the
+        // soon-to-be-retired `Failed` state, snapshotted in
+        // `admit_through_gate` before the CAS rotated the gate.
+        if let gate::GateAdmission::Probe {
+            attempt,
+            backoff_on_fail,
+            last_failure,
+            ..
+        } = &gate_admission
+        {
+            self.event_tx
+                .send(ResourceEvent::RetryAttempt {
+                    key: R::key(),
+                    attempt: *attempt,
+                    backoff: *backoff_on_fail,
+                    error: last_failure.clone().unwrap_or_default(),
+                })
+                .ok();
+        }
+
         let result = dispatch().await;
 
         // Settle the gate ticket based on the acquire result. #322: this
@@ -2036,7 +2075,13 @@ impl Manager {
         settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         match result {
-            Ok(h) => Ok(h.with_drain_tracker(in_flight.release_to_guard())),
+            // Attach the manager's broadcast sender so the guard's `Drop`
+            // emits `ResourceEvent::Released`. Done here, on the success
+            // path only, because failed acquires never minted a guard
+            // to begin with — there is nothing to release.
+            Ok(h) => Ok(h
+                .with_drain_tracker(in_flight.release_to_guard())
+                .with_event_tx(self.event_tx.clone())),
             Err(e) => Err(e),
         }
     }
@@ -2546,10 +2591,24 @@ impl Manager {
                 if let Some(m) = &self.metrics {
                     m.record_acquire_error();
                 }
-                let _ = self.event_tx.send(ResourceEvent::AcquireFailed {
-                    key: R::key(),
-                    error: e.to_string(),
-                });
+                // `BackpressureDetected` is a topology-pressure signal
+                // (semaphore full, max sessions reached). It is a strict
+                // subset of `AcquireFailed` — we emit both so subscribers
+                // that filter on pressure get a typed event without having
+                // to parse error strings, while the unified
+                // `AcquireFailed` stream remains the canonical "acquire
+                // didn't succeed" feed.
+                if matches!(e.kind(), crate::error::ErrorKind::Backpressure) {
+                    self.event_tx
+                        .send(ResourceEvent::BackpressureDetected { key: R::key() })
+                        .ok();
+                }
+                self.event_tx
+                    .send(ResourceEvent::AcquireFailed {
+                        key: R::key(),
+                        error: e.to_string(),
+                    })
+                    .ok();
             },
         }
     }

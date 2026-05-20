@@ -258,5 +258,4 @@ Before sending the PR, verify:
 - [`events.md`](events.md) — lifecycle event streaming
 - [`adapters.md`](adapters.md) — accessor adapters (`HasResources`, `ScopedResourceAccessor`)
 - [`api-reference.md`](api-reference.md) — full surface API listing
-- [`crates/resource/plans/02-topology.md`](../plans/02-topology.md) — historical design rationale for the topology split
 - [`docs/adr/0081-m6-resource-credential-integration.md`](../../../docs/adr/0081-m6-resource-credential-integration.md) — M6 contract: `Resource::Credential` superseded by `#[credential]` slots (ADR-0044); EventSource-direct canonical until `EventTrigger` ships (ADR-0045)
