@@ -249,8 +249,14 @@ deny = [
 
   # nebula-credential-testutil is a publish=false internal test-utility crate.
   # It re-exports InMemoryStore + InMemoryPendingStore for crates that cannot
-  # dev-dep on nebula-storage (dep-cycle). Only dev-dependencies may depend on
-  # it; production builds must not reach these symbols (ADR-0023).
+  # dev-dep on nebula-storage (dep-cycle). In nebula-tenancy it is a pure
+  # dev-dep for inline #[cfg(test)] tests; in nebula-credential-runtime it
+  # is BOTH an optional regular dep gated by the `test-util` feature (for
+  # the `test_support` module that is itself cfg(any(test, feature = "test-util"))-gated)
+  # AND a dev-dep for the #[cfg(test)] inline tests in ops.rs and the
+  # compile_fail/ probes. cargo-deny has no feature-aware wrappers, so the
+  # wrapper allowlist below is the only structural enforcement — the
+  # `test-util` feature MUST never be enabled in a release build (ADR-0023).
   { crate = "nebula-credential-testutil", wrappers = [
     "nebula-credential-testutil",
     "nebula-credential-runtime",

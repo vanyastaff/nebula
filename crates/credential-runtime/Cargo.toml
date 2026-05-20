@@ -62,7 +62,11 @@ default = []
 # `InMemoryStore` is non-durable + unencrypted-at-rest. The default
 # build keeps `[dependencies] nebula-storage` featureless, so a
 # production dependency tree never reaches these symbols.
-test-util = ["nebula-storage/credential-in-memory", "dep:nebula-credential-testutil"]
+test-util = [
+  "nebula-storage/credential-in-memory",
+  "nebula-storage/test-util",
+  "dep:nebula-credential-testutil",
+]
 
 [lints]
 workspace = true

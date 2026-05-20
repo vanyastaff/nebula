@@ -43,8 +43,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
-# `SchemeFactory::for_test*` and `SchemeGuard::for_test` constructors are
-# unconditionally public in nebula-credential (no feature gate needed).
+# Resource's tests do not currently call `SchemeFactory::for_test*` or
+# `SchemeGuard::for_test`; if a future test needs them, add
+# `features = ["test-util"]` here (per ADR-0023 the feature stays scoped to
+# dev-dependencies).
 nebula-credential = { path = "../credential" }
 # `tests/rotation.rs` defines a mock `TestCredential` whose `State` impl
 # requires `Serialize + Deserialize + ZeroizeOnDrop` per the credential

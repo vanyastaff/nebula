@@ -93,12 +93,14 @@ impl<C: Credential> SchemeGuard<'_, C> {
     ///
     /// Mirrors [`SchemeGuard::new`] but is publicly callable so external
     /// integration tests (notably `nebula-resource`'s rotation dispatch
-    /// suite) can fabricate guards for fixture resources. Not intended for
-    /// production code paths.
+    /// suite) can fabricate guards for fixture resources. Gated behind
+    /// `#[cfg(any(test, feature = "test-util"))]` per test-util gating — this
+    /// constructor MUST NOT be exposed in a production release build.
     ///
     /// Production code paths use the engine-driven flow that calls
     /// [`SchemeFactory::acquire`], which hands out a borrow-pinned guard
     /// the borrow checker rejects retention on (Probe 6).
+    #[cfg(any(test, feature = "test-util"))]
     pub fn for_test(scheme: <C as Credential>::Scheme) -> Self {
         Self::new(scheme)
     }
@@ -194,6 +196,7 @@ impl<C: Credential> SchemeFactory<C> {
     /// (which `acquire` re-binds to `&self`). Tests typically capture an
     /// owned scheme prototype and clone it inside the closure body — see
     /// `crates/resource/tests/rotation.rs` for the canonical fixture form.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn for_test<F>(f: F) -> Self
     where
         F: Fn() -> AcquireFuture<C> + Send + Sync + 'static,
@@ -216,6 +219,7 @@ impl<C: Credential> SchemeFactory<C> {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl<C: Credential> SchemeFactory<C>
 where
     <C as Credential>::Scheme: Clone,
