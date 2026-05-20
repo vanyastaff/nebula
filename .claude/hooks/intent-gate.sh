@@ -68,14 +68,26 @@ tb="$(printf '%s' "$st" | jq -r '.turn_base_patch_ids[]?' 2>/dev/null | effectiv
 CODE_RE='\.(rs|toml|sh|md)$'
 
 # Unified added-content stream: a `+++ <path>` header per file then each added
-# line prefixed `+`. Tracked deltas from `git diff --unified=0`; every
-# untracked code file is wholly added. blob / dup / budget all consume this.
+# line prefixed `+`. Single `git diff <base>` (working tree vs base) covers the
+# union of committed-this-turn + staged + unstaged — replaces the prior
+# triple-diff (`$tb..HEAD` + working + `--cached`) which double-counted markers
+# in partial-staging workflows (a marker line that was staged and then edited
+# in working tree was emitted by both the working and the `--cached` diff, so
+# one logical marker counted as two and could spuriously exhaust the per-turn
+# marker budget — Codex review #3270814797). Untracked code files are wholly
+# added and emitted by the untracked loop with a `+ ` sentinel.
 CODE_PS=(-- '*.rs' '*.toml' '*.sh' '*.md')   # pathspec mirror of CODE_RE
 ig_added_lines() {
-  { [ -n "$tb" ] && git -C "$cwd" diff --unified=0 "$tb"..HEAD "${CODE_PS[@]}" 2>/dev/null; \
-    git -C "$cwd" diff --unified=0 "${CODE_PS[@]}" 2>/dev/null; \
-    git -C "$cwd" diff --unified=0 --cached "${CODE_PS[@]}" 2>/dev/null; } \
-  | grep -E '^(\+\+\+ |\+)'
+  local base=""
+  if [ -n "$tb" ]; then
+    base="$tb"
+  elif git -C "$cwd" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    base="HEAD"
+  fi
+  if [ -n "$base" ]; then
+    git -C "$cwd" diff --unified=0 "$base" "${CODE_PS[@]}" 2>/dev/null \
+      | grep -E '^(\+\+\+ |\+)' || true
+  fi
   while IFS= read -r uf; do
     [ -n "$uf" ] || continue
     printf '+++ %s\n' "$uf"
@@ -87,41 +99,52 @@ ig_added_lines() {
 }
 
 # Path-based exempts for net-LoC / NF / blob: criterion benches are
-# table-driven, SQL migrations are DDL fixtures, and snapshot / golden test
-# data are inherently bulky — the path encodes the semantics, so a turn
-# scoped to those paths does not consume the structural budget. (Bench
-# files still respect a per-file blob cap (criterion files can be long but
-# a single function should not be); see blob_cap_for_file below.)
-# Agents cannot game the path because it is checked literally and a
-# reviewer catches misplacement. (ADR-0083 escape-hatch hardening.)
+# table-driven, and snapshot / golden test data are inherently bulky — the
+# path encodes the semantics, so a turn scoped to those paths does not
+# consume the structural budget. (Bench files still respect a per-file blob
+# cap (criterion files can be long but a single function should not be);
+# see blob_cap_for_file below.) Agents cannot game the path because it is
+# checked literally and a reviewer catches misplacement. `*/migrations/*.sql`
+# is intentionally NOT listed: `CODE_RE` does not include `.sql`, so SQL
+# files never enter the gate's input stream in the first place — adding a
+# migration exemption to a stream they cannot reach would only mislead
+# readers (Copilot review #3270814226).
+# (ADR-0083 escape-hatch hardening.)
 is_exempt_path() {
   case "$1" in
     */benches/*.rs)                                       return 0 ;;
-    */migrations/*.sql)                                   return 0 ;;
     */tests/golden/*|*/tests/snapshots/*|*/snapshots/*)   return 0 ;;
     *)                                                    return 1 ;;
   esac
 }
-# @generated convention (prettier, prost-build, tonic, etc.): a tool-emitted
-# marker on the file's first few lines auto-exempts the file from the
-# structural budget. Standard enough that catching it removes a class of
-# false positives without giving agents a new game — the file would have to
-# actually look generated.
+# @generated convention (prettier, prost-build, tonic, etc.): the auto-exempt
+# requires BOTH a `@generated` token AND a real generator-emitted authority
+# marker (`DO NOT EDIT` or Meta's `SignedSource<<…>>`) on the file's first
+# few lines. The bare `// @generated` substring on its own is trivially
+# spoofable — an agent could prepend that one line to any handwritten file
+# to escape the budget (Copilot review #3270814243). Real generators always
+# emit the authority marker; requiring it removes the easy spoof without
+# blocking genuine generated output.
 is_generated_file() {
-  local p="$cwd/$1"
+  local p="$cwd/$1" head5
   [ -f "$p" ] || return 1
-  head -n 5 "$p" 2>/dev/null | grep -qE '@generated'
+  head5="$(head -n 5 "$p" 2>/dev/null)"
+  printf '%s' "$head5" | grep -qE '@generated' \
+    && printf '%s' "$head5" | grep -qE 'DO NOT EDIT|SignedSource<<'
 }
 # Per-file added-line counts, consuming the shared ig_added_lines stream
 # (untracked-aware, per-file via the `+++ ` header reset). Git diff emits
 # `+++ b/<path>` for tracked changes; untracked files have no prefix. Strip
 # the optional `a/` or `b/` so callers see a single canonical relative path
 # (path-glob exemptions still match either form, but `is_generated_file`
-# needs the on-disk path to be openable).
+# needs the on-disk path to be openable). POSIX `[[:space:]]` rather than
+# `[ \t]` — the latter in an ERE bracket expression matches `[<space><\><t>]`
+# (literal `\` and `t`), not a tab, so tab-indented input would silently fall
+# through (Copilot review #3270814260).
 added_lines_per_file() {
   ig_added_lines | awk '
     function flush() { if (file != "") print file "\t" added+0 }
-    /^\+\+\+ /      { flush(); file=$0; sub(/^\+\+\+[ \t]+/, "", file); sub(/^[ab]\//, "", file); added=0; next }
+    /^\+\+\+ /      { flush(); file=$0; sub(/^\+\+\+[[:space:]]+/, "", file); sub(/^[ab]\//, "", file); added=0; next }
     /^\+/           { added++; next }
     END             { flush() }'
 }
@@ -138,12 +161,22 @@ while IFS=$'\t' read -r f a; do
   added=$((added + a))
 done < <(added_lines_per_file)
 deleted=0
-while read -r _a d _; do
-  [[ "$d" =~ ^[0-9]+$ ]] && deleted=$((deleted + d))
-done < <( { [ -n "$tb" ] && git -C "$cwd" diff --numstat "$tb"..HEAD "${CODE_PS[@]}" 2>/dev/null; \
-            git -C "$cwd" diff --numstat "${CODE_PS[@]}" 2>/dev/null; \
-            git -C "$cwd" diff --numstat --cached "${CODE_PS[@]}" 2>/dev/null; } \
-          | grep -E "$CODE_RE" || true )
+# Single `git diff <base>` (working tree vs base) for the same partial-staging
+# dedup reason as ig_added_lines — a deletion that's staged then re-touched in
+# the working tree must not count twice.
+if [ -n "$tb" ]; then
+  num_base="$tb"
+elif git -C "$cwd" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  num_base="HEAD"
+else
+  num_base=""
+fi
+if [ -n "$num_base" ]; then
+  while read -r _a d _; do
+    [[ "$d" =~ ^[0-9]+$ ]] && deleted=$((deleted + d))
+  done < <(git -C "$cwd" diff --numstat "$num_base" "${CODE_PS[@]}" 2>/dev/null \
+            | grep -E "$CODE_RE" || true)
+fi
 net=$((added - deleted))
 
 # Net-negative (cleanup / deletion) is always allowed — positive constraint.
@@ -165,22 +198,28 @@ if [ "$net" -lt 0 ]; then ig_log allow "net-negative"; allow; fi
 # message bodies, comments-about-the-marker in this very file or the
 # hook-test fixtures — do NOT count as markers. Only a real
 # `// budget-justified: …` or `# budget-justified: …` comment on an
-# added line counts.
-MARKER_RE='^\+[ \t]*(//|#)[ \t]*budget-justified:'
+# added line counts. POSIX `[[:space:]]` rather than `[ \t]` — the latter
+# in an ERE bracket expression matches `[<space><\><t>]` (literal `\` and
+# `t`), not a tab (Copilot review #3270814260).
+MARKER_RE='^\+[[:space:]]*(//|#)[[:space:]]*budget-justified:'
 markers_count() {
   ig_added_lines | grep -cE "$MARKER_RE" | awk '{print $1+0}'
 }
 # Justification-quality heuristic: the text after `budget-justified:` must
-# be at least 30 chars and mention one of the legitimate-bulk keywords.
-# Catches lazy `// budget-justified: ok` / `# budget-justified: legacy`
-# escapes without blocking genuine generated/table/criterion/migration/
-# fixture/schema/snapshot/golden/test-data additions. Used by the blob
-# check only — NF / net-LoC / dup checks still treat any marker as present.
+# be at least 30 chars and mention one of the legitimate-bulk keywords as
+# a whole word. Keywords are wrapped with non-word-character anchors
+# (`(^|[^a-z0-9_])(table|…)([^a-z0-9_]|$)`) so substrings such as
+# `unstable` no longer satisfy `table`, closing a substring-match
+# gameability gap (Copilot review #3270814282). Catches lazy
+# `// budget-justified: ok` / `# budget-justified: legacy` escapes without
+# blocking genuine table / generated / criterion / fixture / schema /
+# snapshot / golden / test-data additions. Used by the blob check only —
+# NF / net-LoC / dup checks still treat any marker as present.
 markers_quality_count() {
   ig_added_lines \
     | grep -oE "$MARKER_RE"'.*' \
-    | sed -E 's@^\+[ \t]*(//|#)[ \t]*budget-justified:[ \t]*@@' \
-    | awk '{ l = tolower($0); if (length($0) >= 30 && l ~ /table|generated|criterion|migration|fixture|schema|snapshot|golden|test[ \t]+data/) n++ } END { print n+0 }'
+    | sed -E 's@^\+[[:space:]]*(//|#)[[:space:]]*budget-justified:[[:space:]]*@@' \
+    | awk '{ l = tolower($0); if (length($0) >= 30 && l ~ /(^|[^a-z0-9_])(table|generated|criterion|migration|fixture|schema|snapshot|golden|test[[:space:]]+data)([^a-z0-9_]|$)/) n++ } END { print n+0 }'
 }
 budget_justified()         { local n; n="$(markers_count)";         [ "${n:-0}" -gt 0 ]; }
 budget_justified_quality() { local n; n="$(markers_quality_count)"; [ "${n:-0}" -gt 0 ]; }
@@ -242,7 +281,6 @@ fi
 blob_cap_for_file() {
   case "$1" in
     */benches/*.rs)                                       echo 300 ;;
-    */migrations/*.sql)                                   echo 100000 ;;
     */tests/golden/*|*/tests/snapshots/*|*/snapshots/*)   echo 100000 ;;
     *)                                                    echo 100 ;;
   esac
@@ -250,7 +288,7 @@ blob_cap_for_file() {
 longest_added_run_per_file() {
   ig_added_lines | awk '
     function flush() { if (file != "") print file "\t" max }
-    /^\+\+\+ /      { flush(); file=$0; sub(/^\+\+\+[ \t]+/, "", file); sub(/^[ab]\//, "", file); run=0; max=0; next }
+    /^\+\+\+ /      { flush(); file=$0; sub(/^\+\+\+[[:space:]]+/, "", file); sub(/^[ab]\//, "", file); run=0; max=0; next }
     /^\+/           { run++; if (run>max) max=run; next }
     { run=0 }
     END             { flush() }'
@@ -268,7 +306,7 @@ done < <(longest_added_run_per_file)
 if [ -n "$blob_path" ] && ! budget_justified_quality; then
   ig_bump
   ig_log block "blob-over-cap"
-  deny "Turn adds a $blob_run-line contiguous block in \`$blob_path\` (path-specific cap $blob_cap). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` line (≥30 chars, mentioning table/generated/criterion/migration/fixture/schema/snapshot/golden/test data) for intentional generated/table code. Bench paths (\`*/benches/*.rs\`), SQL migrations, and snapshot/golden test fixtures are auto-exempt by path; files whose first lines carry \`@generated\` are also exempt. (ADR-0083 structural-budget tier; escape-hatch hardening.)"
+  deny "Turn adds a $blob_run-line contiguous block in \`$blob_path\` (path-specific cap $blob_cap). Decompose into smaller functions, or add a \`// budget-justified: <reason>\` (Rust / JS / TS) or \`# budget-justified: <reason>\` (Bash / TOML / Python) line (≥30 chars, mentioning table/generated/criterion/migration/fixture/schema/snapshot/golden/test data as a whole word) for intentional generated/table code. Bench paths (\`*/benches/*.rs\`) and snapshot/golden test fixtures are auto-exempt by path; files whose first lines carry \`@generated\` AND a \`DO NOT EDIT\`/\`SignedSource<<…>>\` authority marker are also exempt. (ADR-0083 structural-budget tier; escape-hatch hardening.)"
 fi
 
 # New-file budget (ToF is the 2nd strongest decay predictor). ls-files

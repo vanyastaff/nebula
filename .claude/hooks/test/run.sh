@@ -547,5 +547,51 @@ printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts"
 chk "E src 200-line blob no marker still denies" 2 "$(egate '{"session_id":"'"$ERS_SID"'","cwd":"'"$ERS_DIR"'","stop_hook_active":false}')"
 rm -rf "$ERS_DIR"
 
+# E quality-keyword word boundaries: a substring like `unstable` (contains
+# `table`) must NOT satisfy the `table` keyword — only whole-word matches do.
+# Regression for Copilot review #3270814282.
+EWB_DIR="$(mktemp -d)"
+( cd "$EWB_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/ewb/src \
+  && { echo '// budget-justified: handles unstable feature flag interactions across runtime layers'; \
+       echo 'fn big() {'; for i in $(seq 1 150); do echo "  let v$i = $i;"; done; echo '}'; } > crates/ewb/src/x.rs )
+EWB_SID="e-word-bound"; EWB_P="$(turn_state_path "$EWB_SID" "$EWB_DIR")"; mkdir -p "$(dirname "$EWB_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EWB_P"
+chk "E unstable doesn't satisfy table keyword" 2 "$(egate '{"session_id":"'"$EWB_SID"'","cwd":"'"$EWB_DIR"'","stop_hook_active":false}')"
+rm -rf "$EWB_DIR"
+
+# E @generated spoof: a bare `// @generated` token without an authority
+# marker (`DO NOT EDIT` or `SignedSource<<…>>`) must NOT auto-exempt — the
+# tightened predicate denies the spoof. Regression for Copilot review
+# #3270814243.
+EGS_DIR="$(mktemp -d)"
+( cd "$EGS_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/egs/src \
+  && { echo '// @generated'; echo 'fn big() {'; \
+       for i in $(seq 1 200); do echo "  let v$i = $i;"; done; echo '}'; } > crates/egs/src/x.rs )
+EGS_SID="e-gen-spoof"; EGS_P="$(turn_state_path "$EGS_SID" "$EGS_DIR")"; mkdir -p "$(dirname "$EGS_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EGS_P"
+chk "E bare @generated doesn't auto-exempt" 2 "$(egate '{"session_id":"'"$EGS_SID"'","cwd":"'"$EGS_DIR"'","stop_hook_active":false}')"
+rm -rf "$EGS_DIR"
+
+# E marker dedup across partial staging: a marker line that's BOTH staged
+# (one text) AND modified in the working tree (different text) must count as
+# ONE logical marker, not two. Pre-fix triple-diff (`$tb..HEAD` + working +
+# `--cached`) emitted both `+staged` and `+working` lines, doubling the
+# marker count and tripping `MARKER_BUDGET=2` with only 2 real markers in
+# the turn. Single `git diff $base` against working tree counts each marker
+# once. Regression for Codex review #3270814797.
+EDD_DIR="$(mktemp -d)"
+( cd "$EDD_DIR" && git init -q && git -c user.email=t@t -c user.name=t commit -qm init --allow-empty \
+  && mkdir -p crates/edd/src \
+  && printf '// budget-justified: criterion benchmark table fixture generated long block one\nfn a(){}\n' > crates/edd/src/a.rs \
+  && git add crates/edd/src/a.rs \
+  && printf '// budget-justified: criterion benchmark table fixture generated long block one V2\nfn a(){}\n' > crates/edd/src/a.rs \
+  && printf '// budget-justified: criterion benchmark table fixture generated long block two\nfn b(){}\n' > crates/edd/src/b.rs )
+EDD_SID="e-dedup"; EDD_P="$(turn_state_path "$EDD_SID" "$EDD_DIR")"; mkdir -p "$(dirname "$EDD_P")"
+printf '{"impl_files_edited":[],"gate_green":[],"turn_base":"","intent_attempts":0}' >"$EDD_P"
+chk "E marker dedup across partial staging" 0 "$(egate '{"session_id":"'"$EDD_SID"'","cwd":"'"$EDD_DIR"'","stop_hook_active":false}')"
+rm -rf "$EDD_DIR"
+
 [ "$fail" -eq 0 ] && echo "ALL GUARD TESTS PASSED" || echo "GUARD TESTS FAILED"
 exit "$fail"

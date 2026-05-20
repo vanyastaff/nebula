@@ -166,15 +166,20 @@ this ADR now closes (PR-series referenced inline in the implementation):
    sufficient to unlock the entire turn. The escape is now hardened on three
    axes, each independent:
 
-   - **Path-based auto-exempt.** `*/benches/*.rs`, `*/migrations/*.sql`, and
-     `*/tests/golden/*` + `*/tests/snapshots/*` + `*/snapshots/*` no longer
-     need a marker — the path encodes the semantics (criterion tables, DDL
-     fixtures, golden snapshots). Bench files still respect a per-file blob
-     cap of 300 (so a single function cannot balloon). Migrations and
-     golden/snapshot data are effectively unbounded. Agents cannot game the
-     path because it is checked literally and a reviewer catches
-     misplacement. Files whose first lines carry an `@generated` marker
-     (prettier / prost-build / tonic convention) are similarly auto-exempt.
+   - **Path-based auto-exempt.** `*/benches/*.rs` and `*/tests/golden/*` +
+     `*/tests/snapshots/*` + `*/snapshots/*` no longer need a marker — the
+     path encodes the semantics (criterion tables, golden snapshots). Bench
+     files still respect a per-file blob cap of 300 (so a single function
+     cannot balloon). Golden/snapshot data are effectively unbounded.
+     Agents cannot game the path because it is checked literally and a
+     reviewer catches misplacement. (`*/migrations/*.sql` is intentionally
+     NOT listed — `CODE_RE` does not include `.sql`, so SQL files never
+     enter the gate's input stream; an exemption against a stream they
+     cannot reach would only mislead readers.) Files whose first lines
+     carry an `@generated` marker AND a real authority marker (`DO NOT
+     EDIT` or Meta's `SignedSource<<…>>`) are similarly auto-exempt — the
+     bare `@generated` substring on its own is trivially spoofable and is
+     not enough.
    - **Per-turn marker budget.** `MARKER_BUDGET=2`. Spamming markers across
      files defeats the point; a 3-marker turn fails with
      `marker-budget-exhausted` regardless of what else is justified. The cap
@@ -183,14 +188,26 @@ this ADR now closes (PR-series referenced inline in the implementation):
    - **Minimum-justification quality (blob only).** The text after
      `budget-justified:` must be at least 30 chars and mention one of
      `table | generated | criterion | migration | fixture | schema |
-     snapshot | golden | test data`. A lazy `// budget-justified: ok`
-     authorizes nothing for the blob check. NF / net-LoC / dup still treat
-     any marker as present — the quality bar is concentrated on the most
-     decay-correlated dimension (per-fn complexity).
+     snapshot | golden | test data` as a **whole word** (non-word-character
+     anchors around each keyword), so substrings like `unstable` no longer
+     satisfy `table`. A lazy `// budget-justified: ok` authorizes nothing
+     for the blob check. NF / net-LoC / dup still treat any marker as
+     present — the quality bar is concentrated on the most decay-correlated
+     dimension (per-fn complexity).
    - **Comment-style portability.** The marker regex accepts both
      `// budget-justified:` (Rust / JS / TS / C) and
      `# budget-justified:` (Bash / TOML / Python) so hook scripts and
-     config files carry the same convention as Rust source.
+     config files carry the same convention as Rust source. Anchors use
+     POSIX `[[:space:]]` rather than `[ \t]`, which in an ERE bracket
+     expression matches literal `\` and `t` instead of a tab.
+   - **Marker-dedup across partial staging.** The diff stream that feeds
+     the marker count is a single `git diff <base>` (working tree vs
+     turn-base) rather than the previous union of `tb..HEAD` + working +
+     `--cached`. With the triple-diff form, a marker line that was staged
+     and then re-edited in the working tree was emitted twice (once by
+     `--cached` and once by the working diff), so one logical marker
+     counted as two and could spuriously exhaust `MARKER_BUDGET=2`. The
+     single-diff form sees each line at most once.
 
    Net effect: the marker is no longer sufficient on its own. Path matters.
    Quantity matters. Justification quality matters. The deterministic core
