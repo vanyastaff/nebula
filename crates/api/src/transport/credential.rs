@@ -237,9 +237,13 @@ impl<'a> CredentialStoreHandle<'a> {
 
     /// Layered `list` impl extracted so the loop body stays under the
     /// `clippy::excessive_nesting` threshold. Drops rows we can't inspect
-    /// or whose `owner_id` doesn't match the caller's scope. `get`
-    /// errors are deliberately swallowed — a row that vanished between
-    /// `list` and `get` is just not yours.
+    /// or whose `owner_id` doesn't match the caller's scope.
+    ///
+    /// `NotFound` mid-iteration is silently skipped (a row that vanished
+    /// between `list` and `get` is just not yours). Other `get` errors
+    /// — most importantly `Backend` from a failed decrypt — are logged
+    /// at `warn` so operators see corruption or key-rotation drift
+    /// instead of silently losing rows from the owner's list.
     async fn list_owned(
         store: &Arc<LayeredStore<InMemoryStore>>,
         owner_id: &str,
@@ -248,8 +252,18 @@ impl<'a> CredentialStoreHandle<'a> {
         let all_ids = store.list(state_kind).await?;
         let mut owned = Vec::with_capacity(all_ids.len());
         for id in all_ids {
-            let Ok(cred) = store.get(&id).await else {
-                continue;
+            let cred = match store.get(&id).await {
+                Ok(c) => c,
+                Err(StoreError::NotFound { .. }) => continue,
+                Err(e) => {
+                    tracing::warn!(
+                        cred.id = %id,
+                        err = %e,
+                        "list_owned: store.get failed; excluding row from listing \
+                         (possible decryption / key-rotation issue)"
+                    );
+                    continue;
+                },
             };
             let row_owner = cred
                 .metadata
