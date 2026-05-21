@@ -6,9 +6,9 @@
 //! ## honest capability honesty split (Phase 4)
 //!
 //! The CRUD subset (`create` / `get` / `update` / `delete` / `list`)
-//! persists through [`CredentialStoreHandle`]: when
-//! `AppState::credential_service` is set (Task 17 wire-up) it routes
-//! through the `CredentialService`'s `LayeredStore<InMemoryStore>`
+//! persists through `CredentialStoreHandle` (crate-private): when
+//! `AppState::credential_service` is set it routes through the
+//! `CredentialService`'s `LayeredStore<InMemoryStore>`
 //! (encryption+audit+cache stack); otherwise it falls back to the raw
 //! `InMemoryStore` wrapped by `CredentialScopeLayer`
 //! (`AppState::oauth_credential_store`). The OAuth2 callback path still
@@ -56,8 +56,8 @@
 //! ## Workspace isolation
 //!
 //! Workspace handlers derive an owner id from the resolved tenant scope.
-//! When `credential_service` is set, [`CredentialStoreHandle::Layered`]
-//! stamps `metadata["owner_id"]` on create and checks it on every
+//! When `credential_service` is set, `CredentialStoreHandle::Layered`
+//! (crate-private) stamps `metadata["owner_id"]` on create and checks it on every
 //! subsequent read, update, and delete — same invariant as the service's
 //! internal `load_owned()`. When it is `None` (legacy path),
 //! `CredentialScopeLayer` performs the same enforcement, so credential
@@ -223,13 +223,44 @@ impl<'a> CredentialStoreHandle<'a> {
         }
     }
 
-    /// `list` — delegates to the underlying store; callers post-filter by
-    /// metadata owner-id when using the layered path.
+    /// `list` — the layered arm filters by `owner_id` BEFORE returning
+    /// IDs (otherwise the raw `InMemoryStore::list` leaks every tenant's
+    /// IDs to the caller — neither `list_credentials` upstream nor the
+    /// stamp-on-put validates owner on the ID itself). The scoped arm is
+    /// already owner-filtered by `CredentialScopeLayer`.
     pub(crate) async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
         match self {
-            Self::Layered(store, _) => store.list(state_kind).await,
+            Self::Layered(store, owner_id) => Self::list_owned(store, owner_id, state_kind).await,
             Self::Scoped(store) => store.list(state_kind).await,
         }
+    }
+
+    /// Layered `list` impl extracted so the loop body stays under the
+    /// `clippy::excessive_nesting` threshold. Drops rows we can't inspect
+    /// or whose `owner_id` doesn't match the caller's scope. `get`
+    /// errors are deliberately swallowed — a row that vanished between
+    /// `list` and `get` is just not yours.
+    async fn list_owned(
+        store: &Arc<LayeredStore<InMemoryStore>>,
+        owner_id: &str,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<String>, StoreError> {
+        let all_ids = store.list(state_kind).await?;
+        let mut owned = Vec::with_capacity(all_ids.len());
+        for id in all_ids {
+            let Ok(cred) = store.get(&id).await else {
+                continue;
+            };
+            let row_owner = cred
+                .metadata
+                .get("owner_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if row_owner == owner_id {
+                owned.push(id);
+            }
+        }
+        Ok(owned)
     }
 }
 

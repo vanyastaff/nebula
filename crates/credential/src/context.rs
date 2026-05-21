@@ -348,10 +348,14 @@ impl CredentialContextBuilder {
         self
     }
 
-    /// Attach a parent cancellation token.
+    /// Attach a per-operation cancellation token, overriding the
+    /// default.
     ///
-    /// If omitted, the context's cancel token defaults to a fresh
-    /// `CancellationToken::new()` (uncancelled, no parent).
+    /// If omitted, [`build`](Self::build) derives the cancel token as a
+    /// child of `BaseContext::cancellation()`, so engine-level shutdown
+    /// cascades transparently. Use `with_cancel(token)` to substitute a
+    /// caller-supplied token (e.g. a request-scoped cancel signal that
+    /// is independent of engine shutdown).
     #[must_use]
     pub fn with_cancel(mut self, token: CancellationToken) -> Self {
         self.cancel = Some(token);

@@ -674,7 +674,9 @@ pub type Result<T> = std::result::Result<T, CredentialError>;
 //   RefreshFailed(Box<RefreshFailedContext>) — 8B pointer
 //   RevokeFailed(Box<RevokeFailedContext>)   — 8B pointer
 //   NotInteractive                   — 0B payload
-//   SchemeMismatch(SchemeMismatch)   — 2B payload (two SchemeKind u8)
+//   SchemeMismatch(Box<SchemeMismatch>) — 8B pointer
+//      (was 2B payload pre-#732 fixup; boxed once `SchemeIdentity::Named`
+//      carries a `CompactString` so the inline form pushed past 32B).
 //   InvalidInput(String)             — 24B (ptr+len+cap)
 //   Resolution(Box<CoreError>)       — 8B pointer
 //
